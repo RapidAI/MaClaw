@@ -153,8 +153,8 @@ func TestTenantDeleteStopsRuntime(t *testing.T) {
 	if stopper.calls != 1 || stopper.tenantID != "tenant_a" {
 		t.Fatalf("stopper calls=%d tenant=%q", stopper.calls, stopper.tenantID)
 	}
-	if repo.items["tenant_a"].DeletedAt == nil {
-		t.Fatal("tenant was not soft deleted")
+	if _, exists := repo.items["tenant_a"]; exists {
+		t.Fatal("tenant was not hard deleted from repo")
 	}
 }
 

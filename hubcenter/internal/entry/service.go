@@ -133,8 +133,9 @@ func (s *Service) Rebuild(ctx context.Context) error {
 			snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
 			for _, route := range codeRoutes {
 				snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
-					HubID:    route.HubID,
-					TenantID: route.TenantID,
+					HubID:       route.HubID,
+					TenantID:    route.TenantID,
+					UsedByEmail: route.UsedByEmail,
 				}
 			}
 		}
@@ -153,15 +154,16 @@ func (s *Service) SnapshotStats() RouteSnapshotStats {
 
 // InvitationCodeRouteResult contains the lookup result for an invitation code.
 type InvitationCodeRouteResult struct {
-	Found      bool   `json:"found"`
-	Code       string `json:"code"`
-	HubID      string `json:"hub_id,omitempty"`
-	HubName    string `json:"hub_name,omitempty"`
-	HubURL     string `json:"hub_url,omitempty"`
-	HubStatus  string `json:"hub_status,omitempty"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	TenantName string `json:"tenant_name,omitempty"`
-	Message    string `json:"message,omitempty"`
+	Found       bool   `json:"found"`
+	Code        string `json:"code"`
+	HubID       string `json:"hub_id,omitempty"`
+	HubName     string `json:"hub_name,omitempty"`
+	HubURL      string `json:"hub_url,omitempty"`
+	HubStatus   string `json:"hub_status,omitempty"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	TenantName  string `json:"tenant_name,omitempty"`
+	UsedByEmail string `json:"used_by_email,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // LookupInvitationCodeRoute queries the invitation code routing table and returns
@@ -178,23 +180,25 @@ func (s *Service) LookupInvitationCodeRoute(ctx context.Context, code string) (*
 		if target, ok := snap.invitationCodeRoutes[code]; ok {
 			if hub, exists := snap.activeHubsByID[target.HubID]; exists {
 				return &InvitationCodeRouteResult{
-					Found:      true,
-					Code:       code,
-					HubID:      hub.ID,
-					HubName:    hub.Name,
-					HubURL:     hub.BaseURL,
-					HubStatus:  hub.Status,
-					TenantID:   target.TenantID,
-					TenantName: tenantNameForHub(hub, target.TenantID),
+					Found:       true,
+					Code:        code,
+					HubID:       hub.ID,
+					HubName:     hub.Name,
+					HubURL:      hub.BaseURL,
+					HubStatus:   hub.Status,
+					TenantID:    target.TenantID,
+					TenantName:  tenantNameForHub(hub, target.TenantID),
+					UsedByEmail: target.UsedByEmail,
 				}, nil
 			}
 			// Hub exists in route table but not in active hubs (maybe disabled/offline).
 			return &InvitationCodeRouteResult{
-				Found:    true,
-				Code:     code,
-				HubID:    target.HubID,
-				TenantID: target.TenantID,
-				Message:  "Hub is registered but currently not active",
+				Found:       true,
+				Code:        code,
+				HubID:       target.HubID,
+				TenantID:    target.TenantID,
+				UsedByEmail: target.UsedByEmail,
+				Message:     "Hub is registered but currently not active",
 			}, nil
 		}
 	}
@@ -206,7 +210,7 @@ func (s *Service) LookupInvitationCodeRoute(ctx context.Context, code string) (*
 			return nil, err
 		}
 		if route != nil {
-			result := &InvitationCodeRouteResult{Found: true, Code: code, HubID: route.HubID, TenantID: route.TenantID}
+			result := &InvitationCodeRouteResult{Found: true, Code: code, HubID: route.HubID, TenantID: route.TenantID, UsedByEmail: route.UsedByEmail}
 			// Try to get hub details.
 			hub, _ := s.hubs.GetByID(ctx, route.HubID)
 			if hub != nil {

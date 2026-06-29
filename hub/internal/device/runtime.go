@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
@@ -101,6 +103,23 @@ func NewRuntime() *Runtime {
 		lastHeartbeatAt:   map[string]time.Time{},
 		events:            make([]MachineEvent, 0, 128),
 	}
+}
+
+// PendingMessages is the per-machine message queue used to buffer messages
+// sent while a machine is temporarily offline (e.g., during Hub redeployment).
+// Messages are drained and delivered when the machine reconnects via MarkOnline.
+var PendingMessages = NewPendingMessageQueue()
+
+func init() {
+	// Background GC: clean up expired/empty entries for permanently offline
+	// machines every 10 minutes. Prevents unbounded map growth.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			PendingMessages.GC()
+		}
+	}()
 }
 
 func NewService(repo MachineRepository, runtime *Runtime) *Service {
@@ -352,7 +371,16 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 		}
 	}
 	log.Printf("[device] MarkOnline: DB status set to 'online' for machine_id=%s", machineID)
-	return s.repo.UpdateHeartbeat(ctx, machineID, now)
+	if err := s.repo.UpdateHeartbeat(ctx, machineID, now); err != nil {
+		return err
+	}
+
+	// Deliver any messages that were buffered while the machine was offline.
+	// This covers Hub redeployment scenarios where users sent messages during
+	// the brief disconnection window.
+	go s.DrainPendingMessages(machineID)
+
+	return nil
 }
 
 func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.MachineHeartbeatPayload) error {
@@ -413,11 +441,14 @@ func (s *Service) SendToMachine(machineID string, msg any) error {
 	conn := s.runtime.desktopsByMachine[machineID]
 	s.runtime.mu.RUnlock()
 	if conn == nil || conn.Conn == nil {
+		// Buffer the message for delivery when the machine reconnects.
+		// This covers transient offline periods during Hub redeployment.
+		PendingMessages.Enqueue(machineID, msg)
 		s.recordEvent(MachineEvent{
 			Timestamp: time.Now().Unix(),
 			MachineID: machineID,
-			Type:      "send.failed",
-			Message:   "machine offline during command dispatch",
+			Type:      "send.queued",
+			Message:   "machine offline, message queued for reconnect delivery",
 		})
 		return ErrMachineOffline
 	}
@@ -442,6 +473,79 @@ func (s *Service) SendToMachine(machineID string, msg any) error {
 	}
 	log.Printf("[device] SendToMachine: Send OK machine_id=%s", machineID)
 	return nil
+}
+
+// DrainPendingMessages delivers all buffered messages for a machine that
+// were queued while it was offline. Called after MarkOnline to ensure the
+// machine receives messages sent during Hub redeployment.
+func (s *Service) DrainPendingMessages(machineID string) {
+	pending := PendingMessages.Drain(machineID)
+	if len(pending) == 0 {
+		return
+	}
+	log.Printf("[device] DrainPendingMessages: delivering %d buffered messages to machine_id=%s", len(pending), machineID)
+	for i, msg := range pending {
+		// Use sendDirect (no re-enqueue on failure) to avoid infinite
+		// re-queue loops if the machine drops again during drain.
+		if err := s.sendDirect(machineID, msg); err != nil {
+			// Re-enqueue remaining undelivered messages for next reconnect.
+			for _, rem := range pending[i:] {
+				PendingMessages.Enqueue(machineID, rem)
+			}
+			log.Printf("[device] DrainPendingMessages: delivery failed for machine_id=%s, re-queued %d remaining: %v", machineID, len(pending)-i, err)
+			break
+		}
+	}
+}
+
+// sendDirect sends a message to a machine without buffering to the pending
+// queue on failure. Used by DrainPendingMessages to avoid re-enqueue loops.
+func (s *Service) sendDirect(machineID string, msg any) error {
+	s.runtime.mu.RLock()
+	conn := s.runtime.desktopsByMachine[machineID]
+	s.runtime.mu.RUnlock()
+	if conn == nil || conn.Conn == nil {
+		return ErrMachineOffline
+	}
+	if !conn.Send(msg) {
+		return ErrMachineSendBufferFull
+	}
+	return nil
+}
+
+// GracefulCloseAll sends WebSocket close(1001, "server going away") to all
+// connected machines, signaling a planned shutdown (e.g., Hub redeployment).
+// Clients that receive close(1001) use fast reconnect (100ms backoff) instead
+// of the normal exponential backoff (500ms → 30s), enabling sub-second
+// reconnection to the new Hub instance.
+//
+// Must be called during Hub graceful shutdown, BEFORE the HTTP server stops
+// accepting connections.
+func (s *Service) GracefulCloseAll() {
+	s.runtime.mu.RLock()
+	conns := make([]*ws.ConnContext, 0, len(s.runtime.desktopsByMachine))
+	for _, conn := range s.runtime.desktopsByMachine {
+		if conn != nil && conn.Conn != nil {
+			conns = append(conns, conn)
+		}
+	}
+	s.runtime.mu.RUnlock()
+
+	if len(conns) == 0 {
+		return
+	}
+
+	log.Printf("[device] GracefulCloseAll: sending close(1001) to %d connected machines", len(conns))
+	closeMsg := websocket.FormatCloseMessage(websocket.CloseGoingAway, "server restarting")
+	deadline := time.Now().Add(3 * time.Second)
+	for _, conn := range conns {
+		// WriteControl may race with concurrent writes from the send goroutine.
+		// Recover from any panic rather than crashing the shutdown path.
+		func(c *ws.ConnContext) {
+			defer func() { _ = recover() }()
+			_ = c.Conn.WriteControl(websocket.CloseMessage, closeMsg, deadline)
+		}(conn)
+	}
 }
 
 // FindOnlineMachineByName returns the machine ID of an online device belonging

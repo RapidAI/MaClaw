@@ -707,6 +707,7 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 		}
 		if dependencyVerification := anyMapFromMap(entry.Governance, "dependencyVerification", "dependency_verification"); dependencyVerification != nil {
 			metadata["dependency_verification"] = dependencyVerification
+			applyEnterpriseMaclawAppDependencyVerificationMetadata(metadata, dependencyVerification)
 		}
 		if testEvidence := anyMapFromMap(entry.Governance, "testEvidence", "test_evidence"); testEvidence != nil {
 			metadata["test_evidence"] = testEvidence
@@ -750,6 +751,54 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 	return compactMetadata(metadata)
 }
 
+func applyEnterpriseMaclawAppDependencyVerificationMetadata(metadata, verification map[string]any) {
+	if metadata == nil || verification == nil {
+		return
+	}
+	for _, pair := range []struct {
+		keys []string
+		meta string
+	}{
+		{[]string{"schema"}, "dependency_verification_schema"},
+		{[]string{"verifiedAt", "verified_at"}, "dependency_verification_verified_at"},
+		{[]string{"runId", "run_id"}, "dependency_verification_run_id"},
+	} {
+		if value := enterpriseMaclawAppFirstString(verification, pair.keys...); value != "" {
+			metadata[pair.meta] = value
+		}
+	}
+	for _, pair := range []struct {
+		keys []string
+		meta string
+	}{
+		{[]string{"dependencyCount", "dependency_count"}, "dependency_verification_dependency_count"},
+		{[]string{"requiredCount", "required_count"}, "dependency_verification_required_count"},
+		{[]string{"installedCount", "installed_count"}, "dependency_verification_installed_count"},
+		{[]string{"missingCount", "missing_count"}, "dependency_verification_missing_count"},
+		{[]string{"blockedCount", "blocked_count"}, "dependency_verification_blocked_count"},
+	} {
+		if value, ok := enterpriseMaclawAppFirstNumber(verification, pair.keys...); ok {
+			metadata[pair.meta] = value
+		}
+	}
+	if value, ok := enterpriseMaclawAppFirstBool(verification, "ok", "verified", "dependencyCheckPassed", "dependency_check_passed"); ok {
+		metadata["dependency_verification_ok"] = value
+	}
+	if value, ok := enterpriseMaclawAppFirstBool(verification, "blocked", "hasBlockedDependency", "has_blocked_dependency"); ok {
+		metadata["dependency_verification_blocked"] = value
+	}
+	skills := anySliceFromMap(verification, "skills")
+	if len(skills) == 0 {
+		skills = anySliceFromMap(verification, "dependencies")
+	}
+	if len(skills) > 0 {
+		metadata["dependency_verification_skills"] = skills
+		metadata["dependency_verification_skill_count"] = len(skills)
+	}
+	if installPlan := anyMapFromMap(verification, "installPlan", "install_plan"); installPlan != nil {
+		metadata["dependency_verification_install_plan"] = installPlan
+	}
+}
 func applyEnterpriseMaclawAppTestEvidenceMetadata(metadata, testEvidence map[string]any) {
 	if metadata == nil || testEvidence == nil {
 		return
@@ -828,6 +877,26 @@ func applyEnterpriseMaclawAppTestEvidenceMetadata(metadata, testEvidence map[str
 		if recordID := enterpriseMaclawAppFirstString(approval, "recordID", "record_id"); recordID != "" {
 			metadata["test_evidence_record_id"] = recordID
 		}
+		for _, pair := range []struct {
+			keys []string
+			meta string
+		}{
+			{[]string{"currentNode", "current_node"}, "test_evidence_approval_current_node"},
+			{[]string{"workflowSkillId", "workflow_skill_id"}, "test_evidence_workflow_skill_id"},
+			{[]string{"workflowVersion", "workflow_version"}, "test_evidence_workflow_version"},
+			{[]string{"businessStatus", "business_status"}, "test_evidence_business_status"},
+			{[]string{"resultStatus", "result_status"}, "test_evidence_result_status"},
+			{[]string{"datasetID", "datasetId", "dataset_id"}, "test_evidence_dataset_id"},
+			{[]string{"blueprintID", "blueprintId", "blueprint_id"}, "test_evidence_blueprint_id"},
+			{[]string{"objectRole", "object_role", "approvalObjectRole", "approval_object_role"}, "test_evidence_object_role"},
+			{[]string{"approvalEvent", "approval_event"}, "test_evidence_approval_event"},
+			{[]string{"approvalWorkflowID", "approvalWorkflowId", "approval_workflow_id"}, "test_evidence_approval_workflow_id"},
+			{[]string{"detailURL", "detailUrl", "detail_url"}, "test_evidence_detail_url"},
+		} {
+			if value := enterpriseMaclawAppFirstString(approval, pair.keys...); value != "" {
+				metadata[pair.meta] = value
+			}
+		}
 		if status := enterpriseMaclawAppFirstString(approval, "status", "approvalStatus", "approval_status", "resultStatus", "result_status"); status != "" {
 			metadata["test_evidence_approval_status"] = status
 		}
@@ -900,11 +969,56 @@ func enterpriseMaclawAppSkillDependenciesForEntry(entry enterpriseMaclawAppPacka
 				"kind":         stringFromAny(dep["kind"]),
 				"required":     dep["required"],
 				"source":       stringFromAny(dep["source"]),
+				"install_ref":  firstNonEmpty(stringFromAny(dep["install_ref"]), stringFromAny(dep["installRef"])),
 				"capabilities": dep["capabilities"],
 			}))
 		}
 	}
 	return out
+}
+
+func enterpriseMaclawAppResolvedDependenciesForEntries(entries []enterpriseMaclawAppPackageEntry) []map[string]any {
+	out := []map[string]any{}
+	byKey := map[string]int{}
+	for _, entry := range entries {
+		for _, dep := range enterpriseMaclawAppSkillDependenciesForEntry(entry) {
+			id := stringFromAny(dep["id"])
+			if id == "" {
+				continue
+			}
+			kind := stringFromAny(dep["kind"])
+			key := strings.ToLower(kind + ":" + id)
+			if index, ok := byKey[key]; ok {
+				appIDs, _ := out[index]["app_ids"].([]string)
+				if !enterpriseMaclawAppStringListContains(appIDs, entry.ID) {
+					out[index]["app_ids"] = append(appIDs, entry.ID)
+				}
+				continue
+			}
+			next := compactMetadata(map[string]any{
+				"id":           id,
+				"version":      stringFromAny(dep["version"]),
+				"kind":         kind,
+				"required":     dep["required"],
+				"source":       stringFromAny(dep["source"]),
+				"install_ref":  firstNonEmpty(stringFromAny(dep["install_ref"]), stringFromAny(dep["installRef"])),
+				"capabilities": dep["capabilities"],
+				"app_ids":      []string{entry.ID},
+			})
+			byKey[key] = len(out)
+			out = append(out, next)
+		}
+	}
+	return out
+}
+
+func enterpriseMaclawAppStringListContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func enterpriseMaclawAppWorkflowMappingForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
@@ -963,6 +1077,12 @@ func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerA
 			return
 		}
 		applyMaclawAppReviewMetadataToEntry(entry, *item, *version, metadata)
+		parsedEntry, err := parseEnterpriseMaclawAppEntry(entry, "stored maclaw app")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INVALID_MACLAW_APP_PACKAGE", err.Error())
+			return
+		}
+		resolvedDependencies := enterpriseMaclawAppResolvedDependenciesForEntries([]enterpriseMaclawAppPackageEntry{parsedEntry})
 		pkg := map[string]any{
 			"schema":        "maclaw.app.pack.v1",
 			"privateMarker": "x_maclaw_apps",
@@ -974,8 +1094,9 @@ func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerA
 				"status":              item.Status,
 				"current_version_key": item.CurrentVersionKey,
 			},
-			"package_sha256": firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])),
-			"apps":           []any{entry},
+			"package_sha256":        firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])),
+			"resolved_dependencies": resolvedDependencies,
+			"apps":                  []any{entry},
 		}
 		writeJSON(w, http.StatusOK, pkg)
 	}

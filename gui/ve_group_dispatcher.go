@@ -17,6 +17,7 @@ import (
 const (
 	groupHubSyncChunkFlushInterval = 80 * time.Millisecond
 	groupHubSyncChunkMaxBytes      = 2048
+	groupHubSyncTimeout            = 2 * time.Second
 )
 
 // GroupChatDispatcher routes group chat messages to the local AI agent
@@ -393,16 +394,25 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		return
 	}
 	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
-	send := func(msg a2a.GroupDiscussionMessage) {
+	drainMessages := func() {
+		for range messages {
+		}
+	}
+	send := func(msg a2a.GroupDiscussionMessage) bool {
 		if strings.TrimSpace(msg.FromID) == "" {
 			msg.FromID = fromID
 		}
-		ctx, cancel := groupDiscussionContext()
+		ctx, cancel := context.WithTimeout(context.Background(), groupHubSyncTimeout)
 		err := client.SendDiscussionMessage(ctx, sessionID, msg)
 		cancel()
 		if err != nil {
 			log.Printf("[group-dispatcher] failed to sync queued message to session %s: %v", sessionID, err)
+			if isVEGroupHubSyncTerminalError(err) {
+				log.Printf("[group-dispatcher] stop syncing queued messages for session %s after terminal Hub error", sessionID)
+				return false
+			}
 		}
+		return true
 	}
 
 	var pendingChunk a2a.GroupDiscussionMessage
@@ -414,9 +424,11 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		msg := pendingChunk
 		msg.Kind = a2a.MessageStreamChunk
 		msg.Content = pendingContent.String()
-		send(msg)
 		pendingChunk = a2a.GroupDiscussionMessage{}
 		pendingContent.Reset()
+		if !send(msg) {
+			drainMessages()
+		}
 	}
 	timer := time.NewTimer(groupHubSyncChunkFlushInterval)
 	if !timer.Stop() {
@@ -469,7 +481,10 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 			}
 			stopTimer()
 			flushPendingChunk()
-			send(msg)
+			if !send(msg) {
+				drainMessages()
+				return
+			}
 		case <-timer.C:
 			timerActive = false
 			flushPendingChunk()
@@ -477,6 +492,28 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 	}
 }
 
+func isVEGroupHubSyncTerminalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, token := range []string{
+		"session not found",
+		"consultation not found",
+		"is closed",
+		"is archived",
+		"is cancelled",
+		"is completed",
+		"context deadline exceeded",
+		"client.timeout exceeded",
+		"connection refused",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
 func (d *GroupChatDispatcher) sendToGroup(sessionID string, msg a2a.GroupDiscussionMessage) {
 	if d.app == nil {
 		return

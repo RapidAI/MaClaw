@@ -2,6 +2,11 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type React from 'react';
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
+}));
+
 import { SidebarNavRail } from '../SidebarNavRail';
 
 function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRail>> = {}) {

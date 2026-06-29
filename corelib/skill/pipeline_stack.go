@@ -67,7 +67,7 @@ func IsPipelineBaseRunArgAllowed(key string) bool {
 		return true
 	}
 	switch key {
-	case "env", "extra_env", "environment":
+	case "env", "extra_env", "environment", "skill_infer_natural_prompt":
 		return true
 	default:
 		return false
@@ -171,7 +171,7 @@ func plainStringArgsInput(runArgs map[string]interface{}) string {
 
 func isPipelineEnvParamKey(key string) bool {
 	switch canonicalRunVarKey(key) {
-	case "env", "extra_env", "environment":
+	case "env", "extra_env", "environment", "skill_infer_natural_prompt":
 		return true
 	default:
 		return false

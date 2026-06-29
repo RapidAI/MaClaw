@@ -108,6 +108,7 @@ type KnowledgeSyncStatus struct {
 	LimitBytes          int64          `json:"limit_bytes"`
 	RetentionDays       int            `json:"retention_days,omitempty"`
 	Encryption          map[string]any `json:"encryption,omitempty"`
+	PasswordVerifier    map[string]any `json:"password_verifier,omitempty"`
 	HasPackage          bool           `json:"has_package"`
 	Message             string         `json:"message,omitempty"`
 }
@@ -844,11 +845,16 @@ func (a *App) KnowledgeSyncUpload(req KnowledgeSyncRequest) (KnowledgeSyncResult
 	if err != nil {
 		return KnowledgeSyncResult{}, err
 	}
+	passwordVerifier, err := encryptKnowledgeSyncPasswordVerifier(password)
+	if err != nil {
+		return KnowledgeSyncResult{}, err
+	}
 	payload := map[string]any{
 		"package_id":            pkg.Manifest.PackageID,
 		"package_version":       pkg.Manifest.Version,
 		"compressed_size_bytes": compressedSize,
 		"encryption":            encryption,
+		"password_verifier":     passwordVerifier,
 		"payload_base64":        base64.StdEncoding.EncodeToString(encrypted),
 	}
 	body, err := json.Marshal(payload)
@@ -995,6 +1001,19 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 func (a *App) KnowledgeSyncVerifyPassword(req KnowledgeSyncRequest) (KnowledgeSyncStatus, error) {
 	if strings.TrimSpace(req.Password) == "" {
 		return KnowledgeSyncStatus{}, fmt.Errorf("sync password is required")
+	}
+	status, err := a.KnowledgeSyncStatus(req)
+	if err != nil {
+		return KnowledgeSyncStatus{}, err
+	}
+	if !status.HasPackage {
+		return KnowledgeSyncStatus{}, fmt.Errorf("no cloud sync package is available")
+	}
+	if len(status.PasswordVerifier) > 0 {
+		if err := decryptKnowledgeSyncPasswordVerifier(strings.TrimSpace(req.Password), status.PasswordVerifier); err != nil {
+			return KnowledgeSyncStatus{}, err
+		}
+		return status, nil
 	}
 	status, rawPackage, err := a.fetchAndDecryptKnowledgeSyncPackage(req)
 	if err != nil {
@@ -1565,6 +1584,87 @@ func decryptKnowledgeSyncPackage(encrypted []byte, password string, encryption m
 		return nil, err
 	}
 	return raw, nil
+}
+
+func encryptKnowledgeSyncPasswordVerifier(password string) (map[string]any, error) {
+	salt := make([]byte, 16)
+	nonce := make([]byte, 12)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	key, err := scrypt.Key([]byte(password), salt, 1<<15, 8, 1, 32)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext := gcm.Seal(nil, nonce, []byte("maclaw.knowledge.sync.password-ok.v1"), []byte("maclaw.knowledge.sync.password.v1"))
+	return map[string]any{
+		"algorithm":  "AES-256-GCM",
+		"kdf":        "scrypt",
+		"n":          1 << 15,
+		"r":          8,
+		"p":          1,
+		"salt":       base64.StdEncoding.EncodeToString(salt),
+		"nonce":      base64.StdEncoding.EncodeToString(nonce),
+		"ciphertext": base64.StdEncoding.EncodeToString(ciphertext),
+	}, nil
+}
+
+func decryptKnowledgeSyncPasswordVerifier(password string, verifier map[string]any) error {
+	if len(verifier) == 0 {
+		return fmt.Errorf("sync password verifier is missing")
+	}
+	salt, err := base64.StdEncoding.DecodeString(stringFromAny(verifier["salt"]))
+	if err != nil {
+		return fmt.Errorf("invalid sync password verifier salt")
+	}
+	nonce, err := base64.StdEncoding.DecodeString(stringFromAny(verifier["nonce"]))
+	if err != nil {
+		return fmt.Errorf("invalid sync password verifier nonce")
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(stringFromAny(verifier["ciphertext"]))
+	if err != nil {
+		return fmt.Errorf("invalid sync password verifier payload")
+	}
+	n := intFromAny(verifier["n"])
+	r := intFromAny(verifier["r"])
+	p := intFromAny(verifier["p"])
+	if n <= 0 {
+		n = 1 << 15
+	}
+	if r <= 0 {
+		r = 8
+	}
+	if p <= 0 {
+		p = 1
+	}
+	key, err := scrypt.Key([]byte(password), salt, n, r, p, 32)
+	if err != nil {
+		return err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, []byte("maclaw.knowledge.sync.password.v1"))
+	if err != nil || string(plaintext) != "maclaw.knowledge.sync.password-ok.v1" {
+		return fmt.Errorf("sync password is incorrect")
+	}
+	return nil
 }
 
 func stringFromAny(value any) string {
@@ -2769,10 +2869,15 @@ func normalizeKnowledgeIDStrings(values []string) []string {
 		if value == "" {
 			continue
 		}
-		if _, ok := seen[value]; ok {
+		key := value
+		if strings.HasPrefix(strings.ToLower(value), "ksrc_") {
+			value = strings.ToLower(value)
+			key = value
+		}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[value] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, value)
 	}
 	return out

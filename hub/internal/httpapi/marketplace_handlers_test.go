@@ -613,7 +613,7 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 								"resultCoverage": {"ok": true, "primary": "artifact", "coveredTypes": ["artifact", "content"], "missingTypes": []},
 								"approvalInstance": {"approvalID": "approval-contract-1", "recordID": "contract-1", "datasetID": "legal.contracts", "objectRole": "contract", "approvalEvent": "contract.submitted", "approvalWorkflowID": "contract-approval", "status": "approved", "currentNode": "contract.result", "workflowSkillId": "contract-approval", "workflowVersion": "1.2.0", "businessStatus": "archived", "resultStatus": "approved", "resultPayload": {"approval_result": "approved", "business_status": "archived", "business_record": {"id": "contract-1"}}, "outputs": [{"kind": "approval_result", "title": "Approval", "text": "approved", "status": "approved"}], "artifacts": [{"id": "artifact-contract", "uri": "artifact://contract/archive.pdf", "name": "archive.pdf"}], "approvalInstanceViewVerified": true}
 							},
-						"dependencyVerification": {"schema": "maclaw.app.install_plan.v1", "dependencyCount": 1}
+						"dependencyVerification": {"schema": "maclaw.app.install_plan.v1", "runId": "dep-run-contract", "verifiedAt": "2026-06-29T12:00:00Z", "dependencyCount": 2, "requiredCount": 2, "installedCount": 2, "missingCount": 0, "blockedCount": 0, "ok": true, "blocked": false, "skills": [{"id": "contract-app-skill", "version": "3.0.0", "kind": "runtime_skill", "install_ref": "hub://skills/contract-app-skill@3.0.0"}, {"id": "contract-approval", "version": "1.2.0", "kind": "workflow_skill", "install_ref": "hub://skills/contract-approval@1.2.0"}], "installPlan": {"schema": "maclaw.app.install_plan.v1", "source": "hub", "required_skill_count": 2}}
 					}
 				}
 			}]
@@ -683,6 +683,22 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	if !ok || len(workflowIDs) != 1 || workflowIDs[0] != "contract-approval" {
 		t.Fatalf("workflow skill metadata=%+v", metadata)
 	}
+	dependencyVerification, ok := metadata["dependency_verification"].(map[string]any)
+	if !ok || dependencyVerification["schema"] != "maclaw.app.install_plan.v1" || dependencyVerification["runId"] != "dep-run-contract" {
+		t.Fatalf("dependency verification metadata=%+v", metadata)
+	}
+	if metadata["dependency_verification_schema"] != "maclaw.app.install_plan.v1" || metadata["dependency_verification_run_id"] != "dep-run-contract" || metadata["dependency_verification_ok"] != true || metadata["dependency_verification_blocked"] != false {
+		t.Fatalf("dependency verification summaries missing ids/status: %+v", metadata)
+	}
+	if metadata["dependency_verification_dependency_count"] != float64(2) || metadata["dependency_verification_required_count"] != float64(2) || metadata["dependency_verification_installed_count"] != float64(2) || metadata["dependency_verification_missing_count"] != float64(0) || metadata["dependency_verification_blocked_count"] != float64(0) {
+		t.Fatalf("dependency verification summaries missing counts: %+v", metadata)
+	}
+	if verifiedSkills, ok := metadata["dependency_verification_skills"].([]any); !ok || len(verifiedSkills) != 2 || metadata["dependency_verification_skill_count"] != float64(2) {
+		t.Fatalf("dependency verification should expose checked skills: %+v", metadata)
+	}
+	if installPlan, ok := metadata["dependency_verification_install_plan"].(map[string]any); !ok || installPlan["source"] != "hub" || installPlan["required_skill_count"] != float64(2) {
+		t.Fatalf("dependency verification should expose install plan: %+v", metadata)
+	}
 	resultContract := metadata["result_contract"].(map[string]any)
 	if resultContract["primary"] != "artifact" {
 		t.Fatalf("result contract metadata=%+v", resultContract)
@@ -722,6 +738,21 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	}
 	if covered, ok := metadata["test_evidence_covered_types"].([]any); !ok || len(covered) != 2 || covered[0] != "artifact" || covered[1] != "content" {
 		t.Fatalf("test evidence covered types summary missing: %+v", metadata)
+	}
+	for key, want := range map[string]any{
+		"test_evidence_approval_current_node": "contract.result",
+		"test_evidence_workflow_skill_id":     "contract-approval",
+		"test_evidence_workflow_version":      "1.2.0",
+		"test_evidence_business_status":       "archived",
+		"test_evidence_result_status":         "approved",
+		"test_evidence_dataset_id":            "legal.contracts",
+		"test_evidence_object_role":           "contract",
+		"test_evidence_approval_event":        "contract.submitted",
+		"test_evidence_approval_workflow_id":  "contract-approval",
+	} {
+		if got := metadata[key]; got != want {
+			t.Fatalf("test evidence approval summary %s=%#v want %#v; metadata=%+v", key, got, want, metadata)
+		}
 	}
 	approvalInstance := testEvidence["approvalInstance"].(map[string]any)
 	if approvalInstance["approvalID"] != "approval-contract-1" || approvalInstance["recordID"] != "contract-1" || approvalInstance["status"] != "approved" {
@@ -770,6 +801,10 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 		t.Fatalf("stored manifest should preserve workflow mapping: %+v", storedWorkflow)
 	}
 	storedGovernance, _ := storedApp["governance"].(map[string]any)
+	storedDependencyVerification, _ := storedGovernance["dependencyVerification"].(map[string]any)
+	if storedDependencyVerification["runId"] != "dep-run-contract" || storedDependencyVerification["dependencyCount"] != float64(2) {
+		t.Fatalf("stored manifest should preserve dependency verification evidence: %+v", storedGovernance)
+	}
 	storedResultContract, _ := storedGovernance["resultContract"].(map[string]any)
 	if storedResultContract["primary"] != "artifact" {
 		t.Fatalf("stored manifest should preserve result contract: %+v", storedResultContract)
@@ -803,6 +838,36 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 			"name":        "Download App",
 			"description": "Downloaded from Hub",
 			"kind":        "tool_app",
+			"binding": map[string]any{
+				"skill": map[string]any{
+					"id":                "download-app-skill",
+					"version":           "1.0.0",
+					"source":            "hub",
+					"appDefinitionFile": "maclaw.app.json",
+					"inputMode":         "form",
+				},
+				"dependencies": map[string]any{
+					"skills": []any{
+						map[string]any{
+							"id":          "download-app-skill",
+							"version":     "1.0.0",
+							"kind":        "app_skill",
+							"required":    true,
+							"source":      "hub",
+							"install_ref": "cap-download-app-skill",
+						},
+						map[string]any{
+							"id":           "download-workflow",
+							"version":      "1.0.0",
+							"kind":         "workflow_skill",
+							"required":     true,
+							"source":       "hub",
+							"install_ref":  "cap-download-workflow",
+							"capabilities": []any{"approval.workflow"},
+						},
+					},
+				},
+			},
 			"ui": map[string]any{
 				"schema":    "maclaw.app.ui.v1",
 				"entry":     "tool_workspace",
@@ -901,6 +966,33 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 	}
 	if pkg["schema"] != "maclaw.app.pack.v1" || pkg["privateMarker"] != "x_maclaw_apps" || pkg["package_sha256"] != "pkg-sha" {
 		t.Fatalf("unexpected package header: %+v", pkg)
+	}
+	resolved, ok := pkg["resolved_dependencies"].([]any)
+	if !ok || len(resolved) != 2 {
+		t.Fatalf("resolved dependencies=%+v", pkg["resolved_dependencies"])
+	}
+	depByID := map[string]map[string]any{}
+	for _, raw := range resolved {
+		dep, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("resolved dependency should be object: %+v", raw)
+		}
+		depByID[stringFromAny(dep["id"])] = dep
+	}
+	if depByID["download-app-skill"]["install_ref"] != "cap-download-app-skill" || depByID["download-app-skill"]["kind"] != "app_skill" {
+		t.Fatalf("download app skill dependency=%+v", depByID["download-app-skill"])
+	}
+	workflowDep := depByID["download-workflow"]
+	if workflowDep["install_ref"] != "cap-download-workflow" || workflowDep["kind"] != "workflow_skill" {
+		t.Fatalf("download workflow dependency=%+v", workflowDep)
+	}
+	appIDs, ok := workflowDep["app_ids"].([]any)
+	if !ok || len(appIDs) != 1 || appIDs[0] != "download-app" {
+		t.Fatalf("download workflow app ids=%+v", workflowDep["app_ids"])
+	}
+	capabilities, ok := workflowDep["capabilities"].([]any)
+	if !ok || len(capabilities) != 1 || capabilities[0] != "approval.workflow" {
+		t.Fatalf("download workflow capabilities=%+v", workflowDep["capabilities"])
 	}
 	apps, ok := pkg["apps"].([]any)
 	if !ok || len(apps) != 1 {

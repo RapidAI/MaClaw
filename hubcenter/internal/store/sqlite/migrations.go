@@ -992,5 +992,7 @@ func ensureInvitationCodeRoutesTable(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_invitation_code_routes_hub_id ON invitation_code_routes(hub_id)`); err != nil {
 		return fmt.Errorf("create invitation_code_routes hub_id index: %w", err)
 	}
+	// Add used_by_email column (idempotent — SQLite ignores duplicate ADD COLUMN).
+	db.Exec(`ALTER TABLE invitation_code_routes ADD COLUMN used_by_email TEXT NOT NULL DEFAULT ''`)
 	return nil
 }

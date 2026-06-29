@@ -319,6 +319,7 @@ func TestStoreKeepsThemeLayerInSync(t *testing.T) {
 	if err := store.Delete("go2"); err != nil {
 		t.Fatal(err)
 	}
+	store.WaitRebuild()
 	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 	if themeLayerContainsEntry(store.ThemeManager().Themes(), "go2") {
 		t.Fatalf("deleted entry should be removed from theme layer: %+v", store.ThemeManager().Themes())

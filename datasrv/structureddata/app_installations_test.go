@@ -146,6 +146,54 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationInfersWorkspacePrimaryAndOutputRegions(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "designer_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.approval", UpsertAppInstallationInput{
+		AppID: "expense.approval",
+		Name:  "Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"workspace_layout": map[string]any{
+				"schema":   "maclaw.app.ui.v1",
+				"entry":    "approval_workspace",
+				"template": "classic_split",
+				"regions": []any{
+					map[string]any{"id": "request_form", "role": "form", "placement": "left"},
+					map[string]any{"id": "approval_inbox", "role": "list", "placement": "center"},
+					map[string]any{"id": "result_panel", "role": "result", "placement": "bottom"},
+				},
+			},
+			"workflow_contract": map[string]any{
+				"schema":          "maclaw.app.workflow_contract.v1",
+				"workflowSkillId": "expense-workflow",
+				"objectRole":      "expense_report",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	if installed.Metadata["workspace_layout_primary_region"] != "left" || installed.Metadata["workspace_layout_output_region"] != "bottom" {
+		t.Fatalf("expected inferred primary/output workspace regions: %#v", installed.Metadata)
+	}
+	layout, ok := installed.Metadata["workspace_layout"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized workspace layout: %#v", installed.Metadata)
+	}
+	if layout["primaryRegion"] != "left" || layout["outputRegion"] != "bottom" {
+		t.Fatalf("expected inferred primary/output written back to layout: %#v", layout)
+	}
+	if ids := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(ids) != 3 || ids[0] != "request_form" || ids[2] != "result_panel" {
+		t.Fatalf("expected canonical region ids: %#v", installed.Metadata)
+	}
+}
 func TestUpsertAppInstallationNormalizesResultContractDeliveryObject(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -1368,6 +1416,23 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 			t.Fatalf("expected workflow_mapping.statusMapping schema to document %s: %#v", key, statusMappingProperties)
 		}
 	}
+	for _, key := range []string{
+		"test_evidence_approval_current_node",
+		"test_evidence_workflow_skill_id",
+		"test_evidence_workflow_version",
+		"test_evidence_business_status",
+		"test_evidence_result_status",
+		"test_evidence_dataset_id",
+		"test_evidence_blueprint_id",
+		"test_evidence_object_role",
+		"test_evidence_approval_event",
+		"test_evidence_approval_workflow_id",
+		"test_evidence_detail_url",
+	} {
+		if _, ok := metadata[key]; !ok {
+			t.Fatalf("expected app installation metadata schema to document %s: %#v", key, metadata)
+		}
+	}
 	dependencyVerification, ok := metadata["dependency_verification"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected dependency_verification schema object: %#v", metadata["dependency_verification"])
@@ -1406,6 +1471,111 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 	for _, key := range []string{"id", "version", "kind", "source", "install_ref", "required", "installed", "health", "action", "app_ids", "installed_status", "message"} {
 		if _, ok := dependencyProperties[key]; !ok {
 			t.Fatalf("expected dependency item schema to document %s: %#v", key, dependencyProperties)
+		}
+	}
+}
+func TestUpsertAppInstallationBuildsApprovalEvidenceFromFlatSummaries(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "auditor_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.approval.flat", UpsertAppInstallationInput{
+		AppID:  "expense.approval.flat",
+		Name:   "Flat Approval Evidence",
+		Kind:   "enterprise_approval_app",
+		Source: "hub",
+		Metadata: map[string]any{
+			"test_evidence_run_id":                    "run-flat-approval",
+			"test_evidence_approval_id":               "approval-flat-1",
+			"test_evidence_record_id":                 "expense-flat-1",
+			"test_evidence_approval_status":           "approved",
+			"test_evidence_approval_current_node":     "expense.result",
+			"test_evidence_workflow_skill_id":         "expense-workflow",
+			"test_evidence_workflow_version":          "2.1.0",
+			"test_evidence_business_status":           "finance_approved",
+			"test_evidence_result_status":             "approved",
+			"test_evidence_dataset_id":                "finance.expenses",
+			"test_evidence_blueprint_id":              "finance.expense.approval",
+			"test_evidence_object_role":               "expense_report",
+			"test_evidence_approval_event":            "expense.submitted",
+			"test_evidence_approval_workflow_id":      "expense-flow",
+			"test_evidence_detail_url":                "https://datasrv.test/approvals/approval-flat-1",
+			"test_evidence_approval_view_verified":    true,
+			"test_evidence_test_protocol_fingerprint": "proto-flat-approval",
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	metadata := installed.Metadata
+	for key, want := range map[string]any{
+		"test_evidence_approval_instance_id":   "approval-flat-1",
+		"test_evidence_approval_id":            "approval-flat-1",
+		"test_evidence_record_id":              "expense-flat-1",
+		"test_evidence_approval_status":        "approved",
+		"test_evidence_approval_current_node":  "expense.result",
+		"test_evidence_workflow_skill_id":      "expense-workflow",
+		"test_evidence_workflow_version":       "2.1.0",
+		"test_evidence_business_status":        "finance_approved",
+		"test_evidence_result_status":          "approved",
+		"test_evidence_dataset_id":             "finance.expenses",
+		"test_evidence_blueprint_id":           "finance.expense.approval",
+		"test_evidence_object_role":            "expense_report",
+		"test_evidence_approval_event":         "expense.submitted",
+		"test_evidence_approval_workflow_id":   "expense-flow",
+		"test_evidence_detail_url":             "https://datasrv.test/approvals/approval-flat-1",
+		"test_evidence_approval_view_verified": true,
+	} {
+		if got := metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v; metadata=%#v", key, got, want, metadata)
+		}
+	}
+	auditMetadata := appInstallationAuditMetadata(*installed)
+	for key, want := range map[string]any{
+		"test_evidence_approval_current_node": "expense.result",
+		"test_evidence_workflow_skill_id":     "expense-workflow",
+		"test_evidence_business_status":       "finance_approved",
+		"test_evidence_result_status":         "approved",
+		"test_evidence_dataset_id":            "finance.expenses",
+		"test_evidence_object_role":           "expense_report",
+		"test_evidence_approval_event":        "expense.submitted",
+		"test_evidence_detail_url":            "https://datasrv.test/approvals/approval-flat-1",
+	} {
+		if got := auditMetadata[key]; got != want {
+			t.Fatalf("audit metadata[%s] = %#v, want %#v; audit=%#v", key, got, want, auditMetadata)
+		}
+	}
+	evidence, ok := metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized test evidence: %#v", metadata)
+	}
+	approval, ok := evidence["approval_instance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected synthesized approval instance: %#v", evidence)
+	}
+	for key, want := range map[string]any{
+		"approval_id":                     "approval-flat-1",
+		"record_id":                       "expense-flat-1",
+		"status":                          "approved",
+		"current_node":                    "expense.result",
+		"workflow_skill_id":               "expense-workflow",
+		"workflow_version":                "2.1.0",
+		"business_status":                 "finance_approved",
+		"result_status":                   "approved",
+		"dataset_id":                      "finance.expenses",
+		"blueprint_id":                    "finance.expense.approval",
+		"object_role":                     "expense_report",
+		"approval_event":                  "expense.submitted",
+		"approval_workflow_id":            "expense-flow",
+		"detail_url":                      "https://datasrv.test/approvals/approval-flat-1",
+		"approval_instance_view_verified": true,
+	} {
+		if got := approval[key]; got != want {
+			t.Fatalf("approval[%s] = %#v, want %#v; approval=%#v", key, got, want, approval)
 		}
 	}
 }

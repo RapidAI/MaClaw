@@ -2,6 +2,12 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { KnowledgeSettingsPanel } from "../settings/KnowledgeSettingsPanel";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+
+type WailsNoDragStyle = CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
 
 interface KnowledgeDialogProps {
     open: boolean;
@@ -10,7 +16,7 @@ interface KnowledgeDialogProps {
     theme: Theme;
 }
 
-const overlayStyle: CSSProperties = {
+const overlayStyle: WailsNoDragStyle = {
     position: "fixed",
     inset: 0,
     background: "rgba(0, 0, 0, 0.5)",
@@ -20,9 +26,11 @@ const overlayStyle: CSSProperties = {
     justifyContent: "center",
     zIndex: 50000,
     animation: "fadeIn 0.2s ease-out",
+    WebkitAppRegion: "no-drag",
+    "--wails-draggable": "no-drag",
 };
 
-const modalStyle: CSSProperties = {
+const modalStyle: WailsNoDragStyle = {
     width: "min(820px, 92vw)",
     maxHeight: "85vh",
     borderRadius: "12px",
@@ -31,6 +39,8 @@ const modalStyle: CSSProperties = {
     flexDirection: "column",
     overflow: "hidden",
     animation: "slideUp 0.25s ease-out",
+    WebkitAppRegion: "no-drag",
+    "--wails-draggable": "no-drag",
 };
 
 const headerStyle: CSSProperties = {
@@ -66,6 +76,7 @@ const toastStyle: CSSProperties = {
 export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogProps) {
     const [toastMessage, setToastMessage] = useState("");
     const toastTimerRef = useRef<number | null>(null);
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
         if (e.key === "Escape") onClose();
     }, [onClose]);
@@ -110,12 +121,15 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
     return (
         <div
             style={overlayStyle}
-            onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
             role="dialog"
             aria-modal="true"
             aria-label={title}
+            {...backdropProps}
         >
-            <div style={{ ...modalStyle, position: "relative", background: theme.bg, border: `1px solid ${theme.divider}` }}>
+            <div
+                style={{ ...modalStyle, position: "relative", background: theme.bg, border: `1px solid ${theme.divider}` }}
+                {...dialogProps}
+            >
                 <div style={{ ...headerStyle, borderBottom: `1px solid ${theme.divider}` }}>
                     <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: theme.text }}>
                         {title}

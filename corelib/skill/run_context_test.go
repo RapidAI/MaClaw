@@ -267,20 +267,20 @@ func TestApplyRunInputInferenceDoesNotGuessNaturalCityPromptWithoutPreposition(t
 	}
 }
 
-func TestApplyRunInputInferenceExtractsSingleCityFromExplicitInput(t *testing.T) {
-	runArgs := map[string]interface{}{"input": "weather in Chengdu"}
+func TestApplyRunInputInferenceExtractsSingleCityFromNaturalPrompt(t *testing.T) {
+	runArgs := map[string]interface{}{"user_prompt": "weather in Chengdu", "_skill_infer_natural_prompt": true}
 	vars := NormalizeRunVars(runArgs)
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, runArgs)
 
 	if vars["city"] != "Chengdu" {
-		t.Fatalf("city = %q, want Chengdu from explicit input", vars["city"])
+		t.Fatalf("city = %q, want Chengdu from natural prompt", vars["city"])
 	}
 }
 
-func TestApplyRunInputInferenceTrimsDateFromExplicitCityInput(t *testing.T) {
-	runArgs := map[string]interface{}{"input": "weather in Chengdu tomorrow"}
+func TestApplyRunInputInferenceTrimsDateFromNaturalPromptCity(t *testing.T) {
+	runArgs := map[string]interface{}{"user_prompt": "weather in Chengdu tomorrow", "_skill_infer_natural_prompt": true}
 	vars := NormalizeRunVars(runArgs)
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
@@ -291,15 +291,15 @@ func TestApplyRunInputInferenceTrimsDateFromExplicitCityInput(t *testing.T) {
 	}
 }
 
-func TestApplyRunInputInferenceUsesDirectChineseInputForSingleCity(t *testing.T) {
-	runArgs := map[string]interface{}{"input": "\u6210\u90fd"}
+func TestApplyRunInputInferenceUsesDirectChineseNaturalPromptForSingleCity(t *testing.T) {
+	runArgs := map[string]interface{}{"user_prompt": "\u6210\u90fd", "_skill_infer_natural_prompt": true}
 	vars := NormalizeRunVars(runArgs)
 	entry := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
 
 	ApplyRunInputInference(entry, vars, runArgs)
 
 	if vars["city"] != "\u6210\u90fd" {
-		t.Fatalf("city = %q, want Chengdu in Chinese from explicit input", vars["city"])
+		t.Fatalf("city = %q, want Chengdu in Chinese from natural prompt", vars["city"])
 	}
 }
 

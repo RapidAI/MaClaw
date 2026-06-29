@@ -1,5 +1,6 @@
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import type { ProviderEndpoint } from '../../config/providerCatalog';
+import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 
 type ProviderFilter = 'all' | 'china' | 'global';
 
@@ -47,9 +48,15 @@ export const ProviderSelectorDialog = ({
     localizeText,
     onConfirm,
     onClose,
-}: ProviderSelectorDialogProps) => (
-    <div className="modal-overlay provider-selector-overlay" onClick={onClose}>
-        <div className="modal-content provider-selector-modal" onClick={(e) => e.stopPropagation()}>
+}: ProviderSelectorDialogProps) => {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
+    return (
+    <div className="modal-overlay provider-selector-overlay" {...backdropProps}>
+        <div
+            className="modal-content provider-selector-modal"
+            {...dialogProps}
+        >
             <h2 className="provider-selector-title">{t("selectProviderTitle")}</h2>
 
             <div className="provider-selector-filter-row" role="tablist" aria-label={t("selectProviderTitle")}>
@@ -127,4 +134,5 @@ export const ProviderSelectorDialog = ({
             </div>
         )}
     </div>
-);
+    );
+};

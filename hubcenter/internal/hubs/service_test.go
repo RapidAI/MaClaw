@@ -1,4 +1,4 @@
-package hubs
+﻿package hubs
 
 import (
 	"context"
@@ -583,7 +583,7 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 		t.Fatalf("seed user link: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true, false); err != nil {
 		t.Fatalf("SyncHubUserLink: %v", err)
 	}
 	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
@@ -614,7 +614,7 @@ func TestSyncHubUserLinkIsTenantScoped(t *testing.T) {
 		t.Fatalf("seed tenant a link: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true, "tenant_b"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true, false, "tenant_b"); err != nil {
 		t.Fatalf("SyncHubUserLink tenant b: %v", err)
 	}
 	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
@@ -694,7 +694,7 @@ func TestSyncHubUserLinkSkipsDomainOwnedByAnotherHub(t *testing.T) {
 		t.Fatalf("seed domain route: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hubA.ID, "secret-a", "user@qianxin.com", false); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubA.ID, "secret-a", "user@qianxin.com", false, false); err != nil {
 		t.Fatalf("SyncHubUserLink: %v", err)
 	}
 	links, err := st.HubUserLinks.ListByEmail(ctx, "user@qianxin.com")
@@ -707,7 +707,7 @@ func TestSyncHubUserLinkSkipsDomainOwnedByAnotherHub(t *testing.T) {
 	if routes.ListAllCalls() != 0 || routes.ListEnabledDomainCalls() != 1 {
 		t.Fatalf("route lookup calls = ListAll:%d ListEnabledByDomain:%d, want 0/1", routes.ListAllCalls(), routes.ListEnabledDomainCalls())
 	}
-	if err := svc.SyncHubUserLink(ctx, hubA.ID, "secret-a", "user@other.example", false); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubA.ID, "secret-a", "user@other.example", false, false); err != nil {
 		t.Fatalf("SyncHubUserLink scattered: %v", err)
 	}
 	links, err = st.HubUserLinks.ListByEmail(ctx, "user@other.example")
@@ -734,7 +734,7 @@ func TestSyncHubUserLinkIgnoresDomainRouteToDisabledHub(t *testing.T) {
 		t.Fatalf("seed disabled domain route: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, current.ID, "secret-current", "user@disabled-domain.example", false); err != nil {
+	if err := svc.SyncHubUserLink(ctx, current.ID, "secret-current", "user@disabled-domain.example", false, false); err != nil {
 		t.Fatalf("SyncHubUserLink: %v", err)
 	}
 	links, err := st.HubUserLinks.ListByEmail(ctx, "user@disabled-domain.example")
@@ -764,7 +764,7 @@ func TestSyncHubUserLinkTenantDomainRouteOverridesGlobalDomainRoute(t *testing.T
 		t.Fatalf("seed tenant route: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, globalHub.ID, "secret-global", "user@qianxin.com", true, "tenant_qianxin"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, globalHub.ID, "secret-global", "user@qianxin.com", true, false, "tenant_qianxin"); err != nil {
 		t.Fatalf("SyncHubUserLink global tenant_qianxin: %v", err)
 	}
 	links, err := st.HubUserLinks.ListByEmail(ctx, "user@qianxin.com")
@@ -775,7 +775,7 @@ func TestSyncHubUserLinkTenantDomainRouteOverridesGlobalDomainRoute(t *testing.T
 		t.Fatalf("tenant-owned domain should not sync to global route hub, got %+v", links)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, tenantHub.ID, "secret-tenant", "user@qianxin.com", true, "tenant_qianxin"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, tenantHub.ID, "secret-tenant", "user@qianxin.com", true, false, "tenant_qianxin"); err != nil {
 		t.Fatalf("SyncHubUserLink tenant owner: %v", err)
 	}
 	links, err = st.HubUserLinks.ListByEmail(ctx, "user@qianxin.com")
@@ -783,7 +783,7 @@ func TestSyncHubUserLinkTenantDomainRouteOverridesGlobalDomainRoute(t *testing.T
 		t.Fatalf("tenant-owned domain should sync to tenant hub, links=%+v err=%v", links, err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, globalHub.ID, "secret-global", "other@qianxin.com", true, "tenant_other"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, globalHub.ID, "secret-global", "other@qianxin.com", true, false, "tenant_other"); err != nil {
 		t.Fatalf("SyncHubUserLink other tenant: %v", err)
 	}
 	links, err = st.HubUserLinks.ListByEmail(ctx, "other@qianxin.com")
@@ -874,7 +874,7 @@ func TestHubUserLinkSyncNormalizesDefaultTenant(t *testing.T) {
 		t.Fatalf("create hub: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hub.ID, "secret", "user@example.com", true, "tenant_default"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hub.ID, "secret", "user@example.com", true, false, "tenant_default"); err != nil {
 		t.Fatalf("SyncHubUserLink: %v", err)
 	}
 	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
@@ -915,7 +915,7 @@ func TestSyncHubUserLinkTenantAdminRouteOnlySuppressesSameTenant(t *testing.T) {
 		t.Fatalf("seed tenant admin link: %v", err)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, "tenant_b"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, false, "tenant_b"); err != nil {
 		t.Fatalf("SyncHubUserLink tenant_b: %v", err)
 	}
 	items, err := st.HubUserLinks.ListByEmail(ctx, "same@example.com")
@@ -930,7 +930,7 @@ func TestSyncHubUserLinkTenantAdminRouteOnlySuppressesSameTenant(t *testing.T) {
 		t.Fatalf("tenant_a admin link should not suppress tenant_b sync, got %+v", items)
 	}
 
-	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, "tenant_a"); err != nil {
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, false, "tenant_a"); err != nil {
 		t.Fatalf("SyncHubUserLink tenant_a: %v", err)
 	}
 	items, err = st.HubUserLinks.ListByEmail(ctx, "same@example.com")
@@ -1231,7 +1231,7 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	hub := &store.HubInstance{ID: "hub_tenant_report", OwnerEmail: "owner@example.com", Name: "Tenant Report Hub", BaseURL: "https://hub.example.com", Status: "online", CapabilitiesJSON: mustJSON(map[string]any{
-		"tenant_names": map[string]any{"tenant_a": "开发部", "tenant_b": "市场部", "tenant_c": "测试部"},
+		"tenant_names": map[string]any{"tenant_a": "寮€鍙戦儴", "tenant_b": "甯傚満閮?, "tenant_c": "娴嬭瘯閮?},
 	}), CreatedAt: now, UpdatedAt: now}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("create hub: %v", err)
@@ -1262,7 +1262,7 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].TotalUsers != 3 {
 		t.Fatalf("physical hub total = %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_a"].TenantName != "开发部" || byTenant["tenant_b"].TotalUsers != 1 || byTenant["tenant_b"].TenantName != "市场部" || byTenant["tenant_c"].TotalUsers != 0 || byTenant["tenant_c"].TenantName != "测试部" {
+	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_a"].TenantName != "寮€鍙戦儴" || byTenant["tenant_b"].TotalUsers != 1 || byTenant["tenant_b"].TenantName != "甯傚満閮? || byTenant["tenant_c"].TotalUsers != 0 || byTenant["tenant_c"].TenantName != "娴嬭瘯閮? {
 		t.Fatalf("tenant report rows = %+v", byTenant)
 	}
 	listAll, _ := linkRepo.Calls()
@@ -1293,7 +1293,7 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 			"tenant_machine_counts": map[string]any{"tenant_a": 3, "tenant_b": 1},
 			"tenant_domains":        map[string]any{"tenant_a": []any{"acme.example"}, "tenant_b": []any{"beta.example"}},
 			"tenant_domain_source":  "configured",
-			"tenant_names":          map[string]any{"tenant_a": "开发部", "tenant_b": "市场部"},
+			"tenant_names":          map[string]any{"tenant_a": "寮€鍙戦儴", "tenant_b": "甯傚満閮?},
 		}),
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
@@ -1310,10 +1310,10 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].UserCount != 3 || byTenant[""].MachineCount != 4 {
 		t.Fatalf("unexpected physical hub dashboard row: %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" || byTenant["tenant_a"].TenantName != "开发部" {
+	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" || byTenant["tenant_a"].TenantName != "寮€鍙戦儴" {
 		t.Fatalf("unexpected tenant_a dashboard row: %+v", byTenant["tenant_a"])
 	}
-	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" || byTenant["tenant_b"].TenantName != "市场部" {
+	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" || byTenant["tenant_b"].TenantName != "甯傚満閮? {
 		t.Fatalf("unexpected tenant_b dashboard row: %+v", byTenant["tenant_b"])
 	}
 }
@@ -1855,7 +1855,7 @@ func TestMigrateUserSurvivesSourceHubResync(t *testing.T) {
 	if _, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "user@example.com", ToHubID: "hub_b"}); err != nil {
 		t.Fatalf("MigrateUser: %v", err)
 	}
-	if err := svc.SyncHubUserLink(ctx, "hub_a", "secret-a", "user@example.com", true); err != nil {
+	if err := svc.SyncHubUserLink(ctx, "hub_a", "secret-a", "user@example.com", true, false); err != nil {
 		t.Fatalf("source SyncHubUserLink: %v", err)
 	}
 	links, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")

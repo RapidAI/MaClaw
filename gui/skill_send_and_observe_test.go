@@ -582,12 +582,12 @@ func TestSkillExecutorExecuteWithArgs_PipelinePropagatesInputForChildInference(t
 		t.Fatalf("Register(pipeline) error = %v", err)
 	}
 
-	output, err := exec.ExecuteWithArgs("pipeline-city", map[string]interface{}{"input": "weather in Chengdu"})
+	output, err := exec.ExecuteWithArgs("pipeline-city", skillExecutionRunArgs("weather in Chengdu"))
 	if err != nil {
 		t.Fatalf("ExecuteWithArgs() error = %v, output = %s", err, output)
 	}
 	if !strings.Contains(output, "Chengdu") {
-		t.Fatalf("pipeline output = %s, want child city inferred from parent input", output)
+		t.Fatalf("pipeline output = %s, want child city inferred from parent prompt", output)
 	}
 }
 

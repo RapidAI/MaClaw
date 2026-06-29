@@ -1491,7 +1491,7 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *v2.WorkflowEngin
 	if resp == nil {
 		return nil
 	}
-	if !resp.ShowForm && engine != nil {
+	if !resp.ShowForm && !resp.RunAgentLoop && engine != nil {
 		if ws := engine.GetActiveWorkflow(userID); ws != nil {
 			if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex >= 0 && ws.PhaseIndex < len(tmpl.Phases) {
 				phase := tmpl.Phases[ws.PhaseIndex]

@@ -609,8 +609,19 @@ func tenantMergeSafeIdent(name string) bool {
 	return true
 }
 
+// TenantMergeSafeIdent reports whether name is a safe SQL identifier (alphanumeric + underscore only).
+func TenantMergeSafeIdent(name string) bool { return tenantMergeSafeIdent(name) }
+
 func tenantMergeQuoteIdent(name string) string {
 	return `"` + name + `"`
+}
+
+// TenantMergeQuoteIdent returns the identifier quoted for use in SQL statements.
+func TenantMergeQuoteIdent(name string) string { return tenantMergeQuoteIdent(name) }
+
+// TenantScopedTables returns the list of tables that have a tenant_id column.
+func TenantScopedTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	return tenantScopedTables(ctx, tx)
 }
 
 func ensureTenantExists(ctx context.Context, tx *sql.Tx, tenantID string) error {

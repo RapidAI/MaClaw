@@ -183,6 +183,7 @@ var (
 	veRuntimeCircuitFailureWindow  = time.Duration(veIntEnv("HUB_VE_RUNTIME_CIRCUIT_FAILURE_WINDOW_SECONDS", defaultVERuntimeCircuitFailureWindow, 1, maxVERuntimeCircuitFailureWindow)) * time.Second
 	veRuntimeCircuitOpenDuration   = time.Duration(veIntEnv("HUB_VE_RUNTIME_CIRCUIT_OPEN_SECONDS", defaultVERuntimeCircuitOpenSeconds, 1, maxVERuntimeCircuitOpenSeconds)) * time.Second
 	veRuntimeCircuitMaxKeys        = veIntEnv("HUB_VE_RUNTIME_CIRCUIT_MAX_KEYS", defaultVERuntimeCircuitMaxKeys, 16, maxVERuntimeCircuitMaxKeys)
+	veRuntimeDeliveryRetryDelay    = time.Duration(veIntEnv("HUB_VE_RUNTIME_DELIVERY_RETRY_DELAY_SECONDS", 3, 1, 30)) * time.Second
 	veDiscoverableSingleflight     singleflight.Group
 	veDiscoverableBuildSemaphore   = make(chan struct{}, veDiscoverableBuildConcurrency)
 	veRuntimeDeliverySemaphore     = make(chan struct{}, veRuntimeDeliveryConcurrency)

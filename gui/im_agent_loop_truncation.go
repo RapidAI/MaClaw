@@ -47,9 +47,24 @@ func resetAgentLoopTruncationRecoveryAfterToolCalls(phase *agentLoopPhase, choic
 	if phase.TruncationRetries == 0 && phase.EssentialTruncationHints == 0 {
 		return
 	}
-	log.Printf("[agent-loop] reset truncation recovery counters after valid tool call branch (retries=%d essential_hints=%d)", phase.TruncationRetries, phase.EssentialTruncationHints)
+	// NOTE: This reset does NOT clear TruncationBlockedTools — once blocked, a tool
+	// stays blocked for the remainder of the agent loop. The reset only affects retry
+	// counters so that a future different tool truncation gets fresh retries.
+	log.Printf("[agent-loop] reset truncation recovery counters after valid tool call branch (retries=%d essential_hints=%d blocked_tools=%v)",
+		phase.TruncationRetries, phase.EssentialTruncationHints, blockedToolNames(phase))
 	phase.TruncationRetries = 0
 	phase.EssentialTruncationHints = 0
+}
+
+func blockedToolNames(phase *agentLoopPhase) []string {
+	if phase == nil || len(phase.TruncationBlockedTools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(phase.TruncationBlockedTools))
+	for name := range phase.TruncationBlockedTools {
+		names = append(names, name)
+	}
+	return names
 }
 
 func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(

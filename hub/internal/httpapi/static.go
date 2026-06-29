@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
@@ -69,25 +70,15 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 		}
 		html := string(htmlData)
 
-		jsPath := filepath.Join(staticDir, "admin.js")
-		if jsData, err := os.ReadFile(jsPath); err == nil {
-			js := string(jsData)
-			if brandName != "" && brandName != "MaClaw" {
-				html = strings.ReplaceAll(html, "MaClaw", brandName)
-				js = strings.ReplaceAll(js, "MaClaw", brandName)
-			}
-			injection := "\n<script>\n" + escapeInlineScript(js) + "\n</script>\n"
-			if strings.Contains(html, `<script src="admin.js"></script>`) {
-				html = strings.Replace(html, `<script src="admin.js"></script>`, injection, 1)
-			} else if strings.Contains(html, `<script src="/admin/admin.js"></script>`) {
-				html = strings.Replace(html, `<script src="/admin/admin.js"></script>`, injection, 1)
-			} else if idx := strings.LastIndex(html, "</body>"); idx >= 0 {
-				html = html[:idx] + injection + html[idx:]
-			} else {
-				html += injection
-			}
-		} else if brandName != "" && brandName != "MaClaw" {
+		// Inject brand name as a runtime JS variable instead of string-replacing
+		// inside admin.js. This avoids the fragile escapeInlineScript path that
+		// causes "Unexpected end of input" when the 107KB admin.js is inlined.
+		if brandName != "" && brandName != "MaClaw" {
 			html = strings.ReplaceAll(html, "MaClaw", brandName)
+			brandInjection := `<script>window.__MACLAW_BRAND__=` + strconv.Quote(brandName) + `;</script>`
+			if idx := strings.Index(html, "<script"); idx >= 0 {
+				html = html[:idx] + brandInjection + "\n" + html[idx:]
+			}
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

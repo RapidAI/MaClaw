@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -477,7 +478,7 @@ func TestActivateRemote_SwitchesToHubProviderWhenRegisteredAccountHasOfficialSer
 	hubURL = hub.URL
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		MaclawLLMCurrentProvider: "Custom1",
@@ -554,7 +555,7 @@ func TestActivateRemote_RemovesStaleHubProviderWhenRegisteredAccountHasNoOfficia
 	hubURL = hub.URL
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
@@ -610,7 +611,7 @@ func TestActivateRemote_RemovesStaleHubProviderWhenOfficialServiceAuthorizationF
 	}))
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
@@ -664,7 +665,7 @@ func TestActivateRemote_ClearsStaleViewerTokenAndHubProviderWhenEnrollOmitsViewe
 	}))
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
@@ -743,6 +744,7 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 	defer hub.Close()
 
 	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -807,7 +809,7 @@ func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
 	}))
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -849,7 +851,7 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 	}))
 	defer hub.Close()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}

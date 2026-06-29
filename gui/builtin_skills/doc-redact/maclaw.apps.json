@@ -1,0 +1,17 @@
+{
+  "x_maclaw_apps": "v1",
+  "apps": [
+    {
+      "id": "doc-redact",
+      "skill_id": "doc-redact",
+      "name": "文档脱敏",
+      "description": "识别身份证、电话、地址等敏感信息并输出脱敏后文档。",
+      "category": "文档处理",
+      "kind": "tool_app",
+      "icon": "shield",
+      "input_mode": "file",
+      "output_modes": ["docx", "txt"],
+      "fields": []
+    }
+  ]
+}

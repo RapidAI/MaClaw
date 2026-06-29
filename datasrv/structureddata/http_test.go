@@ -6208,6 +6208,175 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 }
 
+func TestHTTPServerAppInstallationPUTRoundTripsGUIEquivalentPayloadThroughCapabilities(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	server := NewHTTPServer(svc, "test-token-0123456789012345", "test")
+
+	body := map[string]any{
+		"app_id":       "expense-approval",
+		"blueprint_id": "expense-approval.blueprint",
+		"name":         "Expense Approval",
+		"version":      "2.4.0",
+		"kind":         "enterprise_approval_app",
+		"status":       "installed",
+		"source":       "hub",
+		"role_bindings": []any{
+			map[string]any{"object_role": "expense_report", "domain": "finance", "dataset_id": "finance.expenses", "template_id": "finance.expenses", "required": true},
+		},
+		"metadata": map[string]any{
+			"schema":           "maclaw.app.v1",
+			"app_skill_id":     "expense-approval-app",
+			"app_skill_source": "hub",
+			"version_snapshot": map[string]any{
+				"app_entry_version": "2.4.0",
+				"app_skill":         map[string]any{"id": "expense-approval-app", "version": "2.4.0", "kind": "app_skill", "source": "hub", "install_ref": "hub://skills/expense-approval-app@2.4.0"},
+				"workflow_skills":   []any{map[string]any{"id": "expense-approval-workflow", "version": "1.8.0", "kind": "workflow_skill", "source": "hub", "install_ref": "hub://skills/expense-approval-workflow@1.8.0"}},
+				"approval_bindings": []any{map[string]any{"event": "expense.submitted", "object_role": "expense_report", "workflow_skill_id": "expense-approval-workflow", "workflow_version": "1.8.0"}},
+			},
+			"dependencies": []any{
+				map[string]any{"id": "expense-approval-app", "version": "2.4.0", "kind": "app_skill", "required": true, "source": "hub", "install_ref": "hub://skills/expense-approval-app@2.4.0", "health": "ready"},
+				map[string]any{"id": "expense-approval-workflow", "version": "1.8.0", "kind": "workflow_skill", "required": true, "source": "hub", "install_ref": "hub://skills/expense-approval-workflow@1.8.0", "health": "ready"},
+			},
+			"dependency_verification": map[string]any{
+				"schema":                  "maclaw.app.install_plan.v1",
+				"verified_at":             "2026-06-29T08:00:00Z",
+				"dependency_count":        2,
+				"has_missing_required":    false,
+				"has_blocking_dependency": false,
+				"dependencies": []any{
+					map[string]any{"id": "expense-approval-app", "installed": true, "install_ref": "hub://skills/expense-approval-app@2.4.0"},
+					map[string]any{"id": "expense-approval-workflow", "installed": true, "install_ref": "hub://skills/expense-approval-workflow@1.8.0"},
+				},
+			},
+			"workspace_layout": map[string]any{
+				"schema":        "maclaw.app.ui.v1",
+				"entry":         "approval_workspace",
+				"template":      "classic_split",
+				"density":       "compact",
+				"primaryRegion": "main_grid",
+				"outputRegion":  "result_drawer",
+				"navigation":    []any{"my_requests", "pending_my_approval", "processed", "attention"},
+				"list":          map[string]any{"columns": []any{"request_no", "applicant", "current_node", "status", "updated_at"}},
+				"regions": []any{
+					map[string]any{"id": "start_form", "role": "input", "placement": "left"},
+					map[string]any{"id": "approval_instances", "role": "instance_list", "placement": "main_grid"},
+					map[string]any{"id": "result_drawer", "role": "output", "placement": "bottom"},
+				},
+			},
+			"workflow_mapping":  map[string]any{"schema": "maclaw.app.workflow.v1", "submit_node": "submit.expense", "approval_node": "finance.review", "result_node": "result.package"},
+			"workflow_contract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflow_skill_id": "expense-approval-workflow", "workflow_version": "1.8.0", "object_role": "expense_report", "required_inputs": []any{"record_ref", "applicant"}, "decision_outputs": []any{"approved", "rejected", "attention"}},
+			"result_contract":   map[string]any{"schema": "maclaw.app.result.v1", "primary": "approval_result", "types": []any{"approval_result", "business_status", "business_record", "artifact", "text"}},
+			"test_evidence": map[string]any{
+				"run_id":                          "run-gui-put-approval-1",
+				"verified_at":                     "2026-06-29T08:01:00Z",
+				"definition_hash":                 "sha256:gui-put-expense-approval",
+				"test_protocol_fingerprint":       "proto-gui-put-expense",
+				"primary_result":                  "approval_result",
+				"approval_instance_view_verified": true,
+				"approval_instance": map[string]any{
+					"approval_id":                     "approval-gui-put-1",
+					"workflow_instance_id":            "workflow-gui-put-1",
+					"workflow_skill_id":               "expense-approval-workflow",
+					"workflow_version":                "1.8.0",
+					"dataset_id":                      "finance.expenses",
+					"record_id":                       "expense-1001",
+					"object_role":                     "expense_report",
+					"status":                          "approved",
+					"current_node":                    "result.package",
+					"approval_event":                  "expense.submitted",
+					"approval_workflow_id":            "expense-approval-flow",
+					"detail_url":                      "maclaw://apps/expense-approval/approvals/approval-gui-put-1",
+					"approval_instance_view_verified": true,
+				},
+				"result_payload":  map[string]any{"approval_result": "approved", "business_status": "finance_approved", "result_status": "ready"},
+				"outputs":         []any{map[string]any{"kind": "business_record", "title": "Expense record", "status": "ready"}, map[string]any{"kind": "text", "title": "Approval summary", "text": "approved", "status": "ready"}},
+				"artifacts":       []any{map[string]any{"id": "artifact-gui-put", "name": "expense-result.pdf", "uri": "artifact://expense-result.pdf", "status": "ready"}},
+				"result_coverage": map[string]any{"ok": true, "primary": "approval_result", "covered_types": []any{"approval_result", "business_status", "business_record", "artifact", "text"}, "missing_types": []any{}},
+			},
+		},
+	}
+	req := jsonRequest(http.MethodPut, "/api/v1/data/app-installations/expense-approval", body)
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put GUI-equivalent app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var installed AppInstallation
+	if err := json.NewDecoder(w.Body).Decode(&installed); err != nil {
+		t.Fatalf("decode GUI-equivalent app installation: %v", err)
+	}
+	if installed.AppID != "expense-approval" || installed.Kind != "enterprise_approval_app" || len(installed.RoleBindings) != 1 || installed.RoleBindings[0].DatasetID != "finance.expenses" {
+		t.Fatalf("unexpected GUI-equivalent app installation: %#v", installed)
+	}
+	if installed.Metadata["workspace_layout_primary_region"] != "main_grid" || installed.Metadata["workspace_layout_output_region"] != "result_drawer" || installed.Metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("PUT should normalize GUI workspace layout placement: %#v", installed.Metadata)
+	}
+	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 4 || navigation[1] != "pending_my_approval" || navigation[3] != "attention" {
+		t.Fatalf("PUT should normalize GUI workspace navigation: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_approval_current_node"] != "result.package" || installed.Metadata["test_evidence_workflow_skill_id"] != "expense-approval-workflow" || installed.Metadata["test_evidence_business_status"] != "finance_approved" || installed.Metadata["test_evidence_result_status"] != "ready" {
+		t.Fatalf("PUT should expose approval instance facts: %#v", installed.Metadata)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/capabilities", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("capabilities after GUI-equivalent PUT status=%d body=%s", w.Code, w.Body.String())
+	}
+	var caps DataCapabilities
+	if err := json.NewDecoder(w.Body).Decode(&caps); err != nil {
+		t.Fatalf("decode capabilities after GUI-equivalent PUT: %v", err)
+	}
+	capsApp := findAppInstallation(caps.AppInstallations, "expense-approval")
+	if capsApp == nil {
+		t.Fatalf("expected GUI-equivalent app installation in capabilities: %#v", caps.AppInstallations)
+	}
+	deps, ok := capsApp.Metadata["dependencies"].([]any)
+	if !ok || len(deps) != 2 {
+		t.Fatalf("capabilities should preserve dependencies: %#v", capsApp.Metadata)
+	}
+	firstDep, ok := deps[0].(map[string]any)
+	if !ok || firstDep["install_ref"] != "hub://skills/expense-approval-app@2.4.0" {
+		t.Fatalf("capabilities should preserve app skill install_ref: %#v", deps)
+	}
+	verification, ok := capsApp.Metadata["dependency_verification"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities should preserve dependency verification: %#v", capsApp.Metadata)
+	}
+	verificationDeps, ok := verification["dependencies"].([]any)
+	if !ok || len(verificationDeps) != 2 {
+		t.Fatalf("capabilities should preserve dependency verification dependencies: %#v", verification)
+	}
+	workflowDep, ok := verificationDeps[1].(map[string]any)
+	if !ok || workflowDep["install_ref"] != "hub://skills/expense-approval-workflow@1.8.0" {
+		t.Fatalf("capabilities should preserve workflow skill install_ref: %#v", verificationDeps)
+	}
+	if capsApp.Metadata["workspace_layout_primary_region"] != "main_grid" || capsApp.Metadata["workspace_layout_output_region"] != "result_drawer" {
+		t.Fatalf("capabilities should expose GUI layout placement: %#v", capsApp.Metadata)
+	}
+	if capsApp.Metadata["test_evidence_approval_id"] != "approval-gui-put-1" || capsApp.Metadata["test_evidence_approval_current_node"] != "result.package" || capsApp.Metadata["test_evidence_workflow_skill_id"] != "expense-approval-workflow" {
+		t.Fatalf("capabilities should expose approval evidence summaries: %#v", capsApp.Metadata)
+	}
+	evidence, ok := capsApp.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities should preserve full test evidence: %#v", capsApp.Metadata)
+	}
+	approvalInstance, ok := evidence["approval_instance"].(map[string]any)
+	if !ok || approvalInstance["approval_id"] != "approval-gui-put-1" || approvalInstance["detail_url"] != "maclaw://apps/expense-approval/approvals/approval-gui-put-1" {
+		t.Fatalf("capabilities should preserve full approval instance evidence: %#v", evidence)
+	}
+	if coverage := appInstallationStringList(capsApp.Metadata["test_evidence_covered_types"]); len(coverage) != 5 || coverage[3] != "artifact" {
+		t.Fatalf("capabilities should expose result coverage for GUI app outputs: %#v", capsApp.Metadata)
+	}
+}
 func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -6255,9 +6424,17 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		t.Fatalf("approval app semantics were not persisted: %#v", expenseApproval)
 	}
 
-	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100", WorkflowNodeID: "attention_review", BusinessStatus: "attention", ResultStatus: "attention"})
+	travelCreateResultPayload := map[string]any{
+		"summary":         "Travel request needs policy attention",
+		"business_status": "attention",
+		"requires_input":  true,
+	}
+	travelApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.travel", BlueprintID: "mis.travel.approval", ObjectRole: "travel_request", Kind: "approval", Summary: "Travel approval", WorkflowSkillID: "skill.travel.approval", WorkflowInstanceID: "wf-travel-100", WorkflowNodeID: "attention_review", BusinessStatus: "attention", ResultStatus: "attention", ResultPayload: travelCreateResultPayload, Outputs: []RecordApprovalOutput{{Type: "text", Kind: "attention_note", Title: "Attention note", Text: "Policy exception requires review", Status: "attention"}}, Artifacts: []RecordApprovalArtifact{{ID: "travel-policy-note", Name: "travel-policy-note.txt", URI: "artifact://travel-policy-note", MimeType: "text/plain", Status: "attention", Presentation: "inline"}}})
 	if travelApproval.ID == expenseApproval.ID || travelApproval.AppID != "mis.travel" || travelApproval.ObjectRole != "travel_request" {
 		t.Fatalf("different app/object_role should create an isolated approval: expense=%#v travel=%#v", expenseApproval, travelApproval)
+	}
+	if travelApproval.ResultPayload["summary"] != travelCreateResultPayload["summary"] || len(travelApproval.Outputs) != 1 || travelApproval.Outputs[0].Kind != "attention_note" || len(travelApproval.Artifacts) != 1 || travelApproval.Artifacts[0].Name != "travel-policy-note.txt" {
+		t.Fatalf("create approval should preserve attention result package: %#v", travelApproval)
 	}
 
 	reusedExpenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval retry"})

@@ -330,8 +330,12 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	if runtime.GOOS == "windows" && target.SkillDir != "" {
 		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
 	}
+	configuredType := strings.TrimSpace(target.Type)
 	if err := refreshSkillRunDefinitionFromDir(target); err != nil {
 		return "", fmt.Errorf("reload skill %q from disk: %w", skillName, err)
+	}
+	if strings.TrimSpace(target.Type) == "" {
+		target.Type = configuredType
 	}
 
 	// Bug #3: Distinguish needs_setup / disabled from active

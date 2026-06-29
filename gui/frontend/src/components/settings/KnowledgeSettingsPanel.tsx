@@ -1890,6 +1890,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 notifySuccess(t('Knowledge sync completed.', '知识库同步完成。'));
                 return uploadResult;
             }
+            await KnowledgeSyncVerifyPassword(syncPayload());
             const checkResult = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: 'check' });
             setSyncStatus(normalizeSyncStatusWithLocalService(checkResult || latestStatus, serviceStatus) || null);
             if (checkResult?.requires_resolution) {
@@ -1919,6 +1920,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setHubLLMServiceStatus(serviceStatus || null);
             const latestStatus = normalizeSyncStatusWithLocalService(syncStatus, serviceStatus);
             ensureKnowledgeSyncCanWrite(latestStatus);
+            await KnowledgeSyncVerifyPassword(syncPayload());
             const importResult = await KnowledgeSyncDownload({ ...syncPayload(), conflict_strategy: conflictStrategy });
             setSyncStatus(normalizeSyncStatusWithLocalService(importResult, serviceStatus) || null);
             const uploadResult = await KnowledgeSyncUpload(syncPayload());
@@ -2642,12 +2644,27 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                         ? t('Updating requires the existing sync password. The old cloud package is decrypted for verification before it is replaced.', '更新时请输入原同步密码。替换前会先用该密码验证旧云端同步包。')
                                         : t('First upload requires entering the sync password twice. If you forget it later, delete the cloud package and upload again.', '首次上传需要输入两次同步密码。以后如果忘记密码，可以删除云端同步包后重新上传。')}
                                 </span>
-                                <input className="knowledge-input" value={syncForm.hubURL} onChange={event => setSyncForm({ ...syncForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
-                                <input className="knowledge-input" type="password" value={syncForm.hubToken} onChange={event => setSyncForm({ ...syncForm, hubToken: event.target.value })} placeholder={t('Hub token override (optional)', 'Hub 令牌覆盖（可选）')} />
-                                <input className="knowledge-input" type="password" value={syncForm.password} onChange={event => setSyncForm({ ...syncForm, password: event.target.value })} placeholder={t('Sync password', '同步密码')} />
+                                <label className="knowledge-field">
+                                    <span className="knowledge-field-label">{t('Hub URL', 'Hub 地址')}</span>
+                                    <input className="knowledge-input" value={syncForm.hubURL} onChange={event => setSyncForm({ ...syncForm, hubURL: event.target.value })} placeholder={t('Uses configured Hub if empty', '为空则使用已配置 Hub')} />
+                                </label>
+                                <label className="knowledge-field">
+                                    <span className="knowledge-field-label">{t('Sync password', '同步密码')}</span>
+                                    <input className="knowledge-input" type="password" value={syncForm.password} onChange={event => setSyncForm({ ...syncForm, password: event.target.value })} placeholder={t('Encrypts and decrypts the sync package locally', '仅在本机加密和解密同步包')} />
+                                </label>
                                 {!syncStatus?.has_package ? (
-                                    <input className="knowledge-input" type="password" value={syncForm.passwordConfirm} onChange={event => setSyncForm({ ...syncForm, passwordConfirm: event.target.value })} placeholder={t('Confirm sync password', '再次输入同步密码')} />
+                                    <label className="knowledge-field">
+                                        <span className="knowledge-field-label">{t('Confirm sync password', '再次输入同步密码')}</span>
+                                        <input className="knowledge-input" type="password" value={syncForm.passwordConfirm} onChange={event => setSyncForm({ ...syncForm, passwordConfirm: event.target.value })} placeholder={t('Repeat the sync password for first upload', '首次上传时再次输入同步密码')} />
+                                    </label>
                                 ) : null}
+                                <details className="knowledge-advanced-details">
+                                    <summary className="knowledge-details-summary">{t('Advanced authentication', '高级认证')}</summary>
+                                    <label className="knowledge-field">
+                                        <span className="knowledge-field-label">{t('Hub access token override', 'Hub 访问令牌覆盖')}</span>
+                                        <input className="knowledge-input" type="password" value={syncForm.hubToken} onChange={event => setSyncForm({ ...syncForm, hubToken: event.target.value })} placeholder={t('Usually not needed; uses the configured token automatically', '通常不需要填写，会自动使用已配置令牌')} />
+                                    </label>
+                                </details>
                             </div>
                             <div className="knowledge-exchange-box">
                                 <strong>{t('Current cloud state', '当前云端状态')}</strong>

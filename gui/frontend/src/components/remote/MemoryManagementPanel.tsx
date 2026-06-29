@@ -19,6 +19,7 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors, radius } from "./styles";
 import { ExperienceLearningPanel } from "./MemoryExperienceLearningPanel";
 import { SessionHistoryTab } from "./MemorySessionHistoryTab";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 interface MemoryEntry {
     id: string;
@@ -90,6 +91,10 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 type TraceFocus = { value?: string; seq?: number };
 type Props = { lang: string; traceFocus?: TraceFocus };
+type WailsNoDragStyle = React.CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
 
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
@@ -125,27 +130,36 @@ function fmtSize(b: number): string {
 
 /** Reusable modal overlay — handles backdrop click + Escape key. */
 function ModalOverlay({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
     }, [onClose]);
     return (
-        <div style={overlayStyle} onClick={onClose}>
-            <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={dialogBaseStyle}>
+        <div style={overlayStyle} {...backdropProps}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                style={dialogBaseStyle}
+                {...dialogProps}
+            >
                 {children}
             </div>
         </div>
     );
 }
 
-const overlayStyle: React.CSSProperties = {
+const overlayStyle: WailsNoDragStyle = {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)",
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+    WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
 };
-const dialogBaseStyle: React.CSSProperties = {
+const dialogBaseStyle: WailsNoDragStyle = {
     background: colors.surface, borderRadius: radius.lg,
     padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+    WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
 };
 const cancelBtnStyle: React.CSSProperties = {
     padding: "5px 14px", fontSize: "0.76rem",

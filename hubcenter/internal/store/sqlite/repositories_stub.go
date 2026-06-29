@@ -1333,6 +1333,28 @@ func (r *hubUserLinkRepo) DeleteByHubID(ctx context.Context, hubID string) error
 	return err
 }
 
+func (r *hubUserLinkRepo) DeleteByEmail(ctx context.Context, email string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM hub_user_links
+		WHERE lower(email) = lower(?)
+	`, strings.TrimSpace(strings.ToLower(email)))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *hubUserLinkRepo) DeleteByHubEmail(ctx context.Context, hubID, email string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM hub_user_links
+		WHERE hub_id = ? AND lower(email) = lower(?)
+	`, hubID, strings.TrimSpace(strings.ToLower(email)))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubID, sourceTenantID string, link *store.HubUserLink) ([]*store.HubUserLink, *store.HubUserLink, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2625,8 +2647,8 @@ func (r *invitationCodeRouteRepo) GetByCode(ctx context.Context, code string) (*
 	code = strings.TrimSpace(strings.ToUpper(code))
 	var item store.InvitationCodeRoute
 	var createdAt string
-	err := r.readDB.QueryRowContext(ctx, `SELECT code, hub_id, tenant_id, created_at FROM invitation_code_routes WHERE code = ?`, code).
-		Scan(&item.Code, &item.HubID, &item.TenantID, &createdAt)
+	err := r.readDB.QueryRowContext(ctx, `SELECT code, hub_id, tenant_id, used_by_email, created_at FROM invitation_code_routes WHERE code = ?`, code).
+		Scan(&item.Code, &item.HubID, &item.TenantID, &item.UsedByEmail, &createdAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -2649,7 +2671,7 @@ func (r *invitationCodeRouteRepo) DeleteByHubID(ctx context.Context, hubID strin
 }
 
 func (r *invitationCodeRouteRepo) ListAll(ctx context.Context) ([]*store.InvitationCodeRoute, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT code, hub_id, tenant_id, created_at FROM invitation_code_routes`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT code, hub_id, tenant_id, used_by_email, created_at FROM invitation_code_routes`)
 	if err != nil {
 		return nil, err
 	}
@@ -2658,11 +2680,17 @@ func (r *invitationCodeRouteRepo) ListAll(ctx context.Context) ([]*store.Invitat
 	for rows.Next() {
 		var item store.InvitationCodeRoute
 		var createdAt string
-		if err := rows.Scan(&item.Code, &item.HubID, &item.TenantID, &createdAt); err != nil {
+		if err := rows.Scan(&item.Code, &item.HubID, &item.TenantID, &item.UsedByEmail, &createdAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		items = append(items, &item)
 	}
 	return items, rows.Err()
+}
+
+func (r *invitationCodeRouteRepo) MarkUsedByEmail(ctx context.Context, code string, email string) error {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	_, err := r.db.ExecContext(ctx, `UPDATE invitation_code_routes SET used_by_email = ? WHERE code = ?`, strings.TrimSpace(strings.ToLower(email)), code)
+	return err
 }

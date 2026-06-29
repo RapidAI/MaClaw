@@ -5,7 +5,7 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
 import { MaclawAppSkillsTab } from "./MaclawAppSkillsTab";
 import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
-import { SkillProductBadge } from "./SkillProductBadge";
+import { SkillProductBadge, isMaclawAppSearchResult } from "./SkillProductBadge";
 import { SkillSourceBadge } from "./SkillSourceBadge";
 import {
     executionClassBadgeStyle,
@@ -713,11 +713,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await InstallMixedSkill(skill.source, skill.id, skill.install_ref || "");
             await loadData();
             await checkUpdates();
-            showToast(localizeText(
-                `Skill "${skill.name}" installed successfully`,
-                `技能「${skill.name}」安装成功`,
-                `技能「${skill.name}」安裝成功`,
-            ));
+            showToast(
+                isMaclawAppSearchResult(skill)
+                    ? localizeText(
+                        `Skill "${skill.name}" installed. This is a MaClaw App — switch to the "MaClaw App" tab to manage it.`,
+                        `技能「${skill.name}」安装成功。这是一个 MaClaw App，前往「MaClaw App」标签页管理和使用。`,
+                        `技能「${skill.name}」安裝成功。這是一個 MaClaw App，前往「MaClaw App」標籤頁管理和使用。`,
+                    )
+                    : localizeText(
+                        `Skill "${skill.name}" installed successfully`,
+                        `技能「${skill.name}」安装成功`,
+                        `技能「${skill.name}」安裝成功`,
+                    )
+            );
             if (hubSearchQuery.trim()) {
                 const refreshed = await SearchMixedSkills(hubSearchQuery.trim());
                 setHubResults(Array.isArray(refreshed) ? refreshed : []);

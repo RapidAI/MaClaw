@@ -796,12 +796,34 @@ func commandFileReferenceCandidates(token string) []string {
 	if strings.HasPrefix(token, "-") {
 		return nil
 	}
+	if isSlashStyleShellOption(token) {
+		return nil
+	}
 	if !isCommandFileReference(token) {
 		return nil
 	}
 	return []string{token}
 }
 
+func isSlashStyleShellOption(token string) bool {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	if len(token) < 2 || token[0] != '/' {
+		return false
+	}
+	rest := token[1:]
+	if rest == "" || strings.ContainsAny(rest, `/\`) || strings.ContainsAny(rest, ".:=") {
+		return false
+	}
+	if len([]rune(rest)) > 3 {
+		return false
+	}
+	for _, r := range rest {
+		if !isShellFlagNamePart(r) {
+			return false
+		}
+	}
+	return true
+}
 func flagAssignmentValue(token string) (string, bool) {
 	token = strings.TrimSpace(strings.Trim(token, `"'`))
 	if token == "" {

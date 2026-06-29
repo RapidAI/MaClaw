@@ -392,7 +392,7 @@ func PresentationTemplate() *WorkflowTemplate {
 		Type:        "presentation_design",
 		Name:        "PPT 设计",
 		Description: "受众分析 → 内容大纲 → 逐页脚本 → 生成 PPT。适用于产品介绍、方案汇报、商业展示、演示文稿、幻灯片和 slide deck 设计。",
-		Keywords:    []string{"ppt", "幻灯片", "演示文稿", "slide", "PPT"},
+		Keywords:    []string{"ppt", "powerpoint", "幻灯片", "演示文稿", "slide", "slide deck", "PPT", "PowerPoint"},
 		Phases: []PhaseTemplate{
 			{ID: "audience_goal", Name: "受众与目标", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc,
 				InputSchema: &PhaseInputSchema{

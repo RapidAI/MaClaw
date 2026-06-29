@@ -1,0 +1,55 @@
+name: contract-review
+description: "合同审查 — 上传合同文件（PDF/DOCX/TXT），AI 分析条款风险、合规性问题和修订建议，输出结构化审查报告。"
+triggers:
+    - 合同审查
+    - 审查合同
+    - contract review
+    - 合同风险
+    - 条款分析
+    - review contract
+steps:
+    - action: bash
+      params:
+        command: pip install pymupdf python-docx --quiet 2>&1
+        timeout: 60000
+      continue_on_error: true
+
+    - action: bash
+      params:
+        command: python "{baseDir}/scripts/extract_text.py" --input "{{input}}" --output "{{output}}"
+        timeout: 60000
+      continue_on_error: false
+      on_error: "合同文本提取失败，请检查文件格式"
+      capture:
+        extracted_text_path: 'output_path:\s*(.+)'
+
+    - action: craft_tool
+      params:
+        task: |
+          你是一位专业法律顾问。请完成以下合同审查任务：
+
+          1. 先用 Python 读取文件 "{{extracted_text_path}}" 的全部内容
+          2. 对合同文本进行全面审查
+
+          审查要求：
+          - 识别潜在的法律风险条款（如不合理的免责、违约金过高、管辖权不利等）
+          - 检查是否有缺失的关键条款（如保密条款、知识产权归属、争议解决等）
+          - 标注模糊或可能产生歧义的表述
+          - 给出具体的修订建议
+
+          3. 生成 Markdown 格式审查报告，包含以下 section：
+          ## 合同概要
+          ## 风险条款分析
+          ## 缺失条款提醒
+          ## 修订建议
+          ## 总体风险评级（低/中/高/极高）
+
+          4. 将审查报告写入 "{{output}}/contract_review_report.md"
+        timeout: 300000
+      continue_on_error: false
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true

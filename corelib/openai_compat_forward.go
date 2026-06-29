@@ -271,29 +271,12 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 		}
 		// Cap reasoning budget when tools are present to prevent reasoning from
 		// consuming the entire output budget and truncating tool call JSON.
-		// This covers the model=auto path where the client doesn't know the
-		// actual backend model and cannot set budget_tokens itself.
+		// Conservative budget (4096) — see corelib/llm/client.go comment.
 		if hasToolsInBody(body) {
 			thinking, _ := body["thinking"].(map[string]interface{})
 			if thinking != nil {
 				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					// Reserve at most 25% of output for reasoning, min 1024.
-					// Mirrors the logic in corelib/llm/client.go.
-					maxOut := 65536
-					if mt, ok := body["max_tokens"].(float64); ok && int(mt) > 0 {
-						maxOut = int(mt)
-					} else if mt, ok := body["max_tokens"].(int); ok && mt > 0 {
-						maxOut = mt
-					} else if mt, ok := body["max_completion_tokens"].(float64); ok && int(mt) > 0 {
-						maxOut = int(mt)
-					} else if mt, ok := body["max_completion_tokens"].(int); ok && mt > 0 {
-						maxOut = mt
-					}
-					reasoningBudget := maxOut / 4
-					if reasoningBudget < 1024 {
-						reasoningBudget = 1024
-					}
-					thinking["budget_tokens"] = reasoningBudget
+					thinking["budget_tokens"] = 4096
 				}
 			}
 		}

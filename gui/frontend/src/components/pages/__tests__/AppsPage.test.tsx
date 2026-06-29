@@ -532,9 +532,132 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
     }));
 }
 
+function dynamicApprovalApp() {
+    return normalizeTestAppForFingerprint({
+        id: 'expense',
+        name: '报销申请',
+        description: '提交费用报销并运行审批工作流',
+        category: '财务审批',
+        kind: 'enterprise_approval_app',
+        icon: 'receipt',
+        accent: '#2f7d68',
+        pinned: true,
+        source: 'datasrv',
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'enterprise_app_pack',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: 'enterprise_approval_app',
+            launchMode: 'agent_dynamic_ui',
+            appSkill: { id: 'expense-approval-app', version: '1.0.0', source: 'local' },
+            datasrv: { appID: 'expense', domain: 'finance', datasetID: 'finance.expenses', objectRole: 'expense_report', preferredAction: 'finance.expense_upsert', preferredView: 'finance.expense_review' },
+            workflow: { schema: 'maclaw.app.workflow.v1', submitNode: 'expense.submit', approvalNode: 'expense.manager_review', resultNode: 'expense.result_feedback', attentionNode: 'expense.attention', statusMapping: { pending: 'approval_pending', approved: 'approved', rejected: 'rejected', attention: 'attention', requiresInput: 'requires_input' } },
+            mis: { approvalBindings: [{ event: 'expense.submitted', workflowSkillId: 'expense-approval-workflow', workflowVersion: '1.0.0', objectRole: 'expense_report' }] },
+            dependencies: { skills: [{ id: 'expense-approval-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow'] }] },
+            ui: { schema: 'maclaw.app.ui.v1', generated: true, entry: 'approval_workspace', layouts: { approval_workspace: { template: 'dashboard', density: 'comfortable', primaryRegion: 'left', outputRegion: 'bottom' } } },
+            resultContract: { schema: 'maclaw.app.result.v1', primary: 'approval_result', types: ['approval_result', 'business_status', 'document', 'artifact', 'content'], approvalDecisions: ['approved', 'rejected', 'attention'], delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: true } },
+        },
+    });
+}
+
+function dynamicBusinessApp() {
+    return normalizeTestAppForFingerprint({
+        id: 'purchase-inbound',
+        name: '采购入库',
+        description: '处理采购入库和库存记录',
+        category: 'supply',
+        kind: 'enterprise_normal_app',
+        icon: 'warehouse',
+        accent: '#4668a8',
+        pinned: true,
+        source: 'datasrv',
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'enterprise_app_pack',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: 'enterprise_normal_app',
+            launchMode: 'agent_dynamic_ui',
+            appSkill: { id: 'purchase-inbound-app', version: '1.0.0', source: 'local' },
+            datasrv: { appID: 'purchase-inbound', domain: 'supply', datasetID: 'supply.purchase_orders', objectRole: 'purchase_order', preferredAction: 'purchase_order.upsert', preferredView: 'purchase_order.list', preferredReport: 'purchase_order.report' },
+            dependencies: { skills: [{ id: 'purchase-inbound-skill', version: '1.0.0', kind: 'runtime_skill', required: true, source: 'hub' }] },
+            ui: { schema: 'maclaw.app.ui.v1', generated: true, entry: 'business_workspace', layouts: { business_workspace: { template: 'left_nav', density: 'comfortable', primaryRegion: 'left', outputRegion: 'bottom' } } },
+            resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'content', 'artifact'], delivery: { inlineContent: true, artifacts: true, businessRecord: true, notifications: false } },
+        },
+    });
+}
+
+function dynamicToolApp(id: string, name: string, category = '文档处理', icon = 'pdf', outputModes = ['docx', 'pdf']) {
+    return normalizeTestAppForFingerprint({
+        id,
+        name,
+        description: `${name} 工具应用`,
+        category,
+        kind: 'tool_app',
+        icon,
+        accent: '#7a5c95',
+        source: 'local',
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'skill',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: 'tool_app',
+            launchMode: 'agent_dynamic_ui',
+            skill: { id, appDefinitionFile: 'maclaw.apps.json', inputMode: 'file', outputModes },
+            appSkill: { id, version: '1.0.0', source: 'local' },
+            ui: { schema: 'maclaw.app.ui.v1', generated: true, entry: 'tool_workspace', layouts: { tool_workspace: { template: 'document_workspace', density: 'comfortable', primaryRegion: 'left', outputRegion: 'right', regions: [{ id: 'file_input', role: 'input', placement: 'left' }, { id: 'preview', role: 'preview', placement: 'center' }, { id: 'result_panel', role: 'output', placement: 'right' }] } } },
+            resultContract: testToolAppResultContract(outputModes),
+            testProtocol: testToolAppProtocol(outputModes),
+        },
+    });
+}
+
+function dynamicAutomationApp() {
+    return normalizeTestAppForFingerprint({
+        id: 'data-sync',
+        name: '数据同步',
+        description: '同步外部系统数据',
+        category: '数据工具',
+        kind: 'automation_app',
+        icon: 'sync',
+        accent: '#6f7b3f',
+        source: 'local',
+        manifest: {
+            schema: 'maclaw.app.v1',
+            installUnit: 'enterprise_app_pack',
+            privateMarker: 'x_maclaw_apps',
+            entryKind: 'automation_app',
+            launchMode: 'automation_console',
+            appSkill: { id: 'data-sync-skill', version: '1.0.0', source: 'local' },
+            resultContract: { schema: 'maclaw.app.result.v1', primary: 'business_status', types: ['business_status', 'content'], delivery: { inlineContent: true, artifacts: false, businessRecord: false, notifications: true } },
+        },
+    });
+}
+
+const testDynamicApps = [
+    dynamicApprovalApp(),
+    dynamicBusinessApp(),
+    dynamicToolApp('inventory-count', '库存盘点', '库存管理', 'inventory', ['json']),
+    dynamicToolApp('contract-review', '合同审查', '法务工具', 'contract', ['docx', 'pdf']),
+    dynamicToolApp('sheet-analysis', '表格分析', '数据工具', 'sheet', ['xlsx', 'json']),
+    dynamicToolApp('pdf-to-word', 'PDF 转 Word', '文档处理', 'pdf', ['docx', 'pdf']),
+    dynamicToolApp('document-redaction', '文档脱敏', '文档处理', 'shield', ['pdf']),
+    dynamicToolApp('invoice-audit', '发票审核', '财务审批', 'invoice', ['json', 'pdf']),
+    dynamicToolApp('web-capture', '网页采集', '数据工具', 'web', ['html', 'json']),
+    dynamicAutomationApp(),
+];
+
+function seedDynamicAppsPanel(apps = testDynamicApps) {
+    window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+        orderedIds: apps.map((app) => app.id),
+        pinnedIds: apps.filter((app) => app.pinned).map((app) => app.id),
+        customApps: apps,
+        recentUsedAtById: {},
+    }));
+}
 describe('AppsPage', () => {
     beforeEach(() => {
         window.localStorage.clear();
+        seedDynamicAppsPanel();
         executeMaclawAppBusinessOperationMock.mockReset().mockResolvedValue({ synced: true, mode: 'business_action', target: 'datasrv.action', result_status: 'done', response: { status: 'done' } });
         getMISDataConfigMock.mockReset().mockResolvedValue({ enabled: false, endpoint: 'http://127.0.0.1:18180' });
         listNLSkillsMock.mockReset().mockResolvedValue([]);
@@ -1180,6 +1303,7 @@ describe('AppsPage', () => {
     });
 
     it('exposes app studio sections as accessible tabs', () => {
+        window.localStorage.clear();
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(getStudioButton());
@@ -1203,6 +1327,7 @@ describe('AppsPage', () => {
     });
 
     it('shows local apps in the review and publish checklist', () => {
+        window.localStorage.clear();
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(getStudioButton());
@@ -1284,6 +1409,7 @@ describe('AppsPage', () => {
         expect(within(card).getByText(/Missing workspace region roles: output/)).not.toBeNull();
     });
     it('submits ready local apps into local review state', async () => {
+        window.localStorage.clear();
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
@@ -1535,6 +1661,7 @@ describe('AppsPage', () => {
         });
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
 
+        window.localStorage.clear();
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
@@ -1839,17 +1966,35 @@ describe('AppsPage', () => {
         const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Dependency Verification App')) as HTMLElement;
         expect(readyCard).toBeTruthy();
         expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
+        const packagePreviewText = document.querySelector('.apps-manage-manifest')?.textContent || '';
+        expect(packagePreviewText).toContain('dependencyVerification');
+        expect(packagePreviewText).toContain('cap-hub-declared-business-skill');
+        expect(packagePreviewText).toContain('run-dependency-verified');
+        const previewPayload = JSON.parse(packagePreviewText);
+        const previewGovernance = previewPayload.apps[0].app.governance;
+        expect(previewGovernance.testEvidence).toMatchObject({
+            runId: 'run-dependency-verified',
+            resultPayload: { business_status: 'ready', business_record: { id: 'customer-1' }, text: 'ready' },
+            outputCount: 1,
+            dependencyVerification: expect.objectContaining({
+                schema: 'maclaw.app.install_plan.v1',
+                dependencyCount: 1,
+                dependencies: [expect.objectContaining({ id: 'declared-business-skill', install_ref: 'cap-hub-declared-business-skill', installed: true, health: 'ready' })],
+            }),
+        });
         fireEvent.click(within(readyCard).getByText('Submit for review'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
-        expect(payload.apps[0].app.governance.dependencyVerification).toMatchObject({
+        const submittedGovernance = payload.apps[0].app.governance;
+        expect(submittedGovernance.testEvidence).toEqual(previewGovernance.testEvidence);
+        expect(submittedGovernance.dependencyVerification).toMatchObject({
             schema: 'maclaw.app.install_plan.v1',
             hasMissingRequired: false,
             hasBlockingDependency: false,
             dependencies: [expect.objectContaining({ id: 'declared-business-skill', install_ref: 'cap-hub-declared-business-skill', installed: true, health: 'ready' })],
         });
-        expect(payload.apps[0].app.governance.dependencies.skills[0]).toEqual(expect.objectContaining({ id: 'declared-business-skill', install_ref: 'cap-hub-declared-business-skill' }));
+        expect(submittedGovernance.dependencies.skills[0]).toEqual(expect.objectContaining({ id: 'declared-business-skill', install_ref: 'cap-hub-declared-business-skill' }));
     });
 
     it('requires approval instance evidence before publishing approval apps', async () => {
@@ -2735,6 +2880,7 @@ describe('AppsPage', () => {
         });
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
 
+        window.localStorage.clear();
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
@@ -2763,6 +2909,7 @@ describe('AppsPage', () => {
             .mockResolvedValueOnce([]);
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage, WithdrawMaclawAppPackageSubmission: withdrawMaclawAppPackageSubmission, ListMaclawAppPackageSubmissions: listMaclawAppPackageSubmissions } } };
 
+        window.localStorage.clear();
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
@@ -3652,6 +3799,31 @@ describe('AppsPage', () => {
         await waitFor(() => expect(container.querySelector('.apps-business-workspace')).not.toBeNull());
         expect(container.querySelector('.apps-business-workspace')?.getAttribute('data-region')).toBe('right');
         expect(container.querySelector('.apps-runtime-output')?.getAttribute('data-region')).toBe('bottom');
+
+        fireEvent.click(screen.getByTitle('App Studio'));
+        fireEvent.click(screen.getByText('Review / publish'));
+        const packagePreview = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        const packagedApp = packagePreview.apps.find((entry: any) => entry.app.name === 'Visual Layout Desk');
+        expect(packagedApp.app.ui.layouts.business_workspace).toMatchObject({
+            template: 'classic_split',
+            outputRegion: 'bottom',
+            studio: expect.objectContaining({ savedInManifest: true, updatedBy: 'app_studio' }),
+        });
+        expect(packagedApp.app.ui.layouts.business_workspace.regions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'record_list', role: 'record_list', placement: 'right' }),
+            expect.objectContaining({ id: 'output_panel', role: 'output', placement: 'bottom' }),
+        ]));
+        expect(packagedApp.app.governance.workspaceLayout).toMatchObject({
+            schema: 'maclaw.app.ui.v1',
+            entry: 'business_workspace',
+            outputRegion: 'bottom',
+            regionCount: expect.any(Number),
+            savedInManifest: true,
+        });
+        expect(packagedApp.app.governance.workspaceLayout.regions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'record_list', role: 'record_list', placement: 'right' }),
+            expect.objectContaining({ id: 'output_panel', role: 'output', placement: 'bottom' }),
+        ]));
     });
 
     it('copies the draft manifest preview to clipboard', async () => {
@@ -3771,11 +3943,11 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByPlaceholderText('搜索应用'), { target: { value: '脱敏' } });
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('全部应用 (1)')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('文档处理 (1)')).not.toBeNull();
-        expect((within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
+        expect((within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('财务审批 (0)') as HTMLOptionElement).disabled).toBe(true);
         expect(screen.getByText('搜索“脱敏” · 1 个匹配')).not.toBeNull();
         fireEvent.click(within(document.querySelector('.apps-filter-row') as HTMLElement).getByTitle('重置筛选'));
 
-        fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: 'OA' } });
+        fireEvent.change(document.querySelector('.apps-category-select') as HTMLSelectElement, { target: { value: '财务审批' } });
         fireEvent.change(screen.getByPlaceholderText('搜索应用'), { target: { value: '脱敏' } });
         expect((document.querySelector('.apps-category-select') as HTMLSelectElement).value).toBe('all');
         expect(screen.getAllByText('文档脱敏').length).toBeGreaterThan(0);
@@ -4454,11 +4626,15 @@ describe('AppsPage', () => {
         expect(browserOpenURLMock).toHaveBeenCalledWith('approval://instances/approval-pending-8');
         expect((within(actions).getByText('\u901a\u8fc7') as HTMLButtonElement).disabled).toBe(false);
 
-        fireEvent.click(within(nav).getByText('\u5f85\u6211\u5ba1\u6279'));
-        await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('pending_my_approval', 200));
+        expect(within(nav).getByRole('button', { name: /\u5f85\u6211\u5ba1\u6279\s*2/ })).not.toBeNull();
+        expect(within(nav).getByRole('button', { name: /\u6211\u7684\u7533\u8bf7\s*0/ })).not.toBeNull();
+        fireEvent.click(within(nav).getByText('待我审批'));
+        expect(listMaclawAppApprovalInstancesAllMock).not.toHaveBeenCalledWith('pending_my_approval', 200);
+        expect(screen.getAllByText('Office expense').length).toBeGreaterThan(0);
+        expect(within(detail).getByText('Travel expense')).not.toBeNull();
 
         fireEvent.click(within(nav).getByText('\u6211\u7684\u7533\u8bf7'));
-        await waitFor(() => expect(listMaclawAppApprovalInstancesAllMock).toHaveBeenCalledWith('my_requests', 200));
+        expect(listMaclawAppApprovalInstancesAllMock).not.toHaveBeenCalledWith('my_requests', 200);
         await waitFor(() => expect(within(document.querySelector('.apps-approval-detail') as HTMLElement).getByText('\u53f3\u4fa7\u662f\u5b9e\u4f8b\u8be6\u60c5\u548c\u5904\u7406\u52a8\u4f5c\u533a\uff0c\u8bf7\u5148\u5728\u5de6\u4fa7\u9009\u62e9\u4e00\u6761\u5ba1\u6279\u5b9e\u4f8b\u3002')).not.toBeNull());
         expect(screen.queryByLabelText('\u5ba1\u6279\u64cd\u4f5c')).toBeNull();
     });
@@ -5404,7 +5580,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('执行'));
 
         await waitFor(() => expect(stageSkillAppInputFileMock).toHaveBeenCalledWith('demo.pdf', 'application/pdf', expect.any(Number), 'ZGVtbw=='));
-        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-word', expect.objectContaining({
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-to-word', expect.objectContaining({
             file_name: 'demo.pdf',
             file_text: 'demo',
             file_path: '/tmp/demo.pdf',
@@ -5679,7 +5855,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('报销申请')[0]);
-        fireEvent.change(screen.getByDisplayValue('OA'), { target: { value: '费用报销' } });
+        fireEvent.change(screen.getByDisplayValue('财务审批'), { target: { value: '费用报销' } });
         fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'report' } });
         fireEvent.change(container.querySelector('.apps-preview__mock textarea') as HTMLTextAreaElement, { target: { value: '生成本月报销汇总' } });
         fireEvent.click(screen.getByText('执行'));
@@ -5692,7 +5868,7 @@ describe('AppsPage', () => {
 		executeMaclawAppBusinessOperationMock.mockResolvedValueOnce({
 			synced: true,
             mode: 'business_view',
-            target: 'procurement.purchase_order_review',
+            target: 'purchase_order.list',
             result_status: 'done',
             primary_result: 'business_record',
             result_payload: { business_status: 'done', business_record: { id: 'PO-100', status: 'open' }, text: 'PO review ready' },
@@ -5707,21 +5883,21 @@ describe('AppsPage', () => {
         expect(container.querySelector('.apps-business-workspace')).not.toBeNull();
         expect(container.querySelector('.apps-approval-workspace')).toBeNull();
         expect(screen.getByText('业务工作台')).not.toBeNull();
-        expect(screen.getAllByText('procurement').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('procurement.purchase_orders').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('procurement.purchase_order_upsert').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('purchase_order').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('supply.purchase_orders').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('purchase_order.upsert').length).toBeGreaterThan(0);
 
         fireEvent.change(screen.getByDisplayValue('新建记录'), { target: { value: 'query' } });
         fireEvent.click(screen.getByText('执行'));
 
         await waitFor(() => expect(executeMaclawAppBusinessOperationMock).toHaveBeenCalledWith(expect.objectContaining({
             app_id: 'purchase-inbound',
-            object_role: 'procurement',
+            object_role: 'purchase_order',
             business_action: 'query',
-            preferred_action: 'procurement.purchase_order_upsert',
-            preferred_view: 'procurement.purchase_order_review',
-            preferred_report: 'procurement.purchase_by_status',
-            preferred_dashboard: 'procurement.overview',
+            preferred_action: 'purchase_order.upsert',
+            preferred_view: 'purchase_order.list',
+            preferred_report: 'purchase_order.report',
+            preferred_dashboard: '',
         })));
         expect(recordMaclawAppApprovalInstanceMock).not.toHaveBeenCalled();
         await waitFor(() => expect(screen.getByText('PO review ready')).not.toBeNull());
@@ -5738,7 +5914,7 @@ describe('AppsPage', () => {
             outputMode: 'business',
             resultPayload: {
                 mode: 'business_view',
-                target: 'procurement.purchase_order_review',
+                target: 'purchase_order.list',
                 result_status: 'done',
                 business_status: 'done',
                 business_record: { id: 'PO-100', status: 'open' },
@@ -6296,9 +6472,9 @@ describe('AppsPage', () => {
         fireEvent.change(manageSearch, { target: { value: 'pdf' } });
         expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('全部应用 (4)')).not.toBeNull();
         expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('文档处理 (2)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('数据分析 (1)')).not.toBeNull();
-        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('法务 (1)')).not.toBeNull();
-        expect((within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('OA (0)') as HTMLOptionElement).disabled).toBe(true);
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('财务审批 (1)')).not.toBeNull();
+        expect(within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('法务工具 (1)')).not.toBeNull();
+        expect((within(document.querySelector('.apps-manage-category-select') as HTMLSelectElement).getByText('supply (0)') as HTMLOptionElement).disabled).toBe(true);
         expect(screen.getByText('搜索“pdf” · 4 个匹配')).not.toBeNull();
 
         expect(screen.getAllByText('PDF 转 Word').length).toBeGreaterThan(0);
@@ -6438,7 +6614,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(renamedRow).getByTitle('Manifest'));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"name": "PDF 转 Word 快速版"');
-        expect(manifest).toContain('"id": "pdf-word"');
+        expect(manifest).toContain('"id": "pdf-to-word"');
         expect(manifest).toContain('"source": "local"');
         expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('PDF 转 Word 副本'))).toBe(true);
 
@@ -7352,7 +7528,7 @@ describe('AppsPage', () => {
     it('does not exceed the pinned app limit when installing pinned market apps', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
-        for (const name of ['文档脱敏', '表格分析']) {
+        for (const name of ['文档脱敏', '表格分析', '库存盘点', '合同审查', '发票审核', '网页采集']) {
             const tile = screen.getAllByText(name)[0].closest('.apps-app-tile') as HTMLButtonElement;
             fireEvent.contextMenu(tile, { clientX: 90, clientY: 180 });
             fireEvent.click(screen.getByRole('menuitem', { name: '设为常用' }));
@@ -7446,7 +7622,7 @@ describe('AppsPage', () => {
                     privateMarker: 'x_maclaw_apps',
                     installUnit: 'skill',
                     app: {
-                        id: 'doc-redact',
+                        id: 'document-redaction',
                         name: '文档脱敏增强版',
                         version: 2,
                         description: 'Updated redaction workflow',
@@ -7487,7 +7663,7 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"version": 2/)).not.toBeNull();
         expect(screen.getByText(/"id": "admin-doc-redact-v2"/)).not.toBeNull();
         expect(screen.getByText(/"icon": "shield"/)).not.toBeNull();
-        expect(screen.getByText(/"accent": "#28705f"/)).not.toBeNull();
+        expect(screen.getByText(/"accent": "#7a5c95"/)).not.toBeNull();
     });
 
 
@@ -8507,7 +8683,7 @@ describe('AppsPage', () => {
 
         expect(container.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('发票审核');
         const outputSelect = container.querySelector('.apps-form-row select') as HTMLSelectElement;
-        expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['pdf']);
+        expect(Array.from(outputSelect.options).map((option) => option.value)).toEqual(['json', 'pdf']);
     });
 
     it('restores enterprise MaClaw App skill definitions without downgrading them to tool apps', async () => {
@@ -8676,14 +8852,14 @@ describe('AppsPage', () => {
                     schema: 'maclaw.app.v1',
                     privateMarker: 'x_maclaw_apps',
                     app: {
-                        id: 'pdf-word',
+                        id: 'pdf-to-word',
                         name: 'PDF 转 Word',
                         description: 'Duplicate built-in app',
                         category: '文档处理',
                         kind: 'tool_app',
                         icon: 'pdf',
                         launchMode: 'fixed_skill_ui',
-                        binding: { skill: { id: 'pdf-word', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
+                        binding: { skill: { id: 'pdf-to-word', appDefinitionFile: 'maclaw.apps.json', inputMode: 'file' } },
                     },
                 }),
             },
@@ -8878,7 +9054,7 @@ describe('AppsPage', () => {
         fireEvent.click(getManageTab());
 
         const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65')) as HTMLElement;
-        fireEvent.click(within(dataSyncRow).getByTitle('\u9690\u85cf'));
+        fireEvent.click(within(dataSyncRow).getByTitle('移除'));
         fireEvent.click(screen.getByText('\u5173\u95ed'));
 
         expect(container.querySelector('.apps-runtime-tab')?.textContent || '').not.toContain('数据同步');
@@ -9006,47 +9182,42 @@ describe('AppsPage', () => {
         fireEvent.click(enabledTile);
         expect(document.querySelector('.apps-runtime-tab.is-active')?.textContent).toContain('数据同步');
     });
-    it('restores hidden built-in apps from app studio management', () => {
+    it('removes dynamic local apps from app studio management', () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(getStudioButton());
         fireEvent.click(getManageTab());
         const webCollectRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('网页采集')) as HTMLElement;
-        fireEvent.click(within(webCollectRow).getByTitle('隐藏'));
-
-        expect(screen.getByText('已隐藏应用')).not.toBeNull();
-        const hiddenRow = Array.from(document.querySelectorAll('.apps-manage-row--hidden')).find((row) => row.textContent?.includes('网页采集')) as HTMLElement;
-        fireEvent.click(within(hiddenRow).getByTitle('恢复'));
+        fireEvent.click(within(webCollectRow).getByTitle('移除'));
         fireEvent.click(screen.getByText('\u5173\u95ed'));
 
-        expect(screen.getAllByText('网页采集').length).toBeGreaterThan(0);
+        expect(screen.queryByText('网页采集')).toBeNull();
+        const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
+        expect((stored.customApps || []).some((app: any) => app.id === 'web-capture')).toBe(false);
+        expect(stored.hiddenIds || []).not.toContain('web-capture');
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
-        expect(screen.getAllByText('网页采集').length).toBeGreaterThan(0);
+        expect(screen.queryByText('网页采集')).toBeNull();
     });
 
-    it('filters hidden apps in app studio management', () => {
+    it('filters removed dynamic apps out of app studio management', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(getStudioButton());
         fireEvent.click(getManageTab());
         const dataSyncRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65')) as HTMLElement;
-        fireEvent.click(within(dataSyncRow).getByTitle('\u9690\u85cf'));
+        fireEvent.click(within(dataSyncRow).getByTitle('移除'));
 
         const manageSearch = document.querySelector('.apps-manage-filter .apps-search') as HTMLInputElement;
         fireEvent.change(manageSearch, { target: { value: 'sync' } });
 
-        expect(screen.getByText('\u5df2\u9690\u85cf\u5e94\u7528')).not.toBeNull();
-        expect(screen.queryByText('\u6ca1\u6709\u5339\u914d\u7684\u5e94\u7528')).toBeNull();
-        expect(document.querySelector('.apps-manage-toolbar .apps-count')?.textContent).toBe('1/10');
-        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65'))).toBe(true);
-        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('\u7f51\u9875\u91c7\u96c6'))).toBe(false);
-
-        fireEvent.click(screen.getByTitle('\u6e05\u7a7a\u641c\u7d22'));
-        fireEvent.change(document.querySelector('.apps-manage-category-select') as HTMLSelectElement, { target: { value: '\u6570\u636e\u96c6\u6210' } });
-        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65'))).toBe(true);
+        expect(screen.queryByText('\u5df2\u9690\u85cf\u5e94\u7528')).toBeNull();
+        expect(screen.getByText('\u6ca1\u6709\u5339\u914d\u7684\u5e94\u7528')).not.toBeNull();
+        expect(document.querySelector('.apps-manage-toolbar .apps-count')?.textContent).toBe('0/9');
+        expect(Array.from(document.querySelectorAll('.apps-manage-row--hidden')).some((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65'))).toBe(false);
+        expect(Array.from(document.querySelectorAll('.apps-manage-row')).some((row) => row.textContent?.includes('\u6570\u636e\u540c\u6b65'))).toBe(false);
     });
 
     it('keeps pinned apps capped at two rows', () => {
@@ -9055,10 +9226,13 @@ describe('AppsPage', () => {
         fireEvent.click(getStudioButton());
         fireEvent.click(getManageTab());
 
-        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[6] as HTMLElement).getByTitle('\u7f6e\u9876'));
-        fireEvent.click(within(document.querySelectorAll('.apps-manage-row')[7] as HTMLElement).getByTitle('\u7f6e\u9876'));
+        for (const name of ['文档脱敏', '表格分析', '库存盘点', '合同审查', '发票审核', '网页采集']) {
+            const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes(name)) as HTMLElement;
+            fireEvent.click(within(row).getByTitle('\u7f6e\u9876'));
+        }
 
-        const pinButton = within(document.querySelectorAll('.apps-manage-row')[8] as HTMLElement).getByTitle('\u5e38\u7528\u5e94\u7528\u5df2\u6ee1 8 \u4e2a\uff0c\u8bf7\u5148\u53d6\u6d88\u4e00\u4e2a') as HTMLButtonElement;
+        const nextRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('数据同步')) as HTMLElement;
+        const pinButton = within(nextRow).getByTitle('\u5e38\u7528\u5e94\u7528\u5df2\u6ee1 8 \u4e2a\uff0c\u8bf7\u5148\u53d6\u6d88\u4e00\u4e2a') as HTMLButtonElement;
         expect(pinButton.disabled).toBe(true);
         fireEvent.click(pinButton);
 

@@ -502,7 +502,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// NOTE: No defer s.mu.Unlock() — we unlock manually before async rebuild.
 
 	indices := make([]int, 0, len(desiredByID))
 	updated := make([]Entry, 0, len(desiredByID))
@@ -511,6 +511,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		desired := desiredByID[id]
 		idx := s.findEntryIndexByIDLocked(id)
 		if idx < 0 {
+			s.mu.Unlock()
 			return fmt.Errorf("memory_store: entry %q not found", id)
 		}
 		current := s.entries[idx]
@@ -530,6 +531,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	}
 	for _, id := range orderedDeletes {
 		if s.findEntryIndexByIDLocked(id) < 0 {
+			s.mu.Unlock()
 			return fmt.Errorf("memory_store: entry %q not found", id)
 		}
 	}
@@ -555,9 +557,11 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 			ptrs[i] = &updated[i]
 		}
 		if err := batchBackend.UpdateEntriesAndDeleteIDs(ptrs, orderedDeletes); err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("memory_store: persist entry mutation batch: %w", err)
 		}
 	} else if s.backend != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("memory_store: backend does not support atomic update/delete batch")
 	}
 
@@ -574,10 +578,12 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		}
 		s.entries = kept
 	}
-	s.rebuildDerivedIndexesLocked(false)
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
+	// Snapshot entries and release the write lock before the expensive rebuild.
+	s.scheduleAsyncRebuildLocked(false)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -612,7 +618,8 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// NOTE: No defer s.mu.Unlock() — we unlock manually before async rebuild.
+	// All error returns below must call s.mu.Unlock() explicitly.
 
 	indices := make([]int, 0, len(desiredByID))
 	updated := make([]Entry, 0, len(desiredByID))
@@ -627,6 +634,7 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 		}
 		if idx < 0 {
 			if requireExisting {
+				s.mu.Unlock()
 				return fmt.Errorf("memory_store: entry %q not found", id)
 			}
 			if desired.Category == "" {
@@ -670,9 +678,11 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 			ptrs[i] = &updated[i]
 		}
 		if err := batchBackend.UpdateEntries(ptrs); err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("memory_store: persist updated entry batch: %w", err)
 		}
 	} else if s.backend != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("memory_store: backend does not support atomic batch update")
 	}
 
@@ -683,10 +693,14 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 			s.entries[idx] = updated[i]
 		}
 	}
-	s.rebuildDerivedIndexesLocked(false)
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
+	// Snapshot entries and release the write lock before the expensive rebuild.
+	// This mirrors replaceEntriesAndRebuildAsync: readers see the new entries
+	// immediately but slightly-stale index scores until the rebuild completes.
+	s.scheduleAsyncRebuildLocked(false)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -3652,18 +3666,39 @@ func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks b
 // rebuilds from racing on syncGraphLinksLocked.
 func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
-	snapshot := append([]Entry(nil), entries...)
+	s.scheduleAsyncRebuildLocked(syncGraphLinks)
+}
 
-	// Capture the previous done channel (may be nil on first call or already
-	// closed from a previous rebuild). The new goroutine waits on it so that
-	// at most one rebuild is active at any time, preventing concurrent calls
-	// to syncGraphLinksLocked from corrupting s.entries.
+// scheduleAsyncRebuildLocked snapshots s.entries and launches a background
+// goroutine to rebuild all derived indexes outside the write lock. Only one
+// rebuild goroutine runs at a time (serialised via lastRebuildDone channel).
+//
+// When multiple writes schedule rebuilds in rapid succession, intermediate
+// goroutines detect that a newer rebuild is queued and skip their own rebuild
+// (only the last snapshot matters). This prevents O(N) redundant rebuilds
+// during pipeline batch operations.
+//
+// Caller MUST hold s.mu write lock. The caller is responsible for unlocking
+// s.mu after this call returns (this method does NOT release the lock).
+func (s *Store) scheduleAsyncRebuildLocked(syncGraphLinks bool) {
+	snapshot := append([]Entry(nil), s.entries...)
 	prevDone := s.lastRebuildDone
 	done := make(chan struct{})
 	s.lastRebuildDone = done
 	go func() {
-		// Drain the previous rebuild first. Under a 3-second sync interval
-		// this path is only taken when a rebuild takes longer than the interval.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[memory_store] WARNING: index rebuild panic (recovered): %v", r)
+			}
+			// Ensure done is always closed so WaitRebuild and downstream
+			// goroutines never block permanently, even on panics.
+			select {
+			case <-done:
+				// already closed by normal path
+			default:
+				close(done)
+			}
+		}()
 		if prevDone != nil {
 			select {
 			case <-prevDone:
@@ -3672,14 +3707,26 @@ func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bo
 				return
 			}
 		}
+		// If a newer rebuild was scheduled while we were waiting, our snapshot
+		// is stale. Skip the expensive rebuild — the newer goroutine will
+		// handle it with a fresher snapshot.
+		s.mu.RLock()
+		isLatest := s.lastRebuildDone == done
+		s.mu.RUnlock()
+		if !isLatest {
+			close(done)
+			return
+		}
 		s.rebuildDerivedIndexesOutsideLock(snapshot, syncGraphLinks)
 		close(done)
 	}()
 }
 
-// WaitRebuild blocks until the most recent background index rebuild triggered
-// by replaceEntriesAndRebuildAsync completes. Used in tests and by code paths
-// that need consistent index state immediately after a sync operation.
+// WaitRebuild blocks until the most recent background index rebuild completes.
+// Rebuilds are triggered by batch write operations (UpdateEntriesByID,
+// UpdateEntriesAndDeleteIDs, UpsertEntriesByID) and cross-instance sync.
+// Used in tests and by code paths that need consistent index state immediately
+// after a write operation.
 func (s *Store) WaitRebuild() {
 	s.mu.RLock()
 	done := s.lastRebuildDone
@@ -4015,7 +4062,9 @@ func (s *Store) applyEntryEmbeddingIfReady(entryID string, contentHash string, v
 		}
 	}
 	s.entries[idx] = entry
-	s.rebuildDerivedIndexesLocked(false)
+	// Only the vector index needs updating — entry content/tags/entities
+	// haven't changed, so BM25/graph/entity/semantic indexes remain valid.
+	s.vecIndex.update(entryID, vec)
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}

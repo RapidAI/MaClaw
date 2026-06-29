@@ -175,10 +175,11 @@ type BlockedIP struct {
 }
 
 type InvitationCodeRoute struct {
-	Code      string    `json:"code"`
-	HubID     string    `json:"hub_id"`
-	TenantID  string    `json:"tenant_id"`
-	CreatedAt time.Time `json:"created_at"`
+	Code        string    `json:"code"`
+	HubID       string    `json:"hub_id"`
+	TenantID    string    `json:"tenant_id"`
+	UsedByEmail string    `json:"used_by_email,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type HASyncOp struct {
@@ -302,6 +303,8 @@ type HubUserLinkRepository interface {
 	GetDefaultByEmail(ctx context.Context, email string) (*HubUserLink, error)
 	DeleteByID(ctx context.Context, id string) error
 	DeleteByHubID(ctx context.Context, hubID string) error
+	DeleteByEmail(ctx context.Context, email string) (int64, error)
+	DeleteByHubEmail(ctx context.Context, hubID, email string) (int64, error)
 }
 
 type HubDomainRouteRepository interface {
@@ -331,6 +334,7 @@ type InvitationCodeRouteRepository interface {
 	DeleteByCode(ctx context.Context, code string) error
 	DeleteByHubID(ctx context.Context, hubID string) error
 	ListAll(ctx context.Context) ([]*InvitationCodeRoute, error)
+	MarkUsedByEmail(ctx context.Context, code string, email string) error
 }
 
 type HASyncOpRepository interface {

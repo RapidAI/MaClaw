@@ -322,6 +322,7 @@ func TestStoreUpdateEntriesByIDRefreshesGraphAndPersistsRelatedEdges(t *testing.
 		t.Fatalf("UpdateEntriesByID: %v", err)
 	}
 
+	store.WaitRebuild()
 	neighbors := store.graph.neighborsTypedOf("graph-left")
 	if edge, ok := neighbors["graph-right"]; !ok || edge.LinkType != LinkReferences || edge.Strength != 0.7 {
 		t.Fatalf("batch update did not refresh graph edges: %#v", neighbors)
@@ -372,7 +373,10 @@ func TestStoreUpdateEntriesByIDPersistsCompactFormAndEmbedding(t *testing.T) {
 		t.Fatalf("maintenance fields not persisted: %+v", loaded)
 	}
 	if scores := store.vecIndex.score([]float32{0.25, 0.5, 0.75, 1}); scores["maintenance-fields"] == 0 {
-		t.Fatalf("embedding backfill should refresh vector index, scores=%v", scores)
+		store.WaitRebuild()
+		if scores = store.vecIndex.score([]float32{0.25, 0.5, 0.75, 1}); scores["maintenance-fields"] == 0 {
+			t.Fatalf("embedding backfill should refresh vector index, scores=%v", scores)
+		}
 	}
 }
 

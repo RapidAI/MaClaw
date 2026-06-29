@@ -150,6 +150,7 @@ func NewRouter(
 	fileRelay.Start(context.Background())
 	capabilitySvc := capability.NewService(hubDB)
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
+	mux.HandleFunc("GET /healthz/ready", ReadinessHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
 	groupDiscussionAuth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +243,7 @@ func NewRouter(
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/domains", requireAdmin(AdminTenantDomainsUpdateWithPlatformCallbackHandler(system, tenantRepo, adminAudit)))
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/status", requireGlobalAdmin(AdminTenantStatusUpdateWithPlatformCallbackHandler(system, adminAudit, tenantRepo, tenantIMRuntimeStopper)))
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/merge", requireGlobalAdmin(AdminTenantMergeHandler(hubDB, tenantRepo, adminAudit, tenantIMRuntimeStopper)))
-		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, tenantRepo, tenantIMRuntimeStopper)))
+		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, admins, hubDB, centerSvc, tenantRepo, tenantIMRuntimeStopper)))
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", requireAdmin(AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit)))
 	}
 	mux.HandleFunc("GET /api/admin/debug/machines", requireAdmin(DebugListMachinesHandler(deviceSvc, userLookup)))
@@ -380,6 +381,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/model_download/trigger", requireGlobalAdmin(TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/service/account", GetLLMServiceAccountHandler(identity, system, securitySvc))
+	mux.HandleFunc("GET /api/my-ranking", GetMyRankingHandler(identity, sessionSvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, securitySvc))
@@ -503,6 +505,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
+	mux.HandleFunc("POST /api/center/user-exists", CenterUserExistsHandler(identity, centerSvc))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
 	mux.HandleFunc("GET /api/auth/verify-email", VerifyEmailHandler(identity))

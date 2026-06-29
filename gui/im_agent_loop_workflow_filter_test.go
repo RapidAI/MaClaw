@@ -357,18 +357,18 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 
 	filtered := handler.applyWorkflowToolFilter(userID, handler.getTools())
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, blocked := range []string{"write_file", "edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in doc-only workflow phase; got %#v", blocked, names)
 		}
 	}
-	for _, allowed := range []string{"read_file", "list_directory", "bash"} {
+	for _, allowed := range []string{"read_file", "list_directory", "bash", "write_file"} {
 		if !names[allowed] {
 			t.Fatalf("%s should remain available in doc-only phase; got %#v", allowed, names)
 		}
 	}
 
-	for _, blocked := range []string{"bash", "write_file", "delegate_task"} {
+	for _, blocked := range []string{"delegate_task"} {
 		if handler.isWorkflowToolAllowed(userID, blocked) {
 			t.Fatalf("%s execution must be blocked in doc-only workflow phase", blocked)
 		}
@@ -411,12 +411,17 @@ func TestPlanningWorkflowPhaseAllowsInspectionButBlocksImplementationTools(t *te
 			t.Fatalf("%s should remain available in planning workflow phase; got %#v", allowed, names)
 		}
 	}
-	for _, blocked := range []string{"bash", "write_file", "edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"bash", "edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in planning workflow phase; got %#v", blocked, names)
 		}
 		if handler.isWorkflowToolAllowed(userID, blocked) {
 			t.Fatalf("%s execution must be blocked in planning workflow phase", blocked)
+		}
+	}
+	for _, allowed := range []string{"write_file"} {
+		if !names[allowed] {
+			t.Fatalf("%s should remain available in planning workflow phase; got %#v", allowed, names)
 		}
 	}
 	if ok, _ := handler.isWorkflowToolCallAllowed(userID, "bash", `{"command":"rg -n \"TODO\""}`); ok {

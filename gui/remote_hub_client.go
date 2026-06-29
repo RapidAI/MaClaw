@@ -52,6 +52,13 @@ type RemoteHubClient struct {
 	reconnecting   atomic.Bool
 	allowReconnect atomic.Bool
 
+	// reconnectImmediate is set to true when the Hub sends a close(1001)
+	// "going away" frame, indicating a planned shutdown (e.g., redeployment).
+	// The reconnect loop uses a minimal initial backoff (100ms) instead of
+	// the normal 500ms exponential backoff, enabling sub-second reconnection
+	// to the new Hub instance.
+	reconnectImmediate atomic.Bool
+
 	// Preview delta batching: accumulate lines per session and flush periodically
 	// to reduce WebSocket message frequency for PWA viewers.
 	previewMu      sync.Mutex
@@ -1184,6 +1191,12 @@ func (c *RemoteHubClient) readLoop() {
 
 		var msg inboundHubEnvelope
 		if err := conn.ReadJSON(&msg); err != nil {
+			// Detect planned Hub shutdown: close(1001, "going away").
+			// Set reconnectImmediate so reconnectLoop uses minimal backoff.
+			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseServiceRestart) {
+				log.Printf("[hub-client] readLoop: Hub sent planned close (1001/1012), enabling fast reconnect")
+				c.reconnectImmediate.Store(true)
+			}
 			c.handleConnectionLoss(err)
 			return
 		}
@@ -1966,6 +1979,15 @@ func (c *RemoteHubClient) reconnectLoop() {
 	defer c.reconnecting.Store(false)
 
 	backoff := 500 * time.Millisecond
+	maxBackoff := 30 * time.Second
+	// Fast reconnect: when Hub sent close(1001) indicating planned shutdown,
+	// use minimal backoff so the client reconnects within ~100-200ms of the
+	// new Hub instance becoming available.
+	if c.reconnectImmediate.Swap(false) {
+		backoff = 100 * time.Millisecond
+		maxBackoff = 2 * time.Second // cap low — new instance will be ready shortly
+		log.Printf("[hub-client] reconnectLoop: fast reconnect mode (Hub planned shutdown)")
+	}
 	consecutiveAuthFailures := 0
 	const maxAuthFailuresBeforeClear = 3 // require 3 consecutive definitive rejections before clearing
 
@@ -2041,10 +2063,10 @@ func (c *RemoteHubClient) reconnectLoop() {
 			remaining -= chunk
 		}
 
-		if backoff < 30*time.Second {
+		if backoff < maxBackoff {
 			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
+			if backoff > maxBackoff {
+				backoff = maxBackoff
 			}
 		}
 	}

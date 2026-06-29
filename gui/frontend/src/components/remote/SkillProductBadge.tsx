@@ -12,11 +12,23 @@ export function isMaclawAppSearchResult(skill: SkillProductBadgeSource): boolean
     return !!skill.is_maclaw_app || (skill.product_kind || "").trim().toLowerCase() === "maclaw_app_skill";
 }
 
+function AppIcon() {
+    return (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="8" height="8" rx="2" />
+            <rect x="13" y="3" width="8" height="8" rx="2" />
+            <rect x="3" y="13" width="8" height="8" rx="2" />
+            <rect x="13" y="13" width="8" height="8" rx="2" />
+        </svg>
+    );
+}
+
 export function SkillProductBadge({ skill, localizeText }: { skill: SkillProductBadgeSource; localizeText: LocalizeText }) {
     if (!isMaclawAppSearchResult(skill)) return null;
     return (
         <span style={maclawAppProductBadgeStyle} title={localizeText("MaClaw App Skill", "MaClaw App Skill", "MaClaw App Skill")}>
-            {localizeText("App Skill", "App Skill", "App Skill")}
+            <AppIcon />
+            {localizeText("App", "App", "App")}
         </span>
     );
 }
@@ -31,5 +43,5 @@ const maclawAppProductBadgeStyle: CSSProperties = {
     background: colors.successBg,
     color: colors.success,
     border: `1px solid ${colors.success}33`,
-    fontWeight: 700,
+    fontWeight: 600,
 };

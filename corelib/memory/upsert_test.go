@@ -129,6 +129,7 @@ func TestUpsertEntryByTagsUpdatePersistsRelatedEdgesAndRefreshesGraph(t *testing
 		t.Fatalf("update left: result=%+v err=%v", updated, err)
 	}
 
+	store.WaitRebuild()
 	neighbors := store.graph.neighborsTypedOf(created.EntryID)
 	if edge, ok := neighbors["edge-right"]; !ok || edge.LinkType != LinkDerivedFrom || edge.Strength != 0.6 {
 		t.Fatalf("upsert update did not refresh graph edges: %#v", neighbors)

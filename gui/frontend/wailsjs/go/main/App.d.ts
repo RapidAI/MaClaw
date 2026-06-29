@@ -66,6 +66,8 @@ export function GetLocalCacheDir():Promise<string>;
 
 export function GetRemoteActivationStatus():Promise<any>;
 
+export function GetHubUserRanking():Promise<any>;
+
 export function GroupDiscussionStatus():Promise<any>;
 
 export function GroupDiscussionPublishProfile():Promise<any>;

@@ -9,9 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/app"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -73,6 +76,15 @@ func runServer(args []string) error {
 	a.StartBackgroundTasks()
 	addr := cfg.Server.ListenHost + ":" + strconv.Itoa(cfg.Server.ListenPort)
 
+	// Signal handling for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: a.HTTPHandler,
+	}
+
 	if cfg.TLS.Enabled {
 		if cfg.TLS.AutoGenerate {
 			if err := app.EnsureSelfSignedCert(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil {
@@ -86,21 +98,53 @@ func runServer(args []string) error {
 				return fmt.Errorf("TLS key file not found: %s (set auto_generate=true or provide valid key)", cfg.TLS.KeyFile)
 			}
 		}
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		log.Printf("MaClaw Hub listening on %s (TLS)", addr)
 		log.Printf("  Clients should use: https://<host>:%d", cfg.Server.ListenPort)
 		log.Printf("  To disable TLS (e.g. behind nginx), set tls.enabled=false in config")
-		srv := &http.Server{
-			Addr:    addr,
-			Handler: a.HTTPHandler,
-			TLSConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		}
-		return srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		go func() {
+			if err := srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Hub TLS server error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("MaClaw Hub listening on %s", addr)
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Hub server error: %v", err)
+			}
+		}()
 	}
 
-	log.Printf("MaClaw Hub listening on %s", addr)
-	return http.ListenAndServe(addr, a.HTTPHandler)
+	// Wait for shutdown signal.
+	<-sigCh
+	log.Printf("[hub] shutdown signal received, initiating graceful shutdown")
+
+	// Second signal = force exit (user pressed Ctrl+C twice, or systemd sent
+	// SIGKILL after timeout). Start a goroutine to listen for the second signal
+	// so the process doesn't hang during slow shutdown.
+	go func() {
+		<-sigCh
+		log.Printf("[hub] second signal received, forcing immediate exit")
+		os.Exit(1)
+	}()
+
+	// Step 1: Send close(1001) to all WebSocket clients so they fast-reconnect
+	// to the new instance instead of entering exponential backoff.
+	if a.DeviceService != nil {
+		a.DeviceService.GracefulCloseAll()
+		// Brief pause to allow close frames to be written to the network.
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Step 2: Graceful HTTP server shutdown (drain in-flight requests).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[hub] graceful shutdown error: %v", err)
+	}
+	log.Printf("[hub] shutdown complete")
+	return nil
 }
 
 func runTenant(args []string) error {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -419,20 +420,32 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 
 // DeleteInvitationCodes removes invitation code routes for this hub.
 // Called by Hub when codes are consumed/deleted.
-func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string) error {
+func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, usedByEmailOpt ...string) error {
 	if err := s.verifyHubSecret(ctx, hubID, hubSecret); err != nil {
 		return err
 	}
 	if s.invitationCodeRoutes == nil {
 		return nil
 	}
+	usedByEmail := ""
+	if len(usedByEmailOpt) > 0 {
+		usedByEmail = strings.TrimSpace(strings.ToLower(usedByEmailOpt[0]))
+	}
 	for _, code := range codes {
 		code = strings.TrimSpace(strings.ToUpper(code))
 		if code == "" {
 			continue
 		}
-		if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
-			return fmt.Errorf("delete invitation code route: %w", err)
+		if usedByEmail != "" {
+			// Mark as used instead of deleting — preserves the route for
+			// subsequent lookups and shows the bound email in admin panel.
+			if err := s.invitationCodeRoutes.MarkUsedByEmail(ctx, code, usedByEmail); err != nil {
+				return fmt.Errorf("mark invitation code used: %w", err)
+			}
+		} else {
+			if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
+				return fmt.Errorf("delete invitation code route: %w", err)
+			}
 		}
 	}
 	if s.refresher != nil {
@@ -2972,7 +2985,7 @@ func (s *Service) syncOwnerLink(ctx context.Context, hubID, ownerEmail string, n
 	return nil
 }
 
-func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email string, isDefault bool, tenantIDOpt ...string) error {
+func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email string, isDefault bool, replaceAll bool, tenantIDOpt ...string) error {
 	hubID = strings.TrimSpace(hubID)
 	email = normalizeEmail(email)
 	tenantID := ""
@@ -3012,24 +3025,48 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	if err != nil {
 		return err
 	}
-	for _, item := range items {
-		if item != nil && isAdminUserLink(item) && normalizeHubSyncTenantID(item.TenantID) == tenantID {
-			return nil
+	if !replaceAll {
+		// Normal sync: only replace links for the same tenantID.
+		// Admin-managed links for the same tenant are preserved (skip sync).
+		for _, item := range items {
+			if item != nil && isAdminUserLink(item) && normalizeHubSyncTenantID(item.TenantID) == tenantID {
+				return nil
+			}
 		}
-	}
-	for _, item := range items {
-		if item == nil || isOwnerLink(item) {
-			continue
+		for _, item := range items {
+			if item == nil || isOwnerLink(item) {
+				continue
+			}
+			if normalizeHubSyncTenantID(item.TenantID) != tenantID {
+				continue
+			}
+			if err := s.links.DeleteByID(ctx, item.ID); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
 		}
-		if normalizeHubSyncTenantID(item.TenantID) != tenantID {
-			continue
+	} else {
+		// ReplaceAll: invitation-code enrollment — remove ALL existing links
+		// for this email (across all hubs and tenants) to fully migrate the user.
+		// Owner links and admin links pointing to the NEW hub are preserved.
+		for _, item := range items {
+			if item == nil || isOwnerLink(item) {
+				continue
+			}
+			// Preserve admin links that point to the NEW hub (admin set up the invite).
+			if isAdminUserLink(item) && item.HubID == hubID {
+				continue
+			}
+			if err := s.links.DeleteByID(ctx, item.ID); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.DeleteHubUserLink(ctx, item.ID)
+			}
 		}
-		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
-			return err
-		}
-		if s.sync != nil {
-			s.sync.DeleteHubUserLink(ctx, item.ID)
-		}
+		log.Printf("[hub-user-link] replace_all: removed existing routes for email=%s before creating route to hub=%s", email, hubID)
 	}
 	now := time.Now()
 	link := &store.HubUserLink{ID: primaryUserLinkIDForTenant(hubID, tenantID, email), HubID: hubID, TenantID: tenantID, Email: email, IsDefault: isDefault && tenantID == "", CreatedAt: now, UpdatedAt: now}
@@ -4166,4 +4203,235 @@ func (s *Service) SetHeartbeatWriteInterval(d time.Duration) {
 	if d > 0 {
 		s.heartbeatWriteInterval = d
 	}
+}
+
+// ─── Admin route maintenance ────────────────────────────────────────────────
+
+// AdminDeleteEmailRoutes removes all user-link route entries for the given email.
+// If hubID is non-empty, only routes to that specific Hub are removed.
+// Returns the number of deleted entries.
+func (s *Service) AdminDeleteEmailRoutes(ctx context.Context, email, hubID string) (int64, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return 0, fmt.Errorf("email is required")
+	}
+	var deleted int64
+	var err error
+	if hubID != "" {
+		deleted, err = s.links.DeleteByHubEmail(ctx, hubID, email)
+	} else {
+		deleted, err = s.links.DeleteByEmail(ctx, email)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if deleted > 0 {
+		log.Printf("[admin-route] deleted %d route(s) for email=%s hub_id=%s", deleted, email, hubID)
+		s.refreshRoutes(ctx)
+	}
+	return deleted, nil
+}
+
+// AdminRestoreEmailRoute creates a user-link route entry for the given email
+// pointing to the specified Hub and Tenant. This is used to restore a route
+// that was accidentally deleted or never created (e.g. after DB restore).
+func (s *Service) AdminRestoreEmailRoute(ctx context.Context, email, hubID, tenantID string, isDefault bool) (*store.HubUserLink, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil, fmt.Errorf("email is required")
+	}
+	// Verify hub exists.
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return nil, fmt.Errorf("hub lookup: %w", err)
+	}
+	if hub == nil {
+		return nil, fmt.Errorf("hub %s not found", hubID)
+	}
+
+	now := time.Now().UTC()
+	link := &store.HubUserLink{
+		ID:        primaryUserLinkIDForTenant(hubID, tenantID, email),
+		HubID:     hubID,
+		TenantID:  tenantID,
+		Email:     email,
+		IsDefault: isDefault,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.links.Upsert(ctx, link); err != nil {
+		return nil, fmt.Errorf("create route: %w", err)
+	}
+	log.Printf("[admin-route] restored route email=%s hub_id=%s tenant_id=%s is_default=%v link_id=%s", email, hubID, tenantID, isDefault, link.ID)
+	s.refreshRoutes(ctx)
+	return link, nil
+}
+
+// AdminVerifyEmailRoute checks all route entries for the given email by querying
+// each target Hub to verify the user still exists there. Stale routes (user does
+// not exist on the Hub) are automatically removed.
+//
+// This calls the Hub's /api/center/user-exists endpoint. If the Hub does not
+// support this endpoint or is unreachable, the route is left as-is (conservative).
+func (s *Service) AdminVerifyEmailRoute(ctx context.Context, email string) (*AdminRouteVerificationResult, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil, fmt.Errorf("email is required")
+	}
+
+	links, err := s.links.ListByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return &AdminRouteVerificationResult{
+			Email:   email,
+			Routes:  nil,
+			Message: "No route entries found for this email.",
+		}, nil
+	}
+
+	result := &AdminRouteVerificationResult{
+		Email:  email,
+		Routes: make([]AdminRouteVerificationEntry, 0, len(links)),
+	}
+
+	var cleaned []AdminRouteVerificationEntry
+	for _, link := range links {
+		hub, _ := s.hubs.GetByID(ctx, link.HubID)
+		entry := AdminRouteVerificationEntry{
+			LinkID:    link.ID,
+			HubID:     link.HubID,
+			TenantID:  link.TenantID,
+			CreatedAt: link.CreatedAt,
+		}
+		if hub != nil {
+			entry.HubName = hub.Name
+			entry.HubBaseURL = hub.BaseURL
+			entry.HubOnline = hub.Status == "online" || hub.Status == ""
+		}
+
+		// Skip admin-managed links — they are intentionally set by administrators
+		// (e.g. pre-provisioning a route before the user registers) and should not
+		// be auto-cleaned even if the user doesn't exist yet.
+		if isAdminUserLink(link) {
+			entry.Error = "admin-managed link — skipped automatic cleanup"
+			result.Routes = append(result.Routes, entry)
+			continue
+		}
+
+		// Try to verify user existence on the Hub.
+		if hub != nil && strings.TrimSpace(hub.BaseURL) != "" {
+			exists, verifyErr := s.probeHubUserExists(ctx, hub, email, link.TenantID)
+			if verifyErr != nil {
+				entry.Error = verifyErr.Error()
+				// Could not verify — leave route as-is (conservative).
+			} else {
+				entry.UserExists = &exists
+				if !exists {
+					// User confirmed NOT on this Hub — clean up stale route.
+					if _, delErr := s.links.DeleteByHubEmail(ctx, link.HubID, email); delErr == nil {
+						entry.Cleaned = true
+						cleaned = append(cleaned, entry)
+					} else {
+						entry.Error = "cleanup failed: " + delErr.Error()
+					}
+				}
+			}
+		} else {
+			entry.Error = "hub has no base_url configured — cannot verify"
+		}
+
+		result.Routes = append(result.Routes, entry)
+	}
+
+	result.CleanedRoutes = cleaned
+	if len(cleaned) > 0 {
+		s.refreshRoutes(ctx)
+		result.Message = fmt.Sprintf("Verified %d route(s); cleaned %d stale route(s).", len(links), len(cleaned))
+	} else {
+		result.Message = fmt.Sprintf("Verified %d route(s); all routes are valid.", len(links))
+	}
+	return result, nil
+}
+
+// probeHubUserExists calls the target Hub's /api/center/user-exists endpoint
+// to check if a user with the given email exists in the specified tenant.
+// Returns (true, nil) if user exists, (false, nil) if confirmed not exists,
+// or (false, err) if the Hub is unreachable or doesn't support this endpoint.
+func (s *Service) probeHubUserExists(ctx context.Context, hub *store.HubInstance, email, tenantID string) (bool, error) {
+	if s.client == nil {
+		s.client = &http.Client{Timeout: 10 * time.Second}
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/")
+	payload := map[string]string{"email": email}
+	if tenantID != "" {
+		payload["tenant_id"] = tenantID
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, err
+	}
+
+	url := baseURL + "/api/center/user-exists"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Include hub_secret_hash for authentication so Hub can verify the request
+	// comes from a legitimate HubCenter.
+	if hub.HubSecretHash != "" {
+		req.Header.Set("X-HubCenter-Verify", hub.HubSecretHash)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("hub unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented || resp.StatusCode == http.StatusMethodNotAllowed {
+		return false, fmt.Errorf("hub does not support user-exists endpoint (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return false, fmt.Errorf("hub rejected verification token (HTTP 403) — hub_secret may be out of sync")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("hub returned HTTP %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Exists bool `json:"exists"`
+	}
+	body, err := readLimitedHubResponse(resp.Body, 4096)
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, fmt.Errorf("invalid response from hub: %w", err)
+	}
+	return result.Exists, nil
+}
+
+// AdminRouteVerificationResult is the response from AdminVerifyEmailRoute.
+type AdminRouteVerificationResult struct {
+	Email         string                       `json:"email"`
+	Routes        []AdminRouteVerificationEntry `json:"routes"`
+	CleanedRoutes []AdminRouteVerificationEntry `json:"cleaned_routes,omitempty"`
+	Message       string                        `json:"message"`
+}
+
+// AdminRouteVerificationEntry describes one route and its verification result.
+type AdminRouteVerificationEntry struct {
+	LinkID     string    `json:"link_id"`
+	HubID      string    `json:"hub_id"`
+	HubName    string    `json:"hub_name,omitempty"`
+	HubBaseURL string    `json:"hub_base_url,omitempty"`
+	TenantID   string    `json:"tenant_id,omitempty"`
+	UserExists *bool     `json:"user_exists,omitempty"`
+	HubOnline  bool      `json:"hub_online"`
+	Cleaned    bool      `json:"cleaned"`
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }

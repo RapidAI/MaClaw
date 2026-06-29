@@ -1,0 +1,17 @@
+{
+  "x_maclaw_apps": "v1",
+  "apps": [
+    {
+      "id": "sheet-analysis",
+      "skill_id": "sheet-analysis",
+      "name": "表格分析",
+      "description": "上传 Excel/CSV，生成统计分析、异常检测和可视化图表。",
+      "category": "数据分析",
+      "kind": "tool_app",
+      "icon": "sheet",
+      "input_mode": "file",
+      "output_modes": ["md", "xlsx", "png"],
+      "fields": []
+    }
+  ]
+}

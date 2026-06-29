@@ -63,40 +63,41 @@ type App struct {
 	configLastInternalWrite atomic.Int64
 
 	// Managers to reduce struct complexity
-	managers                        *AppManagers
-	testHomeDir                     string // For testing purposes
-	downloadCancelers               map[string]context.CancelFunc
-	downloadMutex                   sync.Mutex
-	skillInstallConfirm             sync.Map
-	IsInitMode                      bool
-	IsAutoStart                     bool
-	installingNode                  bool      // Flag to prevent concurrent Node.js installation
-	installingGit                   bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone                 chan bool // Channel to signal Node.js installation completion
-	installMutex                    sync.Mutex
-	toolInstallLocks                map[string]bool // Track which tools are currently being installed
-	toolLockMutex                   sync.Mutex      // Mutex for toolInstallLocks map
-	remoteSessions                  *RemoteSessionManager
-	browserSessions                 *BrowserAgentManager
-	powerStateMutex                 sync.Mutex
-	powerStateProcess               *exec.Cmd
-	screenDimCancel                 context.CancelFunc // cancels the screen-dim goroutine
-	workstationCancel               context.CancelFunc // cancels the workstation-mode anti-lock goroutine
-	mcpRegistry                     *MCPRegistry
-	localMCPManager                 *LocalMCPManager
-	skillExecutor                   *SkillExecutor
-	cachedSkillScanner              *CachedSkillScanner
-	skillRunner                     *SkillRunner
-	maclawAppInstallMixedSkill      func(source, id, installRef string) error
-	sessionStarter                  *CodingSessionStarter
-	skillMarketClient               *SkillMarketClient
-	skillMarketAutoLoginRunning     atomic.Bool
-	skillMarketAutoLoginNextAttempt atomic.Value // stores time.Time; throttles failed machine-login retries
-	skillLifecycle                  *SkillLifecycleManager
-	gossipClient                    *GossipClient
-	autoUploadTrigger               *AutoUploadTrigger
-	gossipAutoPublish               *AutoPublishTrigger
-	evolutionPipeline               *skill.EvolutionPipeline
+	managers                           *AppManagers
+	testHomeDir                        string // For testing purposes
+	downloadCancelers                  map[string]context.CancelFunc
+	downloadMutex                      sync.Mutex
+	skillInstallConfirm                sync.Map
+	IsInitMode                         bool
+	IsAutoStart                        bool
+	installingNode                     bool      // Flag to prevent concurrent Node.js installation
+	installingGit                      bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone                    chan bool // Channel to signal Node.js installation completion
+	installMutex                       sync.Mutex
+	toolInstallLocks                   map[string]bool // Track which tools are currently being installed
+	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
+	remoteSessions                     *RemoteSessionManager
+	remoteActivationBackgroundDisabled bool // test-only: skip post-activation background connect
+	browserSessions                    *BrowserAgentManager
+	powerStateMutex                    sync.Mutex
+	powerStateProcess                  *exec.Cmd
+	screenDimCancel                    context.CancelFunc // cancels the screen-dim goroutine
+	workstationCancel                  context.CancelFunc // cancels the workstation-mode anti-lock goroutine
+	mcpRegistry                        *MCPRegistry
+	localMCPManager                    *LocalMCPManager
+	skillExecutor                      *SkillExecutor
+	cachedSkillScanner                 *CachedSkillScanner
+	skillRunner                        *SkillRunner
+	maclawAppInstallMixedSkill         func(source, id, installRef string) error
+	sessionStarter                     *CodingSessionStarter
+	skillMarketClient                  *SkillMarketClient
+	skillMarketAutoLoginRunning        atomic.Bool
+	skillMarketAutoLoginNextAttempt    atomic.Value // stores time.Time; throttles failed machine-login retries
+	skillLifecycle                     *SkillLifecycleManager
+	gossipClient                       *GossipClient
+	autoUploadTrigger                  *AutoUploadTrigger
+	gossipAutoPublish                  *AutoPublishTrigger
+	evolutionPipeline                  *skill.EvolutionPipeline
 	// Maclaw capability evolution components
 	riskAssessor      *RiskAssessor
 	policyEngine      *PolicyEngine
@@ -153,6 +154,7 @@ type App struct {
 	memoryMaintenance                 *memory.Maintenance
 	memPipeline                       *memory.Pipeline
 	memoryPipelineDebounce            time.Duration
+	disableBackgroundEmbeddingForTest bool
 	memoryPipelineScheduleMu          sync.Mutex
 	memoryPipelineTimer               *time.Timer
 	memoryPipelineScheduleSeq         uint64
@@ -393,6 +395,11 @@ func (a *App) initRemoteInfra() {
 // ---------------------------------------------------------------------------
 func (a *App) initCoreInfra() {
 	coreStart := time.Now()
+
+	// Deploy bundled skills (pdf-word, doc-redact, etc.) to ~/.maclaw/data/skills/
+	// on first run. Idempotent — skips if already deployed.
+	deployBuiltinSkills()
+
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
 	}
@@ -648,6 +655,11 @@ func (a *App) ensureMemoryStore() {
 		a.memPipeline = maintenance.Pipeline()
 		a.triggerMemoryPipelineSoon(a.memoryPipelineStartupDelay())
 		a.refreshMemoryEvolutionLLM()
+		if a.disableBackgroundEmbeddingForTest {
+			a.logMemorySnapshot("ensureMemoryStore:embedding-load-disabled-for-test")
+			a.logMemorySnapshot("ensureMemoryStore:ready")
+			return
+		}
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
 		// the model finishes loading in the background. Tool embedding
@@ -6311,6 +6323,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.GossipAutoPublish = v
+		case "show_hub_ranking":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowHubRanking = &v
 		case "llm_trajectory_logging":
 			v, err := boolField(key, value)
 			if err != nil {

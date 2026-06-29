@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -263,7 +264,33 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if len(choice.TruncatedToolNames) > 0 {
 			truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
 			log.Printf("[agent-loop] truncated tool call recovery (iteration=%d tools=%s valid_tools=%d)", iteration, truncatedList, len(choice.Message.ToolCalls))
-			recoveryPrompt := buildToolCallTruncationRecovery(choice.TruncatedToolNames, tools, userText)
+
+			// Best-effort partial write: if write_file was truncated and we have
+			// the raw (incomplete) args, extract path+content and write to disk.
+			// This converts a failed call into a partially successful one.
+			var recoveryPrompt string
+			if rawArgs := truncatedToolArgsLookup(choice.TruncatedToolArgs, "write_file"); rawArgs != "" {
+				if pw := attemptLoopPartialWriteFile(rawArgs); pw != nil {
+					recoveryPrompt = buildLoopPartialWriteRecovery(pw)
+					// Made progress — reset drift/failure counters.
+					consecutiveSame = 0
+					consecutiveSameToolFailures = 0
+					lastFailedTool = ""
+					sameToolFailureGuidanceInjected = false
+				} else {
+					// Partial write not possible. If file already exists from a
+					// previous partial write, instruct LLM to use mode=append.
+					if absPath := resolvePartialWritePath(rawArgs); absPath != "" {
+						if info, statErr := os.Stat(absPath); statErr == nil && info.Size() > 0 {
+							recoveryPrompt = buildLoopPartialWriteAppendHint(absPath, info.Size())
+						}
+					}
+				}
+			}
+			if recoveryPrompt == "" {
+				recoveryPrompt = buildToolCallTruncationRecovery(choice.TruncatedToolNames, tools, userText)
+			}
+
 			if strings.TrimSpace(content) != "" || reasoningContent != "" {
 				assistantMsg := map[string]interface{}{
 					"role":    "assistant",

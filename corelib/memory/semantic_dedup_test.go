@@ -60,6 +60,7 @@ ew.md`,
 		t.Fatalf("expected one merge, got %d", merged)
 	}
 
+	store.WaitRebuild()
 	if got := store.SearchDirectByID("new-entry"); len(got) != 0 {
 		t.Fatalf("new entry should be removed from store, got %+v", got)
 	}

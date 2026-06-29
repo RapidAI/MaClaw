@@ -11,6 +11,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ReadErrorLog: vi.fn().mockResolvedValue([]),
     ProbeRemoteHub: vi.fn().mockResolvedValue({}),
+    GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
 }));
 
 import { AboutPanel } from '../AboutPanel';
@@ -45,6 +46,11 @@ const baseProps = {
         aboutMachineId: 'Machine ID',
         remoteActivation: 'Registration',
         remoteActivated: 'Registered',
+        aboutTotalOnline: 'Online Time',
+        aboutTotalTokens: 'Token Usage',
+        aboutRankPrefix: '#',
+        aboutRankSuffix: '',
+        aboutPeriodMonthly: 'this month',
         quickActionsTitle: 'Quick Actions',
         quickActionsDesc: 'Open official resources, check updates, or report issues.',
         officialWebsite: 'Official Website',

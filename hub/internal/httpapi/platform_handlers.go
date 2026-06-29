@@ -2707,10 +2707,41 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			if deliveryErr == nil && strings.TrimSpace(reply) == "" {
 				deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
 			}
+			// Single retry on transport failure (connection refused, timeout)
+			// when no stream chunks have been sent yet. Covers MaClawSrv
+			// redeploy scenario where the service is back within 3-5 seconds.
+			if err != nil && !streamedChunks && isTransientDeliveryError(err) {
+				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, err)
+				time.Sleep(veRuntimeDeliveryRetryDelay)
+				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
+				deliveryErr = err
+				if deliveryErr == nil && strings.TrimSpace(reply) == "" {
+					deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
+				}
+			}
 			release(deliveryErr)
 			recordVERuntimeDeliveryResult(circuitKey, deliveryErr, time.Now())
 			if err != nil {
 				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
+				// Send stream_end with error so the frontend closes the
+				// "thinking..." spinner. Without this, the UI hangs forever
+				// when MaClawSrv is temporarily unavailable (e.g., redeploy).
+				if initiatorID != "" {
+					errEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
+					errEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
+					errEnvelope.ToIDs = []string{initiatorID}
+					errContent := "[系统提示] 服务暂时不可用，请稍后重试"
+					errMsg := corea2a.GroupDiscussionMessage{ID: newGroupDiscussionID("hub-msg"), SessionID: groupDiscussionSessionID(sessionCopy), FromID: targetID, Kind: corea2a.MessageStreamEnd, Content: errContent}
+					errEnvelope.Message = &errMsg
+					_ = s.fallback.SendToMachine(initiatorID, map[string]any{
+						"type": "ve:discussion_message",
+						"ts":   time.Now().Unix(),
+						"payload": map[string]any{
+							"envelope":    errEnvelope,
+							"target_role": strings.TrimSpace(targetCopy.RoleCode),
+						},
+					})
+				}
 				return
 			}
 			reply = strings.TrimSpace(reply)
@@ -2820,6 +2851,31 @@ func macLawSrvDiscussionEnvelope(session *corea2a.Session, msg corea2a.GroupDisc
 	envelope.ToIDs = []string{strings.TrimSpace(targetID)}
 	envelope.Message = &msg
 	return envelope
+}
+
+// isTransientDeliveryError returns true if the error is a transport-level
+// failure that may resolve on retry (MaClawSrv restarting, network blip).
+// Returns false for content/logic errors that retrying won't fix.
+//
+// Detection is based on the error prefixes produced by postMacLawSrvDiscussionMessage:
+//   - "MaClawSrv runtime delivery failed: ..." → transport error (client.Do failed)
+//   - "MaClawSrv runtime returned status 502/503/504: ..." → upstream temporarily down
+func isTransientDeliveryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Transport failure: connection refused, timeout, DNS, reset, etc.
+	if strings.HasPrefix(msg, "MaClawSrv runtime delivery failed:") {
+		return true
+	}
+	// HTTP 502/503/504 from the runtime — server starting up or overloaded.
+	if strings.Contains(msg, "returned status 502") ||
+		strings.Contains(msg, "returned status 503") ||
+		strings.Contains(msg, "returned status 504") {
+		return true
+	}
+	return false
 }
 
 func macLawSrvDiscussionPayload(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, targetID, targetRole string) map[string]any {

@@ -37,11 +37,21 @@ func (s *testUserRouteSyncer) SyncUserRoute(context.Context, string, ...string) 
 	return nil
 }
 
+func (s *testUserRouteSyncer) SyncUserRouteReplaceAll(context.Context, string, ...string) error {
+	s.syncCalls++
+	return nil
+}
+
 func (s *testUserRouteSyncer) AllowsUserRoute(context.Context, string, ...string) (bool, string, error) {
 	return s.allowed, s.targetHubID, nil
 }
 
 func (s *testUserRouteSyncOnly) SyncUserRoute(context.Context, string, ...string) error {
+	s.syncCalls++
+	return nil
+}
+
+func (s *testUserRouteSyncOnly) SyncUserRouteReplaceAll(context.Context, string, ...string) error {
 	s.syncCalls++
 	return nil
 }

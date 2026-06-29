@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { DeleteSession, GetSessionCount, GetSessionFullText, ListSessionHistory, SearchSessionHistory } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
@@ -20,6 +21,11 @@ interface SessionSearchHit {
     snippet: string;
     rank: number;
 }
+
+type WailsNoDragStyle = CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
 
 type SessionHistoryTabProps = {
     t: Translate;
@@ -185,9 +191,16 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
 }
 
 function SessionViewerModal({ t, lang, viewSession, fullText, loading, onClose, onOpenTrace }: { t: Translate; lang: string; viewSession: ViewSession; fullText: string; loading: boolean; onClose: () => void; onOpenTrace?: (sessionId: string) => void }) {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
     return (
-        <div style={overlayStyle} onClick={onClose}>
-            <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={viewerStyle}>
+        <div style={overlayStyle} {...backdropProps}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                style={viewerStyle}
+                {...dialogProps}
+            >
                 <div style={{ padding: "14px 18px 10px", borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
@@ -211,12 +224,25 @@ function SessionViewerModal({ t, lang, viewSession, fullText, loading, onClose, 
 }
 
 function ModalOverlay({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
     useEffect(() => {
         const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") onClose(); };
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
     }, [onClose]);
-    return <div style={overlayStyle} onClick={onClose}><div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={dialogStyle}>{children}</div></div>;
+    return (
+        <div style={overlayStyle} {...backdropProps}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                style={dialogStyle}
+                {...dialogProps}
+            >
+                {children}
+            </div>
+        </div>
+    );
 }
 
 function fmtDate(s: string, lang: string): string {
@@ -232,7 +258,7 @@ const dangerBtnStyle: CSSProperties = { ...neutralBtnStyle, fontWeight: 600, bor
 const iconBtnStyle: CSSProperties = { padding: "3px 8px", fontSize: "0.68rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary };
 const platformBadgeStyle: CSSProperties = { fontSize: "0.62rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` };
 const snippetStyle: CSSProperties = { fontSize: "0.74rem", color: colors.textSecondary, maxHeight: 48, overflowY: "hidden", textAlign: "left", lineHeight: 1.4 };
-const overlayStyle: CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 };
-const viewerStyle: CSSProperties = { background: colors.surface, borderRadius: radius.lg, boxShadow: "0 12px 40px rgba(0,0,0,0.2)", width: "90vw", maxWidth: 700, maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden" };
-const dialogStyle: CSSProperties = { background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" };
+const overlayStyle: WailsNoDragStyle = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" };
+const viewerStyle: WailsNoDragStyle = { background: colors.surface, borderRadius: radius.lg, boxShadow: "0 12px 40px rgba(0,0,0,0.2)", width: "90vw", maxWidth: 700, maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" };
+const dialogStyle: WailsNoDragStyle = { background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" };
 const preStyle: CSSProperties = { fontSize: "0.74rem", color: colors.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontFamily: "inherit", lineHeight: 1.6, textAlign: "left" };

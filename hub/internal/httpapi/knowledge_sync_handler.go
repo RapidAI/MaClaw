@@ -39,6 +39,7 @@ type KnowledgeSyncView struct {
 	LimitBytes          int64          `json:"limit_bytes"`
 	RetentionDays       int            `json:"retention_days,omitempty"`
 	Encryption          map[string]any `json:"encryption,omitempty"`
+	PasswordVerifier    map[string]any `json:"password_verifier,omitempty"`
 	HasPackage          bool           `json:"has_package"`
 	Message             string         `json:"message,omitempty"`
 }
@@ -58,6 +59,7 @@ type knowledgeSyncMeta struct {
 	ServiceStatus       string         `json:"service_status"`
 	ReadonlyReason      string         `json:"readonly_reason,omitempty"`
 	Encryption          map[string]any `json:"encryption,omitempty"`
+	PasswordVerifier    map[string]any `json:"password_verifier,omitempty"`
 }
 
 type knowledgeSyncUploadRequest struct {
@@ -65,6 +67,7 @@ type knowledgeSyncUploadRequest struct {
 	PackageVersion      int            `json:"package_version"`
 	CompressedSizeBytes int64          `json:"compressed_size_bytes"`
 	Encryption          map[string]any `json:"encryption"`
+	PasswordVerifier    map[string]any `json:"password_verifier,omitempty"`
 	PayloadBase64       string         `json:"payload_base64"`
 }
 
@@ -143,6 +146,7 @@ func UploadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir s
 			ExpiresAt:           expiresAt,
 			ServiceStatus:       status.ServiceStatus,
 			Encryption:          req.Encryption,
+			PasswordVerifier:    req.PasswordVerifier,
 		}
 		if meta.PackageVersion <= 0 {
 			meta.PackageVersion = 1
@@ -383,6 +387,7 @@ func knowledgeSyncViewFromMeta(meta *knowledgeSyncMeta, principal *auth.ViewerPr
 		view.ExpiresAt = meta.ExpiresAt
 	}
 	view.Encryption = meta.Encryption
+	view.PasswordVerifier = meta.PasswordVerifier
 	return view
 }
 

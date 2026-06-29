@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -78,60 +79,65 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	return st
 }
 
-// cancelStaleWorkflowsOnStartup auto-cancels active workflows that are stale from
-// a previous session. This prevents stale state from interfering with new workflow
-// creation after app restarts. Returns true if a stale workflow was cancelled.
+// suspendStaleWorkflowsOnStartup marks any active workflow from a previous session
+// as suspended. Returns true if a workflow was suspended.
 //
-// Two thresholds:
-//   - Form-waiting workflows (InputSchema != nil, FormData == nil): cancelled after 5 minutes.
-//     These are the most problematic — they intercept routing via ActionShowForm and prevent
-//     new workflow creation from reaching the correct path.
-//   - All other active workflows: cancelled after 4 hours.
+// Mechanism: App restart is a session boundary. Workflows depend on continuous
+// interactive confirm/modify loops that are broken when the app closes. Without
+// suspension, the router's Step 1 ("active workflow takes priority") hijacks the
+// user's first message, routing it to the stale workflow's current phase instead
+// of treating it as a fresh request.
+//
+// Suspension (vs cancellation): The workflow state and all completed phase outputs
+// are preserved. The user can resume by saying "继续" (which the confirm classifier
+// recognizes), or send an unrelated message which passes through to the agent loop.
+// This preserves the user's work (requirements, design docs, etc.) while preventing
+// automatic execution hijacking.
 func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine) bool {
 	if machine == nil {
 		return false
 	}
-	// The SQLite store uses user_id as primary key — desktop has one user.
-	// Check the desktop-user's active workflow.
-	const desktopUser = "desktop-user"
-	state := machine.GetActive(desktopUser)
-	if state == nil {
-		return false
-	}
-	staleDuration := time.Since(state.UpdatedAt)
 
-	// Determine the staleness threshold based on workflow phase state.
-	threshold := 4 * time.Hour
-	if phase := state.ActivePhase(); phase != nil && phase.InputSchema != nil && phase.FormData == nil {
-		// Workflow is waiting for form input — use aggressive threshold.
-		// On startup, a form-waiting workflow is almost certainly stale from a previous
-		// session. The user can't have submitted a form within seconds of app launch.
-		threshold = 5 * time.Minute
+	// List all user IDs with stored workflow state (desktop-user + project tabs).
+	userIDs, err := machine.ListAllStoredUserIDs()
+	if err != nil {
+		log.Printf("[workflow-v2] startup: failed to list stored workflows: %v", err)
+		userIDs = []string{"desktop-user"}
 	}
 
-	if staleDuration > threshold {
-		if err := machine.Cancel(desktopUser); err != nil {
-			log.Printf("[workflow-v2] startup: failed to cancel stale workflow %s: %v", state.ID, err)
-			return false
+	suspended := false
+	for _, userID := range userIDs {
+		state := machine.GetActive(userID)
+		if state == nil {
+			continue
 		}
-		log.Printf("[workflow-v2] startup: auto-cancelled stale workflow %s (type=%s, stale=%s, reason=%s)",
-			state.ID, state.Type, staleDuration.Truncate(time.Minute), func() string {
-				if threshold == 5*time.Minute {
-					return "form_waiting"
-				}
-				return "general_staleness"
-			}())
-		// Emit board reset after cancel — the frontend may have restored the old workflow's
-		// progress board from ai_assistant_ui_state.json. Use a short delay (same as the
-		// non-stale path) to ensure Wails runtime is ready.
+		if state.Suspended {
+			// Already suspended from a previous startup — still counts as "handled"
+			suspended = true
+			continue
+		}
+		if err := machine.SuspendWorkflow(userID); err != nil {
+			log.Printf("[workflow-v2] startup: failed to suspend workflow %s (user=%s): %v", state.ID, userID, err)
+			// Fallback: try to cancel or delete to prevent hijacking
+			if cancelErr := machine.Cancel(userID); cancelErr != nil {
+				_ = machine.DeleteState(userID)
+			}
+			suspended = true
+			continue
+		}
+		log.Printf("[workflow-v2] startup: suspended workflow %s (user=%s, type=%s, phase=%s, age=%s)",
+			state.ID, userID, state.Type, state.CurrentPhase, time.Since(state.UpdatedAt).Truncate(time.Second))
+		suspended = true
+	}
+
+	if suspended {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			emitWorkflowV2Event(a, "workflow:suggest_maximize_dismiss", nil)
 			emitWorkflowV2Event(a, "workflow:phase_update", nil)
 		}()
-		return true
 	}
-	return false
+	return suspended
 }
 
 // workflowV2ConfirmClassifier uses LLM to classify user intent during workflow confirmation.
@@ -269,7 +275,7 @@ func inferExplicitWorkflowHint(text string) string {
 	// Step 2: Check exclusion — if the message looks like a file operation on
 	// an existing artifact rather than a creation request, don't hint.
 	for _, excl := range workflowHintExclusionPatterns {
-		if strings.Contains(lower, excl) {
+		if containsWorkflowHintExclusion(lower, excl) {
 			return ""
 		}
 	}
@@ -343,6 +349,9 @@ func SetExplicitHintTemplates(templates *v2.TemplateRegistry) {
 }
 
 func isStrongExplicitKeyword(kw string) bool {
+	if kw == "powerpoint" {
+		return true
+	}
 	// Uppercase abbreviations (original case was lowered, check if short and ASCII)
 	if len(kw) >= 2 && len(kw) <= 6 && isASCIIAlpha(kw) {
 		return true // PPT, SWOT, PRD etc
@@ -408,6 +417,16 @@ func (r *explicitHintRegistry) matchStrongKeyword(lowerText string) string {
 // The keyword is guaranteed to be pure ASCII (from isASCIIAlpha + needsWordBoundary),
 // so strings.Index byte positions correctly delimit the keyword. We only need
 // proper UTF-8 decoding for the boundary characters adjacent to the keyword.
+func containsWorkflowHintExclusion(lowerText, exclusion string) bool {
+	exclusion = strings.ToLower(strings.TrimSpace(exclusion))
+	if exclusion == "" {
+		return false
+	}
+	if isASCIIAlpha(exclusion) {
+		return containsWordBoundary(lowerText, exclusion)
+	}
+	return strings.Contains(lowerText, exclusion)
+}
 func containsWordBoundary(text, keyword string) bool {
 	idx := 0
 	for {
@@ -446,7 +465,7 @@ func isWordBoundaryChar(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '.' ||
 		r == '!' || r == '?' || r == ';' || r == ':' || r == '"' || r == '\'' ||
 		r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}' ||
-		r == '/' || r == '-' || r == '_' ||
+		r == '/' || r == '-' || r == '_' || unicode.IsPunct(r) || unicode.IsSpace(r) ||
 		(r >= 0x4E00 && r <= 0x9FFF) || // CJK char is always a boundary
 		(r >= 0x3000 && r <= 0x303F) // CJK punctuation
 }

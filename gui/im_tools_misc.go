@@ -1257,7 +1257,7 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 		return nil
 	}
 	scanner := cskill.NewSecurityScanner(nil)
-	report := scanner.ScanInstallStaged(context.Background(), entry, skillDir, func(status string) {
+	report := scanner.ScanStaged(context.Background(), entry, skillDir, func(status string) {
 		if h != nil && h.app != nil {
 			h.app.log(fmt.Sprintf("[manage_skill] security scan %s: %s", entry.Name, status))
 		}
@@ -1274,6 +1274,18 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 			return nil
 		}
 		return fmt.Errorf("security scan produced no report")
+	}
+	if report.NeedsUserReview() {
+		if h != nil && h.app != nil {
+			h.app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillReject,
+				"manage_skill_autofix",
+				report.FinalLevel,
+				security.PolicyDeny,
+				fmt.Sprintf("skill autofix writeback requires manual review for %s: %s", entry.Name, report.Summary),
+			)
+		}
+		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
 	}
 	if h != nil && h.app != nil && h.app.skillInstallScanShouldBlock(report) {
 		if h != nil && h.app != nil {

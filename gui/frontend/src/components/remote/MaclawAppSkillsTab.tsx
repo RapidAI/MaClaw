@@ -49,6 +49,8 @@ export function MaclawAppSkillsTab({
         switch ((status || "").trim().toLowerCase()) {
             case "active": return localizeText("Active", "启用", "啟用");
             case "disabled": return localizeText("Disabled", "停用", "停用");
+            case "needs_setup": return localizeText("Needs Setup", "待配置", "待設定");
+            case "error": return localizeText("Error", "异常", "異常");
             default: return status || "-";
         }
     };
@@ -63,11 +65,11 @@ export function MaclawAppSkillsTab({
                     <button className="btn-secondary" style={buttonStyle} onClick={onRefresh} disabled={loading}>
                         {loading ? localizeText("Refreshing...", "刷新中...", "重新整理中...") : localizeText("Refresh", "刷新", "重新整理")}
                     </button>
-                    <button className="btn-secondary" style={buttonStyle} onClick={onOpenAppPanel}>
+                    <button className="btn-primary" style={buttonStyle} onClick={onOpenAppPanel} disabled={!onOpenAppPanel}>
                         {localizeText("Open App Panel", "打开应用面板", "開啟應用面板")}
                     </button>
-                    <button className="btn-primary" style={buttonStyle} onClick={onOpenMarket}>
-                        {localizeText("Upload / Market", "上传 / 能力市场", "上傳 / 能力市場")}
+                    <button className="btn-secondary" style={buttonStyle} onClick={onOpenMarket}>
+                        {localizeText("Market", "能力市场", "能力市場")}
                     </button>
                 </div>
             </div>
@@ -108,12 +110,12 @@ export function MaclawAppSkillsTab({
                                             ? `${skill.usage_count}${localizeText("x", "次", "次")} / ${Math.round((skill.success_rate ?? 0) * 100)}%`
                                             : <span style={{ color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>}
                                     </td>
-                                    <td style={{ ...tdStyle, textAlign: "center" }}><span style={statusStyle}>{statusLabel(skill.status)}</span></td>
+                                    <td style={{ ...tdStyle, textAlign: "center" }}><span style={statusBadgeStyleForStatus((skill.status || "").trim().toLowerCase())}>{statusLabel(skill.status)}</span></td>
                                     <td style={{ ...tdStyle, textAlign: "center" }}>
                                         <div style={rowActionsStyle}>
                                             <button className="btn-secondary" style={iconButtonStyle} onClick={() => onEdit(skill)} disabled={busy} title={localizeText("Edit app skill", "编辑 App Skill", "編輯 App Skill")} aria-label={localizeText("Edit app skill", "编辑 App Skill", "編輯 App Skill")}>{"\u270E"}</button>
                                             <button className="btn-secondary" style={deleteButtonStyle} onClick={() => onDelete(skill.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>×</button>
-                                            <button className="btn-secondary" style={uploadButtonStyle} onClick={() => onUpload(skill.name)} disabled={busy || uploadingSkill === skill.name}>
+                                            <button className="btn-secondary" style={uploadButtonStyle} onClick={() => onUpload(skill.name)} disabled={busy || uploadingSkill === skill.name} aria-label={`${uploadingSkill === skill.name ? localizeText("Uploading", "上传中", "上傳中") : localizeText("Upload", "上传", "上傳")} ${skill.name}`}>
                                                 {uploadingSkill === skill.name ? localizeText("Uploading...", "上传中...", "上傳中...") : skill.hub_skill_id ? localizeText("Re-upload", "重新上传", "重新上傳") : localizeText("Upload", "上传", "上傳")}
                                             </button>
                                             {skill.hub_skill_id && <span style={uploadedBadgeStyle} title={localizeText("Uploaded to Capability Market", "已上传到能力市场", "已上傳到能力市場")}>OK</span>}
@@ -127,7 +129,16 @@ export function MaclawAppSkillsTab({
             )}
 
             {!loading && skills.length === 0 && !error && (
-                <div style={emptyStyle}>{localizeText("No MaClaw App skills yet", "暂无 MaClaw App Skill", "暫無 MaClaw App Skill")}</div>
+                <div style={emptyStyle}>
+                    <div>{localizeText("No MaClaw App skills yet", "暂无 MaClaw App Skill", "暫無 MaClaw App Skill")}</div>
+                    <button
+                        type="button"
+                        onClick={onOpenMarket}
+                        style={emptyMarketLinkStyle}
+                    >
+                        {localizeText("Browse the Market to find App Skills →", "前往能力市场搜索 App Skill →", "前往能力市場搜尋 App Skill →")}
+                    </button>
+                </div>
             )}
         </>
     );
@@ -143,10 +154,21 @@ const thStyle: CSSProperties = { padding: "7px 8px", textAlign: "left", color: c
 const tdStyle: CSSProperties = { padding: "7px 8px", color: colors.text, verticalAlign: "middle" };
 const descStyle: CSSProperties = { maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const badgeStyle: CSSProperties = { display: "inline-flex", padding: "2px 6px", borderRadius: 6, background: colors.surfaceMuted, color: colors.textSecondary, fontSize: "0.7rem" };
-const statusStyle: CSSProperties = { display: "inline-flex", padding: "2px 6px", borderRadius: 6, background: colors.successBg, color: colors.success, fontSize: "0.7rem", fontWeight: 700 };
+const statusBaseStyle: CSSProperties = { display: "inline-flex", padding: "2px 6px", borderRadius: 6, fontSize: "0.7rem", fontWeight: 700 };
+const statusStyles: Record<string, CSSProperties> = {
+    active: { ...statusBaseStyle, background: colors.successBg, color: colors.success },
+    needs_setup: { ...statusBaseStyle, background: colors.warningBg, color: colors.warning },
+    error: { ...statusBaseStyle, background: colors.dangerBg, color: colors.danger },
+    _default: { ...statusBaseStyle, background: colors.surfaceMuted, color: colors.textMuted },
+};
+
+function statusBadgeStyleForStatus(status: string): CSSProperties {
+    return statusStyles[status] || statusStyles._default;
+}
 const iconButtonStyle: CSSProperties = { width: 26, height: 24, padding: 0, marginRight: 4 };
 const deleteButtonStyle: CSSProperties = { ...iconButtonStyle, color: colors.danger };
 const rowActionsStyle: CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4 };
 const uploadButtonStyle: CSSProperties = { fontSize: "0.7rem", padding: "3px 8px", minWidth: 58 };
 const uploadedBadgeStyle: CSSProperties = { fontSize: "0.68rem", color: colors.success, fontWeight: 800 };
 const emptyStyle: CSSProperties = { padding: "28px 8px", textAlign: "center", color: colors.textMuted, fontSize: "0.8rem" };
+const emptyMarketLinkStyle: CSSProperties = { marginTop: "10px", background: "transparent", border: "none", color: colors.link, cursor: "pointer", fontSize: "0.78rem", textDecoration: "underline" };

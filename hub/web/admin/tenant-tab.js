@@ -91,7 +91,7 @@
     deleteTenant: { zh: '\u5220\u9664', en: 'Delete' },
     deactivateConfirm: { zh: '\u786e\u8ba4\u505c\u7528\u79df\u6237 {tenant} \u5417\uff1f', en: 'Deactivate tenant {tenant}?' },
     reactivateConfirm: { zh: '\u786e\u8ba4\u91cd\u65b0\u542f\u7528\u79df\u6237 {tenant} \u5417\uff1f', en: 'Reactivate tenant {tenant}?' },
-    deleteConfirm: { zh: '\u786e\u8ba4\u5220\u9664\u79df\u6237 {tenant} \u5417\uff1f\u6b64\u64cd\u4f5c\u4f1a\u7acb\u5373\u505c\u6b62\u8be5\u79df\u6237 IM \u8fd0\u884c\u65f6\u3002', en: 'Delete tenant {tenant}? This immediately stops tenant IM runtimes.' },
+    deleteConfirm: { zh: '\u2757 \u786e\u8ba4\u5220\u9664\u79df\u6237 {tenant} \u5417\uff1f\u6b64\u64cd\u4f5c\u5c06\u6c38\u4e45\u5220\u9664\u8be5\u79df\u6237\u7684\u6240\u6709\u6570\u636e\uff0c\u4e0d\u53ef\u6062\u590d\uff01', en: '\u2757 Permanently delete tenant {tenant}? This will remove ALL tenant data and cannot be undone!' },
     statusUpdated: { zh: '\u79df\u6237\u72b6\u6001\u5df2\u66f4\u65b0\u3002', en: 'Tenant status updated.' },
     statusUpdateFailed: { zh: '\u66f4\u65b0\u79df\u6237\u72b6\u6001\u5931\u8d25: {error}', en: 'Update tenant status failed: {error}' },
     deletedDone: { zh: '\u79df\u6237\u5df2\u5220\u9664\u3002', en: 'Tenant deleted.' },
@@ -241,11 +241,12 @@
     var nextStatus = tenantStatus(item) === 'active' ? 'inactive' : 'active';
     var statusKey = nextStatus === 'active' ? 'reactivate' : 'deactivate';
     var confirmKey = nextStatus === 'active' ? 'reactivateConfirm' : 'deactivateConfirm';
-    var actions = '<button class="btn-secondary" type="button" onclick="previewTenantMerge(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('mergeDryRun')) + '</button>'
-      + '<button class="btn-secondary" type="button" onclick="mergeTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('mergeTenant')) + '</button>';
+    var escAttr = function(s) { return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+    var actions = '<button class="btn-secondary" type="button" onclick="' + escAttr('previewTenantMerge(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('mergeDryRun')) + '</button>'
+      + '<button class="btn-secondary" type="button" onclick="' + escAttr('mergeTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('mergeTenant')) + '</button>';
     if (!isDefaultTenantID(item.id)) {
-      actions += '<button class="btn-ghost" type="button" onclick="updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')">' + esc(tt(statusKey)) + '</button>'
-        + '<button class="btn-danger" type="button" onclick="deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('deleteTenant')) + '</button>';
+      actions += '<button class="btn-ghost" type="button" onclick="' + escAttr('updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')') + '">' + esc(tt(statusKey)) + '</button>'
+        + '<button class="btn-danger" type="button" onclick="' + escAttr('deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('deleteTenant')) + '</button>';
     }
     return '<div class="tenant-actions">'
       + actions
@@ -258,13 +259,13 @@
     });
   }
 
-  function chooseTenantMergeTarget(sourceID) {
+  async function chooseTenantMergeTarget(sourceID) {
     var options = tenantMergeTargetOptions(sourceID);
     if (!options.length) return '';
-    var message = tt('mergeChooseTarget') + '\n' + options.map(function(item, index) { return String(index + 1) + '. ' + tenantOptionLabel(item); }).join('\n');
-    var raw = global.prompt(message, '1');
-    var index = Number(raw) - 1;
-    if (!Number.isFinite(index) || index < 0 || index >= options.length) return '';
+    var title = tt('mergeChooseTarget');
+    var selectOptions = options.map(function(item) { return { label: tenantOptionLabel(item), value: item.id }; });
+    var index = await showTenantSelectDialog(title, '', selectOptions);
+    if (index < 0 || index >= options.length) return '';
     return options[index].id;
   }
 
@@ -655,7 +656,7 @@
 
   async function updateTenantStatus(tenantID, status, label, confirmKey) {
     if (!tenantID) return;
-    if (!global.confirm(tt(confirmKey || 'deactivateConfirm', { tenant: label || tenantID }))) return;
+    if (!(await showTenantConfirmDialog(tt(confirmKey || 'deactivateConfirm', { tenant: label || tenantID }), { title: lang() === 'zh' ? '\u66f4\u6539\u72b6\u6001' : 'Change Status', danger: status !== 'active' }))) return;
     try {
       await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/status', { method: 'PATCH', body: JSON.stringify({ status: status }) });
       await loadTenants();
@@ -666,26 +667,171 @@
     }
   }
 
+  function showDeleteTenantDialog(tenantID, displayName) {
+    return new Promise(function(resolve) {
+      var overlayId = 'deleteTenantDialogOverlay';
+      var existing = global.document.getElementById(overlayId);
+      if (existing) existing.parentNode.removeChild(existing);
+      var overlay = global.document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      var titleText = lang() === 'zh' ? '\u5220\u9664\u79df\u6237' : 'Delete Tenant';
+      var msgHtml = lang() === 'zh'
+        ? '\u2757 \u6b64\u64cd\u4f5c\u5c06\u6c38\u4e45\u5220\u9664\u79df\u6237 <strong>' + esc(displayName) + '</strong> \u53ca\u5176\u6240\u6709\u6570\u636e\uff08\u7528\u6237\u3001\u8bbe\u5907\u3001\u914d\u7f6e\u3001\u8bb0\u5f55\u7b49\uff09\uff0c\u4e0d\u53ef\u6062\u590d\uff01'
+        : '\u2757 This will <strong>PERMANENTLY</strong> delete tenant "' + esc(displayName) + '" and ALL its data (users, devices, settings, records, etc.). This cannot be undone!';
+      var passwordLabel = lang() === 'zh' ? '\u8bf7\u8f93\u5165\u60a8\u7684\u7ba1\u7406\u5458\u767b\u5f55\u5bc6\u7801\u4ee5\u786e\u8ba4\uff1a' : 'Enter your admin login password to confirm:';
+      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
+      var confirmText = lang() === 'zh' ? '\u786e\u8ba4\u5220\u9664' : 'Confirm Delete';
+      var emptyHint = lang() === 'zh' ? '\u8bf7\u8f93\u5165\u5bc6\u7801' : 'Password is required';
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="deleteTenantDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
+        + '<div class="item-title" id="deleteTenantDialogTitle" style="margin-bottom:8px;color:var(--danger,#e53935)">' + esc(titleText) + '</div>'
+        + '<div class="item-meta" style="margin-bottom:12px">' + msgHtml + '</div>'
+        + '<div class="item-meta" style="margin-bottom:8px">' + esc(passwordLabel) + '</div>'
+        + '<input id="deleteTenantPasswordInput" type="password" autocomplete="current-password" style="width:100%;height:36px;margin-bottom:4px">'
+        + '<div id="deleteTenantPasswordError" style="color:var(--danger,#e53935);font-size:12px;min-height:18px;margin-bottom:8px"></div>'
+        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn-ghost" id="deleteTenantCancelBtn">' + esc(cancelText) + '</button>'
+        + '<button type="button" class="btn-danger" id="deleteTenantConfirmBtn">' + esc(confirmText) + '</button>'
+        + '</div></div>';
+      var done = function(value) {
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        resolve(value);
+      };
+      global.document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(null); });
+      } else {
+        overlay.onclick = function(event) { if (event && event.target === overlay) done(null); };
+      }
+      var input = overlay.querySelector('#deleteTenantPasswordInput');
+      var errorEl = overlay.querySelector('#deleteTenantPasswordError');
+      var cancel = overlay.querySelector('#deleteTenantCancelBtn');
+      var ok = overlay.querySelector('#deleteTenantConfirmBtn');
+      if (cancel) cancel.addEventListener('click', function() { done(null); });
+      if (ok) ok.addEventListener('click', function() {
+        var pw = (input ? input.value : '').trim();
+        if (!pw) { if (errorEl) errorEl.textContent = emptyHint; if (input) input.focus(); return; }
+        done(pw);
+      });
+      if (input) {
+        input.addEventListener('keydown', function(event) {
+          if (event.key === 'Enter') { event.preventDefault(); if (ok) ok.click(); }
+          if (event.key === 'Escape') { event.preventDefault(); done(null); }
+        });
+        input.focus();
+      }
+    });
+  }
+
+  function showTenantConfirmDialog(message, options) {
+    options = options || {};
+    var danger = options.danger !== false;
+    return new Promise(function(resolve) {
+      var overlayId = 'tenantConfirmDialogOverlay';
+      var existing = global.document.getElementById(overlayId);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var overlay = global.document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      var titleText = options.title || (lang() === 'zh' ? '\u786e\u8ba4\u64cd\u4f5c' : 'Confirm');
+      var confirmText = options.confirmText || (lang() === 'zh' ? '\u786e\u8ba4' : 'Confirm');
+      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="tenantConfirmDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
+        + '<div class="item-title" id="tenantConfirmDialogTitle" style="margin-bottom:8px' + (danger ? ';color:var(--danger,#e53935)' : '') + '">' + esc(titleText) + '</div>'
+        + '<div class="item-meta" style="margin-bottom:16px;white-space:pre-wrap">' + esc(message) + '</div>'
+        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn-ghost" id="tenantConfirmCancelBtn">' + esc(cancelText) + '</button>'
+        + '<button type="button" class="' + (danger ? 'btn-danger' : 'btn-primary') + '" id="tenantConfirmOkBtn">' + esc(confirmText) + '</button>'
+        + '</div></div>';
+      var done = function(value) { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
+      global.document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(false); });
+      } else {
+        overlay.onclick = function(event) { if (event && event.target === overlay) done(false); };
+      }
+      var cancel = overlay.querySelector('#tenantConfirmCancelBtn');
+      var ok = overlay.querySelector('#tenantConfirmOkBtn');
+      if (cancel) cancel.addEventListener('click', function() { done(false); });
+      if (ok) { ok.addEventListener('click', function() { done(true); }); ok.focus(); }
+      overlay.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') { event.preventDefault(); done(false); }
+      });
+    });
+  }
+
+  function showTenantSelectDialog(title, message, options) {
+    return new Promise(function(resolve) {
+      var overlayId = 'tenantSelectDialogOverlay';
+      var existing = global.document.getElementById(overlayId);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var overlay = global.document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      var cancelText = lang() === 'zh' ? '\u53d6\u6d88' : 'Cancel';
+      var confirmText = lang() === 'zh' ? '\u786e\u5b9a' : 'OK';
+      var optionsHtml = options.map(function(item, index) {
+        return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer"><input type="radio" name="tenantSelectOption" value="' + index + '"' + (index === 0 ? ' checked' : '') + '><span>' + esc(item.label) + '</span></label>';
+      }).join('');
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="tenantSelectDialogTitle" style="width:min(420px,100%);max-height:80vh;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
+        + '<div class="item-title" id="tenantSelectDialogTitle" style="margin-bottom:8px">' + esc(title) + '</div>'
+        + (message ? '<div class="item-meta" style="margin-bottom:12px">' + esc(message) + '</div>' : '')
+        + '<div style="max-height:240px;overflow-y:auto;margin-bottom:12px;padding:4px 0">' + optionsHtml + '</div>'
+        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn-ghost" id="tenantSelectCancelBtn">' + esc(cancelText) + '</button>'
+        + '<button type="button" class="btn-primary" id="tenantSelectOkBtn">' + esc(confirmText) + '</button>'
+        + '</div></div>';
+      var done = function(value) { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
+      global.document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(-1); });
+      } else {
+        overlay.onclick = function(event) { if (event && event.target === overlay) done(-1); };
+      }
+      var cancel = overlay.querySelector('#tenantSelectCancelBtn');
+      var ok = overlay.querySelector('#tenantSelectOkBtn');
+      if (cancel) cancel.addEventListener('click', function() { done(-1); });
+      if (ok) ok.addEventListener('click', function() {
+        var checked = overlay.querySelector('input[name="tenantSelectOption"]:checked');
+        done(checked ? Number(checked.value) : -1);
+      });
+      overlay.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') { event.preventDefault(); done(-1); }
+        if (event.key === 'Enter') { event.preventDefault(); if (ok) ok.click(); }
+      });
+    });
+  }
+
   async function deleteTenant(tenantID, label) {
     if (!tenantID) return;
-    if (!global.confirm(tt('deleteConfirm', { tenant: label || tenantID }))) return;
+    var displayName = label || tenantID;
+    var password = await showDeleteTenantDialog(tenantID, displayName);
+    if (!password) return;
     try {
-      await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID), { method: 'DELETE' });
+      await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID), { method: 'DELETE', body: JSON.stringify({ password: password }) });
       await loadTenants();
       await loadLoginTenants();
       setTenantOutput(tt('deletedDone'), 'success');
     } catch (err) {
-      setTenantOutput(tt('deleteFailed', { error: err.message || err }), 'error');
+      var errMsg = err.message || String(err);
+      if (errMsg.indexOf('PASSWORD_INCORRECT') >= 0 || errMsg.indexOf('password') >= 0) {
+        setTenantOutput(lang() === 'zh' ? '\u5220\u9664\u5931\u8d25\uff1a\u5bc6\u7801\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5\u3002' : 'Delete failed: incorrect password, please try again.', 'error');
+      } else {
+        setTenantOutput(tt('deleteFailed', { error: errMsg }), 'error');
+      }
     }
   }
 
   async function runTenantMerge(tenantID, label, dryRun) {
     if (!tenantID || tenantMergeBusy[tenantID]) return;
-    var targetID = chooseTenantMergeTarget(tenantID);
+    var targetID = await chooseTenantMergeTarget(tenantID);
     if (!targetID) return;
     var target = (tenantCache || []).filter(function(item) { return item && item.id === targetID; })[0] || { id: targetID };
     var confirmKey = isDefaultTenantID(tenantID) ? 'mergeConfirmDefault' : 'mergeConfirm';
-    if (!dryRun && !global.confirm(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }))) return;
+    if (!dryRun && !(await showTenantConfirmDialog(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }), { title: lang() === 'zh' ? '\u5408\u5e76\u79df\u6237' : 'Merge Tenant', danger: true }))) return;
     tenantMergeBusy[tenantID] = true;
     try {
       var data = await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: targetID, dry_run: !!dryRun, delete_source: true }) });

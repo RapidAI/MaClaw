@@ -27,6 +27,7 @@ const (
 	agentToolKindSSH
 	agentToolKindMemory
 	agentToolKindDelegateTask
+	agentToolKindCreateSession
 )
 
 func classifyAgentToolKind(name string) agentToolKind {
@@ -73,6 +74,8 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindMemory
 	case "delegate_task":
 		return agentToolKindDelegateTask
+	case "create_session":
+		return agentToolKindCreateSession
 	default:
 		return agentToolKindUnknown
 	}
@@ -102,7 +105,7 @@ func (k agentToolKind) IsSkillProgressTool() bool {
 
 func (k agentToolKind) IsBlockedBySkillPreference() bool {
 	switch k {
-	case agentToolKindCraftTool, agentToolKindBash:
+	case agentToolKindCraftTool, agentToolKindBash, agentToolKindCreateSession:
 		return true
 	default:
 		return false

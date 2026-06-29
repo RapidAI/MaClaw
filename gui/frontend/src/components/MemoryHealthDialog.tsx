@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { GetMemoryHealth } from '../../wailsjs/go/main/App';
+import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 
 interface HealthReport {
     active_entries: number;
@@ -28,6 +29,7 @@ type Props = {
 export function MemoryHealthDialog({ open, onClose, t }: Props) {
     const [report, setReport] = useState<HealthReport | null>(null);
     const [loading, setLoading] = useState(false);
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
 
     useEffect(() => {
         if (!open) return;
@@ -59,8 +61,12 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
     };
 
     return (
-        <div className="modal-backdrop" onClick={onClose}>
-            <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '480px', maxHeight: '80vh', overflow: 'auto' }}>
+        <div className="modal-backdrop" {...backdropProps}>
+            <div
+                className="modal-content"
+                {...dialogProps}
+                style={{ width: '480px', maxHeight: '80vh', overflow: 'auto' }}
+            >
                 <div className="modal-header">
                     <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{"\u{1F9E0}"} {t('memoryHealthTitle')}</h3>
                     <button className="btn-close" onClick={onClose}>{"\u00d7"}</button>

@@ -493,7 +493,7 @@ func currentCodingTaskBreakdownOutputBeforeExecution(engine *workflow.WorkflowEn
 func (h *IMMessageHandler) workflowExecutionProjectPath(engine *workflow.WorkflowEngine, userID string) string {
 	if engine != nil {
 		if ws := engine.GetActiveWorkflow(userID); ws != nil {
-			if projectPath := strings.TrimSpace(ws.ProjectPath); projectPath != "" {
+			if projectPath := strings.TrimSpace(ws.ProjectPath); projectPath != "" && projectPath != "." {
 				return projectPath
 			}
 		}

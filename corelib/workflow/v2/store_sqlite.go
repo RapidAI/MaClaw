@@ -65,6 +65,23 @@ func (s *SQLiteStore) Delete(userID string) error {
 	return err
 }
 
+func (s *SQLiteStore) ListAllUserIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT user_id FROM workflows`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *SQLiteStore) Close() error {
 	if s.db != nil {
 		return s.db.Close()

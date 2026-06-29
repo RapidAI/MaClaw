@@ -10,6 +10,7 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors, radius, remoteActionButtonStyle, remoteDangerActionButtonStyle, remotePrimaryActionButtonStyle } from "./styles";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 interface ScheduledTask {
     id: string;
@@ -48,6 +49,10 @@ const labelStyle: React.CSSProperties = {
 };
 
 type Props = { lang: string; refreshKey?: number };
+type WailsNoDragStyle = React.CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
 
 function getWeekdays(lang: string): readonly string[] {
     const key = lang === 'zh-Hant' ? 'zh-Hant' : lang === 'zh-Hans' ? 'zh-Hans' : 'en';
@@ -152,6 +157,8 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const [triggering, setTriggering] = useState<string | null>(null);
     const mountedRef = useRef(true);
     const loadRequestSeq = useRef(0);
+    const { backdropProps: deleteBackdropProps, dialogProps: deleteDialogProps } = useSafeBackdropDismiss(() => setDeleteTarget(null));
+    const { backdropProps: formBackdropProps, dialogProps: formDialogProps } = useSafeBackdropDismiss(() => setDlgOpen(false));
 
     useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -351,8 +358,16 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
             {/* Delete confirmation */}
             {deleteTarget && (
-                <div style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDeleteTarget(null)}>
-                    <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" }}>
+                <div
+                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    {...deleteBackdropProps}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        {...deleteDialogProps}
+                    >
                         <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task?", "确定删除这个定时任务？")}</p>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                             <button onClick={() => setDeleteTarget(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
@@ -364,12 +379,21 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
             {/* Create / Edit dialog */}
             {dlgOpen && (
-                <div style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDlgOpen(false)}>
-                    <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{
+                <div
+                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    {...formBackdropProps}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        style={{
                         background: colors.surface, borderRadius: radius.lg, width: 440, maxWidth: "90vw",
                         maxHeight: "85vh", boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
                         display: "flex", flexDirection: "column",
-                    }}>
+                        WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
+                    } as WailsNoDragStyle}
+                        {...formDialogProps}
+                    >
                         {/* Dialog header — fixed */}
                         <div style={{ padding: "14px 18px 8px", flexShrink: 0 }}>
                             <h4 style={{ fontSize: "0.8rem", margin: 0, color: colors.text }}>

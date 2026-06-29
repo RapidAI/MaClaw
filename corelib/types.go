@@ -464,6 +464,40 @@ type SkillPipelineStep struct {
 	TimeImpactOnReject string            `json:"time_impact_on_reject,omitempty" yaml:"time_impact_on_reject,omitempty"`
 }
 
+// QualifiedID returns the canonical unique identifier for this skill.
+// Format: "publisher:name" when Publisher is set, otherwise bare "name".
+// This is the stable identity used for App→Skill dependency binding.
+// Once a skill is published (Publisher assigned), its QualifiedID is immutable.
+func (e *NLSkillEntry) QualifiedID() string {
+	name := strings.TrimSpace(e.Name)
+	if name == "" {
+		return ""
+	}
+	publisher := strings.TrimSpace(e.Publisher)
+	if publisher != "" {
+		return publisher + ":" + name
+	}
+	return name
+}
+
+// MatchesQualifiedID checks if the skill matches the given qualified ID exactly.
+// This is stricter than MatchesName — it only matches against QualifiedID()
+// and HubSkillID, not against DirName or directory basename.
+// Used for App dependency resolution where deterministic identity is required.
+func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if qid := e.QualifiedID(); qid != "" && strings.EqualFold(qid, id) {
+		return true
+	}
+	if e.HubSkillID != "" && strings.EqualFold(strings.TrimSpace(e.HubSkillID), id) {
+		return true
+	}
+	return false
+}
+
 // MatchesName checks if the skill matches the given name by comparing against
 // the qualified name (Publisher:Name), display name (Name), directory name
 // (DirName), and the SkillDir basename.

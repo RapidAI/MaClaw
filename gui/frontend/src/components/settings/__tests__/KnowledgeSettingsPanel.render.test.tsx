@@ -12,6 +12,7 @@ import {
     KnowledgeSearchStructured,
     KnowledgeSyncStatus,
     KnowledgeSyncUpload,
+    KnowledgeSyncVerifyPassword,
     KnowledgeStructuredCatalog,
     GetHubLLMServiceStatus,
     LoadConfig,
@@ -356,12 +357,38 @@ describe('KnowledgeSettingsPanel component', () => {
 
         render(<KnowledgeSettingsPanel lang="en" showToastMessage={showToastMessage} />);
         fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
-        fireEvent.change(await screen.findByPlaceholderText('Sync password'), { target: { value: 'sync-secret' } });
-        fireEvent.change(screen.getByPlaceholderText('Confirm sync password'), { target: { value: 'sync-secret' } });
+        fireEvent.change(await screen.findByLabelText('Sync password'), { target: { value: 'sync-secret' } });
+        fireEvent.change(screen.getByLabelText('Confirm sync password'), { target: { value: 'sync-secret' } });
         fireEvent.click(screen.getByRole('button', { name: 'Sync' }));
 
         await waitFor(() => expect(KnowledgeSyncUpload).toHaveBeenCalledTimes(1));
         expect(showToastMessage).toHaveBeenCalledWith('Knowledge sync completed.', 3000);
+    });
+
+    it('verifies the sync password before downloading an existing cloud package', async () => {
+        vi.mocked(KnowledgeSyncStatus).mockResolvedValue({
+            service_status: 'official_active',
+            has_package: true,
+            package_id: 'ksync_existing',
+            limit_bytes: 524288000,
+            message: 'maclaw official service is active',
+        } as any);
+        vi.mocked(KnowledgeSyncVerifyPassword).mockResolvedValueOnce({
+            service_status: 'official_active',
+            has_package: true,
+            package_id: 'ksync_existing',
+            limit_bytes: 524288000,
+        } as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sync' }));
+        fireEvent.change(await screen.findByLabelText('Sync password'), { target: { value: 'sync-secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Sync' }));
+
+        await waitFor(() => expect(KnowledgeSyncVerifyPassword).toHaveBeenCalled());
+        expect(KnowledgeSyncVerifyPassword).toHaveBeenCalledWith(expect.objectContaining({
+            password: 'sync-secret',
+        }));
     });
 
     it('does not auto-retry forever when export source loading fails and allows manual recovery', async () => {

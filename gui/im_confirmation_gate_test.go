@@ -219,6 +219,9 @@ func TestHandleIMMessageWithProgressAndStream_LLMFailureFallsThroughToAgent(t *t
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	fastRetry := NewAdaptiveRetry(nil)
+	fastRetry.skipTransientRetries = true
+	h.SetAdaptiveRetry(fastRetry)
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",

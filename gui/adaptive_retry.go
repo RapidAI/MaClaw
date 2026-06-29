@@ -62,13 +62,14 @@ type RetryDecision struct {
 
 // AdaptiveRetry classifies failures and chooses retry behavior.
 type AdaptiveRetry struct {
-	failureCounts       map[string]int
-	failureStreaks      map[string]int
-	lastFailureCategory map[string]FailureCategory
-	maxFailures         int
-	disabledTools       map[string]bool
-	recorder            *TrajectoryRecorder
-	memoryStore         *memory.Store
+	failureCounts        map[string]int
+	failureStreaks       map[string]int
+	lastFailureCategory  map[string]FailureCategory
+	maxFailures          int
+	skipTransientRetries bool
+	disabledTools        map[string]bool
+	recorder             *TrajectoryRecorder
+	memoryStore          *memory.Store
 }
 
 // NewAdaptiveRetry creates an adaptive retry controller.
@@ -95,6 +96,9 @@ func NewAdaptiveRetryForLoop(template *AdaptiveRetry, recorder *TrajectoryRecord
 	ar := NewAdaptiveRetry(recorder)
 	if template != nil && template.maxFailures > 0 {
 		ar.maxFailures = template.maxFailures
+	}
+	if template != nil && template.skipTransientRetries {
+		ar.skipTransientRetries = true
 	}
 	return ar
 }
@@ -178,6 +182,13 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 			Attempt:      attempt,
 		}
 	case FailureTransient:
+		if r.skipTransientRetries {
+			return RetryDecision{
+				Action:       RetryActionSkip,
+				ErrorContext: fmt.Sprintf("tool %s transient retries are disabled for this loop; skip", toolName),
+				Attempt:      attempt,
+			}
+		}
 		if attempt >= maxTransientRetries {
 			return RetryDecision{
 				Action:       RetryActionSkip,

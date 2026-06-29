@@ -199,18 +199,37 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	var resolvedHubID string
 	var resolvedTenantID string // tenant_id from invitation code routing
 
-	if hubURL == "" {
+	// When an invitation code is provided, always resolve via HubCenter even if
+	// a cached HubURL exists. The invitation code may target a different Hub than
+	// the one previously cached (e.g. user was deleted from old Hub and re-invited
+	// to a new one). HubCenter's invitation code routing ensures the request
+	// reaches the correct Hub that issued the code.
+	hasInvitationCode := strings.TrimSpace(cfg.InvitationCode) != ""
+	if hubURL == "" || hasInvitationCode {
+		if hasInvitationCode && hubURL != "" {
+			log.Printf("[enrollment] invitation code provided — ignoring cached hub_url=%s, resolving via HubCenter", hubURL)
+		}
 		log.Printf("[enrollment] resolving hub for email=%s", email)
 		resolved, err := c.resolveHubURL(ctx, httpClient, email, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("hub resolution failed: %w", err)
+			// Only fall back to cached HubURL on network-level failures (all
+			// HubCenter nodes unreachable). If HubCenter was reachable but
+			// explicitly rejected the routing (e.g. INVITATION_CODE_NOT_ROUTED,
+			// email blocked), falling back would bypass that rejection.
+			isNetworkFailure := hasInvitationCode && hubURL != "" && isResolveNetworkError(err)
+			if isNetworkFailure {
+				log.Printf("[enrollment] resolve failed (network: %v) — falling back to cached hub_url=%s", err, hubURL)
+			} else {
+				return nil, fmt.Errorf("hub resolution failed: %w", err)
+			}
+		} else {
+			hubURL = resolved.hubURL
+			resolvedHubID = resolved.hubID
+			resolvedTenantID = resolved.tenantID
+			discoveredURLs = resolved.discoveredURLs
+			usedCenterURL = resolved.usedCenterURL
+			log.Printf("[enrollment] resolved hub=%s tenant=%s center=%s duration=%s", hubURL, resolvedTenantID, usedCenterURL, time.Since(start))
 		}
-		hubURL = resolved.hubURL
-		resolvedHubID = resolved.hubID
-		resolvedTenantID = resolved.tenantID
-		discoveredURLs = resolved.discoveredURLs
-		usedCenterURL = resolved.usedCenterURL
-		log.Printf("[enrollment] resolved hub=%s tenant=%s center=%s duration=%s", hubURL, resolvedTenantID, usedCenterURL, time.Since(start))
 	}
 
 	// --- Step 3: Ensure client_id ---
@@ -491,6 +510,37 @@ func isTimeoutError(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+// isResolveNetworkError returns true when the resolve failure is caused by
+// network-level issues (all HubCenter nodes unreachable, DNS failure, timeout).
+// Returns false when HubCenter was reachable but explicitly rejected the routing
+// (invitation code not found, email blocked, no available hubs, etc.).
+//
+// Heuristic: ResolveHubs returns errors wrapping network failures with "resolve via"
+// prefix or "all hub centers failed" / "no reachable hub center" messages.
+// PickBestHubWithTenantAndID returns errors from HubCenter's response message
+// (e.g. "INVITATION_CODE_NOT_ROUTED", "No available hubs found").
+func isResolveNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Network-level failures from ResolveHubs retry loop.
+	if strings.Contains(msg, "all hub centers failed") ||
+		strings.Contains(msg, "no reachable hub center") ||
+		strings.Contains(msg, "no hub center URLs configured") {
+		return true
+	}
+	// Timeout / connection refused from underlying HTTP calls.
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	if isTimeoutError(err) {
 		return true
 	}
 	return false

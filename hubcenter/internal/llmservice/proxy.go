@@ -577,21 +577,8 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		if hasToolsInStreamBody(reqBody) {
 			if thinking, ok := reqBody["thinking"].(map[string]any); ok {
 				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					maxOut := 65536
-					if mt, ok := reqBody["max_tokens"].(float64); ok && int(mt) > 0 {
-						maxOut = int(mt)
-					} else if mt, ok := reqBody["max_tokens"].(int); ok && mt > 0 {
-						maxOut = mt
-					} else if mt, ok := reqBody["max_completion_tokens"].(float64); ok && int(mt) > 0 {
-						maxOut = int(mt)
-					} else if mt, ok := reqBody["max_completion_tokens"].(int); ok && mt > 0 {
-						maxOut = mt
-					}
-					reasoningBudget := maxOut / 4
-					if reasoningBudget < 1024 {
-						reasoningBudget = 1024
-					}
-					thinking["budget_tokens"] = reasoningBudget
+					// Conservative budget (4096) — see corelib/llm/client.go comment.
+					thinking["budget_tokens"] = 4096
 				}
 			}
 		}

@@ -283,6 +283,46 @@
     font-size: 0.76rem;
 }
 
+.about-rank-badge {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 0.72rem;
+    color: var(--theme-primary);
+    font-weight: 600;
+}
+
+/* Sidebar medal glow animations — one per medal color */
+.sidebar-medal--gold {
+    animation: medal-glow-gold 3s ease-in-out infinite;
+}
+.sidebar-medal--silver {
+    animation: medal-glow-silver 3s ease-in-out infinite;
+}
+.sidebar-medal--bronze {
+    animation: medal-glow-bronze 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar-medal--gold,
+    .sidebar-medal--silver,
+    .sidebar-medal--bronze {
+        animation: none;
+    }
+}
+
+@keyframes medal-glow-gold {
+    0%, 100% { filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.4)); }
+    50% { filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.9)); }
+}
+@keyframes medal-glow-silver {
+    0%, 100% { filter: drop-shadow(0 0 2px rgba(192, 192, 192, 0.4)); }
+    50% { filter: drop-shadow(0 0 6px rgba(192, 192, 192, 0.9)); }
+}
+@keyframes medal-glow-bronze {
+    0%, 100% { filter: drop-shadow(0 0 2px rgba(205, 127, 50, 0.4)); }
+    50% { filter: drop-shadow(0 0 6px rgba(205, 127, 50, 0.9)); }
+}
+
 .about-status-pill {
     display: inline-flex;
     align-items: center;
@@ -3255,6 +3295,8 @@ body {
     justify-content: center;
     padding: 18px;
     background: rgba(15, 23, 42, 0.38);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .knowledge-import-modal {
@@ -3268,6 +3310,8 @@ body {
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg), 0 24px 70px rgba(15, 23, 42, 0.24);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .knowledge-import-header,
@@ -3507,6 +3551,8 @@ body {
     border-radius: var(--radius-md);
     background: var(--theme-surface);
     text-align: left;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .knowledge-panel-header {
@@ -3676,6 +3722,19 @@ body {
     min-height: 72px;
 }
 
+.knowledge-field {
+    display: grid;
+    gap: 5px;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.knowledge-field-label {
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    font-weight: 650;
+}
+
 .knowledge-field-hint {
     color: var(--theme-text-muted);
     font-size: 0.74rem;
@@ -3742,6 +3801,8 @@ body {
     justify-content: center;
     padding: 20px;
     background: rgba(15, 23, 42, 0.42);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .knowledge-share-modal {
@@ -4039,6 +4100,8 @@ body {
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.82rem;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .knowledge-textarea {
@@ -5393,6 +5456,8 @@ body {
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-md);
     background: var(--theme-surface);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .pet-advanced-card {
@@ -6206,6 +6271,8 @@ body {
     align-items: center;
     z-index: 2000;
     animation: fadeIn 0.15s ease-out;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .modal-content {
@@ -6217,6 +6284,8 @@ body {
     text-align: center;
     position: relative;
     animation: slideUp 0.15s ease-out;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .provider-config-modal {
@@ -7842,6 +7911,8 @@ body {
 .llm-config-dialog-overlay {
     background: color-mix(in srgb, var(--theme-page-bg) 58%, rgba(0, 0, 0, 0.48)) !important;
     backdrop-filter: blur(6px);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .llm-config-dialog {
@@ -7853,6 +7924,8 @@ body {
     border-radius: 18px !important;
     background: var(--theme-surface) !important;
     box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24), 0 0 0 1px var(--theme-border-subtle) !important;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .llm-config-dialog__header {
@@ -9076,6 +9149,8 @@ body {
     align-items: center;
     justify-content: center;
     background: rgba(0, 0, 0, 0.45);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .im-audit-panel {
@@ -9089,6 +9164,8 @@ body {
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .im-audit-header,
@@ -13020,6 +13097,8 @@ body {
     justify-content: center;
     align-items: center;
     z-index: 2000;
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
 }
 
 .modal-backdrop[data-ai-theme='dark'] {

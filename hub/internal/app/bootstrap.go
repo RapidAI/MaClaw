@@ -469,6 +469,13 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 	ensureLLMRegistryBuiltinsForAllTenants(context.Background(), st.System, st.Tenants)
 
+	// Mark Hub as ready for traffic. This must be called AFTER:
+	// - MaClawModule initialized (LLM provider client ready)
+	// - LLM registry builtins ensured (provider registry loadable)
+	// The /healthz/ready endpoint returns 200 only after this call,
+	// allowing nginx to route traffic only to fully initialized instances.
+	httpapi.MarkHubReady()
+
 	router := httpapi.NewRouter(
 		adminService,
 		identityService,

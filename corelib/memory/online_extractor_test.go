@@ -148,6 +148,7 @@ func TestOnlineExtractor_ExtractAndIntegrate_UpdateExisting(t *testing.T) {
 	}
 	store.mu.RUnlock()
 
+	store.WaitRebuild()
 	if got := store.FindByEntity("Beijing"); len(got) != 0 {
 		t.Fatalf("superseded entity fact should be removed from active entity lookup, got %+v", got)
 	}

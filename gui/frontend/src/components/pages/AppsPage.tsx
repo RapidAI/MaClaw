@@ -1508,18 +1508,12 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
     local: { zh: '\u672c\u5730', en: 'Local' },
 };
 
-const initialApps: AppEntry[] = [
-    { id: 'expense', name: '\u62a5\u9500\u7533\u8bf7', description: '\u4ece\u53d1\u7968\u3001\u884c\u7a0b\u548c\u653f\u7b56\u81ea\u52a8\u751f\u6210\u62a5\u9500\u5355\u3002', category: 'OA', kind: 'enterprise_approval_app', icon: 'receipt', accent: '#2f5f98', pinned: true, source: 'datasrv', manifest: makeEnterpriseManifest('enterprise_approval_app', 'finance', 'finance.expense_upsert', 'finance.expense_review', 'finance.expense_by_status', 'finance.overview', 'expense-approval-app', [{ id: 'expense-approval-workflow', version: '1.0.0', kind: 'workflow_skill', required: true, source: 'hub', capabilities: ['approval.workflow', 'expense.policy'] }], { event: 'expense.submitted', objectRole: 'expense_report' }) },
-    { id: 'purchase-inbound', name: '\u91c7\u8d2d\u5165\u5e93', description: '\u5bf9\u63a5\u91c7\u8d2d\u5355\u3001\u5165\u5e93\u5355\u548c\u5e93\u5b58\u53d8\u52a8\u3002', category: '\u8fdb\u9500\u5b58', kind: 'enterprise_normal_app', icon: 'warehouse', accent: '#657a42', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('procurement', 'procurement.purchase_order_upsert', 'procurement.purchase_order_review', 'procurement.purchase_by_status', 'procurement.overview') },
-    { id: 'inventory-count', name: '\u5e93\u5b58\u76d8\u70b9', description: '\u6309\u4ed3\u5e93\u6216\u7269\u6599\u751f\u6210\u76d8\u70b9\u8868\u5e76\u56de\u5199\u5dee\u5f02\u3002', category: '\u8fdb\u9500\u5b58', kind: 'enterprise_normal_app', icon: 'inventory', accent: '#6b7280', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('inventory', 'inventory.stock_update', 'inventory.stock_position', 'inventory.stock_by_warehouse', 'inventory.overview') },
-    { id: 'customer-profile', name: '\u5ba2\u6237\u5efa\u6863', description: '\u4ece\u540d\u7247\u3001\u90ae\u4ef6\u6216\u804a\u5929\u8bb0\u5f55\u6574\u7406\u5ba2\u6237\u8d44\u6599\u3002', category: 'CRM', kind: 'enterprise_normal_app', icon: 'customer', accent: '#8a5a44', pinned: true, source: 'datasrv', manifest: makeDataSrvManifest('sales', 'sales.customer_upsert', 'sales.customer_directory', 'sales.customer_activity', 'sales.overview') },
-    { id: 'contract-review', name: '\u5408\u540c\u5ba1\u67e5', description: '\u68c0\u67e5\u5408\u540c\u6761\u6b3e\u3001\u98ce\u9669\u70b9\u548c\u4fee\u8ba2\u5efa\u8bae\u3002', category: '\u6cd5\u52a1', kind: 'tool_app', icon: 'contract', accent: '#7c3f58', pinned: true, source: 'skill', manifest: makeSkillManifest('contract-review', 'mixed') },
-    { id: 'pdf-word', name: 'PDF \u8f6c Word', description: '\u4e0a\u4f20 PDF\uff0c\u4fdd\u7559\u7248\u5f0f\u8f93\u51fa Word \u6587\u6863\u3002', category: '\u6587\u6863\u5904\u7406', kind: 'tool_app', icon: 'pdf', accent: '#b45309', pinned: true, source: 'skill', manifest: makeSkillManifest('pdf-word', 'file') },
-    { id: 'doc-redact', name: '\u6587\u6863\u8131\u654f', description: '\u8bc6\u522b\u8eab\u4efd\u8bc1\u3001\u7535\u8bdd\u3001\u5730\u5740\u7b49\u654f\u611f\u4fe1\u606f\u5e76\u8f93\u51fa\u65b0\u6587\u6863\u3002', category: '\u6587\u6863\u5904\u7406', kind: 'tool_app', icon: 'shield', accent: '#28705f', source: 'skill', manifest: makeSkillManifest('doc-redact', 'file') },
-    { id: 'sheet-analysis', name: '\u8868\u683c\u5206\u6790', description: '\u4e0a\u4f20 Excel\uff0c\u751f\u6210\u5206\u6790\u7ed3\u8bba\u3001\u56fe\u8868\u548c\u6e05\u6d17\u540e\u8868\u683c\u3002', category: '\u6570\u636e\u5206\u6790', kind: 'tool_app', icon: 'sheet', accent: '#3f6f4f', source: 'skill', manifest: makeSkillManifest('sheet-analysis', 'file', ['xlsx', 'pdf']) },
-    { id: 'web-collect', name: '\u7f51\u9875\u91c7\u96c6', description: '\u56fa\u5b9a\u7f51\u7ad9\u7684\u5468\u671f\u91c7\u96c6\u548c\u7ed3\u679c\u6821\u9a8c\u3002', category: '\u6570\u636e\u91c7\u96c6', kind: 'automation_app', icon: 'web', accent: '#5b5ea6', source: 'market', manifest: makeAutomationManifest() },
-    { id: 'data-sync', name: '\u6570\u636e\u540c\u6b65', description: '\u5728 DataSrv \u3001\u6587\u4ef6\u548c\u4e1a\u52a1\u7cfb\u7edf\u95f4\u8fd0\u884c\u53ef\u76d1\u63a7\u540c\u6b65\u3002', category: '\u6570\u636e\u96c6\u6210', kind: 'automation_app', icon: 'sync', accent: '#4b6572', source: 'market', manifest: makeAutomationManifest() },
-];
+// initialApps is intentionally empty — apps are discovered at runtime from
+// installed Skills (via ListSkillAppManifests), DataSrv capabilities, or
+// user-created entries persisted in localStorage. Placeholder entries that
+// lacked real backend implementations have been removed to avoid misleading
+// users with non-functional apps in the management panel.
+const initialApps: AppEntry[] = [];
 
 const marketCatalogApps: AppEntry[] = [
     { id: 'market-contract-archive', name: '\u5408\u540c\u5f52\u6863', description: '\u4e0a\u4f20\u5408\u540c\u548c\u9644\u4ef6\uff0c\u751f\u6210\u5f52\u6863\u7f16\u53f7\u3001\u5ba1\u6838\u72b6\u6001\u548c\u8bc1\u636e\u6458\u8981\u3002', category: '\u6cd5\u52a1', kind: 'tool_app', icon: 'contract', accent: '#7c3f58', source: 'market', manifest: makeSkillManifest('contract-archive', 'mixed', ['docx', 'pdf', 'json']) },
@@ -3416,14 +3410,19 @@ function skillManifestToApp(entry: SkillAppManifestEntry): AppEntry | null {
 
 function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppManifestEntry): AppEntry | null {
     const app = raw?.app;
+    const binding = app?.binding || {};
+    const governance = app?.governance || {};
     const id = String(app?.id || entry?.id || '').trim();
     const name = String(app?.name || entry?.name || '').trim();
     const kind = normalizeAppKind(app?.kind || entry?.kind);
-    const skillID = String(entry?.skill_id || app?.binding?.appSkill?.id || app?.binding?.skill?.id || id).trim();
+    const skillBinding = binding?.skill || app?.skill;
+    const datasrvBinding = binding?.datasrv || app?.datasrv;
+    const skillID = String(entry?.skill_id || binding?.appSkill?.id || app?.appSkill?.id || skillBinding?.id || id).trim();
     if (!id || !name || !skillID) return null;
     const launchMode = String(app?.launchMode || defaultLaunchModeForKind(kind)) as AppManifestBinding['launchMode'];
-    const resultContract = normalizeAppResultContract(app?.binding?.resultContract || app?.governance?.resultContract, kind, app?.binding?.skill?.outputModes || []);
-    const testEvidence = app?.governance?.testEvidence || app?.governance?.test_evidence;
+    const skillOutputModes = skillBinding?.outputModes || skillBinding?.output_modes || [];
+    const resultContract = normalizeAppResultContract(binding?.resultContract || app?.resultContract || governance?.resultContract || governance?.result_contract, kind, skillOutputModes);
+    const testEvidence = governance?.testEvidence || governance?.test_evidence;
     const importedRunEvidence = normalizeImportedRunEvidence(testEvidence ? {
         ...testEvidence,
         runID: testEvidence.runID || testEvidence.runId || testEvidence.run_id,
@@ -3443,27 +3442,27 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
         version: normalizeAppVersion(app?.version || (raw as any)?.version),
         source: 'skill',
         importedRunEvidence,
-        workflowContract: app?.governance?.workflowContract || app?.governance?.workflow_contract,
+        workflowContract: governance?.workflowContract || governance?.workflow_contract,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: raw.installUnit === 'skill' || raw.installUnit === 'mcp' || raw.installUnit === 'builtin' || raw.installUnit === 'enterprise_app_pack' ? raw.installUnit : (isEnterpriseAppKind(kind) ? 'enterprise_app_pack' : 'skill'),
             privateMarker: 'x_maclaw_apps',
             entryKind: kind,
             launchMode,
-            datasrv: normalizeAppDataSrv(app?.binding?.datasrv),
-            mis: normalizeAppMIS(app?.binding?.mis),
-            appSkill: app?.binding?.appSkill || (isEnterpriseAppKind(kind) ? { id: skillID, version: '1.0.0', source: 'local' } : undefined),
-            dependencies: normalizeAppDependencies(app?.binding?.dependencies),
-            ui: normalizeAppWorkspaceLayout(app?.binding?.ui, kind),
+            datasrv: normalizeAppDataSrv(datasrvBinding),
+            mis: normalizeAppMIS(binding?.mis || app?.mis),
+            appSkill: binding?.appSkill || app?.appSkill || (isEnterpriseAppKind(kind) ? { id: skillID, version: '1.0.0', source: 'local' } : undefined),
+            dependencies: normalizeAppDependencies(binding?.dependencies || app?.dependencies),
+            ui: normalizeAppWorkspaceLayout(binding?.ui || app?.ui, kind),
             resultContract,
-            testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(app?.binding?.testProtocol || app?.governance?.testProtocol || testEvidence?.testProtocol, kind, app?.binding?.skill?.outputModes || [], resultContract)),
-            workflow: normalizeAppWorkflowMapping(app?.binding?.workflow || app?.governance?.workflow, kind, app?.binding?.datasrv?.domain || 'business', app?.binding?.datasrv?.objectRole || app?.binding?.datasrv?.domain || 'record'),
-            skill: app?.binding?.skill ? {
-                ...app.binding.skill,
-                inputMode: app.binding.skill.inputMode === 'form' || app.binding.skill.inputMode === 'mixed' ? app.binding.skill.inputMode : 'file',
-                multipleFiles: !!app.binding.skill.multipleFiles,
-                outputModes: normalizeOutputModes(app.binding.skill.outputModes),
-                fields: normalizeSkillAppFields(app.binding.skill.fields),
+            testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(binding?.testProtocol || app?.testProtocol || governance?.testProtocol || governance?.test_protocol || testEvidence?.testProtocol || testEvidence?.test_protocol, kind, skillOutputModes, resultContract)),
+            workflow: normalizeAppWorkflowMapping(binding?.workflow || app?.workflow || governance?.workflow, kind, datasrvBinding?.domain || 'business', datasrvBinding?.objectRole || datasrvBinding?.domain || 'record'),
+            skill: skillBinding ? {
+                ...skillBinding,
+                inputMode: skillBinding.inputMode === 'form' || skillBinding.inputMode === 'mixed' ? skillBinding.inputMode : 'file',
+                multipleFiles: !!skillBinding.multipleFiles,
+                outputModes: normalizeOutputModes(skillBinding.outputModes),
+                fields: normalizeSkillAppFields(skillBinding.fields),
             } : undefined,
         },
     };
@@ -5160,7 +5159,7 @@ function workflowContractForApp(app: AppEntry): AppWorkflowContract | undefined 
 }
 
 function workflowContractIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
-    return workflowContractIssuesForAppIDs(plan, [canonicalAppManifestID(app)])[0];
+    return workflowContractIssuesForAppIDs(plan, appDependencyVerificationAppIDs(app))[0];
 }
 function workflowContractIssuesForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[] = []): AppReviewIssue[] {
     const issues = plan?.workflow_contract_issues || [];
@@ -5201,7 +5200,7 @@ function governanceReviewHasIssueForAppIDs(plan: BackendAppInstallPlan | null | 
 }
 
 function governanceReviewIssueForApp(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): AppReviewIssue | undefined {
-    return governanceReviewIssuesForAppIDs(plan, [canonicalAppManifestID(app)])[0];
+    return governanceReviewIssuesForAppIDs(plan, appDependencyVerificationAppIDs(app))[0];
 }
 
 function governanceReviewIssueMessageForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIDs: string[], text: typeof labels.zh): string {
@@ -5221,18 +5220,19 @@ function workflowContractStatus(contract: AppWorkflowContract | undefined, plan:
     return contract ? 'ready' : 'missing';
 }
 function workflowContractHasIssue(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
-    return workflowContractHasIssueForAppIDs(plan, [canonicalAppManifestID(app)]);
+    return workflowContractHasIssueForAppIDs(plan, appDependencyVerificationAppIDs(app));
 }
 
 function runtimeInstallPlanBlocked(plan: BackendAppInstallPlan | null | undefined, app: AppEntry): boolean {
-    const appIDs = [canonicalAppManifestID(app)];
+    const appIDs = appDependencyVerificationAppIDs(app);
     return hasMissingRequiredBackendDependency(plan, appIDs) || governanceReviewHasIssueForAppIDs(plan, appIDs) || workflowContractHasIssue(plan, app);
 }
 
 function runtimeInstallPlanBlockMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string): string {
+    const appIDs = appDependencyVerificationAppIDs(app);
     const governanceIssue = governanceReviewIssueForApp(plan, app);
     if (governanceIssue?.message) return `${text.reviewIssues}: ${governanceIssue.message}`;
-    if (governanceReviewHasIssueForAppIDs(plan, [canonicalAppManifestID(app)])) return text.reviewIssues;
+    if (governanceReviewHasIssueForAppIDs(plan, appIDs)) return text.reviewIssues;
     const issue = workflowContractIssueForApp(plan, app);
     if (issue?.message) return `${text.workflowContractBlocked}: ${issue.message}`;
     if (plan?.has_workflow_contract_issue) return text.workflowContractBlocked;
@@ -5544,7 +5544,7 @@ function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
     return (app.source === 'market' || app.source === 'skill' || app.source === 'datasrv') && appDependencyEvidence(app).length > 0;
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission, overrides: AppGovernanceOverrides = {}) {
-    const evidence = latestAppRunEvidence(app) || latestAvailableAppRunEvidence(app);
+    const evidence = latestAppRunEvidence(app);
     const evidenceArtifacts = appRunHistoryArtifacts(evidence);
     const evidenceOutputs = normalizeApprovalOutputs(evidence?.outputs) || [];
     const resultContract = appResultContractForManifest(app);
@@ -5671,6 +5671,8 @@ function buildAppTileAriaLabel(app: AppEntry, text: typeof labels.zh, statusLabe
 
 function buildAppSearchText(app: AppEntry, lang?: string) {
     const manifest = app.manifest;
+    const dependencies = appSkillDependencies(app);
+    const approvalBindings = manifest?.mis?.approvalBindings || [];
     return [
         app.id,
         app.name,
@@ -5682,11 +5684,26 @@ function buildAppSearchText(app: AppEntry, lang?: string) {
         app.source,
         manifest?.launchMode,
         manifest?.installUnit,
+        manifest?.appSkill?.id,
+        manifest?.appSkill?.source,
+        manifest?.datasrv?.appID,
         manifest?.datasrv?.domain,
+        manifest?.datasrv?.datasetID,
+        manifest?.datasrv?.objectRole,
+        manifest?.datasrv?.blueprintID,
+        manifest?.datasrv?.templateID,
         manifest?.datasrv?.preferredAction,
         manifest?.datasrv?.preferredView,
         manifest?.datasrv?.preferredReport,
         manifest?.datasrv?.preferredDashboard,
+        manifest?.workflow?.submitNode,
+        manifest?.workflow?.approvalNode,
+        manifest?.workflow?.resultNode,
+        ...Object.values(manifest?.workflow?.statusMapping || {}),
+        ...approvalBindings.flatMap((binding) => [binding.event, binding.workflowSkillId, binding.workflowVersion, binding.objectRole]),
+        ...dependencies.flatMap((dependency) => [dependency.id, dependency.version, dependency.kind, dependency.source, dependency.installRef, ...(dependency.capabilities || [])]),
+        manifest?.resultContract?.primary,
+        ...(manifest?.resultContract?.types || []),
         manifest?.skill?.id,
         manifest?.skill?.inputMode,
         ...(manifest?.skill?.outputModes || []),
@@ -6906,10 +6923,23 @@ function approvalInstanceCanDecide(instance: ApprovalInstanceView | undefined) {
     return !!instance && (instance.status === 'pending' || instance.status === 'draft' || instance.lane === 'pending_my_approval');
 }
 
-function approvalDecisionResultPayload(instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') {
+function approvalDecisionResultPayload(instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention', context?: {
+    resultText?: string;
+    currentNode?: string;
+    workflowDecisionID?: string;
+    currentNodeIDs?: string[];
+    fromStatus?: string;
+}) {
     const base = instance.resultPayload && typeof instance.resultPayload === 'object' && !Array.isArray(instance.resultPayload)
         ? { ...instance.resultPayload }
         : {};
+    const currentNode = String(context?.currentNode || instance.currentNode || '').trim();
+    const workflowDecisionID = String(context?.workflowDecisionID || instance.workflowDecisionID || '').trim();
+    const resultText = String(context?.resultText || instance.result || '').trim();
+    const currentNodeIDs = Array.isArray(context?.currentNodeIDs) && context.currentNodeIDs.length > 0
+        ? context.currentNodeIDs
+        : instance.currentNodeIDs || [];
+    const fromStatus = String(context?.fromStatus || instance.businessStatus || instance.status || instance.fromStatus || '').trim();
     return {
         ...base,
         approval_result: decision,
@@ -6917,6 +6947,20 @@ function approvalDecisionResultPayload(instance: ApprovalInstanceView, decision:
         decision,
         business_status: decision,
         result_status: decision,
+        ...(resultText ? { text: resultText } : {}),
+        ...(currentNode ? { current_node: currentNode, approval_node: currentNode } : {}),
+        ...(currentNodeIDs.length ? { current_node_ids: currentNodeIDs, workflow_node_ids: currentNodeIDs } : {}),
+        ...(instance.workflowSkillID ? { workflow_skill_id: instance.workflowSkillID, workflowSkillId: instance.workflowSkillID } : {}),
+        ...(instance.workflowVersion ? { workflow_version: instance.workflowVersion, workflowVersion: instance.workflowVersion } : {}),
+        ...(instance.approvalWorkflowID ? { approval_workflow_id: instance.approvalWorkflowID, approvalWorkflowID: instance.approvalWorkflowID } : {}),
+        ...(workflowDecisionID ? { workflow_decision_id: workflowDecisionID, workflowDecisionID } : {}),
+        ...(instance.recordID ? { record_id: instance.recordID, recordID: instance.recordID } : {}),
+        ...(instance.approvalID ? { approval_id: instance.approvalID, approvalID: instance.approvalID } : {}),
+        ...(instance.datasetID ? { dataset_id: instance.datasetID, datasetID: instance.datasetID } : {}),
+        ...(instance.objectRole ? { object_role: instance.objectRole, objectRole: instance.objectRole } : {}),
+        ...(fromStatus ? { from_status: fromStatus, fromStatus } : {}),
+        to_status: decision,
+        toStatus: decision,
     };
 }
 
@@ -7624,7 +7668,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
                 prompt: `Run MaClaw business app: ${app.name} / ${inputSummary}`,
             };
-            if (businessSkillID) {
+            if (businessSkillID && app.source !== 'datasrv') {
                 setRunState('running');
                 setCurrentRunContext({ inputSummary, outputMode: 'business' });
                 try {
@@ -7714,7 +7758,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
-        const resultPayload = approvalDecisionResultPayload(instance, decision);
+        const workflowDecisionID = `decision-${Date.now().toString(36)}`;
+        const resultPayload = approvalDecisionResultPayload(instance, decision, {
+            resultText: statusText,
+            currentNode: nextNode,
+            workflowDecisionID,
+            currentNodeIDs: [nextNode],
+            fromStatus: instance.businessStatus || instance.status,
+        });
         const outputs = approvalOutputsOrDefault(
             instance.outputs,
             decision,
@@ -7731,7 +7782,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             workflow_skill_id: instance.workflowSkillID || workflowSkillID,
             approval_workflow_id: instance.approvalWorkflowID || approvalBinding?.event || workflowSkillID || undefined,
             workflow_version: instance.workflowVersion || workflowVersion || undefined,
-            workflow_decision_id: `decision-${Date.now().toString(36)}`,
+            workflow_decision_id: workflowDecisionID,
             approval_id: instance.approvalID,
             record_approval_id: instance.approvalID,
             approval_event: instance.approvalEvent || approvalBinding?.event || undefined,
@@ -7883,7 +7934,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const statusRegion = outputRegion === 'bottom' ? centerRegion : outputRegion;
     const showInputRegion = isRuntimeRoleVisible('input') || isAutomation;
     const showWorkspaceRegion = isApproval ? isRuntimeRoleVisible('instance_list') : isBusiness ? isRuntimeRoleVisible('record_list') : isRuntimeRoleVisible('preview');
-    const showStatusRegion = isRuntimeRoleVisible('detail') || isRuntimeRoleVisible('parameters') || isRuntimeRoleVisible('preview');
+    const showStatusRegion = isRuntimeRoleVisible('detail') || isRuntimeRoleVisible('parameters') || isRuntimeRoleVisible('preview') || !!runtimeBusinessError;
     const showOutputRegion = isRuntimeRoleVisible('output');
 
     return (
@@ -7894,6 +7945,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     <p className="apps-detail__subtitle">{app.description}</p>
                     <InstallVersionSnapshot snapshot={app.versionSnapshot} text={text} />
                     {isApproval && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
+                    {app.installEvidence && <InstallRecordEvidenceSnapshot record={app.installEvidence} text={text} />}
                 </div>
             </div>
             <div className="apps-detail__body elegant-scrollbar">
@@ -8020,7 +8072,6 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             {runtimeVisibleDependencyPlan && (
                                 <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} />
                             )}
-                            {app.installEvidence && <InstallRecordEvidenceSnapshot record={app.installEvidence} text={text} />}
                             {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
                         </section>}
                         {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
@@ -8133,14 +8184,14 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const loadInstances = useCallback(async () => {
         setLoadingState('loading');
         try {
-            const records = await ListMaclawAppApprovalInstancesAll(lane, 200) as BackendApprovalInstance[];
+            const records = await ListMaclawAppApprovalInstancesAll('all', 200) as BackendApprovalInstance[];
             setInstances((records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[]);
             setLoadingState('idle');
         } catch {
             setInstances([]);
             setLoadingState('error');
         }
-    }, [lane, lang]);
+    }, [lang]);
 
     useEffect(() => {
         void loadInstances();
@@ -8162,12 +8213,14 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const filteredInstances = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
         return instances.filter((item) => {
+            const laneMatches = lane === 'all'
+                || (lane === 'handled' ? item.status === 'approved' || item.status === 'rejected' : item.lane === lane);
             const appMatches = appFilter === 'all' || item.appID === appFilter;
             const statusMatches = statusFilter === 'all' || item.status === statusFilter;
             const queryMatches = !normalizedQuery || approvalSearchText(item, appNameById.get(item.appID || '') || '', lang).includes(normalizedQuery);
-            return appMatches && statusMatches && queryMatches;
+            return laneMatches && appMatches && statusMatches && queryMatches;
         });
-    }, [instances, appFilter, statusFilter, query, appNameById]);
+    }, [instances, lane, appFilter, statusFilter, query, appNameById, lang]);
     const selected = filteredInstances.find((item) => item.id === selectedInstanceId) || filteredInstances[0];
     const selectedApp = selected?.appID ? apps.find((item) => item.id === selected.appID) : undefined;
     const selectedResultContract = selectedApp ? appResultContractForManifest(selectedApp) : undefined;
@@ -8210,7 +8263,14 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const statusText = decision === 'approved' ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved') : decision === 'rejected' ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected') : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
-        const resultPayload = approvalDecisionResultPayload(instance, decision);
+        const workflowDecisionID = `decision-${Date.now().toString(36)}`;
+        const resultPayload = approvalDecisionResultPayload(instance, decision, {
+            resultText: statusText,
+            currentNode: nextNode,
+            workflowDecisionID,
+            currentNodeIDs: [nextNode],
+            fromStatus: instance.businessStatus || instance.status,
+        });
         const outputs = approvalOutputsOrDefault(
             instance.outputs,
             decision,
@@ -8227,7 +8287,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             workflow_skill_id: instance.workflowSkillID,
             approval_workflow_id: instance.approvalWorkflowID || instance.approvalEvent || instance.workflowSkillID,
             workflow_version: instance.workflowVersion,
-            workflow_decision_id: `decision-${Date.now().toString(36)}`,
+            workflow_decision_id: workflowDecisionID,
             approval_id: instance.approvalID,
             record_approval_id: instance.approvalID,
             approval_event: instance.approvalEvent,
@@ -8852,9 +8912,16 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
             icon: app.icon,
             customIconDataUrl: app.customIconDataUrl,
             source: app.source,
-            importedRunEvidence: app.importedRunEvidence,
+            importedRunEvidence: latestAppRunEvidence(app) || undefined,
             launchMode: manifest?.launchMode || defaultLaunchModeForKind(app.kind),
             ui: manifest?.ui,
+            datasrv: manifest?.datasrv,
+            mis: manifest?.mis,
+            appSkill: manifest?.appSkill,
+            dependencies: manifest?.dependencies,
+            resultContract: manifest?.resultContract,
+            testProtocol: manifest?.testProtocol,
+            workflow: manifest?.workflow,
             binding: {
                 datasrv: manifest?.datasrv,
                 mis: manifest?.mis,
@@ -9166,7 +9233,11 @@ function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds
 }
 
 function backendDependenciesForApp(plan: BackendAppInstallPlan | null | undefined, appId: string) {
-    return (plan?.dependencies || []).filter((dep) => backendDependencyMatchesAppIDs(dep, [appId]));
+    return backendDependenciesForAppIDs(plan, [appId]);
+}
+
+function backendDependenciesForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIds: string[]) {
+    return (plan?.dependencies || []).filter((dep) => backendDependencyMatchesAppIDs(dep, appIds));
 }
 
 function isBlockingBackendDependency(dep: BackendAppInstallDependency) {
@@ -9183,13 +9254,17 @@ function hasMissingRequiredBackendDependency(plan: BackendAppInstallPlan | null 
     return (plan?.dependencies || []).some((dep) => isBlockingBackendDependency(dep) && backendDependencyMatchesAppIDs(dep, appIds));
 }
 function firstBlockingBackendDependencyForApp(plan: BackendAppInstallPlan | null | undefined, appId: string) {
-    const appDependencies = backendDependenciesForApp(plan, appId);
+    return firstBlockingBackendDependencyForAppIDs(plan, [appId]);
+}
+
+function firstBlockingBackendDependencyForAppIDs(plan: BackendAppInstallPlan | null | undefined, appIds: string[]) {
+    const appDependencies = backendDependenciesForAppIDs(plan, appIds);
     const candidates = appDependencies.length > 0 ? appDependencies : plan?.dependencies || [];
     return candidates.find(isBlockingBackendDependency) || null;
 }
 
 function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInstallPlan | null | undefined, text: typeof labels.zh, lang?: string) {
-    const dep = firstBlockingBackendDependencyForApp(plan, canonicalAppManifestID(app));
+    const dep = firstBlockingBackendDependencyForAppIDs(plan, appDependencyVerificationAppIDs(app));
     if (!dep?.id) return text.missingRequiredDependency;
     const zh = isZh(lang);
     const rawState = String(dep.installed_status || dep.health || dep.action || '').trim();
@@ -9311,6 +9386,39 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
     ].filter(Boolean).join(' · ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
+    const approvalInstance = evidence.approvalInstance && typeof evidence.approvalInstance === 'object'
+        ? evidence.approvalInstance as Record<string, unknown>
+        : evidence.approval_instance && typeof evidence.approval_instance === 'object'
+            ? evidence.approval_instance as Record<string, unknown>
+            : {};
+    const approvalInstanceValue = [
+        installRecordString(approvalInstance.instanceId || approvalInstance.instance_id || approvalInstance.workflowInstanceID || approvalInstance.workflow_instance_id || approvalInstance.approvalID || approvalInstance.approval_id || approvalInstance.recordApprovalID || approvalInstance.record_approval_id),
+        installRecordString(approvalInstance.status),
+        installRecordString(approvalInstance.currentNode || approvalInstance.current_node),
+    ].filter(Boolean).join(' · ');
+    if (approvalInstanceValue) items.push({ label: text.approvalInstanceId, value: approvalInstanceValue });
+    const outputCount = Array.isArray(evidence.outputs)
+        ? evidence.outputs.length
+        : Array.isArray((evidence as Record<string, unknown>).output_blocks)
+            ? ((evidence as Record<string, unknown>).output_blocks as unknown[]).length
+            : 0;
+    const artifactCount = Array.isArray(evidence.artifacts)
+        ? evidence.artifacts.length
+        : Array.isArray((evidence as Record<string, unknown>).artifact_files)
+            ? ((evidence as Record<string, unknown>).artifact_files as unknown[]).length
+            : 0;
+    if (outputCount > 0 || artifactCount > 0) {
+        items.push({ label: text.approvalResultPackage, value: `${text.output}: ${outputCount} · ${text.runArtifacts}: ${artifactCount}` });
+    }
+    const resultPayload = evidence.resultPayload && typeof evidence.resultPayload === 'object'
+        ? evidence.resultPayload as Record<string, unknown>
+        : evidence.result_payload && typeof evidence.result_payload === 'object'
+            ? evidence.result_payload as Record<string, unknown>
+            : {};
+    const resultPayloadKeys = Object.keys(resultPayload).filter(Boolean);
+    if (resultPayloadKeys.length > 0) {
+        items.push({ label: text.approvalOutputData, value: resultPayloadKeys.slice(0, 4).join(', ') + (resultPayloadKeys.length > 4 ? ` +${resultPayloadKeys.length - 4}` : '') });
+    }
     const dependencyVerification = record.dependency_verification || {};
     const verificationDependencies = parseBackendAppInstallDependencies(dependencyVerification.dependencies);
     const dependencyCount = appEvidenceNumber(dependencyVerification.dependencyCount, dependencyVerification.dependency_count)
@@ -10953,15 +11061,29 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
                 </div>
                 <div className="apps-actions">
-                    <button className="apps-primary-button" type="button" disabled={!name.trim()} onClick={createApp}>{text.createTab}</button>
-                    {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
+                    {kind === 'tool_app' && canWriteSkillDefinition ? (
                         <>
-                            <button className="apps-secondary-button" type="button" disabled={!canWriteSkillDefinition || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
+                            <button className="apps-primary-button" type="button" disabled={!name.trim() || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
                                 {skillAppSaveState === 'saving' ? (zh ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : (zh ? '\u4fdd\u5b58\u5230 Skill' : 'Save to Skill')}
                             </button>
                             <button className="apps-secondary-button" type="button" disabled={!skillDefinitionTargetID || !skillDefinitionTargetInstalled || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
                                 {skillMarketUploadState === 'uploading' ? (zh ? '\u4e0a\u4f20\u4e2d...' : 'Uploading...') : (zh ? '\u4e0a\u4f20\u5230 SkillMarket' : 'Upload to SkillMarket')}
                             </button>
+                            <button className="apps-secondary-button" type="button" disabled={!name.trim()} onClick={createApp}>{zh ? '\u4ec5\u6dfb\u52a0\u5230\u9762\u677f' : 'Add to panel only'}</button>
+                        </>
+                    ) : (
+                        <>
+                            <button className="apps-primary-button" type="button" disabled={!name.trim()} onClick={createApp}>{text.createTab}</button>
+                            {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
+                                <>
+                                    <button className="apps-secondary-button" type="button" disabled={!canWriteSkillDefinition || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
+                                        {skillAppSaveState === 'saving' ? (zh ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : (zh ? '\u4fdd\u5b58\u5230 Skill' : 'Save to Skill')}
+                                    </button>
+                                    <button className="apps-secondary-button" type="button" disabled={!skillDefinitionTargetID || !skillDefinitionTargetInstalled || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
+                                        {skillMarketUploadState === 'uploading' ? (zh ? '\u4e0a\u4f20\u4e2d...' : 'Uploading...') : (zh ? '\u4e0a\u4f20\u5230 SkillMarket' : 'Upload to SkillMarket')}
+                                    </button>
+                                </>
+                            )}
                         </>
                     )}
                 </div>
@@ -11106,7 +11228,12 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     const [queueDetailLoadingId, setQueueDetailLoadingId] = useState('');
     const [queueDetailRecords, setQueueDetailRecords] = useState<Record<string, Record<string, unknown>>>({});
     const publishApps = apps.filter((app) => app.source === 'local');
-    const packageText = JSON.stringify(appsToPackManifest(publishApps, submissions), null, 2);
+    const packageGovernanceOverrides = Object.fromEntries(
+        publishApps
+            .map((app) => [app.id, { dependencyVerification: appInstallEvidenceDependencyVerificationPlan(app) }] as const)
+            .filter(([, override]) => !!override.dependencyVerification),
+    );
+    const packageText = JSON.stringify(appsToPackManifest(publishApps, submissions, packageGovernanceOverrides), null, 2);
     const refreshSubmissionQueue = async () => {
         setQueueRefreshing(true);
         try {

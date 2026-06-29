@@ -259,6 +259,11 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 
 	// GUI-specific: emit state change + background hub connection.
 	a.emitRemoteStateChanged()
+	if a.remoteActivationBackgroundDisabled {
+		log.Printf("[onboarding] ActivateRemote background connect skipped")
+		log.Printf("[onboarding] ActivateRemote total=%s", time.Since(start))
+		return result, nil
+	}
 	go func(launchedAt time.Time) {
 		infraStart := time.Now()
 		if a.remoteSessions == nil {

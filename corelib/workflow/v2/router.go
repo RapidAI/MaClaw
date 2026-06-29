@@ -345,6 +345,21 @@ func hasWorkflowStartSignal(text string) bool {
 	if hasStrongCodingActionInText(lower) && len([]rune(lower)) >= 6 {
 		return true
 	}
+
+	// Long text suppression: messages > 200 runes are almost certainly
+	// technical discussions, problem descriptions, or pasted logs — not
+	// imperative "start a workflow" commands. The weak action+object
+	// combination (e.g. "生成" + "代码") produces false positives in long
+	// text because keywords appear in descriptive context ("模型生成 HTML...
+	// Hub 代码里的 timeout"). Require strong signals only for long messages.
+	//
+	// Strong signals (explicitWorkflowObjectSignals, strongCodingAction,
+	// gaokaoApplicationStartSignal) are checked before this guard and
+	// bypass it unconditionally.
+	if len([]rune(lower)) > maxWeakSignalTextLength {
+		return false
+	}
+
 	hasAction := false
 	for _, action := range workflowActionSignals {
 		if strings.Contains(lower, action) {
@@ -362,6 +377,16 @@ func hasWorkflowStartSignal(text string) bool {
 	}
 	return false
 }
+
+// maxWeakSignalTextLength: messages longer than this (in runes) are suppressed
+// from weak action+object workflow detection. Only strong signals (explicit
+// workflow object phrases, strong coding verbs, gaokao signals) can trigger
+// workflow start for long messages.
+//
+// Calibrated: longest legitimate imperative with a path is ~80 runes
+// ("在d:\\workprj\\myproject 下开发一个带音效的贪吃蛇游戏，C++ cmake管理").
+// 200 gives ample headroom while filtering 500+ char technical discussions.
+const maxWeakSignalTextLength = 200
 
 func hasGaokaoApplicationStartSignal(lowerText string) bool {
 	hasObject := false

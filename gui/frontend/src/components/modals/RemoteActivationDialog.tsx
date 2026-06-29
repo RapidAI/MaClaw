@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { RemoteCenterHubOption } from '../../types/appShell';
+import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 
 type RemoteActivationDraft = {
     hub_id: string;
@@ -30,9 +31,15 @@ export const RemoteActivationDialog = ({
     onLoadRemoteHubs,
     onActivate,
     onClose,
-}: RemoteActivationDialogProps) => (
-    <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-content remote-activation-modal" onClick={(e) => e.stopPropagation()}>
+}: RemoteActivationDialogProps) => {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
+    return (
+    <div className="modal-overlay" {...backdropProps}>
+        <div
+            className="modal-content remote-activation-modal"
+            {...dialogProps}
+        >
             <div className="modal-header">
                 <h3>{t("remoteActivationDialogTitle")}</h3>
                 <button className="btn-close" onClick={onClose}>&times;</button>
@@ -120,4 +127,5 @@ export const RemoteActivationDialog = ({
             </div>
         </div>
     </div>
-);
+    );
+};

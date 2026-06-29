@@ -221,10 +221,58 @@
     state.page = Math.min(pageCount(), Math.max(1, state.page + step));
     await global.loadKnowledgeShares();
   };
+  function showKnowledgeDeleteReasonDialog() {
+    return new Promise(function(resolve) {
+      var overlayId = 'knowledgeDeleteReasonDialogOverlay';
+      var existing = global.document.getElementById(overlayId);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var overlay = global.document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      var titleText = tr('knowledgeForceDelete');
+      var promptText = tr('knowledgeDeleteReasonPrompt');
+      var emptyHint = tr('knowledgeDeleteReasonRequired');
+      var cancelText = typeof global.tr === 'function' ? global.tr('closeDialog') : 'Cancel';
+      var confirmText = tr('knowledgeForceDelete');
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="knowledgeDeleteReasonDialogTitle" style="width:min(420px,100%);max-height:none;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
+        + '<div class="item-title" id="knowledgeDeleteReasonDialogTitle" style="margin-bottom:8px;color:var(--danger,#e53935)">' + escapeHtml(titleText) + '</div>'
+        + '<div class="item-meta" style="margin-bottom:12px">' + escapeHtml(promptText) + '</div>'
+        + '<input id="knowledgeDeleteReasonInput" type="text" style="width:100%;height:36px;margin-bottom:4px">'
+        + '<div id="knowledgeDeleteReasonError" style="color:var(--danger,#e53935);font-size:12px;min-height:18px;margin-bottom:8px"></div>'
+        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn-ghost" id="knowledgeDeleteReasonCancelBtn">' + escapeHtml(cancelText) + '</button>'
+        + '<button type="button" class="btn-danger" id="knowledgeDeleteReasonConfirmBtn">' + escapeHtml(confirmText) + '</button>'
+        + '</div></div>';
+      var done = function(value) { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
+      global.document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(null); });
+      } else {
+        overlay.onclick = function(event) { if (event && event.target === overlay) done(null); };
+      }
+      var input = overlay.querySelector('#knowledgeDeleteReasonInput');
+      var errorEl = overlay.querySelector('#knowledgeDeleteReasonError');
+      var cancel = overlay.querySelector('#knowledgeDeleteReasonCancelBtn');
+      var ok = overlay.querySelector('#knowledgeDeleteReasonConfirmBtn');
+      if (cancel) cancel.addEventListener('click', function() { done(null); });
+      if (ok) ok.addEventListener('click', function() {
+        var val = (input ? input.value : '').trim();
+        if (!val) { if (errorEl) errorEl.textContent = emptyHint; if (input) input.focus(); return; }
+        done(val);
+      });
+      if (input) {
+        input.addEventListener('keydown', function(event) {
+          if (event.key === 'Enter') { event.preventDefault(); if (ok) ok.click(); }
+          if (event.key === 'Escape') { event.preventDefault(); done(null); }
+        });
+        input.focus();
+      }
+    });
+  }
   global.forceDeleteKnowledgeShare = async function forceDeleteKnowledgeShare(id) {
-    const reason = (global.prompt(tr('knowledgeDeleteReasonPrompt')) || '').trim();
+    const reason = await showKnowledgeDeleteReasonDialog();
     if (!reason) {
-      showToast(tr('knowledgeDeleteReasonRequired'), 'info');
       return;
     }
     try {

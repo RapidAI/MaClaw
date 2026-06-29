@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,7 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -162,6 +164,7 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

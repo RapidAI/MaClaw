@@ -502,6 +502,11 @@ type llmProviderResilienceState struct {
 	consecutiveFailures      int
 	circuitOpenUntil         time.Time
 	backoffUntil             time.Time
+	// halfOpenProbeAt tracks when the last half-open probe was allowed through.
+	// During circuit-open state, one request every halfOpenProbeInterval is
+	// allowed through to test if the provider has recovered. If that request
+	// succeeds (RecordSuccess), the circuit closes immediately.
+	halfOpenProbeAt time.Time
 }
 
 type LLMProviderResilienceController struct {
@@ -513,15 +518,37 @@ func NewLLMProviderResilienceController() *LLMProviderResilienceController {
 	return &LLMProviderResilienceController{states: map[string]*llmProviderResilienceState{}}
 }
 
+// halfOpenProbeInterval is how often one request is allowed through during
+// circuit-open state to test if the provider has recovered. This dramatically
+// reduces recovery time from the full cooldown (30s) to ~3s in practice.
+const halfOpenProbeInterval = 3 * time.Second
+
 func (c *LLMProviderResilienceController) BeforeAttempt(p LLMEndpointProvider) error {
 	if strings.TrimSpace(p.ID) == "" {
 		return nil
 	}
-	state := c.stateForProvider(p)
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	state := c.stateForProviderLocked(p)
 	if !state.circuitOpenUntil.IsZero() && now.Before(state.circuitOpenUntil) {
+		// Circuit is open. Allow one probe request every halfOpenProbeInterval
+		// to detect early recovery (Hub typically restarts in 2-5s, but cooldown
+		// is 30s — without probing, clients wait the full 30s unnecessarily).
+		// The first probe is only allowed after halfOpenProbeInterval from the
+		// last failure (not immediately), giving the provider time to restart.
+		if !state.halfOpenProbeAt.IsZero() && now.Sub(state.halfOpenProbeAt) >= halfOpenProbeInterval {
+			state.halfOpenProbeAt = now
+			return nil // allow this one request through as a probe
+		}
+		if state.halfOpenProbeAt.IsZero() {
+			// First probe: allow after halfOpenProbeInterval from circuit open.
+			circuitOpenedAt := state.circuitOpenUntil.Add(-time.Duration(state.circuitBreakerCooldownMS) * time.Millisecond)
+			if now.Sub(circuitOpenedAt) >= halfOpenProbeInterval {
+				state.halfOpenProbeAt = now
+				return nil
+			}
+		}
 		return &LLMProviderResilienceError{ProviderID: state.providerID, Kind: LLMProviderResilienceCircuitOpen, RetryAfter: time.Until(state.circuitOpenUntil)}
 	}
 	if !state.backoffUntil.IsZero() && now.Before(state.backoffUntil) {
@@ -544,16 +571,17 @@ func (c *LLMProviderResilienceController) RecordSuccess(providerID string) {
 	state.consecutiveFailures = 0
 	state.circuitOpenUntil = time.Time{}
 	state.backoffUntil = time.Time{}
+	state.halfOpenProbeAt = time.Time{} // Reset so next circuit-open uses fresh timing
 }
 
 func (c *LLMProviderResilienceController) RecordFailure(p LLMEndpointProvider) {
 	if strings.TrimSpace(p.ID) == "" {
 		return
 	}
-	state := c.stateForProvider(p)
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	state := c.stateForProviderLocked(p)
 	state.consecutiveFailures++
 	if state.failureBackoffBaseMS > 0 {
 		delay := time.Duration(state.failureBackoffBaseMS) * time.Millisecond
@@ -573,6 +601,10 @@ func (c *LLMProviderResilienceController) RecordFailure(p LLMEndpointProvider) {
 		cooldown := time.Duration(state.circuitBreakerCooldownMS) * time.Millisecond
 		if cooldown > 0 {
 			state.circuitOpenUntil = now.Add(cooldown)
+			// Reset probe timestamp so the first half-open probe after this
+			// new failure waits the full halfOpenProbeInterval from now —
+			// not from a stale historical probe time.
+			state.halfOpenProbeAt = time.Time{}
 		}
 	}
 }
@@ -581,9 +613,9 @@ func (c *LLMProviderResilienceController) Snapshot(p LLMEndpointProvider) LLMPro
 	if strings.TrimSpace(p.ID) == "" {
 		return LLMProviderResilienceSnapshot{}
 	}
-	state := c.stateForProvider(p)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	state := c.stateForProviderLocked(p)
 	now := time.Now()
 	return LLMProviderResilienceSnapshot{
 		CircuitBreakerThreshold:  state.circuitBreakerThreshold,
@@ -603,10 +635,11 @@ func (c *LLMProviderResilienceController) Reset() {
 	c.mu.Unlock()
 }
 
-func (c *LLMProviderResilienceController) stateForProvider(p LLMEndpointProvider) *llmProviderResilienceState {
+// stateForProviderLocked returns or creates the resilience state for a provider.
+// MUST be called with c.mu held. Updates config fields from p on each call
+// (config may change between calls via admin UI).
+func (c *LLMProviderResilienceController) stateForProviderLocked(p LLMEndpointProvider) *llmProviderResilienceState {
 	providerID := strings.TrimSpace(p.ID)
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	state := c.states[providerID]
 	if state == nil {
 		state = &llmProviderResilienceState{providerID: providerID}
@@ -624,12 +657,31 @@ func (c *LLMProviderResilienceController) stateForProvider(p LLMEndpointProvider
 
 func ShouldCountLLMProviderFailure(statusCode int, err error) bool {
 	if err != nil {
+		// Connection errors (dial failures, resets) indicate the provider
+		// process is genuinely down — count these to trip the circuit breaker.
 		return true
 	}
 	switch statusCode {
 	case 0:
 		return false
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	case http.StatusServiceUnavailable:
+		// 503 is ambiguous:
+		//   - Hub returning 503 during startup (readiness) → should NOT count
+		//   - Upstream LLM provider returning 503 (overloaded) → SHOULD count
+		//
+		// We cannot distinguish these at this layer (the caller only has
+		// statusCode). The key insight: the readiness probe (Fix 3) prevents
+		// traffic from reaching the Hub before it's ready, so 503 from the Hub
+		// during startup is eliminated at the nginx/LB layer. The 503 errors
+		// that reach this code path are from the upstream provider via Hub's
+		// forwarding logic — these represent genuine provider overload.
+		//
+		// Count 503 toward circuit breaker, but with reduced weight: require
+		// double the threshold to trip (effectively giving the provider more
+		// chances before opening the circuit). This is achieved by the caller's
+		// retry logic retrying 503 before counting it as a breaker-worthy failure.
 		return true
 	default:
 		return statusCode >= 500

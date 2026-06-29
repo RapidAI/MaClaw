@@ -44,6 +44,7 @@ func NewCodingSessionStarter(app *App) *CodingSessionStarter {
 }
 
 func (s *CodingSessionStarter) Start(req CodingSessionStartRequest) (CodingSessionStartResult, error) {
+	return CodingSessionStartResult{}, fmt.Errorf("external coding session start is disabled; use the internal CodingSubAgent workflow instead")
 	if s == nil || s.app == nil {
 		return CodingSessionStartResult{}, fmt.Errorf("app not initialized")
 	}

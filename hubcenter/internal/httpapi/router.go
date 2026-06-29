@@ -75,10 +75,11 @@ type HubHeartbeatRequest struct {
 }
 
 type HubUserLinkSyncRequest struct {
-	HubSecret string `json:"hub_secret"`
-	TenantID  string `json:"tenant_id,omitempty"`
-	Email     string `json:"email"`
-	IsDefault bool   `json:"is_default"`
+	HubSecret  string `json:"hub_secret"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	Email      string `json:"email"`
+	IsDefault  bool   `json:"is_default"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
 func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
@@ -296,7 +297,7 @@ func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault, req.TenantID); err != nil {
+		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault, req.ReplaceAll, req.TenantID); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return
@@ -349,9 +350,10 @@ func HubUserLinkDeleteHandler(service *hubs.Service) http.HandlerFunc {
 }
 
 type HubInvitationCodeSyncRequest struct {
-	HubSecret string   `json:"hub_secret"`
-	Codes     []string `json:"codes"`
-	TenantID  string   `json:"tenant_id"`
+	HubSecret   string   `json:"hub_secret"`
+	Codes       []string `json:"codes"`
+	TenantID    string   `json:"tenant_id"`
+	UsedByEmail string   `json:"used_by_email,omitempty"`
 }
 
 func HubInvitationCodeSyncHandler(service *hubs.Service) http.HandlerFunc {
@@ -390,7 +392,7 @@ func HubInvitationCodeDeleteHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := service.DeleteInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes); err != nil {
+		if err := service.DeleteInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, req.UsedByEmail); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return
@@ -595,6 +597,9 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/routing/diagnostics", RequireAdmin(adminService, AdminRoutingDiagnosticsHandler(entryService)))
 	mux.HandleFunc("POST /api/admin/routing/query", RequireAdmin(adminService, AdminRouteQueryHandler(entryService)))
 	mux.HandleFunc("POST /api/admin/routing/invitation-code-query", RequireAdmin(adminService, AdminInvitationCodeQueryHandler(entryService)))
+	mux.HandleFunc("POST /api/admin/routing/delete-email-route", RequireAdmin(adminService, AdminDeleteEmailRouteHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/routing/restore-email-route", RequireAdmin(adminService, AdminRestoreEmailRouteHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/routing/verify-email-route", RequireAdmin(adminService, AdminVerifyEmailRouteHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/server/config", RequireAdmin(adminService, GetAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/server/config", RequireAdmin(adminService, UpdateAdminServerConfigHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))

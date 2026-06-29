@@ -1,3 +1,5 @@
+import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+
 type InstallLogModalProps = {
     envLogs: string[];
     t: (key: string) => string;
@@ -6,9 +8,15 @@ type InstallLogModalProps = {
     onSendLog: (hasError: boolean) => Promise<void> | void;
 };
 
-export const InstallLogModal = ({ envLogs, t, onClose, onCopied, onSendLog }: InstallLogModalProps) => (
-    <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-content install-log-modal" onClick={e => e.stopPropagation()}>
+export const InstallLogModal = ({ envLogs, t, onClose, onCopied, onSendLog }: InstallLogModalProps) => {
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
+
+    return (
+    <div className="modal-overlay" {...backdropProps}>
+        <div
+            className="modal-content install-log-modal"
+            {...dialogProps}
+        >
             <div className="install-log-modal__header">
                 <h3>{t("installLogTitle")}</h3>
                 <button className="modal-close" onClick={onClose}>&times;</button>
@@ -52,4 +60,5 @@ export const InstallLogModal = ({ envLogs, t, onClose, onCopied, onSendLog }: In
             </div>
         </div>
     </div>
-);
+    );
+};

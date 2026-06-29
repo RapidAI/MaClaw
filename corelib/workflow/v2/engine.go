@@ -569,6 +569,9 @@ func (e *WorkflowEngine) StartWorkflowWithOptions(userID string, intent Structur
 	if e.store != nil {
 		_ = e.store.SaveWorkflowState(state)
 	}
+	if e.callbacks != nil {
+		_ = e.callbacks.EmitPhaseUpdate(userID, state)
+	}
 	// Sync to V2 StateMachine if available (enables V2 production paths in tests).
 	if e.machine != nil {
 		if _, err := e.machine.Create(userID, string(intent.Category), state.ProjectPath, intent.Summary); err != nil {
@@ -978,7 +981,49 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 	}
 }
 func (e *WorkflowEngine) ReopenPhaseForRevision(userID, phaseID, feedback string) (*WorkflowResponse, error) {
-	return nil, nil
+	if e == nil {
+		return nil, errors.New("workflow engine is nil")
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return nil, errors.New("workflow not active")
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return nil, errors.New("workflow template not found")
+	}
+	phaseID = CanonicalPhaseID(phaseID)
+	phaseIndex := -1
+	for i, phase := range tmpl.Phases {
+		if CanonicalPhaseID(phase.ID) == phaseID {
+			phaseIndex = i
+			phaseID = phase.ID
+			break
+		}
+	}
+	if phaseIndex < 0 {
+		return nil, errors.New("workflow phase not found: " + phaseID)
+	}
+	e.mu.Lock()
+	ws.PhaseIndex = phaseIndex
+	ws.CurrentPhase = phaseID
+	ws.PendingReviewPhaseID = phaseID
+	ws.PendingReviewRevisionRequested = true
+	ws.UpdatedAt = time.Now()
+	if ws.GateResults == nil {
+		ws.GateResults = map[string]*QualityGateResult{}
+	}
+	if strings.TrimSpace(feedback) != "" {
+		ws.GateResults[phaseID] = &QualityGateResult{PhaseID: phaseID, Passed: false, Items: []GateCheckItem{{Description: "revision requested", Passed: false, Note: feedback}}, CheckedAt: ws.UpdatedAt}
+	}
+	e.mu.Unlock()
+	if e.store != nil {
+		_ = e.store.SaveWorkflowState(ws)
+	}
+	if e.callbacks != nil {
+		_ = e.callbacks.EmitPhaseUpdate(userID, ws)
+	}
+	return &WorkflowResponse{RunAgentLoop: true, PhasePrompt: e.BuildPhasePrompt(userID)}, nil
 }
 
 func (e *WorkflowEngine) syncEngineStateFromHandleResult(userID string, hr *HandleResult) {
@@ -1185,7 +1230,28 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	}
 	return ToolFilterNone
 }
-func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool { return false }
+func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool {
+	if e == nil {
+		return false
+	}
+	ws := e.GetActiveWorkflow(userID)
+	if ws == nil {
+		return false
+	}
+	registry := e.GetRegistry()
+	if registry == nil {
+		return false
+	}
+	tmpl := registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return false
+	}
+	phase := tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase {
+		return false
+	}
+	return IsTemplatePhaseExecutionOrchestrator(tmpl, phase)
+}
 func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool {
 	if e == nil {
 		return false
@@ -1402,19 +1468,37 @@ func PhaseMetadata(tmpl *TemplateSpec) []PhaseMeta {
 		seen[id] = true
 		derivedKind, derivedMutationScope, activatesOrchestrator := phaseMetadataSemantics(tmpl.Type, id)
 		toolPolicy := phase.ToolPolicy
-		if id == "tasks" && tmpl.Type == WorkflowCoding && toolPolicy == "" {
-			toolPolicy = ToolPolicyPlanning
+		needsConfirm := phase.NeedsConfirm
+		canSkip := phase.CanSkip
+		expectsDocument := phase.NeedsConfirm
+		mutationScope := firstMutationScope(phase.MutationScope, derivedMutationScope)
+		if tmpl.Type == WorkflowCoding {
+			switch id {
+			case "tasks":
+				if toolPolicy == "" || toolPolicy == ToolPolicyDocOnly {
+					toolPolicy = ToolPolicyPlanning
+				}
+				needsConfirm = true
+				canSkip = true
+				expectsDocument = true
+			case "review":
+				toolPolicy = ToolPolicyDocOnly
+				needsConfirm = true
+				canSkip = true
+				expectsDocument = true
+				mutationScope = MutationScopeWorkflowDoc
+			}
 		}
 		metas = append(metas, PhaseMeta{
 			ID:                    id,
 			Name:                  phase.Name,
 			Index:                 len(metas),
-			ExpectsDocument:       phase.NeedsConfirm,
-			NeedsConfirm:          phase.NeedsConfirm,
-			CanSkip:               phase.CanSkip,
+			ExpectsDocument:       expectsDocument,
+			NeedsConfirm:          needsConfirm,
+			CanSkip:               canSkip,
 			Kind:                  firstPhaseKind(phase.Kind, derivedKind),
 			ToolPolicy:            toolPolicy,
-			MutationScope:         firstMutationScope(phase.MutationScope, derivedMutationScope),
+			MutationScope:         mutationScope,
 			ActivatesOrchestrator: activatesOrchestrator,
 		})
 	}
@@ -1434,8 +1518,8 @@ func phaseMetadataSemantics(workflowType WorkflowType, phaseID string) (PhaseKin
 			return PhaseKindCodePlanning, MutationScopeWorkflowDoc, false
 		case "implementation":
 			return PhaseKindExecution, MutationScopeProject, true
-		case "verification":
-			return PhaseKindReview, MutationScopeProject, false
+		case "review":
+			return PhaseKindReview, MutationScopeWorkflowDoc, false
 		}
 	case WorkflowPresentationDesign:
 		if phaseID == "ppt_generation" {
@@ -1476,6 +1560,8 @@ func CanonicalPhaseID(phaseID string) string {
 		return "design"
 	case "tasks", "task", "task_plan", "task_breakdown":
 		return "tasks"
+	case "verification", "verify", "review", "acceptance":
+		return "review"
 	default:
 		return phaseID
 	}
@@ -1500,8 +1586,13 @@ func ParseReviewIntent(raw string) ReviewIntent {
 }
 
 // IsTemplatePhaseExecutionOrchestrator returns false (stub).
-func IsTemplatePhaseExecutionOrchestrator(_ *TemplateSpec, _ PhaseSpec) bool {
-	return false
+func IsTemplatePhaseExecutionOrchestrator(tmpl *TemplateSpec, phase PhaseSpec) bool {
+	if tmpl == nil || phase.DisableOrchestrator {
+		return false
+	}
+	kind, _, activatesOrchestrator := phaseMetadataSemantics(tmpl.Type, CanonicalPhaseID(phase.ID))
+	phaseKind := firstPhaseKind(phase.Kind, kind)
+	return activatesOrchestrator || phaseKind == PhaseKindExecution || phaseKind == PhaseKindOpsExecution
 }
 
 // IsExecutionOrchestratorPhase returns false (stub).

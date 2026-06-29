@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"regexp"
 	"strings"
@@ -55,6 +56,10 @@ type LoginNotifier interface {
 // UserRouteSyncer pushes confirmed user-to-hub bindings to Hub Center when available.
 type UserRouteSyncer interface {
 	SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
+	// SyncUserRouteReplaceAll is like SyncUserRoute but removes ALL existing routes
+	// for this email on HubCenter before creating the new one. Used after invitation-
+	// code enrollment to fully migrate the user to the new Hub.
+	SyncUserRouteReplaceAll(ctx context.Context, email string, tenantIDOpt ...string) error
 }
 
 type UserRouteValidator interface {
@@ -332,6 +337,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 
 	// Expiry check for existing users
+	invitationRebind := false
 	if user != nil && s.invitationSvc != nil {
 		expired, expiresAt, _ := s.invitationSvc.CheckExpiryForTenant(ctx, tenantID, email)
 		if expired {
@@ -343,6 +349,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 				if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, email); err != nil {
 					return nil, err
 				}
+				invitationRebind = true
 				// Continue normal enrollment flow
 			} else {
 				// Expired and no new code provided
@@ -429,6 +436,15 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 				_ = s.grantEmailConfirmedBenefitForUser(ctx, email)
 				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
 			}
+		}
+	}
+
+	// When a user was enrolled via invitation code, replace all existing routes
+	// on HubCenter to point to this Hub. This ensures re-invitation to a new Hub
+	// correctly overrides stale routes from the old Hub.
+	if (invitationAccepted || invitationRebind) && s.userRouteSyncer != nil {
+		if err := s.userRouteSyncer.SyncUserRouteReplaceAll(ctx, email, tenantIDFromContext(ctx)); err != nil {
+			log.Printf("[enrollment] SyncUserRouteReplaceAll failed for %s: %v (route may still point to old hub)", email, err)
 		}
 	}
 

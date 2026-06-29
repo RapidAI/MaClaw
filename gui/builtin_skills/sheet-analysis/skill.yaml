@@ -1,0 +1,29 @@
+name: sheet-analysis
+description: "表格分析 — 上传 Excel/CSV 文件，自动分析数据分布、统计摘要、异常值检测，生成分析报告和可视化图表。"
+triggers:
+    - 表格分析
+    - 分析Excel
+    - 分析CSV
+    - sheet analysis
+    - data analysis
+    - 数据分析
+    - analyze spreadsheet
+steps:
+    - action: bash
+      params:
+        command: pip install pandas openpyxl matplotlib --quiet 2>&1
+        timeout: 60000
+      continue_on_error: true
+
+    - action: bash
+      params:
+        command: python "{baseDir}/scripts/analyze.py" --input "{{input}}" --output "{{output}}"
+        timeout: 180000
+      continue_on_error: false
+      on_error: "表格分析失败，请确认文件为有效的 Excel(.xlsx/.xls) 或 CSV 格式"
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true

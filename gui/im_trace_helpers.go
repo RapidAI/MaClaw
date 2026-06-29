@@ -122,8 +122,7 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 }
 
 func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) string {
-	lang, _ := agentViewCurrentLang.Load().(string)
-	return h.buildResumeTraceContextWithLang(userID, fallbackTask, lang)
+	return h.buildResumeTraceContextWithLang(userID, fallbackTask, "zh-Hans")
 }
 
 func (h *IMMessageHandler) buildResumeTraceContextWithLang(userID, fallbackTask, lang string) string {

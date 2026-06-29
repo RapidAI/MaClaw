@@ -389,3 +389,105 @@ func TestRoute_TraditionalChinese(t *testing.T) {
 		}
 	}
 }
+
+
+func TestRoute_LongTechnicalText_NoWorkflow(t *testing.T) {
+	r := setupTestRouter()
+
+	// This is the exact message that triggered the paper_reproduction false positive.
+	// Contains "生成" (in workflowActionSignals) and "代码" (in workflowObjectSignals)
+	// but at 519 runes it exceeds maxWeakSignalTextLength (200), so weak signals
+	// are suppressed.
+	nginxMsg := `Hub.mypapers.top的nginx设置有问题？04 Gateway Timeout，60.4 秒。
+
+找到根因了：
+
+Hub（hub.mypapers.top）前方的 nginx 的 proxy_read_timeout 仍然是 60 秒
+模型生成 250 行 HTML 的 tool call 需要 >60 秒（含 reasoning 思考时间）
+60 秒后 nginx 断开连接返回 504
+客户端收到部分 SSE 数据（finish_reason 为空）→ JSON 截断
+根因确认：不是模型 output 上限问题，是 nginx proxy_read_timeout=60s 太短。
+
+Hub 代码里的 600s timeout 已部署没用——nginx 在 Hub 前面，60 秒就断了。
+
+修复：在 Hub 前方的 nginx 配置中加：
+
+location /api/llm/ {
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_connect_timeout 30s;
+    proxy_buffering off;
+}`
+
+	result := r.Route("user1", nginxMsg, nil)
+	if result.Target != RouteToAgentLoop {
+		t.Fatalf("target = %q, want agent_loop (long technical text with scattered keywords)", result.Target)
+	}
+}
+
+func TestRoute_WeakSignalShortText_StillWorks(t *testing.T) {
+	r := setupTestRouter()
+
+	// Short messages (< 200 runes) with weak action+object should still trigger.
+	cases := []struct {
+		input    string
+		wantType string
+	}{
+		{"帮我生成一份竞品分析报告", "competitive_analysis"},
+		{"做一个完整的商业计划书", "business_plan"},
+		{"写一份详细的研究报告", "research_report"},
+		{"帮我设计一个管理系统", "coding"},
+	}
+	for _, tc := range cases {
+		result := r.Route("user1", tc.input, nil)
+		if result.Target != RouteToWorkflow {
+			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+			continue
+		}
+		if result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		}
+	}
+}
+
+func TestRoute_LongTextSuppression_ExplicitSignalStillWorks(t *testing.T) {
+	r := setupTestRouter()
+
+	// Long text (> 200 runes) with explicit workflow signals should still trigger.
+	// explicitWorkflowObjectSignals and strongCodingAction bypass the weak signal guard.
+	longWithExplicit := "我需要申请一个国自然基金项目，主要研究方向是大语言模型在代码生成领域的应用，" +
+		"目前已经有了初步的实验结果和论文草稿，需要系统地整理成申请书格式，" +
+		"包括研究背景、研究内容、研究方案、可行性分析、预期成果等章节，" +
+		"预算大约在50万左右，计划执行周期3年"
+	result := r.Route("user1", longWithExplicit, nil)
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow (explicit signal '国自然' in long text)", result.Target)
+	}
+}
+
+func TestRoute_LongTextSuppression_StrongActionStillWorks(t *testing.T) {
+	r := setupTestRouter()
+
+	// Long text with strong coding action should still trigger via the
+	// hasStrongCodingActionInText path (checked before weak signal guard).
+	longWithStrongAction := "在d:\\workprj\\myproject 下开发一个完整的在线商城系统，" +
+		"要求包含用户注册登录、商品浏览、购物车、订单管理、支付集成、物流跟踪、" +
+		"评价系统、管理后台等完整功能模块，使用 React + Node.js 技术栈，" +
+		"数据库用 PostgreSQL，缓存用 Redis，消息队列用 RabbitMQ"
+	result := r.Route("user1", longWithStrongAction, nil)
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow (strong action '开发' bypasses length guard)", result.Target)
+	}
+}
+
+func TestRoute_LongTextSuppression_MediumTextWithWeakSignals(t *testing.T) {
+	r := setupTestRouter()
+
+	// Medium text (100-200 runes) with weak action+object signals should
+	// still trigger — the threshold only kicks in at 200+ runes.
+	mediumText := "帮我做一个详细的竞品分析，覆盖头部三家的产品功能对比、定价策略、用户评价，输出一份可以给管理层看的分析报告"
+	result := r.Route("user1", mediumText, nil)
+	if result.Target != RouteToWorkflow {
+		t.Fatalf("target = %q, want workflow (medium text still within threshold)", result.Target)
+	}
+}

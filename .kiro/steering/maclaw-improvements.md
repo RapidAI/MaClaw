@@ -6808,3 +6808,94 @@ iter N+2: LLM 没有 write_file → 使用 bash + Python 写文件 → 成功
 | edit_lines 限制 | preCheck 人为限制 1800 runes，制造死循环 | 删除 preCheck 限制，后端无大小限制，截断由 stream 层处理 |
 | 截断恢复 | block 后 ContinueLoop=false → 被 stall 判定终止 | block 后 ContinueLoop=true + 提醒 → LLM 有机会适应 |
 | promise 分类 | 不区分"策略调整中"和"真正 stall" | TruncationBlockedTools 非空时使用正常容忍阈值 |
+
+
+### 115. 重启后旧工作流劫持用户消息——cancelStaleWorkflowsOnStartup 无条件取消
+
+**来源**：用户重新打开 maclaw GUI 后说"继续"，期望恢复之前的 SSH nginx 配置操作，但系统直接输出了某个旧工作流的"影响分析与方案"阶段文档，之前的对话上下文完全丢失。
+
+**根因（两层叠加）**：
+
+1. **工作流状态通过 SQLite 跨重启持久化，但对话历史在 `runWorkflowV2Phase` 中被 `memory.Clear()` 清空**：
+   - 用户之前启动了某个工作流（如某个分析类模板），工作流状态持久化到 `workflow_v2.db`
+   - 用户在工作流中途做了 SSH nginx 操作（无关任务），但工作流状态没有被取消
+   - maclaw 重启后，`initWorkflowV2()` 从 SQLite 恢复工作流状态
+   - 用户发送"继续" → V2 Router Step 1 检测到活跃工作流 → `HandleInput` → `ActionRunPhase`
+   - `runWorkflowV2Phase` 执行 `memory.Clear(userID)` → 之前的 nginx 操作历史全部丢失
+   - Agent loop 在空历史 + phase prompt 下生成无关的阶段文档
+
+2. **V2 Router 的 Step 1 对短续接信号（"继续"）无条件路由到活跃工作流**：
+   - `looksLikeNewWorkflowTask` 对 <15 runes 的消息返回 false
+   - `machine.HandleInput` 在 `PhasePending`/`PhaseRunning` 状态下无条件返回 `ActionRunPhase`
+   - 短消息 + 活跃工作流 = 必定被劫持
+
+**机制性修复**：App 重启 = session boundary。无条件取消所有活跃工作流。
+
+理由：
+- 桌面 app 重启意味着用户关闭了 app（或 crash/更新），打破了工作流依赖的交互式确认循环
+- 使用阈值（如 10 分钟）仍有 race window（快速重启时工作流存活，仍会劫持消息）
+- 重新启动工作流成本极低（一条消息）；被劫持后的困惑和上下文丢失成本极高
+- 唯一 edge case（开发热重载）是可接受的——开发者可以一条消息重新触发
+
+**修复（原理性——从"取消"升级为"挂起"）**：
+
+修复原理的演进：
+- **V1（初版）**：startup 时取消所有工作流。问题：用户花 30 分钟做的阶段产出物被丢弃。
+- **V2（最终）**：startup 时**挂起**（suspend）所有工作流。用户成果保留，但工作流不会自动执行。
+
+机制：`WorkflowState` 新增 `Suspended bool` 字段。`HandleInput` 在 `Suspended=true` 时走 confirm classifier 路径（与 `PhaseWaitingConfirm` 相同的"先判断用户意图再决定是否执行"模式），而非无条件 `ActionRunPhase`。
+
+行为矩阵：
+- 用户说"继续"/"继续工作流" → classifier 返回 "confirm" → `Suspended=false` + `ActionRunPhase` → 工作流恢复
+- 用户说"帮我查天气"/"继续之前的 SSH 操作" → classifier 返回 "unrelated" → `ActionPassThrough` → 正常 agent loop
+- 用户说"取消工作流" → classifier 返回 "cancel" → 工作流取消
+- LLM 不可用 → `classifyIntent` 返回 "" → default PassThrough（保守：不自动执行）
+
+代码修改：
+- `corelib/workflow/v2/state.go`：`WorkflowState` 新增 `Suspended bool` 字段（`json:"suspended,omitempty"`）
+- `corelib/workflow/v2/machine.go`：
+  - `HandleInput` 新增 Suspended 分支（在 `switch phase.Status` 之前），走 confirm classifier 判断用户意图
+  - 新增 `SuspendWorkflow(userID)` 方法：设 `Suspended=true` + Save
+  - 新增 `DeleteState(userID)` 方法：直接删除行（Cancel 失败的 fallback）
+  - 新增 `ListAllStoredUserIDs()` 方法：委托 store.ListAllUserIDs
+- `corelib/workflow/v2/store.go`：`WorkflowStore` 接口新增 `ListAllUserIDs() ([]string, error)`
+- `corelib/workflow/v2/store_sqlite.go`：实现 `ListAllUserIDs()`
+- `corelib/workflow/v2/store_memory.go`：实现 `ListAllUserIDs()`
+- `gui/workflow_v2_integration.go`：`cancelStaleWorkflowsOnStartup`（函数名保留但语义改为 suspend）：
+  - 遍历所有 stored user IDs
+  - 对每个活跃工作流调用 `SuspendWorkflow`
+  - Suspend 失败时 fallback 到 Cancel → Delete（三层防御）
+
+**为什么 suspend 是原理正确的修复**：
+- 不破坏用户成果（已完成阶段的产出物保留在 `phase.Output` 中）
+- 不自动执行（`Suspended=true` → classifier 门控）
+- 复用已有的 confirm classifier 基础设施（不新增判断逻辑）
+- 用户恢复成本极低（一句"继续"）
+- 进程重启语义 = "暂停正在做的事"而非"放弃正在做的事"（与操作系统 hibernate/sleep 语义一致，而非 kill）
+
+**Review/Fix/Optimize**：
+- **初版修复**（10 分钟阈值）→ **Review 发现**：阈值无法覆盖快速重启场景（crash→秒级重启→"继续"仍被劫持）
+- **优化**：移除阈值，无条件取消。这是唯一的通用修复——不依赖"重启花了多久"这个不可靠信号
+- `staleCancelled` 返回值语义从"是否取消了 stale 工作流"变为"是否取消了任何工作流"——对消费方（board reset emit）的行为无影响
+- **二次 Review** 确认：
+  - `machine.Cancel` 正确将状态标记为 `StatusCancelled` 并 Save 回 SQLite，`GetActive` 下次不会返回已取消的状态
+  - SQLite fallback 路径（MemoryStore）和 IM/TUI 路径不受影响
+  - 无 import 变化、无类型变化、无测试引用旧逻辑
+**Review/Fix/Optimize 演进**：
+- **Round 1**：10 分钟阈值 → 不覆盖快速重启
+- **Round 2**：无条件取消 → 覆盖所有重启场景
+- **Round 3**：扩展 `WorkflowStore` 接口 → 覆盖 Project Tab
+- **Round 4**：原理审视 → 确认"进程重启=放弃"的语义正确性
+- **Round 5**：Cancel 失败 fallback Delete → 三层防御深度
+- **Round 6**：接口兼容性确认 → 无 hub 测试影响
+- **Round 7**：产品 regression 发现 → 从"取消"升级为"挂起"。用户成果保留，通过 confirm classifier 门控决定是否恢复。
+
+**验收标准**：
+- 重启后说"继续" → classifier 判断 "confirm" → 工作流恢复，继续上次进度
+- 重启后说"帮我查天气" → classifier 判断 "unrelated" → PassThrough → 正常 agent loop（对话历史保留）
+- 重启后说"取消工作流" → classifier 判断 "cancel" → 工作流取消
+- LLM 不可用时 → 保守 PassThrough（不自动执行）
+- 用户意外关闭 app 后重新打开 → 之前完成的阶段产出物仍在 → 可以"继续"恢复
+- IM 通道和 TUI 不受影响
+- 所有 6 个修改文件零诊断错误
+

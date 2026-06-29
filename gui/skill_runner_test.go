@@ -1723,18 +1723,7 @@ func TestSkillRunnerStartRun_ExecutesPipelineSkillWithoutSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun() error = %v; pipeline skills should not need direct steps", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	var status *SkillRunStatus
-	for time.Now().Before(deadline) {
-		status, err = runner.GetRunStatus(runID)
-		if err != nil {
-			t.Fatalf("GetRunStatus() error = %v", err)
-		}
-		if status.Status != "running" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
 	if status == nil || status.Status != "success" {
 		t.Fatalf("pipeline status = %+v, want success", status)
 	}
@@ -1789,18 +1778,7 @@ func TestSkillRunnerStartRun_PipelineCarriesNestedArgsContextToSubSkills(t *test
 	if err != nil {
 		t.Fatalf("StartRun() error = %v; nested args context should satisfy pipeline child", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	var status *SkillRunStatus
-	for time.Now().Before(deadline) {
-		status, err = runner.GetRunStatus(runID)
-		if err != nil {
-			t.Fatalf("GetRunStatus() error = %v", err)
-		}
-		if status.Status != "running" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
 	if status == nil || status.Status != "success" {
 		t.Fatalf("pipeline status = %+v, want success", status)
 	}
@@ -2321,6 +2299,7 @@ func waitSkillRunDoneForTest(t *testing.T, runner *SkillRunner, runID string) *S
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	var status *SkillRunStatus
+	var terminal *SkillRunStatus
 	var err error
 	for time.Now().Before(deadline) {
 		status, err = runner.GetRunStatus(runID)
@@ -2328,11 +2307,23 @@ func waitSkillRunDoneForTest(t *testing.T, runner *SkillRunner, runID string) *S
 			t.Fatalf("GetRunStatus() error = %v", err)
 		}
 		if status.Status != "running" {
-			return status
+			terminal = status
+			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("run %s did not finish, last status = %+v", runID, status)
+	if terminal == nil {
+		t.Fatalf("run %s did not finish, last status = %+v", runID, status)
+		return nil
+	}
+	for time.Now().Before(deadline) {
+		if runner == nil || runner.activeRuns.Load() == 0 {
+			time.Sleep(100 * time.Millisecond)
+			return terminal
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("run %s reached terminal status but did not finish cleanup, last status = %+v", runID, terminal)
 	return nil
 }
 

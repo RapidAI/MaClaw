@@ -1,0 +1,27 @@
+name: pdf-word
+description: "PDF 转 Word — 上传 PDF 文件，保留基本版式输出 Word 文档（.docx）。支持中英文混合文档。"
+triggers:
+    - PDF转Word
+    - pdf to word
+    - pdf to docx
+    - 转换PDF
+    - convert pdf
+steps:
+    - action: bash
+      params:
+        command: pip install pymupdf python-docx --quiet 2>&1
+        timeout: 60000
+      continue_on_error: true
+
+    - action: bash
+      params:
+        command: python "{baseDir}/scripts/convert.py" --input "{{input}}" --output "{{output}}"
+        timeout: 120000
+      continue_on_error: false
+      on_error: "PDF 转换失败，请检查文件是否为有效的 PDF 格式"
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true

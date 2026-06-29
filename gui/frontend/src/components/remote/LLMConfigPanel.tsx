@@ -25,6 +25,7 @@ import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent } from "./userAgent";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 interface Props {
     lang?: string;
@@ -215,6 +216,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         if (dlgSaving) return;
         setDlgOpen(false);
     }, [dlgSaving, oauthBusy]);
+    const { backdropProps: configDialogBackdropProps, dialogProps: configDialogProps } = useSafeBackdropDismiss(closeDialog);
 
     // Escape key to close dialog
     useEffect(() => {
@@ -626,12 +628,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
                     background: "rgba(0,0,0,0.4)", display: "flex",
                     alignItems: "center", justifyContent: "center", zIndex: 9999,
-                }} onMouseDown={closeDialog}>
+                }}
+                    {...configDialogBackdropProps}
+                >
                     <div className="llm-config-dialog" style={{
                         background: colors.surface, borderRadius: 12, padding: "24px 28px",
                         maxWidth: 520, width: "92%", maxHeight: "85vh", overflowY: "auto",
                         boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
-                    }} onMouseDown={e => e.stopPropagation()}>
+                    }}
+                        {...configDialogProps}
+                    >
 
                         {/* Header */}
                         <div className="llm-config-dialog__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>

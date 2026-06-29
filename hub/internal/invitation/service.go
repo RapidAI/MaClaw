@@ -40,6 +40,7 @@ var (
 type CenterSyncer interface {
 	SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error
 	DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) error
+	MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) error
 }
 
 type Service struct {
@@ -198,7 +199,17 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 	if err != nil {
 		return ErrInvalidInvitationCode
 	}
-	if item == nil || item.Status != "unused" {
+	if item == nil {
+		return ErrInvalidInvitationCode
+	}
+
+	// If the code was already used by the SAME email, allow re-enrollment
+	// (e.g. user switching devices or re-installing). This is idempotent —
+	// the code stays consumed, no side effects.
+	if item.Status != "unused" {
+		if strings.EqualFold(strings.TrimSpace(item.UsedByEmail), strings.TrimSpace(email)) {
+			return nil
+		}
 		return ErrInvalidInvitationCode
 	}
 
@@ -210,9 +221,10 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 	}
 	s.invalidateVIPLookup(tenantID, email)
 
-	// Remove consumed code from HubCenter routing table (fire-and-forget).
+	// Notify HubCenter that this code has been consumed — mark the bound email
+	// on the routing record (preserves it for admin lookup and re-enrollment).
 	if s.syncer != nil {
-		go s.syncer.DeleteInvitationCodesFromCenter(context.Background(), []string{code})
+		go s.syncer.MarkInvitationCodeUsedOnCenter(context.Background(), code, email)
 	}
 
 	return nil

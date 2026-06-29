@@ -6,6 +6,7 @@ import {
     OpenFileOrShowInFolder,
     QueryIMAuditMessages,
 } from "../../../wailsjs/go/main/App";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 interface IMAuditMessage {
     id: number;
@@ -108,6 +109,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     const [refreshKey, setRefreshKey] = useState(0);
     const [initDone, setInitDone] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
 
     const isZh = isZhLang(lang);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -210,8 +212,11 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     };
 
     return (
-        <div className="im-audit-overlay" onClick={onClose}>
-            <div className="im-audit-panel" onClick={e => e.stopPropagation()}>
+        <div className="im-audit-overlay" {...backdropProps}>
+            <div
+                className="im-audit-panel"
+                {...dialogProps}
+            >
                 <div className="im-audit-header">
                     <div className="im-audit-title-wrap">
                         <span className="im-audit-title">{title}</span>

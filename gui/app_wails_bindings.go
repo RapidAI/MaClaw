@@ -347,11 +347,15 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		}
 		return nil
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
+		// Prefer installRef (HubSkillID from enriched App packages) for
+		// deterministic download. Fall back to bare id (name-based) for
+		// backward compatibility with pre-enrichment packages.
+		downloadID := strings.TrimSpace(firstNonEmpty(installRef, id))
 		stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(id, "mixed-skill"))
 		if err != nil {
 			return err
 		}
-		skill, err := downloadSkillJSONFromHubCenterToDir(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download", stagingDir)
+		skill, err := downloadSkillJSONFromHubCenterToDir(ctx, a, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir)
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
 			return err

@@ -124,3 +124,17 @@
 .user-ranking-num strong{font-variant-numeric:tabular-nums;color:#303541;font-size:13px}
 @media(max-width:1180px){.user-rankings-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.user-rankings-columns{grid-template-columns:1fr}}
 @media(max-width:720px){.user-rankings-filter-grid{grid-template-columns:1fr}.user-ranking-row{grid-template-columns:34px minmax(0,1fr);align-items:start}.user-ranking-num{grid-column:2;text-align:left}}
+
+/* Route query action buttons */
+.route-query-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.route-query-actions-bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.btn-sm{font-size:.82rem;padding:4px 10px;border-radius:4px}
+.btn-danger{color:var(--danger);border-color:var(--danger)}
+.btn-danger:hover{background:rgba(214,93,87,.08)}
+
+/* Route restore form */
+.route-restore-form{margin-top:16px;padding:16px;background:var(--soft);border-radius:8px;border:1px solid var(--line)}
+.route-restore-fields{display:flex;flex-direction:column;gap:10px}
+.route-restore-fields label{display:block;font-size:.82rem;color:var(--muted);margin-bottom:3px}
+.route-restore-fields select,.route-restore-fields input[type="text"],.route-restore-fields input:not([type]){width:100%;padding:6px 10px;border:1px solid var(--line);border-radius:4px;font-size:.88rem}
+.route-restore-fields input[type="checkbox"]{margin-right:6px}

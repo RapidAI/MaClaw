@@ -156,17 +156,16 @@ func buildOpenAIChatRequestBody(
 		// When tools are present, cap reasoning budget so tool call arguments
 		// have room to complete. DeepSeek V4 supports thinking.budget_tokens.
 		// This prevents reasoning from consuming the entire output budget.
+		// Use a conservative cap (4096) rather than 25% of max_output because
+		// DeepSeek V4 Flash has been observed to truncate tool call JSON in
+		// production with large contexts (50K+ input tokens), even though the
+		// truncation cannot be reliably reproduced in isolation. A lower budget
+		// ensures more output capacity is reserved for tool call arguments.
 		if len(opts.Tools) > 0 {
 			thinking, _ := reqBody["thinking"].(map[string]interface{})
 			if thinking != nil {
 				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					// Reserve at most 25% of output for reasoning, min 1024.
-					maxOut := cfg.EffectiveMaxOutputTokens()
-					reasoningBudget := maxOut / 4
-					if reasoningBudget < 1024 {
-						reasoningBudget = 1024
-					}
-					thinking["budget_tokens"] = reasoningBudget
+					thinking["budget_tokens"] = 4096
 				}
 			}
 		}

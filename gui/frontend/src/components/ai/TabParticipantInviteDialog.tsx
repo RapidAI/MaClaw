@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { participantAddErrorText } from "./participantAddError";
@@ -7,6 +8,7 @@ import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
 import { isVirtualEmployeeOnline } from "./virtualEmployeeStatus";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
 type TabParticipantInviteDialogProps = {
     tab: AITab;
@@ -15,12 +17,17 @@ type TabParticipantInviteDialogProps = {
     onClose: () => void;
     onAddParticipantToTab: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
 };
+type WailsNoDragStyle = CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
 
 export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddParticipantToTab }: TabParticipantInviteDialogProps) {
     const [available, setAvailable] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [addingId, setAddingId] = useState("");
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !addingId });
     const isZh = !lang || lang.startsWith("zh");
 
     useEffect(() => {
@@ -74,8 +81,17 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
     if (tab.readOnly || (!tab.veId && !tab.discussionId)) return null;
 
     return (
-        <div data-testid="tab-participant-invite-dialog" role="dialog" aria-modal="true" onMouseDown={() => { if (!addingId) onClose(); }} style={{ position: "absolute", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.08)", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box" }}>
-            <div onMouseDown={(e) => e.stopPropagation()} style={{ width: 260, maxHeight: 320, overflowY: "auto", background: theme.bg, color: theme.text, border: `1px solid ${theme.divider}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 6 }}>
+        <div
+            data-testid="tab-participant-invite-dialog"
+            role="dialog"
+            aria-modal="true"
+            style={{ position: "absolute", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.08)", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+            {...backdropProps}
+        >
+            <div
+                style={{ width: 260, maxHeight: 320, overflowY: "auto", background: theme.bg, color: theme.text, border: `1px solid ${theme.divider}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 6, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                {...dialogProps}
+            >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderBottom: `1px solid ${theme.divider}`, marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>{isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite digital employee"}</span>
                     <button data-testid="tab-participant-invite-close" type="button" disabled={!!addingId} onClick={onClose} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: addingId ? "default" : "pointer", fontSize: 16, lineHeight: 1, opacity: addingId ? 0.45 : 1 }}>x</button>

@@ -70,8 +70,9 @@ type routeSnapshot struct {
 
 // invitationCodeTarget holds the routing target for an invitation code.
 type invitationCodeTarget struct {
-	HubID    string
-	TenantID string
+	HubID       string
+	TenantID    string
+	UsedByEmail string
 }
 
 type registrationPolicyConfig struct {
@@ -612,6 +613,37 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 		return &ResolveResult{Email: email, Mode: "none", Message: "Email is blocked"}, nil
 	}
 
+	// Invitation code routing takes HIGHEST priority — when a code is provided,
+	// route directly to the Hub that issued it, regardless of any existing
+	// emailRoutes, adminUserRoutes, or domainRoutes. This ensures re-invitation
+	// to a different Hub works even when stale routes exist.
+	code := ""
+	if len(invitationCode) > 0 {
+		code = strings.TrimSpace(strings.ToUpper(invitationCode[0]))
+	}
+	if code != "" {
+		if s.invitationCodeRoutes == nil {
+			// Invitation code routing table not yet initialized (HubCenter just
+			// restarted and snapshot rebuild is pending). Return a transient error.
+			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_ROUTING_INITIALIZING"}, nil
+		}
+		target, ok := s.invitationCodeRoutes[code]
+		if ok {
+			hub, exists := s.activeHubsByID[target.HubID]
+			if !exists {
+				return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
+			}
+			codeResult := map[string]resolvedCandidate{}
+			s.mergeCandidate(codeResult, email, snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
+			return buildResolveResult(email, codeResult, ""), nil
+		}
+		// Code not found in routing table — it may have been consumed already
+		// (first registration succeeded and the code was removed from the table).
+		// Fall through to normal email/domain routing, which should now point to
+		// the correct Hub (updated by SyncUserRouteReplaceAll after first enrollment).
+	}
+
+	// No invitation code — fall through to normal email/domain/public routing.
 	resultsByHub := map[string]resolvedCandidate{}
 	merge := func(candidate snapshotCandidate) {
 		s.mergeCandidate(resultsByHub, email, candidate)
@@ -637,36 +669,6 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 		for _, candidate := range s.publicHubs {
 			merge(candidate)
 		}
-	}
-
-	// When an invitation code is provided, resolve it to the specific Hub that
-	// issued it via the invitation code route table (populated when Hub syncs
-	// codes to HubCenter). This is the primary invitation-code routing mechanism.
-	// The actual code validation happens on the Hub side during enrollment.
-	code := ""
-	if len(invitationCode) > 0 {
-		code = strings.TrimSpace(strings.ToUpper(invitationCode[0]))
-	}
-	if code != "" {
-		if s.invitationCodeRoutes == nil {
-			// Invitation code routing not initialized — cannot route by code.
-			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_NOT_ROUTED"}, nil
-		}
-		target, ok := s.invitationCodeRoutes[code]
-		if !ok {
-			// Code not found in routing table — invalid or not yet synced.
-			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_NOT_ROUTED"}, nil
-		}
-		hub, exists := s.activeHubsByID[target.HubID]
-		if !exists {
-			// Code is valid but target hub is offline/disabled.
-			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
-		}
-		// Code found — return ONLY the target hub as the candidate.
-		// Do NOT fall through to public hubs, which would cause mis-routing.
-		codeResult := map[string]resolvedCandidate{}
-		s.mergeCandidate(codeResult, email, snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
-		return buildResolveResult(email, codeResult, ""), nil
 	}
 
 	return buildResolveResult(email, resultsByHub, "No available hubs found"), nil

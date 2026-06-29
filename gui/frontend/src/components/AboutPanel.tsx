@@ -4,8 +4,9 @@ import { useState, useEffect } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, ReadErrorLog } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
+import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
@@ -162,6 +163,29 @@ export function AboutPanel({
     const [showErrorLog, setShowErrorLog] = useState(false);
     const [errorLogLines, setErrorLogLines] = useState<string[]>([]);
     const [errorLogLoading, setErrorLogLoading] = useState(false);
+    const { backdropProps: errorLogBackdropProps, dialogProps: errorLogDialogProps } = useSafeBackdropDismiss(() => setShowErrorLog(false));
+
+    // Hub user ranking stats
+    const [ranking, setRanking] = useState<{ totalTokens: number; durationSeconds: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
+    useEffect(() => {
+        if (!hasRegisteredMachine) return;
+        let cancelled = false;
+        GetHubUserRanking()
+            .then((result) => {
+                if (cancelled) return;
+                const r = result as { total_tokens?: number; duration_seconds?: number; token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
+                if (!r || r.error) return;
+                setRanking({
+                    totalTokens: r.total_tokens || 0,
+                    durationSeconds: r.duration_seconds || 0,
+                    tokenRank: r.token_rank || 0,
+                    durationRank: r.duration_rank || 0,
+                    totalUsers: r.total_users || 0,
+                });
+            })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [hasRegisteredMachine]);
 
     useEffect(() => {
         if (!showErrorLog) return;
@@ -175,6 +199,28 @@ export function AboutPanel({
             })
             .finally(() => setErrorLogLoading(false));
     }, [showErrorLog]);
+
+    // Format duration: seconds → "Xh Ym" or "Ym"
+    const formatDuration = (seconds: number): string => {
+        if (seconds <= 0) return '-';
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        if (hours > 0) return `${hours}h ${minutes}m`;
+        return `${minutes}m`;
+    };
+
+    // Format tokens: add thousand separators
+    const formatTokens = (tokens: number): string => {
+        if (tokens <= 0) return '-';
+        return tokens.toLocaleString();
+    };
+
+    // Format rank with medal emoji for top 3
+    const formatRank = (rank: number, total: number): string => {
+        if (rank <= 0) return '';
+        const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
+        return `${medal} ${t("aboutRankPrefix")}${rank}/${total}${t("aboutRankSuffix")}`;
+    };
 
     return (
         <div className="about-page">
@@ -256,6 +302,24 @@ export function AboutPanel({
                                 <dd className="about-identity-value about-identity-value--muted">{hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}</dd>
                             </div>
                         </div>
+                        {ranking && (ranking.totalTokens > 0 || ranking.durationSeconds > 0) && (
+                            <div className="about-identity-row">
+                                <div className="about-identity-item">
+                                    <dt className="about-kv-label">{t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span></dt>
+                                    <dd className="about-identity-value about-identity-value--muted">
+                                        {formatDuration(ranking.durationSeconds)}
+                                        {ranking.durationRank > 0 && <span className="about-rank-badge">{formatRank(ranking.durationRank, ranking.totalUsers)}</span>}
+                                    </dd>
+                                </div>
+                                <div className="about-identity-item">
+                                    <dt className="about-kv-label">{t("aboutTotalTokens")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span></dt>
+                                    <dd className="about-identity-value about-identity-value--muted">
+                                        {formatTokens(ranking.totalTokens)}
+                                        {ranking.tokenRank > 0 && <span className="about-rank-badge">{formatRank(ranking.tokenRank, ranking.totalUsers)}</span>}
+                                    </dd>
+                                </div>
+                            </div>
+                        )}
                     </dl>
                 </section>
 
@@ -311,8 +375,12 @@ export function AboutPanel({
                 t={t}
             />
             {showErrorLog && (
-                <div className="modal-overlay" onClick={() => setShowErrorLog(false)}>
-                    <div className="modal-content" style={{ width: '700px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
+                <div className="modal-overlay" {...errorLogBackdropProps}>
+                    <div
+                        className="modal-content"
+                        style={{ width: '700px', maxWidth: '90vw' }}
+                        {...errorLogDialogProps}
+                    >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                 <h3 style={{ margin: 0, color: 'var(--theme-primary)' }}>{t("errorLogTitle")}</h3>

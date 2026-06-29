@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import { AppsRailIcon, SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
+import { SidebarBrandHeader, SidebarMedalBadge } from './SidebarNavRailPieces';
+import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -42,12 +44,6 @@ const zhHant = {
     settings: '\u8a2d\u5b9a',
 };
 
-const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
-const maclawHeaderStyle = { ...sharedHeaderStyle, height: '64px', padding: '0 0 2px 0', gap: '0' } as const;
-const tigerClawHeaderStyle = { ...sharedHeaderStyle, height: '56px', padding: '4px 0 2px 0', gap: '1px' } as const;
-const maclawLogoSlotStyle = { width: '54px', height: '48px', display: 'flex', justifyContent: 'center', alignItems: 'center' } as const;
-const maclawLogoImageStyle = { width: '50px', height: '50px', objectFit: 'contain' } as const;
-
 export const SidebarNavRail = ({
     navTab,
     brandInfo,
@@ -58,6 +54,7 @@ export const SidebarNavRail = ({
     runningTaskCount,
     t,
     gossipAllowed,
+    config,
     favoriteEmployees = [],
     veAuthorized = false,
     onStartVEConversation = () => {},
@@ -68,11 +65,35 @@ export const SidebarNavRail = ({
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
+    // Hub ranking medal
+    const showRanking = config?.show_hub_ranking !== false; // default: show
+    const hasRegistered = !!(config?.remote_machine_id && config?.remote_machine_token);
+    const [medal, setMedal] = useState<{ emoji: string; rank: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
+    useEffect(() => {
+        if (!showRanking || !hasRegistered) { setMedal(null); return; }
+        let cancelled = false;
+        GetHubUserRanking()
+            .then((result) => {
+                if (cancelled) return;
+                const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
+                if (!r || r.error) return;
+                const tRank = r.token_rank || 0;
+                const dRank = r.duration_rank || 0;
+                // Pick the best (lowest non-zero) rank, only show if top 3
+                let bestRank = 0;
+                if (tRank > 0 && tRank <= 3 && (dRank === 0 || tRank <= dRank)) { bestRank = tRank; }
+                else if (dRank > 0 && dRank <= 3) { bestRank = dRank; }
+                if (bestRank === 0) { setMedal(null); return; }
+                const emoji = bestRank === 1 ? '🥇' : bestRank === 2 ? '🥈' : '🥉';
+                setMedal({ emoji, rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0 });
+            })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [showRanking, hasRegistered]);
+
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
-    const isTigerClaw = brandInfo?.id === 'qianxin';
-
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'settings', icon: <SettingsIcon />, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
         { id: 'remote', icon: <MonitorIcon />, label: lang === 'zh-Hans' ? zhHans.monitor : lang === 'zh-Hant' ? zhHant.monitor : 'Monitor', visible: true, badge: runningTaskCount > 0 ? runningTaskCount : undefined },
@@ -93,16 +114,7 @@ export const SidebarNavRail = ({
             flexShrink: 0,
             position: 'relative',
         }}>
-            <div className="sidebar-header" style={isTigerClaw ? tigerClawHeaderStyle : maclawHeaderStyle}>
-                {brandInfo?.id === 'qianxin' ? (
-                    <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
-                ) : (
-                    <div style={maclawLogoSlotStyle}>
-                        <img src={currentIcon} alt="Logo" style={maclawLogoImageStyle} />
-                    </div>
-                )}
-                <div style={{ color: isTigerClaw ? 'var(--theme-primary-strong)' : 'var(--theme-primary)', fontSize: isTigerClaw ? '0.64rem' : '0.74rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif', transform: isTigerClaw ? undefined : 'translateY(-2px)' }}>{brandSidebarName}</div>
-            </div>
+            <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
 
             <div
                 className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
@@ -192,6 +204,8 @@ export const SidebarNavRail = ({
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'about' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><AboutIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>
+
+            {medal && <SidebarMedalBadge medal={medal} lang={lang} />}
 
             {systemMenuOpen && (
                 <SystemPopupMenu

@@ -147,6 +147,45 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 		return &HandleResult{Action: ActionPassThrough}, nil
 	}
 
+	// Suspended workflows require explicit user confirmation before resuming.
+	// This prevents stale workflows from hijacking messages after app restart.
+	if state.Suspended {
+		m.mu.Unlock()
+		intent := m.classifyIntent(state, text)
+		m.mu.Lock()
+		// Re-load in case state changed during LLM call
+		state, err = m.store.Load(userID)
+		if err != nil || state == nil || state.Status != StatusActive {
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionPassThrough}, nil
+		}
+		phase = state.ActivePhase()
+		if phase == nil {
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionPassThrough}, nil
+		}
+
+		switch intent {
+		case "confirm":
+			// User wants to resume — clear suspended flag and run the phase
+			state.Suspended = false
+			phase.Status = PhaseRunning
+			m.store.Save(state)
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionRunPhase, Phase: phase, State: state}, nil
+		case "cancel":
+			state.Status = StatusCancelled
+			state.Suspended = false
+			m.store.Save(state)
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionCancelled, State: state}, nil
+		default:
+			// "modify", "unrelated", "" — pass through to normal agent loop
+			m.mu.Unlock()
+			return &HandleResult{Action: ActionPassThrough}, nil
+		}
+	}
+
 	switch phase.Status {
 	case PhasePending, PhaseRunning:
 		// If this phase has an InputSchema and form data hasn't been submitted yet,
@@ -772,6 +811,38 @@ func (m *StateMachine) GetActive(userID string) *WorkflowState {
 		return nil
 	}
 	return state
+}
+
+// ListAllStoredUserIDs returns all user IDs that have workflow state in the store.
+// Used by startup cleanup to discover and cancel stale workflows across all
+// users/tabs (desktop-user, desktop-user:{path}, etc.).
+func (m *StateMachine) ListAllStoredUserIDs() ([]string, error) {
+	return m.store.ListAllUserIDs()
+}
+
+// DeleteState removes workflow state for a user from the store entirely.
+// Used as a fallback when Cancel (which does Load + mutate + Save) fails due to
+// store write errors. Deleting the row is simpler than updating it.
+func (m *StateMachine) DeleteState(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.store.Delete(userID)
+}
+
+// SuspendWorkflow marks an active workflow as suspended. Suspended workflows
+// remain Active (preserving phase outputs) but HandleInput returns PassThrough
+// for unrelated messages instead of auto-executing the current phase.
+// The user can resume by sending a "continue" intent.
+func (m *StateMachine) SuspendWorkflow(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return nil
+	}
+	state.Suspended = true
+	state.UpdatedAt = time.Now()
+	return m.store.Save(state)
 }
 
 // GetRegistry returns the template registry.

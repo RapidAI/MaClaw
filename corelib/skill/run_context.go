@@ -815,7 +815,10 @@ func applyExplicitInputForSingleMissingParam(entry *corelib.NLSkillEntry, vars m
 }
 
 func explicitRunInputValue(vars map[string]string, runArgs map[string]interface{}) string {
-	if raw, ok := lookupRunArg(runArgs, "input"); ok {
+	if !runArgBool(runArgs, "_skill_infer_natural_prompt") {
+		return ""
+	}
+	if raw, ok := lookupRunArg(runArgs, "user_prompt"); ok {
 		if value, ok := runVarString(raw); ok {
 			value = strings.TrimSpace(value)
 			if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
@@ -823,13 +826,28 @@ func explicitRunInputValue(vars map[string]string, runArgs map[string]interface{
 			}
 		}
 	}
-	if value, ok := lookupCanonicalVar(vars, "input"); ok {
+	if value, ok := lookupCanonicalVar(vars, "user_prompt"); ok {
 		value = strings.TrimSpace(value)
 		if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
 			return value
 		}
 	}
 	return ""
+}
+
+func runArgBool(runArgs map[string]interface{}, key string) bool {
+	raw, ok := lookupRunArg(runArgs, key)
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	default:
+		return false
+	}
 }
 
 func inferExplicitInputParamValue(param corelib.NLSkillParam, input string) string {
@@ -860,6 +878,7 @@ func extractExplicitInputCity(input string) string {
 	}
 	for _, pattern := range []string{
 		`(?i)(?:^|\s)(?:weather|forecast)\s+(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]*[A-Za-z])(?:\s|$|[,.!?;:])`,
+		`(?i)(?:^|\s)(?:weather|forecast)\s+([A-Za-z][A-Za-z .'-]*[A-Za-z])(?:\s|$|[,.!?;:])`,
 		`(?i)(?:^|\s)(?:in|for|at)\s+([A-Za-z][A-Za-z .'-]*[A-Za-z])(?:\s|$|[,.!?;:])`,
 	} {
 		if re, err := regexp.Compile(pattern); err == nil {

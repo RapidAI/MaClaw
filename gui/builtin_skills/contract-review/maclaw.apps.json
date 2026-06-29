@@ -1,0 +1,25 @@
+{
+  "x_maclaw_apps": "v1",
+  "apps": [
+    {
+      "id": "contract-review",
+      "skill_id": "contract-review",
+      "name": "合同审查",
+      "description": "检查合同条款、风险点和修订建议。",
+      "category": "法务",
+      "kind": "tool_app",
+      "icon": "contract",
+      "input_mode": "mixed",
+      "output_modes": ["md", "pdf"],
+      "fields": [
+        {
+          "name": "focus",
+          "label": "审查重点",
+          "type": "select",
+          "options": ["全面审查", "风险条款", "合规性", "知识产权"],
+          "default": "全面审查"
+        }
+      ]
+    }
+  ]
+}

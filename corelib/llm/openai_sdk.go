@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -232,6 +233,20 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		return nil, 0, nil, err
 	}
 	contentFilter.Flush()
+
+	// Diagnostic: log stream metrics for truncation investigation
+	{
+		var tcArgSizes []string
+		for idx := 0; idx <= len(toolCalls); idx++ {
+			if acc, ok := toolCalls[idx]; ok {
+				tcArgSizes = append(tcArgSizes, fmt.Sprintf("%s=%d", acc.Name, acc.ArgsBuf.Len()))
+			}
+		}
+		if len(tcArgSizes) > 0 {
+			log.Printf("[LLM-stream-diag] SDK stream done: finish_reason=%q content=%d reasoning=%d tool_calls=%d tool_args=[%s]",
+				finishReason, contentBuf.Len(), reasoningBuf.Len(), len(toolCalls), strings.Join(tcArgSizes, ", "))
+		}
+	}
 	if raw := bytes.TrimSpace(capture.body()); len(raw) > 0 && !json.Valid(raw) && !bytes.Contains(raw, []byte("data:")) {
 		return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
 	}

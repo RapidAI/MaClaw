@@ -21,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -31,6 +33,7 @@ const (
 	migrationChunkSize      = int64(4 << 20)
 	migrationAEADChunkSize  = int64(4 << 20)
 	migrationMagic          = "MLMIG01"
+	migrationHubResolveWait = 8 * time.Second
 )
 
 type migrationStatusResponse struct {
@@ -81,7 +84,7 @@ type encryptedMigrationHeader struct {
 func (s *HTTPServer) handleMigrationStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	cfg, err := s.migrationConfig(r.Context(), p)
 	if err != nil {
-		writeJSON(w, http.StatusOK, migrationStatusResponse{Configured: false, ConfigurationReason: err.Error(), TenantID: p.TenantID, UserID: p.UserID})
+		writeJSON(w, http.StatusOK, migrationStatusResponse{Configured: false, HubURL: cfg.HubURL, TenantID: p.TenantID, UserID: p.UserID, MachineID: cfg.MachineID, MachineName: cfg.MachineName, ConfigurationReason: err.Error()})
 		return
 	}
 	current, maxBytes, err := s.migrationHubGetCurrent(r.Context(), cfg)
@@ -143,15 +146,20 @@ func (s *HTTPServer) handleMigrationExport(w http.ResponseWriter, r *http.Reques
 
 func (s *HTTPServer) handleMigrationImport(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var req struct {
-		ExportID string `json:"export_id"`
-		Password string `json:"password"`
+		ExportID     string `json:"export_id"`
+		Password     string `json:"password"`
+		CleanupRetry bool   `json:"cleanup_retry"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid migration import body"})
 		return
 	}
-	if strings.TrimSpace(req.ExportID) == "" || req.Password == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "export_id and password are required"})
+	if strings.TrimSpace(req.ExportID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "export_id is required"})
+		return
+	}
+	if req.Password == "" && !req.CleanupRetry {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "migration password is required"})
 		return
 	}
 	cfg, err := s.migrationConfig(r.Context(), p)
@@ -186,13 +194,17 @@ func (s *HTTPServer) migrationConfig(ctx context.Context, p agentservice.Princip
 		return migrationClientConfig{}, err
 	}
 	cfg := raw.AppConfig
+	hubURL, resolveErr := s.migrationHubURL(ctx, cfg)
 	out := migrationClientConfig{
-		HubURL:       strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"),
+		HubURL:       hubURL,
 		ViewerToken:  strings.TrimSpace(cfg.RemoteViewerToken),
 		MachineToken: strings.TrimSpace(cfg.RemoteMachineToken),
 		TenantID:     strings.TrimSpace(cfg.RemoteTenantID),
 		MachineID:    strings.TrimSpace(cfg.RemoteMachineID),
 		MachineName:  firstMigrationNonEmpty(cfg.RemoteMachineName, cfg.RemoteClientID, cfg.RemoteMachineID),
+	}
+	if resolveErr != nil {
+		return out, resolveErr
 	}
 	if out.HubURL == "" {
 		return out, fmt.Errorf("Hub is not configured")
@@ -204,6 +216,34 @@ func (s *HTTPServer) migrationConfig(ctx context.Context, p agentservice.Princip
 		return out, fmt.Errorf("Hub login is required")
 	}
 	return out, nil
+}
+
+func (s *HTTPServer) migrationHubURL(ctx context.Context, cfg corelib.AppConfig) (string, error) {
+	if hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"); hubURL != "" {
+		return hubURL, nil
+	}
+	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" && len(cfg.RemoteHubCenterURLs) == 0 {
+		return "", nil
+	}
+	email := strings.TrimSpace(cfg.RemoteEmail)
+	if email == "" {
+		return "", nil
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, migrationHubResolveWait)
+	defer cancel()
+	result, _, _, err := remote.NewEnrollmentClient().ResolveHubs(resolveCtx, email, "", cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	if err != nil {
+		return "", fmt.Errorf("Hub resolution failed: %w", err)
+	}
+	if result == nil || len(result.Hubs) == 0 {
+		return "", fmt.Errorf("Hub resolution failed: no Hub found for %s", email)
+	}
+	for _, hub := range result.Hubs {
+		if strings.TrimSpace(result.DefaultHubID) != "" && hub.HubID == result.DefaultHubID {
+			return strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/"), nil
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(result.Hubs[0].BaseURL), "/"), nil
 }
 
 func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Principal, cfg migrationClientConfig, password string, progress func(float64, string)) (map[string]interface{}, error) {
@@ -302,6 +342,9 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 		claimed = false
 		progress(1, "import cleanup completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
+	}
+	if password == "" {
+		return nil, fmt.Errorf("migration password is required")
 	}
 	chunkCount := int(numberFromMap(exportMap, "chunk_count"))
 	chunkSize := int64(numberFromMap(exportMap, "chunk_size"))

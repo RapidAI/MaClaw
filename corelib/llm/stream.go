@@ -589,7 +589,13 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 				truncatedArgs = make(map[string]string)
 			}
 			truncatedArgs[tc.Function.Name] = args
-			log.Printf("[LLM-stream] truncated tool call (invalid JSON): %s args=%d bytes finish_reason=%s", tc.Function.Name, len(args), finishReason)
+			// Enhanced diagnostic: show args tail to help identify truncation point
+			tail := args
+			if len(tail) > 120 {
+				tail = "..." + tail[len(tail)-120:]
+			}
+			log.Printf("[LLM-stream] truncated tool call (invalid JSON): %s args=%d bytes finish_reason=%s json_err=%q tail=%q",
+				tc.Function.Name, len(args), finishReason, err.Error(), tail)
 			continue
 		}
 		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && (isLengthTruncated || len(args) > 4000) {
@@ -607,6 +613,9 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 		return finishReason, nil, nil
 	}
 	msg.ToolCalls = validCalls
+	// Summary diagnostic for truncation event
+	log.Printf("[LLM-stream] truncation summary: total_calls=%d valid=%d truncated=%d truncated_tools=%v finish_reason=%s",
+		len(validCalls)+len(truncatedNames), len(validCalls), len(truncatedNames), truncatedNames, finishReason)
 	return finishReason, truncatedNames, truncatedArgs
 }
 

@@ -130,6 +130,10 @@ export function GetRemoteActivationStatus() {
   return window['go']['main']['App']['GetRemoteActivationStatus']();
 }
 
+export function GetHubUserRanking() {
+  return window['go']['main']['App']['GetHubUserRanking']();
+}
+
 export function GetHubSecurityPolicy() {
   return window['go']['main']['App']['GetHubSecurityPolicy']();
 }

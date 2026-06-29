@@ -80,6 +80,14 @@ type WorkflowState struct {
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 
+	// Suspended indicates the workflow was active when the app closed and has not
+	// yet been explicitly resumed by the user in this session. While suspended,
+	// the router's Step 1 returns PassThrough instead of RunPhase, preventing
+	// stale workflows from hijacking unrelated user messages after app restart.
+	// The user can resume by saying "继续工作流"/"continue workflow" which the
+	// confirm classifier recognizes as "confirm".
+	Suspended bool `json:"suspended,omitempty"`
+
 	// SupplementaryDocs stores optional supplementary documents uploaded by the user.
 	// These are reference materials (research plans, publication lists, etc.) that
 	// provide context for LLM generation in subsequent phases.

@@ -75,6 +75,20 @@ type NLSkillDefinition struct {
 	MaclawAppEntry      string                      `json:"maclaw_app_entry,omitempty"`
 }
 
+// QualifiedID returns the canonical unique identifier for this skill definition.
+// Format: "publisher:name" when Publisher is set, otherwise bare "name".
+func (d NLSkillDefinition) QualifiedID() string {
+	name := strings.TrimSpace(d.Name)
+	if name == "" {
+		return ""
+	}
+	publisher := strings.TrimSpace(d.Publisher)
+	if publisher != "" {
+		return publisher + ":" + name
+	}
+	return name
+}
+
 // SkillAppManifestEntry is the Wails-facing app extension declared by maclaw.apps.json.
 type SkillAppManifestEntry struct {
 	ID                string                  `json:"id"`
@@ -1396,9 +1410,10 @@ func skillExecutionRunArgs(userPrompt string) map[string]interface{} {
 		return nil
 	}
 	return map[string]interface{}{
-		"args":        userPrompt,
-		"input":       userPrompt,
-		"user_prompt": userPrompt,
+		"args":                        userPrompt,
+		"input":                       userPrompt,
+		"user_prompt":                 userPrompt,
+		"_skill_infer_natural_prompt": true,
 	}
 }
 

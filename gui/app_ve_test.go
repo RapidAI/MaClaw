@@ -1751,7 +1751,7 @@ func TestCacheVEA2ADetailAsyncCoalescesConcurrentRefreshes(t *testing.T) {
 	defer server.Close()
 	defer releaseOnce.Do(func() { close(releaseFirstDetail) })
 
-	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	app := &App{testHomeDir: t.TempDir(), disableBackgroundEmbeddingForTest: true, configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
 	client, cfg, err := app.veA2AHubClient()
 	if err != nil {
 		t.Fatalf("veA2AHubClient: %v", err)
@@ -1939,7 +1939,7 @@ func TestSendVEGroupMessageWithoutMentionTargetsRemoteVEsAndSkipsLocalAI(t *test
 }
 
 func TestSendVEGroupMessageWithoutMentionKeepsSingleVEDefaultResponder(t *testing.T) {
-	gotToIDs := make(chan []string, 1)
+	gotToIDs := make(chan []string, 16)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/a2a/consultations/session-1/detail":
@@ -1956,7 +1956,10 @@ func TestSendVEGroupMessageWithoutMentionKeepsSingleVEDefaultResponder(t *testin
 				t.Errorf("decode body: %v", err)
 				return
 			}
-			gotToIDs <- append([]string(nil), body.ToIDs...)
+			select {
+			case gotToIDs <- append([]string(nil), body.ToIDs...):
+			default:
+			}
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)

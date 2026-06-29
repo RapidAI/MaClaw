@@ -24,7 +24,8 @@ func TestFormatScanReportForUser_DelegatesToShared(t *testing.T) {
 	}
 	// Verify the gui wrapper delegates to the shared implementation.
 	text := FormatScanReportForUser(report, "test-skill")
-	if !containsText(text, "✅") {
+	want := skill.FormatScanReportForUser(report, "test-skill")
+	if text != want {
 		t.Error("should delegate to shared FormatScanReportForUser")
 	}
 }

@@ -10,6 +10,7 @@ import {
     SelectKnowledgeFiles,
 } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 
 // Fallback only used if capabilities haven't loaded yet (e.g. dialog opened before API returns).
 // The authoritative list comes from the backend via the supportedExts prop.
@@ -176,6 +177,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
         setShowAdvanced(false);
         onClose();
     };
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(handleClose);
 
     const buildPayload = () => {
         // When all formats are selected, send empty array to let backend use its DefaultIncludeExts.
@@ -280,8 +282,16 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                 : total > 0 ? Math.round((processed / total) * 85) : 0;
 
     return (
-        <div className="knowledge-import-overlay" onClick={handleClose}>
-            <div className="knowledge-import-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div
+            className="knowledge-import-overlay"
+            {...backdropProps}
+        >
+            <div
+                className="knowledge-import-modal"
+                role="dialog"
+                aria-modal="true"
+                {...dialogProps}
+            >
                 {/* Header */}
                 <div className="knowledge-import-header">
                     {step === 'configure' && (

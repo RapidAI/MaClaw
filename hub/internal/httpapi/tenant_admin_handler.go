@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -426,15 +428,24 @@ func adminTenantStatusUpdateHandler(system store.SystemSettingsRepository, audit
 	}
 }
 
+type tenantDeleteRequest struct {
+	Password string `json:"password"`
+}
+
+// tenantHardDeleter is the interface for physically removing a tenant record.
+type tenantHardDeleter interface {
+	DeleteByID(ctx context.Context, id string) error
+}
+
 func AdminTenantDeleteHandler(tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
-	return adminTenantDeleteHandler(nil, nil, tenants, runtimeStoppers...)
+	return adminTenantDeleteHandler(nil, nil, nil, nil, nil, tenants, runtimeStoppers...)
 }
 
-func AdminTenantDeleteWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
-	return adminTenantDeleteHandler(system, audit, tenants, runtimeStoppers...)
+func AdminTenantDeleteWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, centerSvc BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+	return adminTenantDeleteHandler(system, audit, admins, db, centerSvc, tenants, runtimeStoppers...)
 }
 
-func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, routeDeleter BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
 	runtimeStopper := firstTenantIMRuntimeStopper(runtimeStoppers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
@@ -442,37 +453,164 @@ func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store
 			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
 			return
 		}
-		deleter, ok := tenants.(tenantSoftDeleter)
-		if !ok {
-			writeError(w, http.StatusServiceUnavailable, "TENANT_DELETE_UNSUPPORTED", "Tenant delete is not supported")
-			return
-		}
 		tenantID := strings.TrimSpace(r.PathValue("tenantId"))
 		if tenantID == "" || isReservedTenantID(tenantID) || tenantID == store.DefaultTenantID {
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT", "Tenant id is invalid")
 			return
 		}
+
+		// Require admin password confirmation for destructive delete.
+		var req tenantDeleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && admins != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must contain password field")
+			return
+		}
+
+		// Verify the requesting admin's password when admin service is available.
+		if admins != nil {
+			if strings.TrimSpace(req.Password) == "" {
+				writeError(w, http.StatusBadRequest, "PASSWORD_REQUIRED", "Admin login password is required to confirm tenant deletion")
+				return
+			}
+			if _, err := admins.VerifyScopedCredentials(r.Context(), actor.Username, req.Password, auth.ExplicitGlobalAdminTenantScope); err != nil {
+				writeError(w, http.StatusUnauthorized, "PASSWORD_INCORRECT", "Admin password verification failed")
+				return
+			}
+		}
+
 		tenant, err := tenants.GetByID(r.Context(), tenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "TENANT_LOAD_FAILED", err.Error())
 			return
 		}
-		if tenant == nil || tenant.DeletedAt != nil {
+		if tenant == nil {
 			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Tenant not found")
 			return
 		}
-		if err := deleter.SoftDeleteByID(r.Context(), tenantID); err != nil {
-			writeError(w, http.StatusInternalServerError, "TENANT_DELETE_FAILED", err.Error())
-			return
-		}
+
+		// Stop IM runtimes before data purge.
 		if runtimeStopper != nil {
 			runtimeStopper.StopTenantIMs(r.Context(), tenantID)
 		}
-		updated, _ := tenants.GetByID(r.Context(), tenantID)
-		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.deleted", map[string]any{"tenant_id": tenantID, "tenant_slug": tenant.Slug})
-		postPlatformTenantCallbacks(r.Context(), system, updated, "deleted")
-		writeJSON(w, http.StatusOK, map[string]any{"tenant": tenantDTO(updated)})
+
+		// Delete HubCenter routes for all tenant users (best-effort, errors logged but not blocking).
+		if db != nil && routeDeleter != nil {
+			purgeTenantUserRoutes(r.Context(), db, tenantID, routeDeleter)
+		}
+
+		// Purge all tenant-scoped data from all tables, then hard-delete the tenant record.
+		if db != nil {
+			if err := purgeTenantData(r.Context(), db, tenantID); err != nil {
+				writeError(w, http.StatusInternalServerError, "TENANT_PURGE_FAILED", "Failed to purge tenant data: "+err.Error())
+				return
+			}
+		}
+
+		// Hard-delete the tenant record itself.
+		hardDeleter, ok := tenants.(tenantHardDeleter)
+		if !ok {
+			// Fallback to soft-delete if hard-delete interface not available.
+			if softDeleter, ok2 := tenants.(tenantSoftDeleter); ok2 {
+				if err := softDeleter.SoftDeleteByID(r.Context(), tenantID); err != nil {
+					writeError(w, http.StatusInternalServerError, "TENANT_DELETE_FAILED", err.Error())
+					return
+				}
+			}
+		} else {
+			if err := hardDeleter.DeleteByID(r.Context(), tenantID); err != nil {
+				writeError(w, http.StatusInternalServerError, "TENANT_DELETE_FAILED", err.Error())
+				return
+			}
+		}
+
+		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.hard_deleted", map[string]any{"tenant_id": tenantID, "tenant_slug": tenant.Slug, "purge": true})
+		postPlatformTenantCallbacks(r.Context(), system, tenant, "deleted")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenant_id": tenantID, "purged": true})
 	}
+}
+
+// purgeTenantData deletes all rows belonging to the tenant from all tenant-scoped tables,
+// including system_settings entries scoped to the tenant.
+func purgeTenantData(ctx context.Context, db *sql.DB, tenantID string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Defer FK checks so table deletion order doesn't matter.
+	if _, err := tx.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
+		return err
+	}
+
+	tables, err := sqlite.TenantScopedTables(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	for _, table := range tables {
+		quoted := sqlite.TenantMergeQuoteIdent(table)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoted+` WHERE tenant_id = ?`, tenantID); err != nil {
+			return errors.New("purge table " + table + ": " + err.Error())
+		}
+	}
+
+	// Also purge tenant-scoped system settings within the same transaction.
+	prefix := "tenant:" + tenantID + ":"
+	if _, err := tx.ExecContext(ctx, `DELETE FROM system_settings WHERE key LIKE ?`, prefix+"%"); err != nil {
+		return errors.New("purge system_settings: " + err.Error())
+	}
+
+	return tx.Commit()
+}
+
+// purgeTenantUserRoutes deletes HubCenter routing entries for all users of the tenant.
+// This is best-effort: failures are logged but do not block the deletion.
+// Uses bounded concurrency to avoid timeout on tenants with many users.
+func purgeTenantUserRoutes(ctx context.Context, db *sql.DB, tenantID string, routeDeleter BoundUserRouteDeleter) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT lower(email) FROM users WHERE tenant_id = ? AND email != ''`, tenantID)
+	if err != nil {
+		log.Printf("[tenant-purge] list tenant users for route cleanup: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var emails []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			continue
+		}
+		if email != "" {
+			emails = append(emails, email)
+		}
+	}
+	if rows.Err() != nil {
+		log.Printf("[tenant-purge] scan tenant user emails: %v", rows.Err())
+	}
+	if len(emails) == 0 {
+		return
+	}
+
+	log.Printf("[tenant-purge] deleting hub center routes for %d users in tenant %s", len(emails), tenantID)
+
+	// Bounded concurrency: up to 5 parallel route deletions.
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+
+	for _, email := range emails {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(email string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := routeDeleter.DeleteUserRoute(ctx, email, tenantID); err != nil {
+				log.Printf("[tenant-purge] delete hub center route for %s@%s: %v", email, tenantID, err)
+			}
+		}(email)
+	}
+	wg.Wait()
 }
 
 func AdminTenantMergeHandler(db *sql.DB, tenants store.TenantRepository, audit store.AdminAuditRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {

@@ -1,0 +1,28 @@
+name: doc-redact
+description: "文档脱敏 — 识别身份证号、手机号、邮箱、银行卡号、地址等敏感信息，替换为掩码后输出新文档。支持 TXT/Markdown/DOCX 格式。"
+triggers:
+    - 文档脱敏
+    - 脱敏
+    - redact
+    - anonymize
+    - 隐私保护
+    - mask pii
+steps:
+    - action: bash
+      params:
+        command: pip install python-docx --quiet 2>&1
+        timeout: 60000
+      continue_on_error: true
+
+    - action: bash
+      params:
+        command: python "{baseDir}/scripts/redact.py" --input "{{input}}" --output "{{output}}"
+        timeout: 120000
+      continue_on_error: false
+      on_error: "脱敏处理失败，请检查文件格式是否支持（TXT/MD/DOCX）"
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true

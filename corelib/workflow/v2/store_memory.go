@@ -32,3 +32,13 @@ func (m *MemoryStore) Delete(userID string) error {
 	delete(m.states, userID)
 	return nil
 }
+
+func (m *MemoryStore) ListAllUserIDs() ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.states))
+	for id := range m.states {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}

@@ -34,6 +34,7 @@ func TestConflictSupersedeSynchronizesSemanticGraph(t *testing.T) {
 
 	NewConflictDetector(store, nil, nil).Supersede("old-config")
 
+	store.WaitRebuild()
 	after := store.SemanticGraph().SearchWithOptions([]string{"alpha"}, SemanticSearchOptions{Now: time.Now()})
 	for _, hit := range after {
 		if hit.EntryID == "old-config" {
@@ -147,6 +148,7 @@ func TestPipelineDormantRebuildsDerivedIndexes(t *testing.T) {
 	if result.Dormant != 1 {
 		t.Fatalf("expected one entry to become dormant, got %d", result.Dormant)
 	}
+	store.WaitRebuild()
 	if store.ProjectIndex().Count() != 0 {
 		t.Fatalf("dormant project entry should be removed from project index, got %d", store.ProjectIndex().Count())
 	}
@@ -236,6 +238,7 @@ func TestSupersedeRemovesEntryFromVectorAndLegacyGraph(t *testing.T) {
 
 	NewConflictDetector(store, nil, nil).Supersede("old")
 
+	store.WaitRebuild()
 	if scores := store.vecIndex.score([]float32{1, 0, 0, 0}); scores["old"] != 0 {
 		t.Fatalf("superseded entry should be removed from vector index, got %v", scores)
 	}
@@ -267,6 +270,7 @@ func TestStoreUpdateRebuildsProjectIndexWhenProjectTagChanges(t *testing.T) {
 ewproj`}); err != nil {
 		t.Fatal(err)
 	}
+	store.WaitRebuild()
 	if rec := store.ProjectIndex().Get(`D:\workprj\oldproj`); rec != nil {
 		t.Fatalf("old project should be removed after project tag update, got %+v", rec)
 	}
@@ -395,6 +399,7 @@ func TestSaveDedupMergesEntitiesIntoDerivedIndexes(t *testing.T) {
 	if entries := store.List("", ""); len(entries) != 1 {
 		t.Fatalf("expected hash dedup to keep one entry, got %+v", entries)
 	}
+	store.WaitRebuild()
 	if got := store.FindByEntity("port-2222"); len(got) != 1 || got[0].ID != "same-content" {
 		t.Fatalf("dedup should merge new entities into entity index, got %+v", got)
 	}
@@ -433,6 +438,7 @@ func TestSubstringDedupUpdatesEmbeddingAndEntities(t *testing.T) {
 	if len(entries) != 1 || entries[0].ID != "short" || entries[0].Content != "alpha endpoint uses port 2222 and token auth" {
 		t.Fatalf("expected substring dedup to retain updated short entry, got %+v", entries)
 	}
+	store.WaitRebuild()
 	if scores := store.vecIndex.score([]float32{0, 1, 0, 0}); scores["short"] == 0 {
 		t.Fatalf("substring dedup should update vector embedding, got %v", scores)
 	}
@@ -518,6 +524,7 @@ func TestProfileUpdateRebuildsTemporalTree(t *testing.T) {
 	if err := pc.upsertProfile("new profile", ""); err != nil {
 		t.Fatal(err)
 	}
+	store.WaitRebuild()
 	level, _, ok := store.TMT().NodeInfo("profile")
 	if !ok || level != LevelProfile {
 		t.Fatalf("profile update should rebuild TMT with LevelProfile, level=%v ok=%v", level, ok)

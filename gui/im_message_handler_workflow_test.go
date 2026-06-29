@@ -206,9 +206,9 @@ func registerTestTemplatesInV2Registry(reg *v2.TemplateRegistry) {
 		Phases: []v2.PhaseTemplate{
 			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
 			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
+			{ID: "artifact_plan", Name: "维护工件计划", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
 			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
 			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: v2.ToolPolicyOpsControlled},
-			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: v2.ToolPolicyDocOnly},
 		},
 	})
 	reg.Register(&v2.WorkflowTemplate{
@@ -231,9 +231,9 @@ func registerV1OnlyTestTemplates(v1Reg *v2.WorkflowRegistry) {
 		Phases: []v2.PhaseSpec{
 			{ID: "ops_intake", Name: "运维需求确认", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "readonly_collection", Name: "信息采集", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "artifact_plan", Name: "维护工件计划", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "risk_policy", Name: "风险策略", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 			{ID: "controlled_execution", Name: "受控执行", NeedsConfirm: false, ToolPolicy: v2.ToolFilterOpsControlled},
-			{ID: "verification", Name: "验证", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
 		},
 	})
 

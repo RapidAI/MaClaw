@@ -110,7 +110,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "workflow_contract_status_mapping", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "result_contract_delivery_modes", "result_contract_delivery_inline_content", "result_contract_delivery_artifacts", "result_contract_delivery_business_record", "result_contract_delivery_notifications", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "workflow_contract_status_mapping", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "result_contract_delivery_modes", "result_contract_delivery_inline_content", "result_contract_delivery_artifacts", "result_contract_delivery_business_record", "result_contract_delivery_notifications", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_current_node", "test_evidence_workflow_skill_id", "test_evidence_workflow_version", "test_evidence_business_status", "test_evidence_result_status", "test_evidence_dataset_id", "test_evidence_blueprint_id", "test_evidence_object_role", "test_evidence_approval_event", "test_evidence_approval_workflow_id", "test_evidence_detail_url", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -253,6 +253,18 @@ func normalizeAppInstallationWorkspaceLayoutMetadata(out map[string]any) error {
 		layout["regions"] = regions
 		out["workspace_layout_region_count"] = len(regions)
 		out["workspace_layout_region_ids"] = ids
+		if appInstallationString(layout, "primaryRegion") == "" && appInstallationString(out, "workspace_layout_primary_region") == "" {
+			if inferred := inferAppInstallationWorkspaceRegionPlacement(regions, []string{"primary", "main", "input", "form", "request", "list", "table"}); inferred != "" {
+				layout["primaryRegion"] = inferred
+				out["workspace_layout_primary_region"] = inferred
+			}
+		}
+		if appInstallationString(layout, "outputRegion") == "" && appInstallationString(out, "workspace_layout_output_region") == "" {
+			if inferred := inferAppInstallationWorkspaceRegionPlacement(regions, []string{"output", "result", "results", "artifact", "artifacts", "content", "preview"}); inferred != "" {
+				layout["outputRegion"] = inferred
+				out["workspace_layout_output_region"] = inferred
+			}
+		}
 	}
 	if navigation := firstNonEmptyAppInstallationStringList(appInstallationStringList(layout["navigation"]), appInstallationStringList(out["workspace_layout_navigation"])); len(navigation) > 0 {
 		layout["navigation"] = navigation
@@ -271,6 +283,25 @@ func normalizeAppInstallationWorkspaceLayoutMetadata(out map[string]any) error {
 	return nil
 }
 
+func inferAppInstallationWorkspaceRegionPlacement(regions []map[string]any, roles []string) string {
+	wanted := map[string]struct{}{}
+	for _, role := range roles {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role != "" {
+			wanted[role] = struct{}{}
+		}
+	}
+	for _, region := range regions {
+		role := strings.ToLower(strings.TrimSpace(appInstallationString(region, "role")))
+		if _, ok := wanted[role]; !ok {
+			continue
+		}
+		if placement := appInstallationString(region, "placement"); placement != "" {
+			return placement
+		}
+	}
+	return ""
+}
 func normalizeAppInstallationWorkspaceRegions(value any) ([]map[string]any, []string) {
 	items, ok := value.([]any)
 	if !ok {
@@ -624,6 +655,17 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			"test_evidence_approval_instance",
 			"test_evidence_approval_id",
 			"test_evidence_record_id",
+			"test_evidence_approval_current_node",
+			"test_evidence_workflow_skill_id",
+			"test_evidence_workflow_version",
+			"test_evidence_business_status",
+			"test_evidence_result_status",
+			"test_evidence_dataset_id",
+			"test_evidence_blueprint_id",
+			"test_evidence_object_role",
+			"test_evidence_approval_event",
+			"test_evidence_approval_workflow_id",
+			"test_evidence_detail_url",
 			"test_evidence_dependency_verification",
 			"test_evidence_dependency_count",
 		) {
@@ -686,6 +728,14 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 	if payload, ok := firstAppInstallationPresent(evidence["resultPayload"], evidence["result_payload"], out["test_evidence_result_payload"], appInstallationMapValue(approval, "resultPayload", "result_payload")); ok {
 		normalized["result_payload"] = cloneJSONValue(payload)
 		out["test_evidence_result_payload"] = cloneJSONValue(payload)
+		if payloadMap := appInstallationMap(payload); payloadMap != nil {
+			if businessStatus := appInstallationString(payloadMap, "businessStatus", "business_status"); businessStatus != "" {
+				out["test_evidence_business_status"] = businessStatus
+			}
+			if resultStatus := appInstallationString(payloadMap, "resultStatus", "result_status", "status"); resultStatus != "" {
+				out["test_evidence_result_status"] = resultStatus
+			}
+		}
 	}
 	if outputs, ok := firstAppInstallationPresent(evidence["outputs"], evidence["output_blocks"], evidence["outputBlocks"], out["test_evidence_outputs"], appInstallationMapValue(approval, "outputs", "output_blocks", "outputBlocks")); ok {
 		normalized["outputs"] = cloneJSONValue(outputs)
@@ -722,6 +772,26 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			if recordID := appInstallationString(approval, "recordID", "record_id"); recordID != "" {
 				out["test_evidence_record_id"] = recordID
 			}
+			for _, pair := range []struct {
+				summary string
+				keys    []string
+			}{
+				{"test_evidence_approval_current_node", []string{"currentNode", "current_node"}},
+				{"test_evidence_workflow_skill_id", []string{"workflowSkillId", "workflow_skill_id"}},
+				{"test_evidence_workflow_version", []string{"workflowVersion", "workflow_version"}},
+				{"test_evidence_business_status", []string{"businessStatus", "business_status"}},
+				{"test_evidence_result_status", []string{"resultStatus", "result_status"}},
+				{"test_evidence_dataset_id", []string{"datasetID", "datasetId", "dataset_id"}},
+				{"test_evidence_blueprint_id", []string{"blueprintID", "blueprintId", "blueprint_id"}},
+				{"test_evidence_object_role", []string{"objectRole", "object_role", "approvalObjectRole", "approval_object_role"}},
+				{"test_evidence_approval_event", []string{"approvalEvent", "approval_event"}},
+				{"test_evidence_approval_workflow_id", []string{"approvalWorkflowID", "approvalWorkflowId", "approval_workflow_id"}},
+				{"test_evidence_detail_url", []string{"detailURL", "detailUrl", "detail_url"}},
+			} {
+				if value := appInstallationString(approval, pair.keys...); value != "" {
+					out[pair.summary] = value
+				}
+			}
 			if status := firstNonEmptyAppInstallationString(appInstallationString(approval, "status"), appInstallationString(approval, "approvalStatus", "approval_status"), appInstallationString(approval, "resultStatus", "result_status")); status != "" {
 				out["test_evidence_approval_status"] = status
 			}
@@ -730,19 +800,40 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			}
 		}
 	}
-	if _, hasApproval := normalized["approval_instance"]; !hasApproval && appInstallationHasAny(out, "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified") {
+	if _, hasApproval := normalized["approval_instance"]; !hasApproval && appInstallationHasAny(out, "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_view_verified", "test_evidence_approval_current_node", "test_evidence_workflow_skill_id", "test_evidence_workflow_version", "test_evidence_business_status", "test_evidence_result_status", "test_evidence_dataset_id", "test_evidence_blueprint_id", "test_evidence_object_role", "test_evidence_approval_event", "test_evidence_approval_workflow_id", "test_evidence_detail_url") {
 		approval := map[string]any{}
 		if instanceID := appInstallationString(out, "test_evidence_approval_instance_id"); instanceID != "" {
 			approval["instance_id"] = instanceID
 		}
 		if approvalID := appInstallationString(out, "test_evidence_approval_id"); approvalID != "" {
 			approval["approval_id"] = approvalID
+			if _, ok := approval["instance_id"]; !ok {
+				approval["instance_id"] = approvalID
+				out["test_evidence_approval_instance_id"] = approvalID
+			}
 		}
 		if recordID := appInstallationString(out, "test_evidence_record_id"); recordID != "" {
 			approval["record_id"] = recordID
 		}
 		if status := appInstallationString(out, "test_evidence_approval_status"); status != "" {
 			approval["status"] = status
+		}
+		for _, pair := range []struct{ summary, key string }{
+			{"test_evidence_approval_current_node", "current_node"},
+			{"test_evidence_workflow_skill_id", "workflow_skill_id"},
+			{"test_evidence_workflow_version", "workflow_version"},
+			{"test_evidence_business_status", "business_status"},
+			{"test_evidence_result_status", "result_status"},
+			{"test_evidence_dataset_id", "dataset_id"},
+			{"test_evidence_blueprint_id", "blueprint_id"},
+			{"test_evidence_object_role", "object_role"},
+			{"test_evidence_approval_event", "approval_event"},
+			{"test_evidence_approval_workflow_id", "approval_workflow_id"},
+			{"test_evidence_detail_url", "detail_url"},
+		} {
+			if value := appInstallationString(out, pair.summary); value != "" {
+				approval[pair.key] = value
+			}
 		}
 		if verified, ok := firstAppInstallationBool(out["test_evidence_approval_view_verified"]); ok {
 			approval["approval_instance_view_verified"] = verified

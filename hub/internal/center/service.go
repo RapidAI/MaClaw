@@ -132,10 +132,11 @@ type registerHubResponse struct {
 }
 
 type syncUserLinkRequest struct {
-	HubSecret string `json:"hub_secret"`
-	TenantID  string `json:"tenant_id,omitempty"`
-	Email     string `json:"email"`
-	IsDefault bool   `json:"is_default"`
+	HubSecret  string `json:"hub_secret"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	Email      string `json:"email"`
+	IsDefault  bool   `json:"is_default"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
 type syncUserUsageRequest struct {
@@ -1282,6 +1283,18 @@ func (s *Service) startHeartbeatLoop() {
 }
 
 func (s *Service) SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error {
+	return s.syncUserRouteInternal(ctx, email, false, tenantIDOpt...)
+}
+
+// SyncUserRouteReplaceAll is like SyncUserRoute but instructs HubCenter to remove
+// ALL existing routes for this email (across all hubs/tenants) before creating
+// the new one. Used after invitation-code enrollment to ensure the user is fully
+// migrated to the new hub.
+func (s *Service) SyncUserRouteReplaceAll(ctx context.Context, email string, tenantIDOpt ...string) error {
+	return s.syncUserRouteInternal(ctx, email, true, tenantIDOpt...)
+}
+
+func (s *Service) syncUserRouteInternal(ctx context.Context, email string, replaceAll bool, tenantIDOpt ...string) error {
 	email = normalizeEmail(email)
 	if email == "" {
 		return nil
@@ -1304,7 +1317,7 @@ func (s *Service) SyncUserRoute(ctx context.Context, email string, tenantIDOpt .
 	if len(baseURLs) == 0 {
 		return fmt.Errorf("hub center base url is required")
 	}
-	payload, err := json.Marshal(syncUserLinkRequest{HubSecret: record.HubSecret, TenantID: tenantID, Email: email, IsDefault: tenantID == store.DefaultTenantID})
+	payload, err := json.Marshal(syncUserLinkRequest{HubSecret: record.HubSecret, TenantID: tenantID, Email: email, IsDefault: tenantID == store.DefaultTenantID, ReplaceAll: replaceAll})
 	if err != nil {
 		return err
 	}
@@ -1448,6 +1461,58 @@ func (s *Service) DeleteInvitationCodesFromCenter(ctx context.Context, codes []s
 			return nil
 		}
 		lastErr = fmt.Errorf("hub center invitation-codes delete failed with status %d", resp.StatusCode)
+	}
+	return lastErr
+}
+
+// MarkInvitationCodeUsedOnCenter notifies HubCenter that an invitation code has
+// been consumed by the given email. The route record is preserved (not deleted)
+// so that admin panels can see the binding, and so that the same email can
+// re-enroll via the code's route on a different device.
+func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) error {
+	if s == nil || strings.TrimSpace(code) == "" {
+		return nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"hub_secret":    record.HubSecret,
+		"codes":         []string{code},
+		"used_by_email": strings.TrimSpace(strings.ToLower(email)),
+	})
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		lastErr = fmt.Errorf("hub center invitation-code mark-used failed with status %d", resp.StatusCode)
 	}
 	return lastErr
 }

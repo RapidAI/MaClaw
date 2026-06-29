@@ -141,6 +141,7 @@ const (
 // doc_only workflow phases.
 var DocOnlyAllowedTools = map[string]bool{
 	"read_file":                true,
+	"write_file":               true,
 	"memory":                   true,
 	"generate_pdf":             true,
 	"office":                   true,
@@ -162,6 +163,7 @@ var DocOnlyAllowedTools = map[string]bool{
 // PlanningAllowedTools is the canonical set for reviewable coding-planning phases.
 var PlanningAllowedTools = map[string]bool{
 	"read_file":                true,
+	"write_file":               true,
 	"list_directory":           true,
 	"memory":                   true,
 	"send_file":                true,

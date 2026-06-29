@@ -1340,6 +1340,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	if len(truncatedTools) == 0 {
 		finishReason, truncatedTools, truncatedToolArgs = filterTruncatedToolCalls(&msg, finishReason)
 	}
+	// Enhanced diagnostic when truncation is detected via GUI path
+	if len(truncatedTools) > 0 && resp != nil && resp.Usage != nil {
+		u := resp.Usage
+		log.Printf("[LLM-stream-diag] GUI truncation detected: truncated=%v input=%d output=%d total=%d reasoning_content=%d chars",
+			truncatedTools, u.InputTokens, u.OutputTokens, u.TotalTokens, len(msg.ReasoningContent))
+	}
 	return &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   resp.Usage,

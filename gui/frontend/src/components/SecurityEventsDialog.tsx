@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { QuerySecurityEvents } from '../../wailsjs/go/main/App';
+import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 
 interface SecurityEvent {
     time: string;
@@ -48,6 +49,7 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
     const [events, setEvents] = useState<SecurityEvent[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
 
     useEffect(() => {
         if (!open) return;
@@ -67,8 +69,12 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
     const deniedSummary = formatText(t('securityEventsDeniedSummary'), { count: events.length });
 
     return (
-        <div className="modal-backdrop" onClick={onClose}>
-            <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '680px', maxHeight: '80vh', overflow: 'auto' }}>
+        <div className="modal-backdrop" {...backdropProps}>
+            <div
+                className="modal-content"
+                {...dialogProps}
+                style={{ width: '680px', maxHeight: '80vh', overflow: 'auto' }}
+            >
                 <div className="modal-header">
                     <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{"\u{1F6E1}\uFE0F"} {t('securityEvents')}</h3>
                     <button className="btn-close" onClick={onClose}>{"\u00d7"}</button>

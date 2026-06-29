@@ -59,7 +59,7 @@ Object.assign(I18N.en, {
   migrationFailed: "Migration failed.",
   migrationLoading: "Loading migration state...",
   migrationProgress: "Progress",
-  migrationReadyOnly: "Only ready exports can be imported.",
+  migrationReadyOnly: "Ready packages can be imported. Packages already claimed by this machine can be resumed or cleaned up.",
   migrationMachineName: "Machine"
 });
 Object.assign(I18N.zh, {
@@ -91,7 +91,7 @@ Object.assign(I18N.zh, {
   migrationFailed: "\u8fc1\u79fb\u5931\u8d25\u3002",
   migrationLoading: "\u6b63\u5728\u52a0\u8f7d\u8fc1\u79fb\u72b6\u6001...",
   migrationProgress: "\u8fdb\u5ea6",
-  migrationReadyOnly: "\u53ea\u80fd\u8fc1\u5165\u5df2\u5c31\u7eea\u7684\u8fc1\u51fa\u5305\u3002",
+  migrationReadyOnly: "\u53ef\u8fc1\u5165\u5df2\u5c31\u7eea\u7684\u8fc1\u51fa\u5305\uff0c\u4e5f\u53ef\u7ee7\u7eed\u6216\u6e05\u7406\u7531\u5f53\u524d\u673a\u5668\u8ba4\u9886\u7684\u8fc1\u79fb\u5305\u3002",
   migrationMachineName: "\u673a\u5668"
 });
 Object.assign(I18N.zh, {
@@ -3160,19 +3160,50 @@ function migrationBytes(n) {
 function migrationExportFromStatus() {
   return state.migrationStatus?.current_export || state.migrationStatus?.export || null;
 }
-function migrationReadyExportInstances() {
-  return items(state.migrationInstances).filter((item) => item.has_export && String(item.export_status || "").toLowerCase() === "ready");
+function migrationPackageRows() {
+  const rows = [...items(state.migrationInstances)];
+  const exp = migrationExportFromStatus();
+  const exportID = String(exp?.export_id || "");
+  if (exportID && !rows.some((item) => String(item.export_id || "") === exportID)) {
+    rows.push({
+      instance_id: exp.source_instance_id || exp.source_machine_id || exportID,
+      machine_id: exp.source_machine_id || exp.source_instance_id || "",
+      machine_name: exp.source_machine_name || "",
+      has_export: true,
+      export_id: exportID,
+      export_status: exp.status || "",
+      export_claimed_by_machine_id: exp.claimed_by_machine_id || "",
+      export_size: exp.compressed_size || exp.export_size || 0
+    });
+  }
+  return rows.filter((item) => item.has_export && item.export_id);
+}
+function migrationImportableInstances() {
+  const machineID = String(state.migrationStatus?.machine_id || "");
+  return migrationPackageRows().filter((item) => {
+    const status = String(item.export_status || "").toLowerCase();
+    if (status === "ready") return true;
+    const claimedByCurrent = machineID && String(item.export_claimed_by_machine_id || "") === machineID;
+    return claimedByCurrent && ["importing", "imported", "deleting"].includes(status);
+  });
+}
+function migrationSelectedInstance(exportID) {
+  return migrationImportableInstances().find((item) => String(item.export_id || "") === String(exportID || ""));
+}
+function migrationIsCleanupRetry(item) {
+  return ["imported", "deleting"].includes(String(item?.export_status || "").toLowerCase());
 }
 function renderMigrationManager() {
   const status = state.migrationStatus;
   const configured = status?.configured;
   const exp = migrationExportFromStatus();
-  const readyInstances = migrationReadyExportInstances();
+  const importableInstances = migrationImportableInstances();
   const pct = Math.round(Number(state.migrationJob?.progress || 0) * 100);
   const jobText = state.migrationJob?.progress_text || state.migrationJob?.error || "";
   const machine = [status?.machine_name, status?.machine_id].filter(Boolean).join(" / ") || "-";
-  const sourceOptions = readyInstances.map((item) => {
-    const label = `${item.machine_name || item.instance_name || item.machine_id || item.instance_id} / ${migrationBytes(item.export_size)}`;
+  const sourceOptions = importableInstances.map((item) => {
+    const itemStatus = String(item.export_status || "").toLowerCase();
+    const label = `${item.machine_name || item.instance_name || item.machine_id || item.instance_id} / ${migrationBytes(item.export_size)} / ${itemStatus || "ready"}`;
     return `<option value="${esc(item.export_id || "")}">${esc(label)}</option>`;
   }).join("");
   const exportSummary = exp && exp.status ? `${t("migrationHasExport")}: ${exp.source_machine_name || exp.source_machine_id || "-"} / ${migrationBytes(exp.compressed_size || exp.export_size)} / ${exp.status}` : t("migrationNoExport");
@@ -3231,10 +3262,11 @@ async function startMigrationExport() {
 async function startMigrationImport() {
   const exportID = String($("migrationImportExportID")?.value || "").trim();
   const password = String($("migrationImportPassword")?.value || "");
+  const cleanupRetry = migrationIsCleanupRetry(migrationSelectedInstance(exportID));
   if (!exportID) return toast(t("migrationSelectSource"));
-  if (!password) return toast(t("migrationPasswordRequired"));
+  if (!password && !cleanupRetry) return toast(t("migrationPasswordRequired"));
   try {
-    const out = await api("/api/v1/migration/import", { method: "POST", body: JSON.stringify({ export_id: exportID, password }) });
+    const out = await api("/api/v1/migration/import", { method: "POST", body: JSON.stringify({ export_id: exportID, password, cleanup_retry: cleanupRetry }) });
     toast(t("migrationImportStarted"));
     watchMigrationJob(out.job_id);
   } catch (e) {

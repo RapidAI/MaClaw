@@ -1,0 +1,17 @@
+{
+  "x_maclaw_apps": "v1",
+  "apps": [
+    {
+      "id": "pdf-word",
+      "skill_id": "pdf-word",
+      "name": "PDF 转 Word",
+      "description": "上传 PDF，保留版式输出 Word 文档。",
+      "category": "文档处理",
+      "kind": "tool_app",
+      "icon": "pdf",
+      "input_mode": "file",
+      "output_modes": ["docx"],
+      "fields": []
+    }
+  ]
+}
