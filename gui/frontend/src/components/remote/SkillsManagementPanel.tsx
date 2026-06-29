@@ -7,7 +7,6 @@ import { MaclawAppSkillsTab } from "./MaclawAppSkillsTab";
 import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
 import { SkillProductBadge, isMaclawAppSearchResult } from "./SkillProductBadge";
 import { SkillSourceBadge } from "./SkillSourceBadge";
-import { WorkflowShortcutsSection } from "./WorkflowShortcutsSection";
 import {
     executionClassBadgeStyle,
     statusDotStyle,
@@ -1218,13 +1217,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             </div>
 
             <div style={skillsTabContentStyle}>
-            {/* === Common Workflows Section (only on local tab) === */}
-            {activeTab === "local" && (
-                <WorkflowShortcutsSection
-                    localizeText={localizeText}
-                />
-            )}
-
             {/* === Local Skills Tab === */}
             {activeTab === "local" && (
                 <>
@@ -1498,7 +1490,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!hubSearching && hubResults.length > 0 && (
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "8px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             {hubResults.map((skill) => (
                                 <div key={skill.id} style={hubCardStyle}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
@@ -1591,8 +1583,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {!hubRecsLoading && hubRecommendations.length > 0 && (
-                                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "8px" }}>
-                                    <div style={{ fontSize: "0.78rem", color: colors.textSecondary, fontWeight: 500, gridColumn: "1 / -1" }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                    <div style={{ fontSize: "0.78rem", color: colors.textSecondary, fontWeight: 500 }}>
                                         🔥 {localizeText("Popular Skills", "热门 Skill", "熱門 Skill")}
                                     </div>
                                     {hubRecommendations.map((skill) => (

@@ -86,6 +86,10 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                     <input type="checkbox" checked={effectiveConfig?.show_app_entry === true} onChange={(e) => saveConfigPatch({ show_app_entry: e.target.checked })} />
                     <span>{textForLang(lang, 'MaClaw app entry', 'MaClaw\u5e94\u7528\u5165\u53e3', 'MaClaw\u61c9\u7528\u5165\u53e3')}</span>
                 </label>
+                <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
+                    <input type="checkbox" checked={effectiveConfig?.show_workflow_entry !== false} onChange={(e) => saveConfigPatch({ show_workflow_entry: e.target.checked })} />
+                    <span>{textForLang(lang, 'Workflow entry', '\u5de5\u4f5c\u6d41\u5165\u53e3', '\u5de5\u4f5c\u6d41\u5165\u53e3')}</span>
+                </label>
             </div>
         </section>
 

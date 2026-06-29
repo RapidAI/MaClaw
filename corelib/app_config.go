@@ -121,6 +121,7 @@ type AppConfig struct {
 	MaclawDebugToolCalls   bool                   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry       bool                   `json:"show_ai_trace_entry,omitempty"`
 	ShowAppEntry           bool                   `json:"show_app_entry"`
+	ShowWorkflowEntry      *bool                  `json:"show_workflow_entry,omitempty"`
 	ShowAssistantEntry     bool                   `json:"show_assistant_entry"`
 	ShowHubRanking         *bool                  `json:"show_hub_ranking,omitempty"`
 	PetEnabled             bool                   `json:"pet_enabled,omitempty"`

@@ -28,3 +28,4 @@ export const AppsPage = lazy(() => import('./components/pages/AppsPage').then((m
 export const SkillsPage = lazy(() => import('./components/pages/SkillsPage').then((module) => ({ default: module.SkillsPage })));
 export const MCPPage = lazy(() => import('./components/pages/MCPPage').then((module) => ({ default: module.MCPPage })));
 export const GossipPage = lazy(() => import('./components/pages/GossipPage').then((module) => ({ default: module.GossipPage })));
+export const WorkflowsPage = lazy(() => import('./components/pages/WorkflowsPage').then((module) => ({ default: module.WorkflowsPage })));

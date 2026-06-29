@@ -1,6 +1,7 @@
-import { useState, useMemo, type CSSProperties } from "react";
-import { colors } from "./styles";
-import { StartWorkflowDirect } from "../../../wailsjs/go/main/App";
+/**
+ * Workflow type data definitions for the Workflows panel.
+ * Exports the full list of supported workflow types grouped by category.
+ */
 
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
 
@@ -11,11 +12,16 @@ export interface WorkflowShortcutItem {
     description: string;
 }
 
+export interface WorkflowShortcutGroup {
+    category: string;
+    items: WorkflowShortcutItem[];
+}
+
 /**
  * Returns the full list of supported workflow types with icons and labels.
  * Grouped by category for display.
  */
-export function getAllWorkflowShortcuts(localizeText: LocalizeText): { category: string; items: WorkflowShortcutItem[] }[] {
+export function getAllWorkflowShortcuts(localizeText: LocalizeText): WorkflowShortcutGroup[] {
     return [
         {
             category: localizeText("Software & Development", "软件与开发", "軟體與開發"),
@@ -86,142 +92,3 @@ export function getAllWorkflowShortcuts(localizeText: LocalizeText): { category:
         },
     ];
 }
-
-export function WorkflowShortcutsSection({ localizeText, onSelectWorkflow }: {
-    localizeText: LocalizeText;
-    onSelectWorkflow?: (workflowType: string) => void;
-}) {
-    const groups = useMemo(() => getAllWorkflowShortcuts(localizeText), [localizeText]);
-    const [startingType, setStartingType] = useState<string | null>(null);
-
-    const handleClick = (workflowType: string) => {
-        if (startingType) return; // Prevent rapid double-click
-        setStartingType(workflowType);
-        StartWorkflowDirect(workflowType, "")
-            .catch((err) => {
-                console.warn("[WorkflowShortcuts] StartWorkflowDirect failed:", err);
-            })
-            .finally(() => {
-                // Re-enable after a brief delay to allow the workflow to start
-                setTimeout(() => setStartingType(null), 2000);
-            });
-        onSelectWorkflow?.(workflowType);
-    };
-
-    return (
-        <div style={sectionStyle}>
-            <div style={sectionHeaderStyle}>
-                <span style={sectionTitleStyle}>
-                    🚀 {localizeText("Common Workflows", "常用工作流", "常用工作流")}
-                </span>
-                <span style={sectionHintStyle}>
-                    {localizeText("Click to start a workflow", "点击启动工作流", "點擊啟動工作流")}
-                </span>
-            </div>
-            {groups.map((group) => (
-                <div key={group.category} style={categoryStyle}>
-                    <div style={categoryTitleStyle}>{group.category}</div>
-                    <div style={workflowGridStyle}>
-                        {group.items.map((item) => (
-                            <button
-                                key={item.type}
-                                type="button"
-                                style={{
-                                    ...workflowTileStyle,
-                                    ...(startingType === item.type ? { opacity: 0.6, pointerEvents: "none" as const } : {}),
-                                }}
-                                title={item.description}
-                                disabled={!!startingType}
-                                onClick={() => handleClick(item.type)}
-                            >
-                                <span style={workflowIconStyle}>{item.icon}</span>
-                                <span style={workflowLabelStyle}>{item.label}</span>
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-}
-
-// ── Styles ──
-
-const sectionStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-    marginBottom: "12px",
-    padding: "10px 12px",
-    border: `1px solid ${colors.border}`,
-    borderRadius: "8px",
-    background: colors.surface,
-};
-
-const sectionHeaderStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "8px",
-};
-
-const sectionTitleStyle: CSSProperties = {
-    fontSize: "0.84rem",
-    fontWeight: 700,
-    color: colors.text,
-};
-
-const sectionHintStyle: CSSProperties = {
-    fontSize: "0.7rem",
-    color: colors.textMuted,
-};
-
-const categoryStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "5px",
-};
-
-const categoryTitleStyle: CSSProperties = {
-    fontSize: "0.7rem",
-    fontWeight: 600,
-    color: colors.textSecondary,
-    paddingLeft: "2px",
-};
-
-const workflowGridStyle: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))",
-    gap: "6px",
-};
-
-const workflowTileStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "3px",
-    padding: "8px 4px",
-    border: `1px solid ${colors.border}`,
-    borderRadius: "6px",
-    background: colors.bg,
-    cursor: "pointer",
-    transition: "background 0.15s, border-color 0.15s, transform 0.1s",
-    minWidth: 0,
-};
-
-const workflowIconStyle: CSSProperties = {
-    fontSize: "1.2rem",
-    lineHeight: 1,
-};
-
-const workflowLabelStyle: CSSProperties = {
-    fontSize: "0.68rem",
-    fontWeight: 500,
-    color: colors.text,
-    textAlign: "center",
-    lineHeight: 1.2,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    maxWidth: "100%",
-};

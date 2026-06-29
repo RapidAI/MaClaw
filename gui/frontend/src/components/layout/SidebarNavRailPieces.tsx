@@ -32,7 +32,9 @@ type SidebarPrimaryNavProps = {
     aiAssistantLabel: string;
     appsLabel: string;
     showAppEntry: boolean;
+    showWorkflowEntry: boolean;
     switchTool: (tool: string) => void;
+    workflowLabel?: string;
 };
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
@@ -141,7 +143,7 @@ export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinke
     </div>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, switchTool }: SidebarPrimaryNavProps) => (
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, switchTool, workflowLabel }: SidebarPrimaryNavProps) => (
     <>
         <div
             className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
@@ -171,6 +173,20 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
             </div>
         )}
+        <div
+            className={'sidebar-item left-nav-item ' + (navTab === 'workflows' ? 'active' : '')}
+            onClick={() => switchTool('workflows')}
+            style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'workflows' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showWorkflowEntry ? undefined : 'none' }}
+            title={workflowLabel || '工作流'}
+        >
+            <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'workflows' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 3h6v6H3zM15 3h6v6h-6zM9 15h6v6H9z" />
+                    <path d="M6 9v3a3 3 0 0 0 3 3h0M18 9v3a3 3 0 0 1-3 3h0" />
+                </svg>
+            </span>
+            <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{workflowLabel || '工作流'}</span>
+        </div>
     </>
 );
 

@@ -1799,7 +1799,16 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 		return "", fmt.Errorf("unknown workflow type: %s", workflowType)
 	}
 
-	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	// For StartWorkflowDirect triggered from the workflow panel, always use
+	// the default desktop session (empty project path). The workflow engine will
+	// determine the actual project path during startNewWorkflowV2 based on the
+	// current project setting. Using empty here ensures the message is routed to
+	// the same session that the AI assistant panel's default tab is listening on.
+	sendProjectPath := ""
+	if projectPath == "." {
+		projectPath = "" // normalize for RouteResult too
+	}
+	userID := desktopAIAssistantUserIDForProjectPath(sendProjectPath)
 	requestID := fmt.Sprintf("desktop-ai-%d-%s", time.Now().UnixNano(), workflowType)
 
 	// Route through the normal message serialization path to avoid concurrent
@@ -1832,10 +1841,9 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
 			Text:        choiceCommand,
 			RequestID:   requestID,
-			ProjectPath: projectPath,
+			ProjectPath: sendProjectPath,
 		}); err != nil {
 			log.Printf("[StartWorkflowDirect] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
-			// Clean up pending choice on failure so it doesn't linger as stale state.
 			handler.pendingWorkflowChoice.Delete(userID)
 		}
 	}()
