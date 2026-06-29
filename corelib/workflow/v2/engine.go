@@ -1345,10 +1345,11 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 	// RecordOutput's storage path. This prevents new artifact phases from
 	// failing validation due to legacy phaseID list not covering them.
 	sanitizedContent := SanitizePhaseOutputWithKind(phaseID, phaseKind, content)
-	if err := validatePhaseOutputForCompletion(string(workflowType), phaseID, sanitizedContent); err != nil {
-		return phaseID, err
-	}
 
+	// When V2 machine exists, delegate validation entirely to RecordOutput
+	// (which is the authoritative state owner). This avoids double-validation
+	// and double-logging. RecordOutput already treats validation failure as
+	// advisory for NeedsConfirm phases.
 	if e.machine != nil && e.machine.GetActive(userID) != nil {
 		if err := e.machine.RecordOutput(userID, content); err != nil {
 			return phaseID, err
@@ -1360,6 +1361,23 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 					break
 				}
 			}
+		}
+	} else {
+		// No V2 machine — validate here (legacy path).
+		if err := validatePhaseOutputForCompletion(string(workflowType), phaseID, sanitizedContent); err != nil {
+			phaseNeedsConfirm := false
+			if tmpl := e.registry.Match(workflowType); tmpl != nil {
+				for _, phase := range tmpl.Phases {
+					if phase.ID == phaseID {
+						phaseNeedsConfirm = phase.NeedsConfirm
+						break
+					}
+				}
+			}
+			if !phaseNeedsConfirm {
+				return phaseID, err
+			}
+			log.Printf("[workflow-engine] SavePhaseOutput: validation advisory (phase=%s NeedsConfirm=true): %v", phaseID, err)
 		}
 	}
 

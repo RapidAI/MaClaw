@@ -3,6 +3,7 @@ package v2
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -490,7 +491,15 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	}
 	sanitizedOutput := SanitizePhaseOutputWithKind(phase.ID, phase.Kind, output)
 	if err := validatePhaseOutputForCompletion(state.Type, phase.ID, sanitizedOutput); err != nil {
-		return err
+		if phase.NeedsConfirm {
+			// For NeedsConfirm phases, validation failure is advisory — record the
+			// output and let the user decide whether to accept it. Blocking here
+			// creates a dead loop: phase stays Running → next message re-triggers
+			// agent loop → same output → same validation failure → infinite cycle.
+			log.Printf("[workflow-v2] RecordOutput: validation advisory (phase=%s NeedsConfirm=true): %v", phase.ID, err)
+		} else {
+			return err
+		}
 	}
 	phase.Output = sanitizedOutput
 	if phase.NeedsConfirm {
@@ -518,16 +527,16 @@ func validatePhaseOutputForCompletion(workflowType, phaseID, output string) erro
 		return nil
 	}
 	requiredGroups := [][]string{
-		{"总排清单"},
+		{"总排清单", "志愿填报表", "志愿序号"},
 		{"冲"},
 		{"稳"},
 		{"保"},
-		{"学校"},
-		{"专业"},
+		{"学校", "院校名称", "院校代号"},
+		{"专业", "专业组"},
 		{"办学地点"},
-		{"类型"},
-		{"往年最低位次", "最低位次"},
-		{"推荐理由"},
+		{"类型", "档位"},
+		{"往年最低位次", "最低位次", "等效位次差"},
+		{"推荐理由", "推荐分析"},
 		{"数据来源", "依据来源"},
 	}
 	var missing []string
@@ -556,9 +565,35 @@ func validateGaokaoFinalPlanSourceEvidence(output string) error {
 	if !containsHTTPURL(output) {
 		return fmt.Errorf("gaokao final plan output is incomplete; missing source URLs")
 	}
+	// Only check source URL requirement within the "推荐分析表" section or
+	// legacy "总排清单/冲/稳/保" sections. Skip "志愿填报表" section rows
+	// which contain enrollment codes, not source URLs.
+	inRecommendationSection := false
+	inVolunteerFormSection := false
 	var badRows []string
 	for _, line := range strings.Split(output, "\n") {
 		row := strings.TrimSpace(line)
+		// Track section boundaries
+		if strings.Contains(row, "志愿填报表") || strings.Contains(row, "志愿序号") && strings.Contains(row, "院校代号") {
+			inVolunteerFormSection = true
+			inRecommendationSection = false
+			continue
+		}
+		if strings.Contains(row, "推荐分析表") || strings.Contains(row, "总排清单") {
+			inRecommendationSection = true
+			inVolunteerFormSection = false
+			continue
+		}
+		if (strings.HasPrefix(row, "## ") || strings.HasPrefix(row, "# ")) && !strings.Contains(row, "冲") && !strings.Contains(row, "稳") && !strings.Contains(row, "保") {
+			if !strings.Contains(row, "推荐") && !strings.Contains(row, "总排") {
+				inRecommendationSection = false
+				inVolunteerFormSection = false
+			}
+		}
+		// Only validate source URLs in recommendation sections
+		if inVolunteerFormSection || !inRecommendationSection {
+			continue
+		}
 		if !strings.HasPrefix(row, "|") || !strings.HasSuffix(row, "|") {
 			continue
 		}
@@ -603,22 +638,46 @@ func validateGaokaoFinalPlanSectionRows(output string) error {
 			}
 			continue
 		}
-		if currentSection == "" || !strings.HasSuffix(row, "|") {
+		if !strings.HasSuffix(row, "|") {
 			continue
 		}
 		cells := markdownTableCells(row)
-		if len(cells) < 6 || isMarkdownSeparatorCells(cells) || isGaokaoFinalPlanHeaderRow(cells) {
+		if isMarkdownSeparatorCells(cells) || isGaokaoFinalPlanHeaderRow(cells) {
 			continue
 		}
-		if _, ok := counts[currentSection]; ok {
-			counts[currentSection]++
+		// New format: "档位" column in table cells (志愿填报表 or 推荐分析表)
+		rowText := strings.Join(cells, " ")
+		if strings.Contains(rowText, "冲") {
+			counts["冲"]++
+		}
+		if strings.Contains(rowText, "稳") {
+			counts["稳"]++
+		}
+		if strings.Contains(rowText, "保") {
+			counts["保"]++
+		}
+		// Legacy format: section-based counting
+		if currentSection != "" {
+			if len(cells) >= 6 {
+				if _, ok := counts[currentSection]; ok {
+					counts[currentSection]++
+				}
+			}
+		}
+		// 总排清单: any table data row in that section counts, or row with "志愿序号"
+		if currentSection == "总排清单" || strings.Contains(rowText, "志愿") {
+			counts["总排清单"]++
 		}
 	}
 	var missing []string
-	for _, section := range []string{"总排清单", "冲", "稳", "保"} {
+	for _, section := range []string{"冲", "稳", "保"} {
 		if counts[section] == 0 {
 			missing = append(missing, section)
 		}
+	}
+	// 总排清单 OR 志愿填报表 — at least one must have rows
+	if counts["总排清单"] == 0 && counts["冲"]+counts["稳"]+counts["保"] == 0 {
+		missing = append(missing, "总排清单/志愿填报表")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("gaokao final plan output is incomplete; missing recommendation rows in sections: %s", strings.Join(missing, ", "))

@@ -69,40 +69,39 @@ func setGaokaoEngineAndMachinePhase(t *testing.T, engine *WorkflowEngine, machin
 func TestSavePhaseOutputAndMaybeAdvanceRejectsIncompleteGaokaoFinalPlan(t *testing.T) {
 	engine, machine := setupGaokaoEngineWithMachine(t)
 
+	// For NeedsConfirm=true phases, validation failure is advisory — the output
+	// is still recorded and PendingConfirm is set so the user can review it.
 	phaseID, resp, err := engine.SavePhaseOutputAndMaybeAdvance("user1", "让我读取 evidence_doc.txt，然后运行 check_db2.py 看看数据库结构。")
-	if err == nil {
-		t.Fatal("expected incomplete final plan to be rejected")
-	}
-	if !strings.Contains(err.Error(), "gaokao final plan output is incomplete") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("expected advisory validation (not hard reject) for NeedsConfirm phase: %v", err)
 	}
 	if phaseID != GaokaoPhaseFinalPlan {
 		t.Fatalf("phaseID = %q, want %q", phaseID, GaokaoPhaseFinalPlan)
 	}
-	if resp != nil {
-		t.Fatalf("response = %#v, want nil", resp)
+	if resp == nil || !resp.PendingConfirm {
+		t.Fatalf("response should indicate PendingConfirm, got %#v", resp)
 	}
 
 	ws := engine.GetActiveWorkflow("user1")
 	if ws == nil {
 		t.Fatal("engine workflow should remain active")
 	}
-	if got := ws.PhaseOutputs[GaokaoPhaseFinalPlan]; got != "" {
-		t.Fatalf("engine output should not be saved: %q", got)
+	if got := ws.PhaseOutputs[GaokaoPhaseFinalPlan]; got == "" {
+		t.Fatal("engine output should be saved for user review despite validation warning")
 	}
-	if ws.PendingReviewPhaseID != "" {
-		t.Fatalf("PendingReviewPhaseID = %q, want empty", ws.PendingReviewPhaseID)
+	if ws.PendingReviewPhaseID != GaokaoPhaseFinalPlan {
+		t.Fatalf("PendingReviewPhaseID = %q, want %q", ws.PendingReviewPhaseID, GaokaoPhaseFinalPlan)
 	}
 
 	state := machine.GetActive("user1")
 	if state == nil {
 		t.Fatal("machine workflow should remain active")
 	}
-	if got := state.ActivePhase().Status; got != PhaseRunning {
-		t.Fatalf("machine phase status = %q, want running", got)
+	if got := state.ActivePhase().Status; got != PhaseWaitingConfirm {
+		t.Fatalf("machine phase status = %q, want waiting_confirm", got)
 	}
-	if got := state.ActivePhase().Output; got != "" {
-		t.Fatalf("machine output should not be saved: %q", got)
+	if got := state.ActivePhase().Output; got == "" {
+		t.Fatal("machine output should be saved for user review despite validation warning")
 	}
 }
 
@@ -248,9 +247,19 @@ func TestApplyReviewIntentSupplementReopensGaokaoFinalPlanForRevision(t *testing
 func completeGaokaoFinalPlanOutputForTest() string {
 	return `# 填报参考资料与建议
 
+## 志愿填报表
+
+| 志愿序号 | 档位 | 院校代号 | 院校名称 | 专业组代号 | 选科要求 |
+|---------|------|---------|---------|-----------|---------|
+| 1 | 冲 | 1001 | A大学 | 01 | 物理+化学 |
+| 2 | 稳 | 1002 | B大学 | 03 | 物理+不限 |
+| 3 | 保 | 1003 | C大学 | 02 | 物理+不限 |
+
+## 推荐分析表
+
 ## 总排清单
 | 学校 | 专业 | 办学地点 | 类型 | 往年最低位次 | 推荐理由 | 数据来源 |
-| 北京工业大学 | 电子信息类 | 北京 | 普通 | 12000 | 位次匹配 | 北京教育考试院 https://example.edu/admission |
+| A大学 | 电子信息类 | 北京 | 普通 | 12000 | 位次匹配 | 北京教育考试院 https://example.edu/admission |
 
 ## 冲
 | 学校 | 专业 | 办学地点 | 类型 | 最低位次 | 推荐理由 | 依据来源 |

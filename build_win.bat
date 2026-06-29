@@ -264,7 +264,7 @@ if exist "%OUTPUT_DIR%\maclawsrv-Setup.exe" (
 REM -- Create standalone DataSrv NSIS installer --
 echo [Step 14/14] Creating standalone maclaw-data-srv NSIS installer...
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\datasrv_build_params.nsh.tmp', $content, $utf8NoBom)"
+powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $path = '%~dp0build\windows\installer\datasrv_build_params.nsh.tmp'; $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; for ($i = 0; $i -lt 8; $i++) { try { [System.IO.File]::WriteAllText($path, $content, $utf8NoBom); exit 0 } catch { Start-Sleep -Milliseconds 300 } }; throw 'Failed to write datasrv_build_params.nsh.tmp after retries.'"
 endlocal
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare DataSrv installer parameters.

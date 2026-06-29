@@ -141,12 +141,12 @@ func TestRecordOutput_RejectsIncompleteGaokaoFinalPlan(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
+	// For NeedsConfirm=true phases, validation failure is advisory — the output
+	// is still recorded and the phase transitions to WaitingConfirm so the user
+	// can review it. This prevents dead loops where the phase stays Running.
 	err := m.RecordOutput("user1", "让我读取 evidence_doc.txt，然后运行 check_db2.py 看看数据库结构。")
-	if err == nil {
-		t.Fatal("expected incomplete final plan to be rejected")
-	}
-	if !strings.Contains(err.Error(), "gaokao final plan output is incomplete") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("RecordOutput should not hard-reject NeedsConfirm phase: %v", err)
 	}
 
 	state = m.GetActive("user1")
@@ -156,11 +156,11 @@ func TestRecordOutput_RejectsIncompleteGaokaoFinalPlan(t *testing.T) {
 	if state.CurrentPhase != 3 {
 		t.Fatalf("CurrentPhase = %d, want 3", state.CurrentPhase)
 	}
-	if got := state.ActivePhase().Status; got != PhaseRunning {
-		t.Fatalf("phase status = %q, want running", got)
+	if got := state.ActivePhase().Status; got != PhaseWaitingConfirm {
+		t.Fatalf("phase status = %q, want waiting_confirm (advisory validation lets user decide)", got)
 	}
-	if state.ActivePhase().Output != "" {
-		t.Fatalf("output should not be saved: %q", state.ActivePhase().Output)
+	if state.ActivePhase().Output == "" {
+		t.Fatal("output should be saved for user review despite validation warning")
 	}
 }
 
@@ -206,20 +206,18 @@ func TestRecordOutput_RejectsGaokaoFinalPlanWithoutVerifiedSourceURLs(t *testing
 	}
 
 	output := strings.Replace(completeGaokaoFinalPlanOutputForTest(), "https://example.edu/admission", "来源URL", 1)
+	// NeedsConfirm=true: validation failure is advisory, output is still recorded.
 	err := m.RecordOutput("user1", output)
-	if err == nil {
-		t.Fatal("expected final plan without source URLs to be rejected")
-	}
-	if !strings.Contains(err.Error(), "missing verified source URLs") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("RecordOutput should not hard-reject NeedsConfirm phase: %v", err)
 	}
 
 	state = m.GetActive("user1")
-	if got := state.ActivePhase().Status; got != PhaseRunning {
-		t.Fatalf("phase status = %q, want running", got)
+	if got := state.ActivePhase().Status; got != PhaseWaitingConfirm {
+		t.Fatalf("phase status = %q, want waiting_confirm", got)
 	}
-	if got := state.ActivePhase().Output; got != "" {
-		t.Fatalf("output should not be saved: %q", got)
+	if got := state.ActivePhase().Output; got == "" {
+		t.Fatal("output should be saved for user review despite missing source URLs")
 	}
 }
 
@@ -251,20 +249,18 @@ func TestRecordOutput_RejectsGaokaoFinalPlanWithoutRecommendationRows(t *testing
 
 ## 保
 学校、专业、办学地点、类型、最低位次、推荐理由、依据来源。`
+	// NeedsConfirm=true: validation failure is advisory, output is still recorded.
 	err := m.RecordOutput("user1", output)
-	if err == nil {
-		t.Fatal("expected final plan without recommendation rows to be rejected")
-	}
-	if !strings.Contains(err.Error(), "missing recommendation rows") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("RecordOutput should not hard-reject NeedsConfirm phase: %v", err)
 	}
 
 	state = m.GetActive("user1")
-	if got := state.ActivePhase().Status; got != PhaseRunning {
-		t.Fatalf("phase status = %q, want running", got)
+	if got := state.ActivePhase().Status; got != PhaseWaitingConfirm {
+		t.Fatalf("phase status = %q, want waiting_confirm", got)
 	}
-	if got := state.ActivePhase().Output; got != "" {
-		t.Fatalf("output should not be saved: %q", got)
+	if got := state.ActivePhase().Output; got == "" {
+		t.Fatal("output should be saved for user review despite missing recommendation rows")
 	}
 }
 

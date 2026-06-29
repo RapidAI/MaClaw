@@ -36,7 +36,7 @@ func TestGaokaoApplicationTemplateStructure(t *testing.T) {
 		{GaokaoPhaseProfile, ToolPolicyDocOnly},
 		{GaokaoPhaseDataSearch, ToolPolicyFull},
 		{GaokaoPhaseCandidateRanking, ToolPolicyFull},
-		{GaokaoPhaseFinalPlan, ToolPolicyDocOnly},
+		{GaokaoPhaseFinalPlan, ToolPolicyFull},
 	}
 	for i, w := range want {
 		got := tmpl.Phases[i]
@@ -63,7 +63,7 @@ func TestGaokaoProfileInputSchema(t *testing.T) {
 	for _, f := range schema.Fields {
 		fields[f.Name] = f
 	}
-	for _, name := range []string{"province", "exam_year", "subject_type", "gender", "rank", "accept_joint_program"} {
+	for _, name := range []string{"province", "exam_year", "subject_type", "gender", "rank", "education_level", "accept_joint_program"} {
 		f, ok := fields[name]
 		if !ok {
 			t.Fatalf("required field %q missing", name)
@@ -142,7 +142,7 @@ func TestGaokaoProfileInputSchema(t *testing.T) {
 			t.Fatalf("future_plan options = %#v, want %q", futurePlan.Options, value)
 		}
 	}
-	for _, name := range []string{"province", "province_admission_mode", "gender", "preferred_majors", "career_intent", "future_plan", "excluded_majors", "preferred_locations", "accept_joint_program", "tuition_limit", "strategy"} {
+	for _, name := range []string{"province", "province_admission_mode", "gender", "preferred_majors", "career_intent", "future_plan", "excluded_majors", "preferred_locations", "school_tier", "accept_joint_program", "tuition_limit", "strategy"} {
 		if !fields[name].Reusable {
 			t.Errorf("field %q should be Reusable for preference memory", name)
 		}

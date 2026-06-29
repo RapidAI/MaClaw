@@ -68,28 +68,28 @@ export const SidebarNavRail = ({
     // Hub ranking medal
     const showRanking = config?.show_hub_ranking !== false; // default: show
     const hasRegistered = !!(config?.remote_machine_id && config?.remote_machine_token);
-    const [medal, setMedal] = useState<{ emoji: string; rank: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
+    const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
+    const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
     useEffect(() => {
         if (!showRanking || !hasRegistered) { setMedal(null); return; }
         let cancelled = false;
         GetHubUserRanking()
             .then((result) => {
                 if (cancelled) return;
-                const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
+                const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; rank_change?: number; error?: string } | null;
                 if (!r || r.error) return;
                 const tRank = r.token_rank || 0;
                 const dRank = r.duration_rank || 0;
-                // Pick the best (lowest non-zero) rank, only show if top 3
+                // Pick the best (lowest non-zero) rank — show regardless of position
                 let bestRank = 0;
-                if (tRank > 0 && tRank <= 3 && (dRank === 0 || tRank <= dRank)) { bestRank = tRank; }
-                else if (dRank > 0 && dRank <= 3) { bestRank = dRank; }
+                if (tRank > 0 && (dRank === 0 || tRank <= dRank)) { bestRank = tRank; }
+                else if (dRank > 0) { bestRank = dRank; }
                 if (bestRank === 0) { setMedal(null); return; }
-                const emoji = bestRank === 1 ? '🥇' : bestRank === 2 ? '🥈' : '🥉';
-                setMedal({ emoji, rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0 });
+                setMedal({ rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0, rankChange: r.rank_change || 0, trophyThreshold });
             })
             .catch(() => undefined);
         return () => { cancelled = true; };
-    }, [showRanking, hasRegistered]);
+    }, [showRanking, hasRegistered, trophyThreshold]);
 
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
