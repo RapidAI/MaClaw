@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MaClaw 用户排行榜</title>
+  <meta name="app-version" content="user-ranking-20260629-v2" />
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --ink: #3d4654;
+      --ink-strong: #1a2030;
+      --ink-muted: #7d8694;
+      --border: #e2e5eb;
+      --border-strong: #cdd2da;
+      --gold: #c5930a;
+      --gold-bg: linear-gradient(160deg, #fffcf0 0%, #fef3c7 50%, #fde68a 100%);
+      --gold-border: #e5c94b;
+      --gold-glow: 0 12px 36px rgba(197,147,10,0.14), 0 2px 6px rgba(197,147,10,0.08);
+      --silver: #5e6f82;
+      --silver-bg: linear-gradient(160deg, #f9fafb 0%, #f1f4f8 50%, #e2e8f0 100%);
+      --silver-border: #c8d1dc;
+      --silver-glow: 0 12px 36px rgba(94,111,130,0.08), 0 2px 6px rgba(94,111,130,0.05);
+      --bronze: #a85b1b;
+      --bronze-bg: linear-gradient(160deg, #fffaf5 0%, #fef0e0 50%, #fcd9b0 100%);
+      --bronze-border: #deb87a;
+      --bronze-glow: 0 12px 36px rgba(168,91,27,0.10), 0 2px 6px rgba(168,91,27,0.06);
+      --accent: #4f46e5;
+      --accent-soft: rgba(79,70,229,0.06);
+      --shadow-hero: 0 32px 80px rgba(30,40,60,.08), 0 2px 4px rgba(30,40,60,.03);
+      --shadow-card: 0 1px 3px rgba(30,40,60,.04), 0 8px 24px rgba(30,40,60,.03);
+      --shadow-card-hover: 0 4px 16px rgba(30,40,60,.07), 0 24px 56px rgba(30,40,60,.06);
+      --radius: 16px;
+      --radius-sm: 12px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; color: var(--ink);
+      background: var(--bg);
+      background-image:
+        radial-gradient(ellipse 100% 60% at 50% -10%, rgba(79,70,229,0.04), transparent 60%),
+        radial-gradient(ellipse 80% 40% at 80% 100%, rgba(197,147,10,0.025), transparent 50%);
+    }
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none;
+      background: linear-gradient(90deg, rgba(30,40,60,.018) 1px, transparent 1px),
+                  linear-gradient(180deg, rgba(30,40,60,.012) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,.6) 0%, rgba(0,0,0,.05) 50%, transparent 70%);
+      -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,.6) 0%, rgba(0,0,0,.05) 50%, transparent 70%);
+    }
+    .shell { position: relative; z-index: 1; max-width: 1300px; margin: 0 auto; padding: 44px 28px 80px; }
+
+    /* ─── Header ─── */
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 36px; flex-wrap: wrap; }
+    .brand { display: flex; gap: 14px; align-items: center; }
+    .brand-mark {
+      width: 44px; height: 44px; border-radius: 11px;
+      background: linear-gradient(145deg, #4f46e5, #6366f1);
+      display: grid; place-items: center;
+      font-weight: 900; font-size: 20px; color: #fff;
+      box-shadow: 0 8px 24px rgba(79,70,229,.22), inset 0 1px 0 rgba(255,255,255,.25);
+    }
+    .brand-text { display: flex; flex-direction: column; gap: 3px; }
+    .brand-text strong { font-size: 20px; font-weight: 800; color: var(--ink-strong); letter-spacing: -0.02em; }
+    .brand-text small { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-muted); }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .tab-group {
+      display: inline-flex; padding: 4px; border-radius: 10px;
+      background: #fff; border: 1px solid var(--border);
+      box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 6px 16px rgba(0,0,0,.02);
+    }
+    .tab-group button {
+      border: 0; background: transparent; color: var(--ink-muted);
+      padding: 9px 18px; border-radius: 7px; cursor: pointer;
+      font-weight: 750; font-size: 13px; transition: all 0.2s;
+    }
+    .tab-group button.active {
+      background: var(--accent); color: #fff;
+      box-shadow: 0 4px 14px rgba(79,70,229,.25);
+    }
+    .tab-group button:hover:not(.active) { color: var(--ink); background: var(--accent-soft); }
+    .lang-sw { display: inline-flex; padding: 3px; border-radius: 8px; background: #fff; border: 1px solid var(--border); }
+    .lang-sw button { border: 0; background: transparent; color: var(--ink-muted); padding: 6px 11px; border-radius: 6px; cursor: pointer; font-weight: 750; font-size: 12px; transition: all 0.15s; }
+    .lang-sw button.active { background: var(--accent-soft); color: var(--accent); font-weight: 800; }
+
+    /* ─── Hero Stats ─── */
+    .hero-stats {
+      display: flex; gap: 1px; margin-bottom: 36px;
+      border-radius: var(--radius); overflow: hidden;
+      background: var(--border);
+      box-shadow: var(--shadow-hero);
+    }
+    .hero-stat {
+      flex: 1; padding: 22px 28px; background: #fff;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .hero-stat-label { font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-muted); }
+    .hero-stat-value { font-size: 26px; font-weight: 850; color: var(--ink-strong); letter-spacing: -0.03em; }
+
+    /* ─── Podium ─── */
+    .podium { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 20px; margin-bottom: 40px; align-items: end; }
+    .podium-card {
+      position: relative; padding: 32px 24px 28px; text-align: center;
+      border-radius: var(--radius); border: 1.5px solid var(--border);
+      transition: transform 0.25s cubic-bezier(.4,0,.2,1), box-shadow 0.25s;
+    }
+    .podium-card:hover { transform: translateY(-4px); }
+    .podium-card--gold { order: 2; background: var(--gold-bg); border-color: var(--gold-border); box-shadow: var(--gold-glow); }
+    .podium-card--gold:hover { box-shadow: 0 16px 48px rgba(197,147,10,0.18), 0 4px 8px rgba(197,147,10,0.1); }
+    .podium-card--silver { order: 1; background: var(--silver-bg); border-color: var(--silver-border); box-shadow: var(--silver-glow); }
+    .podium-card--silver:hover { box-shadow: 0 16px 48px rgba(94,111,130,0.12); }
+    .podium-card--bronze { order: 3; background: var(--bronze-bg); border-color: var(--bronze-border); box-shadow: var(--bronze-glow); }
+    .podium-card--bronze:hover { box-shadow: 0 16px 48px rgba(168,91,27,0.14); }
+    .podium-icon { width: 62px; height: 62px; margin: 0 auto 16px; border-radius: 50%; display: grid; place-items: center; }
+    .podium-card--gold .podium-icon { background: rgba(254,243,199,0.9); border: 2px solid rgba(217,175,50,0.35); }
+    .podium-card--silver .podium-icon { background: rgba(241,245,249,0.9); border: 2px solid rgba(148,163,184,0.3); }
+    .podium-card--bronze .podium-icon { background: rgba(255,237,213,0.9); border: 2px solid rgba(194,133,70,0.3); }
+    .podium-email { font-size: 14px; font-weight: 750; color: var(--ink-strong); margin-bottom: 12px; word-break: break-all; line-height: 1.4; }
+    .podium-metric { font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 10px; }
+    .podium-metric strong { display: block; font-size: 22px; font-weight: 850; color: var(--ink-strong); margin-top: 4px; letter-spacing: -0.02em; }
+
+    /* ─── Grid ─── */
+    .ranking-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .rank-card {
+      padding: 22px 20px; display: flex; flex-direction: column; gap: 12px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: #fff; box-shadow: var(--shadow-card);
+      transition: transform 0.2s cubic-bezier(.4,0,.2,1), box-shadow 0.2s, border-color 0.2s;
+    }
+    .rank-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-card-hover); border-color: var(--border-strong); }
+    .rank-card-top { display: flex; align-items: center; gap: 10px; }
+    .rank-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      height: 32px; padding: 0 12px; border-radius: 999px;
+      font-weight: 800; font-size: 12px;
+      background: #f5f6f8; border: 1px solid var(--border); color: var(--ink-muted);
+    }
+    .rank-badge svg { flex-shrink: 0; margin-top: -1px; }
+    .rank-badge--top10 { background: var(--accent-soft); border-color: rgba(79,70,229,0.15); color: var(--accent); }
+    .rank-email { font-size: 13px; font-weight: 700; color: var(--ink); word-break: break-all; line-height: 1.45; }
+    .rank-metrics { display: flex; flex-direction: column; gap: 8px; margin-top: auto; padding-top: 4px; border-top: 1px solid #f0f1f4; }
+    .rank-row { display: flex; justify-content: space-between; align-items: baseline; }
+    .rank-label { font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .rank-value { font-size: 15px; font-weight: 850; color: var(--ink-strong); }
+
+    /* ─── Pagination ─── */
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 40px; }
+    .pagination button {
+      border: 1px solid var(--border-strong); background: #fff; color: var(--ink);
+      padding: 10px 20px; border-radius: 9px; cursor: pointer; font-weight: 800; font-size: 13px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.03); transition: all 0.15s;
+    }
+    .pagination button:hover:not(:disabled) { background: #fafbfc; border-color: var(--accent); color: var(--accent); box-shadow: 0 2px 8px rgba(79,70,229,.08); }
+    .pagination button:disabled { opacity: 0.3; cursor: not-allowed; }
+    .pagination .pg-info { font-size: 13px; color: var(--ink-muted); font-weight: 700; padding: 0 12px; }
+
+    /* ─── States ─── */
+    .loading { text-align: center; padding: 100px 0; color: var(--ink-muted); font-size: 15px; font-weight: 700; }
+    .loading::before { content: ""; display: block; width: 28px; height: 28px; margin: 0 auto 16px; border: 3px solid #e8e9ee; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.75s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; padding: 100px 0; color: var(--ink-muted); font-size: 16px; font-weight: 700; }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 1100px) { .ranking-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 860px) { .ranking-grid { grid-template-columns: repeat(2, 1fr); } .podium { grid-template-columns: 1fr; } .podium-card { order: unset !important; } .hero-stats { flex-direction: column; } }
+    @media (max-width: 520px) { .ranking-grid { grid-template-columns: 1fr; } .shell { padding: 24px 16px 60px; } .controls { width: 100%; } .tab-group { flex: 1; } .tab-group button { flex: 1; } }
+
+    /* ─── i18n ─── */
+    [data-lang] { display: none; }
+    body.lang-en [data-lang="en"] { display: inline; }
+    body.lang-zh [data-lang="zh"] { display: inline; }
+  </style>
+</head>
+<body class="lang-zh">
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div class="brand-text">
+          <strong>MaClaw Hub</strong>
+          <small><span data-lang="en">Leaderboard</span><span data-lang="zh">用户排行榜</span></small>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="tab-group" id="dimensionTabs">
+          <button data-dim="tokens" class="active"><span data-lang="en">Token Usage</span><span data-lang="zh">Token 用量</span></button>
+          <button data-dim="duration"><span data-lang="en">Online Time</span><span data-lang="zh">在线时长</span></button>
+        </div>
+        <div class="lang-sw">
+          <button data-set-lang="en">EN</button>
+          <button data-set-lang="zh" class="active">中文</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="hero-stats" id="statsBar">
+      <div class="hero-stat">
+        <span class="hero-stat-label"><span data-lang="en">Period</span><span data-lang="zh">统计周期</span></span>
+        <span class="hero-stat-value" id="statPeriod">-</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-label"><span data-lang="en">Participants</span><span data-lang="zh">参与用户</span></span>
+        <span class="hero-stat-value" id="statTotal">-</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-label"><span data-lang="en">Page</span><span data-lang="zh">当前页</span></span>
+        <span class="hero-stat-value" id="statPage">-</span>
+      </div>
+    </div>
+
+    <section id="podiumSection" class="podium" style="display:none"></section>
+    <section id="gridSection" class="ranking-grid"></section>
+    <div id="loadingIndicator" class="loading"><span data-lang="en">Loading leaderboard...</span><span data-lang="zh">加载排行榜中...</span></div>
+    <div id="emptyIndicator" class="empty" style="display:none"><span data-lang="en">No ranking data available</span><span data-lang="zh">暂无排名数据</span></div>
+    <nav class="pagination" id="pagination" style="display:none">
+      <button id="prevBtn" disabled>&laquo; <span data-lang="en">Prev</span><span data-lang="zh">上一页</span></button>
+      <span class="pg-info" id="pageInfo"></span>
+      <button id="nextBtn"><span data-lang="en">Next</span><span data-lang="zh">下一页</span> &raquo;</button>
+    </nav>
+  </div>
+
+  <script>
+  (function() {
+    // ─── SVG Icons ───
+    function trophySvg(color, fill) {
+      return '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>' +
+        '<path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>' +
+        '<path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>' +
+        '<path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" fill="' + (fill || color) + '" fill-opacity="0.2"/></svg>';
+    }
+    function medalSvg(color) {
+      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<circle cx="12" cy="8" r="6" fill="' + color + '" fill-opacity="0.1"/>' +
+        '<path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>';
+    }
+    var TROPHY_GOLD = trophySvg('#b8860b', '#d4a017');
+    var TROPHY_SILVER = trophySvg('#64748b', '#94a3b8');
+    var TROPHY_BRONZE = trophySvg('#92400e', '#b45309');
+    var MEDAL_ICON = medalSvg('#7c8a9a');
+
+    var currentDimension = 'tokens';
+    var currentPage = 1;
+    var totalPages = 1;
+    var lang = localStorage.getItem('maclaw-ranking-lang') || (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
+
+    function isZh() { return lang === 'zh'; }
+    function setLang(l) {
+      lang = l;
+      document.body.className = 'lang-' + l;
+      document.documentElement.lang = l === 'zh' ? 'zh-CN' : 'en';
+      document.title = l === 'zh' ? 'MaClaw 用户排行榜' : 'MaClaw Leaderboard';
+      localStorage.setItem('maclaw-ranking-lang', l);
+      document.querySelectorAll('.lang-sw button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-set-lang') === l); });
+    }
+    function setDimension(dim) {
+      currentDimension = dim; currentPage = 1;
+      document.querySelectorAll('#dimensionTabs button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-dim') === dim); });
+      loadData();
+    }
+
+    function formatTokens(n) {
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(n);
+    }
+    function formatDuration(s) {
+      if (s >= 86400) { var d = Math.floor(s/86400), h = Math.floor((s%86400)/3600); return d + (isZh()?'天':'d') + (h > 0 ? ' '+h+(isZh()?'时':'h') : ''); }
+      if (s >= 3600) return (s/3600).toFixed(1) + (isZh()?' 小时':'h');
+      if (s >= 60) return Math.floor(s/60) + (isZh()?' 分钟':'m');
+      return s + (isZh()?' 秒':'s');
+    }
+    function primaryMetric(row) { return currentDimension === 'duration' ? formatDuration(row.duration_seconds) : formatTokens(row.total_tokens); }
+    function primaryLabel() { return currentDimension === 'duration' ? (isZh()?'在线时长':'Online') : 'Tokens'; }
+    function secondaryMetric(row) { return currentDimension === 'duration' ? formatTokens(row.total_tokens) : formatDuration(row.duration_seconds); }
+    function secondaryLabel() { return currentDimension === 'duration' ? 'Tokens' : (isZh()?'在线时长':'Online'); }
+    function rankFor(row) { return currentDimension === 'duration' ? row.duration_rank : row.token_rank; }
+    function esc(str) { var e = document.createElement('span'); e.textContent = str || ''; return e.innerHTML; }
+
+    function renderPodium(rows) {
+      var el = document.getElementById('podiumSection');
+      if (currentPage !== 1 || !rows || rows.length < 1) { el.style.display = 'none'; return; }
+      var count = Math.min(3, rows.length);
+      el.style.display = 'grid';
+      el.style.gridTemplateColumns = count < 3 ? 'repeat('+count+', 1fr)' : '1fr 1.15fr 1fr';
+      var cls = ['podium-card--gold','podium-card--silver','podium-card--bronze'];
+      var icons = [TROPHY_GOLD, TROPHY_SILVER, TROPHY_BRONZE];
+      el.innerHTML = rows.slice(0, count).map(function(row, i) {
+        return '<div class="podium-card '+cls[i]+'">' +
+          '<div class="podium-icon">'+icons[i]+'</div>' +
+          '<div class="podium-email">'+esc(row.masked_email)+'</div>' +
+          '<div class="podium-metric">'+primaryLabel()+'<strong>'+primaryMetric(row)+'</strong></div>' +
+          '<div class="podium-metric">'+secondaryLabel()+'<strong>'+secondaryMetric(row)+'</strong></div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderGrid(rows) {
+      var el = document.getElementById('gridSection');
+      if (!rows) { el.innerHTML = ''; return; }
+      var list = currentPage === 1 ? rows.slice(3) : rows;
+      if (!list.length) { el.innerHTML = ''; return; }
+      el.innerHTML = list.map(function(row) {
+        var rank = rankFor(row);
+        var bc = rank <= 10 ? 'rank-badge rank-badge--top10' : 'rank-badge';
+        return '<div class="rank-card">' +
+          '<div class="rank-card-top"><span class="'+bc+'">'+MEDAL_ICON+' #'+rank+'</span></div>' +
+          '<div class="rank-email">'+esc(row.masked_email)+'</div>' +
+          '<div class="rank-metrics">' +
+            '<div class="rank-row"><span class="rank-label">'+primaryLabel()+'</span><span class="rank-value">'+primaryMetric(row)+'</span></div>' +
+            '<div class="rank-row"><span class="rank-label">'+secondaryLabel()+'</span><span class="rank-value">'+secondaryMetric(row)+'</span></div>' +
+          '</div></div>';
+      }).join('');
+    }
+
+    function renderPagination() {
+      var el = document.getElementById('pagination');
+      if (totalPages <= 1) { el.style.display = 'none'; return; }
+      el.style.display = 'flex';
+      document.getElementById('prevBtn').disabled = currentPage <= 1;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+      document.getElementById('pageInfo').textContent = currentPage + ' / ' + totalPages;
+    }
+    function renderStats(data) {
+      document.getElementById('statPeriod').textContent = data.month || '-';
+      document.getElementById('statTotal').textContent = String(data.total || 0);
+      document.getElementById('statPage').textContent = currentPage + ' / ' + totalPages;
+    }
+
+    var loadSeq = 0; // request sequencing to prevent stale responses
+    function loadData() {
+      var seq = ++loadSeq;
+      document.getElementById('loadingIndicator').style.display = 'block';
+      document.getElementById('emptyIndicator').style.display = 'none';
+      document.getElementById('podiumSection').style.display = 'none';
+      document.getElementById('gridSection').innerHTML = '';
+      document.getElementById('pagination').style.display = 'none';
+
+      var qs = new URLSearchParams(window.location.search || '');
+      var tid = qs.get('tenant_id') || '';
+      var url = '/api/public/user-rankings?dimension=' + currentDimension + '&page=' + currentPage;
+      if (tid) url += '&tenant_id=' + encodeURIComponent(tid);
+
+      fetch(url).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function(data) {
+        if (seq !== loadSeq) return; // stale response, discard
+        document.getElementById('loadingIndicator').style.display = 'none';
+        if (!data || !data.rows || data.rows.length === 0) { document.getElementById('emptyIndicator').style.display = 'block'; return; }
+        totalPages = Math.ceil((data.total || 0) / (data.page_size || 100));
+        renderStats(data);
+        renderPodium(data.rows);
+        renderGrid(data.rows);
+        renderPagination();
+      }).catch(function() {
+        if (seq !== loadSeq) return;
+        document.getElementById('loadingIndicator').style.display = 'none';
+        document.getElementById('emptyIndicator').style.display = 'block';
+      });
+    }
+
+    // ─── Events ───
+    document.querySelectorAll('#dimensionTabs button').forEach(function(b) {
+      b.addEventListener('click', function() { setDimension(b.getAttribute('data-dim')); });
+    });
+    document.querySelectorAll('.lang-sw button').forEach(function(b) {
+      b.addEventListener('click', function() { setLang(b.getAttribute('data-set-lang')); });
+    });
+    document.getElementById('prevBtn').addEventListener('click', function() {
+      if (currentPage > 1) { currentPage--; loadData(); window.scrollTo({top:0,behavior:'smooth'}); }
+    });
+    document.getElementById('nextBtn').addEventListener('click', function() {
+      if (currentPage < totalPages) { currentPage++; loadData(); window.scrollTo({top:0,behavior:'smooth'}); }
+    });
+
+    // ─── Init ───
+    setLang(lang);
+    loadData();
+  })();
+  </script>
+</body>
+</html>

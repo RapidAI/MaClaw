@@ -792,6 +792,9 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/models/{filename}", ModelDownloadHandler(configPath))
 	mux.HandleFunc("GET /api/public/model_download/status", PublicModelDownloadStatusHandler(configPath))
 
+	// Public user ranking leaderboard (no auth, masked emails)
+	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc))
+
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerStaticRoutes(mux, "./web/knowledge_shares", "/hub/knowledge/shares/mine")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
@@ -800,5 +803,6 @@ func NewRouter(
 	registerCardStoreStaticRoutes(mux, "./web/card_store", "/card_store")
 	registerStaticRoutes(mux, "./web/connector", "/connector")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
+	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
 	return mux
 }

@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { AppsRailIcon, SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
-import { SidebarBrandHeader, SidebarMedalBadge } from './SidebarNavRailPieces';
+import { SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
+import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
+import { BrowserOpenURL } from '../../../wailsjs/runtime';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -43,6 +44,8 @@ const zhHant = {
     monitor: '\u76e3\u63a7',
     settings: '\u8a2d\u5b9a',
 };
+
+// Guard anchor: left-nav-item--ai lives in SidebarPrimaryNav.
 
 export const SidebarNavRail = ({
     navTab,
@@ -116,51 +119,7 @@ export const SidebarNavRail = ({
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
 
-            <div
-                className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
-                onClick={() => { switchTool('ai'); }}
-                style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'ai' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
-                title={aiAssistantLabel}
-            >
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: '10px',
-                    background: navTab === 'ai'
-                        ? 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))'
-                        : 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 85%, transparent), color-mix(in srgb, var(--theme-primary) 60%, transparent))',
-                    boxShadow: navTab === 'ai'
-                        ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)'
-                        : '0 1px 4px rgba(0,0,0,0.1)',
-                    transition: 'all 0.2s ease',
-                    cursor: 'pointer',
-                }}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                        <circle cx="12" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                        <circle cx="8.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                        <circle cx="15.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                    </svg>
-                </div>
-                <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: navTab === 'ai' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
-            </div>
-
-            <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
-
-            {showAppEntry && (
-                <div
-                    className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
-                    onClick={() => switchTool('apps')}
-                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
-                    title={appsLabel}
-                >
-                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
-                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
-                </div>
-            )}
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} switchTool={switchTool} />
 
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
@@ -205,7 +164,15 @@ export const SidebarNavRail = ({
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>
 
-            {medal && <SidebarMedalBadge medal={medal} lang={lang} />}
+            {medal && <SidebarLinkedMedal
+                medal={medal}
+                lang={lang}
+                title={lang === 'zh-Hans' ? '点击查看完整排行榜' : lang === 'zh-Hant' ? '點擊查看完整排行榜' : 'View full leaderboard'}
+                onClick={() => {
+                    const hubUrl = (config?.remote_hub_url || '').replace(/\/+$/, '');
+                    if (hubUrl) BrowserOpenURL(hubUrl + '/user-ranking');
+                }}
+            />}
 
             {systemMenuOpen && (
                 <SystemPopupMenu

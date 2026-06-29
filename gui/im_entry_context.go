@@ -110,7 +110,11 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// confirmation gate. The modified msg.Text now contains the execution plan /
 	// enhanced instruction — running it through BM25 template matching causes
 	// false-positive workflow triggers (e.g. plan text matching unrelated templates).
-	if v2State != nil && !v2Disabled && !opts.SkipWorkflowRouting {
+	// Exception: __workflow_choice__ commands from StartWorkflowDirect must always
+	// be processed even when workflows are disabled — the user explicitly clicked
+	// a workflow tile, bypassing the global toggle.
+	isExplicitWorkflowCommand := strings.HasPrefix(trimmed, workflowChoiceCommandPrefix)
+	if v2State != nil && (!v2Disabled || isExplicitWorkflowCommand) && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
 	}
 	// Legacy fallback removed — StateMachine is the only workflow engine.

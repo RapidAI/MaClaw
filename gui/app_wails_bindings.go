@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -1758,6 +1759,87 @@ func (a *App) continueAIAssistantWorkflowMessage(userID string, text string, req
 		return requestID, nil
 	}
 	go a.runAIAssistantMessageAsyncForUser(AIAssistantSendRequest{}, hubClient, requestID, text, userID)
+	return requestID, nil
+}
+
+// StartWorkflowDirect starts a workflow of the given type directly without user
+// confirmation. Called from the "常用工作流" panel when a user clicks a workflow tile.
+// The workflow is started immediately and the first phase begins executing.
+func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (string, error) {
+	workflowType = strings.TrimSpace(workflowType)
+	if workflowType == "" {
+		return "", fmt.Errorf("workflow type is required")
+	}
+
+	// Note: workflow disabled setting is NOT checked here.
+	// When user explicitly clicks a workflow tile, it should always start
+	// regardless of the global workflow toggle. The toggle only affects
+	// automatic workflow detection from free-form messages.
+
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		projectPath = strings.TrimSpace(a.GetCurrentProjectPath())
+	}
+	if projectPath == "" {
+		projectPath = "."
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+
+	// Validate workflow type is registered in the template registry.
+	wf := handler.getWorkflowV2()
+	if wf == nil {
+		return "", fmt.Errorf("workflow engine not initialized")
+	}
+	if tmpl := wf.machine.GetRegistry().Get(workflowType); tmpl == nil {
+		return "", fmt.Errorf("unknown workflow type: %s", workflowType)
+	}
+
+	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	requestID := fmt.Sprintf("desktop-ai-%d-%s", time.Now().UnixNano(), workflowType)
+
+	// Route through the normal message serialization path to avoid concurrent
+	// agent loop races. Send a synthetic message that the workflow integration
+	// layer will pick up and route to startNewWorkflowV2.
+	syntheticText := fmt.Sprintf("启动%s工作流", workflowType)
+
+	// Store the RouteResult so the handleCodingComplexityCommand path can
+	// pick it up as a pre-routed "complex" workflow choice without disambiguation.
+	choiceID := fmt.Sprintf("direct-%d", time.Now().UnixNano())
+	handler.pendingWorkflowChoice.Store(userID, &pendingWorkflowChoice{
+		Msg: IMUserMessage{
+			UserID:    userID,
+			Platform:  desktopPlatform,
+			Text:      syntheticText,
+			RequestID: requestID,
+		},
+		RouteResult: &v2.RouteResult{
+			Target:       "workflow",
+			WorkflowType: workflowType,
+			ProjectPath:  projectPath,
+		},
+		ChoiceID: choiceID,
+	})
+
+	// Send the choice command through the normal message path. This goes through
+	// enterIMMessageSerializationBoundary, ensuring proper session locking.
+	choiceCommand := buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID)
+	go func() {
+		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
+			Text:        choiceCommand,
+			RequestID:   requestID,
+			ProjectPath: projectPath,
+		}); err != nil {
+			log.Printf("[StartWorkflowDirect] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
+			// Clean up pending choice on failure so it doesn't linger as stale state.
+			handler.pendingWorkflowChoice.Delete(userID)
+		}
+	}()
+
 	return requestID, nil
 }
 

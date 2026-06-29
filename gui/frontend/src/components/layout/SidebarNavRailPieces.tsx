@@ -1,3 +1,5 @@
+import { AppsRailIcon } from './SidebarNavIcons';
+
 type SidebarMedal = {
     rank: number;
     tokenRank: number;
@@ -16,6 +18,21 @@ type SidebarBrandHeaderProps = {
 type SidebarMedalBadgeProps = {
     medal: SidebarMedal;
     lang: string;
+};
+
+type SidebarLinkedMedalProps = {
+    medal: SidebarMedal;
+    lang: string;
+    title: string;
+    onClick: () => void;
+};
+
+type SidebarPrimaryNavProps = {
+    navTab: string;
+    aiAssistantLabel: string;
+    appsLabel: string;
+    showAppEntry: boolean;
+    switchTool: (tool: string) => void;
 };
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
@@ -47,7 +64,7 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
     const rankChange = medal.rankChange || 0;
 
     // Trophy color or medal icon
-    let iconElement: React.ReactNode;
+    let iconElement: JSX.Element;
     if (rank === 1) {
         iconElement = <TrophyIcon color="#fbbf24" />; // gold
     } else if (rank === 2) {
@@ -71,7 +88,7 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                 style={{
                     width: '70%',
                     height: '1px',
-                    margin: '8px 0',
+                    margin: '4px 0 2px 0',
                     background: 'linear-gradient(90deg, transparent 0%, rgba(139,157,195,0.12) 15%, rgba(139,157,195,0.35) 50%, rgba(139,157,195,0.12) 85%, transparent 100%)',
                     boxShadow: '0 1px 1px rgba(0,0,0,0.4)',
                 }}
@@ -90,9 +107,9 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
-                    padding: '6px 0 8px 0',
+                    padding: '2px 0 8px 0',
                     width: '100%',
-                    cursor: 'default',
+                    cursor: 'pointer',
                     userSelect: 'none',
                     minHeight: '52px',
                     justifyContent: 'center',
@@ -118,7 +135,46 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
     );
 };
 
-/** Trophy SVG icon */
+export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinkedMedalProps) => (
+    <div onClick={onClick} style={{ cursor: 'pointer', width: '100%' }} title={title}>
+        <SidebarMedalBadge medal={medal} lang={lang} />
+    </div>
+);
+
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, switchTool }: SidebarPrimaryNavProps) => (
+    <>
+        <div
+            className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
+            onClick={() => { switchTool('ai'); }}
+            style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'ai' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+            title={aiAssistantLabel}
+        >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '10px', background: navTab === 'ai' ? 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))' : 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 85%, transparent), color-mix(in srgb, var(--theme-primary) 60%, transparent))', boxShadow: navTab === 'ai' ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)' : '0 1px 4px rgba(0,0,0,0.1)', transition: 'all 0.2s ease', cursor: 'pointer' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                    <circle cx="12" cy="11.5" r="0.8" fill="#fff" stroke="none" />
+                    <circle cx="8.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
+                    <circle cx="15.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
+                </svg>
+            </div>
+            <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: navTab === 'ai' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
+        </div>
+        <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
+        {showAppEntry && (
+            <div
+                className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
+                onClick={() => switchTool('apps')}
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+                title={appsLabel}
+            >
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
+                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
+            </div>
+        )}
+    </>
+);
+
+/** Trophy SVG icon — filled cup body for rich color */
 const TrophyIcon = ({ color }: { color: string }) => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
@@ -126,7 +182,7 @@ const TrophyIcon = ({ color }: { color: string }) => (
         <path d="M4 22h16" />
         <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
         <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
-        <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+        <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" fill={color} fillOpacity={0.25} />
     </svg>
 );
 
