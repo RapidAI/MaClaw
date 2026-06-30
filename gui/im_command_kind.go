@@ -15,6 +15,7 @@ const (
 	imCommandBTW
 	imCommandCancel
 	imCommandLoop
+	imCommandWorkflow
 )
 
 func classifyImmediateIMCommand(trimmed string) imCommandKind {
@@ -40,6 +41,9 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 		}
 		if strings.HasPrefix(trimmed, "/loop ") || trimmed == "/loop" {
 			return imCommandLoop
+		}
+		if strings.HasPrefix(trimmed, "/workflow ") || trimmed == "/workflow" {
+			return imCommandWorkflow
 		}
 		return imCommandUnknown
 	}

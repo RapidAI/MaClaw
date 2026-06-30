@@ -15,18 +15,18 @@
       --ink-muted: #7d8694;
       --border: #e2e5eb;
       --border-strong: #cdd2da;
-      --gold: #c5930a;
+      --gold: #b8860b;
       --gold-bg: linear-gradient(160deg, #fffcf0 0%, #fef3c7 50%, #fde68a 100%);
-      --gold-border: #e5c94b;
-      --gold-glow: 0 12px 36px rgba(197,147,10,0.14), 0 2px 6px rgba(197,147,10,0.08);
-      --silver: #5e6f82;
-      --silver-bg: linear-gradient(160deg, #f9fafb 0%, #f1f4f8 50%, #e2e8f0 100%);
-      --silver-border: #c8d1dc;
-      --silver-glow: 0 12px 36px rgba(94,111,130,0.08), 0 2px 6px rgba(94,111,130,0.05);
-      --bronze: #a85b1b;
+      --gold-border: #ffd700;
+      --gold-glow: 0 12px 36px rgba(255,215,0,0.14), 0 2px 6px rgba(255,215,0,0.08);
+      --silver: #6b7280;
+      --silver-bg: linear-gradient(160deg, #fafbfc 0%, #e5e7eb 50%, #d1d5db 100%);
+      --silver-border: #9ca3af;
+      --silver-glow: 0 12px 36px rgba(107,114,128,0.12), 0 2px 6px rgba(107,114,128,0.07);
+      --bronze: #92400e;
       --bronze-bg: linear-gradient(160deg, #fffaf5 0%, #fef0e0 50%, #fcd9b0 100%);
-      --bronze-border: #deb87a;
-      --bronze-glow: 0 12px 36px rgba(168,91,27,0.10), 0 2px 6px rgba(168,91,27,0.06);
+      --bronze-border: #cd7f32;
+      --bronze-glow: 0 12px 36px rgba(205,127,50,0.12), 0 2px 6px rgba(205,127,50,0.07);
       --accent: #4f46e5;
       --accent-soft: rgba(79,70,229,0.06);
       --shadow-hero: 0 32px 80px rgba(30,40,60,.08), 0 2px 4px rgba(30,40,60,.03);
@@ -110,14 +110,14 @@
     }
     .podium-card:hover { transform: translateY(-4px); }
     .podium-card--gold { order: 2; background: var(--gold-bg); border-color: var(--gold-border); box-shadow: var(--gold-glow); }
-    .podium-card--gold:hover { box-shadow: 0 16px 48px rgba(197,147,10,0.18), 0 4px 8px rgba(197,147,10,0.1); }
+    .podium-card--gold:hover { box-shadow: 0 16px 48px rgba(255,215,0,0.18), 0 4px 8px rgba(255,215,0,0.1); }
     .podium-card--silver { order: 1; background: var(--silver-bg); border-color: var(--silver-border); box-shadow: var(--silver-glow); }
-    .podium-card--silver:hover { box-shadow: 0 16px 48px rgba(94,111,130,0.12); }
+    .podium-card--silver:hover { box-shadow: 0 16px 48px rgba(107,114,128,0.16), 0 4px 8px rgba(107,114,128,0.08); }
     .podium-card--bronze { order: 3; background: var(--bronze-bg); border-color: var(--bronze-border); box-shadow: var(--bronze-glow); }
-    .podium-card--bronze:hover { box-shadow: 0 16px 48px rgba(168,91,27,0.14); }
+    .podium-card--bronze:hover { box-shadow: 0 16px 48px rgba(205,127,50,0.16), 0 4px 8px rgba(205,127,50,0.08); }
     .podium-icon { width: 62px; height: 62px; margin: 0 auto 16px; border-radius: 50%; display: grid; place-items: center; }
     .podium-card--gold .podium-icon { background: rgba(254,243,199,0.9); border: 2px solid rgba(217,175,50,0.35); }
-    .podium-card--silver .podium-icon { background: rgba(241,245,249,0.9); border: 2px solid rgba(148,163,184,0.3); }
+    .podium-card--silver .podium-icon { background: rgba(243,244,246,0.95); border: 2px solid rgba(156,163,175,0.4); }
     .podium-card--bronze .podium-icon { background: rgba(255,237,213,0.9); border: 2px solid rgba(194,133,70,0.3); }
     .podium-email { font-size: 14px; font-weight: 750; color: var(--ink-strong); margin-bottom: 12px; word-break: break-all; line-height: 1.4; }
     .podium-metric { font-size: 11px; font-weight: 700; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 10px; }
@@ -238,9 +238,9 @@
         '<circle cx="12" cy="8" r="6" fill="' + color + '" fill-opacity="0.1"/>' +
         '<path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>';
     }
-    var TROPHY_GOLD = trophySvg('#b8860b', '#d4a017');
-    var TROPHY_SILVER = trophySvg('#64748b', '#94a3b8');
-    var TROPHY_BRONZE = trophySvg('#92400e', '#b45309');
+    var TROPHY_GOLD = trophySvg('#b8860b', '#ffd700');
+    var TROPHY_SILVER = trophySvg('#6b7280', '#c0c0c0');
+    var TROPHY_BRONZE = trophySvg('#92400e', '#cd7f32');
     var MEDAL_ICON = medalSvg('#7c8a9a');
 
     var currentDimension = 'tokens';

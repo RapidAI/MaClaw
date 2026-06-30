@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -4133,7 +4133,13 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         doFetchNews();
         try {
             await ClearAIAssistantUIState();
-            await ClearAIAssistantHistory();
+            // Use session-aware clear so that project tab workflows (V1/V2)
+            // are properly cancelled. The backend resolves the session key to
+            // the correct per-user owner ID and cancels the active agent loop,
+            // clears conversation memory, and resets all session state including
+            // active workflows.
+            const sessionKey = activeSessionKeyForEvents() || 'desktop-user';
+            await ClearAIAssistantHistoryForSession(sessionKey);
             const saved = await persistUIState([], latestPromptsRef.current, null);
             if (saved) {
                 lastPersistedPayloadRef.current = serializePersistedMessages([]);
@@ -4143,7 +4149,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             persistOnUnmountRef.current = true;
         }
-    }, [clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));

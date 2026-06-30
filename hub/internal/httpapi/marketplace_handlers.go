@@ -3,6 +3,7 @@ package httpapi
 import (
 	"archive/zip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -351,6 +352,13 @@ func CapabilityMaclawAppSubmitHandler(svc *capability.Service, identity viewerAu
 			writeError(w, http.StatusBadRequest, "INVALID_MACLAW_APP_PACKAGE", err.Error())
 			return
 		}
+		reviewIssues := enterpriseMaclawAppReadyReviewIssues(entries)
+		if issue := firstBlockingEnterpriseMaclawAppReviewIssue(reviewIssues); issue != nil {
+			writeErrorWithFields(w, http.StatusBadRequest, "MACLAW_APP_PACKAGE_NOT_READY", fmt.Sprintf("maclaw app package is not ready for Hub submission: %s: %s", issue.Path, issue.Message), map[string]any{
+				"review_issues": maclawAppReviewIssuesToMaps(reviewIssues),
+			})
+			return
+		}
 		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		submissions := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
@@ -449,6 +457,15 @@ func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision str
 				writeError(w, http.StatusBadRequest, "INVALID_REJECTION_REASON", "rejection reason must be 10-2000 characters")
 				return
 			}
+		} else if err := ensureEnterpriseMaclawAppCapabilityReadyForApproval(ctx, svc, item.ID, item.CurrentVersionKey); err != nil {
+			if readyErr, ok := err.(*enterpriseMaclawAppNotReadyError); ok {
+				writeErrorWithFields(w, http.StatusBadRequest, "MACLAW_APP_PACKAGE_NOT_READY", readyErr.Error(), map[string]any{
+					"review_issues": maclawAppReviewIssuesToMaps(readyErr.Issues),
+				})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "MACLAW_APP_REVIEW_READY_CHECK_FAILED", err.Error())
+			return
 		}
 		reviewer := firstNonEmpty(strings.TrimSpace(req.Reviewer), "hub-admin")
 		reviewedAt := time.Now().UTC().Format(time.RFC3339)
@@ -524,6 +541,388 @@ func compactStringList(values []string) []string {
 	return out
 }
 
+func AdminCapabilityMaclawAppPublishHandler(svc *capability.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
+		capabilityID := strings.TrimSpace(r.PathValue("id"))
+		if capabilityID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
+			return
+		}
+		var req struct {
+			Publisher      string `json:"publisher,omitempty"`
+			ReleaseChannel string `json:"release_channel,omitempty"`
+			Notes          string `json:"notes,omitempty"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		item, err := svc.Get(ctx, capabilityID)
+		if errors.Is(err, capability.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_GET_FAILED", err.Error())
+			return
+		}
+		metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+		if !isEnterpriseMaclawAppCapability(*item, metadata) {
+			writeError(w, http.StatusBadRequest, "NOT_MACLAW_APP_CAPABILITY", "capability is not a MaClaw App submission")
+			return
+		}
+		status := strings.TrimSpace(strings.ToLower(item.Status))
+		if status == "published" {
+			writeError(w, http.StatusConflict, "MACLAW_APP_ALREADY_PUBLISHED", "MaClaw App capability is already published")
+			return
+		}
+		if status != "approved" {
+			writeError(w, http.StatusConflict, "MACLAW_APP_NOT_APPROVED", "MaClaw App capability must be approved before publish")
+			return
+		}
+		if err := ensureEnterpriseMaclawAppCapabilityReadyForApproval(ctx, svc, item.ID, item.CurrentVersionKey); err != nil {
+			if readyErr, ok := err.(*enterpriseMaclawAppNotReadyError); ok {
+				writeErrorWithFields(w, http.StatusBadRequest, "MACLAW_APP_PACKAGE_NOT_READY", readyErr.Error(), map[string]any{
+					"review_issues": maclawAppReviewIssuesToMaps(readyErr.Issues),
+				})
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "MACLAW_APP_PUBLISH_READY_CHECK_FAILED", err.Error())
+			return
+		}
+		versions, err := svc.ListVersions(ctx, item.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_VERSIONS_FAILED", err.Error())
+			return
+		}
+		version := currentCapabilityVersion(versions, item.CurrentVersionKey)
+		if version == nil {
+			writeError(w, http.StatusNotFound, "MACLAW_APP_PACKAGE_NOT_FOUND", "MaClaw App package version not found")
+			return
+		}
+		publisher := firstNonEmpty(strings.TrimSpace(req.Publisher), "hub-admin")
+		publishedAt := time.Now().UTC().Format(time.RFC3339)
+		packageSHA := firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"]))
+		metadata["review_state"] = "published"
+		metadata["published_at"] = publishedAt
+		metadata["published_by"] = publisher
+		metadata["release_channel"] = firstNonEmpty(strings.TrimSpace(req.ReleaseChannel), "stable")
+		if notes := strings.TrimSpace(req.Notes); notes != "" {
+			metadata["release_notes"] = notes
+		}
+		metadata["package_signature"] = enterpriseMaclawAppPackageSignature(packageSHA, version.VersionKey, publishedAt, publisher)
+		updated, err := svc.ReviewCapabilityVersion(ctx, item.ID, "published", jsonObjectString(compactMetadata(metadata)))
+		if errors.Is(err, capability.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "MACLAW_APP_PUBLISH_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"status":     "published",
+			"capability": updated,
+			"publish": map[string]any{
+				"state":           "published",
+				"published_by":    publisher,
+				"published_at":    publishedAt,
+				"release_channel": metadata["release_channel"],
+				"package_sha256":  packageSHA,
+				"signature":       metadata["package_signature"],
+			},
+		})
+	}
+}
+
+func enterpriseMaclawAppPackageSignature(packageSHA, versionKey, publishedAt, publisher string) map[string]any {
+	payload := enterpriseMaclawAppPackageSignaturePayload(packageSHA, versionKey, publishedAt, publisher)
+	publicKey, privateKey := enterpriseMaclawAppPackageSigningKey()
+	signature := ed25519.Sign(privateKey, []byte(payload))
+	fingerprint := sha256.Sum256(publicKey)
+	return compactMetadata(map[string]any{
+		"schema":                 "maclaw.app.package_signature.v1",
+		"algorithm":              "ed25519",
+		"payload":                payload,
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"public_key_fingerprint": "sha256:" + hex.EncodeToString(fingerprint[:]),
+		"signature_base64":       base64.StdEncoding.EncodeToString(signature),
+		"package_sha256":         strings.TrimSpace(packageSHA),
+		"version_key":            strings.TrimSpace(versionKey),
+		"signed_at":              strings.TrimSpace(publishedAt),
+		"signed_by":              strings.TrimSpace(publisher),
+	})
+}
+
+func enterpriseMaclawAppPackageSignaturePayload(packageSHA, versionKey, publishedAt, publisher string) string {
+	return strings.Join([]string{"maclaw-app", strings.TrimSpace(packageSHA), strings.TrimSpace(versionKey), strings.TrimSpace(publishedAt), strings.TrimSpace(publisher)}, "\n")
+}
+
+func enterpriseMaclawAppPackageSigningKey() (ed25519.PublicKey, ed25519.PrivateKey) {
+	seed := sha256.Sum256([]byte("maclaw-enterprise-hub-app-package-signing-key-v1"))
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	return publicKey, privateKey
+}
+
+type enterpriseMaclawAppNotReadyError struct {
+	Message string
+	Issues  []maclawAppReviewIssue
+}
+
+func (e *enterpriseMaclawAppNotReadyError) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "maclaw app package is not ready for Hub approval"
+	}
+	return e.Message
+}
+
+func ensureEnterpriseMaclawAppCapabilityReadyForApproval(ctx context.Context, svc *capability.Service, capabilityID, currentVersionKey string) error {
+	versions, err := svc.ListVersions(ctx, capabilityID)
+	if err != nil {
+		return err
+	}
+	version := currentCapabilityVersion(versions, currentVersionKey)
+	if version == nil || strings.TrimSpace(version.ManifestJSON) == "" {
+		return &enterpriseMaclawAppNotReadyError{Message: "maclaw app package is not ready for Hub approval: stored manifest is missing", Issues: []maclawAppReviewIssue{{Path: "capability.version.manifest", Severity: "error", Message: "stored MaClaw App manifest is missing", Suggestion: "resubmit the app package before approval"}}}
+	}
+	entry := mapFromRawJSON(json.RawMessage(version.ManifestJSON))
+	parsed, err := parseEnterpriseMaclawAppEntry(entry, "stored maclaw app")
+	if err != nil {
+		return &enterpriseMaclawAppNotReadyError{Message: "maclaw app package is not ready for Hub approval: stored manifest is invalid", Issues: []maclawAppReviewIssue{{Path: "capability.version.manifest", Severity: "error", Message: err.Error(), Suggestion: "resubmit a valid MaClaw App package before approval"}}}
+	}
+	issues := enterpriseMaclawAppReadyReviewIssues([]enterpriseMaclawAppPackageEntry{parsed})
+	if issue := firstBlockingEnterpriseMaclawAppReviewIssue(issues); issue != nil {
+		return &enterpriseMaclawAppNotReadyError{Message: fmt.Sprintf("maclaw app package is not ready for Hub approval: %s: %s", issue.Path, issue.Message), Issues: issues}
+	}
+	return nil
+}
+func enterpriseMaclawAppReadyReviewIssues(entries []enterpriseMaclawAppPackageEntry) []maclawAppReviewIssue {
+	issues := []maclawAppReviewIssue{}
+	for i, entry := range entries {
+		path := fmt.Sprintf("apps[%d]", i)
+		appPath := path + ".app"
+		governancePath := appPath + ".governance"
+		kind := strings.ToLower(strings.TrimSpace(entry.Kind))
+		governance := entry.Governance
+		if governance == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath, Severity: "warning", Message: "governance metadata is missing", Suggestion: "save the app from App Studio so workspace layout, result contract, dependencies and test evidence are recorded"})
+		}
+
+		workspaceLayout := enterpriseMaclawAppWorkspaceLayoutForEntry(entry)
+		if workspaceLayout == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workspaceLayout", Severity: "error", Message: "workspace layout evidence is required", Suggestion: "generate and save the visual MaClaw App workspace layout before submitting to Hub"})
+		} else {
+			regions := anySliceFromMap(workspaceLayout, "regions")
+			if len(regions) == 0 {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workspaceLayout.regions", Severity: "error", Message: "workspace layout must include visual regions", Suggestion: "save the App Studio layout after arranging input, workbench and output regions"})
+			}
+			if enterpriseMaclawAppWorkspaceLayoutRegionWithRole(regions, "input") == "" {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workspaceLayout.regions", Severity: "error", Message: "workspace layout must include an input region", Suggestion: "add or mark one layout region as the data entry/input area"})
+			}
+			if enterpriseMaclawAppWorkspaceLayoutRegionWithRole(regions, "output") == "" {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workspaceLayout.regions", Severity: "error", Message: "workspace layout must include an output region", Suggestion: "add or mark one layout region as the result/output area"})
+			}
+		}
+
+		resultContract := anyMapFromMap(governance, "resultContract", "result_contract")
+		if resultContract == nil {
+			resultContract = anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "resultContract", "result_contract")
+		}
+		if resultContract == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".resultContract", Severity: "error", Message: "result contract is required", Suggestion: "declare whether the app returns approval status, content, business data, documents or artifacts"})
+		} else if primary := enterpriseMaclawAppFirstString(resultContract, "primary", "primaryResult", "primary_result"); primary == "" {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".resultContract.primary", Severity: "error", Message: "result contract must declare a primary result", Suggestion: "set resultContract.primary so installers and DataSrv can classify the app output"})
+		}
+
+		testEvidence := anyMapFromMap(governance, "testEvidence", "test_evidence")
+		if testEvidence == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence", Severity: "error", Message: "test evidence is required", Suggestion: "run the App Studio test protocol and submit the package produced after the test passes"})
+		} else {
+			if enterpriseMaclawAppFirstString(testEvidence, "runId", "run_id") == "" {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.runId", Severity: "error", Message: "test evidence must include a run id", Suggestion: "rerun the app test protocol and keep the generated run evidence"})
+			}
+			if enterpriseMaclawAppFirstString(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash") == "" {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.testProtocolFingerprint", Severity: "error", Message: "test evidence must include the test protocol fingerprint", Suggestion: "save the test protocol and rerun the app test so evidence is tied to the tested protocol"})
+			}
+			if coverage := anyMapFromMap(testEvidence, "resultCoverage", "result_coverage"); coverage != nil {
+				if ok, present := enterpriseMaclawAppFirstBool(coverage, "ok"); present && !ok {
+					issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.resultCoverage", Severity: "error", Message: "test evidence does not cover the declared result contract", Suggestion: "rerun the app test and cover every required output type before submitting"})
+				}
+			}
+			if kind == "enterprise_approval_app" {
+				approval := anyMapFromMap(testEvidence, "approvalInstance", "approval_instance", "approval")
+				if approval == nil {
+					issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.approvalInstance", Severity: "error", Message: "approval app test evidence must include approval instance evidence", Suggestion: "run the approval app and verify my applications, my approvals or handled views before submitting"})
+				} else {
+					if firstNonEmpty(enterpriseMaclawAppFirstString(approval, "instanceId", "instance_id", "approvalInstanceId", "approval_instance_id", "workflowInstanceId", "workflow_instance_id"), enterpriseMaclawAppFirstString(approval, "approvalID", "approvalId", "approval_id")) == "" {
+						issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.approvalInstance.instanceId", Severity: "error", Message: "approval instance evidence must include an instance id or approval id", Suggestion: "sync the tested approval instance to DataSrv and keep the returned approval id"})
+					}
+					if enterpriseMaclawAppFirstString(approval, "status", "approvalStatus", "approval_status", "resultStatus", "result_status") == "" {
+						issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.approvalInstance.status", Severity: "error", Message: "approval instance evidence must include the current or final status", Suggestion: "open the approval instance view after running the workflow and save the refreshed evidence"})
+					}
+					if verified, present := enterpriseMaclawAppFirstBool(approval, "approvalInstanceViewVerified", "approval_instance_view_verified", "approvalViewVerified", "approval_view_verified", "viewVerified", "view_verified"); !present || !verified {
+						issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".testEvidence.approvalInstance.approvalInstanceViewVerified", Severity: "error", Message: "approval app test evidence must verify an approval instance view", Suggestion: "verify my applications, my approvals, handled or attention view for the tested approval instance"})
+					}
+				}
+			}
+		}
+
+		dependencyVerification := anyMapFromMap(governance, "dependencyVerification", "dependency_verification")
+		if dependencyVerification == nil {
+			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification", Severity: "error", Message: "dependency verification is required", Suggestion: "run dependency planning so every required Skill dependency has a resolvable install reference"})
+		} else {
+			if ok, present := enterpriseMaclawAppFirstBool(dependencyVerification, "ok", "verified", "dependencyCheckPassed", "dependency_check_passed"); present && !ok {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification.ok", Severity: "error", Message: "dependency verification failed", Suggestion: "install, publish or fix the missing required Skill dependencies before submitting"})
+			}
+			if blocked, present := enterpriseMaclawAppFirstBool(dependencyVerification, "blocked", "hasBlockedDependency", "has_blocked_dependency"); present && blocked {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification.blocked", Severity: "error", Message: "dependency verification contains blocked dependencies", Suggestion: "resolve blocked Skill dependencies before submitting the app package"})
+			}
+			if enterpriseMaclawAppNumberGreaterThanZero(dependencyVerification, "missingCount", "missing_count") {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification.missingCount", Severity: "error", Message: "dependency verification contains missing dependencies", Suggestion: "install or publish every required dependency and regenerate dependency verification"})
+			}
+			if enterpriseMaclawAppNumberGreaterThanZero(dependencyVerification, "blockedCount", "blocked_count") {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification.blockedCount", Severity: "error", Message: "dependency verification contains blocked dependencies", Suggestion: "fix blocked dependencies and regenerate dependency verification"})
+			}
+			verifiedSkills := anySliceFromMap(dependencyVerification, "skills")
+			if len(verifiedSkills) == 0 {
+				verifiedSkills = anySliceFromMap(dependencyVerification, "dependencies")
+			}
+			if len(verifiedSkills) == 0 {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".dependencyVerification.skills", Severity: "error", Message: "dependency verification must include checked Skill dependencies", Suggestion: "submit the package after PlanMaclawAppInstall records the checked dependency list"})
+			}
+			for depIndex, raw := range verifiedSkills {
+				dep, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if required, present := enterpriseMaclawAppFirstBool(dep, "required"); present && !required {
+					continue
+				}
+				if firstNonEmpty(stringFromAny(dep["install_ref"]), stringFromAny(dep["installRef"])) == "" {
+					issues = append(issues, maclawAppReviewIssue{Path: fmt.Sprintf("%s.dependencyVerification.skills[%d].install_ref", governancePath, depIndex), Severity: "error", Message: "verified required dependency must include install_ref", Suggestion: "publish the dependency Skill to Hub or SkillMarket and regenerate dependency verification"})
+				}
+			}
+		}
+
+		if kind == "enterprise_approval_app" {
+			workflowMapping := enterpriseMaclawAppWorkflowMappingForEntry(entry)
+			if workflowMapping == nil {
+				issues = append(issues, maclawAppReviewIssue{Path: appPath + ".binding.workflow", Severity: "error", Message: "approval app requires workflow mapping", Suggestion: "map submit, approval, result and attention nodes before submitting the approval app"})
+			} else {
+				for _, pair := range []struct{ key, alt, message string }{{"submitNode", "submit_node", "approval app workflow mapping must include submit node"}, {"approvalNode", "approval_node", "approval app workflow mapping must include approval node"}, {"resultNode", "result_node", "approval app workflow mapping must include result node"}} {
+					if firstNonEmpty(stringFromMap(workflowMapping, pair.key), stringFromMap(workflowMapping, pair.alt)) == "" {
+						issues = append(issues, maclawAppReviewIssue{Path: appPath + ".binding.workflow." + pair.key, Severity: "error", Message: pair.message, Suggestion: "complete the approval workflow node mapping in App Studio"})
+					}
+				}
+			}
+			workflowContract := anyMapFromMap(governance, "workflowContract", "workflow_contract")
+			if workflowContract == nil {
+				workflowContract = anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "workflowContract", "workflow_contract")
+			}
+			if workflowContract == nil {
+				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workflowContract", Severity: "error", Message: "approval app requires workflow contract", Suggestion: "declare the approval workflow skill, object role and result mapping before submitting"})
+			} else {
+				if enterpriseMaclawAppFirstString(workflowContract, "workflowSkillId", "workflow_skill_id", "skillId", "skill_id") == "" {
+					issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workflowContract.workflowSkillId", Severity: "error", Message: "workflow contract must include workflow skill id", Suggestion: "bind the approval workflow Skill used by this app"})
+				}
+				if enterpriseMaclawAppFirstString(workflowContract, "objectRole", "object_role", "approvalObjectRole", "approval_object_role") == "" {
+					issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workflowContract.objectRole", Severity: "error", Message: "workflow contract must include approval object role", Suggestion: "set the business object role that the approval workflow manages"})
+				}
+				outputs := enterpriseMaclawAppWorkflowContractOutputs(workflowContract)
+				for _, required := range []string{"workflow_result", "approval_instance", "outputs", "artifacts"} {
+					if _, ok := outputs[required]; !ok {
+						issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workflowContract.requiredOutputs", Severity: "error", Message: "workflow contract must include required output " + required, Suggestion: "declare workflow_result, approval_instance, outputs and artifacts so Hub can verify approval workflow result packages"})
+					}
+				}
+			}
+		}
+	}
+	return issues
+}
+
+func enterpriseMaclawAppWorkflowContractOutputs(contract map[string]any) map[string]struct{} {
+	outputs := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return
+		}
+		outputs[value] = struct{}{}
+	}
+	var collect func(any)
+	collect = func(value any) {
+		switch typed := value.(type) {
+		case []any:
+			for _, item := range typed {
+				collect(item)
+			}
+		case []string:
+			for _, item := range typed {
+				add(item)
+			}
+		case map[string]any:
+			for _, key := range []string{"id", "key", "name", "type", "kind", "field", "fieldName", "field_name", "value"} {
+				if text := stringFromAny(typed[key]); text != "" {
+					add(text)
+				}
+			}
+		case string:
+			for _, part := range strings.FieldsFunc(typed, func(r rune) bool { return r == ',' || r == ';' || r == '|' || r == '\n' || r == '	' || r == ' ' }) {
+				add(part)
+			}
+		default:
+			if text := stringFromAny(typed); text != "" {
+				add(text)
+			}
+		}
+	}
+	for _, key := range []string{"requiredOutputs", "required_outputs", "outputContract", "output_contract", "resultOutputs", "result_outputs"} {
+		collect(contract[key])
+	}
+	return outputs
+}
+func enterpriseMaclawAppNumberGreaterThanZero(values map[string]any, keys ...string) bool {
+	value, ok := enterpriseMaclawAppFirstNumber(values, keys...)
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return typed > 0
+	case int:
+		return typed > 0
+	case int64:
+		return typed > 0
+	case json.Number:
+		if parsed, err := typed.Float64(); err == nil {
+			return parsed > 0
+		}
+	}
+	return false
+}
+func firstBlockingEnterpriseMaclawAppReviewIssue(issues []maclawAppReviewIssue) *maclawAppReviewIssue {
+	for i := range issues {
+		severity := strings.ToLower(strings.TrimSpace(issues[i].Severity))
+		if severity == "error" || severity == "critical" {
+			return &issues[i]
+		}
+	}
+	return nil
+}
+
+func enterpriseMaclawAppWorkspaceLayoutRegionWithRole(regions []any, role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	for _, raw := range regions {
+		region, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(stringFromAny(region["role"])), role) {
+			return stringFromMap(region, "id")
+		}
+	}
+	return ""
+}
 func maclawAppReviewIssuesToMaps(issues []maclawAppReviewIssue) []map[string]any {
 	out := make([]map[string]any, 0, len(issues))
 	for _, issue := range issues {
@@ -1084,9 +1483,10 @@ func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerA
 		}
 		resolvedDependencies := enterpriseMaclawAppResolvedDependenciesForEntries([]enterpriseMaclawAppPackageEntry{parsedEntry})
 		pkg := map[string]any{
-			"schema":        "maclaw.app.pack.v1",
-			"privateMarker": "x_maclaw_apps",
-			"source":        "enterprise_hub",
+			"schema":            "maclaw.app.pack.v1",
+			"privateMarker":     "x_maclaw_apps",
+			"source":            "enterprise_hub",
+			"package_signature": metadata["package_signature"],
 			"capability": map[string]any{
 				"id":                  item.ID,
 				"capability_id":       item.CapabilityID,
@@ -1117,7 +1517,7 @@ func currentCapabilityVersion(versions []capability.VersionSummary, currentVersi
 
 func isInstallableMaclawAppStatus(status string) bool {
 	status = strings.TrimSpace(strings.ToLower(status))
-	return status == "approved" || status == "published"
+	return status == "published"
 }
 
 func applyMaclawAppReviewMetadataToEntry(entry map[string]any, item capability.CapabilitySummary, version capability.VersionSummary, metadata map[string]any) {
@@ -1141,7 +1541,7 @@ func applyMaclawAppReviewMetadataToEntry(entry map[string]any, item capability.C
 	submission["submission_id"] = firstNonEmpty(item.CurrentVersionKey, version.VersionKey)
 	submission["version_key"] = firstNonEmpty(version.VersionKey, item.CurrentVersionKey)
 	submission["status"] = firstNonEmpty(stringFromAny(metadata["review_state"]), item.Status)
-	for _, key := range []string{"reviewer", "reviewed_at", "approved_at", "published_at", "risk_level", "approved_scopes", "review_issues", "review_reason"} {
+	for _, key := range []string{"reviewer", "reviewed_at", "approved_at", "published_at", "published_by", "release_channel", "release_notes", "package_signature", "risk_level", "approved_scopes", "review_issues", "review_reason"} {
 		if value, ok := metadata[key]; ok {
 			submission[key] = value
 		}

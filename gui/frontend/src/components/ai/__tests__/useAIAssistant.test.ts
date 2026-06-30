@@ -17,6 +17,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         return mockSendResponse;
     }),
     ClearAIAssistantHistory: vi.fn(async () => {}),
+    ClearAIAssistantHistoryForSession: vi.fn(async () => {}),
     ClearAIAssistantUIState: vi.fn(async () => { mockUIState = { messages: [], prompts: [] }; }),
     LoadAIAssistantUIState: vi.fn(async () => mockUIState),
     SaveAIAssistantUIState: vi.fn(async (state: any) => { mockUIState = state; }),
@@ -50,7 +51,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
     return renderHook(() => useAIAssistant(options));
@@ -95,6 +96,8 @@ function resetAppMocks() {
     });
     (ClearAIAssistantHistory as any).mockReset();
     (ClearAIAssistantHistory as any).mockImplementation(async () => {});
+    (ClearAIAssistantHistoryForSession as any).mockReset();
+    (ClearAIAssistantHistoryForSession as any).mockImplementation(async () => {});
     (ClearAIAssistantUIState as any).mockReset();
     (ClearAIAssistantUIState as any).mockImplementation(async () => { mockUIState = { messages: [], prompts: [] }; });
     (LoadAIAssistantUIState as any).mockReset();
@@ -628,7 +631,7 @@ describe('useAIAssistant property tests', () => {
             expect(localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY)).toBeNull();
         });
 
-        expect(ClearAIAssistantHistory).toHaveBeenCalledTimes(1);
+        expect(ClearAIAssistantHistoryForSession).toHaveBeenCalledTimes(1);
 
         unmount();
 

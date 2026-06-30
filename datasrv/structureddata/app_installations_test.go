@@ -146,6 +146,87 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 }
 
+func TestUpsertAppInstallationSummarizesToolResultEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "designer_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "tool.contract.archive", UpsertAppInstallationInput{
+		AppID:  "tool.contract.archive",
+		Name:   "Contract Archive",
+		Kind:   "tool_app",
+		Source: "hub",
+		Metadata: map[string]any{
+			"test_evidence": map[string]any{
+				"runId": "run-contract-archive-1",
+				"resultPayload": map[string]any{
+					"status":     "completed",
+					"resultType": "content",
+					"content":    "contract archive ready",
+				},
+				"outputs": []any{
+					map[string]any{"kind": "content", "text": "contract archive ready"},
+					map[string]any{"kind": "document", "title": "Archive PDF"},
+				},
+				"artifacts": []any{
+					map[string]any{"name": "archive.pdf", "uri": "artifact://contract/archive.pdf", "type": "document"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	evidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized test evidence: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_result_type"] != "content" || installed.Metadata["test_evidence_output_type"] != "content" || installed.Metadata["test_evidence_result_content"] != "contract archive ready" {
+		t.Fatalf("expected result payload summaries: %#v", installed.Metadata)
+	}
+	if kinds := appInstallationStringList(installed.Metadata["test_evidence_output_kinds"]); len(kinds) != 2 || kinds[0] != "content" || kinds[1] != "document" {
+		t.Fatalf("expected output kind summaries: %#v", installed.Metadata)
+	}
+	if uris := appInstallationStringList(installed.Metadata["test_evidence_artifact_uris"]); len(uris) != 1 || uris[0] != "artifact://contract/archive.pdf" {
+		t.Fatalf("expected artifact URI summaries: %#v", installed.Metadata)
+	}
+	if names := appInstallationStringList(evidence["artifact_names"]); len(names) != 1 || names[0] != "archive.pdf" {
+		t.Fatalf("expected normalized artifact names: %#v", evidence)
+	}
+	if installed.Metadata["test_evidence_artifact_uri"] != "artifact://contract/archive.pdf" || installed.Metadata["test_evidence_artifact_name"] != "archive.pdf" || !appInstallationNumberEquals(installed.Metadata["test_evidence_artifact_count"], 1) {
+		t.Fatalf("expected primary artifact summaries: %#v", installed.Metadata)
+	}
+
+	byResultType, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{ResultType: "document", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAppInstallations: %v", err)
+	}
+	if len(byResultType) != 1 || byResultType[0].AppID != "tool.contract.archive" {
+		t.Fatalf("expected result_type=document to match artifact/output summaries: %#v", byResultType)
+	}
+
+	audit, err := svc.QueryAuditLogs(context.Background(), principal, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "tool.contract.archive", Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAuditLogs: %v", err)
+	}
+	if len(audit) != 1 {
+		t.Fatalf("expected audit log: %#v", audit)
+	}
+	metadata := audit[0].Metadata
+	if metadata["test_evidence_artifact_uri"] != "artifact://contract/archive.pdf" || metadata["test_evidence_result_type"] != "content" || metadata["test_evidence_output_type"] != "content" {
+		t.Fatalf("expected audit result summaries: %#v", metadata)
+	}
+	if kinds := appInstallationStringList(metadata["test_evidence_output_kinds"]); len(kinds) != 2 || kinds[1] != "document" {
+		t.Fatalf("expected audit output kind summaries: %#v", metadata)
+	}
+	if _, ok := metadata["test_evidence_result_payload"]; ok {
+		t.Fatalf("audit metadata should not include bulky test evidence result payload: %#v", metadata)
+	}
+}
 func TestUpsertAppInstallationInfersWorkspacePrimaryAndOutputRegions(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -602,7 +603,7 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 						},
 						"governance": {
 							"resultContract": {"primary": "artifact", "types": ["artifact", "content"]},
-							"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract"},
+							"workflowContract": {"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "contract-approval", "objectRole": "contract", "requiredOutputs": ["workflow_result", "approval_instance", "outputs", "artifacts"]},
 							"testEvidence": {
 								"runId": "run-contract",
 								"testProtocolFingerprint": "proto-contract",
@@ -826,6 +827,185 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	}
 }
 
+func TestCapabilityMaclawAppSubmitRejectsUnreadyPackage(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(pkg map[string]any)
+		wantMessage string
+	}{
+		{
+			name: "missing test evidence",
+			mutate: func(pkg map[string]any) {
+				delete(readyMaclawAppGovernance(pkg), "testEvidence")
+			},
+			wantMessage: "test evidence is required",
+		},
+		{
+			name: "missing result contract",
+			mutate: func(pkg map[string]any) {
+				delete(readyMaclawAppGovernance(pkg), "resultContract")
+			},
+			wantMessage: "result contract is required",
+		},
+		{
+			name: "dependency verification blocked",
+			mutate: func(pkg map[string]any) {
+				verification := readyMaclawAppGovernance(pkg)["dependencyVerification"].(map[string]any)
+				verification["ok"] = false
+				verification["blocked"] = true
+				verification["missingCount"] = 1
+				verification["blockedCount"] = 1
+			},
+			wantMessage: "dependency verification failed",
+		},
+		{
+			name: "approval app missing workflow contract",
+			mutate: func(pkg map[string]any) {
+				delete(readyMaclawAppGovernance(pkg), "workflowContract")
+			},
+			wantMessage: "approval app requires workflow contract",
+		},
+		{
+			name: "approval app workflow contract missing required outputs",
+			mutate: func(pkg map[string]any) {
+				contract := readyMaclawAppGovernance(pkg)["workflowContract"].(map[string]any)
+				contract["requiredOutputs"] = []any{"workflow_result", "approval_instance"}
+			},
+			wantMessage: "workflow contract must include required output outputs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openCapabilityTestDB(t)
+			svc := capability.NewService(db)
+			pkg := readyEnterpriseApprovalMaclawAppSubmitPackage()
+			tt.mutate(pkg)
+			body, err := json.Marshal(map[string]any{"package": pkg, "source_submission_id": "local-review-ready-gate"})
+			if err != nil {
+				t.Fatalf("encode package: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/capabilities/maclaw-apps/submit", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer viewer-token")
+			rec := httptest.NewRecorder()
+
+			CapabilityMaclawAppSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "author-a", email: "author@example.com"})(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("submit status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if resp["code"] != "MACLAW_APP_PACKAGE_NOT_READY" || !strings.Contains(stringFromAny(resp["message"]), tt.wantMessage) {
+				t.Fatalf("unexpected error response=%+v want message containing %q", resp, tt.wantMessage)
+			}
+			issues, ok := resp["review_issues"].([]any)
+			if !ok || len(issues) == 0 {
+				t.Fatalf("error response should include review issues: %+v", resp)
+			}
+			items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+			if err != nil {
+				t.Fatalf("list capabilities: %v", err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("unready package should not create capability: %+v", items)
+			}
+		})
+	}
+}
+
+func readyEnterpriseApprovalMaclawAppSubmitPackage() map[string]any {
+	return map[string]any{
+		"schema":        "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": []any{map[string]any{
+			"schema":        "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": map[string]any{
+				"id":      "approval-ready-app",
+				"name":    "Approval Ready App",
+				"kind":    "enterprise_approval_app",
+				"version": "1.0.0",
+				"binding": map[string]any{
+					"appSkill": map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "source": "hub"},
+					"workflow": map[string]any{
+						"schema":        "maclaw.app.workflow.v1",
+						"submitNode":    "expense.submit",
+						"approvalNode":  "expense.manager_review",
+						"resultNode":    "expense.result",
+						"attentionNode": "expense.attention",
+					},
+					"dependencies": map[string]any{"skills": []any{
+						map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "kind": "app_skill", "required": true, "source": "hub"},
+						map[string]any{"id": "approval-ready-workflow", "version": "1.0.0", "kind": "workflow_skill", "required": true, "source": "hub", "capabilities": []any{"approval.workflow"}},
+					}},
+				},
+				"governance": map[string]any{
+					"workspaceLayout": map[string]any{
+						"schema":        "maclaw.app.workspace_layout.v1",
+						"primaryRegion": "request_form",
+						"outputRegion":  "result_panel",
+						"regions": []any{
+							map[string]any{"id": "request_form", "role": "input", "placement": "left"},
+							map[string]any{"id": "approval_lane", "role": "workflow", "placement": "center"},
+							map[string]any{"id": "result_panel", "role": "output", "placement": "right"},
+						},
+					},
+					"resultContract":   map[string]any{"primary": "approval_result", "types": []any{"approval_result", "content", "artifact"}},
+					"workflowContract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "approval-ready-workflow", "objectRole": "expense_request", "requiredOutputs": []any{"workflow_result", "approval_instance", "outputs", "artifacts"}},
+					"testEvidence": map[string]any{
+						"runId":                   "run-ready-approval",
+						"testProtocolFingerprint": "proto-ready-approval",
+						"primaryResult":           "approval_result",
+						"resultPayload":           map[string]any{"approval_result": "approved", "business_status": "approved"},
+						"outputs":                 []any{map[string]any{"kind": "approval_result", "title": "Approved", "status": "approved"}},
+						"artifacts":               []any{map[string]any{"id": "approval-file", "uri": "artifact://approval/file.pdf", "name": "approval.pdf"}},
+						"resultCoverage":          map[string]any{"ok": true, "primary": "approval_result", "coveredTypes": []any{"approval_result", "content", "artifact"}, "missingTypes": []any{}},
+						"approvalInstance": map[string]any{
+							"approvalID":                   "approval-ready-1",
+							"recordID":                     "expense-ready-1",
+							"status":                       "approved",
+							"currentNode":                  "expense.result",
+							"workflowSkillId":              "approval-ready-workflow",
+							"workflowVersion":              "1.0.0",
+							"businessStatus":               "approved",
+							"resultStatus":                 "approved",
+							"approvalInstanceViewVerified": true,
+						},
+					},
+					"dependencyVerification": map[string]any{
+						"schema":          "maclaw.app.install_plan.v1",
+						"runId":           "dep-run-ready-approval",
+						"dependencyCount": 2,
+						"requiredCount":   2,
+						"installedCount":  2,
+						"missingCount":    0,
+						"blockedCount":    0,
+						"ok":              true,
+						"blocked":         false,
+						"skills": []any{
+							map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "kind": "app_skill", "install_ref": "hub://skills/approval-ready-app-skill@1.0.0"},
+							map[string]any{"id": "approval-ready-workflow", "version": "1.0.0", "kind": "workflow_skill", "install_ref": "hub://skills/approval-ready-workflow@1.0.0"},
+						},
+					},
+				},
+			},
+		}},
+	}
+}
+
+func readyMaclawAppEntry(pkg map[string]any) map[string]any {
+	apps := pkg["apps"].([]any)
+	return apps[0].(map[string]any)
+}
+func readyMaclawAppGovernance(pkg map[string]any) map[string]any {
+	apps := pkg["apps"].([]any)
+	entry := apps[0].(map[string]any)
+	app := entry["app"].(map[string]any)
+	return app["governance"].(map[string]any)
+}
 func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -886,7 +1066,7 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 				},
 			},
 			"governance": map[string]any{
-				"workflowContract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "download-workflow", "objectRole": "download_record"},
+				"workflowContract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "download-workflow", "objectRole": "download_record", "requiredOutputs": []any{"workflow_result", "approval_instance", "outputs", "artifacts"}},
 				"testEvidence": map[string]any{
 					"runId": "run-download",
 					"outputs": []any{
@@ -924,19 +1104,23 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 		Description:    "Downloaded from Hub",
 		Source:         corelib.CapabilitySourceEnterpriseHub,
 		ManagedBy:      "maclaw_app_upload",
-		Status:         "approved",
+		Status:         "published",
 		MetadataJSON: jsonObjectString(map[string]any{
-			"is_maclaw_app":    true,
-			"product_kind":     "maclaw_app_skill",
-			"maclaw_app_id":    "download-app",
-			"review_state":     "approved",
-			"reviewer":         "hub-admin",
-			"reviewed_at":      "2026-06-17T02:30:00Z",
-			"approved_at":      "2026-06-17T02:30:00Z",
-			"risk_level":       "low",
-			"approved_scopes":  []string{"app.run", "file.read"},
-			"package_sha256":   "pkg-sha",
-			"workspace_layout": map[string]any{"template": "document_workspace"},
+			"is_maclaw_app":     true,
+			"product_kind":      "maclaw_app_skill",
+			"maclaw_app_id":     "download-app",
+			"review_state":      "published",
+			"reviewer":          "hub-admin",
+			"reviewed_at":       "2026-06-17T02:30:00Z",
+			"approved_at":       "2026-06-17T02:30:00Z",
+			"published_at":      "2026-06-17T03:30:00Z",
+			"published_by":      "release-admin",
+			"release_channel":   "stable",
+			"package_signature": enterpriseMaclawAppPackageSignature("pkg-sha", "enterprise_hub:skill:maclaw-app:download-app@pkg", "2026-06-17T03:30:00Z", "release-admin"),
+			"risk_level":        "low",
+			"approved_scopes":   []string{"app.run", "file.read"},
+			"package_sha256":    "pkg-sha",
+			"workspace_layout":  map[string]any{"template": "document_workspace"},
 		}),
 		Version:           "1",
 		VersionKey:        "enterprise_hub:skill:maclaw-app:download-app@pkg",
@@ -944,7 +1128,7 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 		ManifestJSON:      jsonObjectString(manifest),
 		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1", "app_id": "download-app"}),
 		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
-		VersionStatus:     "approved",
+		VersionStatus:     "published",
 		SetCurrentVersion: true,
 	})
 	if err != nil {
@@ -967,6 +1151,11 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 	if pkg["schema"] != "maclaw.app.pack.v1" || pkg["privateMarker"] != "x_maclaw_apps" || pkg["package_sha256"] != "pkg-sha" {
 		t.Fatalf("unexpected package header: %+v", pkg)
 	}
+	topLevelSignature, ok := pkg["package_signature"].(map[string]any)
+	if !ok {
+		t.Fatalf("download package should expose top-level package signature: %+v", pkg["package_signature"])
+	}
+	assertMaclawAppPackageEd25519Signature(t, topLevelSignature)
 	resolved, ok := pkg["resolved_dependencies"].([]any)
 	if !ok || len(resolved) != 2 {
 		t.Fatalf("resolved dependencies=%+v", pkg["resolved_dependencies"])
@@ -1041,18 +1230,29 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 		t.Fatalf("download package should preserve approval instance artifacts: %+v", approvalInstance)
 	}
 	submission, _ := governance["submission"].(map[string]any)
-	if submission["channel"] != "hub" || submission["status"] != "approved" || submission["reviewer"] != "hub-admin" || submission["capability_id"] != seeded.ID {
+	if submission["channel"] != "hub" || submission["status"] != "published" || submission["reviewer"] != "hub-admin" || submission["published_by"] != "release-admin" || submission["capability_id"] != seeded.ID {
 		t.Fatalf("submission metadata=%+v", submission)
 	}
 	scopes, ok := submission["approved_scopes"].([]any)
 	if !ok || len(scopes) != 2 || scopes[0] != "app.run" {
 		t.Fatalf("approved scopes=%+v", submission["approved_scopes"])
 	}
+	signature, ok := submission["package_signature"].(map[string]any)
+	if !ok || signature["schema"] != "maclaw.app.package_signature.v1" || signature["package_sha256"] != "pkg-sha" {
+		t.Fatalf("package signature=%+v", submission["package_signature"])
+	}
+	if signature["algorithm"] != "ed25519" || signature["public_key_fingerprint"] == "" || signature["signature_base64"] == "" {
+		t.Fatalf("download package should expose verifiable ed25519 signature metadata: %+v", signature)
+	}
 }
 func TestAdminCapabilityMaclawAppReviewApprovesCurrentVersion(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
 	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	manifest := readyMaclawAppEntry(readyEnterpriseApprovalMaclawAppSubmitPackage())
+	manifestApp := manifest["app"].(map[string]any)
+	manifestApp["id"] = "review-app"
+	manifestApp["name"] = "Review App"
 	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
 		CapabilityType: corelib.CapabilityTypeSkill,
 		Publisher:      "author@example.com",
@@ -1073,7 +1273,7 @@ func TestAdminCapabilityMaclawAppReviewApprovesCurrentVersion(t *testing.T) {
 		Version:           "1",
 		VersionKey:        "enterprise_hub:skill:maclaw-app:review-app@abc",
 		PackageChecksum:   "abc",
-		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		ManifestJSON:      jsonObjectString(manifest),
 		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
 		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
 		VersionStatus:     "pending_review",
@@ -1119,10 +1319,259 @@ func TestAdminCapabilityMaclawAppReviewApprovesCurrentVersion(t *testing.T) {
 	}
 }
 
+func TestAdminCapabilityMaclawAppReviewBlocksUnreadyApproval(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	pkg := readyEnterpriseApprovalMaclawAppSubmitPackage()
+	manifest := readyMaclawAppEntry(pkg)
+	manifestApp := manifest["app"].(map[string]any)
+	manifestApp["id"] = "review-unready-app"
+	manifestApp["name"] = "Review Unready App"
+	delete(readyMaclawAppGovernance(pkg), "testEvidence")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "author@example.com",
+		CapabilityID:   "review-unready-app",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:review-unready-app",
+		DisplayName:    "Review Unready App",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "maclaw_app_upload",
+		Status:         "pending_review",
+		MetadataJSON: jsonObjectString(map[string]any{
+			"is_maclaw_app": true,
+			"product_kind":  "maclaw_app_skill",
+			"maclaw_app_id": "review-unready-app",
+			"review_state":  "pending_review",
+		}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:review-unready-app@abc",
+		PackageChecksum:   "abc",
+		ManifestJSON:      jsonObjectString(manifest),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed unready maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/review-unready-app/approve", bytes.NewReader([]byte(`{"reviewer":"admin-a"}`)))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "approve")(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "MACLAW_APP_PACKAGE_NOT_READY" || !strings.Contains(stringFromAny(resp["message"]), "test evidence is required") {
+		t.Fatalf("unexpected response=%+v", resp)
+	}
+	item, err := svc.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	if item.Status != "pending_review" {
+		t.Fatalf("unready approval should keep pending status, got %q", item.Status)
+	}
+}
+func TestAdminCapabilityMaclawAppPublishPublishesApprovedVersion(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	manifest := readyMaclawAppEntry(readyEnterpriseApprovalMaclawAppSubmitPackage())
+	manifestApp := manifest["app"].(map[string]any)
+	manifestApp["id"] = "publish-app"
+	manifestApp["name"] = "Publish App"
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "author@example.com",
+		CapabilityID:   "publish-app",
+		GlobalKey:      corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:publish-app",
+		DisplayName:    "Publish App",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:      "maclaw_app_upload",
+		Status:         "approved",
+		MetadataJSON: jsonObjectString(map[string]any{
+			"is_maclaw_app":   true,
+			"product_kind":    "maclaw_app_skill",
+			"maclaw_app_id":   "publish-app",
+			"review_state":    "approved",
+			"reviewer":        "admin-a",
+			"reviewed_at":     "2026-06-30T01:00:00Z",
+			"approved_at":     "2026-06-30T01:00:00Z",
+			"approved_scopes": []string{"app.run"},
+			"package_sha256":  "pkg-publish-sha",
+		}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:publish-app@pkg",
+		PackageChecksum:   "pkg-publish-sha",
+		ManifestJSON:      jsonObjectString(manifest),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "approved",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed publish app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/publish-app/publish", bytes.NewReader([]byte(`{"publisher":"release-admin","release_channel":"stable","notes":"ready for enterprise rollout"}`)))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppPublishHandler(svc)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	item, err := svc.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get published app: %v", err)
+	}
+	if item.Status != "published" {
+		t.Fatalf("capability status=%q", item.Status)
+	}
+	versions, err := svc.ListVersions(ctx, item.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("versions=%+v err=%v", versions, err)
+	}
+	if versions[0].Status != "published" {
+		t.Fatalf("version status=%q", versions[0].Status)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(item.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["review_state"] != "published" || metadata["published_by"] != "release-admin" || metadata["published_at"] == "" || metadata["release_channel"] != "stable" {
+		t.Fatalf("publish metadata=%+v", metadata)
+	}
+	signature, ok := metadata["package_signature"].(map[string]any)
+	if !ok || signature["schema"] != "maclaw.app.package_signature.v1" || signature["package_sha256"] != "pkg-publish-sha" || signature["version_key"] != "enterprise_hub:skill:maclaw-app:publish-app@pkg" {
+		t.Fatalf("package signature=%+v", metadata["package_signature"])
+	}
+	assertMaclawAppPackageEd25519Signature(t, signature)
+}
+
+func assertMaclawAppPackageEd25519Signature(t *testing.T, signature map[string]any) {
+	t.Helper()
+	if signature["algorithm"] != "ed25519" {
+		t.Fatalf("signature algorithm=%v", signature["algorithm"])
+	}
+	payload := stringFromAny(signature["payload"])
+	publicKeyBytes, err := base64.StdEncoding.DecodeString(stringFromAny(signature["public_key_base64"]))
+	if err != nil {
+		t.Fatalf("decode public key: %v", err)
+	}
+	signatureBytes, err := base64.StdEncoding.DecodeString(stringFromAny(signature["signature_base64"]))
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	if len(publicKeyBytes) != ed25519.PublicKeySize || len(signatureBytes) != ed25519.SignatureSize {
+		t.Fatalf("unexpected ed25519 sizes public=%d signature=%d", len(publicKeyBytes), len(signatureBytes))
+	}
+	if !ed25519.Verify(ed25519.PublicKey(publicKeyBytes), []byte(payload), signatureBytes) {
+		t.Fatalf("ed25519 package signature did not verify: %+v", signature)
+	}
+	if fingerprint := stringFromAny(signature["public_key_fingerprint"]); !strings.HasPrefix(fingerprint, "sha256:") || len(fingerprint) != len("sha256:")+64 {
+		t.Fatalf("public key fingerprint=%q", fingerprint)
+	}
+}
+func TestAdminCapabilityMaclawAppPublishRequiresApprovedReadyApp(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	manifest := readyMaclawAppEntry(readyEnterpriseApprovalMaclawAppSubmitPackage())
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "publish-pending-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:publish-pending-app",
+		DisplayName:       "Publish Pending App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "pending_review",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "publish-pending-app", "review_state": "pending_review"}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:publish-pending-app@pkg",
+		PackageChecksum:   "pkg-pending-sha",
+		ManifestJSON:      jsonObjectString(manifest),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed pending app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/publish-pending-app/publish", bytes.NewReader([]byte(`{"publisher":"release-admin"}`)))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppPublishHandler(svc)(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("publish pending status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "MACLAW_APP_NOT_APPROVED" {
+		t.Fatalf("unexpected response=%+v", resp)
+	}
+}
+
+func TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	manifest := readyMaclawAppEntry(readyEnterpriseApprovalMaclawAppSubmitPackage())
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "approved-not-published-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:approved-not-published-app",
+		DisplayName:       "Approved Not Published App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "approved",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "approved-not-published-app", "review_state": "approved"}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:approved-not-published-app@pkg",
+		PackageChecksum:   "pkg-approved-sha",
+		ManifestJSON:      jsonObjectString(manifest),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "approved",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed approved app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities/maclaw-apps/"+seeded.ID+"/package", nil)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	CapabilityMaclawAppPackageHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"})(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("download approved-only status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 func TestAdminCapabilityMaclawAppReviewRejectsWithIssues(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
 	ctx := capability.WithTenant(context.Background(), "tenant_a")
+
 	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
 		CapabilityType:    corelib.CapabilityTypeSkill,
 		Publisher:         "author@example.com",

@@ -530,6 +530,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/capabilities", requireTenantAdmin(AdminCapabilityListHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capabilities", requireTenantAdmin(AdminCapabilityUpsertHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/approve", requireTenantAdmin(AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "approve")))
+	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/publish", requireTenantAdmin(AdminCapabilityMaclawAppPublishHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/reject", requireTenantAdmin(AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "reject")))
 	mux.HandleFunc("GET /api/capabilities/{id}", CapabilityDetailHandler(capabilitySvc, identity))
 	mux.HandleFunc("POST /api/capabilities/skills/submit", CapabilitySkillSubmitHandler(capabilitySvc, identity, runtimeDataDir))

@@ -61,26 +61,18 @@ export const SidebarBrandHeader = ({ brandId, currentIcon, brandSidebarName }: S
 
 export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
     const rank = medal.rank;
-    const trophyThreshold = medal.trophyThreshold;
-    const useTrophy = rank <= trophyThreshold;
     const rankChange = medal.rankChange || 0;
 
-    // Trophy color or medal icon
-    let iconElement: JSX.Element;
-    if (rank === 1) {
-        iconElement = <TrophyIcon color="#fbbf24" />; // gold
-    } else if (rank === 2) {
-        iconElement = <TrophyIcon color="#c0c0c0" />; // silver
-    } else if (rank === 3) {
-        iconElement = <TrophyIcon color="#cd7f32" />; // bronze
-    } else if (useTrophy) {
-        iconElement = <TrophyIcon color="#6b7280" />; // gray trophy
-    } else {
-        iconElement = <MedalIcon color="#8b9dc3" />; // medal/badge icon
-    }
+    // Colorful emoji — vibrant on any background, no color tuning needed
+    const iconElement = rank === 1
+        ? <span role="img" aria-label="gold trophy">🏆</span>
+        : rank === 2
+        ? <span role="img" aria-label="silver medal">🥈</span>
+        : rank === 3
+        ? <span role="img" aria-label="bronze medal">🥉</span>
+        : <span role="img" aria-label="medal">🏅</span>;
 
     const rankText = lang === 'en' ? `#${rank}` : `第${rank}名`;
-    const glowClass = rank === 1 ? 'sidebar-medal--gold' : rank === 2 ? 'sidebar-medal--silver' : rank === 3 ? 'sidebar-medal--bronze' : undefined;
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
@@ -90,7 +82,7 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                 style={{
                     width: '70%',
                     height: '1px',
-                    margin: '4px 0 2px 0',
+                    margin: '3px 0 2px 0',
                     background: 'linear-gradient(90deg, transparent 0%, rgba(139,157,195,0.12) 15%, rgba(139,157,195,0.35) 50%, rgba(139,157,195,0.12) 85%, transparent 100%)',
                     boxShadow: '0 1px 1px rgba(0,0,0,0.4)',
                 }}
@@ -109,20 +101,20 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
-                    padding: '2px 0 8px 0',
+                    padding: '2px 0 5px 0',
                     width: '100%',
                     cursor: 'pointer',
                     userSelect: 'none',
-                    minHeight: '52px',
+                    minHeight: '40px',
                     justifyContent: 'center',
                 }}
             >
                 <span
-                    className={`sidebar-medal-emoji${glowClass ? ` ${glowClass}` : ''}`}
-                    style={{ fontSize: '18px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
+                    className="sidebar-medal-emoji"
+                    style={{ fontSize: '22px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
                 >{iconElement}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '2px', marginTop: '3px' }}>
-                    <span style={{ fontSize: '0.62rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 600 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '2px', marginTop: '2px' }}>
+                    <span style={{ fontSize: '0.62rem', lineHeight: 1, color: 'var(--theme-text)', fontWeight: 700 }}>
                         {rankText}
                     </span>
                     {rankChange > 0 && (
@@ -190,22 +182,4 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
     </>
 );
 
-/** Trophy SVG icon — filled cup body for rich color */
-const TrophyIcon = ({ color }: { color: string }) => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
-        <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
-        <path d="M4 22h16" />
-        <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
-        <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
-        <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" fill={color} fillOpacity={0.25} />
-    </svg>
-);
 
-/** Medal/Badge SVG icon (for ranks beyond trophy threshold) */
-const MedalIcon = ({ color }: { color: string }) => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="8" r="6" />
-        <path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11" />
-    </svg>
-);

@@ -1314,6 +1314,10 @@ export function ClearAIAssistantHistory() {
   return window['go']['main']['App']['ClearAIAssistantHistory']();
 }
 
+export function ClearAIAssistantHistoryForSession(arg1) {
+  return window['go']['main']['App']['ClearAIAssistantHistoryForSession'](arg1);
+}
+
 export function ClearAIAssistantUIState() {
   return window['go']['main']['App']['ClearAIAssistantUIState']();
 }
@@ -2402,6 +2406,10 @@ export function ListMaclawAppApprovalInstances(arg1, arg2, arg3) {
 
 export function ListMaclawAppApprovalInstancesAll(arg1, arg2) {
   return window['go']['main']['App']['ListMaclawAppApprovalInstancesAll'](arg1, arg2);
+}
+
+export function StartMaclawAppApprovalWorkflow(arg1) {
+  return window['go']['main']['App']['StartMaclawAppApprovalWorkflow'](arg1);
 }
 
 export function RecordMaclawAppApprovalInstance(arg1) {

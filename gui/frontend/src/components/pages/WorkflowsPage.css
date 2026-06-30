@@ -9,9 +9,9 @@
 
 .workflows-page__header {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
     flex-shrink: 0;
 }
 
@@ -20,18 +20,20 @@
     font-size: 1.1rem;
     font-weight: 700;
     color: var(--theme-text-primary);
+    text-align: center;
 }
 
 .workflows-page__subtitle {
     margin: 4px 0 0;
     font-size: 0.78rem;
     color: var(--theme-text-secondary);
+    text-align: center;
 }
 
 .workflows-page__search-wrap {
     position: relative;
-    min-width: 200px;
-    max-width: 280px;
+    width: 320px;
+    max-width: 100%;
 }
 
 .workflows-page__search {
@@ -101,7 +103,7 @@
     font-size: 0.76rem;
     font-weight: 700;
     color: var(--theme-text-secondary);
-    padding-left: 2px;
+    text-align: center;
 }
 
 .workflows-page__grid {

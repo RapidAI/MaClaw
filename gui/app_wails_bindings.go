@@ -300,6 +300,10 @@ func (a *App) SearchMixedSkills(query string) ([]MixedSkillSearchResult, error) 
 
 // InstallMixedSkill installs a skill result from mixed search sources (Wails binding).
 func (a *App) InstallMixedSkill(source, id, installRef string) error {
+	return a.installMixedSkillWithIntegrity(source, id, installRef, "", "")
+}
+
+func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPackageSHA256, expectedPackageSignature string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}); err != nil {
 		return err
 	}
@@ -356,7 +360,7 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		if err != nil {
 			return err
 		}
-		skill, err := downloadSkillJSONFromHubCenterToDir(ctx, a, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir)
+		skill, err := downloadSkillJSONFromHubCenterToDirWithIntegrity(ctx, a, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, expectedPackageSHA256, expectedPackageSignature)
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
 			return err
@@ -1836,12 +1840,16 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 
 	// Send the choice command through the normal message path. This goes through
 	// enterIMMessageSerializationBoundary, ensuring proper session locking.
+	// EventScopeID must be "local" so the backend caches it and subsequent workflow
+	// events carry it — the frontend's useWorkflowState filters events by scope ID
+	// and only accepts events matching the active tab's scope ("local" for default tab).
 	choiceCommand := buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID)
 	go func() {
 		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
-			Text:        choiceCommand,
-			RequestID:   requestID,
-			ProjectPath: sendProjectPath,
+			Text:         choiceCommand,
+			RequestID:    requestID,
+			ProjectPath:  sendProjectPath,
+			EventScopeID: "local",
 		}); err != nil {
 			log.Printf("[StartWorkflowDirect] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
 			handler.pendingWorkflowChoice.Delete(userID)
@@ -2253,6 +2261,13 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 // ClearAIAssistantHistory clears the desktop AI assistant conversation memory
 // and resets all per-user session state — fully equivalent to the /clear command (Wails binding).
 func (a *App) ClearAIAssistantHistory() error {
+	return a.ClearAIAssistantHistoryForSession("")
+}
+
+// ClearAIAssistantHistoryForSession clears conversation memory and resets all
+// per-user session state for the given session key (project tab aware).
+// An empty sessionKey defaults to the base desktopUserID for backward compat.
+func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil {
@@ -2260,13 +2275,19 @@ func (a *App) ClearAIAssistantHistory() error {
 		return nil
 	}
 	handler := hubClient.ensureIMHandler()
+	targetUserID := desktopUserID
+	if trimmed := strings.TrimSpace(sessionKey); trimmed != "" && trimmed != desktopUserID {
+		if normalized, err := normalizeAIAssistantSessionUserID(trimmed); err == nil && normalized != "" {
+			targetUserID = normalized
+		}
+	}
 	// Cancel any active agent loop first, so it does not write back into
 	// memory after we clear it. This mirrors IM-channel behavior where /clear
 	// is serialized behind chatLoopMu and only runs after the loop exits.
-	_, _ = handler.CancelSessionForUser(desktopUserID)
-	handler.memory.Clear(desktopUserID)
-	handler.clearPerUserSessionState(desktopUserID)
-	handler.flushEvidenceOnSessionEnd(desktopUserID)
+	_, _ = handler.CancelSessionForUser(targetUserID)
+	handler.memory.Clear(targetUserID)
+	handler.clearPerUserSessionState(targetUserID)
+	handler.flushEvidenceOnSessionEnd(targetUserID)
 	// Clear pending gossip auto-publish buffer as well.
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()

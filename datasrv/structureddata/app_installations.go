@@ -110,7 +110,7 @@ func appInstallationAuditMetadata(app AppInstallation) map[string]any {
 	if app.Source != "" {
 		metadata["source"] = app.Source
 	}
-	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "workflow_contract_status_mapping", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "result_contract_delivery_modes", "result_contract_delivery_inline_content", "result_contract_delivery_artifacts", "result_contract_delivery_business_record", "result_contract_delivery_notifications", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_current_node", "test_evidence_workflow_skill_id", "test_evidence_workflow_version", "test_evidence_business_status", "test_evidence_result_status", "test_evidence_dataset_id", "test_evidence_blueprint_id", "test_evidence_object_role", "test_evidence_approval_event", "test_evidence_approval_workflow_id", "test_evidence_detail_url", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
+	for _, key := range []string{"schema", "package_sha256", "package_bytes", "app_entry_version", "app_skill_id", "app_skill_version", "app_skill_source", "workflow_skill_ids", "workflow_skill_versions", "approval_binding_versions", "workflow_mapping_schema", "workflow_submit_node", "workflow_approval_node", "workflow_result_node", "workflow_attention_node", "workflow_contract_schema", "workflow_contract_skill_id", "workflow_contract_version", "workflow_contract_object_role", "workflow_contract_required_inputs", "workflow_contract_decision_outputs", "workflow_contract_status_mapping", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout_entry", "workspace_layout_template", "workspace_layout_density", "workspace_layout_primary_region", "workspace_layout_output_region", "workspace_layout_region_count", "workspace_layout_region_ids", "workspace_layout_navigation", "workspace_layout_list_columns", "result_contract_schema", "result_contract_primary", "result_contract_types", "result_contract_delivery", "result_contract_delivery_modes", "result_contract_delivery_inline_content", "result_contract_delivery_artifacts", "result_contract_delivery_business_record", "result_contract_delivery_notifications", "test_evidence_run_id", "test_evidence_verified_at", "test_evidence_definition_fingerprint", "test_evidence_test_protocol_fingerprint", "test_evidence_artifact_present", "test_evidence_artifact_name", "test_evidence_artifact_uri", "test_evidence_artifact_path", "test_evidence_artifact_names", "test_evidence_artifact_uris", "test_evidence_artifact_types", "test_evidence_artifact_count", "test_evidence_output_count", "test_evidence_output_kinds", "test_evidence_output_types", "test_evidence_result_type", "test_evidence_output_type", "test_evidence_result_content", "test_evidence_primary_result", "test_evidence_result_coverage_ok", "test_evidence_result_coverage_primary", "test_evidence_covered_types", "test_evidence_missing_types", "test_evidence_approval_instance_id", "test_evidence_approval_id", "test_evidence_record_id", "test_evidence_approval_status", "test_evidence_approval_current_node", "test_evidence_workflow_skill_id", "test_evidence_workflow_version", "test_evidence_business_status", "test_evidence_result_status", "test_evidence_dataset_id", "test_evidence_blueprint_id", "test_evidence_object_role", "test_evidence_approval_event", "test_evidence_approval_workflow_id", "test_evidence_detail_url", "test_evidence_approval_view_verified", "test_evidence_dependency_verified_at", "test_evidence_dependency_count", "test_evidence_dependency_missing_required", "test_evidence_dependency_blocking", "test_evidence_workflow_contract_issue", "test_evidence_workflow_contract_issue_count", "test_evidence_governance_review_issue", "test_evidence_governance_review_issue_count", "governance_status", "governance_risk_level"} {
 		if value, ok := app.Metadata[key]; ok {
 			metadata[key] = value
 		}
@@ -644,8 +644,18 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 			"test_evidence_test_protocol_fingerprint",
 			"test_evidence_artifact_present",
 			"test_evidence_artifact_name",
+			"test_evidence_artifact_uri",
+			"test_evidence_artifact_path",
+			"test_evidence_artifact_names",
+			"test_evidence_artifact_uris",
+			"test_evidence_artifact_types",
 			"test_evidence_artifact_count",
 			"test_evidence_output_count",
+			"test_evidence_output_kinds",
+			"test_evidence_output_types",
+			"test_evidence_result_type",
+			"test_evidence_output_type",
+			"test_evidence_result_content",
 			"test_evidence_result_payload",
 			"test_evidence_outputs",
 			"test_evidence_artifacts",
@@ -682,7 +692,12 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 		{"runId", "run_id", "test_evidence_run_id"},
 		{"verifiedAt", "verified_at", "test_evidence_verified_at"},
 		{"artifactName", "artifact_name", "test_evidence_artifact_name"},
+		{"artifactURI", "artifact_uri", "test_evidence_artifact_uri"},
+		{"artifactPath", "artifact_path", "test_evidence_artifact_path"},
 		{"primaryResult", "primary_result", "test_evidence_primary_result"},
+		{"resultType", "result_type", "test_evidence_result_type"},
+		{"outputType", "output_type", "test_evidence_output_type"},
+		{"resultContent", "result_content", "test_evidence_result_content"},
 	} {
 		if value := firstNonEmptyAppInstallationString(appInstallationString(evidence, pair.camel), appInstallationString(evidence, pair.snake), appInstallationString(out, pair.summary)); value != "" {
 			normalized[pair.snake] = value
@@ -729,6 +744,24 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 		normalized["result_payload"] = cloneJSONValue(payload)
 		out["test_evidence_result_payload"] = cloneJSONValue(payload)
 		if payloadMap := appInstallationMap(payload); payloadMap != nil {
+			if resultType := appInstallationString(payloadMap, "resultType", "result_type", "type", "kind"); resultType != "" {
+				out["test_evidence_result_type"] = resultType
+				if _, ok := normalized["result_type"]; !ok {
+					normalized["result_type"] = resultType
+				}
+			}
+			if outputType := appInstallationString(payloadMap, "outputType", "output_type"); outputType != "" {
+				out["test_evidence_output_type"] = outputType
+				if _, ok := normalized["output_type"]; !ok {
+					normalized["output_type"] = outputType
+				}
+			}
+			if content := appInstallationString(payloadMap, "content", "text", "message", "summary"); content != "" {
+				out["test_evidence_result_content"] = content
+				if _, ok := normalized["result_content"]; !ok {
+					normalized["result_content"] = content
+				}
+			}
 			if businessStatus := appInstallationString(payloadMap, "businessStatus", "business_status"); businessStatus != "" {
 				out["test_evidence_business_status"] = businessStatus
 			}
@@ -746,6 +779,15 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 				out["test_evidence_output_count"] = len(items)
 			}
 		}
+		if kinds := appInstallationItemStrings(outputs, "kind", "type", "result_type", "resultType", "output_type", "outputType"); len(kinds) > 0 {
+			normalized["output_kinds"] = kinds
+			out["test_evidence_output_kinds"] = kinds
+			out["test_evidence_output_types"] = kinds
+			if _, ok := normalized["output_type"]; !ok {
+				normalized["output_type"] = kinds[0]
+				out["test_evidence_output_type"] = kinds[0]
+			}
+		}
 	}
 	if artifacts, ok := firstAppInstallationPresent(evidence["artifacts"], out["test_evidence_artifacts"], appInstallationMapValue(approval, "artifacts")); ok {
 		normalized["artifacts"] = cloneJSONValue(artifacts)
@@ -755,6 +797,30 @@ func normalizeAppInstallationTestEvidenceMetadata(out map[string]any) error {
 				normalized["artifact_count"] = len(items)
 				out["test_evidence_artifact_count"] = len(items)
 			}
+		}
+		if names := appInstallationItemStrings(artifacts, "name", "artifactName", "artifact_name", "filename", "fileName", "file_name"); len(names) > 0 {
+			normalized["artifact_names"] = names
+			out["test_evidence_artifact_names"] = names
+			if appInstallationString(out, "test_evidence_artifact_name") == "" {
+				normalized["artifact_name"] = names[0]
+				out["test_evidence_artifact_name"] = names[0]
+			}
+		}
+		if uris := appInstallationItemStrings(artifacts, "uri", "URI", "artifactURI", "artifactUri", "artifact_uri", "downloadURI", "downloadUri", "download_uri"); len(uris) > 0 {
+			normalized["artifact_uris"] = uris
+			out["test_evidence_artifact_uris"] = uris
+			if appInstallationString(out, "test_evidence_artifact_uri") == "" {
+				normalized["artifact_uri"] = uris[0]
+				out["test_evidence_artifact_uri"] = uris[0]
+			}
+		}
+		if paths := appInstallationItemStrings(artifacts, "path", "artifactPath", "artifact_path", "filePath", "file_path"); len(paths) > 0 && appInstallationString(out, "test_evidence_artifact_path") == "" {
+			normalized["artifact_path"] = paths[0]
+			out["test_evidence_artifact_path"] = paths[0]
+		}
+		if types := appInstallationItemStrings(artifacts, "kind", "type", "result_type", "resultType"); len(types) > 0 {
+			normalized["artifact_types"] = types
+			out["test_evidence_artifact_types"] = types
 		}
 	}
 	if approvalValue, ok := firstAppInstallationPresent(approval, evidence["approvalInstance"], evidence["approval_instance"], evidence["approval"], out["test_evidence_approval_instance"]); ok {
@@ -1050,6 +1116,25 @@ func firstNonEmptyAppInstallationStringList(values ...[]string) []string {
 		}
 	}
 	return nil
+}
+
+func appInstallationItemStrings(value any, keys ...string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range appInstallationMapList(value) {
+		for _, key := range keys {
+			value := appInstallationString(item, key)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func appInstallationStringList(value any) []string {

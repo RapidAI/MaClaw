@@ -1209,6 +1209,24 @@ type ReviewRecordApprovalInput struct {
 	Outputs             []RecordApprovalOutput   `json:"outputs,omitempty"`
 	Artifacts           []RecordApprovalArtifact `json:"artifacts,omitempty"`
 }
+type UpdateRecordApprovalProgressInput struct {
+	WorkflowInstanceID  string                   `json:"workflow_instance_id,omitempty"`
+	CurrentAssignee     string                   `json:"current_assignee,omitempty"`
+	CurrentAssigneeType string                   `json:"current_assignee_type,omitempty"`
+	FromStatus          string                   `json:"from_status,omitempty"`
+	ToStatus            string                   `json:"to_status,omitempty"`
+	WorkflowNodeID      string                   `json:"workflow_node_id,omitempty"`
+	WorkflowNodeIDs     []string                 `json:"workflow_node_ids,omitempty"`
+	WorkflowVersion     string                   `json:"workflow_version,omitempty"`
+	WorkflowDecisionID  string                   `json:"workflow_decision_id,omitempty"`
+	DetailURL           string                   `json:"detail_url,omitempty"`
+	BusinessStatus      string                   `json:"business_status,omitempty"`
+	ResultStatus        string                   `json:"result_status,omitempty"`
+	ResultPayload       map[string]any           `json:"result_payload,omitempty"`
+	Outputs             []RecordApprovalOutput   `json:"outputs,omitempty"`
+	Artifacts           []RecordApprovalArtifact `json:"artifacts,omitempty"`
+	Progress            string                   `json:"progress,omitempty"`
+}
 
 type OperationPlan struct {
 	ID         string         `json:"id"`

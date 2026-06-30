@@ -14,17 +14,21 @@ import (
 )
 
 type HubCapabilitySummary struct {
-	External          bool   `json:"external,omitempty"`
-	ID                string `json:"id"`
-	CapabilityType    string `json:"capability_type"`
-	CapabilityID      string `json:"capability_id"`
-	DisplayName       string `json:"display_name"`
-	Description       string `json:"description,omitempty"`
-	Source            string `json:"source"`
-	Status            string `json:"status"`
-	GlobalKey         string `json:"global_key"`
-	CurrentVersionKey string `json:"current_version_key,omitempty"`
-	MetadataJSON      string `json:"metadata_json,omitempty"`
+	External           bool   `json:"external,omitempty"`
+	ID                 string `json:"id"`
+	CapabilityType     string `json:"capability_type"`
+	CapabilityID       string `json:"capability_id"`
+	DisplayName        string `json:"display_name"`
+	Description        string `json:"description,omitempty"`
+	Source             string `json:"source"`
+	Status             string `json:"status"`
+	GlobalKey          string `json:"global_key"`
+	CurrentVersionKey  string `json:"current_version_key,omitempty"`
+	MetadataJSON       string `json:"metadata_json,omitempty"`
+	PackageSHA256      string `json:"package_sha256,omitempty"`
+	PackageChecksum    string `json:"package_checksum,omitempty"`
+	PackageSignature   string `json:"package_signature,omitempty"`
+	PackageDownloadURL string `json:"package_download_url,omitempty"`
 }
 
 type HubCapabilityDeployment struct {

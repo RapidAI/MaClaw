@@ -456,6 +456,8 @@ func appInstallationHasResultType(metadata map[string]any, resultType string) bo
 		appInstallationString(metadata, "output_type"),
 		appInstallationString(metadata, "result_contract_primary"),
 		appInstallationString(metadata, "test_evidence_primary_result"),
+		appInstallationString(metadata, "test_evidence_result_type"),
+		appInstallationString(metadata, "test_evidence_output_type"),
 		appInstallationString(metadata, "test_evidence_result_coverage_primary"),
 	} {
 		if strings.TrimSpace(value) == resultType {
@@ -467,9 +469,11 @@ func appInstallationHasResultType(metadata map[string]any, resultType string) bo
 			return true
 		}
 	}
-	for _, value := range appInstallationStringList(metadata["test_evidence_covered_types"]) {
-		if value == resultType {
-			return true
+	for _, key := range []string{"test_evidence_covered_types", "test_evidence_output_kinds", "test_evidence_output_types", "test_evidence_artifact_types"} {
+		for _, value := range appInstallationStringList(metadata[key]) {
+			if value == resultType {
+				return true
+			}
 		}
 	}
 	if contract := appInstallationMap(metadata["result_contract"]); contract != nil {

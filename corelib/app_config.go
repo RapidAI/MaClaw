@@ -106,44 +106,45 @@ type AppConfig struct {
 	MemoryAutoCompress bool `json:"memory_auto_compress"`
 	MemoryMaxBackups   int  `json:"memory_max_backups"` // 0 means use default (20)
 	// Security
-	SecurityPolicyMode     string                 `json:"security_policy_mode,omitempty"`
-	HubSecurityCentralized bool                   `json:"hub_security_centralized,omitempty"`
-	SandboxMode            string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
-	NetworkLevel           string                 `json:"network_level,omitempty"`         // "none", "intranet", "allowlist", "full" (default)
-	NetworkAllowlist       []string               `json:"network_allowlist,omitempty"`     // hostnames/IPs allowed when network_level="allowlist"
-	YoloModeAllowed        bool                   `json:"yolo_mode_allowed"`               // default true
-	SmartRouteEnabled      bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
-	GossipEnabled          bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
-	FileOutboundEnabled    bool                   `json:"file_outbound_enabled"`           // default true
-	ImageOutboundEnabled   bool                   `json:"image_outbound_enabled"`          // default true
-	SkillSourcesAllowed    []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; "__none__" = block all; values: "skillhub","clawhub","github","enterprise_hub","local"
-	CapabilityMarketPolicy CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
-	MaclawDebugToolCalls   bool                   `json:"maclaw_debug_tool_calls,omitempty"`
-	ShowAITraceEntry       bool                   `json:"show_ai_trace_entry,omitempty"`
-	ShowAppEntry           bool                   `json:"show_app_entry"`
-	ShowWorkflowEntry      *bool                  `json:"show_workflow_entry,omitempty"`
-	ShowAssistantEntry     bool                   `json:"show_assistant_entry"`
-	ShowHubRanking         *bool                  `json:"show_hub_ranking,omitempty"`
-	PetEnabled             bool                   `json:"pet_enabled,omitempty"`
-	PetSkin                string                 `json:"pet_skin,omitempty"`
-	PetSize                int                    `json:"pet_size,omitempty"`
-	PetMotionEnabled       *bool                  `json:"pet_motion_enabled,omitempty"`
-	PetMotionSound         *bool                  `json:"pet_motion_sound_enabled,omitempty"`
-	PetMotionSoundPreset   string                 `json:"pet_motion_sound_preset,omitempty"`
-	PetTextInteraction     *bool                  `json:"pet_text_interaction_enabled,omitempty"`
-	PetVoiceInput          bool                   `json:"pet_voice_input_enabled,omitempty"`
-	PetVoiceReadback       bool                   `json:"pet_voice_readback_enabled,omitempty"`
-	PetFileDropEnabled     *bool                  `json:"pet_file_drop_enabled,omitempty"`
-	PetInteractionMode     string                 `json:"pet_interaction_mode,omitempty"`
-	PetConversationMode    string                 `json:"pet_conversation_mode,omitempty"`
-	PetReadbackMode        string                 `json:"pet_readback_mode,omitempty"`
-	PetAutoRetryOnNoHear   bool                   `json:"pet_auto_retry_on_no_hear,omitempty"`
-	PetContinuousTimeout   int                    `json:"pet_continuous_timeout_sec,omitempty"`
-	PetQuietMode           bool                   `json:"pet_quiet_mode,omitempty"`
-	FloatingBtnX           int                    `json:"floating_btn_x,omitempty"`
-	FloatingBtnY           int                    `json:"floating_btn_y,omitempty"`
-	FloatingBtnPositionSet bool                   `json:"floating_btn_position_set,omitempty"`
-	LogDetailEnabled       bool                   `json:"log_detail_enabled,omitempty"`
+	SecurityPolicyMode                 string                 `json:"security_policy_mode,omitempty"`
+	HubSecurityCentralized             bool                   `json:"hub_security_centralized,omitempty"`
+	SandboxMode                        string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
+	NetworkLevel                       string                 `json:"network_level,omitempty"`         // "none", "intranet", "allowlist", "full" (default)
+	NetworkAllowlist                   []string               `json:"network_allowlist,omitempty"`     // hostnames/IPs allowed when network_level="allowlist"
+	YoloModeAllowed                    bool                   `json:"yolo_mode_allowed"`               // default true
+	SmartRouteEnabled                  bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
+	GossipEnabled                      bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
+	FileOutboundEnabled                bool                   `json:"file_outbound_enabled"`           // default true
+	ImageOutboundEnabled               bool                   `json:"image_outbound_enabled"`          // default true
+	SkillSourcesAllowed                []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; "__none__" = block all; values: "skillhub","clawhub","github","enterprise_hub","local"
+	TrustedSkillPackageKeyFingerprints []string               `json:"trusted_skill_package_key_fingerprints,omitempty"`
+	CapabilityMarketPolicy             CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+	MaclawDebugToolCalls               bool                   `json:"maclaw_debug_tool_calls,omitempty"`
+	ShowAITraceEntry                   bool                   `json:"show_ai_trace_entry,omitempty"`
+	ShowAppEntry                       bool                   `json:"show_app_entry"`
+	ShowWorkflowEntry                  *bool                  `json:"show_workflow_entry,omitempty"`
+	ShowAssistantEntry                 bool                   `json:"show_assistant_entry"`
+	ShowHubRanking                     *bool                  `json:"show_hub_ranking,omitempty"`
+	PetEnabled                         bool                   `json:"pet_enabled,omitempty"`
+	PetSkin                            string                 `json:"pet_skin,omitempty"`
+	PetSize                            int                    `json:"pet_size,omitempty"`
+	PetMotionEnabled                   *bool                  `json:"pet_motion_enabled,omitempty"`
+	PetMotionSound                     *bool                  `json:"pet_motion_sound_enabled,omitempty"`
+	PetMotionSoundPreset               string                 `json:"pet_motion_sound_preset,omitempty"`
+	PetTextInteraction                 *bool                  `json:"pet_text_interaction_enabled,omitempty"`
+	PetVoiceInput                      bool                   `json:"pet_voice_input_enabled,omitempty"`
+	PetVoiceReadback                   bool                   `json:"pet_voice_readback_enabled,omitempty"`
+	PetFileDropEnabled                 *bool                  `json:"pet_file_drop_enabled,omitempty"`
+	PetInteractionMode                 string                 `json:"pet_interaction_mode,omitempty"`
+	PetConversationMode                string                 `json:"pet_conversation_mode,omitempty"`
+	PetReadbackMode                    string                 `json:"pet_readback_mode,omitempty"`
+	PetAutoRetryOnNoHear               bool                   `json:"pet_auto_retry_on_no_hear,omitempty"`
+	PetContinuousTimeout               int                    `json:"pet_continuous_timeout_sec,omitempty"`
+	PetQuietMode                       bool                   `json:"pet_quiet_mode,omitempty"`
+	FloatingBtnX                       int                    `json:"floating_btn_x,omitempty"`
+	FloatingBtnY                       int                    `json:"floating_btn_y,omitempty"`
+	FloatingBtnPositionSet             bool                   `json:"floating_btn_position_set,omitempty"`
+	LogDetailEnabled                   bool                   `json:"log_detail_enabled,omitempty"`
 	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`

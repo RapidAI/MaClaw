@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +189,150 @@ func TestHubSkillCapabilityInstalledChecksCapabilityRef(t *testing.T) {
 	}
 	if skillInstallStatus(true) != "installed" || skillInstallStatus(false) != "missing" {
 		t.Fatal("unexpected skill install status mapping")
+	}
+}
+
+func TestInstallHubCapabilityVerifiesEnterpriseSkillPackageSHA256(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillBody := fmt.Sprintf(`{
+		"id": "cap-skill-id",
+		"name": "Capability Skill",
+		"description": "from enterprise hub",
+		"version": "1.0.0",
+		"trust_level": "trusted",
+		"triggers": ["capability skill"],
+		"steps": [{"action": "noop", "params": {}, "on_error": "stop"}],
+		"files": {
+			"skill.yaml": %q,
+			"skill.md": %q
+		}
+	}`,
+		base64.StdEncoding.EncodeToString([]byte("name: Capability Skill\ndescription: from enterprise hub\n")),
+		base64.StdEncoding.EncodeToString([]byte("# Capability Skill\n")),
+	)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("missing bearer token for %s: %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities/cap-skill":
+			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{
+				ID:                "cap-skill",
+				CapabilityID:      "cap-skill-id",
+				CapabilityType:    corelib.CapabilityTypeSkill,
+				Source:            corelib.CapabilitySourceEnterpriseHub,
+				Status:            "published",
+				CurrentVersionKey: "1.0.0",
+				MetadataJSON:      fmt.Sprintf(`{"skill_id":"cap-skill-id","hub_url":%q}`, server.URL),
+				PackageSHA256:     strings.Repeat("0", 64),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/skills/cap-skill-id/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(skillBody))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "token"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+
+	status := app.InstallHubCapability("cap-skill")
+	if len(status.Errors) == 0 {
+		t.Fatalf("InstallHubCapability() errors = none, want checksum mismatch")
+	}
+	if !strings.Contains(status.Errors[0], "checksum mismatch") {
+		t.Fatalf("InstallHubCapability() error = %q, want checksum mismatch", status.Errors[0])
+	}
+	if status.ManagedInstalled != 0 {
+		t.Fatalf("ManagedInstalled = %d, want 0 on checksum mismatch", status.ManagedInstalled)
+	}
+	if app.isHubSkillCapabilityInstalled(HubCapabilitySummary{ID: "cap-skill", CapabilityID: "cap-skill-id"}) {
+		t.Fatal("skill should not be registered after checksum mismatch")
+	}
+}
+func TestInstallHubCapabilityVerifiesEnterpriseSkillPackageSignature(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillBody := fmt.Sprintf(`{
+		"id": "cap-signed-skill-id",
+		"name": "Signed Capability Skill",
+		"description": "from enterprise hub",
+		"version": "1.0.0",
+		"trust_level": "trusted",
+		"triggers": ["signed capability skill"],
+		"steps": [{"action": "noop", "params": {}, "on_error": "stop"}],
+		"files": {
+			"skill.yaml": %q,
+			"skill.md": %q
+		}
+	}`,
+		base64.StdEncoding.EncodeToString([]byte("name: Signed Capability Skill\ndescription: from enterprise hub\n")),
+		base64.StdEncoding.EncodeToString([]byte("# Signed Capability Skill\n")),
+	)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	badSignature := "ed25519:" + base64.StdEncoding.EncodeToString(publicKey) + ":" + base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("tampered")))
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("missing bearer token for %s: %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities/cap-signed-skill":
+			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{
+				ID:                "cap-signed-skill",
+				CapabilityID:      "cap-signed-skill-id",
+				CapabilityType:    corelib.CapabilityTypeSkill,
+				Source:            corelib.CapabilitySourceEnterpriseHub,
+				Status:            "published",
+				CurrentVersionKey: "1.0.0",
+				MetadataJSON:      fmt.Sprintf(`{"skill_id":"cap-signed-skill-id","hub_url":%q}`, server.URL),
+				PackageSignature:  badSignature,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/skills/cap-signed-skill-id/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(skillBody))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "token"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+
+	status := app.InstallHubCapability("cap-signed-skill")
+	if len(status.Errors) == 0 {
+		t.Fatalf("InstallHubCapability() errors = none, want signature verification failure")
+	}
+	if !strings.Contains(status.Errors[0], "signature verification failed") {
+		t.Fatalf("InstallHubCapability() error = %q, want signature verification failure", status.Errors[0])
+	}
+	if status.ManagedInstalled != 0 {
+		t.Fatalf("ManagedInstalled = %d, want 0 on signature mismatch", status.ManagedInstalled)
+	}
+	if app.isHubSkillCapabilityInstalled(HubCapabilitySummary{ID: "cap-signed-skill", CapabilityID: "cap-signed-skill-id"}) {
+		t.Fatal("skill should not be registered after signature verification failure")
 	}
 }
 

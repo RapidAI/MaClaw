@@ -297,6 +297,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [saveTaskName, setSaveTaskName] = useState("");
     const [savingTask, setSavingTask] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
+    const [workflowStartingLabel, setWorkflowStartingLabel] = useState<string | null>(null);
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
     const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
@@ -517,6 +518,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     activeTabIdForRecRef.current = activeTab?.id || "local";
+    const activateTabRef = useRef(activateTab);
+    activateTabRef.current = activateTab;
     const [renameGroupTargetTabId, setRenameGroupTargetTabId] = useState<string | null>(null);
     const [renameGroupValue, setRenameGroupValue] = useState("");
     const [renameGroupError, setRenameGroupError] = useState("");
@@ -1566,6 +1569,46 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
     }, [openSaveTaskDialog]);
 
+    // Check for workflow-starting indicator from the Workflows panel.
+    // Uses sessionStorage as a cross-tab-switch communication channel because
+    // this panel may not be mounted when the tile is clicked.
+    // Checks on mount + listens for a custom event for the already-mounted case.
+    useEffect(() => {
+        const consume = () => {
+            const raw = sessionStorage.getItem('maclaw:workflow-starting');
+            if (!raw) return;
+            try {
+                const data = JSON.parse(raw);
+                if (data.ts && Date.now() - data.ts < 5000) {
+                    setWorkflowStartingLabel(data.label || '...');
+                    sessionStorage.removeItem('maclaw:workflow-starting');
+                    // Switch to local tab so workflow events are received correctly
+                    if (data.activateLocal) {
+                        activateTabRef.current('local');
+                    }
+                } else {
+                    sessionStorage.removeItem('maclaw:workflow-starting');
+                }
+            } catch {
+                sessionStorage.removeItem('maclaw:workflow-starting');
+            }
+        };
+        // Check immediately (covers the case where panel was just mounted)
+        consume();
+        // Also listen for nudge events (covers the case where panel is already mounted)
+        window.addEventListener('maclaw:workflow-starting-nudge', consume);
+        return () => {
+            window.removeEventListener('maclaw:workflow-starting-nudge', consume);
+        };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Auto-clear the workflow starting label after 8s (fallback timeout)
+    useEffect(() => {
+        if (!workflowStartingLabel) return;
+        const timer = setTimeout(() => setWorkflowStartingLabel(null), 8000);
+        return () => clearTimeout(timer);
+    }, [workflowStartingLabel]);
+
     const submitSaveTask = useCallback(async () => {
         if (savingTask) return;
         const taskName = saveTaskName.trim() || deriveTaskNameFromMessages();
@@ -1670,8 +1713,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Show welcome for an idle, empty conversation on local tab or a cleared project tab.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
+
+    // Clear the workflow-starting indicator only when a definitive workflow UI takes over.
+    // Do NOT clear on transient states (isBusy, showThinkingState) — they flash briefly
+    // and the welcome page would return before the real workflow UI arrives.
+    useEffect(() => {
+        if (workflowStartingLabel && (hasConversation || workflowAwaitingForm || workflowFormGeneratingDocument || workflowAwaitingReview)) {
+            setWorkflowStartingLabel(null);
+        }
+    }, [workflowStartingLabel, hasConversation, workflowAwaitingForm, workflowFormGeneratingDocument, workflowAwaitingReview]);
     const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     useEffect(() => {
         if (activeTab.type !== "project") return;
@@ -1964,6 +2016,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [updateEntry]);
     const handleCancel = useCallback(async () => {
         if (!cancelSession || cancelPending) return;
+        // If workflow is awaiting form input (no active agent loop), dismiss the
+        // workflow form and cancel the workflow instead of calling cancelSession.
+        if (workflowAwaitingForm && agentView?.id?.startsWith("workflow:form:")) {
+            dismissAgentView(agentView.id, { __cancel_workflow: true });
+            return;
+        }
         const restoreSeq = ++cancelRestoreSeqRef.current;
         const previousInputValue = inputValue;
         setCancelPending(true);
@@ -1981,7 +2039,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             setCancelPending(false);
         }
-    }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
+    }, [agentView, cancelPending, cancelSession, draftInputValue, dismissAgentView, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue, workflowAwaitingForm]);
     const panelSubmitAgentView = useCallback((viewId: string | undefined, data: Record<string, unknown>) => {
         if (typeof viewId === "string" && viewId.startsWith("workflow:form:")) {
             const submittedPhaseID = typeof data?._workflow_phase === "string" && data._workflow_phase.trim()
@@ -2116,6 +2174,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
+                {workflowStartingLabel && !hasConversation && !showThinkingState && !showProcessingState && (
+                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', background: t.bg, color: t.textMuted }}>
+                        <div style={{ fontSize: '2rem' }}>🚀</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>
+                            {lang?.startsWith('en') ? `Starting workflow: ${workflowStartingLabel}` : `正在启动工作流：${workflowStartingLabel}`}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+                            {lang?.startsWith('en') ? 'Please wait...' : '请稍候...'}
+                        </div>
+                    </div>
+                )}
                 {showWelcomeView ? (
                     <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg }}>
                         <AssistantWelcomeView
@@ -2142,7 +2211,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 inputLocked,
                                 inputRef,
                                 inputValue,
-                                isBusy,
+                                isBusy: inputVisualBusy,
                                 isSelectionCollapsedAtBoundary,
                                 pendingAttachments,
                                 ready,

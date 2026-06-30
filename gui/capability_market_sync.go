@@ -887,7 +887,7 @@ func (a *App) ensureHubSkillInstalled(ctx context.Context, item HubCapabilitySum
 	if skillID == "" || hubURL == "" {
 		return false, fmt.Errorf("managed skill %s is missing skill_id or hub_url metadata", item.ID)
 	}
-	return a.installManagedHubSkill(ctx, skillID, hubURL, item.ID, firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey), item.Source, item.GlobalKey)
+	return a.installManagedHubSkill(ctx, skillID, hubURL, item.ID, firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey), item.Source, item.GlobalKey, firstCapabilityNonEmpty(item.PackageSHA256, item.PackageChecksum, stringFromMap(metadata, "package_sha256"), stringFromMap(metadata, "sha256"), stringFromMap(metadata, "package_checksum"), stringFromMap(metadata, "checksum")), firstCapabilityNonEmpty(item.PackageSignature, stringFromMap(metadata, "package_signature"), stringFromMap(metadata, "signature")))
 }
 
 func (a *App) isHubSkillCapabilityInstalled(item HubCapabilitySummary) bool {
@@ -1060,6 +1060,8 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	versionKey := ""
 	source := ""
 	globalKey := ""
+	expectedPackageSHA256 := ""
+	expectedPackageSignature := ""
 	if len(capabilityMeta) > 0 {
 		versionKey = capabilityMeta[0]
 	}
@@ -1068,6 +1070,12 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	}
 	if len(capabilityMeta) > 2 {
 		globalKey = capabilityMeta[2]
+	}
+	if len(capabilityMeta) > 3 {
+		expectedPackageSHA256 = capabilityMeta[3]
+	}
+	if len(capabilityMeta) > 4 {
+		expectedPackageSignature = capabilityMeta[4]
 	}
 	effectiveSource := firstCapabilityNonEmpty(source, "skillhub")
 	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": effectiveSource, "skill_id": skillID, "hub_url": hubURL}); !ok {
@@ -1087,7 +1095,7 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	if err != nil {
 		return false, err
 	}
-	entry, err := a.skillHubClient.InstallToDir(ctx, skillID, hubURL, stagingDir)
+	entry, err := a.skillHubClient.InstallToDirWithIntegrity(ctx, skillID, hubURL, stagingDir, expectedPackageSHA256, expectedPackageSignature)
 	if err != nil {
 		cskill.CleanupStaging(stagingDir)
 		return false, err

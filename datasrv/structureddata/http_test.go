@@ -136,6 +136,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/approvals",
 		"/api/v1/data/approvals/{approvalId}",
 		"/api/v1/data/approvals/{approvalId}/review",
+		"/api/v1/data/approvals/{approvalId}/progress",
 		"/api/v1/data/backups/{backupId}",
 		"/api/v1/data/backups/{backupId}/download",
 		"/api/v1/data/events/dead-letter",
@@ -530,6 +531,12 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/review", name) {
 			t.Fatalf("openapi approval review body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/review"])
 		}
+		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/progress", name) {
+			t.Fatalf("openapi approval progress body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/progress"])
+		}
+	}
+	if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/progress", "progress") {
+		t.Fatalf("openapi approval progress body missing progress: %#v", paths["/api/v1/data/approvals/{approvalId}/progress"])
 	}
 	for _, name := range []string{"confirm", "reason"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/operation-plans/{planId}/apply", name) {
@@ -3134,6 +3141,10 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	}
 	if len(workflowVersionApprovals.Items) != 1 || workflowVersionApprovals.Items[0].ID != reviewedApproval.ID {
 		t.Fatalf("workflow-version filter should return reviewed approval: %#v", workflowVersionApprovals)
+	}
+	workflowVersionApproval := workflowVersionApprovals.Items[0]
+	if workflowVersionApproval.ResultPayload["approval_result"] != "approved" || workflowVersionApproval.ResultPayload["business_status"] != "approved" || len(workflowVersionApproval.Outputs) != 2 || workflowVersionApproval.Outputs[1].Artifact == nil || workflowVersionApproval.Outputs[1].Artifact.URI != "artifact://approval/1" || len(workflowVersionApproval.Artifacts) != 1 || workflowVersionApproval.Artifacts[0].Name != "approval.pdf" {
+		t.Fatalf("workflow-version approval list should preserve final result package: %#v", workflowVersionApproval)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?workflow_skill_id=approval.sales_order&workflow_version=9.9.9&limit=10", nil)
 	auth(req)
@@ -6377,6 +6388,151 @@ func TestHTTPServerAppInstallationPUTRoundTripsGUIEquivalentPayloadThroughCapabi
 		t.Fatalf("capabilities should expose result coverage for GUI app outputs: %#v", capsApp.Metadata)
 	}
 }
+func TestHTTPServerAppInstallationPUTNormalizesStudioGovernancePayload(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	server := NewHTTPServer(svc, "test-token-0123456789012345", "test")
+
+	body := map[string]any{
+		"app_id":       "golden-expense-approval",
+		"blueprint_id": "golden-expense.blueprint",
+		"name":         "Golden Expense Approval",
+		"version":      "3.0.0",
+		"kind":         "enterprise_approval_app",
+		"status":       "installed",
+		"source":       "enterprise_hub",
+		"role_bindings": []any{
+			map[string]any{"object_role": "expense_report", "domain": "finance", "dataset_id": "finance.golden_expenses", "template_id": "finance.golden_expenses", "required": true},
+		},
+		"metadata": map[string]any{
+			"schema":         "maclaw.app.v1",
+			"package_sha":    "sha256:studio-golden-package",
+			"package_sha256": "sha256:studio-golden-package",
+			"governance": map[string]any{
+				"workspaceLayout": map[string]any{
+					"schema":        "maclaw.app.ui.v1",
+					"entry":         "approval_workspace",
+					"template":      "dashboard",
+					"density":       "spacious",
+					"primaryRegion": "left",
+					"outputRegion":  "bottom",
+					"navigation":    []any{"my_requests", "pending_my_approval", "handled", "attention", "all"},
+					"regions": []any{
+						map[string]any{"id": "golden_request", "role": "input", "placement": "left"},
+						map[string]any{"id": "golden_inbox", "role": "instance_list", "placement": "center"},
+						map[string]any{"id": "golden_result", "role": "output", "placement": "bottom"},
+					},
+				},
+				"dependencyVerification": map[string]any{
+					"schema":                "maclaw.app.install_plan.v1",
+					"verifiedAt":            "2026-06-30T01:00:00Z",
+					"dependencyCount":       2,
+					"hasMissingRequired":    false,
+					"hasBlockingDependency": false,
+					"dependencies": []any{
+						map[string]any{"id": "golden-expense-super-skill", "version": "3.0.0", "kind": "app_skill", "installed": true, "health": "ready", "install_ref": "hub://skills/golden-expense-super-skill@3.0.0"},
+						map[string]any{"id": "golden-expense-workflow", "version": "2.4.0", "kind": "workflow_skill", "installed": true, "health": "ready", "install_ref": "hub://skills/golden-expense-workflow@2.4.0"},
+					},
+				},
+				"testEvidence": map[string]any{
+					"runId":                   "run-studio-golden-expense",
+					"verifiedAt":              "2026-06-30T01:01:00Z",
+					"definitionHash":          "sha256:studio-golden-definition",
+					"testProtocolFingerprint": "proto-studio-golden",
+					"primaryResult":           "approval_result",
+					"resultPayload":           map[string]any{"approval_result": "approved", "business_status": "finance_approved", "business_record": map[string]any{"id": "EXP-GOLDEN-1"}},
+					"outputs":                 []any{map[string]any{"kind": "approval_result", "title": "Golden approval decision", "text": "approved", "status": "approved"}},
+					"artifacts":               []any{map[string]any{"id": "golden-expense-pdf", "name": "golden-expense-approval.pdf", "uri": "artifact://golden/expense-approval.pdf", "status": "ready"}},
+					"resultCoverage":          map[string]any{"ok": true, "primary": "approval_result", "coveredTypes": []any{"approval_result", "business_status", "business_record", "document"}, "missingTypes": []any{}},
+					"approvalInstance": map[string]any{
+						"instanceId":                   "wf-studio-golden-1",
+						"approvalID":                   "approval-studio-golden-1",
+						"recordID":                     "EXP-GOLDEN-1",
+						"datasetID":                    "finance.golden_expenses",
+						"objectRole":                   "expense_report",
+						"approvalEvent":                "finance.golden_expense.submitted",
+						"approvalWorkflowID":           "golden-expense-workflow",
+						"status":                       "approved",
+						"currentNode":                  "expense.result_feedback",
+						"workflowSkillId":              "golden-expense-workflow",
+						"workflowVersion":              "2.4.0",
+						"businessStatus":               "finance_approved",
+						"resultStatus":                 "approved",
+						"approvalInstanceViewVerified": true,
+					},
+				},
+			},
+		},
+	}
+	req := jsonRequest(http.MethodPut, "/api/v1/data/app-installations/golden-expense-approval", body)
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put Studio governance app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var installed AppInstallation
+	if err := json.NewDecoder(w.Body).Decode(&installed); err != nil {
+		t.Fatalf("decode Studio governance app installation: %v", err)
+	}
+	if installed.Metadata["workspace_layout_template"] != "dashboard" || installed.Metadata["workspace_layout_density"] != "spacious" || installed.Metadata["workspace_layout_output_region"] != "bottom" || installed.Metadata["workspace_layout_region_count"] != float64(3) {
+		t.Fatalf("Studio governance workspace layout should be normalized: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_run_id"] != "run-studio-golden-expense" || installed.Metadata["test_evidence_definition_fingerprint"] != "sha256:studio-golden-definition" || installed.Metadata["test_evidence_workflow_skill_id"] != "golden-expense-workflow" || installed.Metadata["test_evidence_business_status"] != "finance_approved" {
+		t.Fatalf("Studio governance test evidence should be normalized: %#v", installed.Metadata)
+	}
+	if installed.Metadata["test_evidence_artifact_name"] != "golden-expense-approval.pdf" || installed.Metadata["test_evidence_output_type"] != "approval_result" {
+		t.Fatalf("Studio governance result feedback summaries should be visible: %#v", installed.Metadata)
+	}
+	verification, ok := installed.Metadata["dependency_verification"].(map[string]any)
+	if !ok || verification["dependency_count"] != float64(2) || verification["has_blocking_dependency"] != false {
+		t.Fatalf("Studio governance dependency verification should be normalized: %#v", installed.Metadata["dependency_verification"])
+	}
+	deps, ok := verification["dependencies"].([]any)
+	if !ok || len(deps) != 2 {
+		t.Fatalf("Studio governance dependency details should be preserved: %#v", verification)
+	}
+	workflowDep, ok := deps[1].(map[string]any)
+	if !ok || workflowDep["install_ref"] != "hub://skills/golden-expense-workflow@2.4.0" {
+		t.Fatalf("Studio governance workflow install_ref should roundtrip: %#v", deps)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/capabilities", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("capabilities after Studio governance PUT status=%d body=%s", w.Code, w.Body.String())
+	}
+	var caps DataCapabilities
+	if err := json.NewDecoder(w.Body).Decode(&caps); err != nil {
+		t.Fatalf("decode capabilities after Studio governance PUT: %v", err)
+	}
+	capsApp := findAppInstallation(caps.AppInstallations, "golden-expense-approval")
+	if capsApp == nil {
+		t.Fatalf("expected Studio governance app installation in capabilities: %#v", caps.AppInstallations)
+	}
+	capEvidence, ok := capsApp.Metadata["test_evidence"].(map[string]any)
+	if !ok || capEvidence["run_id"] != "run-studio-golden-expense" || capEvidence["definition_fingerprint"] != "sha256:studio-golden-definition" {
+		t.Fatalf("capabilities should expose canonical Studio test evidence: %#v", capsApp.Metadata)
+	}
+	capApproval, ok := capEvidence["approval_instance"].(map[string]any)
+	if !ok || capApproval["instanceId"] != "wf-studio-golden-1" || capApproval["currentNode"] != "expense.result_feedback" {
+		t.Fatalf("capabilities should expose canonical Studio approval instance evidence: %#v", capEvidence)
+	}
+	governance := capsApp.Metadata["governance"].(map[string]any)
+	governanceEvidence := governance["testEvidence"].(map[string]any)
+	if governanceEvidence["runId"] != "run-studio-golden-expense" {
+		t.Fatalf("capabilities should still preserve original Studio governance evidence: %#v", governance)
+	}
+	if capsApp.Metadata["workspace_layout_output_region"] != "bottom" || capsApp.Metadata["test_evidence_artifact_name"] != "golden-expense-approval.pdf" {
+		t.Fatalf("capabilities should expose normalized Studio layout and artifact summaries: %#v", capsApp.Metadata)
+	}
+}
 func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -6440,6 +6596,41 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	reusedExpenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", Kind: "approval", Summary: "Expense approval retry"})
 	if reusedExpenseApproval.ID != expenseApproval.ID || !reusedExpenseApproval.Reused {
 		t.Fatalf("same app/object_role should reuse pending approval: original=%#v reused=%#v", expenseApproval, reusedExpenseApproval)
+	}
+
+	progressApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.progress", BlueprintID: "mis.progress.approval", ObjectRole: "progress_case", ApprovalWorkflowID: "progress_approval", TriggerEvent: "progress.submitted", SubmittedBy: "employee_2", CurrentAssignee: "manager_queue", CurrentAssigneeType: "queue", FromStatus: "submitted", ToStatus: "pending_manager", Kind: "approval", Summary: "Progress approval", WorkflowSkillID: "skill.progress.approval", WorkflowInstanceID: "wf-progress-100", WorkflowNodeID: "intake", WorkflowNodeIDs: []string{"intake"}, AssignedTo: "manager_queue"})
+	progressReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+progressApproval.ID+"/progress", UpdateRecordApprovalProgressInput{WorkflowInstanceID: "wf-progress-100", WorkflowNodeID: "finance.director_review", WorkflowNodeIDs: []string{"intake", "finance.director_review"}, WorkflowVersion: "2.1.0", WorkflowDecisionID: "progress-tick-1", DetailURL: "approval://instances/wf-progress-100?node=finance.director_review", BusinessStatus: "finance_reviewing", ResultStatus: "running", CurrentAssignee: "finance_director", CurrentAssigneeType: "role", FromStatus: "pending_manager", ToStatus: "finance_reviewing", Progress: "Director review started", ResultPayload: map[string]any{"progress": "Director review started", "current_node": "finance.director_review"}, Outputs: []RecordApprovalOutput{{Type: "text", Kind: "progress_note", Title: "Progress", Text: "Director review started", Status: "running"}}, Artifacts: []RecordApprovalArtifact{{ID: "progress-log", Name: "progress-log.txt", URI: "artifact://progress/log", MimeType: "text/plain", Status: "running", Presentation: "inline"}}})
+	auth(progressReq)
+	progressW := httptest.NewRecorder()
+	server.Handler().ServeHTTP(progressW, progressReq)
+	if progressW.Code != http.StatusOK {
+		t.Fatalf("update approval progress status=%d body=%s", progressW.Code, progressW.Body.String())
+	}
+	var progressedApproval RecordApproval
+	if err := json.NewDecoder(progressW.Body).Decode(&progressedApproval); err != nil {
+		t.Fatalf("decode progressed approval: %v", err)
+	}
+	if progressedApproval.ID != progressApproval.ID || progressedApproval.Status != recordApprovalStatusPending || progressedApproval.ReviewedBy != "" || !progressedApproval.ReviewedAt.IsZero() || progressedApproval.Decision != "" || progressedApproval.Reason != "" {
+		t.Fatalf("progress update must keep approval pending and unreviewed: %#v", progressedApproval)
+	}
+	if progressedApproval.WorkflowNodeID != "finance.director_review" || len(progressedApproval.WorkflowNodeIDs) != 2 || progressedApproval.WorkflowNodeIDs[1] != "finance.director_review" || progressedApproval.WorkflowVersion != "2.1.0" || progressedApproval.WorkflowDecisionID != "progress-tick-1" || progressedApproval.DetailURL != "approval://instances/wf-progress-100?node=finance.director_review" || progressedApproval.BusinessStatus != "finance_reviewing" || progressedApproval.ResultStatus != "running" || progressedApproval.CurrentAssignee != "finance_director" || progressedApproval.CurrentAssigneeType != "role" || progressedApproval.FromStatus != "pending_manager" || progressedApproval.ToStatus != "finance_reviewing" {
+		t.Fatalf("progress update did not persist workflow state: %#v", progressedApproval)
+	}
+	if progressedApproval.ResultPayload["progress"] != "Director review started" || len(progressedApproval.Outputs) != 1 || progressedApproval.Outputs[0].Status != "running" || len(progressedApproval.Artifacts) != 1 || progressedApproval.Artifacts[0].Name != "progress-log.txt" {
+		t.Fatalf("progress update did not preserve running result package: %#v", progressedApproval)
+	}
+	progressRecord, err := svc.GetRecord(context.Background(), p, ds.ID, "exp-100")
+	if err != nil {
+		t.Fatalf("GetRecord after approval progress: %v", err)
+	}
+	if progressRecord.Data["approval_id"] != progressApproval.ID || progressRecord.Data["approval_status"] != recordApprovalStatusPending || progressRecord.Data["approval_lane"] != "pending_my_approval" || progressRecord.Data["approval_current_node"] != "finance.director_review" || progressRecord.Data["business_status"] != "finance_reviewing" || progressRecord.Data["result_status"] != "running" || progressRecord.Data["approval_current_assignee"] != "finance_director" {
+		t.Fatalf("progress update did not sync business record state: %#v", progressRecord.Data)
+	}
+	if fmt.Sprint(progressRecord.Data["approval_workflow_node_ids"]) != "[intake finance.director_review]" || fmt.Sprint(progressRecord.Data["approval_current_nodes"]) != "[intake finance.director_review]" {
+		t.Fatalf("progress update did not sync workflow path: %#v", progressRecord.Data)
+	}
+	if payload, ok := progressRecord.Data["approval_result_payload"].(map[string]any); !ok || payload["progress"] != "Director review started" {
+		t.Fatalf("progress update did not sync result payload: %#v", progressRecord.Data)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?app_id=mis.expense&blueprint_id=mis.expense.approval&object_role=expense_report&approval_workflow_id=expense_approval&trigger_event=expense.submitted&current_assignee=user_1", nil)

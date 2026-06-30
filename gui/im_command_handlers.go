@@ -76,6 +76,8 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 			return &IMAgentResponse{Error: localizedIMLLMNotConfiguredMessage(responseLang, "/loop")}, true
 		}
 		return h.handleLoopCommand(msg, trimmed, onProgress, onToken), true
+	case imCommandWorkflow:
+		return h.handleWorkflowCommand(msg, trimmed, responseLang)
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
@@ -226,6 +228,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - goal-driven verification loop\n" +
 			"    e.g. /loop \"go test ./...\" make all tests pass\n" +
 			"    options: --max N (iterations), --timeout N (seconds), --dir path\n" +
+			"/workflow [type] - list or force-start a workflow\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
 			"/cancel - cancel current task\n" +
@@ -239,6 +242,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - 目標驅動的驗證循環\n" +
 			"    例：/loop \"go test ./...\" 讓所有測試通過\n" +
 			"    選項：--max N（迭代次數），--timeout N（秒），--dir 路徑\n" +
+			"/workflow [類型] - 列出或強制啟動工作流\n" +
 			"/compress - 壓縮對話歷史\n" +
 			"/memory - 查看記憶狀態\n" +
 			"/cancel - 取消當前任務\n" +
@@ -252,6 +256,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - 目标驱动的验证循环\n" +
 			"    例：/loop \"go test ./...\" 让所有测试通过\n" +
 			"    选项：--max N（迭代次数），--timeout N（秒），--dir 路径\n" +
+			"/workflow [类型] - 列出或强制启动工作流\n" +
 			"/compress - 压缩对话历史\n" +
 			"/memory - 查看记忆状态\n" +
 			"/cancel - 取消当前任务\n" +

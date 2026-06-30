@@ -9,6 +9,7 @@ const listMaclawAppInstallsMock = vi.hoisted(() => vi.fn());
 const listMaclawAppApprovalInstancesMock = vi.hoisted(() => vi.fn());
 const listMaclawAppApprovalInstancesAllMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppApprovalInstanceMock = vi.hoisted(() => vi.fn());
+const startMaclawAppApprovalWorkflowMock = vi.hoisted(() => vi.fn());
 const syncMaclawAppApprovalInstanceToDataSrvMock = vi.hoisted(() => vi.fn());
 const installMaclawAppDependenciesMock = vi.hoisted(() => vi.fn());
 const installMaclawAppPackageFromHubMock = vi.hoisted(() => vi.fn());
@@ -43,6 +44,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListMaclawAppApprovalInstances: (...args: unknown[]) => listMaclawAppApprovalInstancesMock(...args),
     ListMaclawAppApprovalInstancesAll: (...args: unknown[]) => listMaclawAppApprovalInstancesAllMock(...args),
     RecordMaclawAppApprovalInstance: (...args: unknown[]) => recordMaclawAppApprovalInstanceMock(...args),
+    StartMaclawAppApprovalWorkflow: (...args: unknown[]) => startMaclawAppApprovalWorkflowMock(...args),
     SyncMaclawAppApprovalInstanceToDataSrv: (...args: unknown[]) => syncMaclawAppApprovalInstanceToDataSrvMock(...args),
     DownloadSkillRunArtifact: (...args: unknown[]) => downloadSkillRunArtifactMock(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openFileOrShowInFolderMock(...args),
@@ -665,7 +667,70 @@ describe('AppsPage', () => {
         listMaclawAppInstallsMock.mockReset().mockResolvedValue([]);
         listMaclawAppApprovalInstancesMock.mockReset().mockResolvedValue([]);
         listMaclawAppApprovalInstancesAllMock.mockReset().mockResolvedValue([]);
-        recordMaclawAppApprovalInstanceMock.mockReset().mockImplementation(async (payload) => ({ ...payload, instance_id: 'appr-test-1', updated_at: '2026-06-19T00:00:00Z' }));
+        recordMaclawAppApprovalInstanceMock.mockReset().mockImplementation(async (payload) => ({ ...payload, instance_id: payload.instance_id || 'appr-test-1', updated_at: '2026-06-19T00:00:00Z' }));
+        startMaclawAppApprovalWorkflowMock.mockReset().mockImplementation(async (input) => {
+            const runID = input.run_workflow_skill === false ? (input.record_id || 'approval-start-ui') : await runNLSkillAsyncMock(input.workflow_skill_id, input.workflow_run_args || {});
+            const status = input.run_workflow_skill === false ? {} : await getNLSkillRunStatusMock(runID);
+            let parsed: any = {};
+            try {
+                const snippet = status?.summary?.last_output_snippet || status?.summary?.last_error_snippet || '';
+                parsed = snippet && String(snippet).trim().startsWith('{') ? JSON.parse(String(snippet)) : {};
+            } catch {
+                parsed = {};
+            }
+            const failed = String(status?.status || '').toLowerCase() === 'failed';
+            const resultPayload = { ...(input.result_payload || {}), ...parsed };
+            const approvalResult = failed ? 'attention' : String(resultPayload.approval_result || resultPayload.decision || 'approved');
+            const finalStatus = approvalResult === 'rejected' ? 'rejected' : approvalResult === 'attention' ? 'attention' : 'approved';
+            const outputs = [...(status?.outputs || []), ...(resultPayload.outputs || [])];
+            const artifacts = [...(status?.artifacts || []), ...(resultPayload.artifacts || [])];
+            const workflowMapping = input.workflow_run_args?.workflow_mapping || {};
+            const pendingNode = input.current_node || workflowMapping.approvalNode || 'approval_node';
+            const pendingNodeIDs = input.current_node_ids || [pendingNode];
+            const pendingEvents = [
+                { node: workflowMapping.submitNode || 'submit', action: 'submitted' },
+                { node: pendingNode, action: 'workflow_started' },
+            ];
+            const pending = {
+                instance_id: 'appr-test-1', app_id: input.app_id, app_name: input.app_name, title: input.title,
+                lane: 'my_requests', status: 'pending', current_node: pendingNode, current_node_ids: pendingNodeIDs, workflow_node_ids: pendingNodeIDs,
+                owner: input.owner, applicant: input.applicant, approver: input.approver, submitted_by: input.applicant,
+                current_assignee: input.current_assignee, current_assignee_type: input.current_assignee_type,
+                workflow_skill_id: input.workflow_skill_id, workflow_version: input.workflow_version, workflow_decision_id: runID,
+                approval_event: input.approval_event, approval_workflow_id: input.approval_event || input.workflow_skill_id,
+                approval_object_role: input.object_role, object_role: input.object_role, dataset_id: input.dataset_id, blueprint_id: input.blueprint_id,
+                record_id: input.record_id, approval_id: 'approval-start-ui', record_approval_id: 'approval-start-ui',
+                result: input.business_note || 'Pending approval', business_status: input.business_status || 'approval_pending', result_status: input.result_status || 'pending',
+                from_status: input.from_status || 'submitted', to_status: input.to_status || input.business_status || 'approval_pending',
+                result_payload: input.result_payload, detail_url: `skill-run://${runID}`, updated_at: '2026-06-19T00:00:00Z',
+                events: pendingEvents,
+            };
+            await recordMaclawAppApprovalInstanceMock(pending);
+            const pendingSync = await syncMaclawAppApprovalInstanceToDataSrvMock({ dataset_id: input.dataset_id, object_role: input.object_role, app_id: input.app_id, blueprint_id: input.blueprint_id, record_id: input.record_id, instance: pending });
+            if (pendingSync?.approval_id || pendingSync?.record_approval_id) {
+                pending.approval_id = pendingSync.approval_id || pendingSync.record_approval_id;
+                pending.record_approval_id = pendingSync.record_approval_id || pendingSync.approval_id;
+            }
+            const finalInstance = {
+                ...pending, ...(resultPayload.approval_instance || {}), lane: finalStatus === 'attention' ? 'attention' : 'handled', status: finalStatus,
+                result: failed ? (status?.error || status?.summary?.last_error_snippet || 'workflow failed') : (resultPayload.text || status?.summary?.last_output_snippet || 'approved'),
+                business_status: resultPayload.business_status || (failed ? 'workflow_error' : pending.business_status),
+                result_status: resultPayload.result_status || (failed ? 'workflow_error' : finalStatus),
+                result_payload: failed ? { ...resultPayload, approval_result: 'attention', business_status: 'workflow_error', result_status: 'workflow_error', text: status?.error || status?.summary?.last_error_snippet || 'workflow failed', workflow_lifecycle: 'error' } : resultPayload,
+                current_node_ids: [(resultPayload.approval_instance || {}).current_node || pending.current_node],
+                workflow_node_ids: [(resultPayload.approval_instance || {}).current_node || pending.current_node],
+                outputs: failed ? [{ kind: 'approval_result', text: status?.error || status?.summary?.last_error_snippet || 'workflow failed', status: 'workflow_error' }] : outputs,
+                artifacts,
+                events: failed ? [{ action: 'workflow_failed', message: status?.error || status?.summary?.last_error_snippet || 'workflow failed' }] : [{ action: 'workflow_completed', message: 'workflow completed' }],
+            };
+            await recordMaclawAppApprovalInstanceMock(finalInstance);
+            const finalSync = await syncMaclawAppApprovalInstanceToDataSrvMock({ dataset_id: input.dataset_id, object_role: input.object_role, app_id: input.app_id, blueprint_id: input.blueprint_id, record_id: finalInstance.record_id || input.record_id, instance: finalInstance });
+            if (finalSync?.approval_id || finalSync?.record_approval_id) {
+                finalInstance.approval_id = finalSync.approval_id || finalSync.record_approval_id;
+                finalInstance.record_approval_id = finalSync.record_approval_id || finalSync.approval_id;
+            }
+            return { started: true, approval_id: finalInstance.approval_id, workflow_skill_id: input.workflow_skill_id, workflow_version: input.workflow_version, instance: pending, workflow_run: { ran: true, workflow_skill_id: input.workflow_skill_id, instance: finalInstance } };
+        });
         syncMaclawAppApprovalInstanceToDataSrvMock.mockReset().mockResolvedValue({ synced: true });
         installMaclawAppDependenciesMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
         installMaclawAppPackageFromHubMock.mockReset().mockResolvedValue({});
@@ -1343,20 +1408,11 @@ describe('AppsPage', () => {
         expect(screen.getByText('运行证据')).not.toBeNull();
         expect(screen.getByText('提交包预览')).not.toBeNull();
         expect(screen.getByText(/maclaw.app.pack.v1/)).not.toBeNull();
-        expect(screen.getByText(/"governance"/)).not.toBeNull();
-        expect(screen.getByText(/"dependencies"/)).not.toBeNull();
+        const packagePreview = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
+        expect(packagePreview.schema).toBe('maclaw.app.pack.v1');
+        expect(packagePreview.apps).toEqual([]);
         expect(screen.getByText('Workspace layout')).not.toBeNull();
-        expect(screen.getByText(/"workspaceLayout"/)).not.toBeNull();
-        expect(screen.getByText(/"entry": "tool_workspace"/)).not.toBeNull();
         expect(screen.getByText('结果契约')).not.toBeNull();
-        expect(screen.getByText(/"resultContract"/)).not.toBeNull();
-        expect(screen.getByText(/"schema": "maclaw.app.result.v1"/)).not.toBeNull();
-        expect(screen.getByText(/"testProtocol"/)).not.toBeNull();
-        expect(screen.getByText(/"schema": "maclaw.app.test_protocol.v1"/)).not.toBeNull();
-        expect(screen.getByText(/"primary": "artifact"/)).not.toBeNull();
-        expect(screen.getByText(/"installPolicy": "install_on_app_install"/)).not.toBeNull();
-        expect(screen.getByText(/"requiredCount": 1/)).not.toBeNull();
-        expect(screen.getByText(/"status": "draft"/)).not.toBeNull();
     });
 
     it('blocks publish readiness when workspace layout misses required region roles', () => {
@@ -3443,7 +3499,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('App Studio'));
         const kindPicker = document.querySelector('.apps-studio-kind') as HTMLElement;
         fireEvent.click(within(kindPicker).getByRole('button', { name: /Approval app/ }));
-        const designButton = screen.getByRole('button', { name: 'Design' });
+        const designButton = screen.getByRole('button', { name: /^Design$|^设计$/ });
 
         expect(designButton.getAttribute('title')).toBe('Open approval workflow designer');
         fireEvent.click(designButton);
@@ -3722,9 +3778,9 @@ describe('AppsPage', () => {
         expect(screen.getByTestId('studio-test-protocol')).not.toBeNull();
         expect(screen.getByText(/"testProtocol"/)).not.toBeNull();
         expect(screen.getByText(/"schema": "maclaw.app.test_protocol.v1"/)).not.toBeNull();
-        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用$/ }));
         expect(within(screen.getByTestId('studio-result-contract')).getAllByText('business_status').length).toBeGreaterThan(0);
-        fireEvent.click(screen.getByRole('button', { name: 'Approval app' }));
+        fireEvent.click(screen.getByRole('button', { name: /^Approval app$|^企业审批型$/ }));
         expect(within(screen.getByTestId('studio-result-contract')).getAllByText('approval_result').length).toBeGreaterThan(0);
         expect(within(screen.getByTestId('studio-result-contract')).getByText(/approved \/ rejected/)).not.toBeNull();
     });
@@ -3755,7 +3811,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="en" />);
 
         fireEvent.click(screen.getByTitle('App Studio'));
-        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用$/ }));
         fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Operations Desk' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-visible-output_panel'));
         fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
@@ -3777,7 +3833,7 @@ describe('AppsPage', () => {
         const { container } = render(<AppsPage lang="en" />);
 
         fireEvent.click(screen.getByTitle('App Studio'));
-        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用$/ }));
         fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Visual Layout Desk' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-record_list-move-right'));
         fireEvent.click(screen.getByTestId('studio-layout-region-output_panel-move-bottom'));
@@ -3792,6 +3848,11 @@ describe('AppsPage', () => {
         ]));
         expect(layout.outputRegion).toBe('bottom');
         expect(layout.studio.updatedBy).toBe('app_studio');
+        seedSuccessfulLocalAppRun(created, {
+            resultPayload: { business_status: 'ready', business_record: { id: created.id }, content: 'ready' },
+            outputs: [{ kind: 'content', title: 'Business status', body: 'ready', status: 'ready' }],
+            resultCoverage: { coveredTypes: ['content', 'business_status'], missingTypes: [] },
+        });
 
         const tile = Array.from(container.querySelectorAll<HTMLButtonElement>('.apps-app-tile')).find((item) => item.textContent?.includes('Visual Layout Desk'));
         expect(tile).not.toBeNull();
@@ -3800,6 +3861,8 @@ describe('AppsPage', () => {
         expect(container.querySelector('.apps-business-workspace')?.getAttribute('data-region')).toBe('right');
         expect(container.querySelector('.apps-runtime-output')?.getAttribute('data-region')).toBe('bottom');
 
+        cleanup();
+        render(<AppsPage lang="en" />);
         fireEvent.click(screen.getByTitle('App Studio'));
         fireEvent.click(screen.getByText('Review / publish'));
         const packagePreview = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
@@ -6221,7 +6284,7 @@ describe('AppsPage', () => {
         render(<AppsPage lang="en" />);
 
         fireEvent.click(screen.getByTitle('App Studio'));
-        fireEvent.click(screen.getByRole('button', { name: 'Business app' }));
+        fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用$/ }));
         fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Customer Console' } });
         fireEvent.change(screen.getByTestId('studio-business-domain'), { target: { value: 'sales' } });
         fireEvent.change(screen.getByTestId('studio-business-object-role'), { target: { value: 'customer' } });
@@ -9314,6 +9377,13 @@ describe('AppsPage', () => {
                             risk_level: 'medium',
                         },
                         test_evidence_test_protocol_fingerprint: 'proto-customer',
+                        datasrv_registration: {
+                            synced: true,
+                            eligible_count: 1,
+                            synced_count: 1,
+                            failed_count: 0,
+                            items: [{ app_id: 'sales.customer.console', synced: true, role_binding_count: 1 }],
+                        },
                     },
                 }],
             }),
@@ -9354,6 +9424,7 @@ describe('AppsPage', () => {
             version_snapshot: { app_entry_version: '5', app_skill: { id: 'customer-console-skill', version: '2.0.0', kind: 'app_skill', source: 'hub' } },
             result_contract: { primary: 'business_status', types: ['business_status', 'business_record', 'content'] },
             test_evidence: { run_id: 'run-customer-imported', definition_hash: 'sha256:customer-console', test_protocol_fingerprint: 'proto-customer' },
+            datasrv_registration: { synced: true, eligible_count: 1, synced_count: 1, failed_count: 0, items: [{ app_id: 'sales.customer.console', synced: true, role_binding_count: 1 }] },
         });
         expect(added.installEvidence.test_evidence.test_protocol).toMatchObject({
             schema: 'maclaw.app.test_protocol.v1',

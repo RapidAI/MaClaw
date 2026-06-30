@@ -675,6 +675,8 @@ export function SendBtwQuery(arg1:string, arg2:string):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 
+export function ClearAIAssistantHistoryForSession(arg1:string):Promise<void>;
+
 export function ClearAIAssistantUIState():Promise<void>;
 
 export function FetchNews():Promise<Array<any>>;
@@ -1098,6 +1100,7 @@ export function RecordMaclawAppInstall(arg1:string,arg2:string):Promise<any>;
 export function ListMaclawAppInstalls(arg1:number):Promise<Array<any>>;
 export function ListMaclawAppApprovalInstances(arg1:string,arg2:string,arg3:number):Promise<Array<any>>;
 export function ListMaclawAppApprovalInstancesAll(arg1:string,arg2:number):Promise<Array<any>>;
+export function StartMaclawAppApprovalWorkflow(arg1:any):Promise<any>;
 export function RecordMaclawAppApprovalInstance(arg1:any):Promise<any>;
 export function SyncMaclawAppApprovalInstanceToDataSrv(arg1:any):Promise<any>;
 export function DownloadMaclawAppPackageFromHub(arg1:string):Promise<any>;

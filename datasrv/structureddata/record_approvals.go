@@ -266,6 +266,40 @@ func (s *Service) GetRecordApproval(ctx context.Context, p Principal, approvalID
 	return s.store.GetRecordApproval(ctx, p.TenantID, strings.TrimSpace(approvalID))
 }
 
+func (s *Service) UpdateRecordApprovalProgress(ctx context.Context, p Principal, approvalID string, in UpdateRecordApprovalProgressInput) (*RecordApproval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	approvalID = strings.TrimSpace(approvalID)
+	current, err := s.store.GetRecordApproval(ctx, p.TenantID, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	if current.Status != recordApprovalStatusPending {
+		return nil, recordApprovalNotPendingError(*current)
+	}
+	fromStatus := strings.TrimSpace(in.FromStatus)
+	if fromStatus == "" {
+		fromStatus = current.BusinessStatus
+	}
+	toStatus := strings.TrimSpace(in.ToStatus)
+	if toStatus == "" {
+		toStatus = strings.TrimSpace(in.BusinessStatus)
+	}
+	if toStatus == "" {
+		toStatus = strings.TrimSpace(current.ToStatus)
+	}
+	workflowNodeID, workflowNodeIDs := normalizeRecordApprovalWorkflowNodes(in.WorkflowNodeID, in.WorkflowNodeIDs)
+	out, err := s.store.UpdateRecordApprovalProgress(ctx, p.TenantID, approvalID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	businessRecordUpdated, err := s.syncBusinessRecordFromApproval(ctx, p, *out, "approval.progress")
+	if err != nil {
+		return nil, err
+	}
+	s.audit(ctx, p, "approval.progress", out.DatasetID, "record", out.RecordID, "Updated approval progress "+approvalID, recordApprovalAuditMetadata(*out, map[string]any{"progress": strings.TrimSpace(in.Progress), "business_record_updated": businessRecordUpdated}))
+	return out, nil
+}
 func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approvalID string, in ReviewRecordApprovalInput) (*RecordApproval, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

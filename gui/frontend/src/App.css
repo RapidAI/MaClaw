@@ -292,36 +292,7 @@
 }
 
 /* Sidebar medal glow animations — one per medal color */
-.sidebar-medal--gold {
-    animation: medal-glow-gold 3s ease-in-out infinite;
-}
-.sidebar-medal--silver {
-    animation: medal-glow-silver 3s ease-in-out infinite;
-}
-.sidebar-medal--bronze {
-    animation: medal-glow-bronze 3s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .sidebar-medal--gold,
-    .sidebar-medal--silver,
-    .sidebar-medal--bronze {
-        animation: none;
-    }
-}
-
-@keyframes medal-glow-gold {
-    0%, 100% { filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.4)); }
-    50% { filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.9)); }
-}
-@keyframes medal-glow-silver {
-    0%, 100% { filter: drop-shadow(0 0 2px rgba(192, 192, 192, 0.4)); }
-    50% { filter: drop-shadow(0 0 6px rgba(192, 192, 192, 0.9)); }
-}
-@keyframes medal-glow-bronze {
-    0%, 100% { filter: drop-shadow(0 0 2px rgba(205, 127, 50, 0.4)); }
-    50% { filter: drop-shadow(0 0 6px rgba(205, 127, 50, 0.9)); }
-}
+/* Sidebar medal — no animation, static display */
 
 .about-status-pill {
     display: inline-flex;
@@ -10193,7 +10164,7 @@ body {
 
 .general-settings-language-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 22px;
     width: 100%;

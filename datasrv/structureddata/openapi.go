@@ -264,6 +264,7 @@ func openAPISpec(version string) map[string]interface{} {
 	add("/api/v1/data/approvals", "get")
 	add("/api/v1/data/approvals/{approvalId}", "get")
 	add("/api/v1/data/approvals/{approvalId}/review", "post")
+	add("/api/v1/data/approvals/{approvalId}/progress", "post")
 	add("/api/v1/data/datasets", "get", "post")
 	add("/api/v1/data/datasets/{datasetId}", "get", "patch", "delete")
 	add("/api/v1/data/datasets/{datasetId}/fields", "get", "put")
@@ -619,6 +620,7 @@ func openAPISpec(version string) map[string]interface{} {
 	setOpenAPIGetResponses(paths, "/api/v1/data/approvals/{approvalId}", recordApprovalOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", createRecordApprovalOpenAPIRequestBody())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/approvals/{approvalId}/review", reviewRecordApprovalOpenAPIRequestBody())
+	setOpenAPIPostRequestBody(paths, "/api/v1/data/approvals/{approvalId}/progress", updateRecordApprovalProgressOpenAPIRequestBody())
 	setOpenAPIPostResponses(paths, "/api/v1/data/datasets/{datasetId}/records/query", listResponseOpenAPIResponses())
 	setOpenAPIPostRequestBody(paths, "/api/v1/data/datasets/{datasetId}/records/query", queryRecordsOpenAPIRequestBody(500, "Maximum number of records to return."))
 	setOpenAPIPostResponses(paths, "/api/v1/data/views/{viewId}/query", businessViewQueryOpenAPIResponses())
@@ -1766,6 +1768,15 @@ func reviewRecordApprovalOpenAPIRequestBody() map[string]interface{} {
 		properties[key] = value
 	}
 	return objectRequestBody(true, []string{"decision"}, properties)
+}
+
+func updateRecordApprovalProgressOpenAPIRequestBody() map[string]interface{} {
+	properties := recordApprovalWorkflowOpenAPIProperties()
+	for key, value := range recordApprovalResultPackageOpenAPIProperties() {
+		properties[key] = value
+	}
+	properties["progress"] = map[string]interface{}{"type": "string", "description": "Human-readable running workflow progress summary."}
+	return objectRequestBody(false, nil, properties)
 }
 
 func applyOperationPlanOpenAPIRequestBody() map[string]interface{} {

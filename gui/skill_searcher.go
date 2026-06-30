@@ -30,6 +30,15 @@ type SkillSearchResult struct {
 	Version                      string                   `json:"version,omitempty"`
 	Author                       string                   `json:"author,omitempty"`
 	CreatedAt                    string                   `json:"created_at,omitempty"`
+	PackageSHA256                string                   `json:"package_sha256,omitempty"`
+	SHA256                       string                   `json:"sha256,omitempty"`
+	PackageChecksum              string                   `json:"package_checksum,omitempty"`
+	Checksum                     string                   `json:"checksum,omitempty"`
+	PackageSignature             string                   `json:"package_signature,omitempty"`
+	Signature                    string                   `json:"signature,omitempty"`
+	PackageDownloadURL           string                   `json:"package_download_url,omitempty"`
+	DownloadURL                  string                   `json:"download_url,omitempty"`
+	PackageSize                  int64                    `json:"package_size,omitempty"`
 	ProductKind                  string                   `json:"product_kind,omitempty"`
 	IsMaclawApp                  bool                     `json:"is_maclaw_app,omitempty"`
 	MaclawAppID                  string                   `json:"maclaw_app_id,omitempty"`
@@ -75,6 +84,15 @@ type MixedSkillSearchResult struct {
 	Version                      string                   `json:"version,omitempty"`
 	Author                       string                   `json:"author,omitempty"`
 	CreatedAt                    string                   `json:"created_at,omitempty"`
+	PackageSHA256                string                   `json:"package_sha256,omitempty"`
+	SHA256                       string                   `json:"sha256,omitempty"`
+	PackageChecksum              string                   `json:"package_checksum,omitempty"`
+	Checksum                     string                   `json:"checksum,omitempty"`
+	PackageSignature             string                   `json:"package_signature,omitempty"`
+	Signature                    string                   `json:"signature,omitempty"`
+	PackageDownloadURL           string                   `json:"package_download_url,omitempty"`
+	DownloadURL                  string                   `json:"download_url,omitempty"`
+	PackageSize                  int64                    `json:"package_size,omitempty"`
 	TrustLevel                   string                   `json:"trust_level,omitempty"`
 	AvgRating                    float64                  `json:"avg_rating"`
 	RatingCount                  int                      `json:"rating_count"`
@@ -431,21 +449,29 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
 	source := string(r.SourceKind())
 	return MixedSkillSearchResult{
-		ID:                           r.ID,
-		Name:                         r.Name,
-		Description:                  r.Description,
-		Tags:                         r.Tags,
-		Source:                       source,
-		SourceLabel:                  mixedSourceLabel(source),
-		TrustLevel:                   mixedTrustLevel(source),
-		AvgRating:                    r.AvgRating,
-		Downloads:                    r.DownloadCount,
-		Score:                        r.Score,
-		Price:                        r.Price,
-		Version:                      r.Version,
-		Author:                       r.Author,
-		CreatedAt:                    r.CreatedAt,
-		ProductKind:                  r.ProductKind,
+		ID:                 r.ID,
+		Name:               r.Name,
+		Description:        r.Description,
+		Tags:               r.Tags,
+		Source:             source,
+		SourceLabel:        mixedSourceLabel(source),
+		TrustLevel:         mixedTrustLevel(source),
+		AvgRating:          r.AvgRating,
+		Downloads:          r.DownloadCount,
+		Score:              r.Score,
+		Price:              r.Price,
+		Version:            r.Version,
+		Author:             r.Author,
+		CreatedAt:          r.CreatedAt,
+		PackageSHA256:      firstNonEmpty(r.PackageSHA256, r.SHA256),
+		SHA256:             r.SHA256,
+		PackageChecksum:    firstNonEmpty(r.PackageChecksum, r.Checksum),
+		Checksum:           r.Checksum,
+		PackageSignature:   firstNonEmpty(r.PackageSignature, r.Signature),
+		Signature:          r.Signature,
+		PackageDownloadURL: firstNonEmpty(r.PackageDownloadURL, r.DownloadURL),
+		DownloadURL:        r.DownloadURL,
+		PackageSize:        r.PackageSize, ProductKind: r.ProductKind,
 		IsMaclawApp:                  r.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill"),
 		MaclawAppID:                  r.MaclawAppID,
 		MaclawAppName:                r.MaclawAppName,

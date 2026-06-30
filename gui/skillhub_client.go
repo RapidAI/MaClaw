@@ -252,11 +252,28 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 // The returned entry's SkillDir is set to the actual extraction directory.
 // It must not perform dependency installation before the caller scans the skill.
 func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targetDir string) (*corelib.NLSkillEntry, error) {
+	return c.InstallToDirWithIntegrity(ctx, skillID, hubURL, targetDir, "", "")
+}
+
+func (c *SkillHubClient) InstallToDirWithIntegrity(ctx context.Context, skillID, hubURL, targetDir, expectedSHA256, expectedSignature string) (*corelib.NLSkillEntry, error) {
 	path := "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
-	var full hubSkillFull
-	base, _, err := c.getJSONFromExplicitHubURL(ctx, hubURL, path, &full)
+	base, _, data, err := c.getBytesFromExplicitHubURL(ctx, hubURL, path, maxDownloadSize)
 	if err != nil {
 		return nil, fmt.Errorf("download skill %q from %s failed: %v", skillID, strings.TrimRight(hubURL, "/"), err)
+	}
+	if err := verifyDownloadedSkillPackageSHA256(data, expectedSHA256); err != nil {
+		return nil, err
+	}
+	var trustedFingerprints []string
+	if c != nil && c.app != nil {
+		trustedFingerprints = c.app.trustedSkillPackageKeyFingerprints()
+	}
+	if err := verifyDownloadedSkillPackageSignatureWithTrustedFingerprints(data, expectedSignature, trustedFingerprints); err != nil {
+		return nil, err
+	}
+	var full hubSkillFull
+	if err := json.Unmarshal(data, &full); err != nil {
+		return nil, fmt.Errorf("decode skill %q from %s failed after %d bytes: %w", skillID, strings.TrimRight(hubURL, "/"), len(data), err)
 	}
 
 	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))
@@ -715,6 +732,41 @@ func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL s
 	return c.app.getHubCenterJSONFromCandidates(ctx, c.client, []string{base}, path, maxDownloadSize, dest)
 }
 
+func (c *SkillHubClient) getBytesFromExplicitHubURL(ctx context.Context, hubURL string, path string, limit int64) (string, []string, []byte, error) {
+	base := strings.TrimSpace(hubURL)
+	if base == "" {
+		return c.app.getHubCenterBytes(ctx, c.client, path, limit)
+	}
+	if authHeader := c.enterpriseHubAuthHeaderForBase(base); authHeader != "" {
+		return c.getBytesFromExplicitHubURLWithAuth(ctx, base, path, limit, authHeader)
+	}
+	base = strings.TrimRight(base, "/")
+	return c.app.getHubCenterBytesFromCandidates(ctx, c.client, []string{base}, path, limit)
+}
+
+func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context, base, path string, limit int64, authHeader string) (string, []string, []byte, error) {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", []string{base}, nil, fmt.Errorf("request hub bytes %s%s failed (%d): %s", base, path, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	data, err := readHubCenterJSONBody(resp.Body, limit)
+	if err != nil {
+		return "", []string{base}, nil, fmt.Errorf("read hub bytes %s%s failed: %w", base, path, err)
+	}
+	return base, []string{base}, data, nil
+}
 func (c *SkillHubClient) enterpriseHubAuthHeaderForBase(base string) string {
 	if c == nil || c.app == nil {
 		return ""

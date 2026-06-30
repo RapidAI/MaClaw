@@ -222,6 +222,72 @@ func (s *SQLiteStore) GetRecordApproval(ctx context.Context, tenantID, approvalI
 	return &approval, nil
 }
 
+func (s *SQLiteStore) UpdateRecordApprovalProgress(ctx context.Context, tenantID, approvalID, workflowInstanceID, workflowNodeID string, workflowNodeIDs []string, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
+	approval, err := s.GetRecordApproval(ctx, tenantID, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	if workflowInstanceID = strings.TrimSpace(workflowInstanceID); workflowInstanceID != "" {
+		approval.WorkflowInstanceID = workflowInstanceID
+	}
+	workflowNodeID, workflowNodeIDs = normalizeRecordApprovalWorkflowNodes(workflowNodeID, workflowNodeIDs)
+	if workflowNodeID != "" {
+		approval.WorkflowNodeID = workflowNodeID
+	}
+	if len(workflowNodeIDs) > 0 {
+		approval.WorkflowNodeIDs = workflowNodeIDs
+	}
+	if workflowVersion = strings.TrimSpace(workflowVersion); workflowVersion != "" {
+		approval.WorkflowVersion = workflowVersion
+	}
+	if workflowDecisionID = strings.TrimSpace(workflowDecisionID); workflowDecisionID != "" {
+		approval.WorkflowDecisionID = workflowDecisionID
+	}
+	if detailURL = strings.TrimSpace(detailURL); detailURL != "" {
+		approval.DetailURL = detailURL
+	}
+	if businessStatus = strings.TrimSpace(businessStatus); businessStatus != "" {
+		approval.BusinessStatus = businessStatus
+	}
+	if resultStatus = strings.TrimSpace(resultStatus); resultStatus != "" {
+		approval.ResultStatus = resultStatus
+	}
+	if currentAssignee = strings.TrimSpace(currentAssignee); currentAssignee != "" {
+		approval.CurrentAssignee = currentAssignee
+	}
+	if currentAssigneeType = strings.TrimSpace(currentAssigneeType); currentAssigneeType != "" {
+		approval.CurrentAssigneeType = currentAssigneeType
+	}
+	if fromStatus = strings.TrimSpace(fromStatus); fromStatus != "" {
+		approval.FromStatus = fromStatus
+	}
+	if toStatus = strings.TrimSpace(toStatus); toStatus != "" {
+		approval.ToStatus = toStatus
+	}
+	if resultPayload != nil {
+		approval.ResultPayload = cloneJSONMap(resultPayload)
+	}
+	if outputs != nil {
+		approval.Outputs = cloneJSONValue(outputs)
+	}
+	if artifacts != nil {
+		approval.Artifacts = cloneJSONValue(artifacts)
+	}
+	approval.UpdatedAt = now
+	res, err := s.db.ExecContext(ctx, `UPDATE record_approvals SET updated_at = ?, workflow_instance_id = ?, workflow_node_id = ?, workflow_node_ids_json = ?, workflow_version = ?, workflow_decision_id = ?, detail_url = ?, business_status = ?, result_status = ?, current_assignee = ?, current_assignee_type = ?, from_status = ?, to_status = ?, result_payload_json = ?, outputs_json = ?, artifacts_json = ? WHERE tenant_id = ? AND id = ?`,
+		formatTime(approval.UpdatedAt), approval.WorkflowInstanceID, approval.WorkflowNodeID, jsonArrayString(approval.WorkflowNodeIDs), approval.WorkflowVersion, approval.WorkflowDecisionID, approval.DetailURL, approval.BusinessStatus, approval.ResultStatus, approval.CurrentAssignee, approval.CurrentAssigneeType, approval.FromStatus, approval.ToStatus, jsonObjectString(approval.ResultPayload), jsonArrayString(approval.Outputs), jsonArrayString(approval.Artifacts), tenantID, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, ErrRecordNotFound
+	}
+	return approval, nil
+}
 func (s *SQLiteStore) UpdateRecordApprovalStatus(ctx context.Context, tenantID, approvalID, status, decision, reason, reviewedBy, workflowInstanceID, workflowNodeID string, workflowNodeIDs []string, workflowVersion, workflowDecisionID, detailURL, businessStatus, resultStatus, currentAssignee, currentAssigneeType, fromStatus, toStatus string, resultPayload map[string]any, outputs []RecordApprovalOutput, artifacts []RecordApprovalArtifact, now time.Time) (*RecordApproval, error) {
 	approval, err := s.GetRecordApproval(ctx, tenantID, approvalID)
 	if err != nil {

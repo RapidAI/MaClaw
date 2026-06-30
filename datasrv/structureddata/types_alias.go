@@ -203,6 +203,7 @@ type RestoreResult = contract.RestoreResult
 type RetryDataEventDeadLetterResult = contract.RetryDataEventDeadLetterResult
 type ReviewOperationPlanInput = contract.ReviewOperationPlanInput
 type ReviewRecordApprovalInput = contract.ReviewRecordApprovalInput
+type UpdateRecordApprovalProgressInput = contract.UpdateRecordApprovalProgressInput
 type RunMaintenanceInput = contract.RunMaintenanceInput
 type RunQualityCheckInput = contract.RunQualityCheckInput
 type SaveHubRegistrationInput = contract.SaveHubRegistrationInput

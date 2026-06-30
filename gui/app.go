@@ -6473,6 +6473,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SubAgentFullAccess = v
+		case "trusted_skill_package_key_fingerprints":
+			v, err := stringSliceField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.TrustedSkillPackageKeyFingerprints = v
 		case "trial_reflect_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

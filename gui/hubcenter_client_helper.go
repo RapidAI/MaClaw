@@ -140,6 +140,14 @@ func (a *App) getHubCenterBytes(ctx context.Context, client *http.Client, path s
 	if err != nil {
 		return "", nil, nil, err
 	}
+	return a.getHubCenterBytesFromCandidates(ctx, client, bases, path, limit)
+}
+
+func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.Client, bases []string, path string, limit int64) (string, []string, []byte, error) {
+	bases = remote.NormalizeHubCenterURLs(bases)
+	if len(bases) == 0 {
+		return "", nil, nil, fmt.Errorf("hubcenter URL not configured")
+	}
 	var lastErr error
 	for _, base := range bases {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)

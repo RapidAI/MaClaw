@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -131,6 +133,302 @@ func TestDownloadSkillJSONFromHubCenter_FailsOver(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
 		t.Fatalf("expected failover download to extract bundled file: %v", err)
+	}
+}
+
+func TestDownloadSkillJSONFromHubCenterVerifiesPackageSHA256(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL}})
+		case "/api/v1/skills/demo/download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "demo",
+				"name":        "Demo Skill",
+				"description": "demo",
+				"version":     "1.0.0",
+				"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "do it"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{backup.URL}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	_, err := downloadSkillJSONFromHubCenterToDirWithIntegrity(context.Background(), app, "/api/v1/skills/demo/download", "", strings.Repeat("0", 64), "")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+}
+func TestVerifyDownloadedSkillPackageSignatureEd25519(t *testing.T) {
+	data := []byte(`{"id":"demo","name":"Demo Skill"}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	signature := ed25519.Sign(privateKey, data)
+	value := "ed25519:" + base64.StdEncoding.EncodeToString(publicKey) + ":" + base64.StdEncoding.EncodeToString(signature)
+	if err := verifyDownloadedSkillPackageSignature(data, value); err != nil {
+		t.Fatalf("verifyDownloadedSkillPackageSignature() error = %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignature([]byte(`{"id":"tampered"}`), value); err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature verification failed") {
+		t.Fatalf("expected signature verification failure, got %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignature(data, "sig-ready"); err != nil {
+		t.Fatalf("unsupported legacy signature metadata should be ignored, got %v", err)
+	}
+}
+
+func TestVerifyDownloadedSkillPackageSignatureChecksPublicKeyFingerprint(t *testing.T) {
+	data := []byte(`{"id":"demo","name":"Demo Skill"}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	signatureValue := map[string]any{
+		"algorithm":              "ed25519",
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, data)),
+		"public_key_fingerprint": fingerprint,
+	}
+	signatureJSON, err := json.Marshal(signatureValue)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignature(data, string(signatureJSON)); err != nil {
+		t.Fatalf("signature with matching public key fingerprint should pass: %v", err)
+	}
+
+	signatureValue["public_key_fingerprint"] = "sha256:" + strings.Repeat("0", 64)
+	signatureJSON, err = json.Marshal(signatureValue)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignature(data, string(signatureJSON)); err == nil || !strings.Contains(strings.ToLower(err.Error()), "fingerprint mismatch") {
+		t.Fatalf("expected fingerprint mismatch, got %v", err)
+	}
+}
+
+func TestVerifyDownloadedSkillPackageSignatureRequiresTrustedFingerprintWhenConfigured(t *testing.T) {
+	data := []byte(`{"id":"demo","name":"Demo Skill"}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	signatureValue := map[string]any{
+		"algorithm":         "ed25519",
+		"public_key_base64": base64.StdEncoding.EncodeToString(publicKey),
+		"signature_base64":  base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, data)),
+	}
+	signatureJSON, err := json.Marshal(signatureValue)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignatureWithTrustedFingerprints(data, string(signatureJSON), []string{strings.TrimPrefix(fingerprint, "sha256:")}); err != nil {
+		t.Fatalf("signature with trusted public key fingerprint should pass: %v", err)
+	}
+	if err := verifyDownloadedSkillPackageSignatureWithTrustedFingerprints(data, string(signatureJSON), []string{"sha256:" + strings.Repeat("1", 64)}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "not trusted") {
+		t.Fatalf("expected untrusted public key failure, got %v", err)
+	}
+}
+
+func TestDownloadSkillJSONFromHubCenterRequiresConfiguredTrustedPackageKeyFingerprint(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	skillBody := []byte(`{"id":"demo","name":"Demo Skill","description":"demo","version":"1.0.0","steps":[{"action":"craft_tool","params":{"instructions":"do it"}}]}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	signatureValue := map[string]any{
+		"algorithm":              "ed25519",
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, skillBody)),
+		"public_key_fingerprint": fingerprint,
+	}
+	signatureJSON, err := json.Marshal(signatureValue)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL}})
+		case "/api/v1/skills/demo/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(skillBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{backup.URL}, TrustedSkillPackageKeyFingerprints: []string{strings.TrimPrefix(fingerprint, "sha256:")}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if _, err := downloadSkillJSONFromHubCenterToDirWithIntegrity(context.Background(), app, "/api/v1/skills/demo/download", "", "", string(signatureJSON)); err != nil {
+		t.Fatalf("trusted package key fingerprint should pass: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.TrustedSkillPackageKeyFingerprints = []string{"sha256:" + strings.Repeat("2", 64)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	_, err = downloadSkillJSONFromHubCenterToDirWithIntegrity(context.Background(), app, "/api/v1/skills/demo/download", "", "", string(signatureJSON))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not trusted") {
+		t.Fatalf("expected untrusted package key failure, got %v", err)
+	}
+}
+
+func TestSkillHubClientInstallToDirRequiresConfiguredTrustedPackageKeyFingerprint(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillBody := []byte(`{"id":"demo","name":"Demo Skill","description":"demo","version":"1.0.0","steps":[{"action":"craft_tool","params":{"instructions":"do it"}}]}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	signatureValue := map[string]any{
+		"algorithm":              "ed25519",
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, skillBody)),
+		"public_key_fingerprint": fingerprint,
+	}
+	signatureJSON, err := json.Marshal(signatureValue)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(skillBody)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, TrustedSkillPackageKeyFingerprints: []string{"sha256:" + strings.Repeat("3", 64)}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	client := NewSkillHubClient(app)
+	_, err = client.InstallToDirWithIntegrity(context.Background(), "demo", server.URL, "", "", string(signatureJSON))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not trusted") {
+		t.Fatalf("expected untrusted package key failure, got %v", err)
+	}
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.TrustedSkillPackageKeyFingerprints = []string{fingerprint}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if _, err := client.InstallToDirWithIntegrity(context.Background(), "demo", server.URL, "", "", string(signatureJSON)); err != nil {
+		t.Fatalf("trusted package key fingerprint should pass: %v", err)
+	}
+}
+
+func TestDownloadSkillJSONFromHubCenterVerifiesPackageSignature(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	skillBody := []byte(`{"id":"demo","name":"Demo Skill","description":"demo","version":"1.0.0","steps":[{"action":"craft_tool","params":{"instructions":"do it"}}]}`)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	validSignature := "ed25519:" + base64.StdEncoding.EncodeToString(publicKey) + ":" + base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, skillBody))
+	badSignature := "ed25519:" + base64.StdEncoding.EncodeToString(publicKey) + ":" + base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("tampered")))
+
+	var backup *httptest.Server
+	backup = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{backup.URL}})
+		case "/api/v1/skills/demo/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(skillBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backup.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{backup.URL}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if _, err := downloadSkillJSONFromHubCenterToDirWithIntegrity(context.Background(), app, "/api/v1/skills/demo/download", "", "", validSignature); err != nil {
+		t.Fatalf("valid package signature should pass: %v", err)
+	}
+	_, err = downloadSkillJSONFromHubCenterToDirWithIntegrity(context.Background(), app, "/api/v1/skills/demo/download", "", "", badSignature)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature verification failed") {
+		t.Fatalf("expected signature verification failure, got %v", err)
 	}
 }
 

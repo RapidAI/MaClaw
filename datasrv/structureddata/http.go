@@ -159,6 +159,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/data/approvals", s.withAuth(s.handleListRecordApprovals))
 	s.mux.HandleFunc("GET /api/v1/data/approvals/{approvalId}", s.withAuth(s.handleGetRecordApproval))
 	s.mux.HandleFunc("POST /api/v1/data/approvals/{approvalId}/review", s.withAuth(s.handleReviewRecordApproval))
+	s.mux.HandleFunc("POST /api/v1/data/approvals/{approvalId}/progress", s.withAuth(s.handleUpdateRecordApprovalProgress))
 	s.mux.HandleFunc("GET /api/v1/data/datasets", s.withAuth(s.handleListDatasets))
 	s.mux.HandleFunc("POST /api/v1/data/datasets", s.withAuth(s.handleCreateDataset))
 	s.mux.HandleFunc("GET /api/v1/data/datasets/{datasetId}", s.withAuth(s.handleGetDataset))
@@ -1659,6 +1660,17 @@ func (s *HTTPServer) handleCreateRecordApproval(w http.ResponseWriter, r *http.R
 	writeResult(w, http.StatusCreated, out, err)
 }
 
+func (s *HTTPServer) handleUpdateRecordApprovalProgress(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
+	var in UpdateRecordApprovalProgressInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpdateRecordApprovalProgress(r.Context(), p, r.PathValue("approvalId"), in)
+	writeResult(w, http.StatusOK, out, err)
+}
 func (s *HTTPServer) handleReviewRecordApproval(w http.ResponseWriter, r *http.Request, p Principal) {
 	if !requireAdmin(w, p) {
 		return
