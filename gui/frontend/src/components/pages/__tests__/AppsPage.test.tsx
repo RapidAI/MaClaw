@@ -711,6 +711,19 @@ describe('AppsPage', () => {
                 pending.approval_id = pendingSync.approval_id || pendingSync.record_approval_id;
                 pending.record_approval_id = pendingSync.record_approval_id || pendingSync.approval_id;
             }
+            const progressNode = workflowMapping.approvalNode || pendingNode;
+            const progressInstance = {
+                ...pending,
+                current_node: progressNode,
+                current_node_ids: [workflowMapping.submitNode || 'submit', progressNode].filter(Boolean),
+                workflow_node_ids: [workflowMapping.submitNode || 'submit', progressNode].filter(Boolean),
+                status: 'running',
+                result_status: 'running',
+                business_status: input.business_status || 'approval_pending',
+                result: 'manager review started',
+                outputs: [{ type: 'content', title: 'Workflow Progress', text: 'manager review started', status: 'running' }],
+                events: [...pendingEvents, { node: progressNode, action: 'workflow_progress', message: 'manager review started' }],
+            };
             const finalInstance = {
                 ...pending, ...(resultPayload.approval_instance || {}), lane: finalStatus === 'attention' ? 'attention' : 'handled', status: finalStatus,
                 result: failed ? (status?.error || status?.summary?.last_error_snippet || 'workflow failed') : (resultPayload.text || status?.summary?.last_output_snippet || 'approved'),
@@ -729,7 +742,7 @@ describe('AppsPage', () => {
                 finalInstance.approval_id = finalSync.approval_id || finalSync.record_approval_id;
                 finalInstance.record_approval_id = finalSync.record_approval_id || finalSync.approval_id;
             }
-            return { started: true, approval_id: finalInstance.approval_id, workflow_skill_id: input.workflow_skill_id, workflow_version: input.workflow_version, instance: pending, workflow_run: { ran: true, workflow_skill_id: input.workflow_skill_id, instance: finalInstance } };
+            return { started: true, approval_id: finalInstance.approval_id, workflow_skill_id: input.workflow_skill_id, workflow_version: input.workflow_version, instance: pending, workflow_run: { ran: true, workflow_skill_id: input.workflow_skill_id, progress_instances: [progressInstance], instance: finalInstance } };
         });
         syncMaclawAppApprovalInstanceToDataSrvMock.mockReset().mockResolvedValue({ synced: true });
         installMaclawAppDependenciesMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
@@ -1197,6 +1210,11 @@ describe('AppsPage', () => {
         const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
         await waitFor(() => expect(within(workflowSkillPicker).getAllByText('expense-workflow').length).toBeGreaterThan(0));
         fireEvent.change(screen.getByTestId('studio-dependency-install-ref'), { target: { value: 'cap-hub-expense-workflow' } });
+        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'left_nav' } });
+        fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
+        fireEvent.click(screen.getByTestId('studio-layout-slot-right'));
+        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
+        fireEvent.change(screen.getByTestId('studio-layout-region-result_panel'), { target: { value: 'bottom' } });
 
         fireEvent.click(screen.getByText('保存到 Skill'));
 
@@ -1216,7 +1234,25 @@ describe('AppsPage', () => {
         expect(payload.app.binding.dependencies.skills[0].install_ref).toBe('cap-hub-expense-workflow');
         expect(payload.app.binding.dependencies.skills[0].kind).toBe('workflow_skill');
         expect(payload.app.binding.mis.approvalBindings[0].workflowSkillId).toBe('expense-workflow');
-        expect(payload.app.binding.ui.layouts.approval_workspace.regions.length).toBeGreaterThan(0);
+        expect(payload.app.binding.ui.layouts.approval_workspace).toMatchObject({
+            template: 'left_nav',
+            density: 'compact',
+            primaryRegion: 'right',
+            outputRegion: 'bottom',
+            studio: expect.objectContaining({ editable: true, savedInManifest: true, updatedBy: 'app_studio' }),
+        });
+        expect(payload.app.binding.ui.layouts.approval_workspace.regions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'request_form', role: 'input', placement: 'right' }),
+            expect.objectContaining({ id: 'result_panel', role: 'output', placement: 'bottom' }),
+        ]));
+        expect(payload.app.governance.workspaceLayout).toMatchObject({
+            entry: 'approval_workspace',
+            template: 'left_nav',
+            density: 'compact',
+            primaryRegion: 'right',
+            outputRegion: 'bottom',
+            savedInManifest: true,
+        });
         expect(payload.app.binding.resultContract.primary).toBe('approval_result');
         expect(payload.app.binding.testProtocol.fingerprint).toMatch(/^[0-9a-f]{8}$/);
         await waitFor(() => expect(screen.getByText('已保存到 expense-super-skill/maclaw.app.json')).not.toBeNull());
@@ -4423,6 +4459,11 @@ describe('AppsPage', () => {
                     }),
                     outputs: expect.arrayContaining([expect.objectContaining({ title: 'Approved expense' })]),
                     artifacts: expect.arrayContaining([expect.objectContaining({ name: 'approval.pdf' })]),
+                    progressInstances: expect.arrayContaining([expect.objectContaining({
+                        currentNode: 'expense.manager_review',
+                        resultStatus: 'running',
+                        outputs: expect.arrayContaining([expect.objectContaining({ title: 'Workflow Progress' })]),
+                    })]),
                     approvalInstanceViewVerified: true,
                 }),
             });
@@ -4464,6 +4505,11 @@ describe('AppsPage', () => {
             }),
             outputs: expect.arrayContaining([expect.objectContaining({ title: 'Approved expense' })]),
             artifacts: expect.arrayContaining([expect.objectContaining({ name: 'approval.pdf' })]),
+            progressInstances: expect.arrayContaining([expect.objectContaining({
+                currentNode: 'expense.manager_review',
+                resultStatus: 'running',
+                outputs: expect.arrayContaining([expect.objectContaining({ title: 'Workflow Progress' })]),
+            })]),
         });
         expect(governance.testEvidence.resultPayload).toEqual(expect.objectContaining({
             approval_result: 'approved',
@@ -8437,6 +8483,29 @@ describe('AppsPage', () => {
         expect(dataSrvEvidence.dataset.state).toBe('partial');
         expect(dataSrvEvidence.textContent).toContain('1/2');
         expect(dataSrvEvidence.textContent).toContain('policy role binding pending');
+        getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                items: [{
+                    app_id: 'contract-audit',
+                    metadata: {
+                        datasrv_registration: {
+                            synced: false,
+                            eligible_count: 2,
+                            synced_count: 1,
+                            failed_count: 1,
+                        },
+                    },
+                }],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        fireEvent.click(screen.getByText('Audit DataSrv'));
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/data/app-installations') && String(url).includes('app_id=contract-audit'))).toBe(true);
+        await waitFor(() => expect(screen.getByText(/DataSrv app installations: 1/)).not.toBeNull());
+        expect(screen.getByText('DataSrv app installations: 1 · DataSrv bindings registered: 0 · DataSrv bindings partially registered: 1 · DataSrv binding registration failed: 0')).not.toBeNull();
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
 
         fireEvent.click(screen.getByText('Check dependencies'));
@@ -9550,6 +9619,16 @@ describe('AppsPage', () => {
                                 outputs: [{ kind: 'table', title: 'Approval rows', text: 'expense approved', status: 'ready', data: { rows: [{ id: 'expense-1', status: 'finance_approved' }] } }],
                                 artifacts: [{ id: 'artifact-expense-evidence', uri: 'artifact://expense/evidence.zip', name: 'expense-approval-evidence.zip', status: 'ready' }],
                             },
+                            progress_instances: [{
+                                approval_id: 'approval-remote-imported',
+                                record_id: 'expense-1',
+                                status: 'running',
+                                current_node: 'finance.director_review',
+                                current_node_ids: ['expense_report.submit', 'finance.director_review'],
+                                result_status: 'running',
+                                business_status: 'finance_pending',
+                                outputs: [{ kind: 'content', title: 'Workflow Progress', text: 'director review started', status: 'running' }],
+                            }],
                         },
                         dependency_verification: {
                             schema: 'maclaw.app.install_plan.v1',
@@ -9708,6 +9787,12 @@ describe('AppsPage', () => {
         expect(added.importedRunEvidence.approvalInstance).toMatchObject({
             instanceId: 'approval-remote-imported',
             approvalID: 'approval-remote-imported',
+            progressInstances: [expect.objectContaining({
+                currentNode: 'finance.director_review',
+                resultStatus: 'running',
+                businessStatus: 'finance_pending',
+                outputs: [expect.objectContaining({ title: 'Workflow Progress' })],
+            })],
             recordID: 'expense-1',
             status: 'approved',
             currentNode: 'expense_report.result_feedback',

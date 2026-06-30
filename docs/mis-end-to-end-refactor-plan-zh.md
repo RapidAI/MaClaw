@@ -12316,3 +12316,241 @@ go test ./gui -count=1 -vet=off -run "TestExecuteMISDataToolListAppInstallations
 ```
 
 结果：通过。
+
+### 推进记录：应用面板显示 DataSrv 登记诊断状态（2026-06-30）
+
+本轮继续把 DataSrv app installation 登记结果从“可查询”推进到“用户可见”。此前安装记录的 evidence snapshot 只把 `datasrv_registration` 拼成普通文本，且 `synced_count > 0` 但未完全同步时会被归为失败，用户无法区分“全部失败”和“部分成功、仍需处理”。
+
+已完成：
+
+- App Studio / 应用面板的安装证据快照增加 DataSrv 登记状态判定：
+  - `ready`：全部 eligible 绑定已同步。
+  - `partial`：已有部分绑定同步成功，但仍有失败或未完成项。
+  - `failed`：存在失败且没有成功同步项。
+  - `skipped`：无 eligible 绑定或被跳过。
+- 新增 `datasrvRegistrationPartial` 中英文文案：
+  - `DataSrv bindings partially registered`
+  - `DataSrv 绑定部分注册`
+- 安装证据快照中的 DataSrv 项增加 `data-state`，并使用低饱和状态样式区分 ready / partial / failed / skipped。
+- 扩展最近安装记录测试：当安装审计里 `datasrv_registration` 为 `eligible_count=2, synced_count=1, failed_count=1` 时，应用面板必须显示“部分注册”、比例 `1/2` 和失败原因。
+
+验证：
+
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：194 passed。
+### 推进记录：最近安装记录支持 DataSrv 登记审计操作（2026-06-30）
+
+本轮继续把“安装审计里有登记证据”推进到“用户可主动复核 DataSrv 当前事实”。此前最近安装记录只能显示本地持久化的 `datasrv_registration` 快照；如果用户怀疑 DataSrv 端登记状态变化，仍需要离开应用面板手工查 `/api/v1/data/app-installations`。
+
+已完成：
+
+- 最近安装记录在存在 `datasrv_registration` 和 App 身份时显示 `Audit DataSrv` 操作。
+- 点击后读取当前 MIS DataSrv 配置，并按 App 安装身份查询 `/api/v1/data/app-installations`。
+- 审计摘要显示 DataSrv 当前安装记录数量，以及 ready / partial / failed / skipped 登记状态计数。
+- 对同一 App 通过多个安装身份命中的结果做去重，避免 market/local/canonical ID 别名导致同一 DataSrv 记录重复计数。
+- 审计结果沿用应用面板的 ready / partial / failed / skipped 低饱和状态样式，保持企业工作台式诊断呈现。
+
+验证：
+
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows recent app install records in the market pane"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：定向用例通过；AppsPage 全量 194 passed。
+### 推进记录：真实 workflow runner 中间节点写入 DataSrv progress（2026-06-30）
+
+本轮继续收缩“审批 workflow 运行中状态仍依赖手工 mock”的缺口。此前 `StartMaclawAppApprovalWorkflow(... run_workflow_skill=true)` 已能调用真实 workflow skill runner，并把最终 `approval_instance` 写回 DataSrv；但 workflow skill 即使产出运行中节点，也没有标准入口让后端按顺序同步到 DataSrv `/progress`，黄金链路仍需要测试手工调用 `SyncMaclawAppApprovalInstanceToDataSrv` 来模拟 running 阶段。
+
+已完成：
+
+- workflow skill 输出合同新增兼容运行中实例数组：
+  - `progress_instances`
+  - `progressInstances`
+  - `workflow_progress`
+  - `workflowProgress`
+  - `approval_progress`
+  - `approvalProgress`
+- 每个 progress item 复用现有 `approval_instance` 解析能力，可直接写实例字段，也可嵌套 `approval_instance` / `instance`。
+- `runMaclawAppApprovalWorkflowSkill` 在解析最终实例前，按顺序把 progress 实例同步到 `SyncMaclawAppApprovalInstanceToDataSrv`；pending 状态因此走 DataSrv `/api/v1/data/approvals/{id}/progress`，并保留 workflow node path、current assignee、business/result status、outputs/artifacts/result payload。
+- workflow run 返回体新增：
+  - `progress_instances`：后端归一化后的运行中审批实例快照。
+  - `progress_sync`：每个运行中实例对应的 DataSrv 同步结果。
+- 最终 `approval_instance` 的 review 同步保持原行为，旧 workflow skill 只返回最终结果时不受影响。
+- 扩展真实 runner 回归：测试 skill 输出 `progress_instances + approval_instance`，断言后端先写 DataSrv `/progress`，再写最终 `/review`。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval|TestSyncMaclawAppApprovalInstanceToDataSrvUpdatesPendingProgress" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+发起节点 UI 数据提交
+  -> 后端 StartMaclawAppApprovalWorkflow 创建 DataSrv approval
+  -> 真实 workflow skill runner 执行
+  -> workflow skill 输出 progress_instances
+  -> 后端逐条同步 DataSrv /progress
+  -> GUI/DataSrv 审批实例可看到 running 节点、节点路径、当前处理人和运行中输出
+  -> workflow skill 输出最终 approval_instance
+  -> 后端同步 DataSrv /review 和最终结果包
+```
+
+### 推进记录：前端运行证据保留 workflow runner progress 实例（2026-06-30）
+
+本轮继续把上一段“真实 workflow runner 中间节点写入 DataSrv progress”的后端能力接到 MaClaw App 前端运行和发布链路。此前后端 `workflow_run.progress_instances` 已能返回真实审批运行中的节点快照，但 GUI 只把最终 `approval_instance` 写入本地运行历史和发布治理证据，导致 App Studio 测试通过后上传 Hub 时，市场审核只能看到最终结果，看不到“当前节点/中间审批状态/运行中输出”的证据。
+
+已完成：
+
+- 审批型 App 调用 `StartMaclawAppApprovalWorkflow(... run_workflow_skill=true)` 后，前端读取 `workflow_run.progress_instances` / `workflow_run.progressInstances`。
+- 当 workflow runner 返回中间审批实例时，GUI 会先把 progress 实例合并进审批实例列表，让“我的申请 / 我审批的 / 当前节点状态”能看到运行中节点。
+- 本地运行历史的 `approvalInstance.progressInstances` 保留每个 progress 快照，包括 current node、workflow node path、business/result status、outputs/artifacts 等证据字段。
+- App Studio 发布包的 `governance.testEvidence.approvalInstance.progressInstances` 同步携带这些中间节点证据，能力市场审核可以验证审批型 App 不只是返回最终文本，而是真的跑过审批 workflow。
+- 普通 tool skill 轮询逻辑中误混入的审批 progress evidence 变量已清理，避免非审批 App 编译/运行时引用越界变量。
+- 前端测试 mock 补充真实 workflow runner 的 `progress_instances` 返回，覆盖“经理审批中”节点进入运行历史和发布治理证据。
+
+验证：
+
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "publishes approval app evidence from an actual workflow run"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval|TestSyncMaclawAppApprovalInstanceToDataSrvUpdatesPendingProgress" -timeout 240s
+```
+
+结果：定向发布证据用例通过；AppsPage 全量 194 passed；GUI 后端审批 workflow 目标用例通过。
+
+对应全链路意义：
+
+```text
+App Studio 测试审批型 App
+  -> 发起节点 UI 提交业务数据
+  -> 后端创建 DataSrv approval 并运行真实 workflow skill
+  -> workflow runner 返回 progress_instances
+  -> 后端同步 DataSrv /progress
+  -> 前端审批工作台合并显示运行中节点
+  -> 本地 run history 保存 progressInstances
+  -> 发布 Hub 包时 governance.testEvidence 携带中间节点证据
+  -> 市场审核/企业安装方能确认审批型 App 的 workflow 过程真实可追踪
+```
+
+### 推进记录：App Studio 审批型应用布局保存到 Skill 定义证据加固（2026-06-30）
+
+本轮继续推进“应用程序设计时自动生成界面、用户可视化调整位置、布局信息保存到应用信息文件、测试后上传 Hub”的闭环。现有 App Studio 已有 `StudioLayoutDesigner`，可以通过可视化槽位和控件调整 template、density、primaryRegion、outputRegion 以及各运行区域 placement；创建本地 App 和运行面板也已能读取这些 manifest 布局。本轮重点把企业审批型 App 保存到 Skill 定义这条链路钉牢，避免只验证“有 regions”，却没有验证“用户调过的位置真的写进 maclaw.app.json / 发布治理证据”。
+
+已完成：
+
+- 扩展“新建企业审批型 App 保存到 appSkill 定义”的前端回归用例。
+- 测试中模拟设计师在 App Studio 里调整审批应用布局：
+  - template 改为 `left_nav`
+  - density 改为 `compact`
+  - primaryRegion 改为 `right`
+  - outputRegion 改为 `bottom`
+  - `result_panel` 移到底部结果区
+- 断言 `SaveMaclawAppDefinitionForSkill(appSkill, manifestText)` 收到的 manifest 中：
+  - `app.binding.ui.layouts.approval_workspace` 保留上述布局字段
+  - `regions` 保留 `request_form` / `result_panel` 的实际 placement
+  - `studio.savedInManifest=true` 且 `updatedBy=app_studio`
+  - `app.governance.workspaceLayout` 同步携带可审核的布局证据
+- 这让“保存到 Skill -> 测试 -> 上传 Hub/能力市场审核”的包内证据能证明审批型应用界面不是固定表单，而是可视化设计后持久化的传统软件式工作台布局。
+
+验证：
+
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves a newly created enterprise approval app into its app skill definition"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：定向用例通过；AppsPage 全量 194 passed。
+
+对应全链路意义：
+
+```text
+App Studio 选择企业审批型应用
+  -> 绑定 appSkill 和 approval workflow skill
+  -> 设计师可视化调整界面布局和区域位置
+  -> 保存到 appSkill/maclaw.app.json
+  -> manifest.ui.layouts.approval_workspace 保存具体布局
+  -> governance.workspaceLayout 形成市场审核证据
+  -> 后续测试、上传、安装、运行均可按同一布局定义恢复界面
+```
+
+### 推进记录：DataSrv 安装恢复保留审批 workflow progress 证据（2026-06-30）
+
+本轮继续补齐“测试后上传 Hub、安装后从 DataSrv 恢复运行证据”的后半段闭环。此前 GUI 已能在本地运行历史和发布治理证据中保存 `approvalInstance.progressInstances`，但从 DataSrv `app_installations.metadata.test_evidence` 反向恢复已安装 MaClaw App 时，只读取最终 `approval_instance`；如果 DataSrv 把运行中节点保存为顶层 `progress_instances` / `workflow_progress`，恢复到应用面板后会丢失中间审批节点，市场安装方只能看到最终审批结果，不能复核 workflow 过程。
+
+已完成：
+
+- `dataSrvInstalledRunEvidence` 增加 progress evidence 合并逻辑，支持从 DataSrv metadata 读取：
+  - `test_evidence.progress_instances` / `progressInstances`
+  - `test_evidence.workflow_progress` / `workflowProgress`
+  - `test_evidence.approval_progress` / `approvalProgress`
+  - 以及 metadata 顶层对应别名
+- 当最终 `approval_instance` 本身尚未包含 progress 字段时，恢复逻辑会把顶层 progress 数组合并到 `approvalInstance.progressInstances`。
+- 如果最终 `approval_instance` 已经内嵌 progress，则保留原始证据，不覆盖。
+- 扩展 DataSrv installed MaClaw App 恢复用例：模拟 DataSrv metadata 中保存“财务总监审批中”的 `progress_instances`，断言添加到应用面板后的 `importedRunEvidence.approvalInstance.progressInstances` 保留 current node、business/result status 和运行中输出。
+
+验证：
+
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：定向 DataSrv 安装恢复用例通过；AppsPage 全量 194 passed。
+
+对应全链路意义：
+
+```text
+App Studio 测试审批型 App
+  -> 发布/安装审计保存最终 approval_instance 和 progress_instances
+  -> Hub / DataSrv app_installations metadata 保留测试证据
+  -> GUI 从 DataSrv 反向发现已安装 MaClaw App
+  -> 添加到应用面板时恢复 importedRunEvidence
+  -> approvalInstance.progressInstances 仍可证明中间审批节点
+  -> 安装方和审核方能复核“不是只看最终结果，而是审批 workflow 过程可追踪”
+```
+
+### 推进记录：Hub SkillMetadata 承载 MaClaw App 企业证据（2026-06-30）
+本轮继续补齐“App Studio 测试后上传 Hub、能力市场审核、安装侧复核”的元数据闭环。此前 GUI、DataSrv 和发布包治理证据已经能保存审批实例、workflow progress、动态布局、依赖检查和 DataSrv 注册信息，但 HubCenter 的 `skill.yaml` 结构化 metadata 中 `maclaw_app_test_evidence` 仍只有基础运行结果字段，审核/索引/安装侧如果只读取 SkillMetadata，会看不到企业审批型 App 的关键证据。
+
+已完成：
+
+- 扩展 `hubcenter/internal/skillmarket.SkillMetadata.MaclawAppTestEvidence`，新增结构化字段：
+  - `app_kind`
+  - `approval_instance`
+  - `progress_instances`
+  - `approval_views`
+  - `dependency_verification`
+  - `workspace_layout`
+  - `datasrv_registration`
+  - `workflow_contract`
+- 保留原有 `run_id`、`verified_at`、`definition_fingerprint`、`artifact_*`、`output_count`、`primary_result`、`result_payload`，兼容已有工具型/普通型 App 证据。
+- 新增 `TestMetadata_RoundTrip_MaclawAppEvidence`，验证企业审批型 App 的完整证据能从 `SkillMetadata -> YAML -> ParseSkillYAML` 往返，并且 `maclaw_app_test_evidence` 被视为已知字段，不落入 `Extra`。
+- 顺手清理前端 `dataSrvInstalledRunEvidence` 中 `approvalEvidenceWithProgress` 与 `artifactName` 挤在同一行的格式问题，避免后续审阅误判逻辑。
+
+验证：
+
+```powershell
+go test ./hubcenter/internal/skillmarket -count=1 -vet=off
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：均通过；AppsPage 全量 194 passed。
+
+对应全链路意义：
+
+```text
+App Studio 试运行企业审批型 App
+  -> 生成 approval_instance、progress_instances、依赖验证、布局和 DataSrv 注册证据
+  -> 发布/上传 Hub 时写入治理证据
+  -> HubCenter SkillMetadata 可以结构化承载同一组证据
+  -> 能力市场审核、索引、安装诊断和二次复核不必只依赖深层 governance JSON
+```

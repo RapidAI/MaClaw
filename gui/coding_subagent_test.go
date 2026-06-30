@@ -1904,7 +1904,7 @@ func TestRemoteCodingSubAgentCallbacksAreNilSafe(t *testing.T) {
 		t.Fatalf("nil callback should not request stop")
 	}
 	if ctx, release, err := nilCB.LLMRequestContext(1); err != nil || ctx == nil || release == nil {
-		t.Fatalf("nil callback should return background request context, ctx=%v release=%v err=%v", ctx, release, err)
+		t.Fatalf("nil callback should return background request context, ctx=%v release_nil=%v err=%v", ctx, release == nil, err)
 	}
 	if prompt := nilCB.BuildSystemPrompt("task", true); !strings.Contains(prompt, "Remote Coding SubAgent") {
 		t.Fatalf("nil callback should still build base remote prompt, got %q", prompt)
@@ -1958,6 +1958,10 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"diff/status 自检结果",
 		"实际运行的验证命令及结果",
 		"剩余风险或未验证项",
+		"文件改写必须使用 ssh_edit_file/ssh_write_file",
+		"必须用 ssh_check_task 跟进直到得到明确状态/exit_code",
+		"git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f",
+		"不要用 ssh_bash 执行 rm -r/rm -rf",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("remote prompt should expose alias hint %q, got %q", want, prompt)
@@ -1998,10 +2002,31 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 	expectDescriptionContains("ssh_edit_file", "old_string/old_content/find/search", "new_string/new_content/replace/replacement")
 	expectDescriptionContains("ssh_edit_file.old_str", "old_string/old_content/find/search")
 	expectDescriptionContains("ssh_edit_file.new_str", "new_string/new_content/replace/replacement")
+	expectDescriptionContains("ssh_bash", "探索、诊断、格式化或验证", "拒绝 git 工作区改写", "递归删除")
+	expectDescriptionContains("ssh_bash.command", "探索/诊断/格式化/验证", "不要用它改写文件或 Git 工作区")
 	expectDescriptionContains("ssh_bash.working_dir", "cwd/work_dir")
 	expectDescriptionContains("ssh_list_dir.path", "dir/directory/root", "file/file_path/filename/target_path")
 	expectDescriptionContains("ssh_check_task.task_id", "id/task")
 	expectDescriptionContains("ssh_check_task.tail_lines", "默认 50", "tail/lines/limit", "1-1000")
+}
+
+func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: "/repo/project"}}
+	for _, command := range []string{
+		"git reset --hard HEAD",
+		"git checkout -- .",
+		"rm -rf build",
+		"sed -i 's/a/b/' src/main.go",
+		"python -c \"open('src/main.go','w').write('x')\"",
+	} {
+		result := cb.sshBash(map[string]interface{}{"command": command})
+		if !strings.Contains(result, "拒绝执行高风险命令") || !strings.Contains(result, "远程编码 SubAgent") {
+			t.Fatalf("remote ssh_bash should reject high-risk command %q before SSH, got %q", command, result)
+		}
+		if strings.Contains(result, "handler unavailable") {
+			t.Fatalf("remote ssh_bash should reject %q before checking SSH handler, got %q", command, result)
+		}
+	}
 }
 
 func TestRemoteShellQuoteEscapesSingleQuotes(t *testing.T) {

@@ -291,8 +291,7 @@
     font-weight: 600;
 }
 
-/* Sidebar medal glow animations — one per medal color */
-/* Sidebar medal — no animation, static display */
+/* Sidebar medal — static display, no animation */
 
 .about-status-pill {
     display: inline-flex;

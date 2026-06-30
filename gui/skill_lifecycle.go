@@ -85,14 +85,22 @@ type skillPackageManifest struct {
 }
 
 type maclawAppTestEvidence struct {
-	RunID                 string         `json:"run_id,omitempty"`
-	VerifiedAt            string         `json:"verified_at,omitempty"`
-	DefinitionFingerprint string         `json:"definition_fingerprint,omitempty"`
-	ArtifactPresent       bool           `json:"artifact_present,omitempty"`
-	ArtifactName          string         `json:"artifact_name,omitempty"`
-	OutputCount           int            `json:"output_count,omitempty"`
-	PrimaryResult         string         `json:"primary_result,omitempty"`
-	ResultPayload         map[string]any `json:"result_payload,omitempty"`
+	RunID                  string           `json:"run_id,omitempty"`
+	VerifiedAt             string           `json:"verified_at,omitempty"`
+	DefinitionFingerprint  string           `json:"definition_fingerprint,omitempty"`
+	AppKind                string           `json:"app_kind,omitempty"`
+	ArtifactPresent        bool             `json:"artifact_present,omitempty"`
+	ArtifactName           string           `json:"artifact_name,omitempty"`
+	OutputCount            int              `json:"output_count,omitempty"`
+	PrimaryResult          string           `json:"primary_result,omitempty"`
+	ResultPayload          map[string]any   `json:"result_payload,omitempty"`
+	ApprovalInstance       map[string]any   `json:"approval_instance,omitempty"`
+	ProgressInstances      []map[string]any `json:"progress_instances,omitempty"`
+	ApprovalViews          []string         `json:"approval_views,omitempty"`
+	DependencyVerification map[string]any   `json:"dependency_verification,omitempty"`
+	WorkspaceLayout        map[string]any   `json:"workspace_layout,omitempty"`
+	DataSrvRegistration    map[string]any   `json:"datasrv_registration,omitempty"`
+	WorkflowContract       map[string]any   `json:"workflow_contract,omitempty"`
 }
 
 type skillPackageManifestFile struct {
@@ -289,7 +297,11 @@ func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
 	}
 	app, _ := doc["app"].(map[string]any)
 	governance, _ := app["governance"].(map[string]any)
+	binding, _ := app["binding"].(map[string]any)
 	testEvidence, _ := governance["testEvidence"].(map[string]any)
+	if len(testEvidence) == 0 {
+		testEvidence, _ = governance["test_evidence"].(map[string]any)
+	}
 	if len(testEvidence) == 0 {
 		return nil
 	}
@@ -297,15 +309,33 @@ func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
 		RunID:                 strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "runId"), stringMapValue(testEvidence, "run_id"))),
 		VerifiedAt:            strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "verifiedAt"), stringMapValue(testEvidence, "verified_at"))),
 		DefinitionFingerprint: strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "definitionHash"), stringMapValue(testEvidence, "definition_hash"), stringMapValue(testEvidence, "definitionFingerprint"), stringMapValue(testEvidence, "definition_fingerprint"))),
+		AppKind:               strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "appKind"), stringMapValue(testEvidence, "app_kind"), stringMapValue(app, "kind"))),
 		ArtifactName:          strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "artifactName"), stringMapValue(testEvidence, "artifact_name"))),
 		PrimaryResult:         strings.TrimSpace(firstNonEmptySkillAppString(stringMapValue(testEvidence, "primaryResult"), stringMapValue(testEvidence, "primary_result"))),
 	}
 	if count, ok := maclawAppNumberFromAny(firstNonEmptyMaclawAppAny(testEvidence["outputCount"], testEvidence["output_count"])); ok && count > 0 {
 		out.OutputCount = int(count)
 	}
-	if payload, ok := firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"]).(map[string]any); ok && len(payload) > 0 {
+	if payload := anyMap(firstNonEmptyMaclawAppAny(testEvidence["resultPayload"], testEvidence["result_payload"])); len(payload) > 0 {
 		out.ResultPayload = cloneMapAny(payload)
 	}
+	if approval := anyMap(firstNonEmptyMaclawAppAny(testEvidence["approvalInstance"], testEvidence["approval_instance"])); len(approval) > 0 {
+		out.ApprovalInstance = cloneMapAny(approval)
+	}
+	out.ProgressInstances = maclawAppEvidenceMapSlice(firstNonEmptyMaclawAppAny(
+		testEvidence["progressInstances"],
+		testEvidence["progress_instances"],
+		testEvidence["workflowProgress"],
+		testEvidence["workflow_progress"],
+		testEvidence["approvalProgress"],
+		testEvidence["approval_progress"],
+		firstNonEmptyMaclawAppAny(out.ApprovalInstance["progressInstances"], out.ApprovalInstance["progress_instances"], out.ApprovalInstance["workflowProgress"], out.ApprovalInstance["workflow_progress"]),
+	))
+	out.ApprovalViews = maclawAppEvidenceStringSlice(firstNonEmptyMaclawAppAny(testEvidence["approvalViews"], testEvidence["approval_views"], testEvidence["viewVerified"], testEvidence["approvalInstanceViewVerified"]))
+	out.DependencyVerification = cloneMapAny(anyMap(firstNonEmptyMaclawAppAny(testEvidence["dependencyVerification"], testEvidence["dependency_verification"], governance["dependencyVerification"], governance["dependency_verification"])))
+	out.WorkspaceLayout = cloneMapAny(anyMap(firstNonEmptyMaclawAppAny(testEvidence["workspaceLayout"], testEvidence["workspace_layout"], governance["workspaceLayout"], governance["workspace_layout"])))
+	out.DataSrvRegistration = cloneMapAny(anyMap(firstNonEmptyMaclawAppAny(testEvidence["datasrvRegistration"], testEvidence["datasrv_registration"], testEvidence["dataSrvRegistration"], governance["datasrvRegistration"], governance["datasrv_registration"], governance["dataSrvRegistration"])))
+	out.WorkflowContract = cloneMapAny(anyMap(firstNonEmptyMaclawAppAny(testEvidence["workflowContract"], testEvidence["workflow_contract"], governance["workflowContract"], governance["workflow_contract"], binding["workflowContract"], binding["workflow_contract"])))
 	if boolMapValue(testEvidence, "artifactPresent") || boolMapValue(testEvidence, "artifact_present") {
 		out.ArtifactPresent = true
 	}
@@ -315,12 +345,70 @@ func maclawAppTestEvidenceFromDefinition(data []byte) *maclawAppTestEvidence {
 			out.ArtifactPresent = true
 		}
 	}
-	if out.RunID == "" && out.VerifiedAt == "" && out.DefinitionFingerprint == "" && out.ArtifactName == "" && !out.ArtifactPresent && out.OutputCount == 0 && out.PrimaryResult == "" && len(out.ResultPayload) == 0 {
+	if out.RunID == "" && out.VerifiedAt == "" && out.DefinitionFingerprint == "" && out.AppKind == "" && out.ArtifactName == "" && !out.ArtifactPresent && out.OutputCount == 0 && out.PrimaryResult == "" && len(out.ResultPayload) == 0 && len(out.ApprovalInstance) == 0 && len(out.ProgressInstances) == 0 && len(out.ApprovalViews) == 0 && len(out.DependencyVerification) == 0 && len(out.WorkspaceLayout) == 0 && len(out.DataSrvRegistration) == 0 && len(out.WorkflowContract) == 0 {
 		return nil
 	}
 	return out
 }
 
+func maclawAppEvidenceMapSlice(raw any) []map[string]any {
+	items := anySlice(raw)
+	if len(items) == 0 {
+		if item := anyMap(raw); len(item) > 0 {
+			items = []any{item}
+		}
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		m := anyMap(item)
+		if len(m) == 0 {
+			continue
+		}
+		if nested := anyMap(firstNonEmptyMaclawAppAny(m["approvalInstance"], m["approval_instance"], m["instance"])); len(nested) > 0 {
+			m = nested
+		}
+		out = append(out, cloneMapAny(m))
+	}
+	return out
+}
+
+func maclawAppEvidenceStringSlice(raw any) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	switch v := raw.(type) {
+	case []string:
+		for _, item := range v {
+			add(item)
+		}
+	case []any:
+		for _, item := range v {
+			add(fmt.Sprint(item))
+		}
+	case map[string]any:
+		for key, value := range v {
+			if ok, _ := value.(bool); ok {
+				add(key)
+			}
+		}
+	case string:
+		for _, item := range strings.Split(v, ",") {
+			add(item)
+		}
+	case bool:
+		if v {
+			add("verified")
+		}
+	}
+	return out
+}
 func skillYAMLFromEntry(entry *corelib.NLSkillEntry) *cskill.SkillYAMLFile {
 	return buildSkillYAMLFileFromPackageEntry(entry)
 }

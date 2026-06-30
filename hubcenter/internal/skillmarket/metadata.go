@@ -50,14 +50,22 @@ type SkillMetadata struct {
 }
 
 type MaclawAppTestEvidence struct {
-	RunID                 string         `yaml:"run_id,omitempty" json:"run_id,omitempty"`
-	VerifiedAt            string         `yaml:"verified_at,omitempty" json:"verified_at,omitempty"`
-	DefinitionFingerprint string         `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
-	ArtifactPresent       bool           `yaml:"artifact_present,omitempty" json:"artifact_present,omitempty"`
-	ArtifactName          string         `yaml:"artifact_name,omitempty" json:"artifact_name,omitempty"`
-	OutputCount           int            `yaml:"output_count,omitempty" json:"output_count,omitempty"`
-	PrimaryResult         string         `yaml:"primary_result,omitempty" json:"primary_result,omitempty"`
-	ResultPayload         map[string]any `yaml:"result_payload,omitempty" json:"result_payload,omitempty"`
+	RunID                  string           `yaml:"run_id,omitempty" json:"run_id,omitempty"`
+	VerifiedAt             string           `yaml:"verified_at,omitempty" json:"verified_at,omitempty"`
+	DefinitionFingerprint  string           `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
+	AppKind                string           `yaml:"app_kind,omitempty" json:"app_kind,omitempty"`
+	ArtifactPresent        bool             `yaml:"artifact_present,omitempty" json:"artifact_present,omitempty"`
+	ArtifactName           string           `yaml:"artifact_name,omitempty" json:"artifact_name,omitempty"`
+	OutputCount            int              `yaml:"output_count,omitempty" json:"output_count,omitempty"`
+	PrimaryResult          string           `yaml:"primary_result,omitempty" json:"primary_result,omitempty"`
+	ResultPayload          map[string]any   `yaml:"result_payload,omitempty" json:"result_payload,omitempty"`
+	ApprovalInstance       map[string]any   `yaml:"approval_instance,omitempty" json:"approval_instance,omitempty"`
+	ProgressInstances      []map[string]any `yaml:"progress_instances,omitempty" json:"progress_instances,omitempty"`
+	ApprovalViews          []string         `yaml:"approval_views,omitempty" json:"approval_views,omitempty"`
+	DependencyVerification map[string]any   `yaml:"dependency_verification,omitempty" json:"dependency_verification,omitempty"`
+	WorkspaceLayout        map[string]any   `yaml:"workspace_layout,omitempty" json:"workspace_layout,omitempty"`
+	DataSrvRegistration    map[string]any   `yaml:"datasrv_registration,omitempty" json:"datasrv_registration,omitempty"`
+	WorkflowContract       map[string]any   `yaml:"workflow_contract,omitempty" json:"workflow_contract,omitempty"`
 }
 
 func cloneSkillMarketAnyMap(value map[string]any) map[string]any {

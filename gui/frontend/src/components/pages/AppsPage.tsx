@@ -454,6 +454,7 @@ type AppRunApprovalInstanceEvidence = {
     viewVerified?: boolean;
     approvalInstanceViewVerified?: boolean;
     approvalViews?: Record<string, unknown>;
+    progressInstances?: AppRunApprovalInstanceEvidence[];
     verifiedAt?: string;
 };
 
@@ -1153,6 +1154,10 @@ const labels = {
         datasrvRegistrationPartial: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u90e8\u5206\u6ce8\u518c',
         datasrvRegistrationSkipped: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u672a\u6ce8\u518c',
         datasrvRegistrationFailed: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u6ce8\u518c\u5931\u8d25',
+        auditDataSrvRegistration: '\u5ba1\u8ba1 DataSrv',
+        auditingDataSrvRegistration: '\u5ba1\u8ba1\u4e2d',
+        dataSrvRegistrationAuditFound: 'DataSrv \u5b89\u88c5\u8bb0\u5f55',
+        dataSrvRegistrationAuditMissing: 'DataSrv \u5b89\u88c5\u8bb0\u5f55\u672a\u627e\u5230',
         installRecordsLoading: '\u6b63\u5728\u8bfb\u53d6\u5b89\u88c5\u8bb0\u5f55',
         installRecordsError: '\u5b89\u88c5\u8bb0\u5f55\u8bfb\u53d6\u5931\u8d25',
         noInstallRecords: '\u6682\u65e0\u5e94\u7528\u5b89\u88c5\u8bb0\u5f55',
@@ -1500,6 +1505,10 @@ const labels = {
         datasrvRegistrationPartial: 'DataSrv bindings partially registered',
         datasrvRegistrationSkipped: 'DataSrv bindings not registered',
         datasrvRegistrationFailed: 'DataSrv binding registration failed',
+        auditDataSrvRegistration: 'Audit DataSrv',
+        auditingDataSrvRegistration: 'Auditing',
+        dataSrvRegistrationAuditFound: 'DataSrv app installations',
+        dataSrvRegistrationAuditMissing: 'DataSrv app installation not found',
         installRecordsLoading: 'Reading install records',
         installRecordsError: 'Failed to read install records',
         noInstallRecords: 'No app install records yet',
@@ -2641,6 +2650,55 @@ async function fetchDataSrvApprovalAppSummary(text: typeof labels.zh): Promise<D
     }));
     return { status: 'ready', endpoint, buckets };
 }
+function dataSrvRegistrationFromInstallation(item: DataSrvAppInstallationItem): BackendAppDataSrvRegistration | undefined {
+    const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata as Record<string, any> : {};
+    const installEvidence = appEvidenceRecord(metadata.install_evidence) || appEvidenceRecord(metadata.installEvidence) || {};
+    const registration = appEvidenceRecord(metadata.datasrv_registration)
+        || appEvidenceRecord(metadata.dataSrvRegistration)
+        || appEvidenceRecord(installEvidence.datasrv_registration)
+        || appEvidenceRecord(installEvidence.dataSrvRegistration);
+    return registration as BackendAppDataSrvRegistration | undefined;
+}
+
+async function fetchDataSrvInstallRegistrationAudit(record: BackendAppInstallRecord, text: typeof labels.zh): Promise<{ message: string; state: 'ready' | 'partial' | 'failed' | 'skipped' }> {
+    const config = await Promise.resolve().then(() => GetMISDataConfig()) as MISDataConfig;
+    const endpoint = String(config?.endpoint || 'http://127.0.0.1:18180').replace(/\/+$/, '');
+    if (!config?.enabled) throw new Error(text.datasrvRegistrationSkipped);
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (config.token) headers.Authorization = `Bearer ${config.token}`;
+    const appIDs = Array.from(new Set((record.apps || []).flatMap((app) => appInstallIdentityKeys(String(app.id || ''))).filter(Boolean)));
+    if (appIDs.length === 0) throw new Error(text.dataSrvRegistrationAuditMissing);
+    const responses = await Promise.all(appIDs.map(async (appID) => {
+        const params = new URLSearchParams({ app_id: appID, limit: '10' });
+        const response = await fetch(`${endpoint}/api/v1/data/app-installations?${params.toString()}`, { headers });
+        if (!response.ok) throw new Error(`GET /api/v1/data/app-installations ${response.status}`);
+        const payload = await response.json();
+        return Array.isArray(payload?.items) ? payload.items as DataSrvAppInstallationItem[] : Array.isArray(payload) ? payload as DataSrvAppInstallationItem[] : [];
+    }));
+    const seenItems = new Set<string>();
+    const items = responses.flat().filter((item, index) => {
+        const key = String(item.app_id || item.appId || item.blueprint_id || item.blueprintID || index).trim() || String(index);
+        if (seenItems.has(key)) return false;
+        seenItems.add(key);
+        return true;
+    });
+    if (items.length === 0) return { state: 'failed', message: `${text.dataSrvRegistrationAuditMissing}: ${appIDs.slice(0, 3).join(', ')}` };
+    const states = items.map(dataSrvRegistrationFromInstallation).map(dataSrvRegistrationState).filter((item): item is NonNullable<ReturnType<typeof dataSrvRegistrationState>> => !!item);
+    const ready = states.filter((item) => item.state === 'ready').length;
+    const partial = states.filter((item) => item.state === 'partial').length;
+    const failed = states.filter((item) => item.state === 'failed').length;
+    const skipped = states.filter((item) => item.state === 'skipped').length + Math.max(0, items.length - states.length);
+    const state = failed > 0 ? 'failed' : partial > 0 ? 'partial' : ready > 0 ? 'ready' : 'skipped';
+    const parts = [
+        `${text.dataSrvRegistrationAuditFound}: ${items.length}`,
+        `${text.datasrvRegistrationReady}: ${ready}`,
+        `${text.datasrvRegistrationPartial}: ${partial}`,
+        `${text.datasrvRegistrationFailed}: ${failed}`,
+    ];
+    if (skipped > 0) parts.push(`${text.datasrvRegistrationSkipped}: ${skipped}`);
+    return { state, message: parts.join(' · ') };
+}
+
 
 function dataSrvApprovalSummaryItem(item: DataSrvAppInstallationItem): DataSrvApprovalSummaryItem | null {
     const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
@@ -3335,6 +3393,26 @@ function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: strin
     const runID = String(evidence.run_id || evidence.runId || metadata.test_evidence_run_id || '').trim();
     if (!runID) return undefined;
     const approvalEvidence = appEvidenceRecord(firstAppEvidenceValue(evidence.approvalInstance, evidence.approval_instance, evidence.approval, metadata.test_evidence_approval_instance, metadata.approvalInstance, metadata.approval_instance));
+    const progressEvidence = firstAppEvidenceValue(
+        evidence.progressInstances,
+        evidence.progress_instances,
+        evidence.workflowProgress,
+        evidence.workflow_progress,
+        evidence.approvalProgress,
+        evidence.approval_progress,
+        metadata.test_evidence_progress_instances,
+        metadata.test_evidence_workflow_progress,
+        metadata.test_evidence_approval_progress,
+        metadata.progressInstances,
+        metadata.progress_instances,
+        metadata.workflowProgress,
+        metadata.workflow_progress,
+        metadata.approvalProgress,
+        metadata.approval_progress,
+    );
+    const approvalEvidenceWithProgress = approvalEvidence && progressEvidence !== undefined && approvalEvidence.progressInstances === undefined && approvalEvidence.progress_instances === undefined && approvalEvidence.workflowProgress === undefined && approvalEvidence.workflow_progress === undefined && approvalEvidence.approvalProgress === undefined && approvalEvidence.approval_progress === undefined
+        ? { ...approvalEvidence, progressInstances: progressEvidence }
+        : approvalEvidence;
     const artifactName = String(evidence.artifact_name || evidence.artifactName || metadata.test_evidence_artifact_name || '').trim();
     const rawEvidenceArtifacts = firstAppEvidenceValue(evidence.artifacts, approvalEvidence?.artifacts, metadata.test_evidence_artifacts);
     const evidenceArtifacts = Array.isArray(rawEvidenceArtifacts) ? rawEvidenceArtifacts as ApprovalInstanceArtifactView[] : [];
@@ -3361,7 +3439,7 @@ function dataSrvInstalledRunEvidence(metadata: Record<string, any>, appID: strin
         outputs: evidenceOutputs.length > 0 ? evidenceOutputs : outputCount > 0 ? [{ type: 'summary', title: 'Imported outputs', text: String(outputCount) }] : undefined,
         resultCoverage: dataSrvInstalledResultCoverageEvidence(metadata, evidence),
         dependencyVerification: dataSrvInstalledDependencyVerificationEvidence(metadata, evidence),
-        approvalInstance: approvalEvidence,
+        approvalInstance: approvalEvidenceWithProgress,
         at: String(evidence.verified_at || evidence.verifiedAt || metadata.test_evidence_verified_at || '').trim() || new Date().toISOString(),
     });
 }
@@ -5572,6 +5650,9 @@ function normalizeAppRunApprovalInstanceEvidence(raw: unknown): AppRunApprovalIn
     const approvalInstanceViewVerified = appEvidenceBool(value.approvalInstanceViewVerified, value.approval_instance_view_verified, value.approvalViewVerified, value.approval_view_verified, value.viewVerified, value.view_verified);
     const currentNodeIDs = parseStringList(firstAppEvidenceValue(value.currentNodeIDs, value.current_node_ids, value.workflowNodeIDs, value.workflow_node_ids, value.workflowNodes, value.workflow_nodes));
     const currentNode = appEvidenceString(value.currentNode, value.current_node, currentNodeIDs[0]) || undefined;
+    const progressRaw = firstAppEvidenceValue(value.progressInstances, value.progress_instances, value.workflowProgress, value.workflow_progress, value.approvalProgress, value.approval_progress);
+    const progressItems = Array.isArray(progressRaw) ? progressRaw : progressRaw && typeof progressRaw === 'object' ? [progressRaw] : [];
+    const progressInstances = progressItems.map((item) => normalizeAppRunApprovalInstanceEvidence(item)).filter(Boolean) as AppRunApprovalInstanceEvidence[];
     return {
         instanceId,
         approvalInstanceId: appEvidenceString(value.approvalInstanceId, value.approval_instance_id) || instanceId,
@@ -5600,6 +5681,7 @@ function normalizeAppRunApprovalInstanceEvidence(raw: unknown): AppRunApprovalIn
         viewVerified: appEvidenceBool(value.viewVerified, value.view_verified),
         approvalInstanceViewVerified,
         approvalViews,
+        progressInstances: progressInstances.length > 0 ? progressInstances : undefined,
         verifiedAt: appEvidenceString(value.verifiedAt, value.verified_at) || undefined,
     };
 }
@@ -7665,7 +7747,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     const resultContract = app ? appResultContractForManifest(app) : buildAppResultContract('tool_app', [currentRunContext.outputMode]);
                     const primaryResult = appRunPrimaryResultFromPayload(resultContract, resultPayload, outputs);
                     const verifiedAt = new Date().toISOString();
-					const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
+                    const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
 					const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt) : undefined;
 					setValidationMessage('');
 					setRuntimeBusinessError(null);
@@ -8022,9 +8104,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     result_payload: fallbackPayload.result_payload,
                     run_workflow_skill: true,
                     workflow_run_args: workflowRunArgs,
-                }) as { instance?: BackendApprovalInstance; approval_id?: string; sync?: unknown; workflow_run?: { ran?: boolean; workflow_skill_id?: string; instance?: BackendApprovalInstance } } | undefined;
+                }) as { instance?: BackendApprovalInstance; approval_id?: string; sync?: unknown; workflow_run?: { ran?: boolean; workflow_skill_id?: string; instance?: BackendApprovalInstance; progress_instances?: BackendApprovalInstance[]; progressInstances?: BackendApprovalInstance[] } } | undefined;
                 const workflowRunInstance = started?.workflow_run?.instance;
-                const startedInstance = workflowRunInstance || started?.instance || fallbackPayload;
+                const workflowRunProgressInstances = (Array.isArray(started?.workflow_run?.progress_instances) ? started?.workflow_run?.progress_instances : Array.isArray(started?.workflow_run?.progressInstances) ? started?.workflow_run?.progressInstances : []) as BackendApprovalInstance[];
+                const startedInstance = workflowRunInstance || started?.instance || workflowRunProgressInstances[workflowRunProgressInstances.length - 1] || fallbackPayload;
                 const workflowRunID = String(
                     startedInstance.workflow_decision_id
                     || startedInstance.workflowDecisionID
@@ -8044,6 +8127,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     events: startedInstance.events || fallbackPayload.events,
                 };
                 approvalRunContextRef.current = { instance: savedInstance };
+                const progressViews = workflowRunProgressInstances
+                    .map((item) => backendApprovalInstanceToView({ ...fallbackPayload, ...item }, lang))
+                    .filter(Boolean) as ApprovalInstanceView[];
+                if (progressViews.length > 0) {
+                    setApprovalInstances((current) => mergeApprovalInstanceViews(current, progressViews));
+                }
                 const view = backendApprovalInstanceToView(savedInstance, lang);
                 if (view) {
                     setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
@@ -8051,6 +8140,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 const lifecycleStatus = String(savedInstance.status || savedInstance.result_status || savedInstance.resultStatus || '').trim().toLowerCase();
                 const stillRunning = ['pending', 'running', 'submitted', 'requires_input', 'requires-input', 'in_progress', 'in-progress'].includes(lifecycleStatus);
                 const verifiedAt = new Date().toISOString();
+                const progressEvidence = workflowRunProgressInstances
+                    .map((item) => appRunApprovalInstanceEvidenceFromBackend({ ...fallbackPayload, ...item }, verifiedAt))
+                    .filter(Boolean) as AppRunApprovalInstanceEvidence[];
+                const approvalInstanceEvidence = appRunApprovalInstanceEvidenceFromBackend(savedInstance, verifiedAt);
+                if (approvalInstanceEvidence && progressEvidence.length > 0) {
+                    approvalInstanceEvidence.progressInstances = progressEvidence;
+                }
                 const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
                 const dependencyVerification = appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt);
                 const resultPayload = savedInstance.result_payload || savedInstance.resultPayload || {};
@@ -8070,7 +8166,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         resultPayload,
                         outputs,
                         dependencyVerification,
-                        approvalInstance: appRunApprovalInstanceEvidenceFromBackend(savedInstance, verifiedAt),
+                        approvalInstance: approvalInstanceEvidence,
                     });
                 }
                 setRunID(workflowRunID || fallbackID);
@@ -8086,10 +8182,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 });
                 return;
             }
-			setValidationMessage('');
-			setRuntimeBusinessError(null);
-			setRunState('done');
-			return;
+            setValidationMessage('');
+            setRuntimeBusinessError(null);
+            return;
         }
         if (isBusiness) {
             const inputSummary = `${businessEntity || app.category} / ${businessActionRole || businessAction || 'execute'}`;
@@ -13123,6 +13218,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
     const [installRecordsState, setInstallRecordsState] = useState<'loading' | 'ready' | 'error'>('loading');
     const [installRecordsError, setInstallRecordsError] = useState('');
     const [installRecordChecks, setInstallRecordChecks] = useState<Record<string, { state: 'loading' | 'repairing' | 'ready' | 'error'; plan?: BackendAppInstallPlan | null; error?: string }>>({});
+    const [installRecordDataSrvAudits, setInstallRecordDataSrvAudits] = useState<Record<string, { state: 'loading' | 'ready' | 'error'; message?: string; error?: string; resultState?: 'ready' | 'partial' | 'failed' | 'skipped' }>>({});
     const refreshInstallRecords = useCallback(async () => {
         setInstallRecordsState('loading');
         setInstallRecordsError('');
@@ -13271,6 +13367,16 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
             void refreshInstallRecords();
         } catch (error: any) {
             setInstallRecordChecks((current) => ({ ...current, [key]: { state: 'error', plan: previous?.plan || null, error: error?.message || String(error || '') } }));
+        }
+    };
+    const auditInstallRecordDataSrvRegistration = async (record: BackendAppInstallRecord, index: number) => {
+        const key = installRecordKey(record, index);
+        setInstallRecordDataSrvAudits((current) => ({ ...current, [key]: { state: 'loading' } }));
+        try {
+            const result = await fetchDataSrvInstallRegistrationAudit(record, text);
+            setInstallRecordDataSrvAudits((current) => ({ ...current, [key]: { state: 'ready', message: result.message, resultState: result.state } }));
+        } catch (error: any) {
+            setInstallRecordDataSrvAudits((current) => ({ ...current, [key]: { state: 'error', error: error?.message || String(error || '') } }));
         }
     };
     const installSingleMarketApp = async (app: AppEntry) => {
@@ -13594,7 +13700,9 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                             const sha = installRecordPackageSHA(record).slice(0, 12) || '-';
                             const recordKey = installRecordKey(record, index);
                             const check = installRecordChecks[recordKey];
+                            const dataSrvAudit = installRecordDataSrvAudits[recordKey];
                             const selectedRecordAppIDs = (record.apps || []).map((app) => String(app.id || '')).filter(Boolean);
+                            const canAuditDataSrvRegistration = !!record.datasrv_registration && selectedRecordAppIDs.length > 0;
                             const checkPanelState = check?.state === 'repairing' ? 'loading' : check?.state;
                             const canRepairCheckedDependencies = !!record.package && (check?.state === 'ready' || check?.state === 'repairing') && hasMissingRequiredBackendDependency(check.plan, selectedRecordAppIDs);
                             return (
@@ -13612,11 +13720,18 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                                         <button className="apps-secondary-button" type="button" disabled={check?.state === 'loading' || check?.state === 'repairing' || !record.package} onClick={() => void checkInstallRecordDependencies(record, index)}>
                                             {check?.state === 'loading' || check?.state === 'repairing' ? text.checkingInstallDependencies : text.recheckInstallDependencies}
                                         </button>
+                                        {canAuditDataSrvRegistration && (
+                                            <button className="apps-secondary-button" type="button" disabled={dataSrvAudit?.state === 'loading'} onClick={() => void auditInstallRecordDataSrvRegistration(record, index)}>
+                                                {dataSrvAudit?.state === 'loading' ? text.auditingDataSrvRegistration : text.auditDataSrvRegistration}
+                                            </button>
+                                        )}
                                         {canRepairCheckedDependencies && (
                                             <button className="apps-primary-button" type="button" disabled={check?.state === 'repairing'} onClick={() => void repairInstallRecordDependencies(record, index)}>
                                                 {check?.state === 'repairing' ? text.repairingInstallDependencies : text.repairInstallDependencies}
                                             </button>
                                         )}
+                                        {dataSrvAudit?.state === 'ready' && <em data-state={dataSrvAudit.resultState} role="status">{dataSrvAudit.message}</em>}
+                                        {dataSrvAudit?.state === 'error' && <em data-state="failed" role="alert">{dataSrvAudit.error}</em>}
                                         {check?.state === 'repairing' && <em>{text.repairingInstallDependencies}</em>}
                                         {check?.state !== 'repairing' && <em>{record.has_blocking_dependency || record.has_missing_required || missingCount > 0 ? text.unavailableDependency : text.installedDependency}</em>}
                                     </div>

@@ -1343,6 +1343,9 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	if command == "" {
 		return "错误: 需要 command 参数"
 	}
+	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
+		return strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
+	}
 	workDir := remoteArgStr(args, "working_dir")
 	if workDir == "" {
 		workDir = c.defaultRemoteWorkingDir()
@@ -1484,19 +1487,23 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 ## 工作规范
 
 1. 修改文件前先 ssh_read_file 确认当前内容
-2. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
-3. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
-4. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "python3 -c 'import module'"、pytest/go test/npm test 等）
-5. 修改后运行并查看只读自检命令（优先 git diff --stat / git diff / git status --short），确认远程改动范围符合任务要求
-6. 路径可以是相对路径（相对于项目目录）或绝对路径
-7. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
-8. 长时间训练命令会自动作为后台任务运行，返回 task_id
-9. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
+2. 优先做最小、聚焦的修改；不要顺手重构无关代码
+3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
+4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
+5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "python3 -c 'import module'"、pytest/go test/npm test 等）
+6. 修改后运行并查看只读自检命令（优先 git diff --stat / git diff / git status --short），确认远程改动范围符合任务要求
+7. ssh_bash 只用于探索、诊断、格式化和验证；文件改写必须使用 ssh_edit_file/ssh_write_file
+8. 路径可以是相对路径（相对于项目目录）或绝对路径
+9. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
+10. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
+11. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件
 - 不要修改 /etc、/usr 等系统目录
 - 不要在未读取文件的情况下盲目覆盖
+- 不要用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
+- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写
 `)
 	if taskContext != "" {
 		sb.WriteString("\n## 任务上下文\n\n")
@@ -1527,9 +1534,9 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 				"old_str": map[string]interface{}{"type": "string", "description": "要被替换的原始文本（也接受 old_string/old_content/find/search）"},
 				"new_str": map[string]interface{}{"type": "string", "description": "替换后的新文本（也接受 new_string/new_content/replace/replacement）"},
 			}, []string{"path", "old_str", "new_str"}),
-		buildRemoteToolDef("ssh_bash", "在远程服务器上执行 shell 命令（长时间命令自动转后台任务）",
+		buildRemoteToolDef("ssh_bash", "在远程服务器上执行探索、诊断、格式化或验证命令（长时间命令自动转后台任务；拒绝 git 工作区改写、递归删除和通过 shell 直接改写文件）",
 			map[string]interface{}{
-				"command":     map[string]interface{}{"type": "string", "description": "要执行的命令"},
+				"command":     map[string]interface{}{"type": "string", "description": "要执行的命令；用于探索/诊断/格式化/验证，不要用它改写文件或 Git 工作区"},
 				"working_dir": map[string]interface{}{"type": "string", "description": "工作目录（默认项目目录；也接受 cwd/work_dir）"},
 			}, []string{"command"}),
 		buildRemoteToolDef("ssh_list_dir", "列出远程目录内容",

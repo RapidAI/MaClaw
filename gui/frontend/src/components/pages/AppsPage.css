@@ -3422,6 +3422,30 @@
     color: var(--theme-warning);
     background: var(--theme-warning-bg);
 }
+.apps-install-record__actions em[data-state='ready'] {
+    border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border));
+    color: var(--theme-success);
+    background: color-mix(in srgb, var(--theme-success-bg) 58%, var(--theme-surface));
+}
+
+.apps-install-record__actions em[data-state='partial'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 34%, var(--theme-border));
+    color: var(--theme-warning);
+    background: color-mix(in srgb, var(--theme-warning-bg) 52%, var(--theme-surface));
+}
+
+.apps-install-record__actions em[data-state='failed'] {
+    border-color: color-mix(in srgb, var(--theme-danger) 30%, var(--theme-border));
+    color: var(--theme-danger);
+    background: color-mix(in srgb, var(--theme-danger-bg) 48%, var(--theme-surface));
+}
+
+.apps-install-record__actions em[data-state='skipped'] {
+    border-color: color-mix(in srgb, var(--theme-text-muted) 22%, var(--theme-border));
+    color: var(--theme-text-secondary);
+    background: color-mix(in srgb, var(--theme-surface-muted) 68%, var(--theme-surface));
+}
+
 .apps-install-record__deps {
     min-width: 0;
     display: flex;

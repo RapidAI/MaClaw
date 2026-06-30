@@ -1461,12 +1461,21 @@ func (a *App) runMaclawAppApprovalWorkflowSkill(base maclawAppApprovalInstance, 
 	if err != nil {
 		return nil, err
 	}
+	progressInstances := maclawAppApprovalProgressInstancesFromWorkflowPayload(payload, base)
+	progressSyncs := make([]map[string]any, 0, len(progressInstances))
+	for _, progress := range progressInstances {
+		syncResult, err := a.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: progress.DatasetID, ObjectRole: progress.ObjectRole, AppID: progress.AppID, BlueprintID: progress.BlueprintID, RecordID: progress.RecordID, ApprovalID: firstNonEmptyMaclawAppString(progress.ApprovalID, base.ApprovalID), Instance: progress})
+		if err != nil {
+			return nil, err
+		}
+		progressSyncs = append(progressSyncs, syncResult)
+	}
 	instance := maclawAppApprovalInstanceFromWorkflowPayload(payload, base)
 	syncResult, err := a.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: instance.DatasetID, ObjectRole: instance.ObjectRole, AppID: instance.AppID, BlueprintID: instance.BlueprintID, RecordID: instance.RecordID, ApprovalID: firstNonEmptyMaclawAppString(instance.ApprovalID, base.ApprovalID), Instance: instance})
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"ran": true, "workflow_skill_id": workflowSkillID, "output": execResult.Output, "captured": execResult.Captured, "payload": payload, "instance": instance, "sync": syncResult}, nil
+	return map[string]any{"ran": true, "workflow_skill_id": workflowSkillID, "output": execResult.Output, "captured": execResult.Captured, "payload": payload, "progress_instances": progressInstances, "progress_sync": progressSyncs, "instance": instance, "sync": syncResult}, nil
 }
 
 func maclawAppWorkflowSkillPayloadFromOutput(output string, captured map[string]string) (map[string]any, error) {
@@ -1572,6 +1581,36 @@ func maclawAppApprovalInstanceFromWorkflowPayload(payload map[string]any, base m
 		instance.Lane = "my_requests"
 	}
 	return instance
+}
+
+func maclawAppApprovalProgressInstancesFromWorkflowPayload(payload map[string]any, base maclawAppApprovalInstance) []maclawAppApprovalInstance {
+	raw := firstNonEmptyMaclawAppAny(payload["progress_instances"], payload["progressInstances"], payload["workflow_progress"], payload["workflowProgress"], payload["approval_progress"], payload["approvalProgress"])
+	items := anySlice(raw)
+	if len(items) == 0 {
+		if item := anyMap(raw); item != nil {
+			items = []any{item}
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	instances := make([]maclawAppApprovalInstance, 0, len(items))
+	current := cloneMaclawAppApprovalInstance(base)
+	for _, item := range items {
+		progressPayload := anyMap(item)
+		if progressPayload == nil {
+			continue
+		}
+		progress := maclawAppApprovalInstanceFromWorkflowPayload(progressPayload, current)
+		progress.Status = normalizeMaclawAppApprovalStatus(firstNonEmptyMaclawAppString(progress.Status, "pending"))
+		if progress.ApprovalID == "" {
+			progress.ApprovalID = current.ApprovalID
+			progress.RecordApprovalID = firstNonEmptyMaclawAppString(progress.RecordApprovalID, progress.ApprovalID)
+		}
+		instances = append(instances, progress)
+		current = progress
+	}
+	return instances
 }
 
 func decodeMaclawAppApprovalOutputsFromAny(value any) []maclawAppApprovalOutput {

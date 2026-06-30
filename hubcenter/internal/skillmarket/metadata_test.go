@@ -63,6 +63,100 @@ func TestMetadata_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestMetadata_RoundTrip_MaclawAppEvidence(t *testing.T) {
+	original := &SkillMetadata{
+		Name:                        "expense-approval-app",
+		Description:                 "Expense approval MaClaw App",
+		ProductKind:                 "maclaw_app",
+		IsMaclawApp:                 true,
+		MaclawAppID:                 "expense.approval",
+		MaclawAppName:               "Expense Approval",
+		MaclawAppInputMode:          "structured_form",
+		MaclawAppOutputModes:        []string{"content", "artifact"},
+		MaclawAppDefinitionSHA256:   "def-sha",
+		ArtifactContractRequired:    true,
+		ArtifactContractOutputModes: []string{"content", "artifact"},
+		MaclawAppTestEvidence: &MaclawAppTestEvidence{
+			RunID:                 "run-1",
+			VerifiedAt:            "2026-06-30T10:00:00Z",
+			DefinitionFingerprint: "fp-1",
+			AppKind:               "enterprise_approval_app",
+			ArtifactPresent:       true,
+			ArtifactName:          "approved.pdf",
+			OutputCount:           2,
+			PrimaryResult:         "approved by workflow skill",
+			ResultPayload: map[string]any{
+				"approval_result": "approved",
+				"business_status": "finance_approved",
+			},
+			ApprovalInstance: map[string]any{
+				"approval_id":      "approval-1",
+				"workflow_node_id": "finance.result",
+				"status":           "approved",
+			},
+			ProgressInstances: []map[string]any{{
+				"approval_id":      "approval-1",
+				"workflow_node_id": "manager.approval",
+				"result_status":    "running",
+			}},
+			ApprovalViews: []string{"my_requests", "pending_my_approval", "handled"},
+			DependencyVerification: map[string]any{
+				"dependency_count":        1,
+				"has_blocking_dependency": false,
+			},
+			WorkspaceLayout: map[string]any{
+				"template":       "left_nav",
+				"primary_region": "right",
+			},
+			DataSrvRegistration: map[string]any{
+				"status":         "partial",
+				"eligible_count": 2,
+				"synced_count":   1,
+			},
+			WorkflowContract: map[string]any{
+				"requires_approval_instance":  true,
+				"requires_progress_instances": true,
+			},
+		},
+	}
+
+	data, err := FormatSkillYAML(original)
+	if err != nil {
+		t.Fatalf("FormatSkillYAML: %v", err)
+	}
+	parsed, err := ParseSkillYAML(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAML: %v", err)
+	}
+	if parsed.MaclawAppTestEvidence == nil {
+		t.Fatal("MaclawAppTestEvidence should round-trip")
+	}
+	if _, ok := parsed.Extra["maclaw_app_test_evidence"]; ok {
+		t.Fatal("maclaw_app_test_evidence should be a known top-level field, not Extra")
+	}
+	got := parsed.MaclawAppTestEvidence
+	if got.AppKind != "enterprise_approval_app" || got.PrimaryResult != "approved by workflow skill" || !got.ArtifactPresent {
+		t.Fatalf("basic MaClaw App evidence mismatch: %#v", got)
+	}
+	if got.ApprovalInstance["approval_id"] != "approval-1" || got.ApprovalInstance["status"] != "approved" {
+		t.Fatalf("approval instance evidence mismatch: %#v", got.ApprovalInstance)
+	}
+	if len(got.ProgressInstances) != 1 || got.ProgressInstances[0]["workflow_node_id"] != "manager.approval" {
+		t.Fatalf("progress evidence mismatch: %#v", got.ProgressInstances)
+	}
+	if !reflect.DeepEqual(got.ApprovalViews, []string{"my_requests", "pending_my_approval", "handled"}) {
+		t.Fatalf("approval views mismatch: %#v", got.ApprovalViews)
+	}
+	if got.DependencyVerification["dependency_count"] != 1 || got.DependencyVerification["has_blocking_dependency"] != false {
+		t.Fatalf("dependency verification mismatch: %#v", got.DependencyVerification)
+	}
+	if got.WorkspaceLayout["template"] != "left_nav" || got.DataSrvRegistration["status"] != "partial" {
+		t.Fatalf("layout/DataSrv evidence mismatch: layout=%#v datasrv=%#v", got.WorkspaceLayout, got.DataSrvRegistration)
+	}
+	if got.WorkflowContract["requires_approval_instance"] != true || got.WorkflowContract["requires_progress_instances"] != true {
+		t.Fatalf("workflow contract mismatch: %#v", got.WorkflowContract)
+	}
+}
 func TestMetadata_RoundTrip_MinimalFields(t *testing.T) {
 	original := &SkillMetadata{
 		Name:        "minimal",

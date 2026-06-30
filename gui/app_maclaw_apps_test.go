@@ -5714,6 +5714,8 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"expense-runner-1","status":"updated"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-runner-1/approvals":
 			_, _ = w.Write([]byte(`{"id":"approval-runner-1","status":"pending"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-runner-1/progress":
+			_, _ = w.Write([]byte(`{"id":"approval-runner-1","status":"pending","progress":"manager review started"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-runner-1/review":
 			_, _ = w.Write([]byte(`{"id":"approval-runner-1","status":"approved"}`))
 		default:
@@ -5724,7 +5726,7 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
-	workflowJSON := `{"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-runner-1","business_status":"finance_approved","result_status":"approved","result":"approved by workflow skill","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-runner-1","status":"finance_approved"},"text":"approved by workflow skill"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by workflow skill"},{"type":"artifact","title":"Workflow PDF","artifact":{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}}],"artifacts":[{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}]}}`
+	workflowJSON := `{"progress_instances":[{"status":"pending","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"manager.approval","workflow_node_ids":["expense.submit","manager.approval"],"current_assignee":"manager","current_assignee_type":"user","business_status":"finance_pending","result_status":"running","result":"manager review started","result_payload":{"text":"manager review started","business_record":{"id":"expense-runner-1","status":"finance_pending"}},"outputs":[{"type":"content","title":"Workflow Progress","text":"manager review started","status":"running"}]}],"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-runner-1","business_status":"finance_approved","result_status":"approved","result":"approved by workflow skill","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-runner-1","status":"finance_approved"},"text":"approved by workflow skill"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by workflow skill"},{"type":"artifact","title":"Workflow PDF","artifact":{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}}],"artifacts":[{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}]}}`
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow result fixture: %v", err)
@@ -5785,6 +5787,10 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	if !ok || workflowRun["ran"] != true {
 		t.Fatalf("expected workflow skill run evidence: %#v", started["workflow_run"])
 	}
+	progressInstances, ok := workflowRun["progress_instances"].([]maclawAppApprovalInstance)
+	if !ok || len(progressInstances) != 1 || progressInstances[0].Status != "pending" || progressInstances[0].CurrentNode != "manager.approval" || progressInstances[0].ResultStatus != "running" {
+		t.Fatalf("workflow skill progress should become running approval instance: %#v", workflowRun["progress_instances"])
+	}
 	instance, ok := workflowRun["instance"].(maclawAppApprovalInstance)
 	if !ok || instance.ApprovalID != "approval-runner-1" || instance.Status != "approved" || instance.CurrentNode != "expense.result" || instance.WorkflowDecisionID != "decision-runner-1" {
 		t.Fatalf("workflow skill result should become approval instance: %#v", workflowRun["instance"])
@@ -5798,8 +5804,18 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	if len(captured) < 5 {
 		t.Fatalf("expected create approval and final review sync requests, got %#v", captured)
 	}
+	progressSynced := false
 	lastReview := false
 	for _, req := range captured {
+		if req.Method == http.MethodPost && req.Path == "/api/v1/data/approvals/approval-runner-1/progress" {
+			progressSynced = true
+			if req.Body["workflow_node_id"] != "manager.approval" || req.Body["business_status"] != "finance_pending" || req.Body["result_status"] != "running" || req.Body["current_assignee"] != "manager" || req.Body["progress"] != "manager review started" {
+				t.Fatalf("progress request should carry workflow skill running fields: %#v", req.Body)
+			}
+			if outputs, ok := req.Body["outputs"].([]interface{}); !ok || len(outputs) != 1 {
+				t.Fatalf("progress request should carry running outputs: %#v", req.Body)
+			}
+		}
 		if req.Method == http.MethodPost && req.Path == "/api/v1/data/approvals/approval-runner-1/review" {
 			lastReview = true
 			if req.Body["decision"] != "approved" || req.Body["workflow_decision_id"] != "decision-runner-1" || req.Body["workflow_node_id"] != "expense.result" {
@@ -5809,6 +5825,9 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 				t.Fatalf("review request should carry workflow node path: %#v", req.Body)
 			}
 		}
+	}
+	if !progressSynced {
+		t.Fatalf("workflow skill running progress should update DataSrv approval progress, captured=%#v", captured)
 	}
 	if !lastReview {
 		t.Fatalf("workflow skill final result should review DataSrv approval, captured=%#v", captured)
