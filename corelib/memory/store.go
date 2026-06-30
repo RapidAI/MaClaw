@@ -25,6 +25,7 @@ import (
 type Store struct {
 	mu               sync.RWMutex
 	entries          []Entry
+	contentHashIdx   map[string]int // ContentHash -> index in entries for O(1) dedup lookup
 	path             string
 	dirty            bool
 	dirtyGen         uint64
@@ -100,6 +101,39 @@ func (s *Store) SetExperienceEventSink(sink lifecycle.EventSink) {
 	s.mu.Lock()
 	s.eventSink = sink
 	s.mu.Unlock()
+}
+
+// rebuildContentHashIdx rebuilds the O(1) ContentHash lookup index from entries.
+// Must be called with s.mu held (write lock).
+func (s *Store) rebuildContentHashIdx() {
+	idx := make(map[string]int, len(s.entries))
+	for i, e := range s.entries {
+		if e.ContentHash != "" {
+			idx[e.ContentHash] = i
+		}
+	}
+	s.contentHashIdx = idx
+}
+
+// contentHashIdxAdd adds or updates a hash->index mapping. Must be called
+// with s.mu held.
+func (s *Store) contentHashIdxAdd(hash string, index int) {
+	if hash == "" {
+		return
+	}
+	if s.contentHashIdx == nil {
+		s.contentHashIdx = make(map[string]int)
+	}
+	s.contentHashIdx[hash] = index
+}
+
+// contentHashIdxRemove removes a hash from the index. Must be called
+// with s.mu held.
+func (s *Store) contentHashIdxRemove(hash string) {
+	if hash == "" || s.contentHashIdx == nil {
+		return
+	}
+	delete(s.contentHashIdx, hash)
 }
 
 // Paginator returns the store's CursorPaginator for cursor-based pagination.
@@ -311,13 +345,32 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 
 	now := time.Now()
 
-	// Idempotent: check by content hash first (O(n) but fast string compare).
+	// Idempotent: check by content hash using O(1) index lookup.
 	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
 	s.mu.RLock()
+	if idx, exists := s.contentHashIdx[hash]; exists && idx < len(s.entries) {
+		existingOwner := s.entries[idx].OwnerID
+		ownerOK := entry.OwnerID == "" || existingOwner == "" || existingOwner == entry.OwnerID
+		if ownerOK {
+			updated := s.entries[idx]
+			updated.UpdatedAt = now
+			updated.AccessCount++
+			updated.Tags = mergeTags(updated.Tags, entry.Tags)
+			updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
+			if updated.ContentHash == "" {
+				updated.ContentHash = hash
+			}
+			s.mu.RUnlock()
+			if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
+				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			}
+			return nil
+		}
+	}
+	// Fallback: also check by Content equality for entries with empty ContentHash.
+	// This handles legacy entries that were saved before hashing was introduced.
 	for i := range s.entries {
-		if s.entries[i].ContentHash == hash || s.entries[i].Content == entry.Content {
-			// Multi-tenant isolation: skip entries from different users.
-			// Empty OwnerID (shared) can match with any user.
+		if s.entries[i].ContentHash == "" && s.entries[i].Content == entry.Content {
 			existingOwner := s.entries[i].OwnerID
 			if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
 				continue
@@ -578,6 +631,10 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		}
 		s.entries = kept
 	}
+	// Rebuild contentHashIdx synchronously since entries may have been
+	// updated or deleted (indices shifted). This is O(n) map assignment,
+	// fast for 500 entries (<1ms).
+	s.rebuildContentHashIdx()
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
@@ -689,8 +746,10 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 	for i, idx := range indices {
 		if idx < 0 {
 			s.entries = append(s.entries, updated[i])
+			s.contentHashIdxAdd(updated[i].ContentHash, len(s.entries)-1)
 		} else {
 			s.entries[idx] = updated[i]
+			s.contentHashIdxAdd(updated[i].ContentHash, idx)
 		}
 	}
 	if s.backend == nil {
@@ -1770,6 +1829,7 @@ func stripDeletedRelations(entry Entry, deleteSet map[string]struct{}) (Entry, b
 // path, use replaceEntriesAndRebuildAsync which releases s.mu before the
 // expensive rebuild work.
 func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
+	s.rebuildContentHashIdx()
 	s.bm25.rebuild(s.entries)
 	s.vecIndex.rebuild(s.entries)
 	s.graph.rebuild(s.entries)
@@ -3666,6 +3726,7 @@ func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks b
 // rebuilds from racing on syncGraphLinksLocked.
 func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
+	s.rebuildContentHashIdx()
 	s.scheduleAsyncRebuildLocked(syncGraphLinks)
 }
 
@@ -3830,6 +3891,7 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 	}
 
 	s.entries = append(s.entries, entry)
+	s.contentHashIdxAdd(entry.ContentHash, len(s.entries)-1)
 	s.bm25.addEntry(entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
 	s.autoLink(entry)

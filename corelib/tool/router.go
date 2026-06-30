@@ -1363,7 +1363,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		embeddingTexts[name] = r.buildEmbeddingText(name, desc)
 	}
 	r.bm25Index.RebuildIfChanged(docs)
-	scores := r.bm25Index.Score(userMessage)
+
+	// Tokenize user message once; reused for BM25 scoring AND experience matching below.
+	queryTokens := bm25.Tokenize(userMessage)
+	scores := r.bm25Index.ScoreWithTokens(queryTokens)
 
 	// Fuse with vector scores when hybrid retrieval is active.
 	if r.hybrid != nil {
@@ -1391,7 +1394,6 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	// Three-signal scoring: retrieval + experience + priority + skill_match.
-	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(scores)
 
 	type scored struct {

@@ -3,7 +3,6 @@ import { useDialog } from "../CustomDialog";
 import { useToast } from "../Toast";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
-import { MaclawAppSkillsTab } from "./MaclawAppSkillsTab";
 import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
 import { SkillProductBadge, isMaclawAppSearchResult } from "./SkillProductBadge";
 import { SkillSourceBadge } from "./SkillSourceBadge";
@@ -100,6 +99,10 @@ interface NLSkillDefinition {
     is_maclaw_app?: boolean;
     maclaw_app_count?: number;
     maclaw_app_entry?: string;
+    params?: Array<{ name: string; description?: string; required?: boolean }>;
+    required_args?: string[];
+    has_documentation?: boolean;
+    mode?: string;
 }
 
 interface HubSkillUpdateInfo {
@@ -413,6 +416,24 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     };
     const backdropMouseDownRef = useRef(false);
     const [activeTab, setActiveTab] = useState<"local" | "maclaw_app" | "hub" | "learned" | "extdirs">("local");
+    // Derived: is the "My Skills" top-level tab active? (covers all sub-filters)
+    const isMySkillsTabActive = activeTab === "local" || activeTab === "maclaw_app" || activeTab === "learned";
+    // Panel width tracking for responsive layout (table vs card)
+    const panelRef = useRef<HTMLDivElement>(null);
+    const [panelWidth, setPanelWidth] = useState(900);
+    useEffect(() => {
+        const el = panelRef.current;
+        if (!el) return;
+        const obs = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                const w = entry.contentRect.width;
+                if (w > 0) setPanelWidth(w); // Ignore 0-width (hidden/unmounting)
+            }
+        });
+        obs.observe(el);
+        if (el.clientWidth > 0) setPanelWidth(el.clientWidth);
+        return () => obs.disconnect();
+    }, []);
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -426,9 +447,32 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [hubSearched, setHubSearched] = useState(false);
     const [hubRecommendations, setHubRecommendations] = useState<MixedSkillSearchResult[]>([]);
     const [hubRecsLoading, setHubRecsLoading] = useState(false);
+    // Hub filter/sort state
+    const [hubFilterSource, setHubFilterSource] = useState<string>("all");
+    const [hubFilterTrust, setHubFilterTrust] = useState<string>("all");
+    const [hubSortBy, setHubSortBy] = useState<string>("relevance");
 
     // Localize backend error messages
     const localizeHubError = useMemo(() => makeLocalizeHubError(localizeText), [localizeText]);
+
+    // Filtered and sorted hub results
+    const filteredHubResults = useMemo(() => {
+        let results = hubResults;
+        if (hubFilterSource !== "all") {
+            results = results.filter((s) => s.source === hubFilterSource);
+        }
+        if (hubFilterTrust !== "all") {
+            results = results.filter((s) => (s.trust_level || "") === hubFilterTrust);
+        }
+        if (hubSortBy === "downloads") {
+            results = [...results].sort((a, b) => (b.downloads || 0) - (a.downloads || 0));
+        } else if (hubSortBy === "rating") {
+            results = [...results].sort((a, b) => (b.avg_rating || 0) - (a.avg_rating || 0));
+        } else if (hubSortBy === "newest") {
+            results = [...results].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+        }
+        return results;
+    }, [hubResults, hubFilterSource, hubFilterTrust, hubSortBy]);
 
     const learnedSourceTooltip = (source: string): string => {
         if (source === "learned") return localizeText("Experience learned", "经验学习", "經驗學習");
@@ -609,6 +653,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setHubSearching(true);
         setHubError("");
         setHubSearched(true);
+        setHubFilterSource("all");
+        setHubFilterTrust("all");
+        setHubSortBy("relevance");
         try {
             const results = await SearchMixedSkills(q);
             setHubResults(Array.isArray(results) ? results : []);
@@ -715,14 +762,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             showToast(
                 isMaclawAppSearchResult(skill)
                     ? localizeText(
-                        `Skill "${skill.name}" installed. This is a MaClaw App — switch to the "MaClaw App" tab to manage it.`,
-                        `技能「${skill.name}」安装成功。这是一个 MaClaw App，前往「MaClaw App」标签页管理和使用。`,
-                        `技能「${skill.name}」安裝成功。這是一個 MaClaw App，前往「MaClaw App」標籤頁管理和使用。`,
+                        `✅ "${skill.name}" installed! Open the App panel to use it.`,
+                        `✅「${skill.name}」安装成功！打开应用面板即可使用。`,
+                        `✅「${skill.name}」安裝成功！開啟應用面板即可使用。`,
                     )
                     : localizeText(
-                        `Skill "${skill.name}" installed successfully`,
-                        `技能「${skill.name}」安装成功`,
-                        `技能「${skill.name}」安裝成功`,
+                        `✅ "${skill.name}" installed! Click ▶ in My Skills to try it.`,
+                        `✅「${skill.name}」安装成功！在"我的技能"中点击 ▶ 试用。`,
+                        `✅「${skill.name}」安裝成功！在「我的技能」中點擊 ▶ 試用。`,
                     )
             );
             if (hubSearchQuery.trim()) {
@@ -1033,12 +1080,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // --- Learned skills tab helpers ---
 
-    // Installed skills: exclude auto-generated (learned/crafted/auto-installed) skills
-    const installedSkills = useMemo(
-        () => skills.filter((s) => !isLearnedSource(s.source ?? "") && !s.is_maclaw_app),
-        [skills]
-    );
-
     const maclawAppSkills = useMemo(
         () => skills.filter((s) => !isLearnedSource(s.source ?? "") && !!s.is_maclaw_app),
         [skills]
@@ -1048,6 +1089,18 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         () => skills.filter((s) => isLearnedSource(s.source ?? "")),
         [skills]
     );
+
+    // Filtered list for "My Skills" tab based on active sub-filter
+    const filteredSkillsForMyTab = useMemo(() => {
+        if (activeTab === "maclaw_app") return maclawAppSkills;
+        if (activeTab === "learned") return learnedSkills;
+        return skills; // "local" shows all
+    }, [activeTab, skills, maclawAppSkills, learnedSkills]);
+
+    // Run a skill by dispatching an event to the AI assistant
+    const handleRunSkill = useCallback((skillName: string) => {
+        window.dispatchEvent(new CustomEvent("maclaw:run-skill", { detail: { name: skillName } }));
+    }, []);
 
     const toggleLearnedSelect = (name: string) => {
         setLearnedSelected((prev) => {
@@ -1166,26 +1219,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     };
 
     return (
-        <div style={skillsPanelShellStyle}>
+        <div style={skillsPanelShellStyle} ref={panelRef}>
             {/* Keep tabs outside the scroll container so the vertical scrollbar starts below them. */}
             <div style={skillsTabBarStyle}>
                 <button
                     style={{
                         ...tabBtnStyle,
-                        ...(activeTab === "local" ? tabBtnActiveStyle : {}),
+                        ...(isMySkillsTabActive ? tabBtnActiveStyle : {}),
                     }}
                     onClick={() => setActiveTab("local")}
                 >
-                    {localizeText("Installed Skills", "已安装 Skills", "已安裝 Skills")}
-                </button>
-                <button
-                    style={{
-                        ...tabBtnStyle,
-                        ...(activeTab === "maclaw_app" ? tabBtnActiveStyle : {}),
-                    }}
-                    onClick={() => setActiveTab("maclaw_app")}
-                >
-                    {localizeText("MaClaw Apps", "MaClaw App", "MaClaw App")}
+                    {localizeText("My Skills", "我的技能", "我的技能")}
                 </button>
                 <button
                     style={{
@@ -1199,63 +1243,40 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 <button
                     style={{
                         ...tabBtnStyle,
-                        ...(activeTab === "learned" ? tabBtnActiveStyle : {}),
-                    }}
-                    onClick={() => setActiveTab("learned")}
-                >
-                    {localizeText("Learned Skills", "自学习技能", "自學習技能")}
-                </button>
-                <button
-                    style={{
-                        ...tabBtnStyle,
                         ...(activeTab === "extdirs" ? tabBtnActiveStyle : {}),
                     }}
                     onClick={() => setActiveTab("extdirs")}
                 >
-                    {localizeText("External Dirs", "外部技能目录", "外部技能目錄")}
+                    {localizeText("Settings", "设置", "設定")}
                 </button>
             </div>
 
             <div style={skillsTabContentStyle}>
-            {/* === Local Skills Tab === */}
-            {activeTab === "local" && (
+            {/* === My Skills Tab (merged: installed + app + learned) === */}
+            {isMySkillsTabActive && (
                 <>
-                    {/* Header with create button */}
-                    <div style={localSkillsToolbarStyle}>
-                        <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
-                            {installedSkills.length} {localizeText("skill(s) registered", "个已注册 Skill", "個已註冊 Skill")}
-                        </span>
-                        <div style={localSkillsActionBarStyle}>
-                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={() => { loadData(); setDiagEntries(null); }} disabled={loading}>
-                                {loading ? localizeText("Refreshing...", "刷新中...", "重新整理中...") : localizeText("🔄 Refresh", "🔄 刷新", "🔄 重新整理")}
+                    {/* Sub-filter chips */}
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                        <button style={{ ...chipStyle, ...(activeTab === "local" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("local")}>
+                            {localizeText("All", "全部", "全部")} ({skills.length})
+                        </button>
+                        <button style={{ ...chipStyle, ...(activeTab === "maclaw_app" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("maclaw_app")}>
+                            📱 App ({maclawAppSkills.length})
+                        </button>
+                        <button style={{ ...chipStyle, ...(activeTab === "learned" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("learned")}>
+                            🧠 {localizeText("Learned", "自学习", "自學習")} ({learnedSkills.length})
+                        </button>
+                        <div style={{ marginLeft: "auto", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            <button className="btn-secondary" style={{ fontSize: "0.74rem", padding: "3px 10px" }} onClick={() => { loadData(); setDiagEntries(null); }} disabled={loading}>
+                                {loading ? "..." : "🔄"}
                             </button>
-                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={async () => {
-                                setDiagLoading(true);
-                                try {
-                                    const res = await DiagnoseSkillFiles();
-                                    setDiagEntries(Array.isArray(res) ? res : []);
-                                } catch (err) {
-                                    setDiagEntries([{ dir: "error", name: "", ok: false, reason: String(err) }]);
-                                } finally {
-                                    setDiagLoading(false);
-                                }
-                            }} disabled={diagLoading}>
-                                {diagLoading ? localizeText("Diagnosing...", "诊断中...", "診斷中...") : localizeText("Diagnose", "诊断", "診斷")}
+                            <button className="btn-secondary" style={{ fontSize: "0.74rem", padding: "3px 10px" }} onClick={handleImportZip} disabled={busy || importing}>
+                                {localizeText("Import", "导入", "匯入")}
                             </button>
-                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleImportZip} disabled={busy || importing}>
-                                {importing ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("PACK Import Skill Pack", "PACK 导入 Skill 包", "PACK 匯入 Skill 包")}
-                            </button>
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
-                                + {localizeText("New Skill", "新建 Skill", "新建 Skill")}
+                            <button className="btn-primary" style={{ fontSize: "0.74rem", padding: "3px 10px" }} onClick={openCreateForm} disabled={busy}>
+                                + {localizeText("New", "新建", "新建")}
                             </button>
                         </div>
-                    </div>
-                    <div style={localSkillsHintStyle}>
-                        {localizeText(
-                            "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml are also supported.",
-                            "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml。",
-                            "標準 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml。",
-                        )}
                     </div>
 
                     <SkillInstallProgressPanel active={importing || installingSkills.size > 0 || (busy && showForm)} localizeText={localizeText} />
@@ -1294,127 +1315,107 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
 
-                    {/* Skills table */}
-                    {!loading && installedSkills.length > 0 && (
-                        <div style={localSkillsTableContainerStyle}>
-                            <table style={localSkillsTableStyle}>
-                                <thead>
-                                    <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={{ ...thStyle, width: "140px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
-                                        <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
-                                        <th style={{ ...thStyle, width: "72px", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
-                                        <th style={{ ...thStyle, width: "70px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Version", "版本", "版本")}</th>
-                                        <th style={{ ...thStyle, width: "92px", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={{ ...thStyle, width: "72px", whiteSpace: "nowrap", textAlign: "center", paddingRight: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "72px", textAlign: "center", paddingLeft: 4 }}>{localizeText("Actions", "操作", "操作")}</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {installedSkills.map((s) => (
-                                        <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
-                                            <td style={{ ...tdStyle, textAlign: "left" }}>{s.name}</td>
-                                            <td style={tdStyle}>
-                                                <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
-                                                {s.execution_class ? (
-                                                    <span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>
-                                                        {getExecutionClassLabel(s.execution_class)}
-                                                    </span>
-                                                ) : (
-                                                    <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>
-                                                )}
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>
-                                                <span style={localSkillsMetaTextStyle} title={displayHubVersion(s.hub_version) || undefined}>
-                                                    {displayHubVersion(s.hub_version) || "—"}
-                                                </span>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
-                                                {(s.usage_count ?? 0) > 0 ? (
-                                                    <span style={localSkillsMetaTextStyle}>
-                                                        {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
-                                                    </span>
-                                                ) : (
-                                                    <span style={{ ...localSkillsMetaTextStyle, color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
-                                                )}
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
-                                                <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>
-                                                    {localizeSkillStatus(s.status)}
-                                                </span>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4 }}>
-                                                <div style={localSkillsRowActionsStyle}>
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={iconBtnStyle}
-                                                        onClick={() => openEditForm(s)}
-                                                        disabled={busy}
-                                                        title={localizeText("Edit", "编辑", "編輯")}
-                                                        aria-label={localizeText("Edit", "编辑", "編輯")}
-                                                    >
-                                                        {"\u270E"}
-                                                    </button>
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={deleteIconBtnStyle}
-                                                        onClick={() => handleDelete(s.name)}
-                                                        disabled={busy}
-                                                        title={localizeText("Delete", "删除", "刪除")}
-                                                        aria-label={localizeText("Delete", "删除", "刪除")}
-                                                    >
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                            <polyline points="3 6 5 6 21 6" />
-                                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                                            <line x1="10" y1="11" x2="10" y2="17" />
-                                                            <line x1="14" y1="11" x2="14" y2="17" />
-                                                        </svg>
-                                                    </button>
+                    {/* Skills list — responsive: cards when narrow, table when wide */}
+                    {!loading && filteredSkillsForMyTab.length > 0 && (
+                        panelWidth < 700 ? (
+                            /* Card layout for narrow panels */
+                            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                {filteredSkillsForMyTab.map((s) => (
+                                    <div key={s.name} style={skillCardStyle}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                                    <span style={skillNameLinkStyle} onClick={() => setDetailSkill(s)}>{s.name}</span>
+                                                    {s.is_maclaw_app && <span style={appBadgeStyle}>📱 App</span>}
+                                                    {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>🧠</span>}
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
-                                            </td>
+                                                <div style={{ fontSize: "0.74rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4 }}>{s.description || "—"}</div>
+                                                {(s.status === "needs_setup" || s.status === "needs_review") && (
+                                                    <div style={{ fontSize: "0.7rem", color: colors.warning, marginTop: "3px" }}>
+                                                        ⚠️ {s.status === "needs_setup"
+                                                            ? localizeText("Needs configuration before use", "需要配置后才能使用", "需要配置後才能使用")
+                                                            : localizeText("Needs review before use", "需要审核后才能使用", "需要審核後才能使用")}
+                                                    </div>
+                                                )}
+                                                <div style={{ display: "flex", gap: "8px", marginTop: "6px", fontSize: "0.7rem", color: colors.textMuted }}>
+                                                    {s.execution_class && <span>{getExecutionClassLabel(s.execution_class)}</span>}
+                                                    {displayHubVersion(s.hub_version) && <span>v{displayHubVersion(s.hub_version)}</span>}
+                                                    {(s.usage_count ?? 0) > 0 && <span>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>}
+                                                </div>
+                                            </div>
+                                            <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                                                <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>▶</button>
+                                                <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{"\u270E"}</button>
+                                                <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
+                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            /* Table layout for wide panels */
+                            <div style={localSkillsTableContainerStyle}>
+                                <table style={{ ...localSkillsTableStyle, minWidth: "760px" }}>
+                                    <thead>
+                                        <tr style={{ background: colors.surfaceMuted }}>
+                                            <th style={{ ...thStyle, width: "140px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                            <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
+                                            <th style={{ ...thStyle, width: "72px", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
+                                            <th style={{ ...thStyle, width: "92px", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
+                                            <th style={{ ...thStyle, width: "72px", whiteSpace: "nowrap", textAlign: "center", paddingRight: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
+                                            <th style={{ ...thStyle, width: "110px", textAlign: "center", paddingLeft: 4 }}>{localizeText("Actions", "操作", "操作")}</th>
                                         </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
+                                    </thead>
+                                    <tbody>
+                                        {filteredSkillsForMyTab.map((s) => (
+                                            <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
+                                                <td style={{ ...tdStyle, textAlign: "left" }}>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                                        {s.is_maclaw_app && <span title="App">📱</span>}
+                                                        {isLearnedSource(s.source ?? "") && <span title={localizeText("Learned", "自学习", "自學習")}>🧠</span>}
+                                                        <span style={{ cursor: "pointer", color: colors.primary }} onClick={() => setDetailSkill(s)}>{s.name}</span>
+                                                    </div>
+                                                </td>
+                                                <td style={tdStyle}><div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div></td>
+                                                <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
+                                                    {s.execution_class ? (<span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>) : (<span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>)}
+                                                </td>
+                                                <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
+                                                    {(s.usage_count ?? 0) > 0 ? (<span style={localSkillsMetaTextStyle}>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>) : (<span style={{ ...localSkillsMetaTextStyle, color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>)}
+                                                </td>
+                                                <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>{localizeSkillStatus(s.status)}</span>
+                                                </td>
+                                                <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4 }}>
+                                                    <div style={localSkillsRowActionsStyle}>
+                                                        <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>▶</button>
+                                                        <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{"\u270E"}</button>
+                                                        <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
+                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )
                     )}
 
-                    {!loading && installedSkills.length === 0 && !error && (
+                    {!loading && filteredSkillsForMyTab.length === 0 && !error && (
                         <div style={skillsEmptyStateStyle}>
-                            {localizeText("No registered Skills yet", "暂无已注册的 Skill", "暫無已註冊的 Skill")}
+                            {activeTab === "learned"
+                                ? localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")
+                                : activeTab === "maclaw_app"
+                                    ? localizeText("No MaClaw App skills. Install from the Capability Market.", "暂无 MaClaw App 技能。请在能力市场安装。", "暫無 MaClaw App 技能。請在能力市場安裝。")
+                                    : localizeText("No registered Skills yet", "暂无已注册的 Skill", "暫無已註冊的 Skill")}
                         </div>
                     )}
                 </>
-            )}
-
-            {/* === MaClaw App Skills Tab === */}
-            {activeTab === "maclaw_app" && (
-                <MaclawAppSkillsTab
-                    skills={maclawAppSkills}
-                    loading={loading}
-                    error={error}
-                    busy={busy}
-                    localizeText={localizeText}
-                    onRefresh={() => { loadData(); setDiagEntries(null); }}
-                    onOpenAppPanel={() => window.dispatchEvent(new CustomEvent("maclaw:open-apps-panel", { detail: { source: "skills-maclaw-app" } }))}
-                    onOpenMarket={() => setActiveTab("hub")}
-                    onEdit={(skill) => openEditForm(skill as NLSkillDefinition)}
-                    onDelete={handleDelete}
-                    uploadingSkill={uploadingSkill}
-                    onUpload={async (skillName) => {
-                        setUploadingSkill(skillName);
-                        try {
-                            const sid = await UploadNLSkillToMarket(skillName);
-                            showToast(`${localizeText("Submission ID", "提交ID", "提交ID")}: ${sid}`, "success");
-                            await loadData();
-                        } catch (e: any) {
-                            showToast(`${e?.message || e}`, "error");
-                        } finally {
-                            setUploadingSkill(null);
-                        }
-                    }}
-                />
             )}
 
             {/* === Hub Market Tab === */}
@@ -1462,6 +1463,32 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         )}
                     </div>
 
+                    {/* Filter & Sort (shown when results exist) */}
+                    {hubSearched && hubResults.length > 0 && (
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", fontSize: "0.72rem" }}>
+                            <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubFilterSource} onChange={(e) => setHubFilterSource(e.target.value)}>
+                                <option value="all">{localizeText("All Sources", "全部来源", "全部來源")}</option>
+                                <option value="skillhub">SkillHub</option>
+                                <option value="clawhub">ClawHub</option>
+                                <option value="github">GitHub</option>
+                            </select>
+                            <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubFilterTrust} onChange={(e) => setHubFilterTrust(e.target.value)}>
+                                <option value="all">{localizeText("All Trust", "全部信任", "全部信任")}</option>
+                                <option value="official">{localizeText("Official", "官方", "官方")}</option>
+                                <option value="community">{localizeText("Community", "社区", "社區")}</option>
+                            </select>
+                            <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubSortBy} onChange={(e) => setHubSortBy(e.target.value)}>
+                                <option value="relevance">{localizeText("Relevance", "相关度", "相關度")}</option>
+                                <option value="downloads">{localizeText("Downloads", "下载量", "下載量")}</option>
+                                <option value="rating">{localizeText("Rating", "评分", "評分")}</option>
+                                <option value="newest">{localizeText("Newest", "最新", "最新")}</option>
+                            </select>
+                            <span style={{ color: colors.textMuted, marginLeft: "auto" }}>
+                                {filteredHubResults.length}/{hubResults.length} {localizeText("results", "个结果", "個結果")}
+                            </span>
+                        </div>
+                    )}
+
                     {/* Hub error */}
                     {hubError && (
                         <div style={remoteErrorStateStyle}>
@@ -1483,15 +1510,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {/* Results */}
-                    {!hubSearching && hubSearched && hubResults.length === 0 && !hubError && (
+                    {!hubSearching && hubSearched && filteredHubResults.length === 0 && !hubError && (
                         <div style={skillsEmptyStateStyle}>
-                            {localizeText("No results found", "无搜索结果", "無搜尋結果")}
+                            {hubResults.length === 0
+                                ? localizeText("No results found", "无搜索结果", "無搜尋結果")
+                                : localizeText("No results match current filters", "当前筛选条件下无结果", "目前篩選條件下無結果")}
                         </div>
                     )}
 
-                    {!hubSearching && hubResults.length > 0 && (
+                    {!hubSearching && filteredHubResults.length > 0 && (
                         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                            {hubResults.map((skill) => (
+                            {filteredHubResults.map((skill) => (
                                 <div key={skill.id} style={hubCardStyle}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
                                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1630,7 +1659,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </>
             )}
 
-            {/* === Learned Skills Tab === */}
+            {/* === Learned Skills detail section (shows within My Skills when learned sub-filter active) === */}
             {activeTab === "learned" && (
                 <>
                     {/* Header with export/import buttons */}
@@ -1783,122 +1812,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {loading && (
                         <div style={remoteLoadingStateStyle}>{localizeText("Loading...", "加载中...", "載入中...")}</div>
                     )}
-
-                    {/* Learned skills table */}
-                    {!loading && learnedSkills.length > 0 && (
-                        <div style={remoteTableContainerStyle}>
-                            <table style={learnedSkillsTableStyle}>
-                                <colgroup><col style={{ width: "36px" }} /><col style={{ width: "18%" }} /><col style={{ width: "22%" }} /><col style={{ width: "40px" }} /><col style={{ width: "56px" }} /><col style={{ width: "58px" }} /><col style={{ width: "200px" }} /></colgroup>
-                                <thead>
-                                    <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={{ ...thStyle, width: "36px", textAlign: "center" }}>
-                                            <input type="checkbox" checked={learnedSkills.length > 0 && learnedSelected.size === learnedSkills.length} onChange={toggleLearnedSelectAll} />
-                                        </th>
-                                        <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Name", "\u540d\u79f0", "\u540d\u7a31")}</th>
-                                        <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "\u63cf\u8ff0", "\u63cf\u8ff0")}</th>
-                                        <th style={{ ...thStyle, width: "40px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Source", "\u6765\u6e90", "\u4f86\u6e90")}</th>
-                                        <th style={{ ...thStyle, width: "56px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Usage", "\u4f7f\u7528\u7edf\u8ba1", "\u4f7f\u7528\u7d71\u8a08")}</th>
-                                        <th style={{ ...thStyle, width: "58px", textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>{localizeText("Status", "\u72b6\u6001", "\u72c0\u614b")}</th>
-                                        <th style={{ ...thStyle, width: "200px", textAlign: "left" }}>{localizeText("Actions", "\u64cd\u4f5c", "\u64cd\u4f5c")}</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {learnedSkills.map((s) => (
-                                        <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
-                                            <td style={{ ...tdStyle, textAlign: "center" }}>
-                                                <input type="checkbox" checked={learnedSelected.has(s.name)} onChange={() => toggleLearnedSelect(s.name)} />
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "left" }}>{s.name}</td>
-                                            <td style={{ ...tdStyle, textAlign: "left" }}>
-                                                <div style={learnedDescriptionPreviewStyle} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "")}</div>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>
-                                                <span
-                                                    title={learnedSourceTooltip(s.source ?? "")}
-                                                    style={{ cursor: "default" }}
-                                                >
-                                                    {learnedSourceIcon(s.source ?? "")}
-                                                </span>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>
-                                                {(s.usage_count ?? 0) > 0 ? (
-                                                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
-                                                        {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
-                                                    </span>
-                                                ) : (
-                                                    <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
-                                                )}
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, paddingRight: 4 }}>
-                                                <span style={statusDotStyle(s.status === "active")}>
-                                                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.status === "active" ? colors.success : colors.border, flexShrink: 0 }} />
-                                                    {s.status === "active" ? localizeText("Active", "启用", "啟用") : localizeText("Disabled", "停用", "停用")}
-                                                </span>
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: "left", paddingLeft: 4 }}>
-                                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: "4px", flexWrap: "wrap" }}>
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={smallBtnStyle}
-                                                        onClick={() => setDetailSkill(s)}
-                                                        disabled={busy}
-                                                    >
-                                                        {localizeText("View", "查看", "查看")}
-                                                    </button>
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={smallBtnStyle}
-                                                        onClick={() => handleLearnedRename(s.name)}
-                                                        disabled={busy}
-                                                    >
-                                                        {localizeText("Rename", "改名", "改名")}
-                                                    </button>
-                                                    <button
-                                                        className="btn-secondary btn-danger"
-                                                        style={smallBtnStyle}
-                                                        onClick={() => handleLearnedDelete(s.name)}
-                                                        disabled={busy}
-                                                    >
-                                                        {busy ? localizeText("Deleting...", "删除中...", "刪除中...") : localizeText("Delete", "删除", "刪除")}
-                                                    </button>
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={uploadBtnStyle}
-                                                        disabled={uploadingSkill === s.name || busy}
-                                                        onClick={async () => {
-                                                            setUploadingSkill(s.name);
-                                                            try {
-                                                                const sid = await UploadNLSkillToMarket(s.name);
-                                                                showToast(`${localizeText("Submission ID", "提交ID", "提交ID")}: ${sid}`, "success");
-                                                                await loadData();
-                                                            } catch (e: any) {
-                                                                showToast(`${e?.message || e}`, "error");
-                                                            } finally {
-                                                                setUploadingSkill(null);
-                                                            }
-                                                        }}
-                                                    >
-                                                        {uploadingSkill === s.name ? localizeText("Uploading...", "上传中...", "上傳中...") : s.hub_skill_id ? localizeText("⬆ Re-upload", "⬆ 重新上传", "⬆ 重新上傳") : localizeText("⬆ Upload", "⬆ 上传", "⬆ 上傳")}
-                                                    </button>
-                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Capability Market", "已上传到能力市场", "已上傳到能力市場")} style={{ fontSize: "0.68rem", color: colors.success }}>OK</span>}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    {!loading && learnedSkills.length === 0 && !error && (
-                        <div style={skillsEmptyStateStyle}>
-                            {localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")}
-                        </div>
-                    )}
                 </>
             )}
 
-            {/* === External Skill Directories Tab === */}
+            {/* === Settings Tab (External Skill Directories) === */}
             {activeTab === "extdirs" && (
                 <>
                     <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginBottom: "4px" }}>
@@ -2066,6 +1983,31 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         : <span style={{ fontSize: "0.74rem", color: colors.textMuted }}>—</span>}
                                 </div>
                             </div>
+                            {/* Parameters */}
+                            {((detailSkill.params && detailSkill.params.length > 0) || (detailSkill.required_args && detailSkill.required_args.length > 0)) && (
+                                <div>
+                                    <strong>{localizeText("Parameters", "参数", "參數")}</strong>
+                                    <div style={{ marginTop: "4px", fontSize: "0.76rem" }}>
+                                        {detailSkill.params && detailSkill.params.length > 0 ? (
+                                            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                                {detailSkill.params.map((p, i) => (
+                                                    <div key={i} style={{ display: "flex", gap: "6px", alignItems: "baseline" }}>
+                                                        <code style={{ fontSize: "0.74rem", color: colors.primary }}>{p.name}</code>
+                                                        {p.required && <span style={{ fontSize: "0.66rem", color: colors.danger }}>*</span>}
+                                                        {p.description && <span style={{ color: colors.textSecondary }}>{p.description}</span>}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                                                {(detailSkill.required_args || []).map((arg, i) => (
+                                                    <span key={i} style={{ ...tagStyle, borderColor: colors.primary, color: colors.primary }}>{arg} *</span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                             <div>
                                 <strong>{localizeText("Steps", "操作步骤", "操作步驟")}</strong>
                                 <pre style={detailPreStyle}>{formatStepText(detailSkill.steps || [])}</pre>
@@ -2078,6 +2020,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </div>
                         </div>
                         <div className="modal-footer">
+                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { handleRunSkill(detailSkill.name); setDetailSkill(null); }} disabled={detailSkill.status !== "active"}>
+                                ▶ {localizeText("Run", "运行", "執行")}
+                            </button>
+                            <button className="btn-secondary" onClick={() => { openEditForm(detailSkill); setDetailSkill(null); }}>
+                                {localizeText("Edit", "编辑", "編輯")}
+                            </button>
                             <button className="btn-secondary" onClick={() => setDetailSkill(null)}>{localizeText("Close", "关闭", "關閉")}</button>
                         </div>
                     </div>
@@ -2389,3 +2337,59 @@ const sourceTextStyle: CSSProperties = {
 };
 
 // Style utilities and formatters extracted to skillsManagementUtils.ts
+
+const chipStyle: CSSProperties = {
+    background: colors.surface,
+    border: `1px solid ${colors.border}`,
+    borderRadius: "12px",
+    padding: "3px 10px",
+    fontSize: "0.72rem",
+    color: colors.textSecondary,
+    cursor: "pointer",
+    fontWeight: 500,
+    transition: "all 0.15s",
+};
+
+const chipActiveStyle: CSSProperties = {
+    background: colors.infoBg,
+    borderColor: colors.primary,
+    color: colors.primary,
+    fontWeight: 600,
+};
+
+const skillCardStyle: CSSProperties = {
+    ...remoteCardStyle,
+    padding: "10px 12px",
+};
+
+const appBadgeStyle: CSSProperties = {
+    fontSize: "0.66rem",
+    padding: "1px 6px",
+    borderRadius: "8px",
+    background: colors.infoBg,
+    color: colors.primaryDark,
+    fontWeight: 500,
+};
+
+const learnedBadgeStyle: CSSProperties = {
+    fontSize: "0.72rem",
+};
+
+const runBtnStyle: CSSProperties = {
+    width: "28px",
+    height: "28px",
+    padding: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "0.72rem",
+    lineHeight: 1,
+    borderRadius: "50%",
+};
+
+const skillNameLinkStyle: CSSProperties = {
+    fontWeight: 600,
+    fontSize: "0.8rem",
+    color: colors.primary,
+    cursor: "pointer",
+};

@@ -527,7 +527,7 @@ type ApprovalInstanceView = {
     approvalID?: string;
     title: string;
     lane: 'my_requests' | 'pending_my_approval' | 'handled' | 'attention';
-    status: 'draft' | 'pending' | 'approved' | 'rejected' | 'attention';
+    status: 'draft' | 'pending' | 'approved' | 'rejected' | 'attention' | 'requires_input' | 'failed' | 'cancelled' | 'timeout' | 'running' | 'submitted' | 'in_progress';
     currentNode: string;
     currentNodeIDs?: string[];
     owner: string;
@@ -644,7 +644,7 @@ type ApprovalRunContext = {
 };
 
 type ApprovalWorkflowCompletion = {
-    status: 'approved' | 'rejected' | 'attention';
+    status: 'approved' | 'rejected' | 'attention' | 'cancelled' | 'timeout';
     lane: ApprovalInstanceView['lane'];
     currentNode: string;
     resultText: string;
@@ -742,6 +742,7 @@ type AppPackageSubmissionSummary = {
     reviewIssues: AppReviewIssue[];
     dependencies: BackendAppInstallDependency[];
     submissionEvidence?: BackendAppInstallRecord;
+    reviewEvidence?: Record<string, unknown>;
     eventCount: number;
     lastEventAt: string;
     message: string;
@@ -880,6 +881,10 @@ const labels = {
         noLocalSubmissionQueue: '\u6682\u65e0\u672c\u673a\u5f85\u540c\u6b65\u63d0\u4ea4',
         localSubmissionQueueError: '\u63d0\u4ea4\u961f\u5217\u8bfb\u53d6\u5931\u8d25',
         localSubmissionQueueLoading: '\u63d0\u4ea4\u961f\u5217\u8bfb\u53d6\u4e2d',
+        reviewEvidence: '\u5ba1\u6838\u8bc1\u636e',
+        approval: '\u5ba1\u6279',
+        progress: '\u8fdb\u5ea6',
+        workflow: '\u5de5\u4f5c\u6d41',
         refreshQueue: '\u5237\u65b0',
         refreshingQueue: '\u5237\u65b0\u4e2d',
         syncQueueToHub: '\u540c\u6b65\u5230 Hub',
@@ -1017,6 +1022,11 @@ const labels = {
         approve: '\u901a\u8fc7',
         reject: '\u9a73\u56de',
         markAttention: '\u6807\u8bb0\u5173\u6ce8',
+        supplementContinue: '\u8865\u5145\u5e76\u7ee7\u7eed',
+        supplementNoteLabel: '\u8865\u5145\u8bf4\u660e',
+        supplementReferenceLabel: '\u6750\u6599\u6216\u9644\u4ef6\u5f15\u7528',
+        supplementFieldsLabel: '\u7f3a\u5931\u9879',
+        supplementRunning: '\u6b63\u5728\u7ee7\u7eed\u6d41\u8f6c',
         approvalResult: '\u5ba1\u6279\u7ed3\u679c',
         approvalResultPackage: '\u7ed3\u679c\u5305',
         approvalOutputData: '\u7ed3\u6784\u5316\u6570\u636e',
@@ -1115,6 +1125,9 @@ const labels = {
         versionSnapshot: '\u7248\u672c\u5feb\u7167',
         workspaceLayout: '\u754c\u9762\u5e03\u5c40',
         resultContract: '\u7ed3\u679c\u5951\u7ea6',
+        resultCoverage: '\u7ed3\u679c\u8986\u76d6',
+        resultCovered: '\u5df2\u8986\u76d6',
+        resultMissing: '\u7f3a\u53e3',
         testEvidence: '\u6d4b\u8bd5\u8bc1\u636e',
         appSkill: '\u5e94\u7528 Skill',
         workflowContract: '\u8fd0\u884c\u5951\u7ea6',
@@ -1231,6 +1244,10 @@ const labels = {
         noLocalSubmissionQueue: 'No local pending submissions',
         localSubmissionQueueError: 'Failed to read submission queue',
         localSubmissionQueueLoading: 'Reading submission queue',
+        reviewEvidence: 'Review evidence',
+        approval: 'Approval',
+        progress: 'Progress',
+        workflow: 'Workflow',
         refreshQueue: 'Refresh',
         refreshingQueue: 'Refreshing',
         syncQueueToHub: 'Sync to Hub',
@@ -1368,6 +1385,11 @@ const labels = {
         approve: 'Approve',
         reject: 'Reject',
         markAttention: 'Mark attention',
+        supplementContinue: 'Continue with supplement',
+        supplementNoteLabel: 'Supplement note',
+        supplementReferenceLabel: 'Material or attachment reference',
+        supplementFieldsLabel: 'Missing items',
+        supplementRunning: 'Continuing workflow',
         approvalResult: 'Approval result',
         approvalResultPackage: 'Result package',
         approvalOutputData: 'Structured data',
@@ -1466,6 +1488,9 @@ const labels = {
         versionSnapshot: 'Version snapshot',
         workspaceLayout: 'Workspace layout',
         resultContract: 'Result contract',
+        resultCoverage: 'Result coverage',
+        resultCovered: 'Covered',
+        resultMissing: 'Missing',
         testEvidence: 'Test evidence',
         appSkill: 'App Skill',
         workflowContract: 'Runtime contract',
@@ -1545,7 +1570,7 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
     local: { zh: '\u672c\u5730', en: 'Local' },
 };
 
-// initialApps is intentionally empty — apps are discovered at runtime from
+// initialApps is intentionally empty · apps are discovered at runtime from
 // installed Skills (via ListSkillAppManifests), DataSrv capabilities, or
 // user-created entries persisted in localStorage. Placeholder entries that
 // lacked real backend implementations have been removed to avoid misleading
@@ -3250,22 +3275,24 @@ function dataSrvInstalledResultCoverageEvidence(metadata: Record<string, any>, e
     const ok = appEvidenceBool(coverage?.ok, metadata.test_evidence_result_coverage_ok);
     const primary = appEvidenceString(coverage?.primary, metadata.test_evidence_result_coverage_primary);
     const coveredTypes = parseStringList(firstAppEvidenceValue(coverage?.coveredTypes, coverage?.covered_types, metadata.test_evidence_covered_types));
+    const coveredCount = appEvidenceNumber(coverage?.coveredCount, coverage?.covered_count, metadata.test_evidence_result_coverage_covered_count);
     const missingTypes = parseStringList(firstAppEvidenceValue(coverage?.missingTypes, coverage?.missing_types, metadata.test_evidence_missing_types));
+    const missingCount = appEvidenceNumber(coverage?.missingCount, coverage?.missing_count, metadata.test_evidence_result_coverage_missing_count);
     if (coverage) {
         return {
             ...coverage,
             ...(ok !== undefined ? { ok } : {}),
             ...(primary ? { primary } : {}),
-            ...(coveredTypes.length ? { covered_types: coveredTypes } : {}),
-            ...(missingTypes.length ? { missing_types: missingTypes } : {}),
+            ...(coveredTypes.length ? { covered_types: coveredTypes } : coveredCount !== undefined ? { covered_count: coveredCount } : {}),
+            ...(missingTypes.length ? { missing_types: missingTypes } : missingCount !== undefined ? { missing_count: missingCount } : {}),
         };
     }
-    if (ok === undefined && !primary && coveredTypes.length === 0 && missingTypes.length === 0) return undefined;
+    if (ok === undefined && !primary && coveredTypes.length === 0 && coveredCount === undefined && missingTypes.length === 0 && missingCount === undefined) return undefined;
     return {
         ...(ok !== undefined ? { ok } : {}),
         ...(primary ? { primary } : {}),
-        ...(coveredTypes.length ? { covered_types: coveredTypes } : {}),
-        ...(missingTypes.length ? { missing_types: missingTypes } : {}),
+        ...(coveredTypes.length ? { covered_types: coveredTypes } : coveredCount !== undefined ? { covered_count: coveredCount } : {}),
+        ...(missingTypes.length ? { missing_types: missingTypes } : missingCount !== undefined ? { missing_count: missingCount } : {}),
     };
 }
 
@@ -3749,10 +3776,11 @@ async function stageSkillAppInputFile(file: File | null) {
     return await StageSkillAppInputFile(file.name, file.type || 'application/octet-stream', file.lastModified, content) as SkillAppStagedFileRef;
 }
 
-function normalizeSkillRunLifecycle(status?: string): 'running' | 'done' | 'error' | 'cancelled' {
+function normalizeSkillRunLifecycle(status?: string): 'running' | 'done' | 'error' | 'cancelled' | 'timeout' {
     const value = String(status || '').trim().toLowerCase();
     if (['success', 'succeeded', 'completed', 'complete', 'done'].includes(value)) return 'done';
-    if (['failed', 'failure', 'error', 'timeout'].includes(value)) return 'error';
+    if (['timeout', 'timed_out', 'timed-out'].includes(value)) return 'timeout';
+    if (['failed', 'failure', 'error'].includes(value)) return 'error';
     if (['cancelled', 'canceled'].includes(value)) return 'cancelled';
     return 'running';
 }
@@ -4207,7 +4235,7 @@ function approvalOutputBody(output: ApprovalInstanceOutputView) {
 function approvalArtifactReference(artifact: ApprovalInstanceArtifactView) {
     return String(artifact.uri || artifact.path || artifact.remote_url || artifact.name || artifact.id || '').trim();
 }
-function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'error' | 'cancelled'): ApprovalWorkflowCompletion['status'] {
+function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'error' | 'cancelled' | 'timeout'): 'approved' | 'rejected' | 'attention' {
     if (lifecycle !== 'done') return 'attention';
     const text = value.trim().toLowerCase();
     if (!text) return 'approved';
@@ -4220,8 +4248,7 @@ function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'e
 function approvalWorkflowProgressFromSkillRunStatus(status: SkillRunStatusView | null, lang?: string) {
     const zh = isZh(lang);
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
-    const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node', 'workflow_node_id', 'workflowNodeId'])
-        || String(status?.summary?.current_step || status?.session_progress?.current_task || '').trim();
+    const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (zh ? '\u8fdb\u884c\u4e2d' : 'In progress');
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const progressText = firstSkillRunResultString(objects, ['progress', 'progress_summary', 'progressSummary', 'message', 'text', 'result'])
         || String(status?.session_progress?.progress_summary || status?.summary?.current_step_status || status?.summary?.last_completed_step || '').trim()
@@ -4231,7 +4258,7 @@ function approvalWorkflowProgressFromSkillRunStatus(status: SkillRunStatusView |
     if (!currentNode && !progressText && (!currentNodeIDs || currentNodeIDs.length === 0)) return null;
     return { currentNode, currentNodeIDs, progressText, businessStatus, resultStatus };
 }
-function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled', lang?: string): ApprovalWorkflowCompletion {
+function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled' | 'timeout', lang?: string): ApprovalWorkflowCompletion {
     const zh = isZh(lang);
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
     const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
@@ -4239,23 +4266,27 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const outputText = skillRunOutputSuffix(status).replace(/^ · /, '');
     const fallbackText = lifecycle === 'cancelled'
         ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
-        : lifecycle === 'error'
-            ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8' : 'Workflow failed and needs attention'))
-            : decision === 'approved'
-                ? (zh ? '\u5ba1\u6279\u5df2\u901a\u8fc7' : 'Approval approved')
-                : decision === 'rejected'
-                    ? (zh ? '\u5ba1\u6279\u5df2\u9a73\u56de' : 'Approval rejected')
-                    : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+        : lifecycle === 'timeout'
+            ? (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out')
+            : lifecycle === 'error'
+                ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8' : 'Workflow failed and needs attention'))
+                : decision === 'approved'
+                    ? (zh ? '\u5ba1\u6279\u5df2\u901a\u8fc7' : 'Approval approved')
+                    : decision === 'rejected'
+                        ? (zh ? '\u5ba1\u6279\u5df2\u9a73\u56de' : 'Approval rejected')
+                        : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
     const resultText = firstSkillRunResultString(objects, ['message', 'result_message', 'resultMessage', 'approval_message', 'approvalMessage', 'content', 'text', 'result']) || outputText || fallbackText;
-    const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || (lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'error' ? 'workflow_error' : decision);
+    const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || (lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'timeout' ? 'timeout' : lifecycle === 'error' ? 'workflow_error' : decision);
     const businessStatus = firstSkillRunResultString(objects, ['business_status', 'businessStatus']) || resultStatus;
     const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (lifecycle === 'cancelled'
         ? (zh ? '\u5df2\u53d6\u6d88' : 'Cancelled')
-        : lifecycle === 'error'
-            ? (zh ? '\u8fd0\u884c\u5f02\u5e38' : 'Workflow error')
-            : decision === 'attention'
-                ? (zh ? '\u9700\u5173\u6ce8' : 'Needs attention')
-                : (zh ? '\u5df2\u5b8c\u6210' : 'Completed'));
+        : lifecycle === 'timeout'
+            ? (zh ? '\u5df2\u8d85\u65f6' : 'Timed out')
+            : lifecycle === 'error'
+                ? (zh ? '\u8fd0\u884c\u5f02\u5e38' : 'Workflow error')
+                : decision === 'attention'
+                    ? (zh ? '\u9700\u5173\u6ce8' : 'Needs attention')
+                    : (zh ? '\u5df2\u5b8c\u6210' : 'Completed'));
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const resultPayload = {
         approval_result: decision,
@@ -4276,8 +4307,8 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
         zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
     );
     return {
-        status: decision,
-        lane: decision === 'attention' ? 'attention' : 'handled',
+        status: lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'timeout' ? 'timeout' : decision,
+        lane: lifecycle === 'cancelled' || lifecycle === 'timeout' ? 'handled' : decision === 'attention' ? 'attention' : 'handled',
         currentNode,
         resultText,
         businessStatus,
@@ -4288,7 +4319,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
         outputs,
         artifacts,
         currentNodeIDs,
-        eventAction: lifecycle === 'cancelled' ? 'workflow_cancelled' : lifecycle === 'error' ? 'workflow_failed' : 'workflow_completed',
+        eventAction: lifecycle === 'cancelled' ? 'workflow_cancelled' : lifecycle === 'timeout' ? 'workflow_timeout' : lifecycle === 'error' ? 'workflow_failed' : 'workflow_completed',
     };
 }
 
@@ -4367,7 +4398,7 @@ function businessOperationResponseSummary(response?: Record<string, unknown>): s
             return Object.entries(first as Record<string, unknown>)
                 .slice(0, 3)
                 .map(([key, value]) => key + ': ' + String(value))
-                .join(' / ')
+                .join(' ·  ')
                 .slice(0, 180);
         }
         return String(first).slice(0, 180);
@@ -4391,7 +4422,7 @@ function buildBusinessOperationResult(result: Record<string, unknown> | undefine
     const recordCount = rows.length;
     const kind = businessOperationResultKind(mode, primaryResult, resultPayload, response);
     const summary = businessOperationResponseSummary(resultPayload) || businessOperationResponseSummary(response);
-    const message = summary || text.runCompleted + ': ' + mode + ' / ' + status;
+    const message = summary || text.runCompleted + ': ' + mode + ' ·  ' + status;
     const outputs = normalizeApprovalOutputs(Array.isArray(result?.outputs) ? result.outputs as ApprovalInstanceOutputView[] : undefined);
     const artifacts = Array.isArray(result?.artifacts)
         ? result.artifacts.filter((item): item is SkillRunArtifactView => !!item && typeof item === 'object' && !Array.isArray(item))
@@ -4737,7 +4768,7 @@ function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
     return [
         ...visible,
         remaining > 0 ? `${text.reviewIssuesMore} ${remaining} ${text.reviewIssuesMoreUnit}` : '',
-    ].filter(Boolean).join(' / ');
+    ].filter(Boolean).join(' ·  ');
 }
 
 function reviewIssueSeverity(issue: AppReviewIssue) {
@@ -4823,6 +4854,7 @@ async function listMaclawAppPackageSubmissions(limit = 8): Promise<AppPackageSub
         reviewIssues: parseReviewIssues(item?.review_issues || item?.reviewIssues),
         dependencies: parseBackendAppInstallDependencies(item?.dependencies || item?.Dependencies),
         submissionEvidence: submissionEvidenceRecordFromSummaryItem(item),
+        reviewEvidence: appEvidenceRecord(item?.review_evidence || item?.reviewEvidence),
         eventCount: Number(item?.event_count || item?.eventCount || 0) || 0,
         lastEventAt: String(item?.last_event_at || item?.lastEventAt || ''),
         message: String(item?.message || ''),
@@ -5022,12 +5054,12 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
     return {
         ok,
         detail: !evidence
-            ? (zh ? '提交审核前需要先运行一次当前应用' : 'Run the current app before review')
+            ? (zh ? '请先运行当前应用再评审' : 'Run the current app before review')
             : !actualHash
-                ? (zh ? '运行证据缺少当前应用定义指纹，请重新测试' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
+                ? (zh ? '运行证据缺少当前应用定义指纹；请重新运行测试' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
                 : ok
-                    ? `${evidence.runID || ''} / ${actualHash}`.trim()
-                    : (zh ? '运行证据不是当前应用定义，请重新测试' : 'Run evidence is stale for the current app definition; rerun the test'),
+                    ? `${evidence.runID || ''} ·  ${actualHash}`.trim()
+                    : (zh ? '运行证据已不匹配当前应用定义；请重新运行测试' : 'Run evidence is stale for the current app definition; rerun the test'),
     };
 }
 
@@ -5252,7 +5284,7 @@ function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
     const missingRoles = missingWorkspaceRegionRoles(app);
     if (missingRoles.length > 0) return zh ? `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}` : `Missing workspace region roles: ${missingRoles.join(', ')}`;
-    return `${layout.entry} / ${layout.template} / ${layout.density} / ${layout.regionCount} regions`;
+    return `${layout.entry} ·  ${layout.template} ·  ${layout.density} ·  ${layout.regionCount} regions`;
 }
 function buildAppResultContract(kind: AppKind, outputModes: string[] = []): AppResultContract {
     const normalizedOutputModes = normalizeOutputModes(outputModes);
@@ -5426,7 +5458,7 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
     if (sampleKeys === 0 || outputKeys === 0) return zh ? '缺少 sampleInput 或 expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '协议指纹' : 'Protocol fingerprint'} ${fingerprint} · ${protocol.riskLevel}`;
+    return `${zh ? '协议指纹' : 'Protocol fingerprint'} ${fingerprint} ·  ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -5573,13 +5605,13 @@ function appWorkflowContractPublishSummary(app: AppEntry, lang?: string) {
     const contract = workflowContractForApp(app);
     if (!contract) return zh ? '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6' : 'Runtime contract not declared';
     const workflow = [contract.workflowSkillId, contract.workflowVersion ? `v${contract.workflowVersion}` : ''].filter(Boolean).join('@');
-    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' / ');
+    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' ·  ');
 }
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
     const types = contract.types.slice(0, 4).join(', ');
-    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` / ${types}` : ''}`;
+    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` ·  ${types}` : ''}`;
 }
 
 function appRunEvidencePayloadValue(payload: Record<string, unknown> | undefined, keys: string[]): unknown {
@@ -5731,7 +5763,7 @@ function appRunApprovalInstanceEvidenceFromBackend(instance: BackendApprovalInst
 function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
     const zh = isZh(lang);
     if (!isEnterpriseApprovalAppKind(app.kind)) {
-        return { ok: true, detail: zh ? '非审批型应用不需要审批实例证据' : 'Not required for non-approval apps' };
+        return { ok: true, detail: zh ? '非审批应用无需审批实例证据' : 'Not required for non-approval apps' };
     }
     const approvalInstance = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
     const hasStatus = !!String(approvalInstance?.status || '').trim();
@@ -5745,18 +5777,18 @@ function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHist
     const ok = !!approvalInstance?.instanceId && hasStatus && hasCurrentNode && hasWorkflowSkill && hasResultStatus && hasResultPackage && viewVerified;
     const missingDetail = () => {
         if (!approvalInstance?.instanceId || !hasStatus || !viewVerified) {
-            return zh ? '缺少 instanceId、status 或审批实例视图校验证据' : 'Missing instanceId, status, or approval instance view verification';
+            return zh ? '缺少 instanceId、status 或审批实例视图验证' : 'Missing instanceId, status, or approval instance view verification';
         }
         if (!hasCurrentNode || !hasWorkflowSkill || !hasResultStatus) {
             return zh ? '缺少 currentNode、workflowSkillId 或 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
         }
-        return zh ? '审批实例证据缺少 resultPayload、outputs 或 artifacts 结果包' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
+        return zh ? '审批实例证据缺少 resultPayload、outputs 或 artifacts' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
     };
     return {
         ok,
         approvalInstance,
         detail: !evidence
-            ? (zh ? '提交审核前需要先运行一次审批流程' : 'Run the approval workflow once before review')
+            ? (zh ? '请先运行一次审批工作流再评审' : 'Run the approval workflow once before review')
             : ok
                 ? `${approvalInstance?.instanceId} / ${approvalInstance?.status}${approvalInstance?.currentNode ? ` / ${approvalInstance.currentNode}` : ''}`
                 : missingDetail(),
@@ -5774,7 +5806,7 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
     const covered = new Set(effectiveCoveredTypes);
     const primaryCovered = !primary || covered.has(primary) || (primary === 'document' && covered.has('artifact')) || (primary === 'artifact' && covered.has('document')) || (primary === 'text' && covered.has('content')) || (primary === 'content' && covered.has('text'));
     const missingTypes = explicitMissingTypes.length ? explicitMissingTypes : primaryCovered || !primary ? [] : [primary];
-    const evidenceLabel = evidence ? `${evidence.runID || ''} / ${evidence.at || ''}`.trim() : '';
+    const evidenceLabel = evidence ? `${evidence.runID || ''} ·  ${evidence.at || ''}`.trim() : '';
     const coveredLabel = effectiveCoveredTypes.length > 0 ? effectiveCoveredTypes.join(', ') : (zh ? '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b' : 'No result type recognized');
     return {
         ok: !!evidence && primaryCovered && missingTypes.length === 0,
@@ -5784,8 +5816,8 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
         detail: !evidence
             ? (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review')
             : primaryCovered && missingTypes.length === 0
-                ? `${evidenceLabel}${primary ? ` / primary: ${primary}` : ''} / ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
-                : `${evidenceLabel} / ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
+                ? `${evidenceLabel}${primary ? ` ·  primary: ${primary}` : ''} ·  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
+                : `${evidenceLabel} ·  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
     };
 }
 function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
@@ -6851,7 +6883,7 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             status: draftStatus,
             currentNode: draftNode,
             owner: zh ? '\u6211' : 'Me',
-            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 / VE' : 'Manager / VE') : workflow,
+            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 ·  VE' : 'Manager ·  VE') : workflow,
             updatedAt: submitted ? new Date().toLocaleString() : '-',
             result: businessNote.trim() || draftResult,
             workflowSkillID: workflow,
@@ -6955,7 +6987,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         approvalID,
         title: appTitle,
         lane: lane === 'pending_my_approval' || lane === 'handled' || lane === 'attention' ? lane : 'my_requests',
-        status: status === 'approved' || status === 'rejected' || status === 'attention' || status === 'draft' ? status : 'pending',
+        status: ['approved', 'rejected', 'attention', 'draft', 'requires_input', 'failed', 'cancelled', 'timeout', 'running', 'submitted', 'in_progress'].includes(status) ? status : 'pending',
         currentNode,
         currentNodeIDs,
         owner,
@@ -7284,11 +7316,15 @@ async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: 
 }
 
 function approvalStatusLabel(status: ApprovalInstanceView['status'], lang?: string) {
-	const zh = isZh(lang);
+    const zh = isZh(lang);
     if (status === 'approved') return zh ? '\u5df2\u901a\u8fc7' : 'Approved';
     if (status === 'rejected') return zh ? '\u5df2\u9a73\u56de' : 'Rejected';
     if (status === 'attention') return zh ? '\u9700\u5173\u6ce8' : 'Needs attention';
-    if (status === 'pending') return zh ? '\u5ba1\u6279\u4e2d' : 'Pending';
+    if (status === 'requires_input') return zh ? '\u5f85\u8865\u5145' : 'Needs input';
+    if (status === 'failed') return zh ? '\u8fd0\u884c\u5931\u8d25' : 'Failed';
+    if (status === 'cancelled') return zh ? '\u5df2\u53d6\u6d88' : 'Cancelled';
+    if (status === 'timeout') return zh ? '\u5df2\u8d85\u65f6' : 'Timed out';
+    if (status === 'pending' || status === 'running' || status === 'submitted' || status === 'in_progress') return zh ? '\u5ba1\u6279\u4e2d' : 'Pending';
     return zh ? '\u8349\u7a3f' : 'Draft';
 }
 
@@ -7309,9 +7345,30 @@ function approvalStatusTransitionText(instance: ApprovalInstanceView | undefined
 }
 
 function approvalInstanceCanDecide(instance: ApprovalInstanceView | undefined) {
-    return !!instance && (instance.status === 'pending' || instance.status === 'draft' || instance.lane === 'pending_my_approval');
+    return !!instance && (instance.status === 'pending' || instance.status === 'draft' || instance.status === 'running' || instance.status === 'submitted' || instance.status === 'in_progress' || instance.lane === 'pending_my_approval');
 }
 
+function approvalRequiresInputInfo(instance: ApprovalInstanceView | undefined, lang?: string) {
+    if (!instance) return null;
+    const status = String(instance.status || instance.resultStatus || '').trim().toLowerCase().replace('-', '_');
+    const payload = instance.resultPayload && typeof instance.resultPayload === 'object' && !Array.isArray(instance.resultPayload) ? instance.resultPayload : {};
+    const raw = (payload as Record<string, unknown>).requires_input || (payload as Record<string, unknown>).requiresInput;
+    const rawMap = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    const fields = Array.isArray(rawMap.fields)
+        ? rawMap.fields.map((item) => String(item || '').trim()).filter(Boolean)
+        : Array.isArray((payload as Record<string, unknown>).missing_fields)
+            ? ((payload as Record<string, unknown>).missing_fields as unknown[]).map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+    const output = (instance.outputs || []).find((item) => approvalOutputKind(item) === 'requires_input');
+    const message = String(rawMap.message || rawMap.reason || (payload as Record<string, unknown>).text || output?.text || instance.result || '').trim();
+    const active = status === 'requires_input' || !!raw || !!output;
+    if (!active) return null;
+    return {
+        title: isZh(lang) ? '\u5f85\u8865\u5145\u6750\u6599' : 'Supplement required',
+        message: message || (isZh(lang) ? '\u8bf7\u8865\u5145\u5fc5\u8981\u6750\u6599\u540e\u7ee7\u7eed\u6d41\u8f6c' : 'Add the missing information and continue the workflow.'),
+        fields,
+    };
+}
 function approvalDecisionResultPayload(instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention', context?: {
     resultText?: string;
     currentNode?: string;
@@ -7597,6 +7654,76 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 		setRunState('error');
 		return message || fallback;
 	};
+    const recordApprovalRuntimeFailure = async (base: BackendApprovalInstance, message: string, inputSummary: string, runIDOverride?: string) => {
+        const now = new Date().toISOString();
+        const failureRunID = String(runIDOverride || base.workflow_decision_id || base.workflowDecisionID || `failed-${Date.now().toString(36)}`).trim();
+        const failureText = message || text.skillRunFailed;
+        const resultPayload = {
+            ...((base.result_payload || base.resultPayload || {}) as Record<string, unknown>),
+            approval_result: 'failed',
+            approval_status: 'failed',
+            decision: 'failed',
+            business_status: 'workflow_error',
+            result_status: 'failed',
+            text: failureText,
+            workflow_lifecycle: 'error',
+        };
+        const payload: BackendApprovalInstance = {
+            ...base,
+            workflow_decision_id: failureRunID,
+            lane: 'handled',
+            status: 'failed',
+            current_node: base.current_node || base.currentNode || (isZh(lang) ? '运行失败' : 'Failed'),
+            result: failureText,
+            business_status: 'workflow_error',
+            result_status: 'failed',
+            to_status: 'failed',
+            current_assignee: 'system',
+            current_assignee_type: 'system',
+            result_payload: resultPayload,
+            outputs: [{ kind: 'approval_result', title: text.approvalResult, text: failureText, status: 'failed' }],
+            updated_at: now,
+            detail_url: base.detail_url || (failureRunID ? `approval-error://${failureRunID}` : undefined),
+            events: [
+                ...(base.events || []),
+                { at: now, node: base.current_node || base.currentNode || '', actor: 'workflow', decision: 'failed', action: 'workflow_failed', message: failureText },
+            ],
+        };
+        approvalRunContextRef.current = null;
+        const fallbackView = backendApprovalInstanceToView(payload, lang);
+        if (fallbackView) {
+            setApprovalInstances((current) => mergeApprovalInstanceViews(current, [fallbackView]).slice(0, 50));
+        }
+        let savedInstance = payload;
+        try {
+            savedInstance = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance || payload;
+            const savedView = backendApprovalInstanceToView(savedInstance, lang);
+            if (savedView) {
+                setApprovalInstances((current) => mergeApprovalInstanceViews(current, [savedView]).slice(0, 50));
+            }
+            if (app) {
+                const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
+                savedInstance = syncedInstance;
+                const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
+                if (syncedView) {
+                    setApprovalInstances((current) => mergeApprovalInstanceViews(current, [syncedView]).slice(0, 50));
+                }
+            }
+        } catch {
+            // The local failed instance is already visible; DataSrv recovery can be retried from the approval center.
+        }
+        const approvalInstance = appRunApprovalInstanceEvidenceFromBackend(savedInstance, now);
+        recordRunHistory({
+            runID: failureRunID,
+            status: 'error',
+            outputMode: 'approval',
+            inputSummary,
+            message: failureText,
+            resultPayload,
+            outputs: payload.outputs,
+            approvalInstance,
+        });
+    };
 	const updateApprovalRunProgressFromStatus = useCallback(async (status: SkillRunStatusView | null) => {
         const context = approvalRunContextRef.current;
         if (!context || !app?.id || !isEnterpriseApprovalAppKind(app.kind)) return;
@@ -7657,7 +7784,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         } catch {
             // Running progress is best-effort; final approval completion still records and syncs authoritatively.
         }
-    }, [app, lang, runID]);	const finalizeApprovalRunFromStatus = useCallback(async (status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled') => {
+    }, [app, lang, runID]);	const finalizeApprovalRunFromStatus = useCallback(async (status: SkillRunStatusView | null, lifecycle: 'done' | 'error' | 'cancelled' | 'timeout') => {
         const context = approvalRunContextRef.current;
         if (!context || !app?.id || !isEnterpriseApprovalAppKind(app.kind)) return undefined;
         approvalRunContextRef.current = null;
@@ -7790,6 +7917,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     setRunState('cancelled');
                     recordRunHistory({ runID, status: 'cancelled', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message: text.skillRunCancelled });
                     await finalizeApprovalRunFromStatus(status || null, lifecycle);
+                } else if (lifecycle === 'timeout') {
+                    const message = skillRunErrorMessage(status) || (isZh(lang) ? '工作流运行超时' : 'Workflow timed out');
+                    setRuntimeBusinessError(null);
+                    setValidationMessage(message);
+                    setRunState('error');
+                    recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
+                    await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 }
 			} catch (error: any) {
 				if (disposed) return;
@@ -7888,7 +8022,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRuntimeDependencyCheckState('error');
                 const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
                 const detail = error?.message || '';
-                const depHint = depNames.length > 0 ? (isZh(lang) ? `（需要: ${depNames.join(', ')}）` : ` (requires: ${depNames.join(', ')})`) : '';
+                const depHint = depNames.length > 0 ? (isZh(lang) ? `（需要：${depNames.join(', ')}）` : ` (requires: ${depNames.join(', ')})`) : '';
                 setValidationMessage((detail || text.dependencyPlanError) + depHint);
                 setRunState('error');
                 return;
@@ -7967,7 +8101,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         if (isApproval) {
             const now = new Date().toISOString();
             const fallbackID = `appr-${Date.now().toString(36)}`;
-            const inputSummary = `${businessEntity || app.category} / ${businessAction || 'create'}`;
+            const inputSummary = `${businessEntity || app.category} ·  ${businessAction || 'create'}`;
             if (!workflowSkillID) {
                 setValidationMessage(text.missingRequiredDependency);
                 setRunState('error');
@@ -8015,7 +8149,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 datasrv_domain: app.manifest?.datasrv?.domain || '',
                 preferred_action: app.manifest?.datasrv?.preferredAction || '',
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
-                prompt: `Start MaClaw approval workflow: ${app.name} / ${inputSummary}`,
+                prompt: `Start MaClaw approval workflow: ${app.name} ·  ${inputSummary}`,
             };
             const fallbackPayload: BackendApprovalInstance = {
                 instance_id: fallbackID,
@@ -8029,10 +8163,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 object_role: approvalObjectRole || undefined,
                 dataset_id: approvalDatasetID || undefined,
                 blueprint_id: approvalBlueprintID || undefined,
-                title: `${businessEntity || app.category} / ${businessAction || 'create'}`,
+                title: `${businessEntity || app.category} ·  ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '主管审批' : 'Manager approval'),
+                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '经理审批' : 'Manager approval'),
                 current_node_ids: [workflowMapping?.approvalNode || workflowSkillID].filter(Boolean) as string[],
                 owner: isZh(lang) ? '当前用户' : 'Current user',
                 applicant: isZh(lang) ? '当前用户' : 'Current user',
@@ -8040,7 +8174,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 submitted_by: isZh(lang) ? '当前用户' : 'Current user',
                 current_assignee: isZh(lang) ? '审批人' : 'Approver',
                 current_assignee_type: 'user',
-                result: isZh(lang) ? '等待审批' : 'Pending approval',
+                result: isZh(lang) ? '待审批' : 'Pending approval',
                 business_status: workflowMapping?.statusMapping?.pending || 'approval_pending',
                 result_status: 'pending',
                 from_status: 'submitted',
@@ -8050,7 +8184,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 business_action: businessAction || 'create',
                 business_note: businessNote,
                 result_payload: {
-                    text: businessNote || (isZh(lang) ? '等待审批' : 'Pending approval'),
+                    text: businessNote || (isZh(lang) ? '待审批' : 'Pending approval'),
                     business_record: { id: fallbackID, status: workflowMapping?.statusMapping?.pending || 'approval_pending' },
                     business_payload: contractInputs.business_payload,
                     form_data: contractInputs,
@@ -8062,7 +8196,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     at: now,
                     actor: isZh(lang) ? '当前用户' : 'Current user',
                     node: workflowMapping?.submitNode,
-                    action: isZh(lang) ? '发起申请' : 'Submitted',
+                    action: isZh(lang) ? '已提交' : 'Submitted',
                     note: businessNote,
                 }, {
                     at: now,
@@ -8173,13 +8307,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRunState(stillRunning ? 'running' : 'done');
             } catch (error: any) {
                 const message = setRuntimeError(error, text.skillRunFailed);
-                recordRunHistory({
-                    runID: 'failed-' + Date.now().toString(36),
-                    status: 'error',
-                    outputMode: 'approval',
-                    inputSummary,
-                    message,
-                });
+                await recordApprovalRuntimeFailure(fallbackPayload, message, inputSummary, 'failed-' + Date.now().toString(36));
                 return;
             }
             setValidationMessage('');
@@ -8187,7 +8315,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             return;
         }
         if (isBusiness) {
-            const inputSummary = `${businessEntity || app.category} / ${businessActionRole || businessAction || 'execute'}`;
+            const inputSummary = `${businessEntity || app.category} ·  ${businessActionRole || businessAction || 'execute'}`;
             const businessPayload = {
                 _maclaw_app: true,
                 app_id: app.id,
@@ -8204,7 +8332,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
                 preferred_report: app.manifest?.datasrv?.preferredReport || '',
                 preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
-                prompt: `Run MaClaw business app: ${app.name} / ${inputSummary}`,
+                prompt: `Run MaClaw business app: ${app.name} ·  ${inputSummary}`,
             };
             if (businessSkillID && app.source !== 'datasrv') {
                 setRunState('running');
@@ -8249,7 +8377,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 				setValidationMessage('');
 				setRuntimeBusinessError(null);
 				setRunState('done');
-					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' / ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
+					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' ·  ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
 				return;
 			} catch (error: any) {
 				const message = setRuntimeError(error, text.skillRunFailed);
@@ -8282,10 +8410,146 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             activeRunDependencyPlanRef.current = null;
             const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
             const detail = error?.message || '';
-            const depHint = depNames.length > 0 ? (isZh(lang) ? `（需要: ${depNames.join(', ')}）` : ` (requires: ${depNames.join(', ')})`) : '';
+            const depHint = depNames.length > 0 ? (isZh(lang) ? `\uFF08\u9700\u8981\uFF1A${depNames.join(', ')}\uFF09` : ` (requires: ${depNames.join(', ')})`) : '';
             setValidationMessage((detail || text.dependencyPlanError) + depHint);
             setRunState('error');
             setDependencyRepairState('idle');
+        }
+    };
+    const continueApprovalInstanceWithSupplement = async (instance: ApprovalInstanceView, supplement: { note: string; reference: string }) => {
+        if (!app?.id || !instance?.id || !isApproval) return;
+        const note = supplement.note.trim();
+        const reference = supplement.reference.trim();
+        const recordID = instance.recordID || instance.id;
+        const formData = {
+            supplement_note: note,
+            supplement_reference: reference,
+            supplemental_input: note || reference,
+        };
+        const businessPayload = {
+            supplement_note: note,
+            supplement_reference: reference,
+            approval_id: instance.approvalID,
+            continue_from_instance_id: instance.id,
+        };
+        const resultPayload = {
+            ...(instance.resultPayload || {}),
+            supplemental_input: {
+                form_data: formData,
+                business_payload: businessPayload,
+            },
+        };
+        const inputSummary = `${instance.title || businessEntity || app.category} ·  ${text.supplementContinue}`;
+        setRunState('running');
+        setValidationMessage(text.supplementRunning);
+        setRuntimeBusinessError(null);
+        setCurrentRunContext({ inputSummary, outputMode: 'approval' });
+        try {
+            const started = await StartMaclawAppApprovalWorkflow({
+                app_id: canonicalAppManifestID(app),
+                app_name: app.name,
+                approval_id: instance.approvalID,
+                instance_id: instance.id,
+                continue_from_instance_id: instance.id,
+                dataset_id: instance.datasetID || approvalDatasetID || undefined,
+                object_role: instance.objectRole || approvalObjectRole || undefined,
+                blueprint_id: instance.blueprintID || approvalBlueprintID || undefined,
+                record_id: recordID,
+                title: instance.title,
+                applicant: instance.applicant || instance.owner,
+                owner: instance.owner || instance.applicant,
+                approver: instance.approver,
+                current_assignee: instance.approver || instance.currentAssignee,
+                current_assignee_type: instance.currentAssigneeType || 'user',
+                approval_event: instance.approvalEvent || approvalBinding?.event || undefined,
+                workflow_skill_id: instance.workflowSkillID || workflowSkillID,
+                workflow_version: instance.workflowVersion || workflowVersion || undefined,
+                current_node: instance.currentNode || workflowMapping?.approvalNode || undefined,
+                current_node_ids: instance.currentNodeIDs && instance.currentNodeIDs.length > 0 ? instance.currentNodeIDs : undefined,
+                business_status: 'supplemented',
+                result_status: 'pending',
+                from_status: instance.businessStatus || instance.status,
+                to_status: 'supplemented',
+                business_entity: instance.objectRole || businessEntity || app.category,
+                business_action: 'supplement',
+                business_note: note || text.supplementContinue,
+                form_data: formData,
+                business_payload: businessPayload,
+                result_payload: resultPayload,
+                run_workflow_skill: true,
+                workflow_run_args: {
+                    _maclaw_app: true,
+                    app_id: canonicalAppManifestID(app),
+                    app_name: app.name,
+                    app_kind: app.kind,
+                    approval_id: instance.approvalID,
+                    approval_instance_id: instance.id,
+                    continue_from_instance_id: instance.id,
+                    supplemental_input: { form_data: formData, business_payload: businessPayload },
+                    workflow_mapping: workflowMapping,
+                    workflow_status_mapping: workflowMapping?.statusMapping,
+                    workflow_skill_id: instance.workflowSkillID || workflowSkillID,
+                    workflow_version: instance.workflowVersion || workflowVersion,
+                    current_node: instance.currentNode || workflowMapping?.approvalNode || '',
+                    business_entity: instance.objectRole || businessEntity || app.category,
+                    business_action: 'supplement',
+                    business_note: note || text.supplementContinue,
+                    prompt: `Continue MaClaw approval workflow: ${app.name} ·  ${instance.title}`,
+                },
+            }) as { instance?: BackendApprovalInstance; approval_id?: string; workflow_run?: { ran?: boolean; workflow_skill_id?: string; instance?: BackendApprovalInstance; progress_instances?: BackendApprovalInstance[]; progressInstances?: BackendApprovalInstance[] } } | undefined;
+            const workflowRunProgressInstances = (Array.isArray(started?.workflow_run?.progress_instances) ? started?.workflow_run?.progress_instances : Array.isArray(started?.workflow_run?.progressInstances) ? started?.workflow_run?.progressInstances : []) as BackendApprovalInstance[];
+            const workflowRunInstance = started?.workflow_run?.instance;
+            const startedInstance = workflowRunInstance || started?.instance || workflowRunProgressInstances[workflowRunProgressInstances.length - 1];
+            const progressViews = workflowRunProgressInstances.map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
+            if (progressViews.length > 0) {
+                setApprovalInstances((current) => mergeApprovalInstanceViews(current, progressViews));
+            }
+            const finalView = startedInstance ? backendApprovalInstanceToView(startedInstance, lang) : undefined;
+            if (finalView) {
+                setApprovalInstances((current) => mergeApprovalInstanceViews(current, [finalView]));
+            }
+            const finalStatus = String(startedInstance?.status || startedInstance?.result_status || startedInstance?.resultStatus || '').trim().toLowerCase().replace('-', '_');
+            const stillRunning = ['pending', 'running', 'submitted', 'requires_input', 'in_progress'].includes(finalStatus);
+            setRunID(String(startedInstance?.workflow_decision_id || startedInstance?.workflowDecisionID || started?.approval_id || instance.approvalID || instance.id).trim());
+            setRunState(stillRunning ? 'running' : 'done');
+            setValidationMessage('');
+            void loadApprovalInstances('all');
+        } catch (error: any) {
+            const message = setRuntimeError(error, text.skillRunFailed);
+            await recordApprovalRuntimeFailure({
+                instance_id: instance.id,
+                app_id: canonicalAppManifestID(app),
+                app_name: app.name,
+                approval_id: instance.approvalID,
+                record_approval_id: instance.approvalID,
+                record_id: recordID,
+                title: instance.title,
+                lane: 'my_requests',
+                status: 'requires_input',
+                current_node: instance.currentNode,
+                current_node_ids: instance.currentNodeIDs,
+                workflow_node_ids: instance.currentNodeIDs,
+                workflow_skill_id: instance.workflowSkillID || workflowSkillID,
+                workflow_version: instance.workflowVersion || workflowVersion,
+                approval_event: instance.approvalEvent || approvalBinding?.event,
+                approval_workflow_id: instance.approvalWorkflowID || instance.workflowSkillID || workflowSkillID,
+                object_role: instance.objectRole || approvalObjectRole,
+                dataset_id: instance.datasetID || approvalDatasetID,
+                blueprint_id: instance.blueprintID || approvalBlueprintID,
+                owner: instance.owner || instance.applicant,
+                applicant: instance.applicant || instance.owner,
+                approver: instance.approver,
+                current_assignee: instance.currentAssignee || instance.approver,
+                current_assignee_type: instance.currentAssigneeType || 'user',
+                result: instance.result,
+                business_status: instance.businessStatus,
+                result_status: instance.resultStatus,
+                from_status: instance.businessStatus || instance.status,
+                result_payload: resultPayload,
+                outputs: instance.outputs,
+                artifacts: instance.artifacts,
+                events: instance.events,
+            }, message, inputSummary, 'failed-' + Date.now().toString(36));
         }
     };
     const updateApprovalInstanceDecision = async (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => {
@@ -8595,7 +8859,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 </>
                             )}
                         </section>}
-                        {isApproval && showWorkspaceRegion && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} />}
+                        {isApproval && showWorkspaceRegion && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} onSupplement={continueApprovalInstanceWithSupplement} />}
                         {isBusiness && showWorkspaceRegion && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} />}
                         {showStatusRegion && <section className="apps-runtime-section apps-runtime-status" data-region={statusRegion} style={{ order: runtimeOrder.status }}>
                             <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
@@ -8780,7 +9044,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const normalizedQuery = query.trim().toLowerCase();
         return instances.filter((item) => {
             const laneMatches = lane === 'all'
-                || (lane === 'handled' ? item.status === 'approved' || item.status === 'rejected' : item.lane === lane);
+                || (lane === 'handled' ? ['approved', 'rejected', 'failed', 'cancelled', 'timeout'].includes(item.status) : item.lane === lane);
             const matchedApp = findAppByRuntimeID(apps, item.appID);
             const appMatches = appFilter === 'all' || (!!matchedApp && appEntryMatchesID(matchedApp, appFilter));
             const statusMatches = statusFilter === 'all' || item.status === statusFilter;
@@ -8795,7 +9059,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const countForLane = (key: ApprovalLaneFilter) => key === 'all'
         ? instances.length
         : key === 'handled'
-            ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
+            ? instances.filter((item) => ['approved', 'rejected', 'failed', 'cancelled', 'timeout'].includes(item.status)).length
             : instances.filter((item) => item.lane === key).length;
     const applyDataSrvSummaryBucket = (bucket: DataSrvApprovalSummaryBucket) => {
         setSelectedInstanceId('');
@@ -8923,7 +9187,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                     <div className="apps-approval-manager__filters">
                         <input className="apps-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text.approvalSearch} />
                         <label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => { setAppFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllApps}</option>{approvalApps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>
-                        <label><span>{text.approvalStatusFilter}</span><select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllStatuses}</option>{(['pending', 'approved', 'rejected', 'attention', 'draft'] as ApprovalInstanceView['status'][]).map((status) => <option key={status} value={status}>{approvalStatusLabel(status, lang)}</option>)}</select></label>
+                        <label><span>{text.approvalStatusFilter}</span><select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSelectedInstanceId(''); }}><option value="all">{text.approvalAllStatuses}</option>{(['pending', 'requires_input', 'approved', 'rejected', 'attention', 'failed', 'cancelled', 'timeout', 'draft'] as ApprovalInstanceView['status'][]).map((status) => <option key={status} value={status}>{approvalStatusLabel(status, lang)}</option>)}</select></label>
                     </div>
                     <nav className="apps-approval-manager__lanes" aria-label={text.approvalWorkspace}>
                         {lanes.map((item) => <button key={item.key} className={lane === item.key ? 'is-active' : ''} type="button" aria-pressed={lane === item.key} onClick={() => { setLane(item.key); setSelectedInstanceId(''); }}><span>{item.label}</span><strong>{countForLane(item.key)}</strong></button>)}
@@ -8941,7 +9205,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
                                     <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} / {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}</span><small>{text.approvalInstanceId}: {item.id} / {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div></div>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}</span><small>{text.approvalInstanceId}: {item.id} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}
@@ -8986,7 +9250,7 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
                         <button className="apps-datasrv-approval-summary__item" data-selected={selectedBucket?.key === bucket.key ? 'true' : 'false'} type="button" key={bucket.key} onClick={() => { setSelectedKey(bucket.key); onBucketSelect?.(bucket); }} aria-pressed={selectedBucket?.key === bucket.key}>
                             <span>{bucket.label}</span>
                             <strong>{bucket.count}</strong>
-                            <small>{bucket.apps.join(' / ') || '-'}</small>
+                            <small>{bucket.apps.join(' ·  ') || '-'}</small>
                         </button>
                         ))}
                     </div>
@@ -9025,7 +9289,42 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
     );
 };
 
-const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision }: { instance?: ApprovalInstanceView; resultContract?: AppResultContract; lang?: string; text: typeof labels.zh; onDecision: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
+const ApprovalSupplementPanel = ({ instance, lang, text, onSupplement }: { instance: ApprovalInstanceView; lang?: string; text: typeof labels.zh; onSupplement?: (instance: ApprovalInstanceView, supplement: { note: string; reference: string }) => void | Promise<void> }) => {
+    const info = approvalRequiresInputInfo(instance, lang);
+    const [note, setNote] = useState('');
+    const [reference, setReference] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    if (!info) return null;
+    const canSubmit = !!onSupplement && !submitting && (note.trim() || reference.trim());
+    const submit = async () => {
+        if (!onSupplement || !canSubmit) return;
+        setSubmitting(true);
+        try {
+            await onSupplement(instance, { note: note.trim(), reference: reference.trim() });
+            setNote('');
+            setReference('');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    return (
+        <section className="apps-approval-supplement" aria-label={info.title}>
+            <div className="apps-approval-supplement__head">
+                <strong>{info.title}</strong>
+                <span>{info.message}</span>
+            </div>
+            {info.fields.length > 0 && <div className="apps-approval-supplement__fields"><span>{text.supplementFieldsLabel}</span>{info.fields.map((field) => <code key={field}>{field}</code>)}</div>}
+            {onSupplement && (
+                <div className="apps-approval-supplement__form">
+                    <label><span>{text.supplementNoteLabel}</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder={isZh(lang) ? '\u8bf4\u660e\u5df2\u8865\u5145\u7684\u6750\u6599' : 'Describe what was added'} /></label>
+                    <label><span>{text.supplementReferenceLabel}</span><input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="artifact://..." /></label>
+                    <button className="apps-primary-button" type="button" disabled={!canSubmit} onClick={() => void submit()}>{submitting ? text.supplementRunning : text.supplementContinue}</button>
+                </div>
+            )}
+        </section>
+    );
+};
+const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSupplement }: { instance?: ApprovalInstanceView; resultContract?: AppResultContract; lang?: string; text: typeof labels.zh; onDecision: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void>; onSupplement?: (instance: ApprovalInstanceView, supplement: { note: string; reference: string }) => void | Promise<void> }) => {
     const selectedOutputs = instance?.outputs || [];
     const selectedArtifacts = instance?.artifacts || [];
     const selectedPayloadEntries = instance?.resultPayload ? Object.entries(instance.resultPayload).filter(([, value]) => formatApprovalResultValue(value)) : [];
@@ -9054,16 +9353,18 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision }: { 
                                 const kind = approvalOutputKind(output);
                                 const body = approvalOutputBody(output);
                                 const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
-                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' / ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
+                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' ·  ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
                             })}
-                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' / ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
+                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' ·  ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
                             {selectedPayloadEntries.length > 0 && <div className="apps-approval-payload"><strong>{text.approvalOutputData}</strong>{selectedPayloadEntries.map(([key, value]) => <div key={`${instance.id}-payload-${key}`}><span>{key}</span><pre>{formatApprovalResultValue(value)}</pre></div>)}</div>}
                         </section>
                     )}
+                    <ApprovalSupplementPanel instance={instance} lang={lang} text={text} onSupplement={onSupplement} />
+
                     <div className="apps-approval-timeline">
                         {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' }, { node: approvalCurrentNodeText(instance, lang) }, { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
-                            const primary = [event.node, event.decision].filter(Boolean).join(' / ') || event.message || '-';
-                            const secondary = [event.actor, event.at].filter(Boolean).join(' / ');
+                            const primary = [event.node, event.decision].filter(Boolean).join(' ·  ') || event.message || '-';
+                            const secondary = [event.actor, event.at].filter(Boolean).join(' ·  ');
                             return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
                         })}
                     </div>
@@ -9098,7 +9399,7 @@ const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) 
                     <div className="apps-approval-manager__filters"><label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => setAppFilter(event.target.value)}><option value="all">{text.runHistoryAllApps}</option>{apps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label></div>
                     {filteredItems.length === 0 ? <div className="apps-run-history__empty">{text.noGlobalRunHistory}</div> : (
                         <div className="apps-run-history__list">
-                            {filteredItems.map((item) => <div className="apps-run-history__item" data-state={item.status} key={`${item.appID}-${item.runID}-${item.at}`}><div><strong>{appNameById.get(item.appID) || item.appID}</strong><span>{formatRunHistoryTime(item.at)} / {item.outputMode.toUpperCase()} / {item.runID}</span>{item.inputSummary && <code>{item.inputSummary}</code>}</div><div className="apps-run-history__side"><em>{item.message || item.status}</em>{(item.artifactURI || item.artifactPath) && <div className="apps-run-history__actions"><button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button><button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button></div>}</div></div>)}
+                            {filteredItems.map((item) => <div className="apps-run-history__item" data-state={item.status} key={`${item.appID}-${item.runID}-${item.at}`}><div><strong>{appNameById.get(item.appID) || item.appID}</strong><span>{formatRunHistoryTime(item.at)} ·  {item.outputMode.toUpperCase()} ·  {item.runID}</span>{item.inputSummary && <code>{item.inputSummary}</code>}</div><div className="apps-run-history__side"><em>{item.message || item.status}</em>{(item.artifactURI || item.artifactPath) && <div className="apps-run-history__actions"><button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button><button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button></div>}</div></div>)}
                         </div>
                     )}
                 </section>
@@ -9107,19 +9408,19 @@ const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) 
     );
 };
 
-const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, backendInstances, approvalLoadState = 'idle', lang, text, style, layoutRegion, onRefresh, onDecision }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; backendInstances?: ApprovalInstanceView[]; approvalLoadState?: 'idle' | 'loading' | 'error'; lang?: string; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; onRefresh?: (lane: ApprovalLaneFilter) => void | Promise<void>; onDecision?: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void> }) => {
+const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, backendInstances, approvalLoadState = 'idle', lang, text, style, layoutRegion, onRefresh, onDecision, onSupplement }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; backendInstances?: ApprovalInstanceView[]; approvalLoadState?: 'idle' | 'loading' | 'error'; lang?: string; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; onRefresh?: (lane: ApprovalLaneFilter) => void | Promise<void>; onDecision?: (instance: ApprovalInstanceView, decision: 'approved' | 'rejected' | 'attention') => void | Promise<void>; onSupplement?: (instance: ApprovalInstanceView, supplement: { note: string; reference: string }) => void | Promise<void> }) => {
     const [lane, setLane] = useState<ApprovalLaneFilter>('my_requests');
     const [selectedInstanceId, setSelectedInstanceId] = useState('');
-    const fallbackInstances = buildApprovalInstances(app, runState, businessEntity, businessAction, businessNote, lang);
+    const fallbackInstances = approvalLoadState === 'error' ? [] : buildApprovalInstances(app, runState, businessEntity, businessAction, businessNote, lang);
     const instances = backendInstances && backendInstances.length > 0 ? backendInstances : fallbackInstances;
-    const visibleInstances = lane === 'all' ? instances : lane === 'handled' ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected') : instances.filter((item) => item.lane === lane);
+    const visibleInstances = lane === 'all' ? instances : lane === 'handled' ? instances.filter((item) => ['approved', 'rejected', 'failed', 'cancelled', 'timeout'].includes(item.status)) : instances.filter((item) => item.lane === lane);
     const selected = visibleInstances.find((item) => item.id === selectedInstanceId) || visibleInstances[0];
     const resultContract = appResultContractForManifest(app);
     const lanes = approvalLanes(text);
     const countForLane = (key: typeof lanes[number]['key']) => key === 'all'
         ? instances.length
         : key === 'handled'
-            ? instances.filter((item) => item.status === 'approved' || item.status === 'rejected').length
+            ? instances.filter((item) => ['approved', 'rejected', 'failed', 'cancelled', 'timeout'].includes(item.status)).length
             : instances.filter((item) => item.lane === key).length;
     useEffect(() => {
         if (onRefresh) void onRefresh(lane);
@@ -9225,6 +9526,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     )}
                                 </section>
                             )}
+                            <ApprovalSupplementPanel instance={selected} lang={lang} text={text} onSupplement={onSupplement} />
+
                             <div className="apps-approval-timeline">
                                 {(selected.events && selected.events.length > 0 ? selected.events : [
                                     { node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' },
@@ -10005,6 +10308,25 @@ function installRecordStringList(value: unknown): string[] {
     return Array.isArray(value) ? value.map((item) => installRecordString(item)).filter(Boolean) : [];
 }
 
+function resultCoverageEvidenceSummary(coverage: Record<string, unknown> | undefined, text: typeof labels.zh): { value: string; state: DataSrvRegistrationState } | null {
+    if (!coverage || typeof coverage !== 'object') return null;
+    const primary = installRecordString(coverage.primary || coverage.primary_result);
+    const covered = installRecordStringList(coverage.coveredTypes || coverage.covered_types);
+    const coveredCount = appEvidenceNumber(coverage.coveredCount, coverage.covered_count);
+    const missing = installRecordStringList(coverage.missingTypes || coverage.missing_types);
+    const ok = appEvidenceBool(coverage.ok, coverage.covered);
+    const shownCoveredCount = covered.length || coveredCount || 0;
+    const parts = [
+        primary,
+        shownCoveredCount > 0 ? `${text.resultCovered}: ${shownCoveredCount}` : '',
+        missing.length ? `${text.resultMissing}: ${missing.length}` : '',
+        ok === true && shownCoveredCount === 0 && missing.length === 0 ? 'ok' : '',
+    ].filter(Boolean);
+    if (parts.length === 0 && ok === undefined) return null;
+    const state: DataSrvRegistrationState = ok === false || missing.length > 0 ? 'failed' : ok === true || shownCoveredCount > 0 ? 'ready' : 'partial';
+    return { value: parts.join(' · ') || (ok ? 'ok' : 'pending'), state };
+}
+
 function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeof labels.zh) {
     const items: Array<{ label: string; value: string; state?: DataSrvRegistrationState }> = [];
     const layout = record.workspace_layout || {};
@@ -10028,6 +10350,13 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
     ].filter(Boolean).join(' · ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
+    const coverage = evidence.resultCoverage && typeof evidence.resultCoverage === 'object'
+        ? evidence.resultCoverage as Record<string, unknown>
+        : evidence.result_coverage && typeof evidence.result_coverage === 'object'
+            ? evidence.result_coverage as Record<string, unknown>
+            : undefined;
+    const coverageSummary = resultCoverageEvidenceSummary(coverage, text);
+    if (coverageSummary) items.push({ label: text.resultCoverage, value: coverageSummary.value, state: coverageSummary.state });
     const approvalInstance = evidence.approvalInstance && typeof evidence.approvalInstance === 'object'
         ? evidence.approvalInstance as Record<string, unknown>
         : evidence.approval_instance && typeof evidence.approval_instance === 'object'
@@ -10096,6 +10425,100 @@ const InstallRecordEvidenceSnapshot = ({ record, text }: { record: BackendAppIns
 	);
 };
 
+type PublishReviewEvidenceItem = { label: string; value: string; state?: DataSrvRegistrationState };
+
+function publishReviewEvidenceState(status: string): DataSrvRegistrationState {
+    const normalized = status.trim().toLowerCase();
+    if (['approved', 'passed', 'pass', 'ready', 'ok', 'success', 'synced', 'complete', 'completed'].includes(normalized)) return 'ready';
+    if (['rejected', 'failed', 'error', 'blocked', 'missing', 'deny', 'denied'].includes(normalized)) return 'failed';
+    if (['pending', 'running', 'submitted', 'partial', 'in_progress', 'in-progress', 'attention', 'requires_input', 'requires-input'].includes(normalized)) return 'partial';
+    return 'skipped';
+}
+
+function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefined, text: typeof labels.zh): PublishReviewEvidenceItem[] {
+    if (!evidence) return [];
+    const records = Object.values(evidence)
+        .map((value) => appEvidenceRecord(value))
+        .filter(Boolean) as Record<string, unknown>[];
+    const items: PublishReviewEvidenceItem[] = [];
+    records.forEach((record, index) => {
+        const suffix = records.length > 1 ? ` #${index + 1}` : '';
+        const approvalStatus = appEvidenceString(record.approval_status, record.approvalStatus, record.status);
+        if (appEvidenceBool(record.has_approval_instance, record.hasApprovalInstance) || approvalStatus) {
+            const approvalValue = [approvalStatus, appEvidenceString(record.current_node, record.currentNode)].filter(Boolean).join(' · ') || 'ready';
+            items.push({ label: `${text.approval}${suffix}`, value: approvalValue, state: publishReviewEvidenceState(approvalStatus || approvalValue) });
+        }
+        const progressCount = appEvidenceNumber(record.progress_count, record.progressCount);
+        if (progressCount !== undefined) {
+            items.push({ label: `${text.progress}${suffix}`, value: String(progressCount), state: progressCount > 0 ? 'partial' : 'skipped' });
+        }
+        const dependencyCount = appEvidenceNumber(record.dependency_count, record.dependencyCount);
+        const hasDependencyVerification = appEvidenceBool(record.has_dependency_verification, record.hasDependencyVerification);
+        const hasBlockingDependency = appEvidenceBool(record.has_blocking_dependency, record.hasBlockingDependency);
+        if (hasDependencyVerification || dependencyCount !== undefined) {
+            items.push({ label: `${text.skillDependencies}${suffix}`, value: String(dependencyCount ?? 0), state: hasBlockingDependency ? 'failed' : 'ready' });
+        }
+        const layoutRecord = appEvidenceRecord(record.workspace_layout) || appEvidenceRecord(record.workspaceLayout);
+        const layoutStudio = appEvidenceRecord(layoutRecord?.studio);
+        const layout = appEvidenceString(record.workspace_template, record.workspaceTemplate, layoutRecord?.template, layoutRecord?.entry, layoutRecord?.density);
+        const layoutSaved = appEvidenceBool(record.workspace_saved_in_manifest, record.workspaceSavedInManifest, layoutRecord?.studio_saved_in_manifest, layoutRecord?.studioSavedInManifest, layoutStudio?.savedInManifest, layoutStudio?.saved_in_manifest);
+        const layoutUpdatedBy = appEvidenceString(record.workspace_updated_by, record.workspaceUpdatedBy, layoutRecord?.studio_updated_by, layoutRecord?.studioUpdatedBy, layoutStudio?.updatedBy, layoutStudio?.updated_by);
+        if (appEvidenceBool(record.has_workspace_layout, record.hasWorkspaceLayout) || layout || layoutSaved) {
+            const layoutValue = [layout || 'ready', layoutSaved ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' · ');
+            items.push({ label: `${text.workspaceLayout}${suffix}`, value: layoutValue, state: 'ready' });
+        }
+        const dataSrvStatus = appEvidenceString(record.datasrv_registration_status, record.dataSrvRegistrationStatus, record.datasrvRegistrationStatus);
+        if (dataSrvStatus) {
+            items.push({ label: `DataSrv${suffix}`, value: dataSrvStatus, state: publishReviewEvidenceState(dataSrvStatus) });
+        }
+        const workflowContract = appEvidenceRecord(record.workflow_contract) || appEvidenceRecord(record.workflowContract);
+        const workflowVersion = appEvidenceString(record.workflow_contract_version, record.workflowContractVersion, workflowContract?.version, workflowContract?.schema);
+        if (appEvidenceBool(record.has_workflow_contract, record.hasWorkflowContract) || workflowVersion) {
+            items.push({ label: `${text.workflow}${suffix}`, value: workflowVersion || 'ready', state: 'ready' });
+        }
+        const resultPrimary = appEvidenceString(record.result_contract_primary, record.resultContractPrimary);
+        const resultTypeCount = appEvidenceNumber(record.result_contract_type_count, record.resultContractTypeCount);
+        if (appEvidenceBool(record.has_result_contract, record.hasResultContract) || resultPrimary || resultTypeCount !== undefined) {
+            const value = [resultPrimary || 'ready', resultTypeCount !== undefined ? `${resultTypeCount} types` : ''].filter(Boolean).join(' · ');
+            items.push({ label: `${text.resultContract}${suffix}`, value, state: 'ready' });
+        }
+        const protocolFingerprint = appEvidenceString(record.test_protocol_fingerprint, record.testProtocolFingerprint);
+        if (appEvidenceBool(record.has_test_protocol, record.hasTestProtocol) || protocolFingerprint) {
+            items.push({ label: `${text.testEvidence}${suffix}`, value: protocolFingerprint || 'ready', state: 'ready' });
+        }
+        const coverageSummary = resultCoverageEvidenceSummary({
+            ok: firstAppEvidenceValue(record.result_coverage_ok, record.resultCoverageOK),
+            primary: firstAppEvidenceValue(record.result_coverage_primary, record.resultCoveragePrimary),
+            covered_count: firstAppEvidenceValue(record.result_coverage_covered_count, record.resultCoverageCoveredCount),
+            missingTypes: (() => {
+                const count = appEvidenceNumber(record.result_coverage_missing_count, record.resultCoverageMissingCount);
+                return count && count > 0 ? Array.from({ length: count }, (_, index) => String(index + 1)) : [];
+            })(),
+        }, text);
+        if (coverageSummary) items.push({ label: `${text.resultCoverage}${suffix}`, value: coverageSummary.value, state: coverageSummary.state });
+        const outputCount = appEvidenceNumber(record.output_count, record.outputCount);
+        const artifactCount = appEvidenceNumber(record.artifact_count, record.artifactCount);
+        if (outputCount !== undefined || artifactCount !== undefined) {
+            items.push({ label: `${text.approvalResultPackage}${suffix}`, value: `${text.output}: ${outputCount ?? 0} · ${text.runArtifacts}: ${artifactCount ?? 0}`, state: 'ready' });
+        }
+    });
+    return items;
+}
+
+const PublishReviewEvidenceStrip = ({ evidence, text }: { evidence?: Record<string, unknown>; text: typeof labels.zh }) => {
+    const items = publishReviewEvidenceItems(evidence, text);
+    if (items.length === 0) return null;
+    return (
+        <div className="apps-install-version-snapshot apps-install-evidence-snapshot apps-review-evidence-strip" role="list" aria-label={text.reviewEvidence}>
+            {items.map((item, index) => (
+                <span role="listitem" data-state={item.state} key={item.label + ':' + item.value + ':' + index}>
+                    <strong>{item.label}</strong>
+                    <em>{item.value}</em>
+                </span>
+            ))}
+        </div>
+    );
+};
 function installRecordVersionSnapshotForApp(installAudit: BackendAppInstallRecord | null | undefined, appID?: string): BackendAppInstallVersionSnapshot | undefined {
     const versions = installAudit?.app_versions;
     if (appID && versions && typeof versions === 'object') {
@@ -10805,8 +11228,8 @@ const StudioSkillPicker = ({
                         }
                     }}
                     placeholder={placeholder || (mode === 'approvalWorkflow'
-                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 / Hub' : 'Search approval workflows / Hub')
-                        : (zh ? '\u641c\u5df2\u5b89\u88c5 / SkillMarket' : 'Search installed / SkillMarket'))}
+                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 ·  Hub' : 'Search approval workflows ·  Hub')
+                        : (zh ? '\u641c\u5df2\u5b89\u88c5 ·  SkillMarket' : 'Search installed ·  SkillMarket'))}
                     aria-label={label}
                 />
                 <button className="apps-secondary-button" type="button" disabled={!query.trim() || currentQueryIsSearching} onClick={() => void searchMarket()}>
@@ -10949,57 +11372,57 @@ const TestProtocolDesigner = ({ protocol, onChange, lang, testIdPrefix = 'studio
     const workflowDecisionOutputs = protocol.workflowDecisionOutputs || [];
     const workflowRequiredOutputs = protocol.workflowRequiredOutputs || [];
     return (
-        <section className="apps-test-protocol" aria-label={zh ? '可复现实测协议' : 'Reproducible test protocol'} data-testid={testIdPrefix + '-test-protocol'}>
+        <section className="apps-test-protocol" aria-label={zh ? '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae' : 'Reproducible test protocol'} data-testid={testIdPrefix + '-test-protocol'}>
             <div className="apps-preview-title-row">
-                <div className="apps-definition__title">{zh ? '可复现实测协议' : 'Reproducible test protocol'}</div>
+                <div className="apps-definition__title">{zh ? '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae' : 'Reproducible test protocol'}</div>
                 <span className="apps-count">maclaw.app.test_protocol.v1</span>
             </div>
             <div className="apps-test-protocol__summary">
-                <span>{zh ? '指纹' : 'Fingerprint'}</span>
+                <span>{zh ? '\u6307\u7eb9' : 'Fingerprint'}</span>
                 <code>{fingerprint}</code>
-                <span>{zh ? '风险' : 'Risk'}</span>
+                <span>{zh ? '\u98ce\u9669' : 'Risk'}</span>
                 <select data-testid={testIdPrefix + '-test-risk'} value={protocol.riskLevel} onChange={(event) => updateRisk(event.target.value)}>
                     {['low', 'medium', 'high', 'critical'].map((level) => <option value={level} key={level}>{level}</option>)}
                 </select>
             </div>
             {isApprovalProtocol && (
-                <div className="apps-test-protocol__workflow" aria-label={zh ? '审批 workflow 输出合同' : 'Approval workflow output contract'}>
+                <div className="apps-test-protocol__workflow" aria-label={zh ? '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6' : 'Approval workflow output contract'}>
                     <div className="apps-test-protocol__workflow-head">
-                        <strong>{zh ? '审批 workflow 输出合同' : 'Approval workflow output contract'}</strong>
-                        <span>{zh ? 'Hub 审核必检' : 'Hub review gate'}</span>
+                        <strong>{zh ? '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6' : 'Approval workflow output contract'}</strong>
+                        <span>{zh ? 'Hub \u8bc4\u5ba1\u95e8\u7981' : 'Hub review gate'}</span>
                     </div>
                     <div className="apps-test-protocol__workflow-grid">
                         <div className="apps-form-row">
-                            <label>{zh ? '必需输入' : 'Required inputs'}</label>
+                            <label>{zh ? '\u5fc5\u586b\u8f93\u5165' : 'Required inputs'}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-required-inputs'} value={workflowRequiredInputs.join(', ')} onChange={(event) => updateList('workflowRequiredInputs', event.target.value)} />
                         </div>
                         <div className="apps-form-row">
-                            <label>{zh ? '决策输出' : 'Decision outputs'}</label>
+                            <label>{zh ? '\u51b3\u7b56\u8f93\u51fa' : 'Decision outputs'}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-decision-outputs'} value={workflowDecisionOutputs.join(', ')} onChange={(event) => updateList('workflowDecisionOutputs', event.target.value)} />
                         </div>
                         <div className="apps-form-row apps-form-row--wide">
-                            <label>{zh ? '必需结果包字段' : 'Required result fields'}</label>
+                            <label>{zh ? '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5' : 'Required result fields'}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-required-outputs'} value={workflowRequiredOutputs.join(', ')} onChange={(event) => updateList('workflowRequiredOutputs', event.target.value)} />
                         </div>
                     </div>
-                    <div className="apps-test-protocol__workflow-chips" aria-label={zh ? '必需结果包字段' : 'Required result fields'}>
-                        {workflowRequiredOutputs.map((item, index) => <span data-testid={`${testIdPrefix}-test-workflow-required-output-${index}`} key={`${item}-${index}`}>{item}</span>)}
+                    <div className="apps-test-protocol__workflow-chips" aria-label={zh ? '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5' : 'Required result fields'}>
+                        {workflowRequiredOutputs.map((item, index) => <span data-testid={testIdPrefix + '-test-workflow-required-output-' + index} key={item + '-' + index}>{item}</span>)}
                     </div>
                 </div>
             )}
             <div className="apps-test-protocol__grid">
                 <div className="apps-form-row apps-form-row--description">
-                    <label>{zh ? '样例输入' : 'Sample input'}</label>
+                    <label>{zh ? '\u793a\u4f8b\u8f93\u5165' : 'Sample input'}</label>
                     <textarea data-testid={testIdPrefix + '-test-sample-input'} value={sampleInputText} onChange={(event) => updateJson('sampleInput', event.target.value)} />
                 </div>
                 <div className="apps-form-row apps-form-row--description">
-                    <label>{zh ? '期望输出' : 'Expected output'}</label>
+                    <label>{zh ? '\u9884\u671f\u8f93\u51fa' : 'Expected output'}</label>
                     <textarea data-testid={testIdPrefix + '-test-expected-output'} value={expectedOutputText} onChange={(event) => updateJson('expectedOutput', event.target.value)} />
                 </div>
             </div>
             <div className="apps-test-protocol__grid apps-test-protocol__grid--compact">
                 <div className="apps-form-row">
-                    <label>{zh ? '角色' : 'Roles'}</label>
+                    <label>{zh ? '\u89d2\u8272' : 'Roles'}</label>
                     <input data-testid={testIdPrefix + '-test-roles'} value={protocol.requiredRoles.join(', ')} onChange={(event) => updateList('requiredRoles', event.target.value)} />
                 </div>
                 <div className="apps-form-row">
@@ -11009,7 +11432,8 @@ const TestProtocolDesigner = ({ protocol, onChange, lang, testIdPrefix = 'studio
             </div>
         </section>
     );
-};const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { title: string; items: string[]; onChange: (items: string[]) => void; lang?: string; testIdPrefix: string }) => {
+};
+const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { title: string; items: string[]; onChange: (items: string[]) => void; lang?: string; testIdPrefix: string }) => {
     const zh = isZh(lang);
     const update = (index: number, value: string) => onChange(items.map((item, itemIndex) => itemIndex === index ? value : item));
     const remove = (index: number) => onChange(items.filter((_, itemIndex) => itemIndex !== index));
@@ -11632,7 +12056,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <section className="apps-layout-designer" aria-label={zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}>
                         <div className="apps-preview-title-row">
                             <div className="apps-definition__title">{zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}</div>
-                            <span className="apps-count">appSkill / workflow_skill</span>
+                            <span className="apps-count">appSkill ·  workflow_skill</span>
                         </div>
                         <div className="apps-capability-skill-grid">
                             <div className="apps-capability-skill-card">
@@ -11725,7 +12149,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                     </div>
                                     <div className="apps-form-row">
                                         <label>{zh ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID / GitHub URL' : 'Capability ID / GitHub URL'} />
+                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID ·  GitHub URL' : 'Capability ID ·  GitHub URL'} />
                                     </div>
                                 </>
                             )}
@@ -12301,6 +12725,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                             <InstallVersionSnapshot snapshot={queueInstallResult?.versionSnapshot} text={text} />
                                             {queueInstallResult?.installEvidence && <InstallRecordEvidenceSnapshot record={queueInstallResult.installEvidence} text={text} />}
                                             {!queueInstallResult?.installEvidence && item.submissionEvidence && <InstallRecordEvidenceSnapshot record={item.submissionEvidence} text={text} />}
+                                            <PublishReviewEvidenceStrip evidence={item.reviewEvidence} text={text} />
                                         </div>
                                         <div className="apps-publish-queue__tools">
                                             {canSyncItemToHub && (
@@ -12384,7 +12809,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                                 {detailPackageApps.length > 0 && <span>{text.queueDetailPackageApps}: {detailPackageApps.join(', ')}</span>}
                                                 {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
                                                 <ReviewIssuesPanel issues={item.reviewIssues} text={text} compact />
-                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' / ')}</span>}
+                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' ·  ')}</span>}
                                             </div>
                                         )}
                                     </div>
@@ -13164,7 +13589,7 @@ const ManageAppsPane = ({ apps, hiddenApps, lang, onTogglePin, onUpdateApp, onDu
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID / GitHub URL' : 'Capability ID / GitHub URL'} />
+                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID ·  GitHub URL' : 'Capability ID ·  GitHub URL'} />
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>

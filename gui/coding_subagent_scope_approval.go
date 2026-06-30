@@ -47,6 +47,9 @@ type ScopeApprovalRequest struct {
 	Path        string // the out-of-scope path being accessed
 	ProjectPath string // the declared project boundary
 	Directory   string // the directory that would be approved with "allow_dir"
+	Kind        string // optional request kind; empty means project scope approval
+	Message     string // optional user-facing reason
+	AutoAllow   bool   // true when backend auto-allows on timeout
 }
 
 // ScopeApprovalCallback is the function type for requesting user approval.
@@ -120,6 +123,7 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		Path:        path,
 		ProjectPath: projectPath,
 		Directory:   dir,
+		AutoAllow:   true,
 	})
 
 	switch decision {
@@ -315,6 +319,9 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 		"path":            req.Path,
 		"project_path":    req.ProjectPath,
 		"directory":       req.Directory,
+		"kind":            req.Kind,
+		"message":         req.Message,
+		"auto_allow":      req.AutoAllow,
 		"timeout_seconds": int(scopeApprovalTimeout / time.Second),
 	})
 }

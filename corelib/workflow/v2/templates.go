@@ -489,7 +489,9 @@ func BusinessPlanTemplate() *WorkflowTemplate {
 			{ID: "business_model", Name: "商业模式", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "financial_plan", Name: "财务规划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "operations", Name: "运营计划", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "risk_assessment", Name: "风险评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "risk_assessment", Name: "风险评估", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"market_analysis", "business_model", "financial_plan"},
+			},
 		},
 	}
 }
@@ -540,7 +542,9 @@ func LiteratureReviewTemplate() *WorkflowTemplate {
 			{ID: "search_strategy", Name: "检索策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "screening", Name: "文献筛选", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "analysis", Name: "内容分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "synthesis", Name: "综述撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "synthesis", Name: "综述撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"analysis", "screening"},
+			},
 		},
 	}
 }
@@ -565,7 +569,9 @@ func ResearchReportTemplate() *WorkflowTemplate {
 			{ID: "methodology", Name: "方法论", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "data_collection", Name: "数据收集", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "analysis", Name: "分析论证", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "conclusion", Name: "结论建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "conclusion", Name: "结论建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"data_collection", "analysis"},
+			},
 		},
 	}
 }
@@ -590,7 +596,9 @@ func CompetitiveAnalysisTemplate() *WorkflowTemplate {
 			{ID: "comparison", Name: "维度对比", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "swot", Name: "SWOT 分析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "differentiation", Name: "差异化策略", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "action_plan", Name: "行动建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "action_plan", Name: "行动建议", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"comparison", "swot", "differentiation"},
+			},
 		},
 	}
 }
@@ -829,7 +837,9 @@ func GrantProposalTemplate() *WorkflowTemplate {
 			{ID: "foundation", Name: "研究基础", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "methodology", Name: "方案设计", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "budget", Name: "预算编制", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "proposal", Name: "申请书", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "proposal", Name: "申请书", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"topic", "foundation", "methodology"},
+			},
 		},
 	}
 }
@@ -855,7 +865,9 @@ func PaperWritingTemplate() *WorkflowTemplate {
 			{ID: "literature", Name: "文献梳理", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "drafting", Name: "正文撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "figures", Name: "图表制作", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
-			{ID: "polishing", Name: "润色定稿", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+			{ID: "polishing", Name: "润色定稿", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"drafting", "literature"},
+			},
 		},
 	}
 }

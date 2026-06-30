@@ -2029,6 +2029,123 @@ func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
 	}
 }
 
+func TestRemoteCodingSubAgentHighRiskBashCanBeUserApproved(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{projectDir: "/repo/project"},
+	}
+	var gotReq ScopeApprovalRequest
+	cb.agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		gotReq = req
+		return ScopeApprovalAllowOnce
+	}, false)
+
+	result := cb.sshBash(map[string]interface{}{
+		"command":     "git reset --hard HEAD",
+		"working_dir": "sub",
+	})
+	if strings.Contains(result, "拒绝执行高风险命令") {
+		t.Fatalf("allow_once should bypass high-risk guardrail, got %q", result)
+	}
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("approved command should proceed to SSH handler, got %q", result)
+	}
+	if gotReq.ToolName != "ssh_bash" || gotReq.Path != "git reset --hard HEAD" || gotReq.ProjectPath != "/repo/project/sub" {
+		t.Fatalf("approval request = %#v", gotReq)
+	}
+	if gotReq.Kind != "remote_high_risk_bash" || gotReq.AutoAllow || !strings.Contains(gotReq.Message, "拒绝执行高风险命令") {
+		t.Fatalf("high-risk approval metadata = %#v", gotReq)
+	}
+}
+
+func TestRemoteCodingSubAgentHighRiskBashFullAccessPersistsForTask(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{projectDir: "/repo/project"},
+	}
+	calls := 0
+	cb.agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalFullAccess
+	}, false)
+
+	first := cb.sshBash(map[string]interface{}{"command": "git reset --hard HEAD"})
+	second := cb.sshBash(map[string]interface{}{"command": "rm -rf build"})
+	if strings.Contains(first, "拒绝执行高风险命令") || strings.Contains(second, "拒绝执行高风险命令") {
+		t.Fatalf("full_access should bypass high-risk guardrail, first=%q second=%q", first, second)
+	}
+	if calls != 1 {
+		t.Fatalf("full_access should avoid prompting again, calls=%d", calls)
+	}
+}
+
+func TestRemoteCodingSubAgentHighRiskBashRejectsDirectoryApprovalDecision(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{projectDir: "/repo/project"},
+	}
+	cb.agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalAllowDir
+	}, false)
+
+	result := cb.sshBash(map[string]interface{}{"command": "git reset --hard HEAD"})
+	if !strings.Contains(result, "拒绝执行高风险命令") {
+		t.Fatalf("allow_dir should not bypass high-risk command guardrail, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentSetCallbacksPreservesExplicitHighRiskApproval(t *testing.T) {
+	agent := &RemoteCodingSubAgent{projectDir: "/repo/project"}
+	calls := 0
+	agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalAllowOnce
+	}, false)
+	agent.SetCallbacks(nil, nil)
+
+	cb := &remoteCodingCallbacks{agent: agent}
+	result := cb.sshBash(map[string]interface{}{"command": "git reset --hard HEAD"})
+	if strings.Contains(result, "拒绝执行高风险命令") {
+		t.Fatalf("explicit approval callback should survive SetCallbacks, got %q", result)
+	}
+	if calls != 1 {
+		t.Fatalf("explicit approval callback calls = %d, want 1", calls)
+	}
+}
+
+func TestRemoteCodingSubAgentSetCallbacksPreservesAutoHighRiskFullAccess(t *testing.T) {
+	agent := &RemoteCodingSubAgent{
+		handler:    &IMMessageHandler{app: &App{}},
+		projectDir: "/repo/project",
+	}
+	agent.setHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		t.Fatalf("auto callback with full access should not be called")
+		return ScopeApprovalDeny
+	}, true, false, false)
+	state := agent.highRiskApproval
+	agent.SetCallbacks(nil, nil)
+	if agent.highRiskApproval != state {
+		t.Fatalf("auto callback refresh should preserve high-risk approval state")
+	}
+
+	cb := &remoteCodingCallbacks{agent: agent}
+	result := cb.sshBash(map[string]interface{}{"command": "git reset --hard HEAD"})
+	if strings.Contains(result, "拒绝执行高风险命令") {
+		t.Fatalf("auto full_access should survive callback refresh, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentAutoHighRiskRefreshDoesNotRevokeFullAccess(t *testing.T) {
+	state := newRemoteHighRiskApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalDeny
+	}, true)
+	state.configure(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalDeny
+	}, false, true)
+
+	result := state.check("git reset --hard HEAD", "/repo/project", "拒绝执行高风险命令")
+	if result != "" {
+		t.Fatalf("preserveFullAccess configure should not revoke full access, got %q", result)
+	}
+}
+
 func TestRemoteShellQuoteEscapesSingleQuotes(t *testing.T) {
 	got := remoteShellQuote("/repo/O'Reilly/app")
 	want := "'/repo/O'\\''Reilly/app'"

@@ -2490,7 +2490,7 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 }
 
 // ResolveScopeApproval handles the user's response to a SubAgent scope approval prompt.
-// decision: "deny", "allow_once", or "allow_dir"
+// decision: "deny", "allow_once", "allow_dir", or "full_access"
 func (a *App) ResolveScopeApproval(approvalID string, decision string) {
 	ResolveScopeApproval(approvalID, decision)
 }

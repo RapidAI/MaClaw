@@ -125,7 +125,7 @@ func (a *App) cancelStaleWorkflowsOnStartup(machine *v2.StateMachine) bool {
 			suspended = true
 			continue
 		}
-		log.Printf("[workflow-v2] startup: suspended workflow %s (user=%s, type=%s, phase=%s, age=%s)",
+		log.Printf("[workflow-v2] startup: suspended workflow %s (user=%s, type=%s, phase=%d, age=%s)",
 			state.ID, userID, state.Type, state.CurrentPhase, time.Since(state.UpdatedAt).Truncate(time.Second))
 		suspended = true
 	}

@@ -50,6 +50,8 @@
   function isMaclawAppCapability(item, metadata) { metadata = metadata || metadataOf(item); return !!(metadata.is_maclaw_app || item.is_maclaw_app || metadata.product_kind === 'maclaw_app_skill' || item.product_kind === 'maclaw_app_skill' || metadata.maclaw_app_id || metadata.maclaw_app_name || metadata.x_maclaw_apps_preview); }
   function maclawAppEvidenceValue(metadata, keys) { for (var i = 0; i < keys.length; i += 1) { var value = metadata && metadata[keys[i]]; if (value !== undefined && value !== null && value !== '') return value; } return ''; }
   function maclawAppEvidenceObject(metadata, keys) { var value = maclawAppEvidenceValue(metadata, keys); return value && typeof value === 'object' ? value : {}; }
+  function maclawAppEvidenceList(value) { return Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []); }
+  function maclawAppEvidenceFirst() { for (var i = 0; i < arguments.length; i += 1) { var value = arguments[i]; if (value !== undefined && value !== null && value !== '') return value; } return ''; }
   function maclawAppPreview(metadata) { var preview = metadata && metadata.x_maclaw_apps_preview; return Array.isArray(preview) && preview.length && preview[0] && typeof preview[0] === 'object' ? preview[0] : {}; }
   function maclawAppEvidenceSummary(item, metadata) {
     metadata = metadata || metadataOf(item);
@@ -57,22 +59,44 @@
     var preview = maclawAppPreview(metadata);
     var appID = maclawAppEvidenceValue(metadata, ['maclaw_app_id', 'app_id']) || preview.id || '';
     var appName = maclawAppEvidenceValue(metadata, ['maclaw_app_name', 'app_name']) || preview.name || firstName(item);
+    var reviewEvidence = maclawAppEvidenceObject(metadata, ['review_evidence', 'reviewEvidence', 'maclaw_app_review_evidence']);
+    var reviewAppEvidence = appID && reviewEvidence[appID] && typeof reviewEvidence[appID] === 'object' ? reviewEvidence[appID] : (appName && reviewEvidence[appName] && typeof reviewEvidence[appName] === 'object' ? reviewEvidence[appName] : reviewEvidence);
     var layout = maclawAppEvidenceObject(metadata, ['workspace_layout', 'workspaceLayout']);
     var result = maclawAppEvidenceObject(metadata, ['result_contract', 'resultContract']);
     var evidence = maclawAppEvidenceObject(metadata, ['test_evidence', 'testEvidence', 'maclaw_app_test_evidence']);
-    var layoutText = [layout.entry, layout.template, layout.density].filter(Boolean).join(' / ');
-    var resultTypes = Array.isArray(result.types) ? result.types.length : 0;
-    var resultText = [result.primary || metadata.maclaw_app_primary_result || evidence.primary_result || '', resultTypes ? resultTypes + ' types' : ''].filter(Boolean).join(' / ');
-    var testText = [evidence.runId || evidence.run_id || '', evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || evidence.definition_fingerprint || ''].filter(Boolean).join(' / ');
+    var layoutStudio = layout.studio && typeof layout.studio === 'object' ? layout.studio : {};
+    var layoutSaved = maclawAppEvidenceFirst(metadata.workspace_layout_studio_saved_in_manifest, metadata.workspace_saved_in_manifest, layout.studio_saved_in_manifest, layoutStudio.savedInManifest, layoutStudio.saved_in_manifest);
+    var layoutUpdatedBy = maclawAppEvidenceFirst(metadata.workspace_layout_studio_updated_by, metadata.workspace_updated_by, layout.studio_updated_by, layoutStudio.updatedBy, layoutStudio.updated_by);
+    var layoutText = [layout.entry, layout.template, layout.density, layoutSaved === true ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' / ');
+    var resultTypes = maclawAppEvidenceFirst(reviewAppEvidence.result_contract_type_count, Array.isArray(result.types) ? result.types.length : 0);
+    var resultPrimary = maclawAppEvidenceFirst(reviewAppEvidence.result_contract_primary, result.primary, result.primary_result, metadata.result_contract_primary, metadata.maclaw_app_primary_result, evidence.primary_result);
+    var resultText = [resultPrimary || '', resultTypes ? resultTypes + ' types' : ''].filter(Boolean).join(' / ');
+    var testText = [evidence.runId || evidence.run_id || reviewAppEvidence.run_id || '', reviewAppEvidence.test_protocol_fingerprint || evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || metadata.test_evidence_test_protocol_fingerprint || evidence.definition_fingerprint || ''].filter(Boolean).join(' / ');
+    var coverageText = [maclawAppEvidenceFirst(reviewAppEvidence.result_coverage_primary, metadata.test_evidence_result_coverage_primary), maclawAppEvidenceFirst(reviewAppEvidence.result_coverage_ok, metadata.test_evidence_result_coverage_ok) === true ? 'ok' : '', maclawAppEvidenceFirst(reviewAppEvidence.result_coverage_covered_count, metadata.test_evidence_result_coverage_covered_count) !== '' ? 'covered ' + maclawAppEvidenceFirst(reviewAppEvidence.result_coverage_covered_count, metadata.test_evidence_result_coverage_covered_count) : '', reviewAppEvidence.result_coverage_missing_count !== undefined && reviewAppEvidence.result_coverage_missing_count !== null ? 'missing ' + reviewAppEvidence.result_coverage_missing_count : ''].filter(Boolean).join(' / ');
+    var outputText = [maclawAppEvidenceFirst(reviewAppEvidence.output_count, evidence.output_count, metadata.test_evidence_output_count) !== '' ? maclawAppEvidenceFirst(reviewAppEvidence.output_count, evidence.output_count, metadata.test_evidence_output_count) + ' outputs' : '', maclawAppEvidenceFirst(reviewAppEvidence.artifact_count, evidence.artifact_count, metadata.test_evidence_artifact_count) !== '' ? maclawAppEvidenceFirst(reviewAppEvidence.artifact_count, evidence.artifact_count, metadata.test_evidence_artifact_count) + ' artifacts' : ''].filter(Boolean).join(' / ');
     var deps = maclawAppEvidenceObject(metadata, ['dependency_verification', 'dependencyVerification']);
     var depText = deps.dependency_count || deps.dependencyCount ? 'deps ' + (deps.dependency_count || deps.dependencyCount) : '';
+    var approval = evidence.approval_instance && typeof evidence.approval_instance === 'object' ? evidence.approval_instance : (evidence.approvalInstance && typeof evidence.approvalInstance === 'object' ? evidence.approvalInstance : {});
+    var progress = maclawAppEvidenceList(maclawAppEvidenceFirst(evidence.progress_instances, evidence.progressInstances, evidence.workflow_progress, evidence.workflowProgress, evidence.approval_progress, evidence.approvalProgress));
+    var dataSrv = evidence.datasrv_registration && typeof evidence.datasrv_registration === 'object' ? evidence.datasrv_registration : (metadata.datasrv_registration && typeof metadata.datasrv_registration === 'object' ? metadata.datasrv_registration : {});
+    var workflow = evidence.workflow_contract && typeof evidence.workflow_contract === 'object' ? evidence.workflow_contract : maclawAppEvidenceObject(metadata, ['workflow_contract', 'workflowContract']);
+    var approvalText = [maclawAppEvidenceFirst(approval.status, approval.approval_status, evidence.approval_status, metadata.test_evidence_approval_status), maclawAppEvidenceFirst(approval.current_node, approval.currentNode, evidence.current_node, metadata.test_evidence_current_node)].filter(Boolean).join(' / ');
+    var progressText = maclawAppEvidenceFirst(evidence.progress_count, evidence.progressCount, progress.length ? progress.length : '');
+    var dataSrvText = maclawAppEvidenceFirst(dataSrv.status, dataSrv.state, dataSrv.registration_status, evidence.datasrv_registration_status, metadata.datasrv_registration_status);
+    var workflowText = maclawAppEvidenceFirst(workflow.version, workflow.schema, workflow.workflowVersion, evidence.workflow_contract_version, metadata.workflow_contract_version);
     var rows = [
       ['App', [appName, appID].filter(Boolean).join(' / ')],
       ['Layout', layoutText],
       ['Result', resultText],
       ['Test', testText],
-      ['Dependencies', depText]
-    ].filter(function(row) { return row[1]; });
+      ['Coverage', coverageText],
+      ['Outputs', outputText],
+      ['Approval', approvalText],
+      ['Progress', progressText],
+      ['Dependencies', depText],
+      ['DataSrv', dataSrvText],
+      ['Workflow', workflowText]
+    ].filter(function(row) { return row[1] !== undefined && row[1] !== null && row[1] !== ''; });
     if (!rows.length) return '';
     return '<div class="item-meta maclaw-app-evidence" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:5px;margin-top:4px;font-size:10px">' + rows.map(function(row) { return '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>' + esc(row[0]) + ':</strong> ' + esc(row[1]) + '</span>'; }).join('') + '</div>';
   }

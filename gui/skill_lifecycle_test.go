@@ -79,6 +79,102 @@ func TestSkillDirHashIgnoresRuntimeStatusFiles(t *testing.T) {
 	}
 }
 
+func TestMaclawAppTestEvidenceFromDefinitionIncludesEnterpriseEvidence(t *testing.T) {
+	definition := map[string]any{
+		"schema":        "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": map[string]any{
+			"id":   "expense.approval",
+			"name": "Expense Approval",
+			"kind": "enterprise_approval_app",
+			"binding": map[string]any{
+				"workflowContract": map[string]any{
+					"requires_approval_instance":  true,
+					"requires_progress_instances": true,
+				},
+			},
+			"governance": map[string]any{
+				"dependencyVerification": map[string]any{
+					"dependency_count":        1,
+					"has_blocking_dependency": false,
+				},
+				"workspaceLayout": map[string]any{
+					"template":       "left_nav",
+					"primary_region": "right",
+				},
+				"datasrv_registration": map[string]any{
+					"status":         "partial",
+					"eligible_count": 2,
+					"synced_count":   1,
+				},
+				"testEvidence": map[string]any{
+					"runId":          "run-approval-1",
+					"verifiedAt":     "2026-06-30T10:00:00Z",
+					"definitionHash": "def-fp",
+					"artifactPath":   "outputs/approved.pdf",
+					"outputCount":    2,
+					"primaryResult":  "approved by workflow skill",
+					"resultPayload": map[string]any{
+						"approval_result": "approved",
+					},
+					"approvalInstance": map[string]any{
+						"approval_id":      "approval-1",
+						"status":           "approved",
+						"workflow_node_id": "finance.result",
+					},
+					"progress_instances": []any{map[string]any{
+						"approval_id":      "approval-1",
+						"status":           "pending",
+						"workflow_node_id": "manager.approval",
+					}},
+					"approvalViews": map[string]any{
+						"my_requests":         true,
+						"pending_my_approval": true,
+					},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatalf("Marshal definition: %v", err)
+	}
+
+	evidence := maclawAppTestEvidenceFromDefinition(data)
+	if evidence == nil {
+		t.Fatal("expected MaClaw App test evidence")
+	}
+	if evidence.AppKind != "enterprise_approval_app" || evidence.RunID != "run-approval-1" || evidence.ArtifactName != "approved.pdf" || !evidence.ArtifactPresent {
+		t.Fatalf("basic evidence mismatch: %#v", evidence)
+	}
+	if evidence.ApprovalInstance["approval_id"] != "approval-1" || evidence.ApprovalInstance["status"] != "approved" {
+		t.Fatalf("approval instance mismatch: %#v", evidence.ApprovalInstance)
+	}
+	if len(evidence.ProgressInstances) != 1 || evidence.ProgressInstances[0]["workflow_node_id"] != "manager.approval" {
+		t.Fatalf("progress instances mismatch: %#v", evidence.ProgressInstances)
+	}
+	if len(evidence.ApprovalViews) != 2 || !containsLifecycleTestString(evidence.ApprovalViews, "my_requests") || !containsLifecycleTestString(evidence.ApprovalViews, "pending_my_approval") {
+		t.Fatalf("approval views mismatch: %#v", evidence.ApprovalViews)
+	}
+	if evidence.DependencyVerification["dependency_count"] != float64(1) || evidence.DependencyVerification["has_blocking_dependency"] != false {
+		t.Fatalf("dependency verification mismatch: %#v", evidence.DependencyVerification)
+	}
+	if evidence.WorkspaceLayout["template"] != "left_nav" || evidence.DataSrvRegistration["status"] != "partial" {
+		t.Fatalf("layout/DataSrv evidence mismatch: layout=%#v datasrv=%#v", evidence.WorkspaceLayout, evidence.DataSrvRegistration)
+	}
+	if evidence.WorkflowContract["requires_approval_instance"] != true || evidence.WorkflowContract["requires_progress_instances"] != true {
+		t.Fatalf("workflow contract mismatch: %#v", evidence.WorkflowContract)
+	}
+}
+
+func containsLifecycleTestString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
 func TestEvaluateSkillPackageCompletenessRejectsJSONDefinition(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte(`{"name":"json-package-skill","steps":[{"run":"echo ok"}]}`)

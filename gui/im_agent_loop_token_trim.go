@@ -6,12 +6,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []interface{}, lastInputTokens int, lastOutputTokens int) int {
+func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []interface{}, lastInputTokens int, lastOutputTokens int) (int, int) {
 	effectiveTokenLimit := cfg.EffectiveContextTokens()
+	estimated := 0
 	if lastInputTokens <= 0 {
-		return effectiveTokenLimit
+		return effectiveTokenLimit, estimated
 	}
-	estimated := estimateConversationTokens(conversation)
+	estimated = estimateConversationTokens(conversation)
 	if estimated > 0 {
 		ratio := float64(lastInputTokens) / float64(estimated)
 		if ratio > 1.15 {
@@ -48,5 +49,5 @@ func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []i
 			effectiveTokenLimit = emptyTrimLimit
 		}
 	}
-	return effectiveTokenLimit
+	return effectiveTokenLimit, estimated
 }

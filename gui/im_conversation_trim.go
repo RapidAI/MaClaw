@@ -99,6 +99,95 @@ func estimateBytesToTokens(data []byte) int {
 	return (len(data)*10 + 24) / 25 // equivalent to len/2.5, rounded up
 }
 
+// precomputeMsgTokens computes per-message token estimates for an entire
+// conversation slice in a single pass. This eliminates repeated json.Marshal
+// calls when trimConversation iteratively tries different drop counts.
+func precomputeMsgTokens(msgs []interface{}) []int {
+	tokens := make([]int, len(msgs))
+	for i, m := range msgs {
+		tokens[i] = estimateSingleMsgTokens(m)
+	}
+	return tokens
+}
+
+// quickConversationTokenEstimate provides a fast upper-bound token estimate
+// by measuring content string lengths directly (no json.Marshal). This
+// intentionally over-estimates (includes role/JSON overhead as fixed per-msg
+// cost) so it can be safely used as a short-circuit: if this cheap estimate
+// says we fit, we definitely fit.
+func quickConversationTokenEstimate(msgs []interface{}) int {
+	total := 0
+	for _, m := range msgs {
+		total += quickSingleMsgTokenEstimate(m)
+	}
+	return total
+}
+
+func quickSingleMsgTokenEstimate(m interface{}) int {
+	// Per-message JSON overhead: {"role":"assistant","content":"..."} ≈ 30 bytes ≈ 12 tokens
+	const perMsgOverhead = 12
+	switch v := m.(type) {
+	case map[string]interface{}:
+		tokens := perMsgOverhead
+		if content, ok := v["content"].(string); ok {
+			tokens += len(content) / 3 // ~3 bytes per token for mixed CJK/English
+		}
+		if tc := v["tool_calls"]; tc != nil {
+			// Rough estimate for tool_calls: assume ~200 tokens per call on average
+			if calls, ok := tc.([]interface{}); ok {
+				tokens += len(calls) * 200
+			} else {
+				tokens += 200
+			}
+		}
+		if rc, ok := v["reasoning_content"].(string); ok {
+			tokens += len(rc) / 4
+		}
+		return tokens
+	case map[string]string:
+		tokens := perMsgOverhead
+		if content := v["content"]; content != "" {
+			tokens += len(content) / 3
+		}
+		return tokens
+	default:
+		// Unknown type — use conservative estimate
+		return 100
+	}
+}
+
+// estimateSingleMsgTokens estimates the token count for a single conversation
+// message. Same logic as estimateConversationTokens but for one message.
+func estimateSingleMsgTokens(m interface{}) int {
+	mm, ok := m.(map[string]interface{})
+	if !ok {
+		data, _ := json.Marshal(m)
+		return estimateBytesToTokens(data)
+	}
+	// Check if content is a multimodal array (vision messages).
+	if content, ok := mm["content"].([]interface{}); ok {
+		total := 0
+		for _, block := range content {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			blockType, _ := bm["type"].(string)
+			blockKind := normalizeIMContentBlockKind(blockType)
+			if blockKind == imContentBlockImageURL || blockKind == imContentBlockImage {
+				total += 85
+				continue
+			}
+			data, _ := json.Marshal(bm)
+			total += estimateBytesToTokens(data)
+		}
+		total += 10 // role overhead
+		return total
+	}
+	data, _ := json.Marshal(mm)
+	return estimateBytesToTokens(data)
+}
+
 // defaultContextTokens is re-exported from corelib for local use.
 const defaultContextTokens = corelib.DefaultContextTokens
 
@@ -162,10 +251,30 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	if msgBudget < 4000 {
 		msgBudget = 4000 // absolute minimum to avoid degenerate cases
 	}
-	if estimateConversationTokens(msgs) <= msgBudget {
+
+	// Early exit: conversations with ≤3 messages are never trimmed.
+	if len(msgs) <= 3 {
 		return msgs
 	}
-	if len(msgs) <= 3 {
+
+	// Fast short-circuit: use a cheap content-length-based estimate to avoid
+	// the expensive json.Marshal precompute when the conversation clearly fits.
+	// The quick estimate under-counts (ignores JSON overhead), so we require
+	// even doubling it stays below budget before trusting the short-circuit.
+	quickEstimate := quickConversationTokenEstimate(msgs)
+	if quickEstimate*2 <= msgBudget {
+		return msgs
+	}
+
+	// Pre-compute per-message token estimates once. This avoids repeated
+	// json.Marshal calls in the drop-groups loop below (P1 optimization).
+	msgTokens := precomputeMsgTokens(msgs)
+	totalTokens := 0
+	for _, t := range msgTokens {
+		totalTokens += t
+	}
+
+	if totalTokens <= msgBudget {
 		return msgs
 	}
 
@@ -202,6 +311,14 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		groups = append(groups, msgGroup{start: gStart, end: i})
 	}
 
+	// Pre-compute per-group token totals for incremental subtraction.
+	groupTokens := make([]int, len(groups))
+	for gi, g := range groups {
+		for idx := g.start; idx < g.end; idx++ {
+			groupTokens[gi] += msgTokens[idx]
+		}
+	}
+
 	// Try dropping the fewest groups from the front first (dropCount=1),
 	// increasing until the remaining tail fits within the budget.
 	// This preserves as much recent context as possible.
@@ -210,19 +327,24 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		"role":    "user",
 		"content": "[注意：中间的对话历史因上下文长度限制已被省略，请基于最近的上下文继续工作]",
 	}}
+	placeholderTokens := estimateConversationTokens(fallbackPlaceholder)
 
 	// Start from keeping all groups, then drop from the front.
-	// First pass: find the minimum dropCount without summarization.
+	// First pass: find the minimum dropCount using incremental subtraction
+	// instead of re-estimating the full result each iteration.
+	// resultTokens = system + placeholder + all groups - dropped groups
+	allGroupsTokens := 0
+	for _, gt := range groupTokens {
+		allGroupsTokens += gt
+	}
+	baseResultTokens := msgTokens[0] + placeholderTokens + allGroupsTokens
+
 	bestDropCount := -1
+	cumulativeDropped := 0
 	for dropCount := 1; dropCount < len(groups); dropCount++ {
-		kept := groups[dropCount:]
-		var result []interface{}
-		result = append(result, systemMsg...)
-		result = append(result, fallbackPlaceholder...)
-		for _, g := range kept {
-			result = append(result, msgs[g.start:g.end]...)
-		}
-		if estimateConversationTokens(result) <= msgBudget {
+		cumulativeDropped += groupTokens[dropCount-1]
+		resultTokens := baseResultTokens - cumulativeDropped
+		if resultTokens <= msgBudget {
 			bestDropCount = dropCount
 			break
 		}
@@ -363,8 +485,16 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		}
 	}
 
+	// Pre-compute current total to avoid repeated full-scan estimation.
+	currentTotal := 0
+	msgToks := make([]int, len(result))
 	for i, m := range result {
-		if estimateConversationTokens(result) <= budget {
+		msgToks[i] = estimateSingleMsgTokens(m)
+		currentTotal += msgToks[i]
+	}
+
+	for i, m := range result {
+		if currentTotal <= budget {
 			break
 		}
 		mm, ok := m.(map[string]interface{})
@@ -410,15 +540,24 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		content, _ := cp["content"].(string)
 		if len(content) <= 200 {
 			result[i] = cp
+			newToks := estimateSingleMsgTokens(cp)
+			currentTotal += newToks - msgToks[i]
+			msgToks[i] = newToks
 			continue
 		}
 		runes := []rune(content)
 		if len(runes) <= 200 {
 			result[i] = cp
+			newToks := estimateSingleMsgTokens(cp)
+			currentTotal += newToks - msgToks[i]
+			msgToks[i] = newToks
 			continue
 		}
 		cp["content"] = string(runes[:100]) + "\n…(截断)…\n" + string(runes[len(runes)-50:])
 		result[i] = cp
+		newToks := estimateSingleMsgTokens(cp)
+		currentTotal += newToks - msgToks[i]
+		msgToks[i] = newToks
 	}
 	return result
 }
@@ -515,12 +654,26 @@ func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
 // limit, even if entry count is within maxEntries. This covers the case where
 // few entries have very large content (e.g., huge tool results).
 func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int) []agent.ConversationEntry {
+	return trimHistoryWithSummaryPrecomputed(entries, summarizer, memorySink, maxEntries, maxTokens, 0)
+}
+
+// trimHistoryWithSummaryPrecomputed is like trimHistoryWithSummary but accepts
+// a pre-computed token estimate to skip redundant estimation at the entrance.
+// Pass precomputedTokens=0 to compute it internally.
+func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int, precomputedTokens int) []agent.ConversationEntry {
 	limit := agent.MaxConversationTurns
 	if maxEntries > 0 {
 		limit = maxEntries
 	}
 	entryOverLimit := len(entries) > limit
-	tokenOverLimit := maxTokens > 0 && estimateConversationEntryTokens(entries) > maxTokens
+	var tokenOverLimit bool
+	if maxTokens > 0 {
+		tokEst := precomputedTokens
+		if tokEst <= 0 {
+			tokEst = estimateConversationEntryTokens(entries)
+		}
+		tokenOverLimit = tokEst > maxTokens
+	}
 	if !entryOverLimit && !tokenOverLimit {
 		return entries
 	}

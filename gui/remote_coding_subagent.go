@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -54,6 +55,11 @@ type RemoteCodingSubAgent struct {
 	// Knowledge stores (optional, nil = gracefully skipped)
 	codingKB  *knowledge.CodingKnowledgeStore
 	generalKB *knowledge.SQLiteStore
+
+	// highRiskApproval lets the user override remote bash safety guardrails.
+	// Nil preserves the default hard-reject behavior.
+	highRiskApproval         *remoteHighRiskApprovalState
+	highRiskApprovalExplicit bool
 }
 
 // RemoteCodingSubAgentResult is the outcome of a remote task execution.
@@ -86,8 +92,32 @@ func NewRemoteCodingSubAgent(
 
 // SetCallbacks configures optional streaming and progress callbacks.
 func (r *RemoteCodingSubAgent) SetCallbacks(onToken func(string), onProgress func(string)) {
+	if r == nil {
+		return
+	}
 	r.onToken = onToken
 	r.onProgress = onProgress
+	if !r.highRiskApprovalExplicit && r.handler != nil && r.handler.app != nil {
+		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(r.handler, r.loopCtx, onProgress), false, false, true)
+	}
+}
+
+// SetHighRiskApprovalCallback configures interactive user confirmation for
+// remote bash commands blocked by coding guardrails.
+func (r *RemoteCodingSubAgent) SetHighRiskApprovalCallback(callback ScopeApprovalCallback, fullAccess bool) {
+	r.setHighRiskApprovalCallback(callback, fullAccess, true, false)
+}
+
+func (r *RemoteCodingSubAgent) setHighRiskApprovalCallback(callback ScopeApprovalCallback, fullAccess bool, explicit bool, preserveFullAccess bool) {
+	if r == nil {
+		return
+	}
+	if r.highRiskApproval == nil {
+		r.highRiskApproval = newRemoteHighRiskApprovalState(callback, fullAccess)
+	} else {
+		r.highRiskApproval.configure(callback, fullAccess, preserveFullAccess)
+	}
+	r.highRiskApprovalExplicit = explicit
 }
 
 // SetKnowledgeStores configures the coding experience store and general knowledge store.
@@ -1070,6 +1100,108 @@ func remoteCodingExitCodeValueIsZero(value string) bool {
 	return err == nil && code == 0
 }
 
+type remoteHighRiskApprovalState struct {
+	mu         sync.Mutex
+	fullAccess bool
+	callback   ScopeApprovalCallback
+}
+
+func newRemoteHighRiskApprovalState(callback ScopeApprovalCallback, fullAccess bool) *remoteHighRiskApprovalState {
+	return &remoteHighRiskApprovalState{
+		fullAccess: fullAccess,
+		callback:   callback,
+	}
+}
+
+func (s *remoteHighRiskApprovalState) configure(callback ScopeApprovalCallback, fullAccess bool, preserveFullAccess bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callback = callback
+	if preserveFullAccess && s.fullAccess {
+		return
+	}
+	s.fullAccess = fullAccess
+}
+
+func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
+	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		if loopCtx != nil && loopCtx.IsCancelled() {
+			return ScopeApprovalDeny
+		}
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("⚠️ 远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath))
+		}
+		responseCh := make(chan ScopeApprovalDecision, 1)
+		approvalID := storePendingScopeApproval(handler, req, responseCh)
+		if handler != nil && handler.app != nil {
+			emitScopeApprovalEvent(handler.app, approvalID, req)
+		}
+		timeout := time.NewTimer(scopeApprovalTimeout)
+		defer timeout.Stop()
+		if loopCtx != nil {
+			select {
+			case decision := <-responseCh:
+				return decision
+			case <-loopCtx.CancelC:
+				pendingScopeApprovals.Delete(approvalID)
+				return ScopeApprovalDeny
+			case <-timeout.C:
+				pendingScopeApprovals.Delete(approvalID)
+				if onProgress != nil {
+					onProgress(fmt.Sprintf("⚠️ 远程高风险命令确认超时，已拒绝执行: %s", req.Path))
+				}
+				return ScopeApprovalDeny
+			}
+		}
+		select {
+		case decision := <-responseCh:
+			return decision
+		case <-timeout.C:
+			pendingScopeApprovals.Delete(approvalID)
+			return ScopeApprovalDeny
+		}
+	}
+}
+
+func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection string) string {
+	if s == nil {
+		return rejection
+	}
+	s.mu.Lock()
+	if s.fullAccess {
+		s.mu.Unlock()
+		return ""
+	}
+	callback := s.callback
+	s.mu.Unlock()
+	if callback == nil {
+		return rejection
+	}
+	decision := callback(ScopeApprovalRequest{
+		ToolName:    "ssh_bash",
+		Path:        command,
+		ProjectPath: workingDir,
+		Directory:   workingDir,
+		Kind:        "remote_high_risk_bash",
+		Message:     rejection,
+		AutoAllow:   false,
+	})
+	switch decision {
+	case ScopeApprovalAllowOnce:
+		return ""
+	case ScopeApprovalFullAccess:
+		s.mu.Lock()
+		s.fullAccess = true
+		s.mu.Unlock()
+		return ""
+	default:
+		return rejection
+	}
+}
+
 func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string {
 	path := remoteArgStr(args, "path")
 	if path == "" {
@@ -1343,14 +1475,20 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	if command == "" {
 		return "错误: 需要 command 参数"
 	}
-	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-		return strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
-	}
 	workDir := remoteArgStr(args, "working_dir")
 	if workDir == "" {
 		workDir = c.defaultRemoteWorkingDir()
 	} else {
 		workDir = c.resolvePath(workDir)
+	}
+	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
+		msg = strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
+		if c == nil || c.agent == nil {
+			return msg
+		}
+		if approvalMsg := c.agent.highRiskApproval.check(command, workDir, msg); approvalMsg != "" {
+			return approvalMsg
+		}
 	}
 
 	fullCmd := fmt.Sprintf("cd %s && %s", remoteShellQuote(workDir), command)
@@ -1496,7 +1634,8 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 8. 路径可以是相对路径（相对于项目目录）或绝对路径
 9. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
 10. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
-11. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
+11. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行
+12. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件

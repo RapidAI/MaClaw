@@ -496,6 +496,56 @@ function assertScopedRefreshHooks() {
   }
 }
 
+function assertMaclawAppEvidenceReviewMarkers() {
+  const marketplace = read('marketplace-tab.js');
+  [
+    'maclawAppEvidenceSummary',
+    'approval_instance',
+    'progress_instances',
+    'datasrv_registration',
+    'workflow_contract',
+    "['Approval', approvalText]",
+    "['DataSrv', dataSrvText]",
+    "['Workflow', workflowText]",
+    "['Coverage', coverageText]",
+    "['Outputs', outputText]",
+    'review_evidence',
+    'result_contract_primary',
+    'test_protocol_fingerprint',
+    'result_coverage_primary',
+    'result_coverage_covered_count'
+  ].forEach(function(marker) {
+    if (!marketplace.includes(marker)) {
+      fail('marketplace-tab.js is missing MaClaw App evidence review marker: ' + marker);
+    }
+  });
+  const hubcenterSkillmarketPath = path.join(root, '..', '..', '..', 'hubcenter', 'web', 'admin', 'assets', 'js', 'skillmarket-admin.js');
+  const hubcenterSkillmarket = fs.existsSync(hubcenterSkillmarketPath) ? fs.readFileSync(hubcenterSkillmarketPath, 'utf8') : '';
+  try {
+    new vm.Script(hubcenterSkillmarket, { filename: 'hubcenter/web/admin/assets/js/skillmarket-admin.js' });
+  } catch (err) {
+    fail('hubcenter skillmarket-admin.js has invalid JavaScript syntax: ' + err.message);
+  }
+  [
+    'smRenderEnterpriseReviewEvidence',
+    'sm-review-evidence-strip',
+    'approval_instance',
+    'progress_instances',
+    'datasrv_registration',
+    'workflow_contract',
+    'resultContract',
+    'testProtocol',
+    'resultCoverage',
+    'coverageCovered',
+    'result_coverage_covered_count',
+    'output_count',
+    'artifact_count'
+  ].forEach(function(marker) {
+    if (!hubcenterSkillmarket.includes(marker)) {
+      fail('hubcenter skillmarket-admin.js is missing MaClaw App review evidence marker: ' + marker);
+    }
+  });
+}
 function assertUsageRankingEmailFilter() {
   const fnSource = extractNamedFunction(read('usage-stats-tab.js'), 'isRankingEmail');
   const sandbox = {};
@@ -847,6 +897,7 @@ assertDataI18nKeysHaveTranslations();
 assertAdminApiRoutesRegistered();
 assertGlobalAdminRuntimeHooks();
 assertScopedRefreshHooks();
+assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
 assertLegacyMirrorRemoved();

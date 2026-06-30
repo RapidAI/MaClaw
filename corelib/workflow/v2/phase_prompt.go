@@ -212,13 +212,13 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	// Artifact generation guidance is driven by phase semantics, not by a
 	// workflow-specific phase ID. New templates can opt in by setting
 	// Kind=artifact_generation or MutationScope=artifact.
-	if isArtifactGenerationPhase(state.Type, phase) && !phaseInstructionHasOwnArtifactGuidance(phase.ID) {
+	if isArtifactGenerationPhase(state.Type, phase) && !phaseInstructionHasOwnArtifactGuidance(WorkflowType(state.Type), phase.ID) {
 		sb.WriteString(genericArtifactGenerationGuidance(phase))
 		sb.WriteString("\n")
 	}
 
 	// Phase-specific instructions
-	sb.WriteString(phaseInstruction(phase.ID))
+	sb.WriteString(phaseInstruction(WorkflowType(state.Type), phase.ID))
 
 	return sb.String()
 }
@@ -369,11 +369,11 @@ func isArtifactGenerationPhase(workflowType string, phase *Phase) bool {
 	return kind == PhaseKindArtifactGeneration || mutationScope == MutationScopeArtifact
 }
 
-func phaseInstructionHasOwnArtifactGuidance(phaseID string) bool {
+func phaseInstructionHasOwnArtifactGuidance(workflowType WorkflowType, phaseID string) bool {
 	// Instead of hardcoding phase IDs, detect from the instruction content itself.
 	// A phase instruction that already mentions artifact-generation tool chains
 	// (manage_skill, craft_tool, send_file) doesn't need the generic guidance.
-	instruction := phaseInstruction(phaseID)
+	instruction := phaseInstruction(workflowType, phaseID)
 	if instruction == "" {
 		return false
 	}
@@ -437,7 +437,7 @@ func textContainsFilePath(text string) bool {
 	return false
 }
 
-func phaseInstruction(phaseID string) string {
+func phaseInstruction(workflowType WorkflowType, phaseID string) string {
 	// Academic application phases are generated parametrically from FundingProfiles.
 	// Check if this phaseID belongs to an academic template before the hardcoded switch.
 	// If the factory generates a non-empty instruction, use it. Otherwise fall through
@@ -451,6 +451,26 @@ func phaseInstruction(phaseID string) string {
 		if instruction := GaokaoPhaseInstruction(phaseID); instruction != "" {
 			return instruction
 		}
+	}
+
+	// Disambiguate shared phase IDs by workflow type.
+	// Some phase IDs (outline, report, analysis, conclusion, methodology, budget)
+	// are reused across templates with different semantics. The disambiguation
+	// switch runs BEFORE the main switch. If no type matches here, the main switch
+	// provides a sensible default (typically the first template that used the ID).
+	switch {
+	case phaseID == "outline" && workflowType == WorkflowPaperWriting:
+		return paperWritingOutline
+	case phaseID == "report" && workflowType == WorkflowComplianceAudit:
+		return complianceAuditReport
+	case phaseID == "analysis" && workflowType == WorkflowResearchReport:
+		return researchReportAnalysis
+	case phaseID == "conclusion" && workflowType == WorkflowDueDiligence:
+		return dueDiligenceConclusion
+	case phaseID == "methodology" && workflowType == WorkflowGrantProposal:
+		return grantProposalMethodology
+	case phaseID == "budget" && workflowType == WorkflowGrantProposal:
+		return grantProposalBudget
 	}
 
 	switch phaseID {
@@ -553,34 +573,99 @@ Reference the task breakdown explicitly so CodingSubAgent knows which task to ex
 	case "audience_goal":
 		return `## 阶段指令
 
-分析 PPT 的目标受众和演讲目标：
-- 受众是谁？（职位、知识水平、关注点）
-- 演讲目标是什么？（说服、教育、汇报）
-- 核心信息是什么？（一句话总结）
-- 期望的行动是什么？
+分析 PPT 的目标受众和演讲目标。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+### 1. 目标受众分析
+- 受众身份（职位、部门、决策层级）
+- 知识水平（对主题的了解程度）
+- 关注点（他们最关心什么）
+- 可能的疑虑/反对意见
+
+### 2. 演讲目标
+- 演讲类型（说服/教育/汇报/激励）
+- 核心信息（一句话能被记住的信息）
+- 期望的行动（听众听完后应该做什么）
+
+### 3. 演讲约束
+- 时间限制
+- 场合（会议室/大会/线上）
+- 技术条件（投影/屏幕比例）
+
+### 4. 内容策略
+- 信息密度（详细 vs 概要）
+- 说服路径（逻辑/情感/案例/数据）
+- 视觉风格方向（商务/学术/创意）
+
+## 重要约束（违反将导致错误）
+- 只生成一份受众目标分析文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "outline":
 		return `## 阶段指令
 
-基于受众和目标，设计 PPT 内容大纲：
-- 每页的标题和核心要点
-- 逻辑流（开场→问题→方案→证据→结论→行动）
-- 预估总页数
+基于受众和目标，设计 PPT 内容大纲。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+### PPT 大纲
+
+| 页码 | 标题 | 核心要点 | 视觉建议 |
+|------|------|---------|---------|
+| 1 | 封面 | 标题+副标题+演讲人 | |
+| 2 | 目录/议程 | 主要章节 | |
+| 3-N | 内容页 | 每页1个核心观点 | 图表/图片/数据 |
+| N+1 | 总结/行动号召 | 关键结论+下一步 | |
+| N+2 | Q&A/联系方式 | | |
+
+### 逻辑流设计
+- 开场策略（问题/故事/数据/引用）
+- 正文逻辑（时间线/问题→方案/对比/递进）
+- 结尾策略（总结/呼吁/展望）
+
+### 页数和时间分配
+- 预估总页数
+- 每页预估讲解时间
+- 总时长是否匹配约束
+
+## 重要约束（违反将导致错误）
+- 只生成一份大纲文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "slide_scripting":
 		return `## 阶段指令
 
-基于大纲，为每一页编写详细脚本：
-- 页面标题
-- 要展示的文字内容
-- 视觉建议（图表/图片/动画）
-- 演讲备注
+基于大纲，为每一页编写详细脚本。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+为每一页 PPT 生成完整脚本：
+
+### 第 1 页：[页面标题]
+- **页面类型**：封面/目录/内容/过渡/总结
+- **展示文字**：页面上实际显示的文字（精炼，不是演讲词）
+- **视觉元素**：图表类型/图片建议/图标/动画
+- **布局建议**：左右分栏/全图/标题+列表/数据可视化
+- **演讲备注**：演讲者在这页要讲什么（口语化，1-3句）
+- **过渡语**：到下一页的过渡衔接
+
+### 第 2 页：...
+（逐页展开，直到最后一页）
+
+### 全局设计指引
+- 主色调/辅助色
+- 字体建议
+- 图片风格（摄影/插画/图标）
+
+## 重要约束（违反将导致错误）
+- 必须覆盖大纲中的每一页，不能遗漏。
+- 展示文字必须精炼（每页不超过 50 字），详细内容放演讲备注。
+- 只生成一份逐页脚本文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "ppt_generation":
 		return `## 阶段指令
@@ -634,45 +719,148 @@ title: 第2页标题
 	case "problem_discovery":
 		return `## 阶段指令
 
-分析产品要解决的核心问题：
-- 目标用户是谁？
-- 他们面临什么痛点？
-- 现有解决方案的不足？
-- 机会在哪里？
+分析产品要解决的核心问题。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+### 1. 目标用户
+- 用户群体描述
+- 用户规模估算
+- 核心特征
+
+### 2. 痛点分析
+| 痛点 | 频率 | 严重度 | 当前解决方式 | 不满意原因 |
+|------|------|--------|------------|----------|
+
+### 3. 现有解决方案
+| 方案 | 提供者 | 优点 | 不足 |
+|------|--------|------|------|
+
+### 4. 机会识别
+- 市场空白
+- 技术趋势带来的新可能
+- 用户需求升级方向
+
+### 5. 问题陈述
+用一段话总结：谁（用户）在什么场景下遇到什么问题，现有方案为什么不够好。
+
+## 重要约束（违反将导致错误）
+- 只生成一份问题发现文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "user_research":
 		return `## 阶段指令
 
-基于问题发现，深入用户研究：
-- 用户画像（demographics, behaviors, goals）
-- 使用场景
-- 关键需求优先级
-- 竞品分析
+基于问题发现，深入用户研究。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+### 1. 用户画像
+| 维度 | 描述 |
+|------|------|
+| 人口统计 | 年龄/性别/职业/收入 |
+| 行为特征 | 使用习惯/消费模式 |
+| 目标动机 | 想达成什么/为什么 |
+| 痛点场景 | 具体的不满场景 |
+
+### 2. 使用场景
+每个场景：
+- 场景描述（谁、在哪、做什么）
+- 触发条件
+- 期望结果
+- 当前体验问题
+
+### 3. 需求优先级
+| 需求 | 类型(基本/期望/兴奋) | 频率 | 重要度 | 优先级 |
+|------|---------------------|------|--------|--------|
+
+### 4. 竞品用户评价分析
+- 用户选择竞品的原因
+- 用户离开竞品的原因
+- 未被满足的诉求
+
+## 重要约束（违反将导致错误）
+- 只生成一份用户研究文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "solution_design":
 		return `## 阶段指令
 
-基于用户研究，设计产品方案：
-- 核心功能列表
-- 信息架构
-- 用户旅程
-- MVP 定义
+基于用户研究，设计产品方案。
 
-输出完毕后等待用户确认。
+## 产出物结构
+
+### 1. 产品定位
+- 一句话定位
+- 核心价值主张
+- 目标用户（从研究中确认）
+
+### 2. 功能架构
+| 模块 | 功能 | 优先级 | MVP必备 | 用户价值 |
+|------|------|--------|---------|---------|
+
+### 3. 信息架构
+- 一级导航
+- 核心页面列表
+- 页面间关系
+
+### 4. 用户旅程
+| 阶段 | 用户行为 | 触点 | 情绪 | 设计机会 |
+|------|---------|------|------|---------|
+
+### 5. MVP 定义
+- MVP 功能范围（最小集）
+- MVP 成功标准
+- MVP 后迭代方向
+
+## 重要约束（违反将导致错误）
+- 只生成一份方案设计文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 	case "prototype":
 		return `## 阶段指令
 
-基于方案，描述原型设计：
-- 关键页面线框图描述
-- 交互流程
-- 视觉风格建议
+整合所有研究和设计，输出完整的产品设计文档（PRD）。这是最终交付物。
 
-输出完毕后等待用户确认。
+## 产出物结构（完整产品设计文档）
+
+### 1. 产品概述
+- 产品定位
+- 目标用户
+- 核心价值
+
+### 2. 功能规格
+每个核心功能：
+- 功能描述
+- 用户故事
+- 验收标准
+- 交互说明
+- 异常处理
+
+### 3. 页面设计描述
+每个关键页面：
+- 页面目的
+- 包含元素
+- 布局建议
+- 交互行为
+
+### 4. 非功能需求
+- 性能要求
+- 安全要求
+- 兼容性要求
+
+### 5. 上线计划
+- MVP 范围和时间
+- 后续迭代计划
+
+## 重要约束（违反将导致错误）
+- 产品设计文档正文不少于 2500 字。
+- 只生成一份完整文档，输出完毕后立即停止。
+- 【严禁】输出确认提示语、分隔线或任何后续内容。
+- 【严禁】自己模拟用户确认。
 `
 
 	// --- Patent Analysis Workflow ---
@@ -2079,6 +2267,187 @@ Document must end with: This document was generated with AI assistance. It is re
 - After completing checklist + saving Abstract.docx, stop immediately.
 - Do NOT simulate user confirmation.
 `
+	// --- Literature Review Workflow ---
+
+	case "topic_definition":
+		return literatureReviewTopicDefinition
+	case "search_strategy":
+		return literatureReviewSearchStrategy
+	case "screening":
+		return literatureReviewScreening
+	case "analysis":
+		return literatureReviewAnalysis
+	case "synthesis":
+		return literatureReviewSynthesis
+
+	// --- Research Report Workflow ---
+
+	case "problem_definition":
+		return researchReportProblemDefinition
+	case "methodology":
+		return researchReportMethodology
+	case "data_collection":
+		return researchReportDataCollection
+	case "conclusion":
+		return researchReportConclusion
+
+	// --- Competitive Analysis Workflow ---
+
+	case "competitor_id":
+		return competitiveAnalysisCompetitorID
+	case "comparison":
+		return competitiveAnalysisComparison
+	case "swot":
+		return competitiveAnalysisSWOT
+	case "differentiation":
+		return competitiveAnalysisDifferentiation
+	case "action_plan":
+		return competitiveAnalysisActionPlan
+
+	// --- Innovation Workflow ---
+
+	case "trend_analysis":
+		return innovationTrendAnalysis
+	case "opportunity":
+		return innovationOpportunity
+	case "solution":
+		return innovationSolution
+	case "feasibility":
+		return innovationFeasibility
+	case "roadmap":
+		return innovationRoadmap
+
+	// --- Business Plan Workflow ---
+
+	case "market_analysis":
+		return businessPlanMarketAnalysis
+	case "business_model":
+		return businessPlanBusinessModel
+	case "financial_plan":
+		return businessPlanFinancialPlan
+	case "operations":
+		return businessPlanOperations
+	case "risk_assessment":
+		return businessPlanRiskAssessment
+
+	// --- Testing Workflow ---
+
+	case "test_strategy":
+		return testingTestStrategy
+	case "test_cases":
+		return testingTestCases
+	case "test_environment":
+		return testingTestEnvironment
+	case "test_execution":
+		return testingTestExecution
+	case "defect_report":
+		return testingDefectReport
+
+	// --- Project Proposal Workflow ---
+
+	case "background":
+		return projectProposalBackground
+	case "objectives":
+		return projectProposalObjectives
+	case "plan":
+		return projectProposalPlan
+	case "budget":
+		return projectProposalBudget
+	case "risk_plan":
+		return projectProposalRiskPlan
+
+	// --- Event Planning Workflow ---
+
+	case "positioning":
+		return eventPlanningPositioning
+	case "creative":
+		return eventPlanningCreative
+	case "execution_plan":
+		return eventPlanningExecutionPlan
+	case "budget_schedule":
+		return eventPlanningBudgetSchedule
+	case "contingency":
+		return eventPlanningContingency
+
+	// --- Bid Response Workflow ---
+
+	case "tender_analysis":
+		return bidResponseTenderAnalysis
+	case "qualification":
+		return bidResponseQualification
+	case "technical":
+		return bidResponseTechnical
+	case "commercial":
+		return bidResponseCommercial
+	case "assembly":
+		return bidResponseAssembly
+
+	// --- Contract Review Workflow ---
+
+	case "parsing":
+		return contractReviewParsing
+	case "risk_analysis":
+		return contractReviewRiskAnalysis
+	case "compliance":
+		return contractReviewCompliance
+	case "suggestions":
+		return contractReviewSuggestions
+	case "opinion":
+		return contractReviewOpinion
+
+	// --- Due Diligence Workflow ---
+
+	case "company_profile":
+		return dueDiligenceCompanyProfile
+	case "business_dd":
+		return dueDiligenceBusinessDD
+	case "financial_dd":
+		return dueDiligenceFinancialDD
+	case "legal_dd":
+		return dueDiligenceLegalDD
+
+	// --- Compliance Audit Workflow ---
+
+	case "scope":
+		return complianceAuditScope
+	case "assessment":
+		return complianceAuditAssessment
+	case "risk_rating":
+		return complianceAuditRiskRating
+	case "remediation":
+		return complianceAuditRemediation
+
+	// --- Experiment Design Workflow ---
+
+	case "hypothesis":
+		return experimentDesignHypothesis
+	case "variables":
+		return experimentDesignVariables
+	case "data_plan":
+		return experimentDesignDataPlan
+	case "analysis_plan":
+		return experimentDesignAnalysisPlan
+
+	// --- Grant Proposal Workflow ---
+
+	case "topic":
+		return grantProposalTopic
+	case "foundation":
+		return grantProposalFoundation
+	case "proposal":
+		return grantProposalProposal
+
+	// --- Paper Writing Workflow ---
+
+	case "literature":
+		return paperWritingLiterature
+	case "drafting":
+		return paperWritingDrafting
+	case "figures":
+		return paperWritingFigures
+	case "polishing":
+		return paperWritingPolishing
+
 	default:
 		// Generic instruction for doc-only phases without specific prompts.
 		return `## 阶段指令

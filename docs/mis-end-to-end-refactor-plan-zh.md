@@ -12554,3 +12554,1481 @@ App Studio 试运行企业审批型 App
   -> HubCenter SkillMetadata 可以结构化承载同一组证据
   -> 能力市场审核、索引、安装诊断和二次复核不必只依赖深层 governance JSON
 ```
+### 推进记录：发布包 manifest 提炼企业审批型 App 证据测试加固（2026-06-30）
+本轮继续把 Hub SkillMetadata 企业证据字段向真实发布包生成路径收口。当前 `gui/skill_lifecycle.go` 的 `maclawAppTestEvidenceFromDefinition` 已能从 `maclaw.app.json` 的 `app.governance.testEvidence`、`governance.dependencyVerification`、`governance.workspaceLayout`、`governance.datasrv_registration` 和 `binding/governance.workflowContract` 中提炼企业审批型 App 证据；这条路径是 `writeSkillPackageManifest` 生成 `skill_package_manifest.json` 时的关键入口。
+
+已完成：
+
+- 新增 `TestMaclawAppTestEvidenceFromDefinitionIncludesEnterpriseEvidence`，把该发布包证据提炼路径纳入 GUI 包测试。
+- 测试覆盖企业审批型 App 的完整证据抽取：
+  - `app_kind=enterprise_approval_app`
+  - `approval_instance`
+  - `progress_instances`
+  - `approval_views`
+  - `dependency_verification`
+  - `workspace_layout`
+  - `datasrv_registration`
+  - `workflow_contract`
+  - `result_payload`、输出数量和文件产物名称
+- 这确保 App Studio 试运行后写入 `maclaw.app.json` 的治理证据，在生成市场发布包 manifest 时不会退化成只有 run/result/artifact 的普通 Skill 证据。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestMaclawAppTestEvidenceFromDefinitionIncludesEnterpriseEvidence" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestMaclawAppTestEvidenceFromDefinitionIncludesEnterpriseEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s
+go test ./hubcenter/internal/skillmarket -count=1 -vet=off
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+App Studio 试运行企业审批型 App
+  -> maclaw.app.json/governance 保存测试证据、布局、依赖、DataSrv 注册、workflow contract
+  -> writeSkillPackageManifest 生成 skill_package_manifest.json
+  -> maclaw_app_test_evidence 提炼出企业审批型证据
+  -> Hub/SkillMarket metadata 和审核/安装诊断具备稳定输入
+```
+### 推进记录：提交/审核列表暴露 MaClaw App 企业证据摘要（2026-06-30）
+本轮继续把企业审批型 App 的测试证据从“包内可提炼”推进到“审核/市场列表可直接消费”。此前 `submission_evidence` 已保留安装视角的完整证据快照，但它偏向安装记录结构；审核页、市场队列和用户刚提交后的即时反馈仍缺少一份轻量、稳定、可扫描的企业证据摘要。
+
+已完成：
+
+- `maclawAppSubmissionSummary` 新增 `review_evidence` 字段。
+- `SubmitMaclawAppPackage` 的即时返回新增 `review_evidence`，提交后无需刷新列表即可看到审核证据摘要。
+- 新增 `maclawAppSubmissionReviewEvidenceForRecord`，按 App 汇总审核关键信息：
+  - app kind / app name
+  - test evidence 是否存在、run id、verified at
+  - approval instance 是否存在、approval id、审批状态、当前节点
+  - workflow progress 数量
+  - approval views
+  - dependency verification 是否存在、依赖数量、阻塞依赖状态
+  - workspace layout 是否存在、布局模板
+  - DataSrv registration 状态
+  - workflow contract 是否存在、contract schema/version
+- 前端 `AppPackageSubmissionSummary` 类型和 `listMaclawAppPackageSubmissions` 解析逻辑接入 `reviewEvidence`，避免 Wails 返回字段在应用面板中被丢弃。
+- 新增 `TestMaclawAppSubmissionSummaryIncludesReviewEvidence`，验证企业审批型 App 提交摘要 JSON 暴露 `review_evidence`，并包含审批实例、progress、布局、DataSrv 注册、依赖验证和 workflow contract。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestSubmitMaclawAppPackageQueuesLocalSubmission" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestSubmitMaclawAppPackageQueuesLocalSubmission|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：均通过；AppsPage 全量 194 passed。
+
+对应全链路意义：
+
+```text
+App Studio 测试并提交 MaClaw App 包
+  -> SubmitMaclawAppPackage 生成本地审核队列记录
+  -> submission_evidence 保留安装视角完整快照
+  -> review_evidence 提供市场审核/列表可扫描摘要
+  -> 前端提交历史、Hub 同步前诊断和后续审核页可直接显示企业审批证据状态
+```
+
+### 推进记录：发布队列可视化展示 review_evidence（2026-06-30）
+
+本轮把上一阶段已经暴露到提交/审核 summary 的 `review_evidence` 继续推进到 GUI 可见界面。此前后端和前端解析层已经能携带审核证据摘要，但发布队列行仍只能显示包身份、依赖数量、安装证据和安装结果；审核人或应用制作者无法在队列列表里直接判断这个 MaClaw App 是否已经具备审批实例、progress、DataSrv 注册、动态布局和 workflow contract 证据。
+
+已完成：
+
+- 前端 `PublishPane` 在本机/Hub 提交队列行中新增 `PublishReviewEvidenceStrip`。
+- `review_evidence` 按 App 摊平为紧凑证据条，覆盖：
+  - 审批实例状态与当前节点；
+  - workflow progress 数量；
+  - 依赖验证数量与阻断状态；
+  - 动态布局模板；
+  - DataSrv 注册状态；
+  - workflow contract 版本。
+- 证据条复用现有安装证据 chip 的状态色体系，保持企业工作台式的紧凑扫描体验，不引入新的大卡片或表单化展示。
+- `AppsPage.test.tsx` 的本地提交队列测试补充 `review_evidence` mock，并断言发布队列能显示审批、进度、依赖、布局、DataSrv 和工作流契约字段。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：通过，`194 passed`。
+
+对应全链路意义：
+
+```text
+App Studio 测试并提交 MaClaw App 包
+  -> 后端提炼 review_evidence 审核摘要
+  -> GUI 发布队列直接展示审批实例、progress、依赖、布局、DataSrv、workflow contract
+  -> 应用制作者/审核者可在上传、同步、安装前快速判断企业审批型 App 的关键证据是否齐备
+```
+
+当前仍未宣称整套 MaClaw App 完成。下一步继续把 `review_evidence` 的可视化同 Hub 审核页/能力市场详情页打通，并继续推进黄金样例 E2E：App Studio 制作/测试/上传、Hub 审核发布、依赖 Skill 下载验签安装、DataSrv 注册、审批 workflow 运行、审批实例中心和结果反馈的同一实例证据闭环。
+
+### 推进记录：Hub 审核与企业市场展示企业审批证据（2026-06-30）
+
+本轮把 `review_evidence`/`maclaw_app_test_evidence` 的可视化从 GUI 本机发布队列继续推进到 Hub 分发侧。此前 App Studio 发布队列已经能看到审批实例、progress、依赖、布局、DataSrv 和 workflow contract，但 HubCenter 审核队列与企业 Hub 市场目录仍主要展示基础测试 run/artifact 信息，审核人与企业管理员无法在市场侧快速判断审批型 App 的关键企业证据是否齐备。
+
+已完成：
+
+- HubCenter `skillmarket-admin.js` 的 MaClaw App 审核详情新增企业证据条：
+  - 审批实例状态与当前节点；
+  - workflow progress 数量；
+  - 依赖验证数量与阻断状态；
+  - 动态布局模板；
+  - DataSrv 注册状态；
+  - workflow contract 版本/schema。
+- HubCenter 管理端样式新增 `.sm-review-evidence-strip` / `.sm-review-evidence-chip`，沿用克制的 ready/partial/failed 状态色，保持审核队列紧凑可扫读。
+- 企业 Hub `marketplace-tab.js` 的 `maclawAppEvidenceSummary` 从只展示 App/Layout/Result/Test/Dependencies，扩展为同时展示 Approval、Progress、DataSrv、Workflow。
+- `hub/web/admin/validate-admin-modules.js` 新增 MaClaw App 企业证据 marker 校验，并对 HubCenter `skillmarket-admin.js` 做 `vm.Script` 语法检查，避免 Hub/HubCenter 市场侧展示链路回退。
+
+验证：
+
+```powershell
+node hub/web/admin/validate-admin-modules.js
+```
+
+结果：通过，`Admin module validation passed.`
+
+对应全链路意义：
+
+```text
+App Studio 测试并上传 MaClaw App 包
+  -> 后端提炼 maclaw_app_test_evidence / review_evidence
+  -> GUI 本机发布队列展示审核摘要
+  -> HubCenter 审核队列展示同一组企业审批证据
+  -> 企业 Hub 市场目录展示已导入/待审核 App 的审批、progress、DataSrv、workflow contract 状态
+  -> 审核、发布、导入、安装前的关键证据可见性贯通
+```
+
+当前仍未宣称整套 MaClaw App 完成。下一步继续推进真实黄金样例 E2E 的运行面：把 Hub 审核/发布后的同一 App 下载安装后，走真实 workflow skill runner 的 initiate/running/complete/result 节点，并由 DataSrv、GUI 运行态、全局审批中心和企业市场审计查看同一实例证据。
+
+### 推进记录：真实 workflow runner 结果同步后 DataSrv 回读同一实例（2026-06-30）
+
+本轮补强审批型 MaClaw App 的真实运行闭环：
+
+```text
+已安装企业审批型 App
+  -> 发起审批实例
+  -> 真实 workflow skill runner 输出 progress_instances / approval_instance
+  -> progress 写入 DataSrv /progress
+  -> final result 写入 DataSrv /review
+  -> GUI 审批实例列表从 DataSrv handled lane 回读同一实例
+  -> 保留审批结果、workflow 节点路径、result_payload、content 输出和文件 artifact
+```
+
+新增验证点：
+
+```text
+TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult
+  现在不仅验证 runner 输出会同步到 DataSrv，
+  还验证最终 approved 结果同步后，ListMaclawAppApprovalInstancesAll("handled") 能从 DataSrv 读回同一 approval_instance。
+```
+
+覆盖的关键字段：
+
+```text
+approval_id / workflow_instance_id / workflow_decision_id
+workflow_node_id / workflow_node_ids
+business_status / result_status
+result_payload.approval_result / result_payload.text
+outputs(content + artifact)
+artifacts(runner-approved.pdf)
+```
+
+已运行验证：
+
+```bash
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s
+```
+
+结果均通过。该记录证明当前链路已经覆盖：workflow skill 真实运行结果 -> DataSrv 最终审批写回 -> GUI 审批中心/实例列表回读同一结果证据。
+
+### 推进记录：App Studio 布局设计态证据贯穿提交、安装、DataSrv 与市场审核（2026-06-30）
+
+本轮补强动态 UI 设计态闭环：App Studio 自动/可视化生成并保存的 `workspace layout` 不再只作为 manifest 内部结构存在，而是进入后端可审计证据链。
+
+新增贯穿字段：
+
+```text
+workspace_layout.studio.savedInManifest / saved_in_manifest
+workspace_layout.studio.editable
+workspace_layout.studio.updatedBy / updated_by
+workspace_layout.studio_saved_in_manifest
+workspace_layout.studio_editable
+workspace_layout.studio_updated_by
+```
+
+链路覆盖：
+
+```text
+App Studio 保存布局
+  -> app.ui.layouts[entry].studio
+  -> SubmitMaclawAppPackage submission_evidence.workspace_layout
+  -> review_evidence.workspace_saved_in_manifest / workspace_updated_by
+  -> RecordMaclawAppInstall install_evidence.workspace_layout
+  -> DataSrv app-installations metadata.workspace_layout + metadata.workspace_layout_studio_*
+  -> GUI 本机提交队列审核证据条
+  -> Hub / HubCenter 市场审核摘要
+```
+
+这样审核端可以直接看到该 App 的传统软件式界面布局是否已经由 App Studio 保存，而不是只看到 template 名称。
+
+已运行验证：
+
+```bash
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+node hub/web/admin/validate-admin-modules.js
+go test ./gui -count=1 -vet=off -run "TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestSubmitMaclawAppPackagePersistsNormalizedWorkspaceLayout|TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s
+```
+
+结果均通过。
+### 推进记录：全局审批中心结果包 UI 覆盖收口（2026-06-30）
+
+本轮继续从“企业审批型应用 = 数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”的用户可见闭环收口。此前后端与 DataSrv 已经能把 workflow runner 的最终审批实例、结构化 `result_payload`、输出块 `outputs` 和文件产物 `artifacts` 回流到 GUI；本轮补齐全局审批中心详情面板的前端回归断言，明确验证用户打开审批实例后能看到：
+
+1. 审批输出块标题与文本内容，例如 `Decision`、`manager approved travel expense`。
+2. 输出级文件产物和独立附件，例如 `Approval PDF`、`approval-result.pdf`、`artifact://approval/result.pdf`。
+3. 结构化结果包字段，例如 `business_record`、`business_status=finance_approved`、业务记录 `EXP-1`。
+
+验收覆盖：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：`AppsPage.test.tsx` 194 个前端用例全部通过。
+
+当前剩余缺口继续聚焦：
+
+- 端到端真实样例仍需要再跑一轮“App Studio 制作 -> 测试 -> 上传 Hub -> 审核/发布 -> 安装依赖 -> DataSrv 登记 -> 运行审批 -> 审批中心回看结果”的完整验收脚本或手工自动化。
+- DataSrv / Hub / GUI 的关键后端定向测试需要按最终路径再做一次集中回归，确认没有只靠前端 mock 覆盖的断点。
+- 若要宣称产品级完成，还需要补安装失败、依赖签名失败、DataSrv 离线、workflow skill 运行失败/取消等异常路径的界面验收。
+### 推进记录：签名 Hub 审批型 App 安装审计保留企业证据（2026-06-30）
+
+本轮继续推进真实黄金样例 E2E 的安装面。此前 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 已覆盖：签名 Hub App 包下载、依赖 Skill 下载与验签、DataSrv app-installations 登记、审批 workflow 发起、running 节点同步、final 结果同步，以及从 DataSrv handled lane 回读同一审批实例。新增验收把“安装后本地审计记录”纳入同一条黄金路径。
+
+新增覆盖：
+
+1. `ListMaclawAppInstalls` 能读回刚安装的企业审批型 App 审计记录。
+2. 审计记录保留 App 身份、来源 `enterprise_hub`、package hash、ready 依赖计划。
+3. 审计记录保留 DataSrv 登记结果：`synced=true`、`synced_count=1`、登记 item 的 `app_id/status/synced`。
+4. 审计记录保留审批 workflow contract、App Studio workspace layout、result contract。
+5. 审计记录保留导入的审批测试证据 `approvalInstance`，包括 `approval-evidence-golden`。
+
+这一步补的是“安装后的可审计/可恢复证据”，使链路不只在安装返回值和运行态内存中成立，也能从本地安装历史恢复企业审批型 App 的关键证据。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+Hub 审核/发布签名 MaClaw App
+  -> GUI 下载并验签安装 App 依赖 Skill
+  -> DataSrv 登记 app-installations
+  -> 本地安装历史持久化 DataSrv 登记、workflow contract、布局、结果契约、审批测试证据
+  -> 后续冷启动、运行态恢复、审计页面和企业市场诊断可读取同一组证据
+```
+
+当前剩余缺口继续聚焦：
+
+- 还需要把完整黄金样例从测试夹具提升到一条更接近真实用户操作的自动化验收脚本/场景：App Studio 制作、测试、上传、Hub 审核发布、下载安装、运行审批、审批中心查看结果。
+- 异常路径仍需补强：依赖下载失败、签名/公钥不可信、DataSrv 离线、workflow skill 失败/取消、审批拒绝和需关注结果的可见反馈。
+### 推进记录：Hub 安装依赖失败返回结构化诊断（2026-06-30）
+
+本轮开始补企业级交付必须具备的异常路径。此前安装 MaClaw App 时，如果 required Skill 依赖下载、验签或安装失败，后端会阻断安装，但错误信息主要是总括性的 `required Skill dependencies are missing or unavailable`。这不利于 GUI、审核人员或企业管理员判断具体是哪一个 workflow/app/runtime Skill 出问题，也不利于区分 install_ref、下载、签名验签、版本冲突等阶段。
+
+已完成：
+
+1. 新增 `maclawAppInstallPlanBlockingDependencySummary`，从阻塞依赖中提炼诊断摘要。
+2. Hub 安装失败和本地安装失败现在会在错误中追加：依赖 ID、错误码、阶段和原始原因。
+3. 诊断优先级：`install_error_*` -> `preflight_*` -> `integrity_*` -> `install_ref_*` -> action/health/message。
+4. 新增 `TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics`，模拟 Hub 安装审批型 App 时 workflow Skill 验签失败，断言错误信息包含：
+   - `signed-workflow`
+   - `package_integrity_failed`
+   - `skillhub_download`
+   - `signature verification failed`
+   - `public key fingerprint not trusted`
+
+这样前端现有安装失败展示不需要等待新协议，也能直接显示企业管理员可定位的依赖失败原因。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestPlanMaclawAppInstallPreflightsEnterpriseHubCapability|TestPlanMaclawAppInstallPreflightsSkillMarketDependency" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+Hub 安装 MaClaw App
+  -> required Skill 依赖安装/下载/验签失败
+  -> install_plan 标记 failed/blocked 并保留 install_error/preflight/integrity 诊断
+  -> InstallSelectedMaclawAppPackageFromHub 返回带依赖 ID、错误码、阶段、原因的可读错误
+  -> GUI 安装失败提示可直接定位依赖问题
+```
+
+当前剩余缺口继续聚焦：
+
+- DataSrv 离线/登记失败时，安装应保留 partial 注册审计并在运行态/安装历史中明确展示。
+- workflow skill 运行失败/取消时，需要生成可审计结果包并在审批中心显示失败/取消状态。
+- 审批拒绝、需关注、等待补充输入等非 approved 结果，需要继续用真实 workflow runner + DataSrv 回读测试覆盖。
+### 推进记录：DataSrv 登记失败持久化为安装审计（2026-06-30）
+
+本轮继续补企业级异常路径：Hub 安装 MaClaw App 时，DataSrv app-installations 登记可能因为 DataSrv 离线、权限失效或服务端错误失败。安装本身不应因此完全丢失，因为依赖 Skill 和本地 App 包可能已经安装成功；但失败必须进入安装审计，供运行态、安装历史、市场诊断和后续修复使用。
+
+已完成：
+
+1. `datasrv_registration` 新增稳定 `status` 字段：
+   - `ready`：全部 eligible App 已登记；
+   - `partial`：部分登记成功；
+   - `failed`：有 eligible App，但全部登记失败；
+   - `skipped`：无可登记 role binding 或 DataSrv 未启用。
+2. `registerMaclawAppInstallationsToDataSrv` 在成功、失败、跳过场景都写入 `status`。
+3. `maclawAppDataSrvRegistrationForApp` 过滤到单个 App 时也保留/重算 app 级 `status`。
+4. 新增 `TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure`：
+   - Hub 安装发布级企业普通 App；
+   - DataSrv `/api/v1/data/app-installations/{app}` 返回 503；
+   - 安装仍完成并返回 install record；
+   - `datasrv_registration.status=failed`、`synced=false`、`eligible_count=1`、`failed_count=1`；
+   - item 级保留 `app_id`、`synced=false` 和 HTTP 原因 `datasrv offline`；
+   - `ListMaclawAppInstalls` 能读回同一失败登记审计。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure|TestInstallSelectedMaclawAppPackageFromHubInstallsDepsAndRegistersDataSrv|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestRecordMaclawAppInstallRegistersApprovalAppWithDataSrv" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+Hub 安装 MaClaw App
+  -> Skill 依赖和 App 包本地安装成功
+  -> DataSrv app-installations 登记失败
+  -> 安装记录保留 failed DataSrv registration 审计
+  -> 前端安装历史/运行态可通过 datasrv_registration.status/reason/items 展示失败原因
+  -> 后续可做“重新审计/重新登记/修复 DataSrv 配置”闭环
+```
+
+当前剩余缺口继续聚焦：
+
+- workflow skill 运行失败/取消时，需要生成可审计结果包并在审批中心显示失败/取消状态。
+- 审批拒绝、需关注、等待补充输入等非 approved 结果，需要继续用真实 workflow runner + DataSrv 回读测试覆盖。
+- 还需要一条更接近真实用户操作的自动化黄金验收脚本，把 App Studio 制作、测试、上传、Hub 审核发布、下载安装、运行审批、审批中心查看结果串起来。
+### 推进记录：workflow Skill 失败生成可审计结果包（2026-06-30）
+
+本轮继续补企业审批型 App 的运行异常路径。此前 `StartMaclawAppApprovalWorkflow(..., run_workflow_skill=true)` 在 workflow Skill 执行失败或输出无法解析时会直接返回 error，导致已经创建的审批实例停留在 pending，DataSrv 和审批中心缺少最终失败结果包。企业审批型应用需要把失败也视为一种可审计结果，而不是只把异常抛给调用方。
+
+已完成：
+
+1. `runMaclawAppApprovalWorkflowSkill` 在 skill 执行失败或 workflow 输出解析失败时，不再直接中断。
+2. 新增失败结果包生成逻辑：
+   - `status=failed`
+   - `lane=handled`
+   - `business_status=workflow_failed`
+   - `result_status=failed`
+   - `result_payload.approval_result=failed`
+   - `result_payload.error/text` 保存失败原因
+   - `outputs` 保存 `Workflow failed` 输出块
+3. 失败实例会写入本地审批实例 registry，并调用 DataSrv `/review` 同步最终失败结果。
+4. `normalizeMaclawAppApprovalStatus`、handled lane 过滤、DataSrv review 状态判断纳入 `failed`，使审批中心“已处理”视图能看到失败实例。
+5. 新增 `TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult`：
+   - 创建真实 workflow Skill runner；
+   - skill 命令非零退出；
+   - `StartMaclawAppApprovalWorkflow` 返回 `workflow_run.ran=false` 而不是 error；
+   - 返回实例为 `failed/handled`；
+   - DataSrv 收到 `decision=failed` 的 `/review`；
+   - 本地 handled lane 能读回失败结果包。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> DataSrv 创建审批实例
+  -> workflow Skill 执行失败/输出异常
+  -> GUI 后端生成 failed approval_instance + result_payload + outputs
+  -> DataSrv /review 写入 failed 最终状态
+  -> 审批中心 handled lane 可回看失败结果包
+```
+
+当前剩余缺口继续聚焦：
+
+- 取消/超时路径需要复用同一结果包机制做专门测试。
+- 审批拒绝、需关注、等待补充输入等非 approved 业务结果，需要继续用真实 workflow runner + DataSrv 回读覆盖。
+- 最终还需要一条接近真实用户操作的黄金验收脚本，串起 App Studio 制作、测试、上传、Hub 审核发布、下载安装、运行审批和审批中心查看结果。
+### 推进记录：workflow Skill 需关注结果保持仅查看语义（2026-06-30）
+
+本轮继续补非 approved 业务结果。此前手工同步路径已经支持 `attention_view_only`，但真实 workflow runner 输出 `attention` 时缺少专门回归，无法证明“需关注（仅查看）”不会被误当成通过/拒绝去 review DataSrv 审批。
+
+已完成：
+
+1. 新增 `TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult`。
+2. 测试使用真实 workflow Skill runner 输出 `approval_instance.status=attention`。
+3. 验证结果实例：
+   - `status=attention`
+   - `lane=attention`
+   - `result_status=attention`
+   - `current_node=expense.attention`
+   - `result_payload.approval_result=attention`
+   - `result_payload.business_status=finance_attention`
+   - `outputs[0].status=attention`
+4. 验证 DataSrv 行为：
+   - 发起阶段仍创建 DataSrv approval；
+   - workflow attention 结果不调用 `/review`；
+   - 只 PATCH 业务记录，写入 `approval_status=attention`、`approval_lane=attention`；
+   - 本地审批中心 `attention` lane 能读回该结果包。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestSyncMaclawAppApprovalInstanceToDataSrvKeepsAttentionViewOnly" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> workflow Skill 返回 attention / needs attention
+  -> GUI 后端生成 attention approval_instance + result_payload + outputs
+  -> DataSrv 业务记录写入需关注状态
+  -> 不 review DataSrv 审批实例
+  -> 审批中心 attention lane 可回看仅查看结果
+```
+
+当前剩余缺口继续聚焦：
+
+- `rejected` 的真实 workflow runner + DataSrv 回读还需要单独覆盖，确认拒绝会 review DataSrv 审批并进入 handled。
+- `cancelled/timeout/requires_input` 需要明确产品语义：哪些是最终 handled，哪些回到待补充输入。
+- 最终仍需一条接近真实用户操作的黄金验收脚本串起制作、测试、上传、审核、安装、运行和回看。
+### 推进记录：workflow Skill 拒绝结果进入 DataSrv review 与 handled 回读（2026-06-30）
+
+本轮继续补非 approved 业务结果。`attention` 已明确为仅查看，不 review DataSrv 审批；`rejected` 则是最终审批结果，必须和 `approved` 一样写入 DataSrv `/review`，并进入审批中心已处理视图。
+
+已完成：
+
+1. 新增 `TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult`。
+2. 测试使用真实 workflow Skill runner 输出 `approval_instance.status=rejected`。
+3. 验证结果实例：
+   - `status=rejected`
+   - `lane=handled`
+   - `result_status=rejected`
+   - `current_node=expense.result`
+   - `workflow_decision_id=decision-reject-runner-1`
+   - `result_payload.approval_result=rejected`
+   - `result_payload.business_status=finance_rejected`
+   - `outputs[0].status=rejected`
+4. 验证 DataSrv 行为：
+   - 发起阶段创建 DataSrv approval；
+   - workflow rejected 结果调用 `/api/v1/data/approvals/{id}/review`；
+   - review 请求携带 `decision=rejected`、workflow 节点、decision id、业务状态、结果状态和输出块；
+   - DataSrv handled lane 回读同一 rejected 结果包。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> workflow Skill 返回 rejected
+  -> GUI 后端生成 rejected approval_instance + result_payload + outputs
+  -> DataSrv /review 写入 rejected 最终审批状态
+  -> DataSrv handled lane 回读同一结果包
+  -> 审批中心已处理视图可回看拒绝原因与业务状态
+```
+
+当前剩余缺口继续聚焦：
+
+- `cancelled/timeout` 的最终状态语义需要补 runner + DataSrv review 回归。
+- `requires_input`/等待补充输入需要明确是否回到发起人待补充，而不是进入 handled。
+- 最终仍需要一条接近真实用户操作的黄金验收脚本串起制作、测试、上传、审核、安装、运行和回看。
+### 推进记录：workflow Skill 超时结果进入最终态回读（2026-06-30）
+
+本轮继续补最终态异常结果。`timeout` 和 `cancelled` 一样不应继续停留在 pending；它是一次审批运行的最终结果，需要进入 handled，并写回 DataSrv 审批实例，供审批中心和审计链路回看。
+
+已完成：
+
+1. 新增 `TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult`。
+2. 测试使用真实 workflow Skill runner 输出 `approval_instance.status=timeout`。
+3. 验证结果实例：
+   - `status=timeout`
+   - `lane=handled`
+   - `result_status=timeout`
+   - `current_node=expense.timeout`
+   - `workflow_decision_id=decision-timeout-runner-1`
+   - `result_payload.approval_result=timeout`
+   - `result_payload.business_status=approval_timeout`
+   - `outputs[0].status=timeout`
+4. 验证 DataSrv 行为：
+   - 发起阶段创建 DataSrv approval；
+   - workflow timeout 结果调用 `/api/v1/data/approvals/{id}/review`；
+   - review 请求携带 `decision=timeout`、workflow 节点、decision id、业务状态、结果状态和输出块；
+   - DataSrv handled lane 回读同一 timeout 结果包。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> workflow Skill 返回 timeout
+  -> GUI 后端生成 timeout approval_instance + result_payload + outputs
+  -> DataSrv /review 写入 timeout 最终审批状态
+  -> DataSrv handled lane 回读同一结果包
+  -> 审批中心已处理视图可回看超时原因与业务状态
+```
+
+当前剩余缺口继续聚焦：
+
+- `cancelled` 可复用 timeout 的最终态机制，但仍建议补一条轻量回归，避免状态名差异回退。
+- `requires_input`/等待补充输入需要明确产品语义：回到发起人待补充，还是独立 lane。
+- 最终仍需要一条接近真实用户操作的黄金验收脚本串起制作、测试、上传、审核、安装、运行和回看。
+### 推进记录：workflow Skill 取消结果进入最终态回读（2026-06-30）
+
+本轮继续补最终态异常结果。`cancelled` 与 `timeout` 一样代表本次审批运行已经结束，不应继续停留在 pending，也不应进入仅查看的 attention lane。它需要进入 handled，并写回 DataSrv 审批实例，供审批中心、审计链路和安装证据复核。
+
+已完成：
+
+1. 新增 `TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult`。
+2. 测试使用真实 workflow Skill runner 输出 `approval_instance.status=cancelled`。
+3. 验证结果实例：
+   - `status=cancelled`
+   - `lane=handled`
+   - `result_status=cancelled`
+   - `current_node=expense.cancelled`
+   - `workflow_decision_id=decision-cancel-runner-1`
+   - `result_payload.approval_result=cancelled`
+   - `result_payload.business_status=approval_cancelled`
+   - `outputs[0].status=cancelled`
+4. 验证 DataSrv 行为：
+   - 发起阶段创建 DataSrv approval；
+   - workflow cancelled 结果调用 `/api/v1/data/approvals/{id}/review`；
+   - review 请求携带 `decision=cancelled`、workflow 节点、decision id、业务状态、结果状态和输出块；
+   - DataSrv handled lane 回读同一 cancelled 结果包。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> workflow Skill 返回 cancelled
+  -> GUI 后端生成 cancelled approval_instance + result_payload + outputs
+  -> DataSrv /review 写入 cancelled 最终审批状态
+  -> DataSrv handled lane 回读同一结果包
+  -> 审批中心已处理视图可回看取消原因与业务状态
+```
+
+当前剩余缺口继续聚焦：
+
+- `requires_input`/等待补充输入需要明确产品语义并实现：建议不要进入 handled，而是回到发起人待补充或独立待补充 lane。
+- 最终仍需要一条接近真实用户操作的黄金验收脚本串起制作、测试、上传、审核、安装、运行和回看。
+### 推进记录：workflow Skill 待补充输入结果回到发起人侧（2026-06-30）
+
+本轮补齐 `requires_input` / 待补充输入语义。它不是审批最终态，也不是需关注的仅查看态；它表示 workflow Skill 已经判断当前材料、字段或业务对象不足，需要发起人补充后继续流转。因此它不应进入 handled，也不应调用 DataSrv `/review`。
+
+产品语义确定为：
+
+```text
+requires_input
+  -> 运行中/待补充状态
+  -> 默认进入 my_requests 发起人侧视图
+  -> 保留 result_payload.requires_input、outputs 和业务记录引用
+  -> DataSrv 同步走 /progress + 业务记录 PATCH
+  -> 不写最终审批 review
+```
+
+已完成：
+
+1. `normalizeMaclawAppApprovalStatus` 纳入 `requires_input`，不再把它退化为 `pending`。
+2. workflow Skill 输出 `approval_instance.status=requires_input` 时，后端默认归入 `my_requests` lane。
+3. `SyncMaclawAppApprovalInstanceToDataSrv` 对 `requires_input` 复用进度同步路径：调用 `update_record_approval_progress`，并同步业务记录状态。
+4. handled lane 仍只接收 approved / rejected / failed / cancelled / timeout，`requires_input` 不进入已处理。
+5. 新增 `TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult`，覆盖真实 workflow runner 输出待补充结果：
+   - `status=requires_input`
+   - `lane=my_requests`
+   - `result_status=requires_input`
+   - `current_node=expense.require_input`
+   - `workflow_decision_id=decision-input-runner-1`
+   - `result_payload.approval_result=requires_input`
+   - `result_payload.requires_input.fields=[invoice_attachment]`
+   - `outputs[0].kind=requires_input`
+   - DataSrv 收到 `/progress`，没有收到 `/review`
+   - GUI `my_requests` lane 能读回该实例，`handled` lane 不能读到。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+企业审批型 App 发起审批
+  -> workflow Skill 返回 requires_input
+  -> GUI 后端保留待补充结果包和输出块
+  -> DataSrv /progress 写入当前节点与待补充状态
+  -> 业务记录 PATCH 为 waiting_for_requester / requires_input
+  -> 发起人在我的申请视图看到待补充实例
+  -> 补充材料后可继续同一审批实例流转
+```
+
+当前剩余缺口继续聚焦：
+
+- 需要把“待补充后继续提交”的二次流转动作补成可视化操作和后端续跑接口。
+- 最终仍需要一条接近真实用户操作的黄金验收脚本串起制作、测试、上传、审核、安装、运行、待补充、继续流转和结果回看。
+### 推进记录：待补充输入后续跑同一审批实例（2026-06-30）
+
+本轮继续补 `requires_input` 之后的二次流转。待补充不是终态，发起人补齐字段、附件或业务对象后，应继续原审批实例，而不是重新创建一张审批单。
+
+已实现后端续跑语义：
+
+1. `MaclawAppApprovalWorkflowStartInput` 新增可选字段：
+   - `approval_id`
+   - `instance_id`
+   - `continue_from_instance_id`
+2. `StartMaclawAppApprovalWorkflow` 在传入上述字段时，会从本地审批实例 registry 恢复原实例。
+3. 续跑时复用原 `approval_id / approval_instance_id / workflow_instance_id`，并把本次补充材料写入 `result_payload.supplemental_input`。
+4. 续跑开始先把同一审批实例同步为 progress：
+   - `business_status=supplemented`
+   - `result_status=pending`
+   - `lane=pending_my_approval`
+   - DataSrv 调用 `/api/v1/data/approvals/{id}/progress`
+5. workflow Skill runner 随后继续运行；如果返回 approved/rejected/failed/cancelled/timeout，仍回写同一个 DataSrv approval 的 `/review`。
+6. 新增后端回归 `TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement`，覆盖：
+   - 已存在 `requires_input` 本地实例；
+   - 发起人提交补充附件；
+   - 不创建新的 DataSrv approval；
+   - 先 progress 同一 approval；
+   - workflow runner 返回 approved；
+   - final review 仍使用同一 `approval_id / workflow_instance_id`；
+   - handled lane 回读到补充后通过的结果包。
+
+验证：
+
+```powershell
+go test ./corelib/workflow/v2 -count=1 -vet=off -run "^$"
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement|TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -timeout 240s
+```
+
+结果：均通过。
+
+为解除本轮验证阻塞，顺手修复了 `corelib/workflow/v2/phase_prompt.go` 的编译问题：`phaseInstruction` 调用按 `WorkflowType(state.Type)` 传参，并移除新增 workflow case 中与既有 `design` phase id 冲突的重复 case；同时为 grant proposal / paper writing 补齐缺失阶段指令常量。
+
+对应全链路意义：
+
+```text
+审批型 App 返回 requires_input
+  -> 发起人在我的申请看到待补充
+  -> 用户补充字段/附件/业务对象
+  -> GUI 调用 StartMaclawAppApprovalWorkflow(approval_id, continue_from_instance_id, form_data)
+  -> 后端恢复同一审批实例并写 supplemental_input
+  -> DataSrv progress 更新同一 approval
+  -> workflow Skill 继续运行
+  -> 最终结果 review 同一 approval
+  -> 审批中心 handled / my_requests / pending_my_approval 看到的是同一条实例历史
+```
+
+当前剩余缺口继续聚焦：
+
+- 前端运行工作台需要露出“补充材料并继续”可视化动作，把当前 `requires_input` 实例的缺失字段/附件渲染成可编辑区域。
+- 编译阻塞解除后，补跑 `TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement` 和完整审批状态回归。
+- 继续推进真实用户黄金路径：制作、测试、上传、审核、安装、运行、待补充、继续流转、结果回看。
+### 推进记录：前端审批工作台支持待补充材料并继续流转（2026-06-30）
+
+本轮补齐 `requires_input` 在 GUI 运行态的可视化闭环。审批型 App 的 workflow Skill 返回待补充材料后，发起人不再只看到一条静态状态，而是在审批工作台和全局审批详情中看到可操作的补充面板，并可继续同一审批实例流转。
+
+已实现前端运行态能力：
+
+1. `ApprovalInstanceView.status` 扩展为覆盖 `requires_input / failed / cancelled / timeout / running / submitted / in_progress`，全局审批筛选器同步可选这些状态。
+2. 新增 `approvalRequiresInputInfo`，从 `result_payload.requires_input`、`resultPayload.requiresInput`、`outputs.kind=requires_input` 中提取待补充标题、说明和缺失字段。
+3. 新增 `ApprovalSupplementPanel`，在运行态审批工作台和全局审批详情中展示：
+   - 待补充说明；
+   - 缺失字段 chips；
+   - 补充说明输入；
+   - 附件/材料引用输入；
+   - “补充后继续”动作。
+4. 运行态 `continueApprovalInstanceWithSupplement` 调用后端 `StartMaclawAppApprovalWorkflow`，携带：
+   - `approval_id`；
+   - `instance_id`；
+   - `continue_from_instance_id`；
+   - `form_data.supplement_note / supplement_reference`；
+   - `business_payload.supplemental_input`；
+   - `workflow_run_args.supplemental_input`。
+5. 前端把后端返回的 `workflow_run.progress_instances` 与最终 `instance` 合并回本地 `approvalInstances`，因此同一审批实例可从待补充继续进入 pending/running/approved 等后续状态。
+6. 历史证据展示契约保持兼容：审批节点链、DataSrv 审批明细、SkillMarket/Hub 分组、发布证据、结果契约决策串恢复为既有 `/` 分隔格式，避免新 UI 改动破坏既有回归。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "continues a requires-input approval instance"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "opens global approval management|DataSrv approval app summary|SkillMarket results|approval instance evidence|visual result contract"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+
+- 待补充继续流转目标测试通过。
+- 5 个历史 UI 证据回归测试通过。
+- `AppsPage.test.tsx` 全量通过：195 passed / 195。
+- 后端定向补跑通过：`go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s`。
+
+对应全链路意义：
+
+```text
+workflow Skill 返回 requires_input
+  -> GUI 审批工作台展示缺失字段和补充入口
+  -> 发起人填写补充说明/材料引用
+  -> GUI 调用 StartMaclawAppApprovalWorkflow 续跑同一 approval_id
+  -> 后端写 supplemental_input 并同步 DataSrv progress
+  -> workflow Skill 继续运行
+  -> GUI 合并 progress/final instance
+  -> 审批中心和运行工作台回看同一审批实例的完整历史
+```
+
+当前剩余缺口继续聚焦：
+
+- 继续补一条更接近真实用户路径的黄金验收：App Studio 制作、测试、上传 Hub、审核发布、安装依赖、DataSrv 注册、发起审批、待补充、继续流转、结果回看。
+- 在黄金验收稳定后，清理临时测试输出文件，并整理应保留的新源码/测试/文档改动。
+### 推进记录：签名 Hub 安装后待补充再续跑黄金验收（2026-06-30）
+
+本轮把真实黄金路径从“签名 Hub 审批型 App 安装后可发起并回读 approved 结果”，继续推进到“安装后的同一 App 可先返回 `requires_input`，发起人补充材料后续跑同一审批实例并最终回读 handled 结果”。这补齐了此前前端/后端单独覆盖之外的关键组合证据。
+
+已完成：
+
+1. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`：
+   - 先从企业 Hub 下载签名 MaClaw App 包；
+   - 下载并验签安装 `expense-super-skill` 与 `expense-workflow`；
+   - 安装时登记 DataSrv `app-installations`；
+   - 发起第一张审批并回读 approved 结果包；
+   - 使用已安装的 `expense-workflow` 依赖 Skill 作为真实 runner；
+   - 发起第二张审批，workflow runner 返回 `requires_input`；
+   - 验证 `requires_input` 进入发起人 `my_requests` lane，并保留缺失材料输出块；
+   - 补充 `invoice_attachment` 后调用 `StartMaclawAppApprovalWorkflow` 续跑同一 `approval_id=approval-golden-2` / `workflow_instance_id=wf-golden-2`；
+   - 验证续跑不再创建新的 DataSrv approval；
+   - workflow runner 返回 approved 后，从 DataSrv handled lane 回读同一实例。
+2. 修复后端 workflow 结果合并：
+   - 续跑开始时写入的 `result_payload.supplemental_input` 现在会在 workflow runner 最终结果覆盖 `result_payload` 时被保留；
+   - 这样 workflow Skill 不需要主动回显补充材料，GUI/DataSrv 仍可审计发起人补充了什么。
+3. 保持既有独立续跑用例：`TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement` 继续通过。
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -timeout 240s
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+```
+
+结果：均通过。
+
+对应全链路意义：
+
+```text
+App Studio/Hub 发布的签名审批型 App
+  -> GUI 从 Hub 安装 App 与依赖 Skill
+  -> 安装时完成依赖验签与 DataSrv 登记
+  -> 运行审批 workflow Skill
+  -> workflow 返回 requires_input
+  -> GUI/DataSrv 记录待补充实例
+  -> 发起人补充材料
+  -> GUI 续跑同一 approval_id / workflow_instance_id
+  -> workflow 返回 approved
+  -> DataSrv handled lane 回读同一实例最终结果
+  -> result_payload 保留 supplemental_input 审计证据
+```
+
+当前剩余缺口继续聚焦：
+
+- 这条黄金路径已经是后端自动化夹具级闭环；下一步需要把 App Studio 的用户可视化制作、测试、上传、Hub 审核发布操作进一步提升为更接近真实点击流的前端/集成验收。
+- 继续清理当前工作树中的临时测试输出文件，区分应提交源码与过程产物。
+- 异常路径仍需集中补 UI 验收：DataSrv 离线、依赖下载失败、签名不可信、workflow 失败/取消/超时后的运行态反馈。
+### 推进记录：前端市场安装后运行态待补充续跑验收（2026-06-30）
+
+本轮把上一阶段后端 golden path 的“签名 Hub 安装后待补充再续跑”继续推进到用户可见的 AppsPage 点击流。此前前端分别覆盖了 Hub 市场安装审批型 App、运行态 `requires_input` 补充材料续跑；本轮把两者连起来，验证用户从市场安装后的 App 可以直接进入运行态审批工作台，并对待补充实例继续同一审批流程。
+
+已完成：
+
+1. 扩展 `AppsPage.test.tsx` 的 `installs approved Hub MaClaw Apps from market search results`：
+   - 从 App Studio / Add from market 搜索 Enterprise Hub App；
+   - 安装企业审批型 App 并保存 Hub 安装证据、依赖验证证据、App Studio 布局证据；
+   - 关闭 Studio，回到应用面板；
+   - 打开刚安装的审批型 App；
+   - 运行态审批工作台加载 `requires_input` 实例；
+   - 展示缺失字段 `signed_contract` 和待补充输出块；
+   - 用户填写补充说明和材料引用；
+   - 点击 `Continue with supplement`；
+   - 断言前端调用 `StartMaclawAppApprovalWorkflow` 时携带安装后的 App 身份、同一 `approval_id`、同一 `workflow_instance_id`、DataSrv 记录信息、workflow Skill 版本和 `result_payload.supplemental_input`。
+2. 这条测试把前端可视化路径串成：
+   - 市场分发；
+   - 安装依赖证据；
+   - 动态 UI 布局恢复；
+   - 审批实例管理；
+   - 待补充材料继续流转。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results|continues a requires-input approval instance"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+```
+
+结果：
+
+- 前端单测 targeted 通过。
+- 前端待补充组合 targeted 通过。
+- `AppsPage.test.tsx` 全量通过：195 passed / 195。
+- 后端 Hub 安装 + 待补充续跑 golden 组合通过。
+
+对应全链路意义：
+
+```text
+用户在 App Studio 打开能力市场
+  -> 搜索并安装 Enterprise Hub 审批型 App
+  -> GUI 保存安装证据、依赖证据和动态布局
+  -> 用户从主应用面板打开新装 App
+  -> 运行态审批工作台显示 requires_input 实例
+  -> 用户可视化填写补充材料
+  -> GUI 调用 StartMaclawAppApprovalWorkflow 续跑同一审批实例
+  -> 后端 golden path 已验证同一实例进入 DataSrv handled 回读
+```
+
+当前剩余缺口继续聚焦：
+
+- 进一步把 App Studio“制作/测试/提交审核/审核通过/发布/安装/运行”的全点击流拆成可维护的前端集成验收，避免单个巨型测试继续膨胀。
+- 清理工作树里的临时输出文件和历史测试产物，只保留源码、测试和必要文档。
+- 异常路径 UI 仍需做集中验收：DataSrv 离线、依赖下载失败、签名不可信、workflow 失败/取消/超时。
+### 推进记录：运行态审批实例加载失败异常路径收口（2026-06-30）
+
+本轮把审批型 MaClaw App 运行态的 DataSrv 审批实例读取失败路径补齐为可见、可恢复、可验证的行为。此前 `ApprovalWorkspace` 在后端读取失败时仍可能使用本地生成的 fallback 审批实例，用户会看到类似真实审批行的内容，容易误判当前实例数据可用；现在读取失败时不再展示生成行，只显示错误提示和空态，用户点击刷新后可以重新拉取 DataSrv 实例。
+
+已完成：
+
+1. 调整运行态审批工作台实例来源：
+   - 当 `ListMaclawAppApprovalInstances` 失败、`approvalLoadState === 'error'` 时，`ApprovalWorkspace` 不再调用本地生成的 fallback 实例作为列表数据；
+   - 工作台保留 `审批实例读取失败` 告警；
+   - 列表区显示 `当前分类暂无审批实例`，避免把模拟/生成节点误展示为真实 DataSrv 审批实例。
+2. 新增前端异常路径验收：
+   - 模拟 DataSrv 审批实例读取连续失败；
+   - 打开内置审批型 App `报销申请`；
+   - 验证工作台出现读取失败提示；
+   - 验证不会展示 fallback 行 `发起节点`；
+   - 点击 `刷新` 后模拟 DataSrv 恢复；
+   - 验证真实实例 `Recovered expense approval` 和结果包重新出现在工作台。
+3. 回归确认不影响既有审批工作台和待补充材料续跑路径。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "approval workspace load failures"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows approval workspace load failures|shows the approval instance workspace|continues a requires-input approval instance"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+```
+
+结果：
+- 定向异常路径前端测试通过：1 passed / 196。
+- 审批工作台组合前端测试通过：3 passed / 196。
+- `AppsPage.test.tsx` 全量通过：196 passed / 196。
+- 后端 Hub 安装 + 待补充续跑 golden 组合通过。
+
+对应全链路意义：
+
+```text
+运行态审批型 MaClaw App
+  -> 从 DataSrv 拉取审批实例失败
+  -> GUI 明确展示审批实例读取失败
+  -> 不使用本地 fallback 行伪装真实实例
+  -> 用户刷新
+  -> DataSrv 恢复后显示真实审批实例和结果包
+```
+
+当前剩余缺口继续聚焦：
+- 继续补齐依赖下载失败、签名不可信、DataSrv 运行时离线、workflow failed/cancelled/timeout 的可见异常态和验收。
+- 把 App Studio 制作、测试、提交审核、发布、安装、运行拆成更小的前端集成验收，避免单个巨型测试继续膨胀。
+- 后续清理临时测试输出文件，但需要先区分用户改动、过程产物和必须保留的新源码/测试/文档。
+### 推进记录：Hub 市场安装依赖失败前端可见诊断（2026-06-30）
+
+本轮把上一阶段后端已经返回的 required Skill 依赖失败诊断推进到用户可见的市场安装路径。企业审批型 MaClaw App 从 Hub 一键安装时，如果 workflow/app/runtime Skill 依赖下载或验签失败，前端现在有明确验收：错误信息会停留在对应市场行，用户能直接看到失败依赖、错误码、阶段和原始原因，而不是只看到泛化的安装失败。
+
+已完成：
+
+1. 新增 `AppsPage.test.tsx` 前端验收：
+   - 从 Enterprise Hub 搜索审批型 App `Expense Approval Pro`；
+   - 点击市场行 `Add` 触发 `InstallSelectedMaclawAppPackageFromHub`；
+   - 模拟后端返回 required workflow Skill 验签失败；
+   - 验证市场行进入 blocked 状态；
+   - 验证用户可见文本包含 `signed-workflow`、`package_integrity_failed`、`skillhub_download`、`signature verification failed`、`public key fingerprint not trusted`；
+   - 验证失败后不会把 App 写入管理列表。
+2. 保持前端安装逻辑复用后端错误 message，不引入新的失败协议；当前 UI 已能消费 `InstallSelectedMaclawAppPackageFromHub` 返回的结构化摘要。
+3. 用后端定向测试再次确认该错误文本来自真实安装路径：`TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics`。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "dependency install diagnostics"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics" -timeout 240s
+```
+
+结果：
+- 定向前端测试通过：1 passed / 197。
+- `AppsPage.test.tsx` 全量通过：197 passed / 197。
+- 后端依赖诊断定向测试通过。
+
+对应全链路意义：
+
+```text
+Enterprise Hub 审批型 MaClaw App 安装
+  -> required workflow Skill 下载/验签失败
+  -> 后端错误携带依赖 ID、错误码、阶段、原始原因
+  -> GUI 市场行进入 blocked 状态并展示诊断文本
+  -> App 不进入本地管理列表
+```
+
+当前剩余缺口继续聚焦：
+- 签名不可信/包签名失败需要在市场安装和包粘贴安装两条路径继续做前端可见验收。
+- DataSrv 运行时离线、workflow failed/cancelled/timeout 仍需要补运行态结果反馈和审批中心回看断言。
+- App Studio 制作、测试、上传、审核发布、安装、运行的完整点击流仍需拆分成更小的稳定集成验收。
+### 推进记录：Hub App 包签名失败前端可见反馈（2026-06-30）
+
+本轮继续收口 Enterprise Hub 分发安装的可信异常路径。此前后端已经能在下载 Hub MaClaw App 包时校验 `package_signature`，并在签名无效时拒绝包；前端市场安装路径也会展示安装错误，但缺少固定验收来证明“App 包自身签名失败”不会被吞掉，也不会进入后续依赖安装或本地落库。
+
+已完成：
+
+1. 新增 `AppsPage.test.tsx` 前端验收：
+   - 从 Enterprise Hub 搜索审批型 App `Signed Contract Intake`；
+   - 点击市场行 `Add` 触发 `InstallSelectedMaclawAppPackageFromHub`；
+   - 模拟后端返回 `maclaw app package signature verification failed`；
+   - 验证市场行进入 blocked 状态，并在行内显示包签名失败原因；
+   - 验证不会继续调用本地依赖安装 `InstallMaclawAppDependencies`；
+   - 验证不会调用 `RecordMaclawAppInstall` 写入本地安装审计；
+   - 验证失败 App 不出现在管理列表。
+2. 与上一条依赖验签失败用例一起确认：Hub App 包自身签名失败、required Skill 依赖验签失败，都会在市场行内形成可定位、不中断上下文的企业工作台式反馈。
+3. 后端定向测试确认 App 包签名无效仍由真实下载路径拒绝：`TestDownloadMaclawAppPackageFromHubRejectsInvalidPackageSignature`。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "package signature failures|dependency install diagnostics"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestDownloadMaclawAppPackageFromHubRejectsInvalidPackageSignature|TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics" -timeout 240s
+```
+
+结果：
+- 签名/依赖异常前端组合通过：2 passed / 198。
+- `AppsPage.test.tsx` 全量通过：198 passed / 198。
+- 后端签名异常定向组合通过。
+
+对应全链路意义：
+
+```text
+Enterprise Hub 市场搜索 MaClaw App
+  -> 用户点击安装
+  -> Hub App 包 package_signature 校验失败
+  -> GUI 市场行 blocked 并展示签名失败原因
+  -> 不进入依赖安装
+  -> 不写本地安装审计
+  -> 不出现在 App 管理列表
+```
+
+当前剩余缺口继续聚焦：
+- DataSrv 运行时离线需要补“发起/续跑审批失败时”的运行态反馈，而不是只覆盖审批实例列表加载失败。
+- workflow failed/cancelled/timeout 需要补结果反馈和审批中心回看断言。
+- App Studio 制作、测试、上传、Hub 审核发布、安装、运行仍需拆成稳定的全链路点击流验收。
+### 推进记录：运行态审批发起失败落本地 failed 实例（2026-06-30）
+
+本轮继续收口企业审批型 MaClaw App 的运行态异常反馈。此前审批 workflow 启动失败或 DataSrv 在发起阶段离线时，前端主要显示顶部运行错误并写一条 run history，审批实例工作台可能没有可回看的失败实例；这与“审批型应用 = 数据录入 + 审批工作流 Skill 运行 + 审批实例数据管理 + 结果反馈”的目标不一致。本轮改为：只要审批发起或待补充续跑失败，GUI 就落一条本地 `failed` 审批实例，保留错误文本、结果包、workflow_failed 事件，并尽力同步 DataSrv；DataSrv 仍离线时，本地 failed 实例继续可见。
+
+已完成：
+
+1. 前端运行态新增失败落库 helper：
+   - 将失败审批实例写入 `handled` lane；
+   - `status=failed`、`business_status=workflow_error`、`result_status=failed`；
+   - `result_payload` 保存 `approval_result=failed`、`workflow_lifecycle=error` 和错误文本；
+   - `outputs` 生成 `approval_result` 结果块；
+   - `events` 追加 `workflow_failed`；
+   - 先更新本地工作台，再尝试 `RecordMaclawAppApprovalInstance` 和 DataSrv sync。
+2. 首次发起审批失败接入该 helper：
+   - workflow Skill 启动失败不再是“无审批实例”；
+   - DataSrv 发起同步失败也会留下本地 failed 实例。
+3. 待补充材料续跑失败也接入同一 helper：
+   - 保留原审批实例 ID、approval ID、record ID、supplemental input；
+   - 失败后能在工作台/审批中心回看。
+4. 修正 `backendApprovalInstanceToView` 状态归一化：
+   - 保留 `requires_input`、`failed`、`cancelled`、`timeout`、`running`、`submitted`、`in_progress`；
+   - 避免这些后端状态被误压成 `pending`，从而影响 handled lane、筛选和详情展示。
+
+新增/更新验收：
+
+- `records approval workflow launch failures as failed instances`
+  - 模拟 workflow Skill 启动失败；
+  - 验证写入 failed 审批实例；
+  - 验证结果包、事件、DataSrv 同步尝试；
+  - 验证运行态工作台 handled lane 可看到错误文本。
+- `records DataSrv start failures as failed approval instances in the runtime workspace`
+  - 模拟 `StartMaclawAppApprovalWorkflow` 因 DataSrv 离线失败；
+  - 验证本地 failed 实例仍然可见；
+  - 验证不丢失错误文本和结果包。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "records approval workflow launch failures|records DataSrv start failures"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "records approval workflow launch failures|records DataSrv start failures|marks approval workflow failures|continues a requires-input approval instance|approval workspace load failures"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+```
+
+结果：
+- 新增运行态失败前端测试通过：2 passed / 199。
+- 审批异常组合前端测试通过：5 passed / 199。
+- `AppsPage.test.tsx` 全量通过：199 passed / 199。
+- 后端审批运行态组合通过。
+
+对应全链路意义：
+
+```text
+审批型 MaClaw App 运行态发起/续跑
+  -> workflow Skill 启动失败 或 DataSrv 发起同步失败
+  -> GUI 顶部显示运行错误
+  -> 本地审批实例工作台生成 failed 实例
+  -> 结果包记录错误文本和 workflow_lifecycle=error
+  -> handled lane / 审批中心可回看失败实例
+  -> DataSrv 恢复后可基于本地实例继续审计或重试同步
+```
+
+当前剩余缺口继续聚焦：
+- workflow cancelled/timeout 的前端用户可见回看还需要更明确的 UI 验收，后端 timeout 已有定向覆盖。
+- App Studio 制作、测试、上传、Hub 审核发布、安装、运行仍需拆成稳定的全链路点击流验收。
+- 临时测试输出文件仍需在最终收口前清点，避免过程产物混入提交范围。
+### 推进记录：workflow 取消/超时结果运行态回看验收（2026-06-30）
+本轮继续收口审批型 MaClaw App 的运行态最终结果反馈。后端已经能把 workflow Skill 返回的 `cancelled` / `timeout` 写成最终审批实例，并同步 DataSrv `/review`；前端运行态也需要明确区分这两类结果，不能把 timeout 混成普通 error，也不能让 cancelled/timeout 停留在 pending 或仅顶部提示中。
+
+已完成：
+
+1. 前端 workflow lifecycle 归一化补齐 `timeout`：
+   - `timeout` / `timed_out` / `timed-out` 不再归入 generic error；
+   - timeout 结果进入 `handled` lane；
+   - 结果包保留 `workflow_lifecycle=timeout`、`result_status=timeout`、`business_status=timeout` 或后端显式业务状态；
+   - 事件动作为 `workflow_timeout`。
+2. `cancelled` 结果继续作为最终态处理：
+   - 进入 `handled` lane；
+   - 结果包保留 `workflow_lifecycle=cancelled`、`result_status=cancelled`；
+   - 事件动作为 `workflow_cancelled`。
+3. 手动审批决策路径保持独立：
+   - 人工通过/驳回/需关注仍写入 `status=decision`；
+   - workflow lifecycle 只用于 Skill 运行结果归档，不污染审批人手动决策。
+4. 运行态工作台新增/补强 UI 回看验收：
+   - cancelled/timeout 都能在 handled 审批工作区看到；
+   - 详情中保留结果文本、当前节点、结果包和事件轨迹；
+   - 与 DataSrv 发起失败、workflow failed、requires_input 继续补充等异常路径组合回归。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "timeout and cancelled workflow results|cancelled workflow results|records DataSrv start failures|records approval workflow launch failures|marks approval workflow failures|continues a requires-input approval instance|approval workspace load failures"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "records approval decisions with workflow result fields|records DataSrv sync failures in approval instance timelines|keeps approval result package when a pending item is manually approved|shows the approval instance workspace for approval apps"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+go test ./gui -count=1 -vet=off -run "TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -timeout 240s
+```
+
+结果：
+- 前端 timeout/cancelled 与异常组合定向验收通过：7 passed / 194 skipped。
+- 前端人工审批回归定向验收通过：4 passed / 197 skipped。
+- `AppsPage.test.tsx` 全量通过：201 passed / 201。
+- 后端审批运行态组合通过。
+
+对应全链路意义：
+
+```text
+审批型 MaClaw App 运行 workflow Skill
+  -> Skill 返回 cancelled 或 timeout
+  -> GUI 将结果转为最终审批实例
+  -> handled lane / 审批中心可回看
+  -> result_payload / outputs / events 保留最终态证据
+  -> DataSrv review 链路与前端工作台语义一致
+```
+
+当前剩余缺口继续聚焦：
+- App Studio 制作、动态布局调整、保存、测试、上传 Hub 的点击流验收还需要继续拆分实现。
+- Hub 审核发布、安装依赖、运行已安装 App 的端到端 UI 级验收还需要继续补齐。
+- DataSrv / Hub / GUI 三端合同字段需要做最终一致性审计，尤其是 layout、dependency_verification、approval_instance、result_contract、test_evidence。
+### 推进记录：App Studio 提交审核摘要补齐 result/test 证据（2026-06-30）
+本轮继续推进 App Studio -> 提交审核 -> Hub/市场安装前的证据链闭环。此前本地提交队列和审核摘要已经能暴露 workspace layout、依赖验证、审批实例、DataSrv 注册和 workflow contract，但缺少 result contract、test protocol、result coverage、输出/附件计数这些“设计后测试、测试后上传”的关键证据摘要。这样 Hub 审核页或企业市场审查工具只能看到 App 已经有测试证据，却不容易判断测试是否覆盖了声明的输出合同。
+
+已完成：
+
+1. 后端 `maclawAppSubmissionReviewEvidenceForRecord` 增加审核摘要字段：
+   - `has_result_contract`；
+   - `result_contract_primary`；
+   - `result_contract_type_count`；
+   - `has_test_protocol`；
+   - `test_protocol_fingerprint`；
+   - `result_coverage_ok`；
+   - `result_coverage_primary`；
+   - `result_coverage_missing_count`；
+   - `output_count`；
+   - `artifact_count`。
+2. 审核摘要同时支持 governance 与 binding 中的 result contract/test protocol 来源，避免 App Studio 保存位置和 Hub 包展开位置不一致时丢证据。
+3. 后端测试 `TestMaclawAppSubmissionSummaryIncludesReviewEvidence` 补充 result contract、test protocol、result coverage、outputs、artifacts 断言，并确认 JSON `review_evidence` 对外暴露这些字段。
+4. 原提交队列路径 `TestSubmitMaclawAppPackageQueuesLocalSubmission` 一并回归，确认新增摘要不影响 package queue 和 dependency audit。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder
+gofmt -w gui\app_maclaw_apps.go gui\app_maclaw_apps_test.go
+go test ./gui -count=1 -vet=off -run "TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestSubmitMaclawAppPackageQueuesLocalSubmission" -timeout 240s
+```
+
+结果：
+- 后端 App Studio/提交审核摘要定向测试通过。
+
+对应全链路意义：
+
+```text
+App Studio 设计动态 UI + 输出合同 + 测试协议
+  -> 用户运行测试形成 test evidence / result coverage
+  -> 提交审核生成 maclaw.app.pack.v1
+  -> 本地提交队列 summary 暴露 review_evidence
+  -> Hub/市场审核可直接看到 layout + dependency + workflow + result/test 覆盖摘要
+```
+
+当前剩余缺口继续聚焦：
+- Hub 审核发布页面需要消费这些 `review_evidence` 字段，形成市场审核侧可见的证据卡。
+- 安装已发布 App 后，需要继续验证 install evidence 能把 result/test 证据回填到本地 App 管理和运行态详情。
+- App Studio 的完整点击流仍需要补一条从创建审批型应用、调整布局、运行审批测试、提交审核、安装运行的 UI 级组合验收。
+### 推进记录：Hub 审核侧消费 App Studio result/test 证据（2026-06-30）
+本轮继续推进“App Studio 设计/测试/提交 -> Hub 审核发布”的可见证据闭环。上一轮后端提交队列已经把 `review_evidence` 扩展到 result contract、test protocol、result coverage、outputs/artifacts；本轮把这些字段接入 Hub 审核/市场管理界面，避免证据只停留在 JSON 队列里。
+
+已完成：
+
+1. HubCenter 能力市场审核页增强 MaClaw App 审核证据卡：
+   - 新增 Result chip：显示 result contract primary 与类型数量；
+   - 新增 Test chip：显示 test protocol fingerprint；
+   - 新增 Coverage chip：显示 coverage primary、ok/missing 状态；
+   - 新增 Outputs chip：显示输出块和附件数量；
+   - 保留原有 Approval / Progress / Dependencies / Layout / DataSrv / Workflow chips。
+2. 企业 Hub `marketplace-tab.js` 的 MaClaw App 卡片摘要兼容 `review_evidence`：
+   - 可读取按 app id/app name 分组的 `review_evidence`；
+   - 可读取 `result_contract_primary`、`test_protocol_fingerprint`、`result_coverage_primary` 等扁平字段；
+   - 卡片摘要新增 Coverage / Outputs 行。
+3. 管理模块静态校验增加防回退 marker：
+   - 企业 Hub 必须保留 `review_evidence`、Result/Test/Coverage/Outputs 字段读取；
+   - HubCenter 必须保留 result/test/coverage/output evidence chips。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder
+node hub/web/admin/validate-admin-modules.js
+```
+
+结果：
+- Admin module validation passed.
+
+对应全链路意义：
+
+```text
+App Studio 设计动态 UI + 输出合同 + 测试协议
+  -> 测试形成 test evidence / result coverage
+  -> 提交审核生成 review_evidence
+  -> Hub / HubCenter 审核界面显示 result/test/coverage/output 证据
+  -> 审核人可判断 App 是否真的覆盖声明输出，而不是只看到“有测试”
+```
+
+当前剩余缺口继续聚焦：
+- 已发布/已安装 App 的 install evidence 回填到 GUI App 管理详情和运行态详情还需要最终一致性验收。
+- App Studio 仍需要一条 UI 级组合验收：创建审批型应用、调整布局、运行审批测试、提交审核、Hub 审核发布、安装、运行。
+- DataSrv / Hub / GUI 字段合同仍需做最后审计，尤其是 `review_evidence` 与 `install_evidence` 在跨端命名上的一致性。
+### 推进记录：安装后 result/test/coverage 证据回填 GUI 回看（2026-06-30）
+
+本轮把 App Studio 提交审核摘要和 Hub 审核侧已经具备的 result/test/coverage/output 证据继续回填到 GUI 本地回看路径，避免证据只停留在后端 JSON 或 Hub 审核页里。现在本机提交队列和已安装 App 的证据快照都能显示结果契约、测试协议、结果覆盖和输出产物摘要。
+
+已完成：
+
+1. 补齐安装证据快照中的结果覆盖展示：
+   - 从 `test_evidence.resultCoverage` / `test_evidence.result_coverage` 读取覆盖证据；
+   - 显示 primary result、已覆盖类型数、缺口类型数；
+   - 当 `ok=true` 且没有明细 covered 列表时，显示 `ok`，避免误写为“已覆盖: 0”；
+   - 覆盖失败或存在 missing 类型时进入 failed 视觉状态，覆盖通过进入 ready 状态。
+2. 补齐本机提交队列的审核证据条：
+   - 消费 `review_evidence.result_contract_primary` / `result_contract_type_count`；
+   - 消费 `test_protocol_fingerprint`；
+   - 消费 `result_coverage_ok` / `result_coverage_primary` / `result_coverage_missing_count`；
+   - 消费 `output_count` / `artifact_count`，展示输出结果与输出产物数量。
+3. 回归确认已安装 App 管理详情和提交队列两条 GUI 路径都能看到 result/test/coverage/output 证据。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows local app package submission queue summaries|restores single app install evidence from top-level market install records"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- 定向前端测试通过：2 passed / 199 skipped。
+- `AppsPage.test.tsx` 全量通过：201 passed。
+
+对应全链路意义：
+
+```text
+App Studio 设计 / 测试 / 提交审核
+  -> 后端 summary 生成 review_evidence
+  -> Hub 审核侧显示 result/test/coverage/output
+  -> GUI 本地提交队列同步显示同一组审核证据
+  -> Hub 安装后的 install evidence 回填本地 App 管理详情
+  -> 用户在安装后仍可回看结果契约、测试协议、覆盖状态和输出产物摘要
+```
+
+当前剩余缺口继续聚焦：
+- App Studio 创建、动态布局调整、保存、测试、提交、Hub 审核发布、市场安装、运行的 UI 级全链路点击流仍需拆成稳定验收。
+- DataSrv / Hub / GUI 字段合同需要最后审计，尤其是 `review_evidence`、`install_evidence`、`result_contract`、`test_evidence`、`result_coverage` 的跨端命名一致性。
+- 最终收口前需要清点临时测试输出文件，避免过程产物混入提交范围。
+### 推进记录：Hub 安装到运行链路补齐 result/test evidence UI 验收（2026-06-30）
+
+本轮继续把全链路 UI 验收往前推进，不新增孤立路径，而是在既有“Enterprise Hub 搜索安装审批型 MaClaw App -> 回到管理列表 -> 打开已安装 App -> 处理 requires_input 审批实例”的主验收里补齐 result/test/coverage/output 证据断言。
+
+已完成：
+
+1. 增强 Hub 审批型 App 安装夹具：
+   - 安装证据包含 `result_contract.primary/types`；
+   - 测试证据包含 `test_protocol_fingerprint`；
+   - 测试证据包含 `result_coverage.ok/primary/covered_types/missing_types`；
+   - 测试证据包含顶层 `outputs/artifacts`，用于安装结果行的输出产物摘要。
+2. 增强市场安装 UI 验收：
+   - 安装完成后，市场行内证据快照必须显示 Result contract；
+   - 必须显示测试运行与协议指纹；
+   - 必须显示 Result coverage，且覆盖 `approval_result/artifact/content` 三类结果；
+   - 必须显示 Output / Output artifacts 数量。
+3. 保留同一测试后半段的运行态验收：
+   - 关闭 Studio 后从主应用面板打开已安装审批型 App；
+   - 从 DataSrv 拉取 requires_input 实例；
+   - 显示缺失字段 `signed_contract`；
+   - 用户填写补充说明和材料引用；
+   - 续跑时保留同一 `approval_id`、`workflow_instance_id`、DataSrv 记录、workflow Skill 版本和 `result_payload.supplemental_input`。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results|continues a requires-input approval instance"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- Hub 安装主链路 targeted 通过：1 passed / 200 skipped。
+- Hub 安装 + requires_input 续跑组合 targeted 通过：2 passed / 199 skipped。
+- `AppsPage.test.tsx` 全量通过：201 passed。
+
+对应全链路意义：
+
+```text
+Enterprise Hub 搜索审批型 MaClaw App
+  -> 一键安装并完成 Skill 依赖检查
+  -> GUI 安装结果行显示 layout / dependency / result contract / test protocol / coverage / output evidence
+  -> 本地 App 管理列表保留安装证据和动态布局
+  -> 打开已安装审批型 App
+  -> DataSrv 审批实例工作台显示 requires_input
+  -> 用户补充材料并续跑同一审批实例
+  -> workflow Skill 继续运行并保留补充输入审计
+```
+
+当前剩余缺口继续聚焦：
+- App Studio 从零创建审批型 App、视觉调整布局、运行测试、提交审核、Hub 审核发布的点击流还需要拆成更稳定的前端验收链，而不是只依赖若干分段测试。
+- 需要做跨端字段合同终审：GUI / DataSrv / Hub / HubCenter 对 `review_evidence`、`install_evidence`、`result_contract`、`test_evidence`、`result_coverage`、`approval_instance` 的命名是否完全一致。
+- 最终收口前清理临时测试输出文件，并跑后端关键组合测试与 Hub admin 静态校验。
+### 推进记录：result coverage covered count 跨端字段合同补齐（2026-06-30）
+
+本轮做 `review_evidence` / `install_evidence` 字段合同终审中的一个实质收口：此前 result coverage 证据能表达 `ok`、primary result 和 missing count，但审核摘要缺少 covered count。这样 Hub/GUI 审核侧只能看到“覆盖通过”或“缺口数”，不能看到测试实际覆盖了多少类声明结果。现在后端生产、GUI 消费、Hub 审核展示、HubCenter 审核展示和静态校验都补齐了 covered count。
+
+已完成：
+
+1. 后端 App Studio 提交审核摘要补齐：
+   - `maclawAppSubmissionReviewEvidenceForRecord` 新增 `result_coverage_covered_count`；
+   - 字段来自 `testEvidence.resultCoverage.coveredTypes` / `covered_types`；
+   - 与既有 `result_coverage_ok`、`result_coverage_primary`、`result_coverage_missing_count` 形成完整覆盖摘要。
+2. 后端 Hub/市场能力元数据补齐：
+   - 生成 `test_evidence_result_coverage_covered_count`；
+   - 与 `test_evidence_covered_types`、`test_evidence_result_coverage_ok`、`test_evidence_result_coverage_primary` 同步落入 metadata。
+3. GUI App Studio / 本地提交队列消费补齐：
+   - `resultCoverageEvidenceSummary` 支持 `coveredCount` / `covered_count`；
+   - `publishReviewEvidenceItems` 消费 `result_coverage_covered_count` / `resultCoverageCoveredCount`；
+   - 提交队列 review evidence 现在显示 `approval_result · 已覆盖: 3`，而不是只能显示 `ok`。
+4. Hub / HubCenter 审核展示补齐：
+   - Enterprise Hub marketplace MaClaw App 摘要 Coverage 行显示 `covered N`；
+   - HubCenter review evidence chip 显示 covered count；
+   - admin 静态校验 markers 增加 `result_coverage_covered_count` / `coverageCovered`，防止后续回退。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder
+gofmt -w gui\app_maclaw_apps.go gui\app_maclaw_apps_test.go
+go test ./gui -count=1 -vet=off -run "TestMaclawAppSubmissionSummaryIncludesReviewEvidence|TestSubmitMaclawAppPackageQueuesLocalSubmission|TestInstallSelectedMaclawAppPackageFromHubRecordsInstallEvidence" -timeout 240s
+rg -n "result_coverage_covered_count|test_evidence_result_coverage_covered_count|coverageCovered" hub\web\admin\marketplace-tab.js hubcenter\web\admin\assets\js\skillmarket-admin.js hub\web\admin\validate-admin-modules.js gui\app_maclaw_apps.go gui\frontend\src\components\pages\AppsPage.tsx
+
+git diff --check -- gui\app_maclaw_apps.go gui\app_maclaw_apps_test.go gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx hub\web\admin\marketplace-tab.js hubcenter\web\admin\assets\js\skillmarket-admin.js hub\web\admin\validate-admin-modules.js
+
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows local app package submission queue summaries|installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- 后端定向测试通过。
+- 前端 evidence / Hub 安装 targeted 通过：2 passed / 199 skipped。
+- `AppsPage.test.tsx` 全量通过：201 passed。
+- `rg` marker 验证通过，字段出现在后端生产、GUI 消费、Hub 展示、HubCenter 展示和 admin 校验脚本中。
+- `git diff --check` 通过；仅提示部分 JS/文档文件未来 Git 触碰时 CRLF 会转 LF。
+- `node hub\web\admin\validate-admin-modules.js` 本轮因 Windows sandbox 进程创建层 `helper_unknown_error: setup refresh had errors` 未能启动；不是脚本断言失败。已用 marker 验证覆盖新增字段，后续环境恢复后仍需补跑该校验。
+
+对应全链路意义：
+
+```text
+App Studio 运行测试形成 resultCoverage.coveredTypes/missingTypes
+  -> SubmitMaclawAppPackage 生成 review_evidence.result_coverage_covered_count
+  -> Hub / HubCenter 审核侧显示 covered N + missing N
+  -> GUI 本地提交队列显示已覆盖类型数
+  -> 安装后 install evidence 和 runtime 回看仍能显示完整 coverage 明细
+```
+
+当前剩余缺口继续聚焦：
+- 环境恢复后补跑 `node hub\web\admin\validate-admin-modules.js`。
+- 继续审计 `approval_instance`、`test_evidence`、`install_evidence` 在 DataSrv 安装回填、Hub 发布、GUI 冷启动恢复三条路径中的字段命名一致性。
+- 将 App Studio 从零创建、视觉布局调整、测试、提交、审核发布的点击流继续拆成稳定的前端验收链。
+### 推进记录：DataSrv 安装回填 coverage count 与 workflow instance ID 合同收口（2026-06-30）
+
+本轮继续审计 `install_evidence` / `test_evidence` / `approval_instance` 的跨端字段合同，重点补齐 DataSrv 已安装 MaClaw App 回填路径。上一轮后端和 Hub 审核摘要已经能产出 `result_coverage_covered_count`，但 GUI 从 DataSrv metadata 合成 installed evidence 时还没有消费该摘要字段；同时审批实例回填需要明确区分 `approval_id` 和 `workflow_instance_id`，避免把审批业务 ID 当成 workflow instance ID。
+
+已完成：
+
+1. GUI DataSrv installed coverage 合成补齐计数字段：
+   - `dataSrvInstalledResultCoverageEvidence` 支持 `metadata.test_evidence_result_coverage_covered_count`；
+   - 同时支持 `metadata.test_evidence_result_coverage_missing_count`；
+   - 当 DataSrv metadata 只提供摘要计数、没有 `coveredTypes` / `missingTypes` 列表时，仍能合成 `result_coverage.covered_count` / `missing_count`；
+   - imported run evidence 和 install evidence 都能回看该覆盖摘要。
+2. DataSrv 已安装审批型 App 的审批实例字段合同加固：
+   - 测试夹具加入 `workflow_instance_id`；
+   - GUI 归一化后保留 `instanceId = workflow_instance_id`；
+   - 同时保留 `approvalID = approval_id`；
+   - progress instance 也保留同一 `workflow_instance_id`，避免进度回看和最终实例断链。
+3. 前端测试覆盖两类 DataSrv 安装回填：
+   - 企业普通 App：metadata 只有 coverage 摘要计数，恢复为 `resultCoverage.covered_count/missing_count`；
+   - 企业审批型 App：恢复 workflow instance ID、approval ID、progress instances、动态布局、依赖证据、结果包和运行契约。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence|turns DataSrv installed MaClaw apps into addable app candidates"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+
+cd D:\workprj\aicoder
+git diff --check -- gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx docs\mis-end-to-end-refactor-plan-zh.md
+rg -n "test_evidence_result_coverage_covered_count|workflow_instance_id: 'wf-remote-imported'|covered_count: 3|workflowInstanceId: 'wf-remote-imported'" gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx
+```
+
+结果：
+- DataSrv installed targeted 组合通过：2 passed / 199 skipped。
+- DataSrv 审批型安装回填 targeted 通过：1 passed / 200 skipped。
+- `AppsPage.test.tsx` 全量通过：201 passed。
+- `git diff --check` 通过；仅提示文档 CRLF 未来会转 LF。
+- `rg` marker 验证通过。
+- `node hub\web\admin\validate-admin-modules.js` 仍因 Windows sandbox 进程创建层 `helper_unknown_error: setup refresh had errors` 无法启动；前端 `npm.cmd test` 可运行，说明本轮 GUI 验证不受影响。
+
+对应全链路意义：
+
+```text
+DataSrv app_installations.metadata
+  -> test_evidence_result_coverage_covered_count / missing_count
+  -> GUI 合成 installEvidence.test_evidence.result_coverage
+  -> importedRunEvidence.resultCoverage 可回看覆盖规模
+  -> approval_instance.workflow_instance_id 与 approval_id 分离保存
+  -> 已安装审批型 App 运行态继续使用正确 DataSrv app_id 和 workflow instance ID
+```
+
+当前剩余缺口继续聚焦：
+- 继续审计 Hub 发布包、DataSrv 安装登记、GUI 冷启动恢复三条路径里 `approval_instance` / `install_evidence` 是否还有命名不一致。
+- 环境恢复后补跑 Hub admin node 校验。
+- 继续拆 App Studio 从零创建、视觉布局调整、测试、提交、审核发布的 UI 点击流验收。

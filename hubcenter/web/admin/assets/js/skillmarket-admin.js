@@ -28,8 +28,8 @@ function smUploadAuthModeText(value) {
 }
 function smAdminLabel(key) {
   const labels = {
-    en: { appSkill:'MaClaw App', appPreview:'App Preview', appCategory:'Category', inputMode:'Input', outputModes:'Outputs', artifactContract:'Artifact Contract', artifactRequired:'Required', presentation:'Presentation', permissions:'Permissions', requiredEnv:'Required Env', requiresGUI:'GUI', securityLabels:'Security', testEvidence:'Test Evidence', manifestPreview:'Manifest Preview', runID:'Run ID', verifiedAt:'Verified', artifact:'Artifact', definitionHash:'Definition SHA256', yes:'Yes', no:'No', none:'None' },
-    zh: { appSkill:'MaClaw App', appPreview:'App 预览', appCategory:'分类', inputMode:'输入', outputModes:'输出', artifactContract:'产物契约', artifactRequired:'必须产出', presentation:'呈现方式', permissions:'权限', requiredEnv:'环境变量', requiresGUI:'GUI', securityLabels:'安全标签', testEvidence:'测试证据', manifestPreview:'Manifest 预览', runID:'运行 ID', verifiedAt:'验证时间', artifact:'产物', definitionHash:'描述文件 SHA256', yes:'是', no:'否', none:'无' }
+    en: { appSkill:'MaClaw App', appPreview:'App Preview', appCategory:'Category', inputMode:'Input', outputModes:'Outputs', artifactContract:'Artifact Contract', artifactRequired:'Required', presentation:'Presentation', permissions:'Permissions', requiredEnv:'Required Env', requiresGUI:'GUI', securityLabels:'Security', testEvidence:'Test Evidence', manifestPreview:'Manifest Preview', runID:'Run ID', verifiedAt:'Verified', artifact:'Artifact', definitionHash:'Definition SHA256', reviewEvidence:'Review Evidence', approval:'Approval', progress:'Progress', dependencies:'Dependencies', workspaceLayout:'Layout', dataSrv:'DataSrv', workflowContract:'Workflow', resultContract:'Result', testProtocol:'Test', resultCoverage:'Coverage', outputs:'Outputs', yes:'Yes', no:'No', none:'None' },
+    zh: { appSkill:'MaClaw App', appPreview:'App 预览', appCategory:'分类', inputMode:'输入', outputModes:'输出', artifactContract:'产物契约', artifactRequired:'必须产出', presentation:'呈现方式', permissions:'权限', requiredEnv:'环境变量', requiresGUI:'GUI', securityLabels:'安全标签', testEvidence:'测试证据', manifestPreview:'Manifest 预览', runID:'运行 ID', verifiedAt:'验证时间', artifact:'产物', definitionHash:'描述文件 SHA256', reviewEvidence:'审核证据', approval:'审批', progress:'进度', dependencies:'依赖', workspaceLayout:'布局', dataSrv:'DataSrv', workflowContract:'工作流', resultContract:'结果', testProtocol:'测试', resultCoverage:'覆盖', outputs:'输出', yes:'是', no:'否', none:'无' }
   };
   return (labels[currentLang] || labels.en)[key] || labels.en[key] || key;
 }
@@ -39,6 +39,78 @@ function smValueList(values) {
 function smReviewKV(label, value) {
   const shown = value === undefined || value === null || value === '' ? smAdminLabel('none') : String(value);
   return `<div class="item-meta"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(shown)}</div>`;
+}
+function smEvidenceObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function smEvidenceList(value) {
+  return Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []);
+}
+function smEvidenceValue() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    const value = arguments[i];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return '';
+}
+function smEvidenceState(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['approved', 'passed', 'pass', 'ready', 'ok', 'success', 'synced', 'complete', 'completed'].includes(normalized)) return 'ready';
+  if (['rejected', 'failed', 'error', 'blocked', 'missing', 'deny', 'denied'].includes(normalized)) return 'failed';
+  if (['pending', 'running', 'submitted', 'partial', 'in_progress', 'in-progress', 'attention', 'requires_input', 'requires-input'].includes(normalized)) return 'partial';
+  return 'skipped';
+}
+function smEvidenceChip(label, value, state) {
+  const shown = value === undefined || value === null || value === '' ? smAdminLabel('none') : String(value);
+  return `<span class="sm-review-evidence-chip" data-state="${escapeHtml(state || smEvidenceState(shown))}"><strong>${escapeHtml(label)}</strong><em>${escapeHtml(shown)}</em></span>`;
+}
+function smRenderEnterpriseReviewEvidence(s, evidence) {
+  evidence = smEvidenceObject(evidence);
+  const approval = smEvidenceObject(smEvidenceValue(evidence.approval_instance, evidence.approvalInstance, evidence.approval));
+  const progress = smEvidenceList(smEvidenceValue(evidence.progress_instances, evidence.progressInstances, evidence.workflow_progress, evidence.workflowProgress, evidence.approval_progress, evidence.approvalProgress));
+  const dependency = smEvidenceObject(smEvidenceValue(evidence.dependency_verification, evidence.dependencyVerification, s.dependency_verification, s.dependencyVerification));
+  const layout = smEvidenceObject(smEvidenceValue(evidence.workspace_layout, evidence.workspaceLayout, s.workspace_layout, s.workspaceLayout));
+  const dataSrv = smEvidenceObject(smEvidenceValue(evidence.datasrv_registration, evidence.dataSrvRegistration, evidence.datasrvRegistration, s.datasrv_registration, s.dataSrvRegistration));
+  const workflow = smEvidenceObject(smEvidenceValue(evidence.workflow_contract, evidence.workflowContract, s.workflow_contract, s.workflowContract));
+  const resultContract = smEvidenceObject(smEvidenceValue(evidence.result_contract, evidence.resultContract, s.result_contract, s.resultContract));
+  const resultCoverage = smEvidenceObject(smEvidenceValue(evidence.result_coverage, evidence.resultCoverage, s.test_evidence_result_coverage));
+  const approvalStatus = smEvidenceValue(approval.status, approval.approval_status, evidence.approval_status, s.test_evidence_approval_status);
+  const approvalNode = smEvidenceValue(approval.current_node, approval.currentNode, evidence.current_node, s.test_evidence_current_node);
+  const approvalText = [approvalStatus, approvalNode].filter(Boolean).join(' · ');
+  const progressCount = smEvidenceValue(evidence.progress_count, evidence.progressCount, progress.length ? progress.length : '');
+  const dependencyCount = smEvidenceValue(dependency.dependency_count, dependency.dependencyCount, Array.isArray(dependency.dependencies) ? dependency.dependencies.length : '');
+  const blocking = smEvidenceValue(dependency.has_blocking_dependency, dependency.hasBlockingDependency, dependency.has_missing_required, dependency.hasMissingRequired);
+  const layoutStudio = layout.studio && typeof layout.studio === 'object' ? layout.studio : {};
+  const layoutSaved = smEvidenceValue(evidence.workspace_layout_studio_saved_in_manifest, evidence.workspace_saved_in_manifest, layout.studio_saved_in_manifest, layoutStudio.savedInManifest, layoutStudio.saved_in_manifest);
+  const layoutUpdatedBy = smEvidenceValue(evidence.workspace_layout_studio_updated_by, evidence.workspace_updated_by, layout.studio_updated_by, layoutStudio.updatedBy, layoutStudio.updated_by);
+  const layoutText = [layout.template, layout.entry, layout.density, layoutSaved === true ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' · ');
+  const dataSrvText = smEvidenceValue(dataSrv.status, dataSrv.state, dataSrv.registration_status, evidence.datasrv_registration_status, s.datasrv_registration_status);
+  const workflowText = smEvidenceValue(workflow.version, workflow.schema, workflow.workflowVersion, evidence.workflow_contract_version, s.workflow_contract_version);
+  const resultPrimary = smEvidenceValue(resultContract.primary, resultContract.primary_result, evidence.result_contract_primary, s.result_contract_primary, s.maclaw_app_primary_result, evidence.primary_result);
+  const resultTypes = smEvidenceValue(evidence.result_contract_type_count, resultContract.type_count, Array.isArray(resultContract.types) ? resultContract.types.length : '');
+  const resultText = [resultPrimary, resultTypes !== '' ? resultTypes + ' types' : ''].filter(Boolean).join(' / ');
+  const testProtocol = smEvidenceValue(evidence.test_protocol_fingerprint, evidence.testProtocolFingerprint, evidence.test_protocol_hash, evidence.definition_fingerprint, s.test_evidence_test_protocol_fingerprint, s.maclaw_app_definition_sha256);
+  const coverageOK = smEvidenceValue(resultCoverage.ok, resultCoverage.covered, evidence.result_coverage_ok, s.test_evidence_result_coverage_ok);
+  const coveragePrimary = smEvidenceValue(resultCoverage.primary, resultCoverage.primary_result, evidence.result_coverage_primary, s.test_evidence_result_coverage_primary);
+  const coverageCovered = smEvidenceValue(evidence.result_coverage_covered_count, evidence.resultCoverageCoveredCount, resultCoverage.covered_count, Array.isArray(resultCoverage.coveredTypes) ? resultCoverage.coveredTypes.length : '', Array.isArray(resultCoverage.covered_types) ? resultCoverage.covered_types.length : '');
+  const coverageMissing = smEvidenceValue(evidence.result_coverage_missing_count, resultCoverage.missing_count, Array.isArray(resultCoverage.missingTypes) ? resultCoverage.missingTypes.length : '', Array.isArray(resultCoverage.missing_types) ? resultCoverage.missing_types.length : '');
+  const coverageText = [coveragePrimary, coverageOK !== '' ? (String(coverageOK) === 'true' ? 'ok' : String(coverageOK)) : '', coverageCovered !== '' ? 'covered ' + coverageCovered : '', coverageMissing !== '' ? 'missing ' + coverageMissing : ''].filter(Boolean).join(' / ');
+  const outputCount = smEvidenceValue(evidence.output_count, evidence.outputCount, s.test_evidence_output_count, Array.isArray(evidence.outputs) ? evidence.outputs.length : '');
+  const artifactCount = smEvidenceValue(evidence.artifact_count, evidence.artifactCount, s.test_evidence_artifact_count, Array.isArray(evidence.artifacts) ? evidence.artifacts.length : '');
+  const outputText = [outputCount !== '' ? outputCount + ' outputs' : '', artifactCount !== '' ? artifactCount + ' artifacts' : ''].filter(Boolean).join(' / ');
+  const chips = [];
+  if (approvalText) chips.push(smEvidenceChip(smAdminLabel('approval'), approvalText, smEvidenceState(approvalStatus || approvalText)));
+  if (progressCount !== '') chips.push(smEvidenceChip(smAdminLabel('progress'), progressCount, Number(progressCount) > 0 ? 'partial' : 'skipped'));
+  if (dependencyCount !== '') chips.push(smEvidenceChip(smAdminLabel('dependencies'), dependencyCount, String(blocking) === 'true' ? 'failed' : 'ready'));
+  if (layoutText) chips.push(smEvidenceChip(smAdminLabel('workspaceLayout'), layoutText, 'ready'));
+  if (dataSrvText) chips.push(smEvidenceChip(smAdminLabel('dataSrv'), dataSrvText, smEvidenceState(dataSrvText)));
+  if (workflowText) chips.push(smEvidenceChip(smAdminLabel('workflowContract'), workflowText, 'ready'));
+  if (resultText) chips.push(smEvidenceChip(smAdminLabel('resultContract'), resultText, resultPrimary ? 'ready' : 'partial'));
+  if (testProtocol) chips.push(smEvidenceChip(smAdminLabel('testProtocol'), testProtocol, 'ready'));
+  if (coverageText) chips.push(smEvidenceChip(smAdminLabel('resultCoverage'), coverageText, String(coverageOK) === 'false' || Number(coverageMissing) > 0 ? 'failed' : 'ready'));
+  if (outputText) chips.push(smEvidenceChip(smAdminLabel('outputs'), outputText, 'ready'));
+  if (!chips.length) return '';
+  return `<div class="item-meta"><strong>${escapeHtml(smAdminLabel('reviewEvidence'))}</strong></div><div class="sm-review-evidence-strip" role="list" aria-label="${escapeHtml(smAdminLabel('reviewEvidence'))}">${chips.join('')}</div>`;
 }
 function smRenderReviewDetail(s) {
   const isApp = !!(s && (s.is_maclaw_app || s.product_kind === 'maclaw_app_skill'));
@@ -54,8 +126,9 @@ function smRenderReviewDetail(s) {
     smReviewKV(smAdminLabel('verifiedAt'), evidence.verified_at || '-'),
     smReviewKV(smAdminLabel('artifact'), evidence.artifact_present ? (evidence.artifact_name || smAdminLabel('yes')) : smAdminLabel('no')),
   ].join('');
+  const enterpriseEvidenceHTML = smRenderEnterpriseReviewEvidence(s, evidence);
   const manifestHTML = s.maclaw_app_manifest_preview ? `<div class="item-meta"><strong>${escapeHtml(smAdminLabel('manifestPreview'))}</strong></div><pre class="sm-manifest-preview">${escapeHtml(JSON.stringify(s.maclaw_app_manifest_preview, null, 2))}</pre>` : '';
-  return `<div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appPreview'))}</label><strong title="${escapeHtml(s.maclaw_app_name || s.name || '-')}">${escapeHtml(s.maclaw_app_name || s.name || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appCategory'))}</label><strong>${escapeHtml(s.maclaw_app_category || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('inputMode'))}</label><strong>${escapeHtml(s.maclaw_app_input_mode || '-')}</strong></div></div><div class="item-meta">${escapeHtml(s.maclaw_app_description || s.description || '')}</div><div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('outputModes'))}</label><strong>${escapeHtml(outputs)}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('artifactRequired'))}</label><strong>${escapeHtml(s.artifact_contract_required ? smAdminLabel('yes') : smAdminLabel('no'))}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('presentation'))}</label><strong>${escapeHtml(s.artifact_contract_presentation || '-')}</strong></div></div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('artifactContract'))}:</strong> ${escapeHtml(contractOutputs)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('permissions'))}:</strong> ${escapeHtml(permissions)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('requiredEnv'))}:</strong> ${escapeHtml(env)} | <strong>${escapeHtml(smAdminLabel('requiresGUI'))}:</strong> ${escapeHtml(s.requires_gui ? smAdminLabel('yes') : smAdminLabel('no'))}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('securityLabels'))}:</strong> ${escapeHtml(labels)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('definitionHash'))}:</strong> ${escapeHtml(s.maclaw_app_definition_sha256 || '-')}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('testEvidence'))}</strong></div>${evidenceHTML}${manifestHTML}`;
+  return `<div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appPreview'))}</label><strong title="${escapeHtml(s.maclaw_app_name || s.name || '-')}">${escapeHtml(s.maclaw_app_name || s.name || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('appCategory'))}</label><strong>${escapeHtml(s.maclaw_app_category || '-')}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('inputMode'))}</label><strong>${escapeHtml(s.maclaw_app_input_mode || '-')}</strong></div></div><div class="item-meta">${escapeHtml(s.maclaw_app_description || s.description || '')}</div><div class="sm-stat-grid"><div class="sm-stat"><label>${escapeHtml(smAdminLabel('outputModes'))}</label><strong>${escapeHtml(outputs)}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('artifactRequired'))}</label><strong>${escapeHtml(s.artifact_contract_required ? smAdminLabel('yes') : smAdminLabel('no'))}</strong></div><div class="sm-stat"><label>${escapeHtml(smAdminLabel('presentation'))}</label><strong>${escapeHtml(s.artifact_contract_presentation || '-')}</strong></div></div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('artifactContract'))}:</strong> ${escapeHtml(contractOutputs)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('permissions'))}:</strong> ${escapeHtml(permissions)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('requiredEnv'))}:</strong> ${escapeHtml(env)} | <strong>${escapeHtml(smAdminLabel('requiresGUI'))}:</strong> ${escapeHtml(s.requires_gui ? smAdminLabel('yes') : smAdminLabel('no'))}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('securityLabels'))}:</strong> ${escapeHtml(labels)}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('definitionHash'))}:</strong> ${escapeHtml(s.maclaw_app_definition_sha256 || '-')}</div><div class="item-meta"><strong>${escapeHtml(smAdminLabel('testEvidence'))}</strong></div>${evidenceHTML}${enterpriseEvidenceHTML}${manifestHTML}`;
 }
 function smRenderReviewCard(s) {
   const name=escapeHtml(s.name||'-'); const version=escapeHtml(s.version||'-'); const author=escapeHtml(s.author||'-'); const uploaded=escapeHtml(s.created_at?fmtDate(s.created_at):'-'); const rating=(s.avg_rating||0).toFixed(1); const ratings=s.rating_count||0; const rawStatus=s.status||'-'; const status=escapeHtml(smStatusText(rawStatus)); const idArg=smJsArg(s.id); const appBadge=(s.is_maclaw_app||s.product_kind==='maclaw_app_skill')?`<span class="badge info">${escapeHtml(smAdminLabel('appSkill'))}</span>`:'';

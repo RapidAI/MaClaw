@@ -590,6 +590,12 @@ func workflowDocTextLooksComplete(phaseID string, text string) bool {
 		return docSignals >= 2 && (strings.Contains(cleaned, "大纲") || strings.Contains(cleaned, "章节") || strings.Contains(cleaned, "结构") || strings.Contains(lower, "outline"))
 	case "slide_scripting":
 		return docSignals >= 2 && (strings.Contains(cleaned, "脚本") || strings.Contains(cleaned, "第1页") || strings.Contains(cleaned, "第 1 页") || strings.Contains(lower, "slide"))
+	case "synthesis", "conclusion", "action_plan", "risk_assessment", "risk_plan",
+		"proposal", "polishing", "opinion", "contingency", "assembly",
+		"analysis_plan", "report":
+		// Final deliverable phases: less strict — any document with 2+ signals
+		// and >= 500 runes is considered complete (these produce comprehensive reports).
+		return docSignals >= 2 && len([]rune(cleaned)) >= 500
 	}
 	// For artifact generation phases (ppt_generation, etc.) with NeedsConfirm=false,
 	// this function's result doesn't drive any force-return decision. Return true

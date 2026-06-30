@@ -508,15 +508,25 @@ func refreshSkillRunDefinitionFromDir(target *corelib.NLSkillEntry) error {
 	if target == nil || strings.TrimSpace(target.SkillDir) == "" {
 		return nil
 	}
-	if !importedSkillDefinitionExists(target.SkillDir) {
+	// Always attempt to reload from disk if the directory exists.
+	// The previous check (importedSkillDefinitionExists) was overly conservative:
+	// it rejected legacy formats (SKILL.md + _meta.json) and didn't handle
+	// renamed files. This caused stale step definitions to persist in the
+	// runner cache, losing runtime placeholders like {{input}}.
+	if _, err := os.Stat(target.SkillDir); err != nil {
 		return nil
 	}
-	overlayStatus := target.Status
-	lastError := target.LastError
 	reloaded, err := loadImportedSkillEntry(target.SkillDir)
 	if err != nil {
-		return err
+		// If reload fails, fall back to the existing target silently.
+		// This preserves backward compat for config-only skills whose
+		// directory was deleted but config entry remains.
+		log.Printf("[skill-runner] refresh_from_dir: reload %q failed (using cached): %v", target.SkillDir, err)
+		return nil
 	}
+	oldStepCount := len(target.Steps)
+	overlayStatus := target.Status
+	lastError := target.LastError
 	mergeSkillPackagingRuntimeFields(reloaded, target)
 	if fileSkillStatusIsOverlay(overlayStatus) {
 		reloaded.Status = strings.TrimSpace(overlayStatus)
@@ -533,6 +543,9 @@ func refreshSkillRunDefinitionFromDir(target *corelib.NLSkillEntry) error {
 	reloaded.DirName = firstNonEmptySkillString(reloaded.DirName, target.DirName)
 	reloaded.CreatedAt = firstNonEmptySkillString(target.CreatedAt, reloaded.CreatedAt)
 	*target = *reloaded
+	if len(target.Steps) != oldStepCount {
+		log.Printf("[skill-runner] refresh_from_dir: %q steps changed (%d -> %d)", target.Name, oldStepCount, len(target.Steps))
+	}
 	return nil
 }
 

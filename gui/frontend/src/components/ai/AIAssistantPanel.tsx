@@ -369,7 +369,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => { if (typeof off === "function") off(); };
     }, []);
     // SubAgent scope approval: interactive confirmation when accessing paths outside project
-    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string; timeoutSeconds: number } | null>(null);
+    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string; timeoutSeconds: number; kind: string; message: string; autoAllow: boolean } | null>(null);
     const [scopeApprovalCountdown, setScopeApprovalCountdown] = useState(0);
     useEffect(() => {
         const off = EventsOn("subagent-scope-approval", (payload: unknown) => {
@@ -384,6 +384,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 projectPath: (data.project_path as string) || "",
                 directory: (data.directory as string) || "",
                 timeoutSeconds: timeoutSec,
+                kind: (data.kind as string) || "",
+                message: (data.message as string) || "",
+                autoAllow: typeof data.auto_allow === "boolean" ? data.auto_allow : true,
             });
             setScopeApprovalCountdown(timeoutSec);
         });
@@ -400,11 +403,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Auto-dismiss 1 second before backend timeout to avoid race where user
     // clicks "deny" but backend has already auto-allowed.
     useEffect(() => {
-        if (scopeApprovalPending && scopeApprovalCountdown <= 1) {
+        if (scopeApprovalPending?.autoAllow && scopeApprovalCountdown <= 1) {
+            setScopeApprovalPending(null);
+        } else if (scopeApprovalPending && !scopeApprovalPending.autoAllow && scopeApprovalCountdown <= 0) {
             setScopeApprovalPending(null);
         }
     }, [scopeApprovalPending, scopeApprovalCountdown]);
-    const handleScopeApprovalResolve = useCallback(async (decision: "allow_dir" | "deny" | "full_access") => {
+    const handleScopeApprovalResolve = useCallback(async (decision: "allow_once" | "allow_dir" | "deny" | "full_access") => {
         const pending = scopeApprovalPending;
         setScopeApprovalPending(null);
         if (!pending) return;
@@ -1569,6 +1574,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
     }, [openSaveTaskDialog]);
 
+    // Handle external "run skill" requests (from Skills Management Panel ▶ button)
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const text = (e as CustomEvent).detail?.text;
+            if (typeof text === "string" && text.trim()) {
+                e.preventDefault(); // Signal to sender that injection was accepted
+                void sendMessageForTabRef.current?.(text.trim());
+            }
+        };
+        window.addEventListener('maclaw:inject-chat-message', handler);
+        return () => window.removeEventListener('maclaw:inject-chat-message', handler);
+    }, []);
+
     // Check for workflow-starting indicator from the Workflows panel.
     // Uses sessionStorage as a cross-tab-switch communication channel because
     // this panel may not be mounted when the tile is clicked.
@@ -2096,7 +2114,35 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return executeAction(command);
     }, [activeTab.id, activeTab.projectPath, executeAction, isProjectTabActive]);
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, idx === lastAssistantIdx, savedFileLabel, lang, isBusy)), [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
+
+    // Per-message render cache: avoids re-rendering unchanged messages during
+    // streaming. During streaming, only the LAST assistant message changes
+    // (every 33ms). Without this cache, all N messages get full Markdown
+    // re-parsing on every token batch flush.
+    const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage> }>>(new Map());
+    // Track render-config: when theme/lang/callback/etc change, invalidate entire cache
+    // to avoid returning stale renders with old styles or stale closures.
+    const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; isBusy: boolean; execAction: typeof panelExecuteAction } | null>(null);
+    if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.isBusy !== isBusy || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
+        prevRenderConfigRef.current = { t, lang, savedFileLabel, isBusy, execAction: panelExecuteAction };
+        msgRenderCacheRef.current.clear();
+    }
+    const renderedOtherMessages = useMemo(() => {
+        const cache = msgRenderCacheRef.current;
+        return otherMessages.map((msg: ChatMessage, idx: number) => {
+            const isLast = idx === lastAssistantIdx;
+            // Content key captures message-specific fields that affect render.
+            // Unchanged messages between streaming ticks hit the cache.
+            const contentKey = `${msg.content?.length ?? 0}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}`;
+            const cached = cache.get(msg.id);
+            if (cached && cached.contentKey === contentKey) {
+                return cached.node;
+            }
+            const node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy);
+            cache.set(msg.id, { contentKey, node });
+            return node;
+        });
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],
@@ -2104,6 +2150,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
     const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
+    const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === "remote_high_risk_bash";
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
@@ -2115,21 +2162,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
                     <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
                         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{localizeText(lang, "⚠️ Scope Approval", "⚠️ 目录越权确认", "⚠️ 目錄越權確認")}</h3>
+                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
                         </div>
                         <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
-                            <div style={{ marginBottom: 8 }}>{localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
+                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
                             <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
                                 <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
-                                <div><strong>{localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
-                                <div><strong>{localizeText(lang, "Project", "项目范围", "項目範圍")}:</strong> {scopeApprovalPending.projectPath}</div>
+                                <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
+                                <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Working dir", "工作目录", "工作目錄") : localizeText(lang, "Project", "项目范围", "項目範圍")}:</strong> {scopeApprovalPending.projectPath}</div>
                             </div>
-                            <div style={{ fontSize: 12, color: t.textMuted }}>{localizeText(lang, `Allow directory "${scopeApprovalPending.directory}" for the remainder of this task?`, `允许目录「${scopeApprovalPending.directory}」在本任务中后续操作？`, `允許目錄「${scopeApprovalPending.directory}」在本任務中後續操作？`)}</div>
+                            <div style={{ fontSize: 12, color: t.textMuted }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Only approve this if you understand the command and trust its effect. If you do nothing, it will be rejected.", "仅在你理解该命令并信任其影响时放行。不操作将自动拒绝。", "僅在你理解該命令並信任其影響時放行。不操作將自動拒絕。") : localizeText(lang, `Allow directory "${scopeApprovalPending.directory}" for the remainder of this task?`, `允许目录「${scopeApprovalPending.directory}」在本任务中后续操作？`, `允許目錄「${scopeApprovalPending.directory}」在本任務中後續操作？`)}</div>
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Task", "本任务放行", "本任務放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
                         </div>
                     </div>
                 </div>

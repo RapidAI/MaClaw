@@ -29,17 +29,24 @@ var knownPhaseFileNames = map[string]string{
 	"prototype":        "04-prototype.md",
 
 	// innovation workflow
-	"opportunity": "01-opportunity.md",
-	"ideation":    "02-ideation.md",
-	"validation":  "03-validation.md",
-	"roadmap":     "04-roadmap.md",
-	"action_plan": "05-action-plan.md",
+	"opportunity":    "01-opportunity.md",
+	"trend_analysis": "01-trend-analysis.md",
+	"ideation":       "02-ideation.md",
+	"solution":       "03-solution.md",
+	"validation":     "03-validation.md",
+	"feasibility":    "04-feasibility.md",
+	"roadmap":        "04-roadmap.md",
+	"action_plan":    "05-action-plan.md",
 
 	// business_plan workflow
 	"bp_requirement":    "01-requirement.md",
+	"market_analysis":   "01-market-analysis.md",
 	"bp_content":        "02-content.md",
+	"business_model":    "02-business-model.md",
 	"bp_structure":      "03-structure.md",
+	"financial_plan":    "03-financial-plan.md",
 	"bp_visual_design":  "04-visual-design.md",
+	"operations":        "04-operations.md",
 	"bp_doc_generation": "05-doc-generation.md",
 
 	// testing workflow
@@ -52,30 +59,41 @@ var knownPhaseFileNames = map[string]string{
 	// literature_review workflow
 	"topic_definition":         "01-topic-definition.md",
 	"literature_search":        "02-literature-search.md",
+	"search_strategy":          "02-search-strategy.md",
 	"screening_classification": "03-screening-classification.md",
+	"screening":                "03-screening.md",
 	"content_extraction":       "04-content-extraction.md",
 	"review_writing":           "05-review-writing.md",
+	"synthesis":                "05-synthesis.md",
 
 	// research_report workflow
 	"requirement_scoping": "01-requirement-scoping.md",
+	"problem_definition":  "01-problem-definition.md",
 	"source_mapping":      "02-source-mapping.md",
 	"report_collection":   "03-report-collection.md",
 	"insight_extraction":  "04-insight-extraction.md",
 	"synthesis_report":    "05-synthesis-report.md",
+	"conclusion":          "05-conclusion.md",
 
 	// experiment_design workflow
 	"hypothesis_formulation": "01-hypothesis.md",
+	"hypothesis":             "01-hypothesis.md",
 	"experiment_design":      "02-experiment-design.md",
 	"variable_control":       "03-variable-control.md",
+	"variables":              "03-variables.md",
 	"data_collection":        "04-data-collection.md",
+	"data_plan":              "04-data-plan.md",
 	"analysis_plan":          "05-analysis-plan.md",
 
 	// grant_proposal workflow
 	"topic_justification": "01-topic-justification.md",
+	"topic":               "01-topic.md",
 	"research_status":     "02-research-status.md",
+	"foundation":          "02-foundation.md",
 	"research_plan":       "03-research-plan.md",
 	"expected_outcomes":   "04-expected-outcomes.md",
 	"budget_plan":         "05-budget-plan.md",
+	"proposal":            "05-proposal.md",
 
 	// paper_writing workflow
 	// Current template phase IDs (outline_design, methodology, results_presentation,
@@ -90,6 +108,10 @@ var knownPhaseFileNames = map[string]string{
 	"submission_prep":      "05-submission.md",       // template phase index 4
 	"paper_outline":        "01-paper-outline.md",   // legacy alias of outline_design
 	"literature_basis":     "02-literature-basis.md", // legacy (no current equivalent)
+	"literature":           "02-literature.md",       // current template phase ID
+	"drafting":             "03-drafting.md",         // current template phase ID
+	"figures":              "04-figures.md",          // current template phase ID
+	"polishing":            "05-polishing.md",        // current template phase ID
 	"results_writing":      "03-results.md",          // legacy alias of results_presentation
 	"paper_polish":         "05-submission.md",        // legacy alias of submission_prep
 
@@ -100,27 +122,41 @@ var knownPhaseFileNames = map[string]string{
 	"resource_budget":     "04-resource-budget.md",
 	"risk_assessment":     "05-risk-assessment.md",
 	"background_analysis": "01-background.md",  // actual template phase ID
+	"background":          "01-background.md",  // current template phase ID
 	"goal_definition":     "02-objectives.md",  // actual template phase ID
+	"objectives":          "02-objectives.md",  // current template phase ID
+	"plan":                "03-plan.md",        // current template phase ID
 	"resource_assessment": "04-resource-budget.md", // actual template phase ID
+	"budget":              "04-budget.md",       // current template phase ID
 	"risk_contingency":    "05-risk-assessment.md", // actual template phase ID
+	"risk_plan":           "05-risk-plan.md",    // current template phase ID
 
 	// event_planning workflow
-	"event_objectives":   "01-objectives.md",
-	"event_concept":      "02-concept.md",
-	"event_logistics":    "03-logistics.md",
-	"event_promotion":    "04-promotion.md",
-	"event_execution":    "05-execution-plan.md",
+	"event_objectives":    "01-objectives.md",
+	"event_concept":       "02-concept.md",
+	"event_logistics":     "03-logistics.md",
+	"event_promotion":     "04-promotion.md",
+	"event_execution":     "05-execution-plan.md",
 	"requirement_confirm": "01-objectives.md",     // actual template phase ID
+	"positioning":         "01-positioning.md",    // current template phase ID
 	"scheme_planning":     "02-concept.md",        // actual template phase ID
+	"creative":            "02-creative.md",       // current template phase ID
 	"process_design":      "03-logistics.md",      // actual template phase ID
+	"execution_plan":      "03-execution-plan.md", // current template phase ID
 	"material_checklist":  "04-promotion.md",      // actual template phase ID
+	"budget_schedule":     "04-budget-schedule.md",// current template phase ID
 	"execution_manual":    "05-execution-plan.md", // actual template phase ID
+	"contingency":         "05-contingency.md",    // current template phase ID
 
 	// competitive_analysis workflow
 	"market_landscape":    "01-market-landscape.md",
+	"competitor_id":       "01-competitor-id.md",
 	"competitor_profiles": "02-competitor-profiles.md",
+	"comparison":          "02-comparison.md",
 	"feature_comparison":  "03-feature-comparison.md",
+	"swot":                "03-swot.md",
 	"strategy_analysis":   "04-strategy-analysis.md",
+	"differentiation":     "04-differentiation.md",
 	"recommendations":     "05-recommendations.md",
 
 	// presentation_design workflow
@@ -146,18 +182,27 @@ var knownPhaseFileNames = map[string]string{
 	"maint_verification":  "03-maint-verification.md",
 
 	// bid_response workflow
-	"bid_parsing":       "01-bid-parsing.md",
-	"qualification":     "02-qualification.md",
+	"bid_parsing":        "01-bid-parsing.md",
+	"tender_analysis":    "01-tender-analysis.md", // current template phase ID
+	"qualification":      "02-qualification.md",
 	"technical_proposal": "03-technical-proposal.md",
-	"commercial_quote":  "04-commercial-quote.md",
-	"document_assembly": "05-document-assembly.md",
+	"technical":          "03-technical.md",        // current template phase ID
+	"commercial_quote":   "04-commercial-quote.md",
+	"commercial":         "04-commercial.md",       // current template phase ID
+	"document_assembly":  "05-document-assembly.md",
+	"assembly":           "05-assembly.md",         // current template phase ID
 
 	// contract_review workflow
 	"contract_parsing": "01-contract-parsing.md",
+	"parsing":          "01-parsing.md",            // current template phase ID
 	"clause_risk":      "02-clause-risk.md",
+	"risk_analysis":    "02-risk-analysis.md",      // current template phase ID
 	"compliance_check": "03-compliance-check.md",
+	"compliance":       "03-compliance.md",         // current template phase ID
 	"revision_suggest": "04-revision-suggestions.md",
+	"suggestions":      "04-suggestions.md",        // current template phase ID
 	"review_opinion":   "05-review-opinion.md",
+	"opinion":          "05-opinion.md",            // current template phase ID
 
 	// due_diligence workflow
 	"company_profile": "01-company-profile.md",
@@ -168,9 +213,12 @@ var knownPhaseFileNames = map[string]string{
 
 	// compliance_audit workflow
 	"audit_scope":       "01-audit-scope.md",
+	"scope":             "01-scope.md",             // current template phase ID
 	"compliance_assess": "02-compliance-assessment.md",
+	"assessment":        "02-assessment.md",        // current template phase ID
 	"risk_rating":       "03-risk-rating.md",
 	"remediation_plan":  "04-remediation-plan.md",
+	"remediation":       "04-remediation.md",       // current template phase ID
 	"audit_report":      "05-audit-report.md",
 
 	// patent_analysis workflow

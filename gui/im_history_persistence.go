@@ -67,8 +67,12 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	}
 
 	// Track whether compaction will occur (for post-compaction actions).
+	estimatedTokens := 0
+	if dynamicTokenLimit > 0 {
+		estimatedTokens = estimateConversationEntryTokens(history)
+	}
 	willCompact := len(history) > dynamicLimit ||
-		(dynamicTokenLimit > 0 && estimateConversationEntryTokens(history) > dynamicTokenLimit)
+		(dynamicTokenLimit > 0 && estimatedTokens > dynamicTokenLimit)
 
 	// Collect dropped substantial texts for async memory sink (not on critical path).
 	// The memorySink callback collects texts during trimHistoryWithSummary, but
@@ -90,7 +94,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Compaction: trim without LLM summarizer (fast, <1ms). Uses static
 	// placeholder for dropped entries. memorySinkCollector only collects
 	// texts into a slice (no I/O, no locks) — actual persistence is async.
-	trimmed := trimHistoryWithSummary(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit)
+	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens)
 	h.memory.Save(userID, trimmed)
 
 	// Index compacted entries for cross-page recall (Requirement 7).

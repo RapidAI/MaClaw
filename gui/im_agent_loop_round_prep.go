@@ -123,7 +123,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	prepStartedAt := time.Now()
 	conversation = autoCompressConversation(conversation, opts.Config, opts.HTTPClient)
 
-	effectiveTokenLimit := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
+	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
 	conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
 
 	phase := derefAgentLoopPhase(opts.Phase)

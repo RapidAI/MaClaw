@@ -112,20 +112,11 @@ func (h *IMMessageHandler) beginAgentLoopRuntimeState(ctx *LoopContext, userID, 
 }
 
 func (h *IMMessageHandler) newAgentLoopDebugFlag() func() bool {
-	var cached bool
-	var cachedAt time.Time
-	return func() bool {
-		if now := time.Now(); now.Sub(cachedAt) > 2*time.Second {
-			c, err := h.loadConfig()
-			if err != nil {
-				cached = false
-			} else {
-				cached = c.MaclawDebugToolCalls
-			}
-			cachedAt = now
-		}
-		return cached
-	}
+	// Read once at loop construction time. Debug mode doesn't need live-toggling
+	// mid-loop, and this eliminates per-iteration configMu lock acquisition.
+	c, err := h.loadConfig()
+	debugEnabled := err == nil && c.MaclawDebugToolCalls
+	return func() bool { return debugEnabled }
 }
 
 func (h *IMMessageHandler) startAgentLoopMilestoneTracker(userID, userText string, sendProgress func(string)) (*progress.AgentProgressTracker, func()) {

@@ -252,18 +252,20 @@ func (cc *ContextCompressor) compressLayer2(msgs []interface{}, budget int, usag
 	result = truncateToolResultsInConversation(result)
 
 	// If still over budget, apply assistant content truncation.
-	if estimateConversationTokens(result) > budget {
+	afterTokens := estimateConversationTokens(result)
+	if afterTokens > budget {
 		result = truncateAssistantContent(result, budget)
+		afterTokens = estimateConversationTokens(result)
 	}
 
 	// Last resort: if still over, fall back to system + placeholder only.
-	if estimateConversationTokens(result) > budget {
+	if afterTokens > budget {
 		result = make([]interface{}, 0, 1+len(placeholder))
 		result = append(result, systemMsg...)
 		result = append(result, placeholder...)
+		afterTokens = estimateConversationTokens(result)
 	}
 
-	afterTokens := estimateConversationTokens(result)
 	cc.lineage = append(cc.lineage, SessionLineage{
 		ParentSessionID:    cc.sessionID,
 		CompressedAt:       time.Now(),

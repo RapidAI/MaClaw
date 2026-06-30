@@ -351,6 +351,35 @@ function App() {
         return () => window.removeEventListener('maclaw:open-apps-panel', openAppsPanel);
     }, [setNavTabNow, showAppEntryEnabled]);
     useEffect(() => {
+        const runSkill = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            const name = detail?.name;
+            if (!name) return;
+            // Switch to AI tab and send a run command through the chat.
+            // Use a retry loop to handle the case where AIAssistantPanel hasn't
+            // mounted its inject-chat-message listener yet after tab switch.
+            setNavTabNow('ai');
+            const text = `run skill "${name}"`;
+            let attempts = 0;
+            const tryInject = () => {
+                attempts++;
+                const event = new CustomEvent("maclaw:inject-chat-message", {
+                    detail: { text },
+                    cancelable: true, // Required for preventDefault to work
+                });
+                window.dispatchEvent(event);
+                // If nobody called preventDefault, the listener may not be ready yet.
+                // Retry up to 5 times with increasing delay.
+                if (!event.defaultPrevented && attempts < 5) {
+                    setTimeout(tryInject, attempts * 150);
+                }
+            };
+            setTimeout(tryInject, 50);
+        };
+        window.addEventListener('maclaw:run-skill', runSkill);
+        return () => window.removeEventListener('maclaw:run-skill', runSkill);
+    }, [setNavTabNow]);
+    useEffect(() => {
         if (!showAppEntryEnabled && navTab === 'apps') setNavTabNow('ai');
     }, [navTab, setNavTabNow, showAppEntryEnabled]);
     useEffect(() => {

@@ -1030,6 +1030,13 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 	}
 
 	if !force {
+		// Force-refresh the skill scanner cache before upload pre-checks.
+		// Stale cache data (up to 10 minutes old) can reference old file
+		// paths (e.g., scripts/run.js when the actual file is scripts/run.py),
+		// causing false "Missing bundled files" errors during upload preflight.
+		if exec := h.getSkillExecutor(); exec != nil {
+			exec.invalidateSkillCache()
+		}
 		// Pre-upload portability gate runs first so the agent fixes path /
 		// completeness problems before the usage/quality checks.
 		if gate := h.runUploadPortabilityGate(name); gate != "" {

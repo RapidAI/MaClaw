@@ -236,6 +236,57 @@ func (idx *Index) Score(query string) map[string]float64 {
 	return scores
 }
 
+// ScoreWithTokens is like Score but accepts pre-tokenized query tokens.
+// This avoids re-tokenizing the same query when both Score and external code
+// need the tokens (e.g. experience matching in Router).
+func (idx *Index) ScoreWithTokens(queryTokens []string) map[string]float64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	if len(idx.docs) == 0 || len(queryTokens) == 0 {
+		return nil
+	}
+
+	// Deduplicate query tokens.
+	seen := make(map[string]struct{}, len(queryTokens))
+	unique := make([]string, 0, len(queryTokens))
+	for _, qt := range queryTokens {
+		if _, ok := seen[qt]; !ok {
+			seen[qt] = struct{}{}
+			unique = append(unique, qt)
+		}
+	}
+
+	n := float64(len(idx.docs))
+	idf := make(map[string]float64, len(unique))
+	for _, term := range unique {
+		freq := idx.df[term]
+		if freq == 0 {
+			continue
+		}
+		idf[term] = math.Log((n-float64(freq)+0.5)/(float64(freq)+0.5) + 1.0)
+	}
+
+	scores := make(map[string]float64, len(idx.docs))
+	for _, doc := range idx.docs {
+		var s float64
+		dl := float64(doc.length)
+		for _, qt := range unique {
+			tfVal := float64(doc.tf[qt])
+			if tfVal == 0 {
+				continue
+			}
+			num := tfVal * (idx.k1 + 1)
+			denom := tfVal + idx.k1*(1-idx.b+idx.b*dl/idx.avgDL)
+			s += idf[qt] * num / denom
+		}
+		if s > 0 {
+			scores[doc.id] = s
+		}
+	}
+	return scores
+}
+
 // ScoreSubset computes BM25 scores only for documents whose IDs are in allowed.
 // Document frequency and average length still use the full index so scores stay
 // comparable with Score(); only the final scoring loop is pruned.
