@@ -83,6 +83,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 			})
 		}
 		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
+		haSvc.SetPublicURL(cfg.Server.PublicBaseURL)
 		haSvc.SetNodeKeyMaterial(keyMaterial)
 		haSvc.AttachStore(st)
 		haSvc.SetPushDebounceInterval(time.Duration(cfg.HA.PushDebounceSeconds) * time.Second)

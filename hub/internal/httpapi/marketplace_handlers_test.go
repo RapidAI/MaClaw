@@ -25,6 +25,8 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	maclawappcontract "github.com/RapidAI/CodeClaw/internal/maclawappcontract"
+	maclawapptest "github.com/RapidAI/CodeClaw/internal/testfixtures"
 )
 
 func TestAdminCapabilityMarketPolicyDefaults(t *testing.T) {
@@ -873,6 +875,17 @@ func TestCapabilityMaclawAppSubmitRejectsUnreadyPackage(t *testing.T) {
 			},
 			wantMessage: "workflow contract must include required output outputs",
 		},
+		{
+			name: "workspace layout fingerprint mismatch",
+			mutate: func(pkg map[string]any) {
+				layout := readyMaclawAppGovernance(pkg)["workspaceLayout"].(map[string]any)
+				layout["entry"] = "approval_workspace"
+				layout["template"] = "classic_split"
+				layout["density"] = "comfortable"
+				layout["fingerprint"] = "deadbeef"
+			},
+			wantMessage: "workspace layout fingerprint does not match",
+		},
 	}
 
 	for _, tt := range tests {
@@ -917,83 +930,7 @@ func TestCapabilityMaclawAppSubmitRejectsUnreadyPackage(t *testing.T) {
 }
 
 func readyEnterpriseApprovalMaclawAppSubmitPackage() map[string]any {
-	return map[string]any{
-		"schema":        "maclaw.app.pack.v1",
-		"privateMarker": "x_maclaw_apps",
-		"apps": []any{map[string]any{
-			"schema":        "maclaw.app.v1",
-			"privateMarker": "x_maclaw_apps",
-			"app": map[string]any{
-				"id":      "approval-ready-app",
-				"name":    "Approval Ready App",
-				"kind":    "enterprise_approval_app",
-				"version": "1.0.0",
-				"binding": map[string]any{
-					"appSkill": map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "source": "hub"},
-					"workflow": map[string]any{
-						"schema":        "maclaw.app.workflow.v1",
-						"submitNode":    "expense.submit",
-						"approvalNode":  "expense.manager_review",
-						"resultNode":    "expense.result",
-						"attentionNode": "expense.attention",
-					},
-					"dependencies": map[string]any{"skills": []any{
-						map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "kind": "app_skill", "required": true, "source": "hub"},
-						map[string]any{"id": "approval-ready-workflow", "version": "1.0.0", "kind": "workflow_skill", "required": true, "source": "hub", "capabilities": []any{"approval.workflow"}},
-					}},
-				},
-				"governance": map[string]any{
-					"workspaceLayout": map[string]any{
-						"schema":        "maclaw.app.workspace_layout.v1",
-						"primaryRegion": "request_form",
-						"outputRegion":  "result_panel",
-						"regions": []any{
-							map[string]any{"id": "request_form", "role": "input", "placement": "left"},
-							map[string]any{"id": "approval_lane", "role": "workflow", "placement": "center"},
-							map[string]any{"id": "result_panel", "role": "output", "placement": "right"},
-						},
-					},
-					"resultContract":   map[string]any{"primary": "approval_result", "types": []any{"approval_result", "content", "artifact"}},
-					"workflowContract": map[string]any{"schema": "maclaw.app.workflow_contract.v1", "workflowSkillId": "approval-ready-workflow", "objectRole": "expense_request", "requiredOutputs": []any{"workflow_result", "approval_instance", "outputs", "artifacts"}},
-					"testEvidence": map[string]any{
-						"runId":                   "run-ready-approval",
-						"testProtocolFingerprint": "proto-ready-approval",
-						"primaryResult":           "approval_result",
-						"resultPayload":           map[string]any{"approval_result": "approved", "business_status": "approved"},
-						"outputs":                 []any{map[string]any{"kind": "approval_result", "title": "Approved", "status": "approved"}},
-						"artifacts":               []any{map[string]any{"id": "approval-file", "uri": "artifact://approval/file.pdf", "name": "approval.pdf"}},
-						"resultCoverage":          map[string]any{"ok": true, "primary": "approval_result", "coveredTypes": []any{"approval_result", "content", "artifact"}, "missingTypes": []any{}},
-						"approvalInstance": map[string]any{
-							"approvalID":                   "approval-ready-1",
-							"recordID":                     "expense-ready-1",
-							"status":                       "approved",
-							"currentNode":                  "expense.result",
-							"workflowSkillId":              "approval-ready-workflow",
-							"workflowVersion":              "1.0.0",
-							"businessStatus":               "approved",
-							"resultStatus":                 "approved",
-							"approvalInstanceViewVerified": true,
-						},
-					},
-					"dependencyVerification": map[string]any{
-						"schema":          "maclaw.app.install_plan.v1",
-						"runId":           "dep-run-ready-approval",
-						"dependencyCount": 2,
-						"requiredCount":   2,
-						"installedCount":  2,
-						"missingCount":    0,
-						"blockedCount":    0,
-						"ok":              true,
-						"blocked":         false,
-						"skills": []any{
-							map[string]any{"id": "approval-ready-app-skill", "version": "1.0.0", "kind": "app_skill", "install_ref": "hub://skills/approval-ready-app-skill@1.0.0"},
-							map[string]any{"id": "approval-ready-workflow", "version": "1.0.0", "kind": "workflow_skill", "install_ref": "hub://skills/approval-ready-workflow@1.0.0"},
-						},
-					},
-				},
-			},
-		}},
-	}
+	return maclawapptest.ReadyEnterpriseApprovalMaclawAppSubmitPackage()
 }
 
 func readyMaclawAppEntry(pkg map[string]any) map[string]any {
@@ -1120,7 +1057,19 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 			"risk_level":        "low",
 			"approved_scopes":   []string{"app.run", "file.read"},
 			"package_sha256":    "pkg-sha",
-			"workspace_layout":  map[string]any{"template": "document_workspace"},
+			"review_evidence": map[string]any{"download-app": map[string]any{
+				"run_id":                        "run-download-reviewed",
+				"test_protocol_fingerprint":     "proto-download-reviewed",
+				"result_contract_primary":       "approval_result",
+				"result_coverage_primary":       "approval_result",
+				"result_coverage_covered_count": 2,
+				"result_coverage_missing_count": 0,
+				"output_count":                  1,
+				"artifact_count":                1,
+				"approval_status":               "approved",
+				"current_node":                  "download.result",
+			}},
+			"workspace_layout": map[string]any{"template": "document_workspace"},
 		}),
 		Version:           "1",
 		VersionKey:        "enterprise_hub:skill:maclaw-app:download-app@pkg",
@@ -1156,6 +1105,11 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 		t.Fatalf("download package should expose top-level package signature: %+v", pkg["package_signature"])
 	}
 	assertMaclawAppPackageEd25519Signature(t, topLevelSignature)
+	topReviewEvidence := anyMapFromMap(pkg, "review_evidence")
+	topDownloadEvidence := anyMapFromMap(topReviewEvidence, "download-app")
+	if topDownloadEvidence["run_id"] != "run-download-reviewed" || topDownloadEvidence["approval_status"] != "approved" || topDownloadEvidence["current_node"] != "download.result" {
+		t.Fatalf("download package should expose top-level review evidence: %+v", pkg["review_evidence"])
+	}
 	resolved, ok := pkg["resolved_dependencies"].([]any)
 	if !ok || len(resolved) != 2 {
 		t.Fatalf("resolved dependencies=%+v", pkg["resolved_dependencies"])
@@ -1232,6 +1186,11 @@ func TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack(t *testing.T) {
 	submission, _ := governance["submission"].(map[string]any)
 	if submission["channel"] != "hub" || submission["status"] != "published" || submission["reviewer"] != "hub-admin" || submission["published_by"] != "release-admin" || submission["capability_id"] != seeded.ID {
 		t.Fatalf("submission metadata=%+v", submission)
+	}
+	submissionReviewEvidence := anyMapFromMap(submission, "review_evidence")
+	submissionDownloadEvidence := anyMapFromMap(submissionReviewEvidence, "download-app")
+	if submissionDownloadEvidence["run_id"] != "run-download-reviewed" || submissionDownloadEvidence["result_coverage_covered_count"] != float64(2) {
+		t.Fatalf("download package should preserve submission review evidence: %+v", submission)
 	}
 	scopes, ok := submission["approved_scopes"].([]any)
 	if !ok || len(scopes) != 2 || scopes[0] != "app.run" {
@@ -1381,6 +1340,179 @@ func TestAdminCapabilityMaclawAppReviewBlocksUnreadyApproval(t *testing.T) {
 		t.Fatalf("unready approval should keep pending status, got %q", item.Status)
 	}
 }
+func TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	pkg := readyEnterpriseApprovalMaclawAppSubmitPackage()
+	submitBody, err := json.Marshal(map[string]any{"package": pkg, "source_submission_id": "local-golden-approval"})
+	if err != nil {
+		t.Fatalf("encode submit package: %v", err)
+	}
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/maclaw-apps/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", "Bearer viewer-token")
+	submitRec := httptest.NewRecorder()
+	CapabilityMaclawAppSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "author-a", email: "author@example.com"})(submitRec, submitReq)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", submitRec.Code, submitRec.Body.String())
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("submitted capabilities=%+v err=%v", items, err)
+	}
+	capabilityID := items[0].ID
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+capabilityID+"/approve", bytes.NewReader([]byte(`{"reviewer":"hub-admin","risk_level":"low","approved_scopes":["app.run","app.install"]}`)))
+	approveReq.Header.Set("X-Tenant-ID", "tenant_a")
+	approveReq.SetPathValue("id", capabilityID)
+	approveRec := httptest.NewRecorder()
+	AdminCapabilityMaclawAppReviewHandler(svc, "approve")(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	publishReq := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+capabilityID+"/publish", bytes.NewReader([]byte(`{"publisher":"release-admin","release_channel":"stable"}`)))
+	publishReq.Header.Set("X-Tenant-ID", "tenant_a")
+	publishReq.SetPathValue("id", capabilityID)
+	publishRec := httptest.NewRecorder()
+	AdminCapabilityMaclawAppPublishHandler(svc)(publishRec, publishReq)
+	if publishRec.Code != http.StatusOK {
+		t.Fatalf("publish status=%d body=%s", publishRec.Code, publishRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/capabilities?type=skill", nil)
+	listReq.Header.Set("Authorization", "Bearer viewer-token")
+	listRec := httptest.NewRecorder()
+	CapabilityListHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "installer", email: "installer@example.com"})(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Items []capability.CapabilitySummary `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listResp.Items) != 1 || listResp.Items[0].ID != capabilityID || listResp.Items[0].Status != "published" {
+		t.Fatalf("published marketplace list should expose one published app: %+v", listResp.Items)
+	}
+	metadata := mapFromRawJSON(json.RawMessage(listResp.Items[0].MetadataJSON))
+	if metadata["review_state"] != "published" || metadata["published_by"] != "release-admin" || metadata["package_signature"] == nil {
+		t.Fatalf("published marketplace metadata should preserve review state and signature: %+v", metadata)
+	}
+	reviewEvidence := anyMapFromMap(metadata, "review_evidence")
+	appReviewEvidence := anyMapFromMap(reviewEvidence, "approval-ready-app")
+	if appReviewEvidence["run_id"] != "run-ready-approval" || appReviewEvidence["approval_status"] != "approved" || appReviewEvidence["current_node"] != "expense.result" {
+		t.Fatalf("published marketplace metadata should expose review evidence for GUI preview: %+v", metadata["review_evidence"])
+	}
+	if metadata["workspace_layout_primary_region"] != "center" || metadata["workspace_layout_output_region"] != "bottom" || metadata["skill_dependency_count"] != float64(2) {
+		t.Fatalf("published marketplace metadata should expose layout and dependency summaries: %+v", metadata)
+	}
+	if metadata["test_evidence_result_coverage_primary"] != "approval_result" || metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_artifact_count"] != float64(1) {
+		t.Fatalf("published marketplace metadata should expose result coverage and output summaries: %+v", metadata)
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, "/api/capabilities/maclaw-apps/"+capabilityID+"/package", nil)
+	downloadReq.Header.Set("Authorization", "Bearer viewer-token")
+	downloadReq.SetPathValue("id", capabilityID)
+	downloadRec := httptest.NewRecorder()
+	CapabilityMaclawAppPackageHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "installer", email: "installer@example.com"})(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("download status=%d body=%s", downloadRec.Code, downloadRec.Body.String())
+	}
+	var downloaded map[string]any
+	if err := json.Unmarshal(downloadRec.Body.Bytes(), &downloaded); err != nil {
+		t.Fatalf("decode downloaded package: %v", err)
+	}
+	topReviewEvidence := anyMapFromMap(downloaded, "review_evidence")
+	topAppEvidence := anyMapFromMap(topReviewEvidence, "approval-ready-app")
+	if topAppEvidence["run_id"] != "run-ready-approval" || downloaded["package_signature"] == nil {
+		t.Fatalf("downloaded package should carry review evidence and package signature: %+v", downloaded)
+	}
+	capabilityBlock := anyMapFromMap(downloaded, "capability")
+	if downloaded["source"] != "enterprise_hub" || capabilityBlock["id"] != capabilityID || capabilityBlock["status"] != "published" || capabilityBlock["current_version_key"] == "" {
+		t.Fatalf("downloaded package should carry published Hub capability identity: %+v", downloaded)
+	}
+	resolvedDependencies := anySliceFromMap(downloaded, "resolved_dependencies")
+	if len(resolvedDependencies) != 2 {
+		t.Fatalf("downloaded package should carry resolved app/workflow Skill dependencies: %+v", downloaded["resolved_dependencies"])
+	}
+	apps := anySliceFromMap(downloaded, "apps")
+	if len(apps) != 1 {
+		t.Fatalf("downloaded package should contain one app: %+v", downloaded["apps"])
+	}
+	entry := apps[0].(map[string]any)
+	app := entry["app"].(map[string]any)
+	governance := app["governance"].(map[string]any)
+	submission := governance["submission"].(map[string]any)
+	if submission["status"] != "published" || submission["capability_id"] != capabilityID || submission["published_by"] != "release-admin" || submission["package_signature"] == nil {
+		t.Fatalf("downloaded app entry should carry Hub submission identity: %+v", submission)
+	}
+	submissionReviewEvidence := anyMapFromMap(submission, "review_evidence")
+	if anyMapFromMap(submissionReviewEvidence, "approval-ready-app")["run_id"] != "run-ready-approval" {
+		t.Fatalf("downloaded app submission should preserve review evidence: %+v", submission)
+	}
+	assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract(t, downloaded, capabilityID)
+
+	downloadHandler := CapabilityMaclawAppPackageHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "installer", email: "installer@example.com"})
+	downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/capabilities/maclaw-apps/"+capabilityID+"/package" {
+			t.Fatalf("unexpected black-box download path: %s", r.URL.Path)
+		}
+		r.SetPathValue("id", capabilityID)
+		downloadHandler(w, r)
+	}))
+	defer downloadServer.Close()
+	blackBoxDownloaded, err := maclawappcontract.DownloadGUIInstallHubPackage(context.Background(), downloadServer.Client(), downloadServer.URL, "viewer-token", capabilityID)
+	if err != nil {
+		t.Fatalf("shared GUI HTTP client should consume real Hub handler output: %v", err)
+	}
+	blackBoxCapability := anyMapFromMap(blackBoxDownloaded, "capability")
+	if blackBoxCapability["id"] != capabilityID || anyMapFromMap(blackBoxDownloaded, "package_signature")["public_key_fingerprint"] == "" {
+		t.Fatalf("black-box shared GUI client should preserve Hub identity and signature: %+v", blackBoxDownloaded)
+	}
+	selectedPackage, err := maclawappcontract.SelectHubPackageApps(blackBoxDownloaded, []string{"market-approval-ready-app"})
+	if err != nil {
+		t.Fatalf("shared GUI package selector should accept real Hub handler output: %v", err)
+	}
+	assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract(t, selectedPackage, capabilityID)
+	selectedApps := anySliceFromMap(selectedPackage, "apps")
+	if len(selectedApps) != 1 || anyMapFromMap(anyMapFromMap(selectedApps[0].(map[string]any), "app"), "governance") == nil {
+		t.Fatalf("shared GUI package selector should keep the selected app entry: %+v", selectedPackage["apps"])
+	}
+	selectedDeps := anySliceFromMap(selectedPackage, "resolved_dependencies")
+	selectedGovernance := anyMapFromMap(anyMapFromMap(selectedApps[0].(map[string]any), "app"), "governance")
+	selectedVerification := anyMapFromMap(selectedGovernance, "dependencyVerification")
+	selectedVerificationDeps := anySliceFromMap(selectedVerification, "dependencies")
+	if len(selectedDeps) != 2 || len(selectedVerificationDeps) != 2 || selectedVerification["blocked"] == true {
+		t.Fatalf("shared GUI selector should preserve non-blocking dependency verification and resolved dependencies, deps=%+v verification=%+v", selectedDeps, selectedVerification)
+	}
+	var workflowDep map[string]any
+	for _, rawDep := range selectedVerificationDeps {
+		dep, _ := rawDep.(map[string]any)
+		if dep["id"] == "approval-ready-workflow" {
+			workflowDep = dep
+			break
+		}
+	}
+	if workflowDep["id"] != "approval-ready-workflow" || workflowDep["install_ref"] == "" {
+		t.Fatalf("shared GUI selector should preserve workflow dependency install ref: %+v", selectedVerificationDeps)
+	}
+}
+
+func assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract(t *testing.T, pkg map[string]any, capabilityID string) {
+	t.Helper()
+	if err := maclawappcontract.ValidateGUIInstallHubPackage(pkg, capabilityID); err != nil {
+		t.Fatalf("downloaded package should satisfy GUI install contract: %v\npackage=%+v", err, pkg)
+	}
+	fingerprint, err := maclawappcontract.VerifyHubPackageSignature(pkg)
+	if err != nil {
+		t.Fatalf("downloaded package signature should verify for GUI install trust: %v\npackage=%+v", err, pkg)
+	}
+	if strings.TrimSpace(fingerprint) == "" {
+		t.Fatalf("downloaded package signature should expose trusted public-key fingerprint: %+v", pkg["package_signature"])
+	}
+}
+
 func TestAdminCapabilityMaclawAppPublishPublishesApprovedVersion(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)

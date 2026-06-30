@@ -126,13 +126,16 @@ func buildClientHubCentersView(cfg config.HAConfig) clientHubCentersView {
 				FQDN:         node.FQDN,
 				NodeID:       node.NodeID,
 				NodeName:     node.NodeName,
-				BaseURL:      normalizeClientHubCenterURL(node.AdvertiseURL),
+				BaseURL:      normalizeClientHubCenterURL(node.ClientFacingURL()),
 				PublicKeyPEM: node.PublicKeyPEM,
 				Current:      node.NodeID == cfg.NodeID || (node.FQDN != "" && strings.EqualFold(node.FQDN, cfg.SelfFQDN)),
 				Configured:   true,
 			})
 		}
 	} else if cfg.NodeID != "" || cfg.AdvertiseURL != "" || cfg.SelfFQDN != "" {
+		// Legacy path (no node catalog): AdvertiseURL and peer.BaseURL are used as-is.
+		// In legacy deployments these are typically already public-facing URLs.
+		// For node-catalog deployments (len(cfg.Nodes) > 0), ClientFacingURL() is used above.
 		nodes = append(nodes, clientHubCenterNodeView{NodeID: cfg.NodeID, NodeName: cfg.NodeName, FQDN: cfg.SelfFQDN, BaseURL: normalizeClientHubCenterURL(cfg.AdvertiseURL), Current: true, Configured: cfg.Enabled})
 		for _, peer := range cfg.Peers {
 			if !peer.Enabled {

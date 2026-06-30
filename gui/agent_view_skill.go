@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -98,7 +99,7 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 	// the toolRunSkill path. Previously this emitted a status panel instead,
 	// but the panel is unnecessary — the LLM should receive the result and
 	// relay it to the user in natural language.
-	status, _ := waitForSkillRunnerSnapshot(a.skillRunner, runID, 5*time.Second)
+	status, _ := waitForSkillRunnerSnapshot(context.Background(), a.skillRunner, runID, 5*time.Second)
 	// Dismiss the parameter form panel after launch.
 	if a.ctx != nil {
 		a.clearAgentView("skill:run:" + skillName)
@@ -165,7 +166,7 @@ func (a *App) handleSkillStatusAgentViewSubmit(data map[string]interface{}) *IMA
 	if runID == "" || runID == "<nil>" {
 		return &IMAgentResponse{Text: "Skill status submission is missing run_id.", Error: "missing run_id", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	status, err := waitForSkillRunnerSnapshot(a.skillRunner, runID, 500*time.Millisecond)
+	status, err := waitForSkillRunnerSnapshot(context.Background(), a.skillRunner, runID, 500*time.Millisecond)
 	if err != nil {
 		return &IMAgentResponse{Text: "Skill status refresh failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}

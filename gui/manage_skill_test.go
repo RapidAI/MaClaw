@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -127,7 +128,7 @@ func TestToolManageSkill_InvalidAction(t *testing.T) {
 	app := &App{}
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolManageSkill(map[string]interface{}{"action": "invalid_action"}, nil)
+	got := h.toolManageSkill(context.Background(), map[string]interface{}{"action": "invalid_action"}, nil)
 	if !strings.Contains(got, "未知 manage_skill action") {
 		t.Fatalf("expected unknown action error, got %q", got)
 	}
@@ -147,7 +148,7 @@ func TestToolManageSkill_EmptyAction(t *testing.T) {
 	app := &App{}
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolManageSkill(map[string]interface{}{}, nil)
+	got := h.toolManageSkill(context.Background(), map[string]interface{}{}, nil)
 	if !strings.Contains(got, "未知 manage_skill action") {
 		t.Fatalf("expected unknown action error for empty action, got %q", got)
 	}
@@ -158,7 +159,7 @@ func TestToolManageSkill_UploadAliases(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 
 	for _, action := range []string{"publish", "pub", "submit", "发布", "上架"} {
-		got := h.toolManageSkill(map[string]interface{}{"action": action}, nil)
+		got := h.toolManageSkill(context.Background(), map[string]interface{}{"action": action}, nil)
 		if strings.Contains(got, "未知 manage_skill action") {
 			t.Fatalf("alias %q should route to upload, got %q", action, got)
 		}
@@ -177,7 +178,7 @@ func TestToolManageSkill_AllCanonicalActionsHandled(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 
 	for _, action := range skill.ManageSkillActionNames() {
-		got := h.toolManageSkill(map[string]interface{}{"action": action}, nil)
+		got := h.toolManageSkill(context.Background(), map[string]interface{}{"action": action}, nil)
 		if strings.Contains(got, "未知 manage_skill action") {
 			t.Errorf("GUI dispatcher has no handler for canonical action %q", action)
 		}
@@ -205,7 +206,7 @@ func TestToolManageSkillMaintenancePlanReturnsReadOnlyPlan(t *testing.T) {
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	h := &IMMessageHandler{app: app}
 
-	raw := h.toolManageSkill(map[string]interface{}{
+	raw := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":           "maintenance_plan",
 		"min_failure_runs": 3,
 	}, nil)
@@ -251,7 +252,7 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	h := &IMMessageHandler{app: app}
 
-	blocked := h.toolManageSkill(map[string]interface{}{
+	blocked := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":  "execute_maintenance_plan",
 		"dry_run": false,
 	}, nil)
@@ -265,7 +266,7 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 	if err := json.Unmarshal([]byte(blocked), &guardPayload); err != nil || guardPayload.OK || guardPayload.DryRun {
 		t.Fatalf("confirm guard should preserve dry_run=false, payload=%#v err=%v raw=%s", guardPayload, err, blocked)
 	}
-	blocked = h.toolManageSkill(map[string]interface{}{
+	blocked = h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":  "execute_maintenance_plan",
 		"dry_run": false,
 		"confirm": true,
@@ -277,7 +278,7 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 		t.Fatalf("approval guard should preserve dry_run=false, payload=%#v err=%v raw=%s", guardPayload, err, blocked)
 	}
 
-	raw := h.toolManageSkill(map[string]interface{}{
+	raw := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":           "execute_maintenance_plan",
 		"dry_run":          false,
 		"confirm":          true,
@@ -346,7 +347,7 @@ func TestToolManageSkillExecuteMaintenancePlanUsesApprovedDraftReviewTrace(t *te
 		t.Fatalf("RecordExperienceDraftReview: %v", err)
 	}
 
-	previewRaw := h.toolManageSkill(map[string]interface{}{
+	previewRaw := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":                    "execute_maintenance_plan",
 		"dry_run":                   true,
 		"min_failure_runs":          3,
@@ -426,7 +427,7 @@ func TestToolManageSkillExecuteMaintenancePlanUsesApprovedDraftReviewTrace(t *te
 	if _, err := app.ConfirmPreviewedSkillDraftReview(record.TraceID); err == nil {
 		t.Fatalf("ConfirmPreviewedSkillDraftReview should reject already applied trace")
 	}
-	replayRaw := h.toolManageSkill(map[string]interface{}{
+	replayRaw := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":                    "execute_maintenance_plan",
 		"dry_run":                   false,
 		"confirm":                   true,
@@ -462,7 +463,7 @@ func TestToolManageSkillExecuteMaintenancePlanDoesNotOvercountRepairWithoutLLM(t
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	raw := h.toolManageSkill(map[string]interface{}{
+	raw := h.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":           "execute_maintenance_plan",
 		"dry_run":          false,
 		"confirm":          true,
@@ -514,7 +515,7 @@ func TestToolManageSkillExecuteMaintenancePlanBlocksMissingReviewedDraft(t *test
 		t.Fatalf("RecordExperienceDraftReview: %v", err)
 	}
 
-	raw := (&IMMessageHandler{app: app}).toolManageSkill(map[string]interface{}{
+	raw := (&IMMessageHandler{app: app}).toolManageSkill(context.Background(), map[string]interface{}{
 		"action":                    "execute_maintenance_plan",
 		"dry_run":                   true,
 		"approved_review_trace_ids": []interface{}{record.TraceID},

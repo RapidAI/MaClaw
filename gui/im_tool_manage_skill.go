@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -57,7 +58,7 @@ func classifyManageSkillAction(action string) manageSkillAction {
 }
 
 // toolManageSkill dispatches the merged manage_skill tool to individual handlers.
-func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+func (h *IMMessageHandler) toolManageSkill(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	ownerID, explicitRuntimeOwner := runtimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if explicitRuntimeOwner && ownerID == "" {
 		return "manage_skill failed: runtime owner is missing; isolated runtime will not fall back to desktop owner"
@@ -73,7 +74,7 @@ func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgre
 	case manageSkillActionUninstall:
 		return h.toolUninstallSkill(args)
 	case manageSkillActionRun:
-		return h.toolRunSkill(args, onProgress)
+		return h.toolRunSkill(ctx, args, onProgress)
 	case manageSkillActionStatus:
 		return h.toolGetSkillRun(args)
 	case manageSkillActionUpload:

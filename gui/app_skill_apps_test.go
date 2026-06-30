@@ -1291,6 +1291,87 @@ func TestWithSkillAppInputFileAliasesDoesNotOverrideExplicitValues(t *testing.T)
 	}
 }
 
+func TestWithSkillAppInputFileAliasesSetsInputAlias(t *testing.T) {
+	got := withSkillAppInputFileAliases(map[string]interface{}{
+		"file": map[string]interface{}{
+			"name":        "report.pdf",
+			"staged_path": "/tmp/maclaw/report.pdf",
+		},
+	})
+	if got["input"] != "/tmp/maclaw/report.pdf" {
+		t.Fatalf("input = %#v, want staged path for {{input}} template", got["input"])
+	}
+}
+
+func TestWithSkillAppInputFileAliasesSynthesizesOutputPath(t *testing.T) {
+	got := withSkillAppInputFileAliases(map[string]interface{}{
+		"output_mode": "docx",
+		"file": map[string]interface{}{
+			"name":        "report.pdf",
+			"staged_path": "/tmp/maclaw/report.pdf",
+		},
+	})
+	want := filepath.Join("/tmp/maclaw", "report.docx")
+	if got["output"] != want {
+		t.Fatalf("output = %#v, want %q (synthesized from input + output_mode)", got["output"], want)
+	}
+}
+
+func TestWithSkillAppInputFileAliasesDoesNotOverrideExplicitOutput(t *testing.T) {
+	got := withSkillAppInputFileAliases(map[string]interface{}{
+		"output_mode": "docx",
+		"output":      "/explicit/output.docx",
+		"file": map[string]interface{}{
+			"name":        "report.pdf",
+			"staged_path": "/tmp/maclaw/report.pdf",
+		},
+	})
+	if got["output"] != "/explicit/output.docx" {
+		t.Fatalf("explicit output should not be overridden: %#v", got["output"])
+	}
+}
+
+func TestWithSkillAppInputFileAliasesOutputAvoidsOverwriteInput(t *testing.T) {
+	got := withSkillAppInputFileAliases(map[string]interface{}{
+		"output_mode": "pdf",
+		"file": map[string]interface{}{
+			"name":        "report.pdf",
+			"staged_path": "/tmp/maclaw/report.pdf",
+		},
+	})
+	want := filepath.Join("/tmp/maclaw", "report_output.pdf")
+	if got["output"] != want {
+		t.Fatalf("output = %#v, want %q (should avoid overwriting input)", got["output"], want)
+	}
+}
+
+func TestSynthesizeSkillAppOutputPathVariousFormats(t *testing.T) {
+	cases := []struct {
+		input      string
+		format     string
+		wantSuffix string
+	}{
+		{"/tmp/demo.pdf", "docx", "demo.docx"},
+		{"/tmp/demo.pdf", "txt", "demo.txt"},
+		{"/tmp/demo.xlsx", "json", "demo.json"},
+		{"/tmp/a b c.PDF", "docx", "a b c.docx"},
+		{"", "docx", ""},
+		{"/tmp/demo.pdf", "", ""},
+	}
+	for _, tc := range cases {
+		got := synthesizeSkillAppOutputPath(tc.input, tc.format)
+		if tc.wantSuffix == "" {
+			if got != "" {
+				t.Fatalf("synthesizeSkillAppOutputPath(%q, %q) = %q, want empty", tc.input, tc.format, got)
+			}
+			continue
+		}
+		if !strings.HasSuffix(got, tc.wantSuffix) {
+			t.Fatalf("synthesizeSkillAppOutputPath(%q, %q) = %q, want suffix %q", tc.input, tc.format, got, tc.wantSuffix)
+		}
+	}
+}
+
 func TestListSkillAppManifestsNormalizesPrivateExtension(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

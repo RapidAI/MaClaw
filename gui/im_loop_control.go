@@ -25,7 +25,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	// before the caller sends a new message.
 	select {
 	case <-ctx.DoneC:
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit — force-closing DoneC")
 		ctx.Done()
 	}
@@ -49,7 +49,7 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	ctx.Cancel()
 	select {
 	case <-ctx.DoneC:
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s — force-closing DoneC to unblock waiters", userID)
 		// Force-close DoneC so that hasActiveInterruptableLoop and other
 		// waiters stop considering this loop as active. The goroutine holding

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -164,6 +165,10 @@ type SkillRunner struct {
 	// nudge promotion, and upload triggering independently of the main agent loop.
 	evolutionPipeline *cskill.EvolutionPipeline
 
+	// outcomeReporter reports local execution outcomes to HubCenter,
+	// closing the feedback loop between local quality and global ranking.
+	outcomeReporter *skillOutcomeReporter
+
 	// recentRepairs tracks skills that were recently auto-repaired.
 	// Consumed by the system prompt builder to notify the LLM about
 	// repaired skills so it can adjust its calling strategy.
@@ -204,18 +209,91 @@ type skillRun struct {
 	monitorCancel context.CancelFunc // cancels the session monitor goroutine
 	templateVars  map[string]string
 	runArgs       map[string]interface{}
-	selectedSteps []string          // api_workflow mode: only run steps with these labels
-	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
-	workspaceDir  string            // isolated per-run copy of the skill directory
-	timeoutSec    int               // normalized system Skill Runner timeout captured when the run starts
+	selectedSteps []string            // api_workflow mode: only run steps with these labels
+	extraEnv      map[string]string   // env vars from run_skill caller, injected into subprocesses
+	workspaceDir  string              // isolated per-run copy of the skill directory
+	timeoutSec    int                 // normalized system Skill Runner timeout captured when the run starts
+	liveOutput    *skillRunLiveOutput // real-time subprocess output tail (last N lines)
+}
+
+// skillRunLiveOutput is a goroutine-safe ring buffer that captures the last N
+// lines of subprocess stdout/stderr in real time. The skill runner writes to it
+// during bash step execution; GetRunStatus reads from it during polling.
+type skillRunLiveOutput struct {
+	mu    sync.Mutex
+	lines []string // ring buffer, max skillRunLiveOutputMaxLines
+	total int      // total lines seen (for progress estimation)
+}
+
+const skillRunLiveOutputMaxLines = 20
+
+func newSkillRunLiveOutput() *skillRunLiveOutput {
+	return &skillRunLiveOutput{lines: make([]string, 0, skillRunLiveOutputMaxLines)}
+}
+
+// Append adds a line to the ring buffer (goroutine-safe).
+func (lo *skillRunLiveOutput) Append(line string) {
+	lo.mu.Lock()
+	defer lo.mu.Unlock()
+	lo.total++
+	if len(lo.lines) >= skillRunLiveOutputMaxLines {
+		// shift left
+		copy(lo.lines, lo.lines[1:])
+		lo.lines[len(lo.lines)-1] = line
+	} else {
+		lo.lines = append(lo.lines, line)
+	}
+}
+
+// LastLines returns a copy of the last N lines (goroutine-safe).
+func (lo *skillRunLiveOutput) LastLines(n int) []string {
+	lo.mu.Lock()
+	defer lo.mu.Unlock()
+	if n <= 0 || len(lo.lines) == 0 {
+		return nil
+	}
+	start := len(lo.lines) - n
+	if start < 0 {
+		start = 0
+	}
+	result := make([]string, len(lo.lines)-start)
+	copy(result, lo.lines[start:])
+	return result
+}
+
+// Snippet returns the last line as a short progress string (goroutine-safe).
+// Truncated to 200 runes for UI display.
+func (lo *skillRunLiveOutput) Snippet() string {
+	lo.mu.Lock()
+	defer lo.mu.Unlock()
+	if len(lo.lines) == 0 {
+		return ""
+	}
+	line := lo.lines[len(lo.lines)-1]
+	runes := []rune(line)
+	if len(runes) > 200 {
+		return string(runes[:200]) + "..."
+	}
+	return line
+}
+
+// Total returns the total number of lines seen.
+func (lo *skillRunLiveOutput) Total() int {
+	lo.mu.Lock()
+	defer lo.mu.Unlock()
+	return lo.total
 }
 
 // NewSkillRunner creates a SkillRunner.
 func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
-	return &SkillRunner{
+	r := &SkillRunner{
 		executor: executor,
 		runs:     make(map[string]*skillRun),
 	}
+	if executor != nil && executor.app != nil {
+		r.outcomeReporter = newSkillOutcomeReporter(executor.app)
+	}
+	return r
 }
 
 func (r *SkillRunner) defaultTimeoutSec() int {
@@ -434,6 +512,21 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	prep, err := cskill.PrepareRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
 	if err != nil {
 		log.Printf("[skill-runner] start_run prepare_failed owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(prepStart).Round(time.Millisecond), err)
+		// Detailed diagnostic dump for AI debugging tools
+		log.Printf("[skill-runner-diag] === PREPARE FAILURE DIAGNOSTIC ===")
+		log.Printf("[skill-runner-diag] skill=%q skill_dir=%s", skillName, target.SkillDir)
+		log.Printf("[skill-runner-diag] template_vars=%v", templateVars)
+		log.Printf("[skill-runner-diag] run_args_keys=%v", mapKeysAny(runArgs))
+		log.Printf("[skill-runner-diag] extra_env_keys=%v", mapKeys(extraEnv))
+		log.Printf("[skill-runner-diag] steps_count=%d required_args=%v params_count=%d", len(target.Steps), target.RequiredArgs, len(target.Params))
+		if len(target.Steps) > 0 {
+			for si, s := range target.Steps {
+				cmd, _ := s.Params["command"].(string)
+				log.Printf("[skill-runner-diag] step[%d] action=%s command=%s", si, s.Action, truncateRunesMarker(cmd, 300, "..."))
+			}
+		}
+		log.Printf("[skill-runner-diag] error=%v", err)
+		log.Printf("[skill-runner-diag] === END DIAGNOSTIC ===")
 		return "", err
 	}
 	if elapsed := time.Since(prepStart); elapsed > 100*time.Millisecond {
@@ -479,6 +572,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		selectedSteps: selectedSteps,
 		extraEnv:      extraEnv,
 		timeoutSec:    defaultTimeoutSec,
+		liveOutput:    newSkillRunLiveOutput(),
 	}
 	for i, step := range target.Steps {
 		run.status.Steps[i] = StepResult{
@@ -602,6 +696,7 @@ func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *
 		runArgs:      cloneSkillRunArgs(runArgs),
 		extraEnv:     extraEnv,
 		timeoutSec:   defaultTimeoutSec,
+		liveOutput:   newSkillRunLiveOutput(),
 	}
 	for i, step := range target.Pipeline {
 		run.status.Steps[i] = StepResult{
@@ -709,6 +804,9 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	if finalStatus != skillRunStatusCancelled {
 		r.updateUsageStats(entry, execErr)
 	}
+
+	// Pipeline skills also participate in the outcome reporting + auto-upload loop.
+	r.tryAutoUpload(entry, run)
 }
 
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
@@ -724,10 +822,29 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 	cp := snapshotRunStatus(&run.status)
+	liveOut := run.liveOutput
 	r.mu.RUnlock()
 
 	r.hydrateRunSessionMeta(&cp)
 	summarizeSkillRun(&cp)
+
+	// Inject live subprocess output into the status snapshot AFTER summarize
+	// (summarizeSkillRun resets Summary, so injecting before would be wiped).
+	// This gives the polling frontend real-time visibility into what the skill
+	// is doing without waiting for step completion.
+	if liveOut != nil && cp.Status == skillRunStatusRunning {
+		if snippet := liveOut.Snippet(); snippet != "" && cp.Summary.LastOutputSnippet == "" {
+			cp.Summary.LastOutputSnippet = snippet
+		}
+		if lines := liveOut.LastLines(10); len(lines) > 0 {
+			for i := range cp.Steps {
+				if cp.Steps[i].Status == skillStepStatusRunning {
+					cp.Steps[i].StdoutLastLines = lines
+					break
+				}
+			}
+		}
+	}
 	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
 		log.Printf("[skill-runner] get_status slow run=%s owner=%q skill=%q status=%q elapsed=%s", runID, cp.OwnerID, cp.Skill, cp.Status.String(), elapsed.Round(time.Millisecond))
 	}
@@ -1297,6 +1414,18 @@ func truncateRunesMarker(s string, maxRunes int, marker string) string {
 
 // mapKeys returns the keys of a string map for diagnostic logging.
 func mapKeys(m map[string]string) []string {
+	if m == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// mapKeysAny returns the keys of an interface{} map for diagnostic logging.
+func mapKeysAny(m map[string]interface{}) []string {
 	if m == nil {
 		return nil
 	}
@@ -2110,6 +2239,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 		resolvedStep.Params["_skill_run_id"] = run.status.RunID
 		resolvedStep.Params["_skill_owner_id"] = run.status.OwnerID
+		resolvedStep.Params["_live_output"] = run.liveOutput
 		restoreEnv := installSkillStepProcessEnvForRun(run.status.RunID, run.status.OwnerID, resolvedStep.Action, run.extraEnv)
 		stepStart := time.Now()
 		log.Printf("[skill-runner] run=%s owner=%q step %d/%d: action=%s command=%q", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
@@ -2157,13 +2287,29 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] run=%s owner=%q step %d/%d FAILED elapsed=%s: %v", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), time.Since(stepStart).Truncate(time.Millisecond), stepErr)
+			// Detailed diagnostic dump for AI debugging tools (logged to file, not shown to user)
+			log.Printf("[skill-runner-diag] === STEP FAILURE DIAGNOSTIC ===")
+			log.Printf("[skill-runner-diag] run_id=%s skill=%q step=%d/%d action=%s", run.status.RunID, skill.Name, i+1, len(skill.Steps), resolvedStep.Action)
+			log.Printf("[skill-runner-diag] command=%s", resolveCommandForDisplay(resolvedStep))
+			log.Printf("[skill-runner-diag] skill_dir=%s workspace=%s", skill.SkillDir, run.workspaceDir)
+			log.Printf("[skill-runner-diag] template_vars=%v", run.templateVars)
+			log.Printf("[skill-runner-diag] extra_env_keys=%v", mapKeys(run.extraEnv))
+			log.Printf("[skill-runner-diag] error=%v", stepErr)
+			if result != "" {
+				log.Printf("[skill-runner-diag] output_tail=%s", truncateRunesMarker(result, 2000, "\n...(truncated)"))
+			}
 			// Extract error details if it's a bashStepError
 			if bErr, ok := stepErr.(*bashStepError); ok {
 				run.status.Steps[i].ExitCode = bErr.ExitCode()
 				run.status.Steps[i].Timeout = bErr.IsTimeout()
 				run.status.Steps[i].StdoutLastLines = lastNLines(bErr.Stdout(), 10)
 				run.status.Steps[i].StderrLastLines = lastNLines(bErr.Stderr(), 10)
+				log.Printf("[skill-runner-diag] exit_code=%d timeout=%v", bErr.ExitCode(), bErr.IsTimeout())
+				if stderrTail := strings.TrimSpace(truncateRunesMarker(bErr.Stderr(), 1000, "...")); stderrTail != "" {
+					log.Printf("[skill-runner-diag] stderr_tail=%s", stderrTail)
+				}
 			}
+			log.Printf("[skill-runner-diag] === END DIAGNOSTIC ===")
 			hasFailure = true
 			if onError != skillStepOnErrorContinue {
 				run.status.Error = fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, stepErr.Error())
@@ -2868,8 +3014,9 @@ func installSkillStepProcessEnvForRun(runID, ownerID, action string, extraEnv ma
 }
 
 // tryAutoUpload attempts to upload to SkillMarket after a skill run finishes.
+// Also reports execution outcome to HubCenter for global quality signals.
 func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
-	if r.uploadTrigger == nil || r.executor == nil || r.executor.app == nil {
+	if r == nil || r.executor == nil || r.executor.app == nil || skill == nil {
 		return
 	}
 	if skill.SkillDir == "" {
@@ -2879,22 +3026,53 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 	r.mu.RLock()
 	status := run.status.LifecycleStatus()
 	hasErr := false
+	stepTotal := len(run.status.Steps)
+	stepSuccessCount := 0
+	outputSizeBytes := 0
 	for _, st := range run.status.Steps {
 		if st.IsFailed() {
 			hasErr = true
-			break
 		}
+		if st.LifecycleStatus() == skillStepStatusSuccess {
+			stepSuccessCount++
+		}
+		outputSizeBytes += len(st.Output)
 	}
+	durationMs := run.status.DurationMs
+	runID := run.status.RunID
 	r.mu.RUnlock()
 
-	result := &SkillExecutionResult{Success: status == skillRunStatusSuccess, HasError: hasErr, OutputQuality: "basic"}
+	result := &SkillExecutionResult{
+		Success:          status == skillRunStatusSuccess,
+		HasError:         hasErr,
+		OutputQuality:    "basic",
+		StepTotal:        stepTotal,
+		StepSuccessCount: stepSuccessCount,
+		OutputSizeBytes:  outputSizeBytes,
+		DurationMs:       durationMs,
+		TimeoutMs:        int64(r.runDefaultTimeoutSec(run)) * 1000,
+	}
 	if status == skillRunStatusSuccess && !hasErr {
 		result.OutputQuality = "good"
 	}
 
-	localHash := skillDirHash(skill.SkillDir)
 	score := EvaluateSkillExecution(result)
+
+	// Report execution outcome to HubCenter (async, throttled, idempotent).
+	// This closes the feedback loop: local execution quality → global AvgRating.
+	// Independent of uploadTrigger — always report when possible.
+	if r.outcomeReporter != nil {
+		r.outcomeReporter.ReportOutcome(skill, runID, score)
+	}
+
+	// Auto-upload logic requires uploadTrigger.
+	if r.uploadTrigger == nil {
+		return
+	}
+
+	localHash := skillDirHash(skill.SkillDir)
 	r.uploadTrigger.RecordExecution(skill.Name, score, localHash)
+
 	if status != skillRunStatusSuccess || hasErr || score < 1 {
 		return
 	}
@@ -3255,7 +3433,87 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), params)
 	hideCommandWindow(cmd)
 	coretool.PrepareCommandForTreeKill(cmd)
+
+	// Live output streaming: if a liveOutput ring buffer is provided via params,
+	// tee stdout/stderr to both the full buffer and the live tail for real-time
+	// progress visibility during long-running skill steps.
 	var stdout, stderr bytes.Buffer
+	var liveOut *skillRunLiveOutput
+	if lo, ok := params["_live_output"].(*skillRunLiveOutput); ok && lo != nil {
+		liveOut = lo
+	}
+	if liveOut != nil {
+		// Use pipe + goroutine to scan lines in real time
+		stdoutPipe, pipeErr1 := cmd.StdoutPipe()
+		stderrPipe, pipeErr2 := cmd.StderrPipe()
+		if pipeErr1 != nil || pipeErr2 != nil {
+			// Pipe creation failed — fall through to non-streaming mode
+			log.Printf("[skill-runner] live output pipe failed (stdout_err=%v stderr_err=%v), falling back to buffer mode", pipeErr1, pipeErr2)
+			liveOut = nil
+		} else {
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				scanner := bufio.NewScanner(stdoutPipe)
+				scanner.Buffer(make([]byte, 256*1024), 256*1024)
+				for scanner.Scan() {
+					line := scanner.Text()
+					stdout.WriteString(line)
+					stdout.WriteByte('\n')
+					trimmed := strings.TrimSpace(line)
+					if trimmed != "" {
+						liveOut.Append(trimmed)
+					}
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				scanner := bufio.NewScanner(stderrPipe)
+				scanner.Buffer(make([]byte, 256*1024), 256*1024)
+				for scanner.Scan() {
+					line := scanner.Text()
+					stderr.WriteString(line)
+					stderr.WriteByte('\n')
+					trimmed := strings.TrimSpace(line)
+					if trimmed != "" {
+						liveOut.Append(trimmed)
+					}
+				}
+			}()
+
+			startTime := time.Now()
+			runID, _ := params["_skill_run_id"].(string)
+			ownerID, _ := params["_skill_owner_id"].(string)
+			log.Printf("[skill-runner] bash exec: run=%s owner=%q shell=%s workDir=%s timeout=%ds live_output=true", strings.TrimSpace(runID), strings.TrimSpace(ownerID), filepath.Base(shellName), workDir, timeout)
+			err := cmd.Start()
+			if err == nil {
+				// Monitor stepCtx for timeout/cancellation — kill the process tree
+				// so pipe readers get EOF and wg.Wait() unblocks.
+				done := make(chan struct{})
+				go func() {
+					select {
+					case <-done:
+					case <-stepCtx.Done():
+						coretool.TerminateCommandTree(cmd)
+					}
+				}()
+				wg.Wait()
+				err = cmd.Wait()
+				close(done)
+				if stepCtx.Err() != nil && err == nil {
+					err = stepCtx.Err()
+				}
+			}
+			elapsed := time.Since(startTime)
+			sanitizeUTF8Buffer(&stdout)
+			sanitizeUTF8Buffer(&stderr)
+			isTimeout := stepCtx.Err() == context.DeadlineExceeded
+			return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, &stdout, &stderr, err, isTimeout)
+		}
+	}
+
+	// Non-streaming fallback (no live output buffer, or pipe creation failed)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -3275,13 +3533,16 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	sanitizeUTF8Buffer(&stderr)
 
 	isTimeout := stepCtx.Err() == context.DeadlineExceeded
+	return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, &stdout, &stderr, err, isTimeout)
+}
 
+// formatBashStepResult builds the final output string and error for a bash step.
+func formatBashStepResult(command, shellName string, shellArgs []string, tmpScript, workDir string, timeout int, elapsed time.Duration, stdout, stderr *bytes.Buffer, err error, isTimeout bool) (string, error) {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("shell: %s\n", filepath.Base(shellName)))
 	b.WriteString(fmt.Sprintf("elapsed: %s\n", elapsed.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
 	if tmpScript != "" {
-		// Show original command instead of temp script path for readability
 		b.WriteString(fmt.Sprintf("command: %s (via script)\n", command))
 	} else {
 		b.WriteString(fmt.Sprintf("command: %s %s\n", filepath.Base(shellName), strings.Join(shellArgs, " ")))
@@ -3305,7 +3566,6 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		} else {
 			b.WriteString(fmt.Sprintf("\n[error] %v", err))
 		}
-		// 构建包含 stderr 的错误消息，方便上层排查
 		errMsg := err.Error()
 		stderrText := strings.TrimSpace(stderr.String())
 		if stderrText != "" {

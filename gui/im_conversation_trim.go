@@ -110,11 +110,11 @@ func precomputeMsgTokens(msgs []interface{}) []int {
 	return tokens
 }
 
-// quickConversationTokenEstimate provides a fast upper-bound token estimate
+// quickConversationTokenEstimate provides a fast lower-bound token estimate
 // by measuring content string lengths directly (no json.Marshal). This
-// intentionally over-estimates (includes role/JSON overhead as fixed per-msg
-// cost) so it can be safely used as a short-circuit: if this cheap estimate
-// says we fit, we definitely fit.
+// intentionally under-counts (ignores JSON structural overhead, field names,
+// quoting), so the caller uses a 2x safety margin: only short-circuits when
+// quickEstimate*2 <= budget.
 func quickConversationTokenEstimate(msgs []interface{}) int {
 	total := 0
 	for _, m := range msgs {
@@ -128,17 +128,32 @@ func quickSingleMsgTokenEstimate(m interface{}) int {
 	const perMsgOverhead = 12
 	switch v := m.(type) {
 	case map[string]interface{}:
+		// Messages with tool_calls have unpredictable size (function args can
+		// be thousands of bytes). Fall back to json.Marshal for accuracy.
+		if v["tool_calls"] != nil {
+			data, _ := json.Marshal(v)
+			return estimateBytesToTokens(data)
+		}
 		tokens := perMsgOverhead
+		// Handle multimodal content ([]interface{} with image blocks).
+		if blocks, ok := v["content"].([]interface{}); ok {
+			for _, block := range blocks {
+				bm, ok := block.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				blockType, _ := bm["type"].(string)
+				blockKind := normalizeIMContentBlockKind(blockType)
+				if blockKind == imContentBlockImageURL || blockKind == imContentBlockImage {
+					tokens += 85
+				} else if text, ok := bm["text"].(string); ok {
+					tokens += len(text) / 3
+				}
+			}
+			return tokens
+		}
 		if content, ok := v["content"].(string); ok {
 			tokens += len(content) / 3 // ~3 bytes per token for mixed CJK/English
-		}
-		if tc := v["tool_calls"]; tc != nil {
-			// Rough estimate for tool_calls: assume ~200 tokens per call on average
-			if calls, ok := tc.([]interface{}); ok {
-				tokens += len(calls) * 200
-			} else {
-				tokens += 200
-			}
 		}
 		if rc, ok := v["reasoning_content"].(string); ok {
 			tokens += len(rc) / 4
@@ -257,10 +272,11 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		return msgs
 	}
 
-	// Fast short-circuit: use a cheap content-length-based estimate to avoid
-	// the expensive json.Marshal precompute when the conversation clearly fits.
-	// The quick estimate under-counts (ignores JSON overhead), so we require
-	// even doubling it stays below budget before trusting the short-circuit.
+	// Fast short-circuit: use a cheaper estimate (only marshals tool_call msgs,
+	// uses string length for text msgs) to avoid the full O(n) json.Marshal
+	// precompute when the conversation clearly fits within budget.
+	// The quick estimate under-counts text-only messages, so we require
+	// doubling it stays below budget before trusting the short-circuit.
 	quickEstimate := quickConversationTokenEstimate(msgs)
 	if quickEstimate*2 <= msgBudget {
 		return msgs

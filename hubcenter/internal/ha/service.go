@@ -67,6 +67,7 @@ type Service struct {
 	nodeID        string
 	nodeName      string
 	advertiseURL  string
+	publicURL     string
 	clusterSecret string
 	privateKey    *rsa.PrivateKey
 	publicKeyPEM  string
@@ -181,6 +182,22 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		snapshotHashes:           make(map[string]string),
 		heartbeatSyncMinInterval: 10 * time.Second,
 	}
+}
+
+func (s *Service) SetPublicURL(publicURL string) {
+	if s == nil {
+		return
+	}
+	s.publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+}
+
+// clientFacingURL returns the URL that should be exposed to external clients.
+// Prefers publicURL over advertiseURL.
+func (s *Service) clientFacingURL() string {
+	if s.publicURL != "" {
+		return s.publicURL
+	}
+	return s.advertiseURL
 }
 
 func (s *Service) SetPushDebounceInterval(d time.Duration) {
@@ -493,7 +510,7 @@ func (s *Service) ListClientEndpoints(ctx context.Context) (*EndpointsView, erro
 	if err != nil {
 		return nil, err
 	}
-	nodes := []EndpointView{{NodeID: s.nodeID, NodeName: s.nodeName, BaseURL: s.advertiseURL, ServiceStatus: self.ServiceStatus, QualityScore: self.QualityScore, Routable: self.Routable}}
+	nodes := []EndpointView{{NodeID: s.nodeID, NodeName: s.nodeName, BaseURL: s.clientFacingURL(), ServiceStatus: self.ServiceStatus, QualityScore: self.QualityScore, Routable: self.Routable}}
 	for _, peer := range s.listPeerStates() {
 		nodes = append(nodes, EndpointView{NodeID: peer.NodeID, NodeName: peer.NodeName, BaseURL: peer.BaseURL, ServiceStatus: peer.ServiceStatus, QualityScore: peer.QualityScore, Routable: peer.Reachable && peer.QualityScore >= 50})
 	}

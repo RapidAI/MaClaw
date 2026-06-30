@@ -591,6 +591,19 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_capability_inventory_user_cap ON user_capability_inventory(tenant_id, user_email, capability_ref);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_capability_inventory_seen ON user_capability_inventory(tenant_id, user_email, last_seen_at DESC);`,
 
+		`CREATE TABLE IF NOT EXISTS capability_market_submissions (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			id TEXT PRIMARY KEY,
+			capability_ref TEXT NOT NULL,
+			capability_name TEXT NOT NULL DEFAULT '',
+			hubcenter_submission_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'uploading',
+			reject_reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_capability_market_submissions_tenant ON capability_market_submissions(tenant_id, status);`,
+
 		`CREATE TABLE IF NOT EXISTS mcp_secret_requirements (
 			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,

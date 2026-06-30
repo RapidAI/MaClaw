@@ -7,16 +7,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	maclawapptest "github.com/RapidAI/CodeClaw/internal/testfixtures"
 )
 
 func sha256HexForTest(data []byte) string {
@@ -1304,6 +1306,94 @@ func TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenTopLevelUILayoutChanges(
 	}
 }
 
+func TestSubmitMaclawAppPackageRejectsWorkspaceLayoutFingerprintMismatch(t *testing.T) {
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "layout-fingerprint-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Layout fingerprint tool\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "layout-fingerprint-tool", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	layout := map[string]any{
+		"template":      "document_workspace",
+		"density":       "compact",
+		"primaryRegion": "left",
+		"outputRegion":  "right",
+		"regions": []any{
+			map[string]any{"id": "input", "role": "input", "placement": "left", "order": 1},
+			map[string]any{"id": "result", "role": "output", "placement": "right", "order": 2},
+		},
+		"studio": map[string]any{"savedInManifest": true, "updatedBy": "app_studio"},
+	}
+	layout["fingerprint"] = maclawAppWorkspaceLayoutFingerprint("tool_workspace", layout)
+	ui := map[string]any{
+		"schema":    "maclaw.app.ui.v1",
+		"generated": true,
+		"entry":     "tool_workspace",
+		"layouts":   map[string]any{"tool_workspace": layout},
+	}
+	governanceLayout := cloneMapAny(layout)
+	governanceLayout["schema"] = "maclaw.app.ui.v1"
+	governanceLayout["entry"] = "tool_workspace"
+	governanceLayout["regionCount"] = 2
+	governanceLayout["visibleRegionCount"] = 2
+	governanceLayout["regionIds"] = []any{"input", "result"}
+	governanceLayout["fingerprint"] = "deadbeef"
+	doc := map[string]any{
+		"schema":        "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": []any{
+			map[string]any{
+				"schema":        "maclaw.app.v1",
+				"privateMarker": "x_maclaw_apps",
+				"installUnit":   "enterprise_app_pack",
+				"app": map[string]any{
+					"id":          "layout-fingerprint-app",
+					"name":        "Layout Fingerprint App",
+					"description": "Reject mismatched workspace layout fingerprints",
+					"category":    "Tools",
+					"kind":        "tool_app",
+					"icon":        "pdf",
+					"version":     1,
+					"launchMode":  "agent_dynamic_ui",
+					"ui":          ui,
+					"binding": map[string]any{
+						"skill":          map[string]any{"id": "layout-fingerprint-tool", "inputMode": "form", "outputModes": []any{"text"}},
+						"dependencies":   map[string]any{"skills": []any{map[string]any{"id": "layout-fingerprint-tool", "kind": "runtime_skill", "required": true, "source": "local"}}},
+						"ui":             ui,
+						"resultContract": map[string]any{"schema": "maclaw.app.result.v1", "primary": "content", "types": []any{"content", "text"}, "delivery": map[string]any{"inlineContent": true}},
+						"testProtocol":   map[string]any{"schema": "maclaw.app.test_protocol.v1", "fingerprint": "proto-layout-fp", "sampleInput": map[string]any{"sample": true}, "expectedOutput": map[string]any{"content": "ok"}, "requiredRoles": []any{"tester"}, "requiredScopes": []any{"app.run"}, "riskLevel": "low"},
+					},
+					"governance": map[string]any{
+						"workspaceLayout":        governanceLayout,
+						"resultContract":         map[string]any{"schema": "maclaw.app.result.v1", "primary": "content", "types": []any{"content", "text"}, "delivery": map[string]any{"inlineContent": true}},
+						"dependencyVerification": map[string]any{"schema": "maclaw.app.install_plan.v1", "hasMissingRequired": false, "hasBlockingDependency": false, "dependencies": []any{map[string]any{"id": "layout-fingerprint-tool", "kind": "runtime_skill", "required": true, "installed": true, "health": "ready", "action": "skip"}}},
+						"testProtocol":           map[string]any{"schema": "maclaw.app.test_protocol.v1", "fingerprint": "proto-layout-fp", "sampleInput": map[string]any{"sample": true}, "expectedOutput": map[string]any{"content": "ok"}, "requiredRoles": []any{"tester"}, "requiredScopes": []any{"app.run"}, "riskLevel": "low"},
+						"testEvidence":           map[string]any{"testProtocol": map[string]any{"schema": "maclaw.app.test_protocol.v1", "fingerprint": "proto-layout-fp", "sampleInput": map[string]any{"sample": true}, "expectedOutput": map[string]any{"content": "ok"}, "requiredRoles": []any{"tester"}, "requiredScopes": []any{"app.run"}, "riskLevel": "low"}, "testProtocolFingerprint": "proto-layout-fp", "runId": "run-layout-fp", "verifiedAt": "2026-07-01T01:00:00Z", "resultPayload": map[string]any{"content": "ok"}, "outputs": []any{map[string]any{"kind": "content", "text": "ok"}}, "resultCoverage": map[string]any{"ok": true, "primary": "content", "coveredTypes": []any{"content", "text"}, "missingTypes": []any{}}},
+					},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal package: %v", err)
+	}
+	pkg := maclawAppPackageWithCurrentDefinitionHashes(t, string(raw))
+
+	assertSubmitMaclawAppPackageBlocked(t, app, pkg, "apps[0].app.governance.workspaceLayout.fingerprint")
+}
+
 func TestSubmitMaclawAppPackageRequiresRunEvidenceDefinitionHash(t *testing.T) {
 	tmpHome := t.TempDir()
 	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "missing-hash-tool")
@@ -1741,6 +1831,133 @@ func maclawAppReadyToolPackageForHubSyncTest(t *testing.T, appID string) string 
 	}`, appID)
 	return maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
 }
+
+func markMaclawAppPackageAsPublishedHubDownloadTest(t *testing.T, pkg map[string]any, appID, capabilityID, versionKey string) {
+	t.Helper()
+	pkg["source"] = "enterprise_hub"
+	pkg["capability_id"] = capabilityID
+	pkg["capability"] = map[string]any{
+		"id":                  capabilityID,
+		"capability_id":       appID,
+		"display_name":        appID,
+		"status":              "published",
+		"current_version_key": versionKey,
+	}
+	reviewEvidence := map[string]any{
+		appID: map[string]any{
+			"run_id":                           "run-" + appID + "-published",
+			"test_protocol_fingerprint":        "proto-hub-ready",
+			"result_contract_primary":          "content",
+			"result_coverage_primary":          "content",
+			"result_coverage_covered_count":    1,
+			"result_coverage_missing_count":    0,
+			"output_count":                     1,
+			"artifact_count":                   0,
+			"has_workspace_layout":             true,
+			"workspace_saved_in_manifest":      true,
+			"has_dependency_verification":      true,
+			"has_blocking_dependency":          false,
+			"datasrv_registration_status":      "skipped",
+			"datasrv_registration_skip_reason": "no datasrv role bindings",
+		},
+	}
+	pkg["review_evidence"] = reviewEvidence
+	pkg["maclaw_app_review_evidence"] = reviewEvidence
+	pkg["resolved_dependencies"] = []any{map[string]any{
+		"id":       appID + "-skill",
+		"kind":     "runtime_skill",
+		"required": true,
+		"source":   "enterprise_hub",
+		"app_ids":  []string{appID},
+	}}
+	apps := anySlice(pkg["apps"])
+	if len(apps) == 0 {
+		t.Fatalf("package fixture has no apps")
+	}
+	entry := anyMap(apps[0])
+	if entry == nil {
+		t.Fatalf("package fixture app entry is not an object: %#v", apps[0])
+	}
+	app := anyMap(entry["app"])
+	if app == nil {
+		t.Fatalf("package fixture app payload is not an object: %#v", entry["app"])
+	}
+	governance := anyMap(app["governance"])
+	if governance == nil {
+		governance = map[string]any{}
+		app["governance"] = governance
+	}
+	submission := map[string]any{
+		"schema":          "maclaw.app.hub_submission.v1",
+		"status":          "published",
+		"capability_id":   capabilityID,
+		"version_key":     versionKey,
+		"submitted_at":    "2026-06-30T07:50:00Z",
+		"approved_at":     "2026-06-30T07:55:00Z",
+		"published_at":    "2026-06-30T08:00:00Z",
+		"review_evidence": reviewEvidence,
+	}
+	if packageSHA := strings.TrimSpace(maclawAppStringFromAny(pkg["package_sha256"])); packageSHA != "" {
+		submission["package_sha256"] = packageSHA
+	}
+	if signature := anyMap(pkg["package_signature"]); len(signature) > 0 {
+		submission["package_signature"] = signature
+	}
+	governance["submission"] = submission
+}
+
+func normalizeMaclawAppPackageWorkspaceFingerprintsForTest(t *testing.T, pkg map[string]any) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	entries, err := parseMaclawAppPackageEntriesFromMap(pkg, false)
+	if err != nil {
+		t.Fatalf("parse package before workspace fingerprint normalization: %v", err)
+	}
+	for _, entry := range entries {
+		app := entry.App
+		appID := entry.ID
+		governance := anyMap(app["governance"])
+		layout := anyMap(governance["workspaceLayout"])
+		if len(layout) == 0 {
+			layout = anyMap(governance["workspace_layout"])
+		}
+		entryName := strings.TrimSpace(maclawAppStringFromAny(layout["entry"]))
+		if entryName == "" {
+			entryName = strings.TrimSpace(maclawAppStringFromAny(anyMap(app["ui"])["entry"]))
+		}
+		if entryName == "" {
+			continue
+		}
+		fingerprint := maclawAppWorkspaceLayoutFingerprint(entryName, layout)
+		if fingerprint == "" {
+			continue
+		}
+		layout["fingerprint"] = fingerprint
+		out[appID] = fingerprint
+		for _, uiMap := range []map[string]any{anyMap(app["ui"]), anyMap(anyMap(app["binding"])["ui"])} {
+			layouts := anyMap(uiMap["layouts"])
+			if len(layouts) > 0 {
+				layouts[entryName] = cloneMapAny(layout)
+			}
+		}
+	}
+	entries, err = parseMaclawAppPackageEntriesFromMap(pkg, false)
+	if err != nil {
+		t.Fatalf("parse package after workspace fingerprint normalization: %v", err)
+	}
+	for _, entry := range entries {
+		governance := anyMap(entry.App["governance"])
+		testEvidence := anyMap(governance["testEvidence"])
+		if testEvidence == nil {
+			testEvidence = anyMap(governance["test_evidence"])
+		}
+		if testEvidence != nil {
+			testEvidence["definitionHash"] = maclawAppDefinitionFingerprintForEntry(entry)
+		}
+	}
+	return out
+}
+
 func TestSyncMaclawAppPackageSubmissionToHubUpdatesLocalQueue(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	var capturedPath string
@@ -1982,6 +2199,9 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 									"density": "compact",
 									"primaryRegion": "left",
 									"outputRegion": "right",
+									"fingerprint": "layout-normal-hub-install",
+									"visibleRegionCount": 3,
+									"studio": {"editable": true, "savedInManifest": true, "updatedBy": "app_studio"},
 									"navigation": ["records", "result"],
 									"list": {"columns": ["title", "status"]},
 									"regions": [
@@ -1994,10 +2214,10 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 						},
 						"governance": {
 							"submission": {"channel": "hub", "status": "approved", "capability_id": "cap-hub-install-app"},
-							"workspaceLayout": {"schema": "maclaw.app.ui.v1", "entry": "normal_workspace", "template": "classic_split", "density": "compact", "primaryRegion": "left", "outputRegion": "right", "regionCount": 3, "regions": [{"id": "input_form", "role": "input", "placement": "left", "visible": true}, {"id": "record_grid", "role": "record_list", "placement": "center", "visible": true}, {"id": "result_panel", "role": "output", "placement": "right", "visible": true}]},
-							"resultContract": {"schema": "maclaw.app.result.v1", "primary": "content", "types": ["content"]},
+							"workspaceLayout": {"schema": "maclaw.app.ui.v1", "entry": "normal_workspace", "template": "classic_split", "density": "compact", "primaryRegion": "left", "outputRegion": "right", "regionCount": 3, "visibleRegionCount": 3, "regionIds": ["input_form", "record_grid", "result_panel"], "fingerprint": "layout-normal-hub-install", "studio": {"editable": true, "savedInManifest": true, "updatedBy": "app_studio"}, "regions": [{"id": "input_form", "role": "input", "placement": "left", "visible": true}, {"id": "record_grid", "role": "record_list", "placement": "center", "visible": true}, {"id": "result_panel", "role": "output", "placement": "right", "visible": true}]},
+							"resultContract": {"schema": "maclaw.app.result.v1", "primary": "business_status", "types": ["business_status", "business_record", "content", "artifact"], "delivery": {"inlineContent": true, "artifacts": true, "businessRecord": true}},
 							"testProtocol": {"schema": "maclaw.app.test_protocol.v1", "sampleInput": {"text": "hello"}, "expectedOutput": {"type": "content"}, "fingerprint": "proto-hub-install"},
-	                        "testEvidence": {"runId": "run-hub-install", "verifiedAt": "2026-06-27T08:00:00Z", "testProtocolFingerprint": "proto-hub-install", "primaryResult": "content", "resultPayload": {"content": "done"}, "outputs": [{"kind": "text", "title": "Result", "text": "done", "status": "ready"}], "resultCoverage": {"ok": true, "primary": "content", "coveredTypes": ["content"], "missingTypes": []}}
+	                        "testEvidence": {"runId": "run-hub-install", "verifiedAt": "2026-06-27T08:00:00Z", "testProtocolFingerprint": "proto-hub-install", "primaryResult": "business_status", "resultPayload": {"business_status": "done", "business_record": {"id": "hub-run-1"}, "content": "done"}, "outputs": [{"kind": "business_record", "title": "Result", "text": "done", "status": "ready", "data": {"id": "hub-run-1"}}], "artifacts": [{"id": "hub-install-export", "name": "hub-install.csv", "uri": "artifact://hub/install.csv", "status": "ready"}], "resultCoverage": {"ok": true, "primary": "business_status", "coveredTypes": ["business_status", "business_record", "content", "artifact"], "missingTypes": []}}
 						},
 						"binding": {
 							"datasrv": {"domain": "tools", "datasetID": "tools.hub_install_runs", "templateID": "tools.hub_install_runs", "objectRole": "hub_install_run"}
@@ -2058,17 +2278,23 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	if !ok {
 		t.Fatalf("DataSrv registration missing metadata: %#v", capturedDataSrvBody)
 	}
-	if metadata["test_evidence_run_id"] != "run-hub-install" || metadata["test_evidence_verified_at"] != "2026-06-27T08:00:00Z" || metadata["test_evidence_test_protocol_fingerprint"] != "proto-hub-install" || metadata["test_evidence_primary_result"] != "content" {
+	if metadata["test_evidence_run_id"] != "run-hub-install" || metadata["test_evidence_verified_at"] != "2026-06-27T08:00:00Z" || metadata["test_evidence_test_protocol_fingerprint"] != "proto-hub-install" || metadata["test_evidence_primary_result"] != "business_status" {
 		t.Fatalf("DataSrv registration missing Hub test evidence summary: %#v", metadata)
 	}
-	if metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "content" || metadata["test_evidence_result_coverage_covered_count"] != float64(1) {
+	if metadata["test_evidence_output_count"] != float64(1) || metadata["test_evidence_artifact_count"] != float64(1) || metadata["test_evidence_result_coverage_ok"] != true || metadata["test_evidence_result_coverage_primary"] != "business_status" || metadata["test_evidence_result_coverage_covered_count"] != float64(4) {
 		t.Fatalf("DataSrv registration missing Hub result coverage summary: %#v", metadata)
 	}
-	if metadata["workspace_layout_primary_region"] != "left" || metadata["workspace_layout_output_region"] != "right" {
+	if metadata["result_contract_primary"] != "business_status" {
+		t.Fatalf("DataSrv registration missing enterprise normal result contract summary: %#v", metadata)
+	}
+	if resultTypes := maclawAppStringListFromAny(metadata["result_contract_types"]); len(resultTypes) != 4 || resultTypes[0] != "business_status" || resultTypes[3] != "artifact" {
+		t.Fatalf("DataSrv registration missing enterprise normal result contract types: %#v", metadata)
+	}
+	if metadata["workspace_layout_primary_region"] != "left" || metadata["workspace_layout_output_region"] != "right" || metadata["workspace_layout_fingerprint"] != "layout-normal-hub-install" || metadata["workspace_layout_visible_region_count"] != float64(3) {
 		t.Fatalf("DataSrv registration missing Hub workspace region summary: %#v", metadata)
 	}
 	workspaceLayout, ok := metadata["workspace_layout"].(map[string]interface{})
-	if !ok || workspaceLayout["entry"] != "normal_workspace" || workspaceLayout["template"] != "classic_split" || workspaceLayout["primary_region"] != "left" || workspaceLayout["output_region"] != "right" {
+	if !ok || workspaceLayout["entry"] != "normal_workspace" || workspaceLayout["template"] != "classic_split" || workspaceLayout["primary_region"] != "left" || workspaceLayout["output_region"] != "right" || workspaceLayout["fingerprint"] != "layout-normal-hub-install" {
 		t.Fatalf("DataSrv registration missing Hub workspace layout: %#v", metadata)
 	}
 	if workspaceLayout["region_count"] != float64(3) {
@@ -2079,16 +2305,24 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 		t.Fatalf("DataSrv registration should preserve Hub workspace regions: %#v", workspaceLayout)
 	}
 	outputRegion, _ := regions[2].(map[string]interface{})
-	if outputRegion["id"] != "result_panel" || outputRegion["placement"] != "right" {
+	if outputRegion["id"] != "result_panel" || outputRegion["placement"] != "right" || outputRegion["visible"] != true {
 		t.Fatalf("DataSrv registration should preserve Hub workspace region placement: %#v", regions)
 	}
 	resultPayload, ok := metadata["test_evidence_result_payload"].(map[string]interface{})
-	if !ok || resultPayload["content"] != "done" {
+	if !ok || resultPayload["business_status"] != "done" || resultPayload["content"] != "done" {
 		t.Fatalf("DataSrv registration missing Hub result payload summary: %#v", metadata)
+	}
+	businessRecord, ok := resultPayload["business_record"].(map[string]interface{})
+	if !ok || businessRecord["id"] != "hub-run-1" {
+		t.Fatalf("DataSrv registration missing Hub business record payload: %#v", resultPayload)
 	}
 	outputs, ok := metadata["test_evidence_outputs"].([]interface{})
 	if !ok || len(outputs) != 1 {
 		t.Fatalf("DataSrv registration missing Hub output summary: %#v", metadata)
+	}
+	artifacts, ok := metadata["test_evidence_artifacts"].([]interface{})
+	if !ok || len(artifacts) != 1 {
+		t.Fatalf("DataSrv registration missing Hub artifact summary: %#v", metadata)
 	}
 	roleBindings, ok := capturedDataSrvBody["role_bindings"].([]interface{})
 	if !ok || len(roleBindings) != 1 {
@@ -2107,6 +2341,15 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 	}
 	if records[0].VersionSnapshot.AppEntryVersion != "2" {
 		t.Fatalf("expected app version snapshot: %#v", records[0].VersionSnapshot)
+	}
+	if records[0].WorkspaceLayout["fingerprint"] != "layout-normal-hub-install" || records[0].WorkspaceLayout["visibleRegionCount"] != float64(3) {
+		t.Fatalf("install audit should persist normal app workspace layout evidence: %#v", records[0].WorkspaceLayout)
+	}
+	if records[0].ResultContract["primary"] != "business_status" {
+		t.Fatalf("install audit should persist normal app result contract: %#v", records[0].ResultContract)
+	}
+	if records[0].TestEvidence["primaryResult"] != "business_status" {
+		t.Fatalf("install audit should persist normal app business run evidence: %#v", records[0].TestEvidence)
 	}
 	if records[0].DataSrvRegistration["synced"] != true || maclawAppIntValueForTest(records[0].DataSrvRegistration["eligible_count"]) != 1 || maclawAppIntValueForTest(records[0].DataSrvRegistration["synced_count"]) != 1 {
 		t.Fatalf("install audit should persist DataSrv registration status: %#v", records[0].DataSrvRegistration)
@@ -2218,7 +2461,6 @@ func TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint(t *testin
 	if err := json.Unmarshal([]byte(maclawAppReadyToolPackageForHubSyncTest(t, "signed-app")), &pkg); err != nil {
 		t.Fatalf("decode package fixture: %v", err)
 	}
-	pkg["source"] = "enterprise_hub"
 	pkg["package_sha256"] = packageSHA
 	pkg["package_signature"] = map[string]any{
 		"schema":                 "maclaw.app.package_signature.v1",
@@ -2232,6 +2474,7 @@ func TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint(t *testin
 		"signed_at":              "2026-06-30T08:00:00Z",
 		"signed_by":              "hub-admin",
 	}
+	markMaclawAppPackageAsPublishedHubDownloadTest(t, pkg, "signed-app", "cap-signed-app", "enterprise_hub:skill:maclaw-app:signed-app@pkg")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/capabilities/maclaw-apps/cap-signed-app/package" {
@@ -2262,6 +2505,386 @@ func TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint(t *testin
 	}
 	if len(cfg.TrustedSkillPackageKeyFingerprints) != 1 || normalizeDownloadedSkillPublicKeyFingerprint(cfg.TrustedSkillPackageKeyFingerprints[0]) != fingerprint {
 		t.Fatalf("trusted package key fingerprints not merged into config: %#v", cfg.TrustedSkillPackageKeyFingerprints)
+	}
+}
+
+func TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	capabilityID := "cap-approval-ready-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:approval-ready-app@pkg"
+	fixtureData, err := json.Marshal(maclawapptest.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage(capabilityID, versionKey))
+	if err != nil {
+		t.Fatalf("marshal shared approval fixture: %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, string(fixtureData))), &pkg); err != nil {
+		t.Fatalf("decode shared approval fixture: %v", err)
+	}
+	packageSHA := strings.Repeat("e", 64)
+	signature := maclawapptest.SignPublishedMaclawAppHubPackage(pkg, publicKey, privateKey, packageSHA, versionKey, "2026-07-01T01:00:00Z", "hub-admin")
+	if anyMap(pkg["package_signature"])["public_key_fingerprint"] != fingerprint || anyMap(signature)["package_sha256"] != packageSHA {
+		t.Fatalf("shared signed package fixture should expose expected package signature: %#v", signature)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/capabilities/maclaw-apps/"+capabilityID+"/package" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pkg)
+	}))
+	defer server.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	downloaded, err := app.DownloadMaclawAppPackageFromHub(capabilityID)
+	if err != nil {
+		t.Fatalf("DownloadMaclawAppPackageFromHub() shared fixture error = %v", err)
+	}
+	downloadedPackage := anyMap(downloaded["package"])
+	capability := anyMap(downloadedPackage["capability"])
+	reviewEvidence := anyMap(downloadedPackage["review_evidence"])
+	appEvidence := anyMap(reviewEvidence["approval-ready-app"])
+	if capability["id"] != capabilityID || capability["status"] != "published" || appEvidence["run_id"] == "" {
+		t.Fatalf("downloaded shared fixture should preserve Hub package identity and review evidence: %#v", downloadedPackage)
+	}
+	appIDs := maclawAppStringListFromAny(downloaded["app_ids"])
+	if len(appIDs) != 1 || appIDs[0] != "approval-ready-app" {
+		t.Fatalf("downloaded shared fixture should expose approval-ready-app id: %#v", downloaded["app_ids"])
+	}
+}
+
+func TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	capabilityID := "cap-approval-ready-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:approval-ready-app@pkg"
+	fixtureData, err := json.Marshal(maclawapptest.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage(capabilityID, versionKey))
+	if err != nil {
+		t.Fatalf("marshal shared approval fixture: %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, string(fixtureData))), &pkg); err != nil {
+		t.Fatalf("decode shared approval fixture: %v", err)
+	}
+	packageSHA := strings.Repeat("f", 64)
+	maclawapptest.SignPublishedMaclawAppHubPackage(pkg, publicKey, privateKey, packageSHA, versionKey, "2026-07-01T02:00:00Z", "hub-admin")
+	appSkillBody, appSkillSHA, appSkillSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-app-skill", "1.0.0", "run approval app", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed app skill fixture: %v", err)
+	}
+	workflowBody, workflowSHA, workflowSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-workflow", "1.0.0", "run approval workflow", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed workflow fixture: %v", err)
+	}
+	var installedAppSkill bool
+	var installedWorkflow bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+			t.Fatalf("Authorization = %q for %s", got, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/capabilities/maclaw-apps/cap-approval-ready-app/package":
+			_ = json.NewEncoder(w).Encode(pkg)
+		case "/api/capabilities/cap-approval-ready-app-skill":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-app-skill", "cap-approval-ready-app-skill", "1.0.0", appSkillSHA, appSkillSignature))
+		case "/api/capabilities/cap-approval-ready-workflow":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-workflow", "cap-approval-ready-workflow", "1.0.0", workflowSHA, workflowSignature))
+		case "/api/v1/skills/approval-ready-app-skill/download":
+			installedAppSkill = true
+			_, _ = w.Write(appSkillBody)
+		case "/api/v1/skills/approval-ready-workflow/download":
+			installedWorkflow = true
+			_, _ = w.Write(workflowBody)
+		case "/api/capabilities/inventory":
+			if r.Method != http.MethodPut {
+				t.Fatalf("inventory method = %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
+		}
+	}))
+	defer hub.Close()
+	var appInstallationPayload map[string]any
+	type capturedRequest struct {
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]any
+	}
+	dataSrvRequests := []capturedRequest{}
+	finalSynced := false
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		dataSrvRequests = append(dataSrvRequests, item)
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/approval-ready-app":
+			appInstallationPayload = item.Body
+			_, _ = w.Write([]byte(`{"app_id":"approval-ready-app","status":"installed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-ready-run-1":
+			_, _ = w.Write([]byte(`{"id":"expense-ready-run-1","data":{"status":"draft","amount":960}}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-ready-run-1":
+			_, _ = w.Write([]byte(`{"id":"expense-ready-run-1","status":"updated"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-ready-run-1/approvals":
+			_, _ = w.Write([]byte(`{"id":"approval-ready-run-1","status":"pending"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-ready-run-1/progress":
+			_, _ = w.Write([]byte(`{"id":"approval-ready-run-1","status":"pending","progress":"manager review started"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-ready-run-1/review":
+			if item.Body["decision"] == "approved" && item.Body["workflow_node_id"] == "expense.result" {
+				finalSynced = true
+			}
+			_, _ = w.Write([]byte(`{"id":"approval-ready-run-1","status":"approved"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/approvals":
+			if finalSynced {
+				_, _ = w.Write([]byte(`{"items":[{"id":"approval-ready-run-1","app_id":"approval-ready-app","dataset_id":"finance.expense_forms","record_id":"expense-ready-run-1","status":"approved","summary":"Shared Ready Run","workflow_skill_id":"approval-ready-workflow","workflow_version":"1.0.0","workflow_instance_id":"wf-ready-run-1","workflow_decision_id":"decision-ready-run-1","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","expense.manager_review","expense.result"],"business_status":"finance_approved","result_status":"approved","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-ready-run-1","status":"finance_approved"},"text":"approved by shared workflow"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by shared workflow"},{"type":"artifact","title":"Approval PDF","artifact":{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}}],"artifacts":[{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}],"request":{"approval_instance_id":"wf-ready-run-1","appID":"approval-ready-app","blueprintID":"finance.expense.v1","objectRole":"expense_request","approvalEvent":"finance.submitted","workflowSkillId":"approval-ready-workflow","workflowVersion":"1.0.0","workflowNodeId":"expense.result","workflowNodeIds":["expense.submit","expense.manager_review","expense.result"],"businessStatus":"finance_approved","resultStatus":"approved"},"created_by":"alice","submitted_by":"alice","reviewed_by":"manager","assigned_to":"manager","created_at":"2026-07-01T02:00:00Z","updated_at":"2026-07-01T02:03:00Z"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		default:
+			t.Fatalf("unexpected DataSrv request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer dataSrv.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	installed, err := app.InstallSelectedMaclawAppPackageFromHub(capabilityID, []string{"approval-ready-app"})
+	if err != nil {
+		t.Fatalf("InstallSelectedMaclawAppPackageFromHub() shared fixture error = %v", err)
+	}
+	if !installedAppSkill || !installedWorkflow {
+		t.Fatalf("expected both shared fixture dependencies to be installed, appSkill=%v workflow=%v", installedAppSkill, installedWorkflow)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.TrustedSkillPackageKeyFingerprints) != 1 || normalizeDownloadedSkillPublicKeyFingerprint(cfg.TrustedSkillPackageKeyFingerprints[0]) != fingerprint {
+		t.Fatalf("shared fixture install should seed dependency trust from package signature: %#v", cfg.TrustedSkillPackageKeyFingerprints)
+	}
+	plan, ok := installed["install_plan"].(maclawAppInstallPlan)
+	if !ok || plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("shared fixture install plan should be ready: %#v", installed["install_plan"])
+	}
+	if dep := maclawAppPlanDepForTest(plan, "approval-ready-workflow"); dep == nil || !dep.Installed || dep.PackageSHA256 != workflowSHA || dep.PackageSignature == "" || dep.PreflightStatus != "ready" {
+		t.Fatalf("shared fixture workflow dependency should be signed, preflighted, and installed: %#v", dep)
+	}
+	registration := anyMap(anyMap(installed["install_record"])["datasrv_registration"])
+	if registration["status"] != "ready" || registration["synced_count"] != 1 {
+		t.Fatalf("shared fixture approval app should register with DataSrv: %#v", registration)
+	}
+	metadata := anyMap(appInstallationPayload["metadata"])
+	if appInstallationPayload["kind"] != "enterprise_approval_app" || len(anySlice(appInstallationPayload["role_bindings"])) != 1 {
+		t.Fatalf("DataSrv registration should preserve approval app role binding: %#v", appInstallationPayload)
+	}
+	if metadata["hub_capability_id"] != capabilityID || metadata["hub_review_status"] != "published" || metadata["workflow_contract_skill_id"] != "approval-ready-workflow" || metadata["workspace_layout_fingerprint"] == "" {
+		t.Fatalf("DataSrv metadata should preserve Hub governance, workflow, and layout evidence: %#v", metadata)
+	}
+	records, err := app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
+	}
+	if len(records) != 1 || records[0].AppID != "approval-ready-app" || records[0].DataSrvRegistration["status"] != "ready" {
+		t.Fatalf("shared fixture install should be persisted with DataSrv evidence: %#v", records)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	workflowJSON := `{"progress_instances":[{"status":"pending","workflow_instance_id":"wf-ready-run-1","approval_id":"approval-ready-run-1","record_id":"expense-ready-run-1","dataset_id":"finance.expense_forms","object_role":"expense_request","workflow_skill_id":"approval-ready-workflow","workflow_version":"1.0.0","workflow_node_id":"expense.manager_review","workflow_node_ids":["expense.submit","expense.manager_review"],"current_assignee":"manager","current_assignee_type":"user","business_status":"finance_pending","result_status":"running","result":"manager review started","result_payload":{"text":"manager review started","business_record":{"id":"expense-ready-run-1","status":"finance_pending"}},"outputs":[{"type":"content","title":"Workflow Progress","text":"manager review started","status":"running"}]}],"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-ready-run-1","approval_id":"approval-ready-run-1","record_id":"expense-ready-run-1","dataset_id":"finance.expense_forms","object_role":"expense_request","workflow_skill_id":"approval-ready-workflow","workflow_version":"1.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","expense.manager_review","expense.result"],"workflow_decision_id":"decision-ready-run-1","business_status":"finance_approved","result_status":"approved","result":"approved by shared workflow","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-ready-run-1","status":"finance_approved"},"text":"approved by shared workflow"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by shared workflow"},{"type":"artifact","title":"Approval PDF","artifact":{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}}],"artifacts":[{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}]}}`
+	workflowResultPath := filepath.Join(app.testHomeDir, "shared-ready-workflow-result.txt")
+	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
+		t.Fatalf("write shared workflow result fixture: %v", err)
+	}
+	workflowCommand := `cat "` + workflowResultPath + `"`
+	if os.PathSeparator == '\\' {
+		workflowCommand = `type "` + workflowResultPath + `"`
+	}
+	if err := app.skillExecutor.Update(corelib.NLSkillEntry{
+		Name:   "approval-ready-workflow",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action:  "bash",
+			Params:  map[string]interface{}{"command": workflowCommand},
+			Capture: map[string]string{"workflow_result": `workflow_result=(.+)`},
+		}},
+	}); err != nil {
+		t.Fatalf("update shared workflow skill: %v", err)
+	}
+	started, err := app.StartMaclawAppApprovalWorkflow(MaclawAppApprovalWorkflowStartInput{
+		AppID:            "approval-ready-app",
+		DatasetID:        "finance.expense_forms",
+		ObjectRole:       "expense_request",
+		BlueprintID:      "finance.expense.v1",
+		RecordID:         "expense-ready-run-1",
+		Title:            "Shared Ready Run",
+		Applicant:        "alice",
+		Approver:         "manager",
+		ApprovalEvent:    "finance.submitted",
+		BusinessNote:     "submit shared fixture workflow",
+		BusinessPayload:  map[string]any{"amount": float64(960), "currency": "CNY"},
+		RunWorkflowSkill: true,
+	})
+	if err != nil {
+		t.Fatalf("StartMaclawAppApprovalWorkflow() shared fixture error = %v", err)
+	}
+	workflowRun, ok := started["workflow_run"].(map[string]any)
+	if !ok || workflowRun["ran"] != true {
+		t.Fatalf("expected shared fixture workflow run evidence: %#v", started["workflow_run"])
+	}
+	progressInstances, ok := workflowRun["progress_instances"].([]maclawAppApprovalInstance)
+	if !ok || len(progressInstances) != 1 || progressInstances[0].CurrentNode != "expense.manager_review" || progressInstances[0].ResultStatus != "running" {
+		t.Fatalf("shared fixture workflow should sync running progress: %#v", workflowRun["progress_instances"])
+	}
+	finalInstance, ok := workflowRun["instance"].(maclawAppApprovalInstance)
+	if !ok || finalInstance.ApprovalID != "approval-ready-run-1" || finalInstance.InstanceID != "wf-ready-run-1" || finalInstance.Status != "approved" || finalInstance.WorkflowDecisionID != "decision-ready-run-1" {
+		t.Fatalf("shared fixture workflow should finish approval instance: %#v", workflowRun["instance"])
+	}
+	appHandled, err := app.ListMaclawAppApprovalInstances("approval-ready-app", "handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances shared handled error = %v", err)
+	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll shared handled error = %v", err)
+	}
+	if len(appHandled) != 1 || len(globalHandled) != 1 {
+		t.Fatalf("shared fixture workflow should be readable from app and global approval centers, app=%#v global=%#v", appHandled, globalHandled)
+	}
+	readBack := appHandled[0]
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, readBack, globalHandled[0])
+	if readBack.AppID != "approval-ready-app" || readBack.WorkflowSkillID != "approval-ready-workflow" || readBack.WorkflowVersion != "1.0.0" || readBack.CurrentNode != "expense.result" {
+		t.Fatalf("shared fixture readback should preserve app/workflow identity: %#v", readBack)
+	}
+	if readBack.ResultPayload["approval_result"] != "approved" || len(readBack.Outputs) != 2 || len(readBack.Artifacts) != 1 || readBack.Artifacts[0].Name != "approval-ready-run.pdf" {
+		t.Fatalf("shared fixture readback should preserve result text and file artifact: %#v", readBack)
+	}
+	sawProgress := false
+	sawReview := false
+	sawAppScopedHandled := false
+	sawGlobalHandled := false
+	for _, req := range dataSrvRequests {
+		if req.Method == http.MethodPost && req.Path == "/api/v1/data/approvals/approval-ready-run-1/progress" {
+			sawProgress = true
+		}
+		if req.Method == http.MethodPost && req.Path == "/api/v1/data/approvals/approval-ready-run-1/review" {
+			sawReview = req.Body["decision"] == "approved" && req.Body["workflow_node_id"] == "expense.result"
+		}
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" && req.RawQuery == "app_id=approval-ready-app&lane=handled&limit=10" {
+			sawAppScopedHandled = true
+		}
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" && req.RawQuery == "lane=handled&limit=10" {
+			sawGlobalHandled = true
+		}
+	}
+	if !sawProgress || !sawReview || !sawAppScopedHandled || !sawGlobalHandled {
+		t.Fatalf("shared fixture should sync progress/review and query both approval centers, progress=%v review=%v app=%v global=%v requests=%#v", sawProgress, sawReview, sawAppScopedHandled, sawGlobalHandled, dataSrvRequests)
+	}
+}
+
+func TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	packageSHA := strings.Repeat("c", 64)
+	payload := "maclaw-app\n" + packageSHA + "\nenterprise_hub:skill:maclaw-app:unsigned-governance@pkg\n2026-06-30T08:00:00Z\nhub-admin"
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppReadyToolPackageForHubSyncTest(t, "unsigned-governance")), &pkg); err != nil {
+		t.Fatalf("decode package fixture: %v", err)
+	}
+	pkg["source"] = "enterprise_hub"
+	pkg["package_sha256"] = packageSHA
+	pkg["package_signature"] = map[string]any{
+		"schema":                 "maclaw.app.package_signature.v1",
+		"algorithm":              "ed25519",
+		"payload":                payload,
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"public_key_fingerprint": downloadedSkillPublicKeyFingerprint(publicKey),
+		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload))),
+		"package_sha256":         packageSHA,
+		"version_key":            "enterprise_hub:skill:maclaw-app:unsigned-governance@pkg",
+		"signed_at":              "2026-06-30T08:00:00Z",
+		"signed_by":              "hub-admin",
+	}
+	pkg["review_evidence"] = map[string]any{
+		"unsigned-governance": map[string]any{"run_id": "run-unsigned-governance"},
+	}
+	pkg["maclaw_app_review_evidence"] = pkg["review_evidence"]
+	pkg["resolved_dependencies"] = []any{
+		map[string]any{"id": "unsigned-governance-skill", "kind": "runtime_skill", "required": true, "source": "enterprise_hub"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pkg)
+	}))
+	defer server.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	_, err = app.DownloadMaclawAppPackageFromHub("cap-unsigned-governance")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "governance submission") {
+		t.Fatalf("expected missing published governance failure, got %v", err)
+	}
+}
+
+func TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	packageSHA := strings.Repeat("d", 64)
+	payload := "maclaw-app\n" + packageSHA + "\nenterprise_hub:skill:maclaw-app:missing-package-review@pkg\n2026-06-30T08:00:00Z\nhub-admin"
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppReadyToolPackageForHubSyncTest(t, "missing-package-review")), &pkg); err != nil {
+		t.Fatalf("decode package fixture: %v", err)
+	}
+	pkg["package_sha256"] = packageSHA
+	pkg["package_signature"] = map[string]any{
+		"schema":                 "maclaw.app.package_signature.v1",
+		"algorithm":              "ed25519",
+		"payload":                payload,
+		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+		"public_key_fingerprint": downloadedSkillPublicKeyFingerprint(publicKey),
+		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload))),
+		"package_sha256":         packageSHA,
+		"version_key":            "enterprise_hub:skill:maclaw-app:missing-package-review@pkg",
+		"signed_at":              "2026-06-30T08:00:00Z",
+		"signed_by":              "hub-admin",
+	}
+	markMaclawAppPackageAsPublishedHubDownloadTest(t, pkg, "missing-package-review", "cap-missing-package-review", "enterprise_hub:skill:maclaw-app:missing-package-review@pkg")
+	delete(pkg, "review_evidence")
+	delete(pkg, "maclaw_app_review_evidence")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pkg)
+	}))
+	defer server.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	_, err = app.DownloadMaclawAppPackageFromHub("cap-missing-package-review")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "package review_evidence") {
+		t.Fatalf("expected missing package review evidence failure, got %v", err)
 	}
 }
 
@@ -2311,18 +2934,9 @@ func TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDepen
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
-	skillBody := []byte(`{"id":"signed-skill","name":"signed-skill","description":"signed skill","version":"1.0.0","steps":[{"action":"craft_tool","params":{"instructions":"do it"}}],"files":{"SKILL.md":"IyBTaWduZWQgU2tpbGwK"}}`)
-	skillSHA := sha256HexForTest(skillBody)
-	skillSignature := map[string]any{
-		"algorithm":              "ed25519",
-		"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
-		"public_key_fingerprint": fingerprint,
-		"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, skillBody)),
-		"package_sha256":         skillSHA,
-	}
-	skillSignatureJSON, err := json.Marshal(skillSignature)
+	skillBody, skillSHA, skillSignatureJSON, err := maclawapptest.SignedEnterpriseHubSkillPackage("signed-skill", "1.0.0", "do it", publicKey, privateKey)
 	if err != nil {
-		t.Fatalf("marshal skill signature: %v", err)
+		t.Fatalf("signed skill fixture: %v", err)
 	}
 
 	pkgJSON := maclawAppPackageWithCurrentDefinitionHashes(t, `{
@@ -2340,10 +2954,10 @@ func TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDepen
 					"skill": {"id": "signed-skill", "version": "1.0.0", "source": "enterprise_hub", "install_ref": "enterprise_hub://capabilities/cap-signed-skill@1.0.0"}
 				},
 				"governance": {
-					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":2, "regions":[{"id":"input", "role":"input", "placement":"left"}, {"id":"output", "role":"output", "placement":"right"}]},
-					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "density":"compact", "primaryRegion":"left", "outputRegion":"right", "regionCount":2, "visibleRegionCount":2, "regionIds":["input","output"], "fingerprint":"layout-tool-signed-install", "studio":{"editable":true, "savedInManifest":true, "updatedBy":"app_studio"}, "regions":[{"id":"input", "role":"input", "placement":"left"}, {"id":"output", "role":"output", "placement":"right"}]},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"document", "types":["document","content","artifact"], "delivery":{"inlineContent":true, "artifacts":true}},
 					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencyCount":1, "requiredCount":1, "installedCount":1, "missingCount":0, "blockedCount":0, "ok":true, "blocked":false, "dependencies":[{"id":"signed-skill", "version":"1.0.0", "kind":"app_skill", "required":true, "source":"enterprise_hub", "install_ref":"enterprise_hub://capabilities/cap-signed-skill@1.0.0", "installed":true, "health":"ready", "action":"skip"}]},
-					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-signed-install", "sampleInput":{"sample":true}, "expectedOutput":{"content":"ok"}, "requiredRoles":["tester"], "requiredScopes":["app.run"], "riskLevel":"low"}, "testProtocolFingerprint":"proto-signed-install", "runId":"run-signed-install", "verifiedAt":"2026-06-30T08:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-signed-install", "sampleInput":{"sample":true}, "expectedOutput":{"document":"signed-output.pdf"}, "requiredRoles":["tester"], "requiredScopes":["app.run"], "riskLevel":"low"}, "testProtocolFingerprint":"proto-signed-install", "runId":"run-signed-install", "verifiedAt":"2026-06-30T08:00:00Z", "primaryResult":"document", "resultPayload":{"document":"signed-output.pdf", "content":"ok"}, "outputs":[{"kind":"document", "title":"Signed output", "text":"signed-output.pdf", "status":"ready"}], "artifacts":[{"id":"signed-output-pdf", "name":"signed-output.pdf", "uri":"artifact://signed/output.pdf", "status":"ready"}], "resultCoverage":{"ok":true, "primary":"document", "coveredTypes":["document","content","artifact"], "missingTypes":[]}}
 				}
 			}
 		}]
@@ -2367,6 +2981,9 @@ func TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDepen
 		"signed_at":              "2026-06-30T08:00:00Z",
 		"signed_by":              "hub-admin",
 	}
+	markMaclawAppPackageAsPublishedHubDownloadTest(t, pkg, "signed-install-app", "cap-signed-install", "enterprise_hub:skill:maclaw-app:signed-install-app@pkg")
+	layoutFingerprints := normalizeMaclawAppPackageWorkspaceFingerprintsForTest(t, pkg)
+	signedInstallLayoutFingerprint := layoutFingerprints["signed-install-app"]
 
 	var servedSkillDownload bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2378,7 +2995,7 @@ func TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDepen
 		case "/api/capabilities/maclaw-apps/cap-signed-install/package":
 			_ = json.NewEncoder(w).Encode(pkg)
 		case "/api/capabilities/cap-signed-skill":
-			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-signed-skill", CapabilityID: "signed-skill", CapabilityType: "skill", Status: "published", CurrentVersionKey: "1.0.0", PackageSHA256: skillSHA, PackageSignature: string(skillSignatureJSON), MetadataJSON: `{"skill_id":"signed-skill","hub_skill_id":"signed-skill","package_sha256":"` + skillSHA + `","package_signature":` + strconv.Quote(string(skillSignatureJSON)) + `}`})
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("signed-skill", "cap-signed-skill", "1.0.0", skillSHA, skillSignatureJSON))
 		case "/api/v1/skills/signed-skill/download":
 			servedSkillDownload = true
 			_, _ = w.Write(skillBody)
@@ -2418,6 +3035,38 @@ func TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDepen
 	if dep == nil || !dep.Installed || dep.Health != "ready" || dep.PackageSHA256 != skillSHA || dep.PackageSignature == "" {
 		t.Fatalf("signed dependency should be installed with integrity metadata: %#v", dep)
 	}
+	installRecord, ok := result["install_record"].(map[string]any)
+	if !ok {
+		t.Fatalf("signed tool install result should include install record: %#v", result)
+	}
+	registration := anyMap(installRecord["datasrv_registration"])
+	if registration["status"] != "skipped" || registration["reason"] != "no datasrv role bindings" {
+		t.Fatalf("tool app install should skip DataSrv registration without role bindings: %#v", registration)
+	}
+	installEvidence := anyMap(installRecord["install_evidence"])
+	toolEvidence := anyMap(installEvidence["signed-install-app"])
+	if toolEvidence["result_contract"] == nil || toolEvidence["workspace_layout"] == nil {
+		t.Fatalf("signed tool install evidence should include result contract and workspace layout: %#v", installRecord)
+	}
+	records, err := app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
+	}
+	if len(records) != 1 || records[0].AppID != "signed-install-app" || records[0].Kind != "tool_app" {
+		t.Fatalf("signed tool app install should be persisted: %#v", records)
+	}
+	if records[0].WorkspaceLayout["fingerprint"] != signedInstallLayoutFingerprint || records[0].WorkspaceLayout["visibleRegionCount"] != float64(2) {
+		t.Fatalf("signed tool install audit should preserve workspace layout evidence: %#v", records[0].WorkspaceLayout)
+	}
+	if records[0].ResultContract["primary"] != "document" {
+		t.Fatalf("signed tool install audit should preserve document result contract: %#v", records[0].ResultContract)
+	}
+	if records[0].TestEvidence["primaryResult"] != "document" {
+		t.Fatalf("signed tool install audit should preserve document test evidence: %#v", records[0].TestEvidence)
+	}
+	if artifacts := anySlice(records[0].TestEvidence["artifacts"]); len(artifacts) != 1 {
+		t.Fatalf("signed tool install audit should preserve artifact evidence: %#v", records[0].TestEvidence)
+	}
 }
 func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -2430,24 +3079,14 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
-	signedSkill := func(id string) ([]byte, string, string) {
-		body := []byte(`{"id":"` + id + `","name":"` + id + `","description":"signed ` + id + `","version":"1.0.0","steps":[{"action":"craft_tool","params":{"instructions":"run approval"}}],"files":{"SKILL.md":"IyBTaWduZWQgU2tpbGwK"}}`)
-		sha := sha256HexForTest(body)
-		signature := map[string]any{
-			"algorithm":              "ed25519",
-			"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
-			"public_key_fingerprint": fingerprint,
-			"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, body)),
-			"package_sha256":         sha,
-		}
-		signatureJSON, err := json.Marshal(signature)
-		if err != nil {
-			t.Fatalf("marshal %s signature: %v", id, err)
-		}
-		return body, sha, string(signatureJSON)
+	appSkillBody, appSkillSHA, appSkillSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("expense-super-skill", "1.4.0", "run approval", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed app skill fixture: %v", err)
 	}
-	appSkillBody, appSkillSHA, appSkillSignature := signedSkill("expense-super-skill")
-	workflowBody, workflowSHA, workflowSignature := signedSkill("expense-workflow")
+	workflowBody, workflowSHA, workflowSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("expense-workflow", "2.1.0", "run approval", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed workflow skill fixture: %v", err)
+	}
 
 	pkgJSON := maclawAppPackageWithCurrentDefinitionHashes(t, `{
 		"schema": "maclaw.app.pack.v1",
@@ -2474,16 +3113,18 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 						{"id":"expense-super-skill", "kind":"app_skill", "version":"1.4.0", "required":true, "source":"enterprise_hub", "install_ref":"enterprise_hub://capabilities/cap-expense-super-skill@1.4.0"},
 						{"id":"expense-workflow", "kind":"workflow_skill", "version":"2.1.0", "required":true, "source":"enterprise_hub", "install_ref":"enterprise_hub://capabilities/cap-expense-workflow@2.1.0"}
 					]},
-					"ui": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "layouts":{"approval_workspace":{"template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regions":[{"id":"request_form", "role":"input", "placement":"center"}, {"id":"approval_inbox", "role":"instance_list", "placement":"left"}, {"id":"result_panel", "role":"output", "placement":"bottom"}]}}},
+						"ui": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "layouts":{"approval_workspace":{"template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionIds":["approval_inbox","request_form","approval_detail","result_panel"], "visibleRegionCount":3, "fingerprint":"layout-expense-golden", "studio":{"editable":true, "savedInManifest":true, "updatedBy":"app_studio"}, "regions":[{"id":"approval_inbox", "role":"instance_list", "placement":"left", "order":1}, {"id":"request_form", "role":"input", "placement":"center", "order":2}, {"id":"approval_detail", "role":"detail", "placement":"right", "visible":false, "order":3}, {"id":"result_panel", "role":"output", "placement":"bottom", "order":4}]}}},
 					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "business_record", "artifact"], "delivery":{"inlineContent":true, "artifacts":true}}
 				},
 				"governance": {
-					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionCount":3, "regions":[{"id":"request_form", "role":"input", "placement":"center"}, {"id":"approval_inbox", "role":"instance_list", "placement":"left"}, {"id":"result_panel", "role":"output", "placement":"bottom"}]},
+						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionCount":4, "visibleRegionCount":3, "regionIds":["approval_inbox","request_form","approval_detail","result_panel"], "fingerprint":"layout-expense-golden", "studio":{"editable":true, "savedInManifest":true, "updatedBy":"app_studio"}, "regions":[{"id":"approval_inbox", "role":"instance_list", "placement":"left", "order":1}, {"id":"request_form", "role":"input", "placement":"center", "order":2}, {"id":"approval_detail", "role":"detail", "placement":"right", "visible":false, "order":3}, {"id":"result_panel", "role":"output", "placement":"bottom", "order":4}]},
 					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "business_record", "artifact"], "delivery":{"inlineContent":true, "artifacts":true}},
 					"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-expense-golden", "sampleInput":{"amount":860, "applicant":"alice"}, "expectedOutput":{"approval_result":"approved", "business_status":"finance_approved"}},
 					"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-workflow", "workflowVersion":"2.1.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"finance_pending", "approved":"finance_approved", "rejected":"finance_rejected", "attention":"finance_attention"}},
 					"dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "hasGovernanceReviewIssue":false, "dependencies":[{"id":"expense-super-skill", "kind":"app_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}, {"id":"expense-workflow", "kind":"workflow_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
-					"testEvidence": {"runId":"run-expense-golden", "testProtocolFingerprint":"proto-expense-golden", "primaryResult":"approval_result", "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "record_id":"expense-golden-1"}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"artifact-expense-golden", "name":"expense-golden.pdf", "uri":"artifact://expense/golden.pdf", "status":"ready"}], "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "business_record", "artifact"], "missingTypes":[]}, "dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "hasGovernanceReviewIssue":false}, "approvalInstance":{"instanceId":"wf-evidence-golden", "approvalID":"approval-evidence-golden", "recordID":"expense-golden-1", "datasetID":"finance.expense_forms", "blueprintID":"finance.expense.v1", "objectRole":"expense_report", "approvalEvent":"finance.submitted", "workflowSkillId":"expense-workflow", "workflowVersion":"2.1.0", "status":"approved", "currentNode":"expense.result", "businessStatus":"finance_approved", "resultStatus":"approved", "viewVerified":true, "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "business_record":{"id":"expense-golden-1"}}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"artifact-expense-golden", "name":"expense-golden.pdf", "uri":"artifact://expense/golden.pdf", "status":"ready"}]}}
+					"testEvidence": {"runId":"run-expense-golden", "testProtocolFingerprint":"proto-expense-golden", "primaryResult":"approval_result", "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "record_id":"expense-golden-1"}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"artifact-expense-golden", "name":"expense-golden.pdf", "uri":"artifact://expense/golden.pdf", "status":"ready"}], "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result", "business_status", "business_record", "artifact"], "missingTypes":[]}, "dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "hasGovernanceReviewIssue":false}, "approvalInstance":{"instanceId":"wf-evidence-golden", "approvalID":"approval-evidence-golden", "recordID":"expense-golden-1", "datasetID":"finance.expense_forms", "blueprintID":"finance.expense.v1", "objectRole":"expense_report", "approvalEvent":"finance.submitted", "workflowSkillId":"expense-workflow", "workflowVersion":"2.1.0", "status":"approved", "currentNode":"expense.result", "businessStatus":"finance_approved", "resultStatus":"approved", "viewVerified":true, "resultPayload":{"approval_result":"approved", "business_status":"finance_approved", "business_record":{"id":"expense-golden-1"}}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"artifact-expense-golden", "name":"expense-golden.pdf", "uri":"artifact://expense/golden.pdf", "status":"ready"}]}},
+					"reviewEvidence": {"run_id":"run-expense-golden", "test_protocol_fingerprint":"proto-expense-golden", "result_contract_primary":"approval_result", "result_coverage_primary":"approval_result", "result_coverage_covered_count":4, "result_coverage_missing_count":0, "output_count":1, "artifact_count":1, "approval_status":"approved", "current_node":"expense.result"},
+					"submission": {"channel":"hub", "status":"published", "capability_id":"cap-expense-approval", "market_capability_id":"expense-approval", "submission_id":"enterprise_hub:skill:maclaw-app:expense-approval@pkg", "version_key":"enterprise_hub:skill:maclaw-app:expense-approval@pkg", "package_sha256":"pkg-expense-approval-golden", "review_evidence":{"expense-approval":{"run_id":"run-expense-golden", "approval_status":"approved", "current_node":"expense.result"}}}
 				}
 			}
 		}]
@@ -2492,6 +3133,28 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	if err := json.Unmarshal([]byte(pkgJSON), &pkg); err != nil {
 		t.Fatalf("decode app package: %v", err)
 	}
+	pkg["capability"] = map[string]any{
+		"id":                  "cap-expense-approval",
+		"capability_id":       "expense-approval",
+		"display_name":        "Expense Approval",
+		"status":              "published",
+		"current_version_key": "enterprise_hub:skill:maclaw-app:expense-approval@pkg",
+	}
+	pkg["review_evidence"] = map[string]any{
+		"expense-approval": map[string]any{
+			"run_id":                        "run-expense-golden",
+			"test_protocol_fingerprint":     "proto-expense-golden",
+			"result_contract_primary":       "approval_result",
+			"result_coverage_primary":       "approval_result",
+			"result_coverage_covered_count": 4,
+			"result_coverage_missing_count": 0,
+			"output_count":                  1,
+			"artifact_count":                1,
+			"approval_status":               "approved",
+			"current_node":                  "expense.result",
+		},
+	}
+	pkg["maclaw_app_review_evidence"] = pkg["review_evidence"]
 	pkgSHA := strings.Repeat("d", 64)
 	pkgPayload := "maclaw-app\n" + pkgSHA + "\nenterprise_hub:skill:maclaw-app:expense-approval@pkg\n2026-06-30T09:00:00Z\nhub-admin"
 	pkg["package_sha256"] = pkgSHA
@@ -2507,17 +3170,70 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 		"signed_at":              "2026-06-30T09:00:00Z",
 		"signed_by":              "hub-admin",
 	}
+	if apps := anySlice(pkg["apps"]); len(apps) == 1 {
+		entry := anyMap(apps[0])
+		appMap := anyMap(entry["app"])
+		governance := anyMap(appMap["governance"])
+		submission := anyMap(governance["submission"])
+		submission["package_signature"] = pkg["package_signature"]
+	}
+	layoutFingerprints := normalizeMaclawAppPackageWorkspaceFingerprintsForTest(t, pkg)
+	expenseLayoutFingerprint := layoutFingerprints["expense-approval"]
 
 	remoteFinal := false
 	supplementalFinal := false
 	supplementalCreateCount := 0
 	var dataSrvRequests []string
+	var dataSrvApprovalSyncs []struct {
+		Path string
+		Body map[string]any
+	}
+	var appInstallationPayload map[string]any
 	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dataSrvRequests = append(dataSrvRequests, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
+		captureApprovalSync := func() {
+			body := map[string]any{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode approval sync body for %s: %v", r.URL.Path, err)
+			}
+			dataSrvApprovalSyncs = append(dataSrvApprovalSyncs, struct {
+				Path string
+				Body map[string]any
+			}{Path: r.URL.Path, Body: body})
+		}
 		switch {
 		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/expense-approval":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read app installation body: %v", err)
+			}
+			if err := json.Unmarshal(body, &appInstallationPayload); err != nil {
+				t.Fatalf("decode app installation body: %v body=%s", err, string(body))
+			}
 			_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/app-installations":
+			items := []map[string]any{}
+			metadata := anyMap(appInstallationPayload["metadata"])
+			matches := appInstallationPayload != nil
+			if value := r.URL.Query().Get("hub_capability_id"); value != "" && metadata["hub_capability_id"] != value {
+				matches = false
+			}
+			if value := r.URL.Query().Get("hub_version_key"); value != "" && metadata["hub_version_key"] != value {
+				matches = false
+			}
+			if value := r.URL.Query().Get("hub_review_status"); value != "" && metadata["hub_review_status"] != value {
+				matches = false
+			}
+			if value := r.URL.Query().Get("workspace_layout_fingerprint"); value != "" && metadata["workspace_layout_fingerprint"] != value {
+				matches = false
+			}
+			if matches {
+				items = append(items, appInstallationPayload)
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"items": items}); err != nil {
+				t.Fatalf("encode app installation query response: %v", err)
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-golden-1":
 			_, _ = w.Write([]byte(`{"id":"expense-golden-1","data":{"status":"draft","amount":860}}`))
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-golden-1":
@@ -2532,13 +3248,17 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 			supplementalCreateCount++
 			_, _ = w.Write([]byte(`{"id":"approval-golden-2","status":"pending"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-golden-1/progress":
+			captureApprovalSync()
 			_, _ = w.Write([]byte(`{"id":"approval-golden-1","status":"pending","progress":"director review"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-golden-2/progress":
+			captureApprovalSync()
 			_, _ = w.Write([]byte(`{"id":"approval-golden-2","status":"pending","progress":"supplemental input"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-golden-1/review":
+			captureApprovalSync()
 			remoteFinal = true
 			_, _ = w.Write([]byte(`{"id":"approval-golden-1","status":"approved"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-golden-2/review":
+			captureApprovalSync()
 			supplementalFinal = true
 			_, _ = w.Write([]byte(`{"id":"approval-golden-2","status":"approved"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/approvals":
@@ -2566,9 +3286,9 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 		case "/api/capabilities/maclaw-apps/cap-expense-approval/package":
 			_ = json.NewEncoder(w).Encode(pkg)
 		case "/api/capabilities/cap-expense-super-skill":
-			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-expense-super-skill", CapabilityID: "expense-super-skill", CapabilityType: "skill", Status: "published", CurrentVersionKey: "1.4.0", PackageSHA256: appSkillSHA, PackageSignature: appSkillSignature, MetadataJSON: `{"skill_id":"expense-super-skill","hub_skill_id":"expense-super-skill","package_sha256":"` + appSkillSHA + `","package_signature":` + strconv.Quote(appSkillSignature) + `}`})
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("expense-super-skill", "cap-expense-super-skill", "1.4.0", appSkillSHA, appSkillSignature))
 		case "/api/capabilities/cap-expense-workflow":
-			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-expense-workflow", CapabilityID: "expense-workflow", CapabilityType: "skill", Status: "published", CurrentVersionKey: "2.1.0", PackageSHA256: workflowSHA, PackageSignature: workflowSignature, MetadataJSON: `{"skill_id":"expense-workflow","hub_skill_id":"expense-workflow","package_sha256":"` + workflowSHA + `","package_signature":` + strconv.Quote(workflowSignature) + `}`})
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("expense-workflow", "cap-expense-workflow", "2.1.0", workflowSHA, workflowSignature))
 		case "/api/v1/skills/expense-super-skill/download":
 			_, _ = w.Write(appSkillBody)
 		case "/api/v1/skills/expense-workflow/download":
@@ -2594,6 +3314,36 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	installed, err := app.InstallSelectedMaclawAppPackageFromHub("cap-expense-approval", []string{"expense-approval"})
 	if err != nil {
 		t.Fatalf("InstallSelectedMaclawAppPackageFromHub() error = %v", err)
+	}
+	installedPackage := anyMap(installed["package"])
+	packageCapability := anyMap(installedPackage["capability"])
+	packageReviewEvidence := anyMap(installedPackage["review_evidence"])
+	packageAppEvidence := anyMap(packageReviewEvidence["expense-approval"])
+	if installedPackage["source"] != "enterprise_hub" ||
+		packageCapability["id"] != "cap-expense-approval" ||
+		packageCapability["status"] != "published" ||
+		packageCapability["current_version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" ||
+		packageAppEvidence["run_id"] != "run-expense-golden" ||
+		packageAppEvidence["approval_status"] != "approved" {
+		t.Fatalf("installed selected package should preserve Hub published package identity and review evidence: %#v", installedPackage)
+	}
+	installedPackageApps := anySlice(installedPackage["apps"])
+	if len(installedPackageApps) != 1 {
+		t.Fatalf("installed selected package should preserve exactly one selected app entry: %#v", installedPackage["apps"])
+	}
+	installedEntry := anyMap(installedPackageApps[0])
+	installedEntryApp := anyMap(installedEntry["app"])
+	installedEntryGovernance := anyMap(installedEntryApp["governance"])
+	installedSubmission := anyMap(installedEntryGovernance["submission"])
+	installedSubmissionReviewEvidence := anyMap(installedSubmission["review_evidence"])
+	installedSubmissionAppEvidence := anyMap(installedSubmissionReviewEvidence["expense-approval"])
+	if installedSubmission["status"] != "published" ||
+		installedSubmission["capability_id"] != "cap-expense-approval" ||
+		installedSubmission["market_capability_id"] != "expense-approval" ||
+		installedSubmission["version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" ||
+		len(anyMap(installedSubmission["package_signature"])) == 0 ||
+		installedSubmissionAppEvidence["run_id"] != "run-expense-golden" {
+		t.Fatalf("installed selected package entry should preserve Hub submission identity and review evidence: %#v", installedSubmission)
 	}
 	plan, ok := installed["install_plan"].(maclawAppInstallPlan)
 	if !ok || plan.HasMissingRequired || plan.HasBlockingDependency {
@@ -2636,12 +3386,102 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	if installRecord.WorkspaceLayout["entry"] != "approval_workspace" || installRecord.ResultContract["primary"] != "approval_result" {
 		t.Fatalf("install audit should preserve UI layout and result contract: layout=%#v result=%#v", installRecord.WorkspaceLayout, installRecord.ResultContract)
 	}
+	if installRecord.WorkspaceLayout["template"] != "left_nav" || installRecord.WorkspaceLayout["density"] != "compact" || installRecord.WorkspaceLayout["fingerprint"] != expenseLayoutFingerprint {
+		t.Fatalf("install audit should preserve App Studio workspace layout identity: %#v", installRecord.WorkspaceLayout)
+	}
+	if fmt.Sprint(installRecord.WorkspaceLayout["regionCount"]) != "4" || fmt.Sprint(installRecord.WorkspaceLayout["visibleRegionCount"]) != "3" {
+		t.Fatalf("install audit should preserve workspace layout region counts: %#v", installRecord.WorkspaceLayout)
+	}
+	if gotRegionIDs := strings.Join(maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(installRecord.WorkspaceLayout["regionIds"], installRecord.WorkspaceLayout["region_ids"])), ","); gotRegionIDs != "approval_inbox,request_form,approval_detail,result_panel" {
+		t.Fatalf("install audit should preserve workspace layout region order, got %q in %#v", gotRegionIDs, installRecord.WorkspaceLayout)
+	}
+	studioLayout := anyMap(installRecord.WorkspaceLayout["studio"])
+	if studioLayout["editable"] != true || studioLayout["savedInManifest"] != true || studioLayout["updatedBy"] != "app_studio" {
+		t.Fatalf("install audit should preserve App Studio layout edit evidence: %#v", installRecord.WorkspaceLayout)
+	}
+	appInstallationMetadata := anyMap(appInstallationPayload["metadata"])
+	if appInstallationPayload["app_id"] != "expense-approval" || appInstallationMetadata["workspace_layout_fingerprint"] != expenseLayoutFingerprint {
+		t.Fatalf("DataSrv app installation should receive workspace layout fingerprint metadata: payload=%#v metadata=%#v", appInstallationPayload, appInstallationMetadata)
+	}
+	if appInstallationMetadata["workspace_layout_template"] != "left_nav" || appInstallationMetadata["workspace_layout_density"] != "compact" || appInstallationMetadata["workspace_layout_primary_region"] != "center" || appInstallationMetadata["workspace_layout_output_region"] != "bottom" {
+		t.Fatalf("DataSrv app installation should receive workspace layout placement metadata: %#v", appInstallationMetadata)
+	}
+	if fmt.Sprint(appInstallationMetadata["workspace_layout_region_count"]) != "4" || fmt.Sprint(appInstallationMetadata["workspace_layout_visible_region_count"]) != "3" {
+		t.Fatalf("DataSrv app installation should receive workspace layout region counts: %#v", appInstallationMetadata)
+	}
+	if gotRegionIDs := strings.Join(maclawAppStringListFromAny(appInstallationMetadata["workspace_layout_region_ids"]), ","); gotRegionIDs != "approval_inbox,request_form,approval_detail,result_panel" {
+		t.Fatalf("DataSrv app installation should receive workspace layout region order, got %q in %#v", gotRegionIDs, appInstallationMetadata)
+	}
+	if appInstallationMetadata["hub_capability_id"] != "cap-expense-approval" || appInstallationMetadata["hub_version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" || appInstallationMetadata["hub_package_sha256"] != "pkg-expense-approval-golden" || appInstallationMetadata["hub_review_status"] != "published" {
+		t.Fatalf("DataSrv app installation should receive Hub published identity metadata: %#v", appInstallationMetadata)
+	}
+	dataSrvSubmission := anyMap(appInstallationMetadata["submission"])
+	dataSrvSubmissionSignature := anyMap(dataSrvSubmission["package_signature"])
+	if dataSrvSubmission["capability_id"] != "cap-expense-approval" ||
+		dataSrvSubmissionSignature["package_sha256"] != pkgSHA ||
+		dataSrvSubmissionSignature["public_key_fingerprint"] != fingerprint {
+		t.Fatalf("DataSrv app installation should receive Hub submission package signature: %#v", appInstallationMetadata)
+	}
+	dataSrvHubSignature := anyMap(appInstallationMetadata["hub_package_signature"])
+	if dataSrvHubSignature["package_sha256"] != pkgSHA ||
+		appInstallationMetadata["hub_package_signature_algorithm"] != "ed25519" ||
+		appInstallationMetadata["hub_package_signature_fingerprint"] != fingerprint ||
+		appInstallationMetadata["hub_package_signature_signed_at"] != "2026-06-30T09:00:00Z" ||
+		appInstallationMetadata["hub_package_signature_signed_by"] != "hub-admin" {
+		t.Fatalf("DataSrv app installation should receive flattened Hub package signature summaries: %#v", appInstallationMetadata)
+	}
+	if appInstallationMetadata["review_evidence_run_id"] != "run-expense-golden" || appInstallationMetadata["review_evidence_approval_status"] != "approved" || appInstallationMetadata["review_evidence_current_node"] != "expense.result" {
+		t.Fatalf("DataSrv app installation should receive Hub review evidence summaries: %#v", appInstallationMetadata)
+	}
+	if appInstallationMetadata["result_contract_primary"] != "approval_result" || appInstallationMetadata["test_evidence_result_coverage_primary"] != "approval_result" || appInstallationMetadata["test_evidence_result_coverage_covered_count"] != float64(4) || appInstallationMetadata["test_evidence_artifact_count"] != float64(1) {
+		t.Fatalf("DataSrv app installation should receive result contract and test coverage summaries: %#v", appInstallationMetadata)
+	}
+	if appInstallationMetadata["dependency_count"] != float64(2) || appInstallationMetadata["has_missing_required_dependency"] != false || appInstallationMetadata["has_blocking_dependency"] != false {
+		t.Fatalf("DataSrv app installation should receive dependency verification summaries: %#v", appInstallationMetadata)
+	}
+	queryURL := dataSrv.URL + "/api/v1/data/app-installations?hub_capability_id=cap-expense-approval&hub_version_key=" + url.QueryEscape("enterprise_hub:skill:maclaw-app:expense-approval@pkg") + "&hub_review_status=published&workspace_layout_fingerprint=" + url.QueryEscape(expenseLayoutFingerprint)
+	queryReq, err := http.NewRequest(http.MethodGet, queryURL, nil)
+	if err != nil {
+		t.Fatalf("create signed DataSrv app installation query: %v", err)
+	}
+	queryReq.Header.Set("Authorization", "Bearer data-token")
+	queryResp, err := http.DefaultClient.Do(queryReq)
+	if err != nil {
+		t.Fatalf("query signed DataSrv app installation by Hub/layout identity: %v", err)
+	}
+	defer queryResp.Body.Close()
+	if queryResp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(queryResp.Body)
+		t.Fatalf("signed DataSrv app installation query status=%d body=%s", queryResp.StatusCode, string(bodyBytes))
+	}
+	var queriedInstallations struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(queryResp.Body).Decode(&queriedInstallations); err != nil {
+		t.Fatalf("decode signed DataSrv app installation query: %v", err)
+	}
+	if len(queriedInstallations.Items) != 1 || queriedInstallations.Items[0]["app_id"] != "expense-approval" {
+		t.Fatalf("signed DataSrv app installation query should return installed approval app: %#v", queriedInstallations.Items)
+	}
+	queriedMetadata := anyMap(queriedInstallations.Items[0]["metadata"])
+	if queriedMetadata["hub_capability_id"] != "cap-expense-approval" || queriedMetadata["hub_review_status"] != "published" || queriedMetadata["workspace_layout_fingerprint"] != expenseLayoutFingerprint || queriedMetadata["review_evidence_run_id"] != "run-expense-golden" {
+		t.Fatalf("signed DataSrv query should preserve Hub review and layout summaries: %#v", queriedMetadata)
+	}
+	if anyMap(queriedMetadata["hub_package_signature"])["public_key_fingerprint"] != fingerprint || queriedMetadata["hub_package_signature_signed_by"] != "hub-admin" {
+		t.Fatalf("signed DataSrv query should preserve Hub package signature summaries: %#v", queriedMetadata)
+	}
 	approvalEvidence := anyMap(installRecord.TestEvidence["approval_instance"])
 	if len(approvalEvidence) == 0 {
 		approvalEvidence = anyMap(installRecord.TestEvidence["approvalInstance"])
 	}
 	if approvalEvidence["approval_id"] != "approval-evidence-golden" && approvalEvidence["approvalID"] != "approval-evidence-golden" {
 		t.Fatalf("install audit should preserve imported approval test evidence: %#v", installRecord.TestEvidence)
+	}
+	if installRecord.Submission["capability_id"] != "cap-expense-approval" || installRecord.Submission["version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" || installRecord.Submission["status"] != "published" {
+		t.Fatalf("signed install audit should preserve Hub submission identity: %#v", installRecord.Submission)
+	}
+	if installRecord.ReviewEvidence["run_id"] != "run-expense-golden" || installRecord.ReviewEvidence["approval_status"] != "approved" || installRecord.ReviewEvidence["current_node"] != "expense.result" {
+		t.Fatalf("signed install audit should preserve Hub review evidence: %#v", installRecord.ReviewEvidence)
 	}
 
 	started, err := app.StartMaclawAppApprovalWorkflow(MaclawAppApprovalWorkflowStartInput{AppID: "expense-approval", DatasetID: "finance.expense_forms", RecordID: "expense-golden-1", Title: "Golden Expense", Applicant: "alice", Approver: "manager", BusinessNote: "golden sample", BusinessPayload: map[string]any{"amount": float64(860), "currency": "CNY"}, FormData: map[string]any{"reason": "travel"}})
@@ -2699,6 +3539,24 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	}
 	if got.ResultPayload["approval_result"] != "approved" || got.ResultPayload["business_status"] != "finance_approved" || len(got.Outputs) != 2 || got.Outputs[1].Title != "Approval PDF" || len(got.Artifacts) != 1 || got.Artifacts[0].Name != "expense-golden-approved.pdf" {
 		t.Fatalf("handled approval should expose final content and file result package: %#v", got)
+	}
+	var goldenFinalSync map[string]any
+	for _, sync := range dataSrvApprovalSyncs {
+		if sync.Path == "/api/v1/data/approvals/approval-golden-1/review" {
+			goldenFinalSync = sync.Body
+		}
+	}
+	if len(goldenFinalSync) == 0 {
+		t.Fatalf("signed installed approval app should sync final review payload to DataSrv: %#v", dataSrvApprovalSyncs)
+	}
+	if goldenFinalSync["decision"] != "approved" || goldenFinalSync["workflow_instance_id"] != "wf-golden-1" || goldenFinalSync["workflow_node_id"] != "expense.result" || goldenFinalSync["workflow_version"] != "2.1.0" {
+		t.Fatalf("final review sync should preserve workflow identity: %#v", goldenFinalSync)
+	}
+	goldenFinalPayload := anyMap(goldenFinalSync["result_payload"])
+	goldenFinalOutputs := anySlice(goldenFinalSync["outputs"])
+	goldenFinalArtifacts := anySlice(goldenFinalSync["artifacts"])
+	if goldenFinalPayload["approval_result"] != "approved" || goldenFinalPayload["business_status"] != "finance_approved" || len(goldenFinalOutputs) != 2 || len(goldenFinalArtifacts) != 1 || anyMap(goldenFinalArtifacts[0])["name"] != "expense-golden-approved.pdf" {
+		t.Fatalf("final review sync should preserve result payload, output blocks and artifact package: %#v", goldenFinalSync)
 	}
 
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
@@ -2776,6 +3634,25 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	if !foundSupplemented {
 		t.Fatalf("installed supplemental approval should be visible as the same handled instance from DataSrv: %#v", goldenHandled)
 	}
+	var supplementalFinalSync map[string]any
+	for _, sync := range dataSrvApprovalSyncs {
+		if sync.Path == "/api/v1/data/approvals/approval-golden-2/review" {
+			supplementalFinalSync = sync.Body
+		}
+	}
+	if len(supplementalFinalSync) == 0 {
+		t.Fatalf("installed supplemental approval should sync final review payload to DataSrv: %#v", dataSrvApprovalSyncs)
+	}
+	supplementalPayload := anyMap(supplementalFinalSync["result_payload"])
+	supplementalInput := anyMap(supplementalPayload["supplemental_input"])
+	supplementalFormData := anyMap(supplementalInput["form_data"])
+	if supplementalFinalSync["decision"] != "approved" ||
+		supplementalFinalSync["workflow_instance_id"] != "wf-golden-2" ||
+		supplementalFinalSync["workflow_decision_id"] != "decision-golden-2" ||
+		supplementalPayload["approval_result"] != "approved" ||
+		supplementalFormData["invoice_attachment"] != "artifact://invoice/golden-2.pdf" {
+		t.Fatalf("supplemental final review sync should preserve continuation identity and submitted form data: %#v", supplementalFinalSync)
+	}
 	if len(dataSrvRequests) == 0 || dataSrvRequests[0] != "PUT /api/v1/data/app-installations/expense-approval" {
 		t.Fatalf("signed hub install should register approval app before runtime, got %#v", dataSrvRequests)
 	}
@@ -2840,15 +3717,23 @@ func TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnosti
 }
 func TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	fingerprint := downloadedSkillPublicKeyFingerprint(publicKey)
+	capabilityID := "cap-multi-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:multi-app@pkg"
+	packageSHA := strings.Repeat("f", 64)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/capabilities/maclaw-apps/cap-multi-app/package" {
+		if r.URL.Path != "/api/capabilities/maclaw-apps/"+capabilityID+"/package" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		pkg := maclawAppPackageWithCurrentDefinitionHashes(t, `{
-				"schema": "maclaw.app.pack.v1",
-				"privateMarker": "x_maclaw_apps",
-				"source": "enterprise_hub",
+					"schema": "maclaw.app.pack.v1",
+					"privateMarker": "x_maclaw_apps",
+					"source": "enterprise_hub",
 			"apps": [{
 				"schema": "maclaw.app.v1",
 				"privateMarker": "x_maclaw_apps",
@@ -2886,7 +3771,44 @@ func TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps(t *testing.T) 
 				}
 				}]
 			}`)
-		_, _ = w.Write([]byte(pkg))
+		var pkgMap map[string]any
+		if err := json.Unmarshal([]byte(pkg), &pkgMap); err != nil {
+			t.Fatalf("decode signed multi-app package fixture: %v", err)
+		}
+		reviewEvidence := map[string]any{
+			"hub-skip": map[string]any{"run_id": "run-skip-published", "approval_status": "ready", "current_node": "tool_workspace"},
+			"hub-kept": map[string]any{"run_id": "run-kept-published", "approval_status": "ready", "current_node": "tool_workspace"},
+		}
+		pkgMap["capability_id"] = capabilityID
+		pkgMap["capability"] = map[string]any{"id": capabilityID, "capability_id": "multi-app", "display_name": "Multi App", "status": "published", "current_version_key": versionKey}
+		pkgMap["review_evidence"] = reviewEvidence
+		pkgMap["maclaw_app_review_evidence"] = reviewEvidence
+		pkgMap["resolved_dependencies"] = []any{
+			map[string]any{"id": "local-only-skill", "kind": "runtime_skill", "source": "local", "required": true, "app_ids": []string{"hub-skip"}},
+			map[string]any{"id": "hub-kept-skill", "kind": "runtime_skill", "source": "enterprise_hub", "required": true, "app_ids": []string{"hub-kept"}},
+		}
+		signature := maclawapptest.SignPublishedMaclawAppHubPackage(pkgMap, publicKey, privateKey, packageSHA, versionKey, "2026-07-01T02:00:00Z", "hub-admin")
+		for _, rawEntry := range anySlice(pkgMap["apps"]) {
+			entry := anyMap(rawEntry)
+			appMap := anyMap(entry["app"])
+			appID := strings.TrimSpace(maclawAppStringFromAny(appMap["id"]))
+			governance := anyMap(appMap["governance"])
+			if governance == nil {
+				governance = map[string]any{}
+				appMap["governance"] = governance
+			}
+			governance["submission"] = map[string]any{
+				"schema":               "maclaw.app.hub_submission.v1",
+				"status":               "published",
+				"capability_id":        capabilityID,
+				"market_capability_id": appID,
+				"version_key":          versionKey,
+				"package_sha256":       packageSHA,
+				"package_signature":    signature,
+				"review_evidence":      reviewEvidence,
+			}
+		}
+		_ = json.NewEncoder(w).Encode(pkgMap)
 	}))
 	defer server.Close()
 	keptSkillDir := filepath.Join(app.GetDataDir(), "skills", "hub-kept-skill")
@@ -2908,6 +3830,11 @@ func TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps(t *testing.T) 
 	}
 	if result["app_count"] != 1 || result["source_app_count"] != 2 {
 		t.Fatalf("unexpected selected install counts: %#v", result)
+	}
+	installedPackage := anyMap(result["package"])
+	installedSignature := anyMap(installedPackage["package_signature"])
+	if installedSignature["public_key_fingerprint"] != fingerprint || installedSignature["package_sha256"] != packageSHA {
+		t.Fatalf("selected install package should preserve original Hub package signature: %#v", installedSignature)
 	}
 	appIDs, _ := result["app_ids"].([]string)
 	if len(appIDs) != 1 || appIDs[0] != "hub-kept" {
@@ -2935,6 +3862,9 @@ func TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps(t *testing.T) 
 	}
 	if len(records) != 1 || records[0].AppID != "hub-kept" || records[0].Source != "enterprise_hub" {
 		t.Fatalf("unexpected selected install records: %#v", records)
+	}
+	if records[0].ReviewEvidence["run_id"] != "run-kept-published" || strings.Contains(fmt.Sprint(records[0].Package), "run-skip-published") {
+		t.Fatalf("selected hub install audit should preserve only selected app review evidence: record=%#v package=%#v", records[0].ReviewEvidence, records[0].Package)
 	}
 }
 func TestInstallSelectedMaclawAppPackageFromHubInstallsDepsAndRegistersDataSrv(t *testing.T) {
@@ -3124,16 +4054,41 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 
 	var dataSrvRequests []map[string]interface{}
 	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/data/app-installations/expense-approval" {
-			t.Fatalf("unexpected DataSrv request: %s %s", r.Method, r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer data-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
-		var body map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode DataSrv registration body: %v", err)
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/expense-approval":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode DataSrv registration body: %v", err)
+			}
+			dataSrvRequests = append(dataSrvRequests, body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/app-installations":
+			items := []map[string]interface{}{}
+			for _, body := range dataSrvRequests {
+				metadata, _ := body["metadata"].(map[string]interface{})
+				if r.URL.Query().Get("hub_capability_id") != "" && metadata["hub_capability_id"] != r.URL.Query().Get("hub_capability_id") {
+					continue
+				}
+				if r.URL.Query().Get("hub_version_key") != "" && metadata["hub_version_key"] != r.URL.Query().Get("hub_version_key") {
+					continue
+				}
+				if r.URL.Query().Get("hub_review_status") != "" && metadata["hub_review_status"] != r.URL.Query().Get("hub_review_status") {
+					continue
+				}
+				items = append(items, body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{"items": items}); err != nil {
+				t.Fatalf("encode DataSrv query response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected DataSrv request: %s %s", r.Method, r.URL.String())
 		}
-		dataSrvRequests = append(dataSrvRequests, body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
 	}))
 	defer dataSrv.Close()
 
@@ -3168,15 +4123,16 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 							{"id":"expense-super-skill", "kind":"app_skill", "version":"1.4.0", "required":true, "source":"hub", "install_ref":"hub-expense-super-skill"},
 							{"id":"expense-workflow", "kind":"workflow_skill", "version":"2.1.0", "required":true, "source":"hub", "install_ref":"hub-expense-workflow"}
 						]},
-						"ui": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "layouts":{"approval_workspace":{"template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regions":[{"id":"request_form", "role":"input", "placement":"center"}, {"id":"approval_inbox", "role":"instance_list", "placement":"left"}, {"id":"result_panel", "role":"output", "placement":"bottom"}]}}},
+						"ui": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "layouts":{"approval_workspace":{"template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionIds":["approval_inbox","request_form","approval_detail","result_panel"], "visibleRegionCount":3, "fingerprint":"layout-expense-golden", "studio":{"editable":true, "savedInManifest":true, "updatedBy":"app_studio"}, "regions":[{"id":"approval_inbox", "role":"instance_list", "placement":"left", "order":1}, {"id":"request_form", "role":"input", "placement":"center", "order":2}, {"id":"approval_detail", "role":"detail", "placement":"right", "visible":false, "order":3}, {"id":"result_panel", "role":"output", "placement":"bottom", "order":4}]}}},
 						"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "artifact"], "delivery":{"inlineContent":true, "artifacts":true}},
 						"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-expense", "sampleInput":{"amount":860, "applicant":"alice"}, "expectedOutput":{"approval_result":"approved", "business_status":"finance_approved"}}
 					},
 					"governance": {
-						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionCount":3, "regions":[{"id":"request_form", "role":"input", "placement":"center"}, {"id":"approval_inbox", "role":"instance_list", "placement":"left"}, {"id":"result_panel", "role":"output", "placement":"bottom"}]},
+						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"left_nav", "density":"compact", "primaryRegion":"center", "outputRegion":"bottom", "regionCount":4, "visibleRegionCount":3, "regionIds":["approval_inbox","request_form","approval_detail","result_panel"], "fingerprint":"layout-expense-golden", "studio":{"editable":true, "savedInManifest":true, "updatedBy":"app_studio"}, "regions":[{"id":"approval_inbox", "role":"instance_list", "placement":"left", "order":1}, {"id":"request_form", "role":"input", "placement":"center", "order":2}, {"id":"approval_detail", "role":"detail", "placement":"right", "visible":false, "order":3}, {"id":"result_panel", "role":"output", "placement":"bottom", "order":4}]},
 						"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result", "business_status", "artifact"], "delivery":{"inlineContent":true, "artifacts":true}},
 							"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-expense", "sampleInput":{"amount":860, "applicant":"alice"}, "expectedOutput":{"approval_result":"approved", "business_status":"finance_approved"}},
 						"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-workflow", "workflowVersion":"2.1.0", "objectRole":"expense_report", "requiredInputs":["record_ref", "applicant", "business_payload"], "decisionOutputs":["approved", "rejected", "attention"], "statusMapping":{"pending":"pending", "approved":"approved", "rejected":"rejected", "attention":"attention"}},
+							"submission": {"channel":"hub", "status":"published", "capability_id":"cap-expense-approval", "market_capability_id":"expense-approval", "submission_id":"enterprise_hub:skill:maclaw-app:expense-approval@pkg", "version_key":"enterprise_hub:skill:maclaw-app:expense-approval@pkg", "package_sha256":"pkg-expense-approval", "review_evidence":{"expense-approval":{"run_id":"run-hub-reviewed-expense", "test_protocol_fingerprint":"proto-expense", "result_contract_primary":"approval_result", "result_contract_type_count":3, "result_coverage_primary":"approval_result", "result_coverage_covered_count":3, "result_coverage_missing_count":0, "output_count":2, "artifact_count":1, "approval_status":"approved", "current_node":"expense.result"}}},
 							"dependencyVerification":{"schema":"maclaw.app.install_plan.v1", "dependencyCount":2, "hasMissingRequired":false, "hasBlockingDependency":false, "hasWorkflowContractIssue":false, "hasGovernanceReviewIssue":false, "dependencies":[{"id":"expense-super-skill", "kind":"app_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}, {"id":"expense-workflow", "kind":"workflow_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
 						"testEvidence": {
 							"runId":"run-expense-approval",
@@ -3275,6 +4231,14 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 	if installApproval == nil || maclawAppStringValue(installApproval, "current_node", "currentNode") != "expense.result" || maclawAppStringValue(installApproval, "workflow_skill_id", "workflowSkillId") != "expense-workflow" || maclawAppStringValue(installApproval, "business_status", "businessStatus") != "finance_approved" || maclawAppStringValue(installApproval, "result_status", "resultStatus") != "approved" {
 		t.Fatalf("install evidence should preserve approval instance contract: %#v", installApproval)
 	}
+	installReviewEvidence := anyMap(installEvidence["review_evidence"])
+	if installReviewEvidence == nil || installReviewEvidence["run_id"] != "run-hub-reviewed-expense" || installReviewEvidence["approval_status"] != "approved" || installReviewEvidence["current_node"] != "expense.result" {
+		t.Fatalf("install evidence should preserve Hub review evidence: %#v", installEvidence)
+	}
+	installSubmission := anyMap(installEvidence["submission"])
+	if installSubmission == nil || installSubmission["capability_id"] != "cap-expense-approval" || installSubmission["version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" || installSubmission["package_sha256"] != "pkg-expense-approval" {
+		t.Fatalf("install evidence should preserve Hub submission identity: %#v", installEvidence)
+	}
 	if outputs := anySlice(installApproval["outputs"]); len(outputs) != 1 {
 		t.Fatalf("install evidence should preserve approval outputs: %#v", installApproval)
 	}
@@ -3289,15 +4253,23 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 	if metadata == nil || metadata["test_evidence_run_id"] != "run-expense-approval" || metadata["test_evidence_approval_current_node"] != "expense.result" || metadata["test_evidence_workflow_skill_id"] != "expense-workflow" || metadata["test_evidence_business_status"] != "finance_approved" || metadata["test_evidence_result_status"] != "approved" {
 		t.Fatalf("DataSrv metadata should expose approval evidence summaries: %#v", metadata)
 	}
-	if metadata["workspace_layout_primary_region"] != "center" || metadata["workspace_layout_output_region"] != "bottom" || metadata["workspace_layout_region_count"] != float64(3) {
+	dataSrvReviewEvidence := anyMap(metadata["review_evidence"])
+	if dataSrvReviewEvidence == nil || dataSrvReviewEvidence["run_id"] != "run-hub-reviewed-expense" || dataSrvReviewEvidence["result_coverage_covered_count"] != float64(3) {
+		t.Fatalf("DataSrv metadata should preserve Hub review evidence: %#v", metadata)
+	}
+	dataSrvSubmission := anyMap(metadata["submission"])
+	if dataSrvSubmission == nil || metadata["hub_capability_id"] != "cap-expense-approval" || metadata["hub_market_capability_id"] != "expense-approval" || metadata["hub_version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" || metadata["hub_package_sha256"] != "pkg-expense-approval" || metadata["hub_review_status"] != "published" {
+		t.Fatalf("DataSrv metadata should preserve Hub submission identity: %#v", metadata)
+	}
+	if metadata["workspace_layout_primary_region"] != "center" || metadata["workspace_layout_output_region"] != "bottom" || metadata["workspace_layout_region_count"] != float64(4) || metadata["workspace_layout_visible_region_count"] != float64(3) || metadata["workspace_layout_fingerprint"] != "layout-expense-golden" {
 		t.Fatalf("DataSrv metadata should expose approval workspace layout summaries: %#v", metadata)
 	}
 	workspaceLayout := anyMap(metadata["workspace_layout"])
-	if workspaceLayout == nil || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "left_nav" || workspaceLayout["primary_region"] != "center" || workspaceLayout["output_region"] != "bottom" || workspaceLayout["region_count"] != float64(3) {
+	if workspaceLayout == nil || workspaceLayout["entry"] != "approval_workspace" || workspaceLayout["template"] != "left_nav" || workspaceLayout["primary_region"] != "center" || workspaceLayout["output_region"] != "bottom" || workspaceLayout["region_count"] != float64(4) || workspaceLayout["visible_region_count"] != float64(3) || workspaceLayout["fingerprint"] != "layout-expense-golden" {
 		t.Fatalf("DataSrv metadata should preserve approval workspace layout: %#v", metadata)
 	}
 	workspaceRegions := anySlice(workspaceLayout["regions"])
-	if len(workspaceRegions) != 3 {
+	if len(workspaceRegions) != 4 {
 		t.Fatalf("DataSrv metadata should preserve approval workspace regions: %#v", workspaceLayout)
 	}
 	workspaceRegionByID := map[string]map[string]any{}
@@ -3305,11 +4277,11 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 		region := anyMap(raw)
 		workspaceRegionByID[maclawAppStringValue(region, "id")] = region
 	}
-	if maclawAppStringValue(workspaceRegionByID["request_form"], "placement") != "center" || maclawAppStringValue(workspaceRegionByID["approval_inbox"], "placement") != "left" || maclawAppStringValue(workspaceRegionByID["result_panel"], "placement") != "bottom" {
+	if maclawAppStringValue(workspaceRegionByID["request_form"], "placement") != "center" || maclawAppStringValue(workspaceRegionByID["approval_inbox"], "placement") != "left" || maclawAppStringValue(workspaceRegionByID["approval_detail"], "placement") != "right" || workspaceRegionByID["approval_detail"]["visible"] != false || maclawAppStringValue(workspaceRegionByID["result_panel"], "placement") != "bottom" {
 		t.Fatalf("DataSrv metadata should preserve approval workspace region placements: %#v", workspaceLayout)
 	}
 	regionIDs := anySlice(metadata["workspace_layout_region_ids"])
-	if len(regionIDs) != 3 || regionIDs[0] != "request_form" || regionIDs[2] != "result_panel" {
+	if len(regionIDs) != 4 || regionIDs[0] != "approval_inbox" || regionIDs[1] != "request_form" || regionIDs[2] != "approval_detail" || regionIDs[3] != "result_panel" {
 		t.Fatalf("DataSrv metadata should expose approval workspace region ids: %#v", metadata["workspace_layout_region_ids"])
 	}
 	depVerification := anyMap(metadata["dependency_verification"])
@@ -3343,12 +4315,49 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 		t.Fatalf("DataSrv approval evidence should preserve artifacts: %#v", dataSrvApproval)
 	}
 
+	queryURL := dataSrv.URL + "/api/v1/data/app-installations?hub_capability_id=cap-expense-approval&hub_version_key=" + url.QueryEscape("enterprise_hub:skill:maclaw-app:expense-approval@pkg") + "&hub_review_status=published"
+	queryReq, err := http.NewRequest(http.MethodGet, queryURL, nil)
+	if err != nil {
+		t.Fatalf("create DataSrv Hub identity query: %v", err)
+	}
+	queryReq.Header.Set("Authorization", "Bearer data-token")
+	queryResp, err := http.DefaultClient.Do(queryReq)
+	if err != nil {
+		t.Fatalf("query DataSrv app installations by Hub identity: %v", err)
+	}
+	defer queryResp.Body.Close()
+	if queryResp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(queryResp.Body)
+		t.Fatalf("DataSrv Hub identity query status=%d body=%s", queryResp.StatusCode, string(bodyBytes))
+	}
+	var queried struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(queryResp.Body).Decode(&queried); err != nil {
+		t.Fatalf("decode DataSrv Hub identity query: %v", err)
+	}
+	if len(queried.Items) != 1 || queried.Items[0]["app_id"] != "expense-approval" {
+		t.Fatalf("DataSrv Hub identity query should return installed approval app: %#v", queried.Items)
+	}
+	queriedMetadata := anyMap(queried.Items[0]["metadata"])
+	if queriedMetadata == nil || queriedMetadata["hub_capability_id"] != "cap-expense-approval" || queriedMetadata["hub_review_status"] != "published" || queriedMetadata["test_evidence_approval_id"] != "approval-expense-1001" {
+		t.Fatalf("DataSrv queried install should preserve Hub identity and approval summaries: %#v", queriedMetadata)
+	}
+
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
 	}
 	if len(records) != 1 || records[0].AppID != "expense-approval" || records[0].Kind != "enterprise_approval_app" {
 		t.Fatalf("local install audit should contain selected approval app: %#v", records)
+	}
+	auditReviewEvidence := records[0].ReviewEvidence
+	if auditReviewEvidence == nil || auditReviewEvidence["run_id"] != "run-hub-reviewed-expense" || auditReviewEvidence["approval_status"] != "approved" {
+		t.Fatalf("local install audit should preserve Hub review evidence: %#v", records[0].ReviewEvidence)
+	}
+	auditSubmission := records[0].Submission
+	if auditSubmission == nil || auditSubmission["capability_id"] != "cap-expense-approval" || auditSubmission["version_key"] != "enterprise_hub:skill:maclaw-app:expense-approval@pkg" {
+		t.Fatalf("local install audit should preserve Hub submission identity: %#v", records[0].Submission)
 	}
 	auditApproval := anyMap(records[0].TestEvidence["approval_instance"])
 	if auditApproval == nil {
@@ -3529,6 +4538,17 @@ func TestRefreshMaclawAppPackageSubmissionFromHubUpdatesReviewState(t *testing.T
 				"path":     "app.governance",
 				"severity": "info",
 				"message":  "review passed",
+			}},
+			"review_evidence": map[string]any{"sync-app": map[string]any{
+				"run_id":                        "run-hub-reviewed",
+				"test_protocol_fingerprint":     "proto-hub-reviewed",
+				"result_coverage_primary":       "approval_result",
+				"result_coverage_covered_count": 2,
+				"result_coverage_missing_count": 0,
+				"output_count":                  1,
+				"artifact_count":                1,
+				"approval_status":               "approved",
+				"current_node":                  "sync.result",
 			}},
 		})
 		w.Header().Set("Content-Type", "application/json")
@@ -4120,6 +5140,255 @@ func TestInstallMaclawAppDependenciesInstallsHubBackedSources(t *testing.T) {
 	}
 	if plan.HasMissingRequired || plan.HasBlockingDependency {
 		t.Fatalf("installed hub-backed dependencies should clear blocking flags: %#v", plan)
+	}
+}
+
+func TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	appSkillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "expense-super-skill")
+	if err := os.MkdirAll(appSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll appSkillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(appSkillDir, "SKILL.md"), []byte("# Expense Super Skill\n"), 0o644); err != nil {
+		t.Fatalf("write app skill: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "expense-super-skill", SkillDir: appSkillDir, Status: "active", Source: "enterprise_hub", HubSkillID: "expense-super-skill"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	workflowJSON := `{"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-repaired-1","approval_id":"approval-repaired-1","record_id":"expense-repaired-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-repaired-1","business_status":"finance_approved","result_status":"approved","result":"approved after dependency repair","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-repaired-1","status":"finance_approved"},"text":"approved after dependency repair"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved after dependency repair","status":"approved"}]}}`
+	workflowResultPath := filepath.Join(tmpHome, "workflow-repaired-result.txt")
+	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
+		t.Fatalf("write workflow result fixture: %v", err)
+	}
+	workflowCommand := `cat "` + workflowResultPath + `"`
+	if os.PathSeparator == '\\' {
+		workflowCommand = `type "` + workflowResultPath + `"`
+	}
+
+	packageJSON := maclawAppPackageWithCurrentDefinitionHashes(t, `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "expense-approval",
+			"name": "Expense Approval",
+			"version": "1.0.0",
+			"kind": "enterprise_approval_app",
+			"binding": {
+				"appSkill": {"id":"expense-super-skill", "version":"1.0.0", "source":"enterprise_hub", "install_ref":"cap-expense-super-skill"},
+				"datasrv": {"domain":"finance", "datasetID":"finance.expense_forms", "objectRole":"expense_report", "blueprintID":"finance.expense.v1"},
+				"mis": {"approvalBindings": [{"event":"finance.submitted", "objectRole":"expense_report", "workflowSkillId":"expense-workflow", "workflowVersion":"2.0.0"}]},
+				"workflow": {"schema":"maclaw.app.workflow.v1", "submitNode":"expense.submit", "approvalNode":"manager.approval", "resultNode":"expense.result"},
+				"dependencies": {"skills": [
+					{"id":"expense-super-skill", "kind":"app_skill", "version":"1.0.0", "required":true, "source":"enterprise_hub", "install_ref":"cap-expense-super-skill"},
+					{"id":"expense-workflow", "kind":"workflow_skill", "version":"2.0.0", "required":true, "source":"enterprise_hub", "install_ref":"cap-expense-workflow"}
+				]}
+			},
+			"governance": {
+				"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"approval_workspace", "template":"left_nav", "regionCount":3, "visibleRegionCount":3, "regions":[{"id":"approval_inbox", "role":"instance_list", "placement":"left"}, {"id":"request_form", "role":"input", "placement":"center"}, {"id":"result_panel", "role":"output", "placement":"bottom"}]},
+				"resultContract": {"schema":"maclaw.app.result.v1", "primary":"approval_result", "types":["approval_result","business_status","artifact"]},
+				"workflowContract": {"schema":"maclaw.app.workflow_contract.v1", "workflowSkillId":"expense-workflow", "workflowVersion":"2.0.0", "objectRole":"expense_report", "requiredInputs":["record_ref","applicant","business_payload"], "decisionOutputs":["approved","rejected","attention"], "statusMapping":{"pending":"pending","approved":"finance_approved","rejected":"finance_rejected","attention":"finance_attention"}},
+				"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-dependency-repair", "sampleInput":{"amount":640}, "expectedOutput":{"approval_result":"approved"}, "requiredRoles":["tester"], "requiredScopes":["app.run"], "riskLevel":"medium"},
+				"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencyCount":2, "requiredCount":2, "installedCount":2, "missingCount":0, "blockedCount":0, "ok":true, "blocked":false, "dependencies":[{"id":"expense-super-skill", "kind":"app_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}, {"id":"expense-workflow", "kind":"workflow_skill", "required":true, "installed":true, "health":"ready", "action":"installed"}]},
+				"testEvidence": {"runId":"run-dependency-repair", "testProtocolFingerprint":"proto-dependency-repair", "resultPayload":{"approval_result":"approved", "business_status":"finance_approved"}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"dependency-repair-artifact", "name":"dependency-repair.pdf", "uri":"artifact://dependency/repair.pdf", "status":"ready"}], "resultCoverage":{"ok":true, "primary":"approval_result", "coveredTypes":["approval_result","business_status","artifact"], "missingTypes":[]}, "approvalViews":["my_requests","handled"], "approvalInstance":{"instanceId":"wf-dependency-repair-evidence", "approvalID":"approval-dependency-repair-evidence", "recordID":"expense-repaired-evidence", "datasetID":"finance.expense_forms", "objectRole":"expense_report", "workflowSkillId":"expense-workflow", "workflowVersion":"2.0.0", "status":"approved", "currentNode":"expense.result", "businessStatus":"finance_approved", "resultStatus":"approved", "viewVerified":true, "resultPayload":{"approval_result":"approved", "business_status":"finance_approved"}, "outputs":[{"kind":"approval_result", "title":"Decision", "text":"approved", "status":"ready"}], "artifacts":[{"id":"dependency-repair-artifact", "name":"dependency-repair.pdf", "uri":"artifact://dependency/repair.pdf", "status":"ready"}]}}
+			}
+		}
+	}`)
+
+	initialPlan, err := app.PlanMaclawAppInstall(packageJSON)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() initial error = %v", err)
+	}
+	if !initialPlan.HasMissingRequired || !initialPlan.HasBlockingDependency {
+		t.Fatalf("initial plan should block on missing workflow dependency: %#v", initialPlan)
+	}
+	if dep := maclawAppPlanDepForTest(initialPlan, "expense-workflow"); dep == nil || dep.Action != "blocked" || dep.Health != "missing" {
+		t.Fatalf("workflow dependency should be missing before repair: %#v", dep)
+	}
+	if _, err := app.RecordMaclawAppInstall(packageJSON, "enterprise_hub"); err == nil || !strings.Contains(err.Error(), "required Skill dependencies") {
+		t.Fatalf("RecordMaclawAppInstall should reject missing workflow dependency, got %v", err)
+	}
+
+	type installCall struct {
+		source     string
+		id         string
+		installRef string
+	}
+	var installCalls []installCall
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		installCalls = append(installCalls, installCall{source: source, id: id, installRef: installRef})
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", id)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+id+"\n"), 0o644); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       id,
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     source,
+			HubSkillID: id,
+			HubVersion: "2.0.0",
+			Steps: []corelib.NLSkillStep{{
+				Action:  "bash",
+				Params:  map[string]interface{}{"command": workflowCommand},
+				Capture: map[string]string{"workflow_result": `workflow_result=(.+)`},
+			}},
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	repairedPlan, err := app.InstallMaclawAppDependencies(packageJSON)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	if len(installCalls) != 1 || installCalls[0] != (installCall{source: "enterprise_hub", id: "expense-workflow", installRef: "cap-expense-workflow"}) {
+		t.Fatalf("dependency repair should install workflow skill from Hub capability: %#v", installCalls)
+	}
+	if repairedPlan.HasMissingRequired || repairedPlan.HasBlockingDependency {
+		t.Fatalf("repaired plan should clear dependency blockers: %#v", repairedPlan)
+	}
+	if dep := maclawAppPlanDepForTest(repairedPlan, "expense-workflow"); dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" {
+		t.Fatalf("workflow dependency should be ready after repair: %#v", dep)
+	}
+
+	var captured []struct {
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
+	}
+	finalSynced := false
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		item := struct {
+			Method   string
+			Path     string
+			RawQuery string
+			Body     map[string]interface{}
+		}{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&item.Body)
+		}
+		captured = append(captured, item)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/expense-approval":
+			_, _ = w.Write([]byte(`{"app_id":"expense-approval","status":"installed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-repaired-1":
+			_, _ = w.Write([]byte(`{"id":"expense-repaired-1","data":{"status":"draft","amount":640}}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-repaired-1":
+			_, _ = w.Write([]byte(`{"id":"expense-repaired-1","status":"finance_approved"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/datasets/finance.expense_forms/records/expense-repaired-1/approvals":
+			_, _ = w.Write([]byte(`{"id":"approval-repaired-1","status":"pending"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/data/approvals/approval-repaired-1/review":
+			finalSynced = true
+			_, _ = w.Write([]byte(`{"id":"approval-repaired-1","status":"approved"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/approvals":
+			if finalSynced {
+				_, _ = w.Write([]byte(`{"items":[{"id":"approval-repaired-1","app_id":"expense-approval","dataset_id":"finance.expense_forms","record_id":"expense-repaired-1","status":"approved","summary":"Expense Approved After Dependency Repair","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_instance_id":"wf-repaired-1","workflow_decision_id":"decision-repaired-1","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"business_status":"finance_approved","result_status":"approved","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-repaired-1","status":"finance_approved"},"text":"approved after dependency repair"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved after dependency repair","status":"approved"}],"request":{"approval_instance_id":"wf-repaired-1","workflowSkillId":"expense-workflow","workflowVersion":"2.0.0","workflowNodeId":"expense.result"},"created_by":"alice","submitted_by":"alice","reviewed_by":"manager"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		default:
+			t.Fatalf("unexpected DataSrv request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer dataSrv.Close()
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "token", TenantID: "tenant", UserID: "alice", Role: "requester"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+
+	record, err := app.RecordMaclawAppInstall(packageJSON, "enterprise_hub")
+	if err != nil {
+		t.Fatalf("RecordMaclawAppInstall after dependency repair error = %v", err)
+	}
+	if record["has_missing_required"] == true || record["has_blocking_dependency"] == true {
+		t.Fatalf("install record should be unblocked after dependency repair: %#v", record)
+	}
+	records, err := app.ListMaclawAppInstalls(10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
+	}
+	if len(records) != 1 || records[0].HasMissingRequired || records[0].HasBlockingDependency {
+		t.Fatalf("local install audit should preserve repaired dependency state: %#v", records)
+	}
+	if dep := maclawAppPlanDepForTest(maclawAppInstallPlan{Dependencies: records[0].Dependencies}, "expense-workflow"); dep == nil || !dep.Installed || dep.Health != "ready" {
+		t.Fatalf("install audit should record ready workflow dependency: %#v", records[0].Dependencies)
+	}
+
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	started, err := app.StartMaclawAppApprovalWorkflow(MaclawAppApprovalWorkflowStartInput{
+		AppID:            "expense-approval",
+		DatasetID:        "finance.expense_forms",
+		ObjectRole:       "expense_report",
+		RecordID:         "expense-repaired-1",
+		Title:            "Expense Approved After Dependency Repair",
+		Applicant:        "alice",
+		Approver:         "manager",
+		BusinessNote:     "run after dependency repair",
+		BusinessPayload:  map[string]any{"amount": float64(640)},
+		RunWorkflowSkill: true,
+	})
+	if err != nil {
+		t.Fatalf("StartMaclawAppApprovalWorkflow() after dependency repair error = %v", err)
+	}
+	workflowRun, ok := started["workflow_run"].(map[string]any)
+	if !ok || workflowRun["ran"] != true {
+		t.Fatalf("expected workflow run after dependency repair: %#v", started["workflow_run"])
+	}
+	instance, ok := workflowRun["instance"].(maclawAppApprovalInstance)
+	if !ok || instance.Status != "approved" || instance.WorkflowSkillID != "expense-workflow" || instance.WorkflowDecisionID != "decision-repaired-1" {
+		t.Fatalf("dependency-repaired workflow should finish approval: %#v", workflowRun["instance"])
+	}
+	handled, err := app.ListMaclawAppApprovalInstances("expense-approval", "handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances handled error = %v", err)
+	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(handled) != 1 || len(globalHandled) != 1 {
+		t.Fatalf("dependency-repaired workflow should be visible in app/global handled lanes, app=%#v global=%#v", handled, globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	sawInstallRegistration := false
+	sawReview := false
+	for _, req := range captured {
+		if req.Method == http.MethodPut && req.Path == "/api/v1/data/app-installations/expense-approval" {
+			sawInstallRegistration = true
+			metadata := anyMap(req.Body["metadata"])
+			dependencyVerification := anyMap(metadata["dependency_verification"])
+			if metadata == nil ||
+				metadata["dependency_count"] != float64(2) ||
+				metadata["has_blocking_dependency"] != false ||
+				dependencyVerification == nil ||
+				dependencyVerification["blockedCount"] != float64(0) ||
+				dependencyVerification["has_blocking_dependency"] != false {
+				t.Fatalf("DataSrv registration should preserve repaired dependency summaries: %#v", req.Body)
+			}
+		}
+		if req.Method == http.MethodPost && req.Path == "/api/v1/data/approvals/approval-repaired-1/review" {
+			sawReview = true
+		}
+	}
+	if !sawInstallRegistration || !sawReview {
+		t.Fatalf("dependency repair flow should register install and review final approval, install=%v review=%v captured=%#v", sawInstallRegistration, sawReview, captured)
 	}
 }
 
@@ -5152,8 +6421,44 @@ func TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp(t *testing.
 				"kind": "enterprise_normal_app",
 				"binding": map[string]any{
 					"datasrv": map[string]any{"domain": "finance", "datasetID": "finance.selected", "objectRole": "selected_record"},
+					"ui": map[string]any{
+						"schema":    "maclaw.app.ui.v1",
+						"generated": true,
+						"entry":     "business_workspace",
+						"layouts": map[string]any{
+							"business_workspace": map[string]any{
+								"template":      "dashboard",
+								"density":       "compact",
+								"primaryRegion": "center",
+								"outputRegion":  "bottom",
+								"regions": []any{
+									map[string]any{"id": "operation_form", "role": "input", "placement": "center", "order": 1},
+									map[string]any{"id": "record_list", "role": "record_list", "placement": "left", "order": 2},
+									map[string]any{"id": "output_panel", "role": "output", "placement": "bottom", "order": 3},
+									map[string]any{"id": "record_detail", "role": "detail", "placement": "right", "visible": false, "order": 4},
+								},
+								"fingerprint": "layout-selected",
+								"studio": map[string]any{
+									"editable":        true,
+									"savedInManifest": true,
+									"updatedBy":       "app_studio",
+								},
+							},
+						},
+					},
 				},
 				"governance": map[string]any{
+					"workspaceLayout": map[string]any{
+						"entry":              "business_workspace",
+						"template":           "dashboard",
+						"density":            "compact",
+						"primaryRegion":      "center",
+						"outputRegion":       "bottom",
+						"fingerprint":        "layout-selected",
+						"savedInManifest":    true,
+						"regionIds":          []any{"operation_form", "record_list", "output_panel", "record_detail"},
+						"visibleRegionCount": 3,
+					},
 					"testEvidence": map[string]any{
 						"runId": "run-selected-1",
 						"resultPayload": map[string]any{
@@ -5167,6 +6472,16 @@ func TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp(t *testing.
 						},
 						"artifacts": []any{
 							map[string]any{"name": "selected-export.pdf", "uri": "artifact://selected/export.pdf", "type": "document"},
+						},
+					},
+					"dependencyVerification": map[string]any{
+						"schema":                "maclaw.app.install_plan.v1",
+						"verifiedAt":            "2026-07-01T03:00:00Z",
+						"dependencyCount":       1,
+						"hasMissingRequired":    false,
+						"hasBlockingDependency": false,
+						"dependencies": []any{
+							map[string]any{"id": "selected-skill", "kind": "runtime_skill", "source": "hub", "required": true, "installed": true, "health": "ready"},
 						},
 					},
 				},
@@ -5190,7 +6505,7 @@ func TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp(t *testing.
 		},
 	}
 	dependencies := []maclawAppInstallPlanDependency{
-		{ID: "selected-skill", Kind: "runtime_skill", Required: true, AppIDs: []string{"market-selected-app"}, Installed: true, Health: "ready", Action: "skip"},
+		{ID: "selected-skill", Kind: "runtime_skill", Required: true, Source: "hub", InstallRef: "hub://skills/selected-skill@1.2.0", InstallRefKind: "hub", InstallRefTarget: "selected-skill", InstallRefVersion: "1.2.0", InstallRefStatus: "ok", PreflightStatus: "ready", PreflightCode: "skillhub_target_ready", PreflightStage: "skillhub_preflight", PackageSHA256: "sha-selected-skill", PackageSignature: "sig-selected-skill", PackageDownloadURL: "https://hub.example/skills/selected-skill/download", IntegrityStatus: "ready", IntegrityCode: "package_integrity_metadata_ready", IntegrityStage: "skillhub_preflight", AppIDs: []string{"market-selected-app"}, Installed: true, Health: "ready", Action: "skip"},
 		{ID: "other-skill", Kind: "runtime_skill", Required: true, AppIDs: []string{"other-app"}, Installed: false, Health: "missing", Action: "blocked"},
 	}
 
@@ -5232,12 +6547,62 @@ func TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp(t *testing.
 	if uris := maclawAppStringListFromAny(selectedMetadata["test_evidence_artifact_uris"]); len(uris) != 1 || uris[0] != "artifact://selected/export.pdf" {
 		t.Fatalf("selected app metadata should carry artifact URI summaries: %#v", selectedMetadata)
 	}
-	selectedVerificationDependencies, ok := selectedVerification["dependencies"].([]maclawAppInstallPlanDependency)
-	if !ok || len(selectedVerificationDependencies) != 1 {
+	selectedWorkspace := anyMap(selectedMetadata["workspace_layout"])
+	if selectedWorkspace == nil || maclawAppStringValue(selectedWorkspace, "entry") != "business_workspace" || maclawAppStringValue(selectedWorkspace, "template") != "dashboard" || maclawAppStringValue(selectedWorkspace, "density") != "compact" {
+		t.Fatalf("selected app metadata should carry workspace layout: %#v", selectedMetadata["workspace_layout"])
+	}
+	if selectedMetadata["workspace_layout_primary_region"] != "center" || selectedMetadata["workspace_layout_output_region"] != "bottom" || selectedMetadata["workspace_layout_fingerprint"] != "layout-selected" {
+		t.Fatalf("selected app metadata should flatten workspace layout routing: %#v", selectedMetadata)
+	}
+	if selectedMetadata["workspace_layout_region_count"] != 4 || selectedMetadata["workspace_layout_visible_region_count"] != 3 {
+		t.Fatalf("selected app metadata should flatten workspace layout region counts: %#v", selectedMetadata)
+	}
+	if regionIDs := maclawAppStringListFromAny(selectedMetadata["workspace_layout_region_ids"]); len(regionIDs) != 4 || regionIDs[0] != "operation_form" || regionIDs[2] != "output_panel" {
+		t.Fatalf("selected app metadata should flatten workspace layout region ids: %#v", selectedMetadata["workspace_layout_region_ids"])
+	}
+	selectedInstallEvidence := anyMap(selectedMetadata["install_evidence"])
+	if selectedInstallEvidence == nil {
+		t.Fatalf("selected app metadata should carry install evidence: %#v", selectedMetadata)
+	}
+	installWorkspace := anyMap(selectedInstallEvidence["workspace_layout"])
+	if installWorkspace == nil || maclawAppStringValue(installWorkspace, "fingerprint") != "layout-selected" || maclawAppStringValue(installWorkspace, "outputRegion", "output_region") != "bottom" {
+		t.Fatalf("selected app install evidence should carry the same workspace layout: %#v", selectedInstallEvidence["workspace_layout"])
+	}
+	installTestEvidence := anyMap(selectedInstallEvidence["test_evidence"])
+	if installTestEvidence == nil || maclawAppStringValue(installTestEvidence, "runId", "run_id") != "run-selected-1" {
+		t.Fatalf("selected app install evidence should carry test evidence: %#v", selectedInstallEvidence["test_evidence"])
+	}
+	installVerification := anyMap(selectedInstallEvidence["dependency_verification"])
+	if installVerification == nil || installVerification["dependency_count"] != 1 || installVerification["has_blocking_dependency"] != false {
+		t.Fatalf("selected app install evidence should carry scoped dependency verification: %#v", selectedInstallEvidence["dependency_verification"])
+	}
+	selectedVerificationDependencies := anySlice(selectedVerification["dependencies"])
+	if len(selectedVerificationDependencies) != 1 {
 		t.Fatalf("selected app verification dependencies should be scoped: %#v", selectedVerification)
 	}
-	if selectedVerificationDependencies[0].ID != "selected-skill" || selectedVerificationDependencies[0].Health != "ready" {
+	selectedVerificationDependency := anyMap(selectedVerificationDependencies[0])
+	if maclawAppStringValue(selectedVerificationDependency, "id") != "selected-skill" || maclawAppStringValue(selectedVerificationDependency, "health") != "ready" {
 		t.Fatalf("selected app verification should not include other app dependency: %#v", selectedVerificationDependencies)
+	}
+	if maclawAppStringValue(selectedVerificationDependency, "install_ref_kind") != "hub" ||
+		maclawAppStringValue(selectedVerificationDependency, "install_ref_target") != "selected-skill" ||
+		maclawAppStringValue(selectedVerificationDependency, "install_ref_version") != "1.2.0" ||
+		maclawAppStringValue(selectedVerificationDependency, "preflight_status") != "ready" ||
+		maclawAppStringValue(selectedVerificationDependency, "preflight_code") != "skillhub_target_ready" ||
+		maclawAppStringValue(selectedVerificationDependency, "package_sha256") != "sha-selected-skill" ||
+		maclawAppStringValue(selectedVerificationDependency, "package_signature") != "sig-selected-skill" ||
+		maclawAppStringValue(selectedVerificationDependency, "integrity_status") != "ready" ||
+		maclawAppStringValue(selectedVerificationDependency, "integrity_code") != "package_integrity_metadata_ready" {
+		t.Fatalf("selected app verification should preserve dependency preflight and integrity diagnostics: %#v", selectedVerificationDependency)
+	}
+	installVerificationDependencies := anySlice(installVerification["dependencies"])
+	if len(installVerificationDependencies) != 1 {
+		t.Fatalf("selected app install evidence verification dependencies should be scoped: %#v", installVerification)
+	}
+	installVerificationDependency := anyMap(installVerificationDependencies[0])
+	if maclawAppStringValue(installVerificationDependency, "package_download_url") != "https://hub.example/skills/selected-skill/download" ||
+		maclawAppStringValue(installVerificationDependency, "integrity_stage") != "skillhub_preflight" {
+		t.Fatalf("selected app install evidence should preserve dependency download and integrity diagnostics: %#v", installVerificationDependency)
 	}
 	selectedDependencies, ok := selectedMetadata["dependencies"].([]maclawAppInstallPlanDependency)
 	if !ok || len(selectedDependencies) != 1 || selectedMetadata["dependency_count"] != 1 || selectedMetadata["has_missing_required_dependency"] != false || selectedMetadata["has_blocking_dependency"] != false {
@@ -6094,14 +7459,15 @@ func TestMaclawAppApprovalPendingRequestAlsoAppearsForApprover(t *testing.T) {
 
 func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	finalSynced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -6241,14 +7607,25 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	if !lastReview {
 		t.Fatalf("workflow skill final result should review DataSrv approval, captured=%#v", captured)
 	}
+	appHandledRemote, err := app.ListMaclawAppApprovalInstances("expense-approval", "handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances handled after runner sync error = %v", err)
+	}
+	if len(appHandledRemote) != 1 {
+		t.Fatalf("workflow runner final sync should be readable back from single app handled lane: %#v", appHandledRemote)
+	}
 	handledRemote, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppApprovalInstancesAll handled after runner sync error = %v", err)
 	}
 	if len(handledRemote) != 1 {
-		t.Fatalf("workflow runner final sync should be readable back from DataSrv handled lane: %#v", handledRemote)
+		t.Fatalf("workflow runner final sync should be readable back from global DataSrv handled lane: %#v", handledRemote)
 	}
-	readBack := handledRemote[0]
+	readBack := appHandledRemote[0]
+	globalReadBack := handledRemote[0]
+	if globalReadBack.AppID != readBack.AppID || globalReadBack.ApprovalID != readBack.ApprovalID || globalReadBack.InstanceID != readBack.InstanceID || globalReadBack.WorkflowDecisionID != readBack.WorkflowDecisionID {
+		t.Fatalf("single app and global approval centers should show the same workflow instance, app=%#v global=%#v", readBack, globalReadBack)
+	}
 	if readBack.ApprovalID != "approval-runner-1" || readBack.InstanceID != "wf-runner-1" || readBack.Status != "approved" || readBack.CurrentNode != "expense.result" || readBack.WorkflowDecisionID != "decision-runner-1" {
 		t.Fatalf("DataSrv readback should preserve final workflow identity and node state: %#v", readBack)
 	}
@@ -6258,16 +7635,35 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	if readBack.ResultPayload["approval_result"] != "approved" || readBack.ResultPayload["text"] != "approved by workflow skill" || len(readBack.Outputs) != 2 || len(readBack.Artifacts) != 1 || readBack.Artifacts[0].Name != "runner-approved.pdf" {
 		t.Fatalf("DataSrv readback should preserve result payload, content output, and file artifact: %#v", readBack)
 	}
+	if len(globalReadBack.Outputs) != len(readBack.Outputs) || len(globalReadBack.Artifacts) != len(readBack.Artifacts) || globalReadBack.Artifacts[0].URI != readBack.Artifacts[0].URI {
+		t.Fatalf("global approval center should preserve the same result outputs and artifacts as app detail, app=%#v global=%#v", readBack, globalReadBack)
+	}
+	sawAppScopedQuery := false
+	sawGlobalQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalQuery = true
+			}
+		}
+	}
+	if !sawAppScopedQuery || !sawGlobalQuery {
+		t.Fatalf("approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedQuery, sawGlobalQuery, captured)
+	}
 }
 func TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -6388,17 +7784,40 @@ func TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult(t *te
 	if len(attention) != 1 || attention[0].Status != "attention" || attention[0].ResultPayload["approval_result"] != "attention" {
 		t.Fatalf("workflow attention result should be visible in attention lane: %#v", attention)
 	}
+	globalAttention, err := app.ListMaclawAppApprovalInstancesAll("attention", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll attention error = %v", err)
+	}
+	if len(globalAttention) != 1 {
+		t.Fatalf("workflow attention result should be visible in global attention lane: %#v", globalAttention)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, attention[0], globalAttention[0])
 }
+
+func assertMaclawAppApprovalReadbackSameInstanceForTest(t *testing.T, appView, globalView maclawAppApprovalInstance) {
+	t.Helper()
+	if appView.AppID != globalView.AppID || appView.ApprovalID != globalView.ApprovalID || appView.InstanceID != globalView.InstanceID || appView.WorkflowDecisionID != globalView.WorkflowDecisionID {
+		t.Fatalf("single app and global approval centers should show the same workflow instance, app=%#v global=%#v", appView, globalView)
+	}
+	if appView.Status != globalView.Status || appView.Lane != globalView.Lane || appView.CurrentNode != globalView.CurrentNode || appView.ResultStatus != globalView.ResultStatus || appView.BusinessStatus != globalView.BusinessStatus {
+		t.Fatalf("single app and global approval centers should preserve the same status/node fields, app=%#v global=%#v", appView, globalView)
+	}
+	if len(appView.Outputs) != len(globalView.Outputs) || len(appView.Artifacts) != len(globalView.Artifacts) {
+		t.Fatalf("single app and global approval centers should preserve the same result package, app=%#v global=%#v", appView, globalView)
+	}
+}
+
 func TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	finalSynced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -6520,17 +7939,41 @@ func TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult(t *testing.T) 
 	if len(handled) != 1 || handled[0].Status != "rejected" || handled[0].ResultPayload["approval_result"] != "rejected" || len(handled[0].Outputs) != 1 {
 		t.Fatalf("workflow rejected result should be visible in handled lane: %#v", handled)
 	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(globalHandled) != 1 || globalHandled[0].Status != "rejected" || globalHandled[0].ResultPayload["approval_result"] != "rejected" || len(globalHandled[0].Outputs) != 1 {
+		t.Fatalf("workflow rejected result should be visible in global handled lane: %#v", globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	sawAppScopedQuery := false
+	sawGlobalQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalQuery = true
+			}
+		}
+	}
+	if !sawAppScopedQuery || !sawGlobalQuery {
+		t.Fatalf("rejected approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedQuery, sawGlobalQuery, captured)
+	}
 }
 func TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	finalSynced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -6652,17 +8095,41 @@ func TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult(t *testing.T) {
 	if len(handled) != 1 || handled[0].Status != "timeout" || handled[0].ResultPayload["approval_result"] != "timeout" || len(handled[0].Outputs) != 1 {
 		t.Fatalf("workflow timeout result should be visible in handled lane: %#v", handled)
 	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(globalHandled) != 1 || globalHandled[0].Status != "timeout" || globalHandled[0].ResultPayload["approval_result"] != "timeout" || len(globalHandled[0].Outputs) != 1 {
+		t.Fatalf("workflow timeout result should be visible in global handled lane: %#v", globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	sawAppScopedQuery := false
+	sawGlobalQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalQuery = true
+			}
+		}
+	}
+	if !sawAppScopedQuery || !sawGlobalQuery {
+		t.Fatalf("timeout approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedQuery, sawGlobalQuery, captured)
+	}
 }
 func TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	finalSynced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -6783,6 +8250,29 @@ func TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult(t *testing.T)
 	}
 	if len(handled) != 1 || handled[0].Status != "cancelled" || handled[0].ResultPayload["approval_result"] != "cancelled" || len(handled[0].Outputs) != 1 {
 		t.Fatalf("workflow cancelled result should be visible in handled lane: %#v", handled)
+	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(globalHandled) != 1 || globalHandled[0].Status != "cancelled" || globalHandled[0].ResultPayload["approval_result"] != "cancelled" || len(globalHandled[0].Outputs) != 1 {
+		t.Fatalf("workflow cancelled result should be visible in global handled lane: %#v", globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	sawAppScopedQuery := false
+	sawGlobalQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalQuery = true
+			}
+		}
+	}
+	if !sawAppScopedQuery || !sawGlobalQuery {
+		t.Fatalf("cancelled approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedQuery, sawGlobalQuery, captured)
 	}
 }
 func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testing.T) {
@@ -6926,13 +8416,14 @@ func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testin
 }
 func TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -7092,17 +8583,48 @@ func TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement(t *t
 	if len(handled) != 1 || handled[0].ApprovalID != "approval-input-runner-2" || handled[0].Status != "approved" || handled[0].ResultPayload["approval_result"] != "approved" {
 		t.Fatalf("continued approved result should be visible in handled lane: %#v", handled)
 	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(globalHandled) != 1 || globalHandled[0].ApprovalID != "approval-input-runner-2" || globalHandled[0].Status != "approved" || globalHandled[0].ResultPayload["approval_result"] != "approved" {
+		t.Fatalf("continued approved result should be visible in global handled lane: %#v", globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	requests, err := app.ListMaclawAppApprovalInstances("expense-approval", "my_requests", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstances my_requests after supplement error = %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("continued approved result should leave requester input lane: %#v", requests)
+	}
+	sawAppScopedHandledQuery := false
+	sawGlobalHandledQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedHandledQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalHandledQuery = true
+			}
+		}
+	}
+	if !sawAppScopedHandledQuery || !sawGlobalHandledQuery {
+		t.Fatalf("continued approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedHandledQuery, sawGlobalHandledQuery, captured)
+	}
 }
 func TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	failedReviewed := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -7120,7 +8642,7 @@ func TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult(t *testi
 			_, _ = w.Write([]byte(`{"id":"approval-fail-1","status":"failed"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/data/approvals":
 			if failedReviewed {
-				_, _ = w.Write([]byte(`{"items":[{"id":"approval-fail-1","app_id":"expense-approval","dataset_id":"finance.expense_forms","record_id":"expense-fail-1","status":"failed","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_instance_id":"placeholder","workflow_node_id":"workflow.failed","business_status":"workflow_failed","result_status":"failed","result_payload":{"approval_result":"failed","business_status":"workflow_failed","text":"workflow failed"},"outputs":[{"kind":"approval_result","title":"Workflow failed","text":"workflow failed","status":"failed"}]}]}`))
+				_, _ = w.Write([]byte(`{"items":[{"id":"approval-fail-1","app_id":"expense-approval","dataset_id":"finance.expense_forms","record_id":"expense-fail-1","status":"failed","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_instance_id":"placeholder","workflow_node_id":"workflow.failed","workflow_node_ids":["manager.approval","workflow.failed"],"business_status":"workflow_failed","result_status":"failed","result_payload":{"approval_result":"failed","business_status":"workflow_failed","result_status":"failed","error":"exit status 7","text":"workflow failed"},"outputs":[{"kind":"approval_result","type":"approval_result","title":"Workflow failed","text":"workflow failed","status":"failed"}],"request":{"approval_instance_id":"placeholder","workflowSkillId":"expense-workflow","workflowVersion":"2.0.0","workflowNodeId":"workflow.failed","businessStatus":"workflow_failed","resultStatus":"failed"},"created_by":"alice","submitted_by":"alice","assigned_to":"manager"}]}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"items":[{"id":"approval-fail-1","app_id":"expense-approval","dataset_id":"finance.expense_forms","record_id":"expense-fail-1","status":"pending","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_instance_id":"placeholder"}]}`))
@@ -7215,6 +8737,32 @@ func TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult(t *testi
 	}
 	if len(handled) != 1 || handled[0].Status != "failed" || handled[0].ResultPayload["approval_result"] != "failed" {
 		t.Fatalf("failed workflow should be visible in handled lane: %#v", handled)
+	}
+	globalHandled, err := app.ListMaclawAppApprovalInstancesAll("handled", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll handled error = %v", err)
+	}
+	if len(globalHandled) != 1 || globalHandled[0].Status != "failed" || globalHandled[0].ResultPayload["approval_result"] != "failed" || len(globalHandled[0].Outputs) != 1 {
+		t.Fatalf("failed workflow should be visible in global handled lane: %#v", globalHandled)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, handled[0], globalHandled[0])
+	if handled[0].ResultPayload["error"] == "" || globalHandled[0].ResultPayload["error"] == "" {
+		t.Fatalf("failed workflow readback should preserve error evidence, app=%#v global=%#v", handled[0].ResultPayload, globalHandled[0].ResultPayload)
+	}
+	sawAppScopedQuery := false
+	sawGlobalQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=handled&limit=10" {
+				sawAppScopedQuery = true
+			}
+			if req.RawQuery == "lane=handled&limit=10" {
+				sawGlobalQuery = true
+			}
+		}
+	}
+	if !sawAppScopedQuery || !sawGlobalQuery {
+		t.Fatalf("failed approval readback should query both app-scoped and global handled lanes, appScoped=%v global=%v captured=%#v", sawAppScopedQuery, sawGlobalQuery, captured)
 	}
 }
 func TestStartMaclawAppApprovalWorkflowCreatesDataSrvApproval(t *testing.T) {

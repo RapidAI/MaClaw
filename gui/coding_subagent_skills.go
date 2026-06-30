@@ -17,6 +17,7 @@ package main
 //   - Injecting all 50+ skills into context (token waste + noise)
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -349,7 +350,7 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 	skillName, _ := args["name"].(string)
 	log.Printf("[coding-subagent] manage_skill: action=%s name=%q", action, skillName)
 
-	result := h.toolManageSkill(args, progressCB)
+	result := h.toolManageSkill(context.Background(), args, progressCB)
 
 	// Classify outcome based on known failure prefixes from toolManageSkill.
 	// Do NOT use substring matching on the result body — skill output may

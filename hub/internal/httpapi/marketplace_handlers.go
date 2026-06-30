@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	maclawappcontract "github.com/RapidAI/CodeClaw/internal/maclawappcontract"
 )
 
 const capabilityMarketPolicySettingKey = "capability_market_policy"
@@ -722,6 +723,9 @@ func enterpriseMaclawAppReadyReviewIssues(entries []enterpriseMaclawAppPackageEn
 			if enterpriseMaclawAppWorkspaceLayoutRegionWithRole(regions, "output") == "" {
 				issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".workspaceLayout.regions", Severity: "error", Message: "workspace layout must include an output region", Suggestion: "add or mark one layout region as the result/output area"})
 			}
+			if issue := enterpriseMaclawAppWorkspaceLayoutReviewIssue(entry, governancePath); issue != nil {
+				issues = append(issues, *issue)
+			}
 		}
 
 		resultContract := anyMapFromMap(governance, "resultContract", "result_contract")
@@ -1147,7 +1151,76 @@ func enterpriseMaclawAppCapabilityMetadata(pkg map[string]any, entry enterpriseM
 			}
 		}
 	}
+	if reviewEvidence := enterpriseMaclawAppReviewEvidenceForEntry(entry); reviewEvidence != nil {
+		metadata["review_evidence"] = map[string]any{entry.ID: reviewEvidence}
+		metadata["maclaw_app_review_evidence"] = map[string]any{entry.ID: reviewEvidence}
+	}
 	return compactMetadata(metadata)
+}
+
+func enterpriseMaclawAppReviewEvidenceForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
+	if entry.Governance == nil {
+		return nil
+	}
+	testEvidence := anyMapFromMap(entry.Governance, "testEvidence", "test_evidence")
+	if testEvidence == nil {
+		return nil
+	}
+	record := map[string]any{}
+	if runID := enterpriseMaclawAppFirstString(testEvidence, "runId", "run_id"); runID != "" {
+		record["run_id"] = runID
+	}
+	if protocol := enterpriseMaclawAppFirstString(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash"); protocol != "" {
+		record["test_protocol_fingerprint"] = protocol
+		record["has_test_protocol"] = true
+	}
+	if resultContract := anyMapFromMap(entry.Governance, "resultContract", "result_contract"); resultContract != nil {
+		if primary := enterpriseMaclawAppFirstString(resultContract, "primary"); primary != "" {
+			record["result_contract_primary"] = primary
+			record["has_result_contract"] = true
+		}
+		if types := enterpriseMaclawAppStringList(firstEnterpriseMaclawAppPresent(resultContract, "types")); len(types) > 0 {
+			record["result_contract_type_count"] = len(types)
+		}
+	}
+	if coverage := anyMapFromMap(testEvidence, "resultCoverage", "result_coverage"); coverage != nil {
+		if value, ok := enterpriseMaclawAppFirstBool(coverage, "ok"); ok {
+			record["result_coverage_ok"] = value
+		}
+		if primary := enterpriseMaclawAppFirstString(coverage, "primary"); primary != "" {
+			record["result_coverage_primary"] = primary
+		}
+		if covered := enterpriseMaclawAppStringList(firstEnterpriseMaclawAppPresent(coverage, "coveredTypes", "covered_types")); len(covered) > 0 {
+			record["result_coverage_covered_count"] = len(covered)
+		}
+		if missing := enterpriseMaclawAppStringList(firstEnterpriseMaclawAppPresent(coverage, "missingTypes", "missing_types")); len(missing) > 0 {
+			record["result_coverage_missing_count"] = len(missing)
+		} else {
+			record["result_coverage_missing_count"] = 0
+		}
+	}
+	if value, ok := enterpriseMaclawAppFirstNumber(testEvidence, "outputCount", "output_count"); ok {
+		record["output_count"] = value
+	} else if outputs := anySliceFromMap(testEvidence, "outputs"); len(outputs) > 0 {
+		record["output_count"] = len(outputs)
+	}
+	if value, ok := enterpriseMaclawAppFirstNumber(testEvidence, "artifactCount", "artifact_count"); ok {
+		record["artifact_count"] = value
+	} else if artifacts := anySliceFromMap(testEvidence, "artifacts"); len(artifacts) > 0 {
+		record["artifact_count"] = len(artifacts)
+	}
+	if approval := anyMapFromMap(testEvidence, "approvalInstance", "approval_instance", "approval"); approval != nil {
+		if status := enterpriseMaclawAppFirstString(approval, "status", "approvalStatus", "approval_status", "resultStatus", "result_status"); status != "" {
+			record["approval_status"] = status
+		}
+		if node := enterpriseMaclawAppFirstString(approval, "currentNode", "current_node"); node != "" {
+			record["current_node"] = node
+		}
+	}
+	if len(record) == 0 {
+		return nil
+	}
+	return compactMetadata(record)
 }
 
 func applyEnterpriseMaclawAppDependencyVerificationMetadata(metadata, verification map[string]any) {
@@ -1331,12 +1404,181 @@ func enterpriseMaclawAppWorkspaceLayoutForEntry(entry enterpriseMaclawAppPackage
 	if generated, ok := ui["generated"].(bool); ok {
 		out["generated"] = generated
 	}
-	for _, key := range []string{"template", "density", "primaryRegion", "primary_region", "outputRegion", "output_region", "navigation", "list", "regions"} {
+	for _, key := range []string{"template", "density", "primaryRegion", "primary_region", "outputRegion", "output_region", "navigation", "list", "regions", "fingerprint"} {
 		if value, ok := layout[key]; ok {
 			out[key] = value
 		}
 	}
 	return compactMetadata(out)
+}
+
+func enterpriseMaclawAppWorkspaceLayoutReviewIssue(entry enterpriseMaclawAppPackageEntry, governancePath string) *maclawAppReviewIssue {
+	workspaceLayout := enterpriseMaclawAppWorkspaceLayoutForEntry(entry)
+	if workspaceLayout == nil {
+		return nil
+	}
+	entryName := strings.TrimSpace(enterpriseMaclawAppFirstString(workspaceLayout, "entry"))
+	if entryName == "" {
+		entryName = enterpriseMaclawAppWorkspaceLayoutEntryName(entry)
+	}
+	if entryName == "" {
+		return nil
+	}
+	if issue := enterpriseMaclawAppWorkspaceLayoutFingerprintIssue(workspaceLayout, entryName, governancePath+".workspaceLayout"); issue != nil {
+		return issue
+	}
+	governanceFingerprint := strings.TrimSpace(enterpriseMaclawAppFirstString(workspaceLayout, "fingerprint"))
+	appPath := strings.TrimSuffix(governancePath, ".governance")
+	for _, source := range enterpriseMaclawAppWorkspaceUILayoutSources(entry, entryName, appPath) {
+		if source.layout == nil {
+			continue
+		}
+		if issue := enterpriseMaclawAppWorkspaceLayoutFingerprintIssue(source.layout, entryName, source.path); issue != nil {
+			return issue
+		}
+		layoutFingerprint := strings.TrimSpace(enterpriseMaclawAppFirstString(source.layout, "fingerprint"))
+		if governanceFingerprint != "" && layoutFingerprint != "" && governanceFingerprint != layoutFingerprint {
+			return &maclawAppReviewIssue{
+				Path:       governancePath + ".workspaceLayout.fingerprint",
+				Severity:   "error",
+				Message:    "workspace layout fingerprint does not match the saved manifest UI layout",
+				Suggestion: "save the App Studio layout again so app.ui, binding.ui, and governance.workspaceLayout share the same fingerprint",
+			}
+		}
+	}
+	return nil
+}
+
+func enterpriseMaclawAppWorkspaceLayoutFingerprintIssue(layout map[string]any, entryName, path string) *maclawAppReviewIssue {
+	declared := strings.TrimSpace(enterpriseMaclawAppFirstString(layout, "fingerprint"))
+	if declared == "" {
+		return nil
+	}
+	computed := enterpriseMaclawAppWorkspaceLayoutFingerprint(entryName, layout)
+	if computed == "" || computed == declared {
+		return nil
+	}
+	return &maclawAppReviewIssue{
+		Path:       path + ".fingerprint",
+		Severity:   "error",
+		Message:    "workspace layout fingerprint does not match the saved layout regions",
+		Suggestion: "save the App Studio layout again after moving, hiding, or reordering workspace regions",
+	}
+}
+
+type enterpriseMaclawAppWorkspaceUILayoutSource struct {
+	path   string
+	layout map[string]any
+}
+
+func enterpriseMaclawAppWorkspaceUILayoutSources(entry enterpriseMaclawAppPackageEntry, entryName, appPath string) []enterpriseMaclawAppWorkspaceUILayoutSource {
+	sources := []enterpriseMaclawAppWorkspaceUILayoutSource{}
+	if layout := enterpriseMaclawAppUILayoutForEntry(anyMapFromMap(entry.App, "ui"), entryName); layout != nil {
+		sources = append(sources, enterpriseMaclawAppWorkspaceUILayoutSource{path: appPath + ".ui.layouts." + entryName, layout: layout})
+	}
+	if binding := enterpriseMaclawAppBindingForEntry(entry); binding != nil {
+		if layout := enterpriseMaclawAppUILayoutForEntry(anyMapFromMap(binding, "ui"), entryName); layout != nil {
+			sources = append(sources, enterpriseMaclawAppWorkspaceUILayoutSource{path: appPath + ".binding.ui.layouts." + entryName, layout: layout})
+		}
+	}
+	return sources
+}
+
+func enterpriseMaclawAppWorkspaceLayoutEntryName(entry enterpriseMaclawAppPackageEntry) string {
+	if entryName := enterpriseMaclawAppFirstString(anyMapFromMap(entry.App, "ui"), "entry"); entryName != "" {
+		return entryName
+	}
+	return enterpriseMaclawAppFirstString(anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "ui"), "entry")
+}
+
+func enterpriseMaclawAppUILayoutForEntry(ui map[string]any, entryName string) map[string]any {
+	if ui == nil || entryName == "" {
+		return nil
+	}
+	return anyMapFromMap(anyMapFromMap(ui, "layouts"), entryName)
+}
+
+func enterpriseMaclawAppWorkspaceLayoutFingerprint(entryName string, layout map[string]any) string {
+	return maclawappcontract.WorkspaceLayoutFingerprint(entryName, layout)
+}
+
+func enterpriseMaclawAppCanonicalWorkspaceLayoutRegions(rawRegions []any) []map[string]any {
+	type indexedRegion struct {
+		index  int
+		order  int
+		region map[string]any
+	}
+	regions := make([]indexedRegion, 0, len(rawRegions))
+	for i, raw := range rawRegions {
+		region, _ := raw.(map[string]any)
+		if region == nil {
+			continue
+		}
+		order := i + 1
+		if value, ok := enterpriseMaclawAppFirstNumber(region, "order"); ok {
+			order = enterpriseMaclawAppIntFromNumber(value, order)
+		}
+		regions = append(regions, indexedRegion{index: i, order: order, region: region})
+	}
+	sort.SliceStable(regions, func(i, j int) bool {
+		if regions[i].order == regions[j].order {
+			return regions[i].index < regions[j].index
+		}
+		return regions[i].order < regions[j].order
+	})
+	out := make([]map[string]any, 0, len(regions))
+	for i, item := range regions {
+		visible := true
+		if value, ok := enterpriseMaclawAppFirstBool(item.region, "visible"); ok {
+			visible = value
+		}
+		order := item.order
+		if order <= 0 {
+			order = i + 1
+		}
+		out = append(out, map[string]any{
+			"id":        enterpriseMaclawAppFirstString(item.region, "id"),
+			"role":      enterpriseMaclawAppFirstString(item.region, "role"),
+			"placement": enterpriseMaclawAppFirstString(item.region, "placement"),
+			"visible":   visible,
+			"order":     order,
+		})
+	}
+	return out
+}
+
+func enterpriseMaclawAppIntFromNumber(value any, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	case int64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case json.Number:
+		if parsed, err := typed.Int64(); err == nil && parsed > 0 {
+			return int(parsed)
+		}
+		if parsed, err := typed.Float64(); err == nil && parsed > 0 {
+			return int(parsed)
+		}
+	}
+	return fallback
+}
+
+func enterpriseMaclawAppFNV1aTextHash(value string) string {
+	var hash uint32 = 2166136261
+	for _, char := range value {
+		hash ^= uint32(char)
+		hash *= 16777619
+	}
+	return fmt.Sprintf("%08x", hash)
 }
 
 func enterpriseMaclawAppBindingForEntry(entry enterpriseMaclawAppPackageEntry) map[string]any {
@@ -1411,6 +1653,27 @@ func enterpriseMaclawAppResolvedDependenciesForEntries(entries []enterpriseMacla
 	return out
 }
 
+func enterpriseMaclawAppDownloadPackage(item capability.CapabilitySummary, version capability.VersionSummary, entry map[string]any, parsedEntry enterpriseMaclawAppPackageEntry, metadata map[string]any) map[string]any {
+	return map[string]any{
+		"schema":            "maclaw.app.pack.v1",
+		"privateMarker":     "x_maclaw_apps",
+		"source":            "enterprise_hub",
+		"package_signature": metadata["package_signature"],
+		"capability": map[string]any{
+			"id":                  item.ID,
+			"capability_id":       item.CapabilityID,
+			"display_name":        item.DisplayName,
+			"status":              item.Status,
+			"current_version_key": item.CurrentVersionKey,
+		},
+		"package_sha256":             firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])),
+		"review_evidence":            metadata["review_evidence"],
+		"maclaw_app_review_evidence": metadata["maclaw_app_review_evidence"],
+		"resolved_dependencies":      enterpriseMaclawAppResolvedDependenciesForEntries([]enterpriseMaclawAppPackageEntry{parsedEntry}),
+		"apps":                       []any{entry},
+	}
+}
+
 func enterpriseMaclawAppStringListContains(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
@@ -1481,23 +1744,7 @@ func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerA
 			writeError(w, http.StatusInternalServerError, "INVALID_MACLAW_APP_PACKAGE", err.Error())
 			return
 		}
-		resolvedDependencies := enterpriseMaclawAppResolvedDependenciesForEntries([]enterpriseMaclawAppPackageEntry{parsedEntry})
-		pkg := map[string]any{
-			"schema":            "maclaw.app.pack.v1",
-			"privateMarker":     "x_maclaw_apps",
-			"source":            "enterprise_hub",
-			"package_signature": metadata["package_signature"],
-			"capability": map[string]any{
-				"id":                  item.ID,
-				"capability_id":       item.CapabilityID,
-				"display_name":        item.DisplayName,
-				"status":              item.Status,
-				"current_version_key": item.CurrentVersionKey,
-			},
-			"package_sha256":        firstNonEmpty(version.PackageChecksum, stringFromAny(metadata["package_sha256"])),
-			"resolved_dependencies": resolvedDependencies,
-			"apps":                  []any{entry},
-		}
+		pkg := enterpriseMaclawAppDownloadPackage(*item, *version, entry, parsedEntry, metadata)
 		writeJSON(w, http.StatusOK, pkg)
 	}
 }
@@ -1541,7 +1788,7 @@ func applyMaclawAppReviewMetadataToEntry(entry map[string]any, item capability.C
 	submission["submission_id"] = firstNonEmpty(item.CurrentVersionKey, version.VersionKey)
 	submission["version_key"] = firstNonEmpty(version.VersionKey, item.CurrentVersionKey)
 	submission["status"] = firstNonEmpty(stringFromAny(metadata["review_state"]), item.Status)
-	for _, key := range []string{"reviewer", "reviewed_at", "approved_at", "published_at", "published_by", "release_channel", "release_notes", "package_signature", "risk_level", "approved_scopes", "review_issues", "review_reason"} {
+	for _, key := range []string{"reviewer", "reviewed_at", "approved_at", "published_at", "published_by", "release_channel", "release_notes", "package_signature", "risk_level", "approved_scopes", "review_issues", "review_reason", "review_evidence", "maclaw_app_review_evidence"} {
 		if value, ok := metadata[key]; ok {
 			submission[key] = value
 		}

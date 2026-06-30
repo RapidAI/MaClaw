@@ -67,6 +67,7 @@ function Render-HubCenterConfig {
       node_id: $($node.NodeID)
       node_name: $($node.NodeName)
       advertise_url: $(Normalize-Url $node.AdvertiseURL)
+      public_url: $(Normalize-Url $node.PublicBaseURL)
       enabled: true
 "@
     }

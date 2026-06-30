@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -360,7 +361,7 @@ func (a *App) ConfirmPreviewedSkillDraftReview(traceID string) (map[string]inter
 	if detail.DraftExecutionStatus != skillDraftExecutionPreviewed {
 		return nil, fmt.Errorf("experience trace %q is not waiting for preview confirmation", traceID)
 	}
-	raw := (&IMMessageHandler{app: a}).toolManageSkill(map[string]interface{}{
+	raw := (&IMMessageHandler{app: a}).toolManageSkill(context.Background(), map[string]interface{}{
 		"action":                    "execute_maintenance_plan",
 		"dry_run":                   false,
 		"confirm":                   true,

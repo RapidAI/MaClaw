@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -272,7 +273,7 @@ func normalizeInitialSkillRunWaitSeconds(raw interface{}) time.Duration {
 	return normalizeSkillRunWaitSeconds(raw)
 }
 
-func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.Duration) (*SkillRunStatus, error) {
+func waitForSkillRunnerSnapshot(ctx context.Context, runner *SkillRunner, runID string, timeout time.Duration) (*SkillRunStatus, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
@@ -347,7 +348,11 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 		if time.Now().After(deadline) {
 			return finish("deadline", status)
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return finish("cancelled", status)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
@@ -367,7 +372,7 @@ func skillRunStatusExpectsSession(status *SkillRunStatus) bool {
 	return false
 }
 
-func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	h.ensureSkillRunner()
 	runner := h.getSkillRunner()
 	if runner == nil {
@@ -408,7 +413,7 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 		onProgress("⏳ Skill 已启动，正在等待状态快照...")
 	}
 	waitStartedAt := time.Now()
-	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	status, err := waitForSkillRunnerSnapshot(ctx, runner, runID, waitDuration)
 	if err != nil {
 		log.Printf("[run_skill] wait failed owner=%q skill=%q run=%s wait_elapsed=%s total=%s err=%v", ownerID, name, runID, time.Since(waitStartedAt).Round(time.Millisecond), time.Since(toolStartedAt).Round(time.Millisecond), err)
 	} else {
@@ -441,7 +446,7 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
 	startedAt := time.Now()
 	log.Printf("[get_skill_run] start run=%s wait=%s", runID, waitDuration.Round(time.Millisecond))
-	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	status, err := waitForSkillRunnerSnapshot(context.Background(), runner, runID, waitDuration)
 	if err != nil {
 		log.Printf("[get_skill_run] failed run=%s elapsed=%s err=%v", runID, time.Since(startedAt).Round(time.Millisecond), err)
 	} else {

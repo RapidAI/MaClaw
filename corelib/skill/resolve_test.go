@@ -350,6 +350,10 @@ func TestResolveStep_DoesNotAppendInputToCompoundShellCommand(t *testing.T) {
 }
 
 func TestResolveStep_DoesNotAppendInputToExplicitBashStep(t *testing.T) {
+	// Bash steps that reference a script file (node/python + .js/.py extension)
+	// DO get implicit input appended when no placeholder is present.
+	// This enables SKILL.md-parsed skills (which always use action:"bash")
+	// to receive user-provided input as a trailing CLI argument.
 	step := corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
@@ -362,12 +366,13 @@ func TestResolveStep_DoesNotAppendInputToExplicitBashStep(t *testing.T) {
 		t.Fatalf("ResolveStep() error = %v", err)
 	}
 	cmd, _ := result.Step.Params["command"].(string)
-	if cmd != "node run.js" {
-		t.Fatalf("command = %q, want explicit bash command unchanged", cmd)
+	if !strings.Contains(cmd, "thesis.pdf") {
+		t.Fatalf("command = %q, want input appended for script-accepting bash step", cmd)
 	}
 }
 
 func TestResolveStep_DoesNotAppendInputToExplicitShellStep(t *testing.T) {
+	// Same as bash: shell steps with script commands get implicit input.
 	step := corelib.NLSkillStep{
 		Action: "shell",
 		Params: map[string]interface{}{
@@ -380,8 +385,8 @@ func TestResolveStep_DoesNotAppendInputToExplicitShellStep(t *testing.T) {
 		t.Fatalf("ResolveStep() error = %v", err)
 	}
 	cmd, _ := result.Step.Params["command"].(string)
-	if cmd != "node run.js" {
-		t.Fatalf("command = %q, want explicit shell command unchanged", cmd)
+	if !strings.Contains(cmd, "thesis.pdf") {
+		t.Fatalf("command = %q, want input appended for script-accepting shell step", cmd)
 	}
 }
 

@@ -236,7 +236,8 @@ func appendImplicitInputArgIfNeeded(originalAction string, originalParams, resol
 
 func actionAcceptsImplicitInputArg(action string) bool {
 	switch NormalizeStepActionName(action) {
-	case "", "command", "run", "exec", "execute", "cmd", "script", "node", "js", "javascript", "python", "python3":
+	case "", "bash", "command", "run", "exec", "execute", "cmd", "script", "shell", "sh",
+		"node", "js", "javascript", "python", "python3":
 		return true
 	default:
 		return false

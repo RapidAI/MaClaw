@@ -14032,3 +14032,3453 @@ DataSrv app_installations.metadata
 - 继续审计 Hub 发布包、DataSrv 安装登记、GUI 冷启动恢复三条路径里 `approval_instance` / `install_evidence` 是否还有命名不一致。
 - 环境恢复后补跑 Hub admin node 校验。
 - 继续拆 App Studio 从零创建、视觉布局调整、测试、提交、审核发布的 UI 点击流验收。
+
+### 推进记录：App Studio 从零创建到测试提交审核 UI 点击流验收（2026-06-30）
+
+本轮把上一段“App Studio 从零创建审批型 App、视觉调整布局、测试、提交审核”的缺口推进成可执行的前端端到端验收。新增用例覆盖：
+
+1. App Studio 创建企业审批型应用，选择 App Skill 与审批 workflow Skill，并配置审批事件、对象角色和依赖安装引用；
+2. 在可视化布局设计器中调整 `approval_workspace` 的 template、density、primaryRegion、outputRegion 和 result panel placement，保存到超级 Skill 的 `maclaw.app.json`；
+3. 保存后的 Skill 型 MaClaw App 继续保留 `studioOrigin=app_studio`，因此可进入本机 Review / publish 审核候选，而不会被 `source=skill` 过滤掉；
+4. 运行审批 workflow 后，回填审批实例、workflow metadata、result payload、outputs、artifacts、result coverage 和 dependency verification；
+5. 提交审核包断言 `binding.appSkill`、`dependencies.skills.install_ref`、`binding.mis.approvalBindings`、动态 UI layout、workspaceLayout governance、resultContract、testProtocol、testEvidence.approvalInstance、outputs/artifacts 均进入 package payload。
+
+本轮同时修正测试辅助依赖验证数据：`testDependencyVerificationForApp` 保留 `install_ref / installRef`，使发布门禁能验证 workflow Skill 的安装来源，而不是只按 skill id 粗略匹配。发布面板候选规则也收紧为 `source=local` 或 `studioOrigin=app_studio`，避免普通自动发现的已安装 Skill App 被误列为本地待提交应用。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "creates, tests, and submits an enterprise approval app from App Studio"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：目标用例通过；`AppsPage.test.tsx` 全量 `202 passed`。
+
+当前剩余缺口继续聚焦：
+
+- 继续把 Hub 审核发布、市场安装、依赖下载/验签、DataSrv 登记、运行审批、审批中心回看结果拆成稳定的 UI/集成验收链；
+- 对 DataSrv、GUI 后端、Hub/HubCenter 继续做一次字段契约巡检，确认 App Studio 生成的 `studioOrigin` 只影响本机发布候选，不进入 Hub 安装身份语义；
+- 在更接近真实用户操作的黄金样例中复核审批通过、拒绝、需关注、待补充、取消、超时等结果态是否都能从 workflow runner 进入 DataSrv 和运行态回看。
+
+### 推进记录：Hub 审核通过安装后运行态证据回灌（2026-06-30）
+
+本轮继续推进 App Studio 提交审核之后的后半段闭环：Hub 审核通过的 MaClaw App 从本机发布队列直接安装后，安装证据不能只停留在队列行的临时结果里，必须回灌到真正加入应用面板的 AppEntry，供用户关闭 App Studio 后继续运行、复测、诊断和二次发布。
+
+修复点：
+
+1. `installApprovedHubApp` 现在复用市场安装路径已有的 `installedAppWithInstallEvidence`，把 `InstallMaclawAppPackageFromHub` 返回的 `install_record` 合成到每个已安装 App：
+   - `versionSnapshot`：app entry version、app_skill、workflow_skill、approval binding；
+   - `installEvidence`：workspace layout、result contract、workflow contract、test evidence、dependency verification、DataSrv registration；
+   - `workflowContract`：审批运行合同；
+   - `importedRunEvidence`：由安装测试证据恢复出的 approvalInstance、resultPayload、outputs、artifacts。
+2. 新增前端组合验收：Hub 审核队列中 `approved` 的企业审批型 App，点击 `Install approved app` 后：
+   - 本地 `maclaw:apps-panel:v1` 中的 `market-*` App 保留审批 workflow 依赖、DataSrv 登记状态、审批实例结果包和文件产物；
+   - 关闭 App Studio 打开运行态，能看到版本快照、运行合同、安装测试证据、审批实例摘要、输出块和附件名。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：目标用例通过；`AppsPage.test.tsx` 全量 `203 passed`。
+
+当前剩余缺口继续聚焦：
+
+- Hub 审核发布本身仍主要通过队列/夹具验证，下一步需要把审核端状态流转、发布后的能力市场详情、真实下载包和依赖验签安装串成更接近真实用户操作的验收；
+- 继续把 DataSrv 登记后的审批运行、审批中心“我的申请/我审批的/已处理/需关注”、以及审批通过/拒绝/需关注/待补充/取消/超时结果态放进同一条 golden path，而不只依赖分段测试。
+
+### 推进记录：Hub 安装审批实例进入运行态审批工作台 lane 回看（2026-06-30）
+
+本轮继续收口 Hub 审核通过安装后的运行态回看链路。此前安装证据已经能回灌到 AppEntry，并在运行态详情头部展示版本快照、workflow contract、测试证据和审批实例摘要；但还需要证明这些审批实例不是只停留在证据卡里，而是能进入用户日常处理的审批工作台 lane。
+
+已完成：
+
+1. GUI 运行态审批实例种子新增 lane 推断规则：
+   - 如果安装/导入证据显式提供 `lane`，继续尊重原值；
+   - `approved` / `rejected` / `failed` / `cancelled` / `timeout` 自动进入 `handled`；
+   - `attention` 自动进入 `attention`；
+   - `requires_input`、`pending`、`running` 等非终态默认留在 `my_requests`。
+2. 扩展 Hub 审核通过安装的前端组合验收：
+   - Hub review queue 中 approved 的企业审批型 App 点击 `Install approved app`；
+   - 安装记录回灌 `versionSnapshot`、`installEvidence`、`workflowContract`、`importedRunEvidence`；
+   - 关闭 App Studio 后打开已安装 App；
+   - 在运行态审批工作台点击 `Handled` lane；
+   - 断言 `EXP-HUB-APPROVED-1`、`wf-approved-approval-1`、`Approved expense`、`approved-approval.pdf` 均在审批工作台内可见。
+3. 测试夹具不再依赖该 Hub 安装实例显式写入 `lane`，用例覆盖的是状态推断进入 `handled` 的真实恢复语义。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- Hub 审核安装运行态证据 targeted 用例通过：1 passed / 202 skipped。
+- `AppsPage.test.tsx` 全量通过：203 passed。
+
+对应全链路意义：
+
+```text
+Hub 审核通过的企业审批型 MaClaw App
+  -> GUI 安装并回灌 install evidence / approval_instance
+  -> 运行态恢复审批实例种子
+  -> 按审批状态推断进入 my_requests / handled / attention lane
+  -> 用户在审批工作台已处理 lane 回看审批结果包、业务记录和文件产物
+```
+
+当前剩余缺口继续聚焦：
+- Hub 审核发布状态流转、发布后能力市场详情、真实下载包和依赖验签安装还需要串成更接近真实用户操作的 UI/集成验收；
+- 全局“审批状态”中心还需要和单 App 运行态工作台做一条组合回看验收，确认我的申请、待我审批、已处理、需关注在跨 App 视角一致；
+- 最终收口前继续做 DataSrv / GUI / Hub / HubCenter 字段合同终审，并清理临时测试输出文件。
+
+### 推进记录：全局审批状态中心合并本地安装审批实例 seed（2026-06-30）
+
+本轮继续把单 App 运行态审批工作台和左侧全局“审批状态”中心打通。此前 Hub 安装后的审批实例已经能在单 App 运行态 `Handled` lane 回看，但全局审批中心只读取 `ListMaclawAppApprovalInstancesAll('all', 200)` 返回值；如果用户刚从 Hub 安装 App，DataSrv/后端全局列表尚未回流该测试审批实例，全局视角会短暂缺失同一条审批证据。
+
+已完成：
+
+1. `ApprovalManager` 新增本地 seed 合并：
+   - 从所有企业审批型 App 的 `importedRunEvidence.approvalInstance` 和 `installEvidence.test_evidence.approval_instance` 生成本地审批实例；
+   - 加载全局后端列表成功时，使用 `mergeApprovalInstanceViews(localSeedInstances, remoteViews)` 合并，后端/远端记录优先，本地 seed 作为补充；
+   - 后端全局列表加载失败但本地 seed 存在时，仍展示本地审批实例，避免刚安装的 App 在全局审批中心消失。
+2. 扩展 Hub 审核通过安装组合验收：
+   - 先在单 App 运行态审批工作台点击 `Handled` lane，验证审批实例、输出和附件可见；
+   - 再点击左侧 `Approval status` 打开全局审批中心；
+   - 后端全局审批列表 mock 返回空数组；
+   - 全局中心仍能从本地安装证据显示 `EXP-HUB-APPROVED-1`、`wf-approved-approval-1`、`Approved expense`、`approved-approval.pdf`。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- Hub 审核安装 + 单 App/全局审批中心回看 targeted 用例通过：1 passed / 202 skipped。
+- `AppsPage.test.tsx` 全量通过：203 passed。
+
+对应全链路意义：
+
+```text
+Hub 安装企业审批型 MaClaw App
+  -> install evidence 回灌到本地 AppEntry
+  -> 单 App 运行态审批工作台可回看 handled 审批结果
+  -> 全局审批状态中心合并本地 seed 与后端全局列表
+  -> DataSrv/后端回流前也能跨 App 回看审批实例、结果包和附件
+```
+
+当前剩余缺口继续聚焦：
+- Hub 审核发布状态流转、发布后能力市场详情、真实下载包和依赖验签安装仍需更接近真实操作的 UI/集成验收；
+- DataSrv / GUI / Hub / HubCenter 字段合同需要最终巡检，尤其是 `approval_instance`、`install_evidence`、`test_evidence` 与 `result_contract` 的命名一致性；
+- 收口前清理临时测试输出文件，并补跑后端关键组合测试与 Hub admin 静态校验。
+### 推进记录：Hub 市场搜索结果安装前审核证据详情可见（2026-06-30）
+
+本轮继续推进“Hub 审核发布 -> 能力市场详情 -> 真实下载包安装”的 UI 级验收。此前 Hub/HubCenter 审核侧已经能显示 review evidence，GUI 市场安装后也能显示 install evidence；但用户在 GUI 的 “Add from market” 搜索结果里，安装前还只能看到名称、分类和来源，缺少审核/测试摘要，无法在点击安装前判断该 App 是否经过结果契约、测试协议、覆盖率、输出附件和审批实例验证。
+
+已完成：
+
+1. GUI 市场搜索结果支持携带 `marketReviewEvidence`：
+   - 从 `SearchMixedSkills` 返回的 `review_evidence` / `reviewEvidence` / `maclaw_app_review_evidence` 或 `metadata.review_evidence` 中提取当前 App 的审核证据；
+   - 支持 `{appID: evidence}`、`{market-appID: evidence}`、`{appName: evidence}` 和单条扁平 evidence；
+   - 该字段只用于市场预览，不进入安装身份语义；真正安装仍以 Hub 下载包和 `install_record` 为准。
+2. 市场行复用 `PublishReviewEvidenceStrip`：
+   - 安装前可见 Approval、Test evidence、Result coverage、Result package 等审核摘要；
+   - `PublishReviewEvidenceStrip` 同时兼容映射型 evidence 和扁平 evidence；
+   - Test evidence 值增强为 `run_id · test_protocol_fingerprint`，和 Hub 审核侧的信息量对齐。
+3. 保持安装后证据区分：
+   - 市场行可同时展示安装前 review evidence 和安装后的 install evidence；
+   - 测试断言显式排除 `.apps-review-evidence-strip`，继续验证真正的 install evidence snapshot。
+4. 扩展市场安装组合验收：
+   - `SearchMixedSkills` 返回带 `review_evidence` 的 Hub MaClaw App；
+   - GUI 搜索结果安装前显示 `run-market-contract-review · proto-market-contract-review`、`approval_result · Covered: 3`、`Output: 1 · Output artifacts: 1`、`approved · contract.result_feedback`；
+   - 点击 `Add` 后仍走真实 `InstallSelectedMaclawAppPackageFromHub(capabilityID, selectedAppIDs)`；
+   - 安装后继续验证 dependency plan、install evidence、DataSrv registration、审批实例和文件产物回灌。
+
+验证：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx
+```
+
+结果：
+- Hub 市场搜索安装 targeted 用例通过：1 passed / 202 skipped。
+- `AppsPage.test.tsx` 全量通过：203 passed。
+
+对应全链路意义：
+
+```text
+Hub/HubCenter 审核形成 review_evidence
+  -> GUI Add from market 搜索结果读取 Hub 能力详情
+  -> 安装前显示审核/测试/覆盖/输出/审批摘要
+  -> 点击 Add 走 Hub 真实下载包 + 选择子 App + 依赖验签安装
+  -> 安装后显示 install evidence 并回灌运行态
+```
+
+当前剩余缺口继续聚焦：
+- Hub 审核发布状态流转本身仍需要更接近真实操作的 UI/集成验收，尤其是从 submitted -> approved/published -> marketplace searchable 的状态串联；
+- DataSrv / GUI / Hub / HubCenter 字段合同需要最终巡检，确认 review_evidence 与 install_evidence 的字段命名在跨端一致；
+- 收口前清理临时测试输出文件，并补跑后端关键组合测试与 Hub admin 静态校验。
+### 推进记录：Hub 审核发布状态流转到市场安装验收（2026-06-30）
+
+本轮继续补齐 App Studio 提交审核后的 Hub 发布状态闭环。此前已经能展示本机提交队列、同步到 Hub、刷新 Hub 审核状态，以及从市场搜索结果安装已发布 MaClaw App；但缺少一条把这些动作串起来的用户级验收，无法证明 `submitted -> pending_review -> published -> marketplace searchable -> install` 是同一个 App/capability 的连续链路。
+
+本轮完成：
+
+1. 新增前端验收 `syncs a local submission to Hub, refreshes published status, then installs it from market search`：
+   - 本机提交队列显示 `local-review-flow`，状态为 `submitted/local`；
+   - 点击 `Sync to Hub` 后调用 `SyncMaclawAppPackageSubmissionToHub('local-review-flow')`，队列更新为 `hub-review-flow / pending_review / hub`；
+   - 点击 `Refresh Hub Status` 后调用 `RefreshMaclawAppPackageSubmissionFromHub('hub-review-flow')`，队列更新为 `published`，并显示审核证据、结果覆盖、输出/附件摘要；
+   - 切到 `Add from market`，Hub 搜索返回同一个 `cap-flow-approval-app`，市场行安装前显示同一份 review evidence；
+   - 点击安装时调用 `InstallSelectedMaclawAppPackageFromHub('cap-flow-approval-app', ['market-flow-approval-app'])`，而不是退回本地粘贴包安装或绕过 Hub 下载包。
+
+2. 修复 Hub 市场安装后的本地 AppEntry 身份回灌：
+   - 从 Hub 下载包解析出的 AppEntry 现在继承市场候选的 `marketCapabilityID`、`marketInstallSource`、`marketSourceLabel`；
+   - 这样安装后的 App 能继续被 Hub governance 队列按 capability id 匹配，支持后续 revoked/republished 状态同步；
+   - 同时不改变 install evidence、workflow contract、approval instance、result package 的回灌路径。
+
+验证结果：
+
+- 新增 Hub 状态流转到市场安装 targeted 用例通过：1 passed / 203 skipped。
+- 既有 Hub 市场搜索安装 targeted 用例通过：1 passed / 203 skipped。
+- 既有 Hub 审核队列安装审批型 App runtime evidence targeted 用例通过：1 passed / 203 skipped。
+
+对应全链路意义：
+
+```text
+App Studio 提交本机队列
+  -> 同步 Hub 审核队列
+  -> 刷新为 published
+  -> 能力市场搜索到同一 capability
+  -> 安装时走 Hub 下载包 + 依赖安装/验签 + install evidence 回灌
+  -> 本地 App 保留 Hub capability 身份，后续可继续接收治理状态
+```
+
+当前剩余缺口继续聚焦：
+
+- 继续把这条前端 UI 验收和后端 Hub 审核接口、Hub capability metadata/package 下载接口做更真实的集成串联，减少纯 mock 比例；
+- 继续补一条跨 DataSrv + Hub + GUI 的最终黄金样例：制作审批型 App、测试、上传审核、发布、下载安装依赖、发起审批、running 节点同步、审批完成、单 App/全局审批中心结果和文件回读。
+### 推进记录：Hub review evidence 后端保真与 GUI refresh 持久化（2026-06-30）
+
+本轮把上一段前端 UI 状态流转继续下压到 Hub/GUI 后端字段契约。此前 Hub 提交、审核、发布和下载包已经保留原始 manifest、测试证据和安装签名，但 `review_evidence` 主要依赖 GUI 本地队列从 package 重新派生；如果 Hub 审核侧对证据做了规范化或补充，GUI refresh 后无法把这份 Hub 侧审核证据持久回本机队列。
+
+本轮完成：
+
+1. Hub 提交入库时生成稳定 `review_evidence` / `maclaw_app_review_evidence`：
+   - 以 App ID 为 key；
+   - 聚合 run_id、test_protocol_fingerprint、result contract primary/type count、result coverage primary/covered/missing、output/artifact count、approval_status/current_node；
+   - 继续保留原始 `test_evidence`，review evidence 只是审核/市场/GUI 预览用摘要，不替代安装包本体。
+
+2. Hub 下载 published MaClaw App 包时保留审核证据：
+   - 顶层 `maclaw.app.pack.v1.review_evidence` 暴露同一份审核摘要；
+   - entry 内 `app.governance.submission.review_evidence` / `maclaw_app_review_evidence` 同步保留，随原始 app manifest 一起进入安装包；
+   - 下载包仍只允许 `published` 状态，并继续携带 package_signature、resolved_dependencies、原始动态 UI、workflow/result/test evidence。
+
+3. GUI 后端 refresh 持久化 Hub review evidence：
+   - `maclawAppSubmissionRecord` 新增 `review_evidence`；
+   - `RefreshMaclawAppPackageSubmissionFromHub` 从 Hub capability metadata 读取 review_evidence 并写入本机 durable queue；
+   - `ListMaclawAppPackageSubmissions` summary 优先返回 Hub 持久化 review_evidence，缺失时再从本地 package 派生；
+   - `GetMaclawAppPackageSubmission` 会克隆返回 review_evidence，避免详情调用修改内存副本。
+
+验证结果：
+
+- Hub handler 强制定向测试通过：`go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmit|TestCapabilityMaclawAppPackageHandler" -count=1`。
+- GUI refresh 定向测试通过：`go test ./gui -run "TestRefreshMaclawAppPackageSubmissionFromHubUpdatesReviewState"`。
+
+对应全链路意义：
+
+```text
+App Studio 提交包
+  -> Hub 从完整 test evidence 派生 review_evidence
+  -> Hub 审核/发布保留 review_evidence
+  -> published package 下载时顶层和 entry submission 都携带 review_evidence
+  -> GUI refresh Hub 状态后持久化 review_evidence
+  -> 市场搜索、提交队列、安装审计可消费同一份审核摘要
+```
+
+当前剩余缺口继续聚焦：
+
+- 把 Hub approve/publish 管理端点击流、GUI refresh、市场搜索安装放进一条更接近真实服务的组合验收；
+- 继续推进最终黄金样例：App Studio 制作审批型 App、测试、上传审核、发布、下载安装依赖、DataSrv 注册、发起审批、running 节点同步、审批完成、单 App/全局审批中心结果和文件回读。
+### 推进记录：Hub review_evidence 进入安装审计与 DataSrv 注册（2026-06-30）
+
+本轮继续收口 MaClaw App 从 Hub 审核发布到企业本地安装运行的证据链。此前 Hub 侧已经能在提交、审核、发布和包下载阶段保留 `review_evidence`，GUI 刷新 Hub 状态后也能把审核证据写回本机提交队列；但安装后的本地审计记录和 DataSrv app-installations 注册 metadata 仍主要依赖 `test_evidence` / `install_evidence`，缺少对 Hub 审核摘要的直接回溯。
+
+本轮完成：
+
+1. GUI backend 安装审计记录 `maclawAppInstallRecord` 新增 `review_evidence` 字段。
+2. 新增 `maclawAppReviewEvidenceForEntry`，从 `app.governance.submission.review_evidence` / `reviewEvidence` / `maclaw_app_review_evidence` 中提取当前 App 的 Hub 审核摘要，兼容按 app id/name 分组和扁平 evidence。
+3. `RecordMaclawAppInstall` 在本地安装 registry 中持久化 Hub review evidence。
+4. `maclawAppInstallEvidenceByApp` 在每个 App 的 `install_evidence` 中附带 `review_evidence`，让市场安装结果、GUI 详情和后续运行审计都能看到同一份审核摘要。
+5. `maclawAppDataSrvInstallationPayloads` 在 DataSrv `/api/v1/data/app-installations/{app_id}` 注册 metadata 中同步写入 `review_evidence`，便于 DataSrv 侧追踪该企业应用安装时对应的 Hub 审核证据。
+6. 扩展 `TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence`，覆盖：
+   - Hub package entry 内带 `governance.submission.review_evidence`；
+   - 安装返回的 `install_evidence.review_evidence` 保留 run、审批状态和当前节点；
+   - DataSrv 注册 metadata 保留 review evidence；
+   - 本地安装审计 `ListMaclawAppInstalls` 保留 review evidence。
+
+验证命令：
+
+```powershell
+go test ./gui -run TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence -count=1
+go test ./gui -run "TestRefreshMaclawAppPackageSubmissionFromHubUpdatesReviewState|TestMaclawAppSubmissionSummaryIncludesReviewEvidence" -count=1
+git diff --check -- gui/app_maclaw_apps.go gui/app_maclaw_apps_test.go
+```
+
+当前剩余缺口仍集中在真实跨服务黄金路径：需要继续把 App Studio 本地制作/试运行、提交 Hub、Hub 审核发布、GUI 刷新 published 状态、市场安装、依赖 Skill 检查/安装、DataSrv 安装登记、审批 workflow 启动、节点状态同步、结果回写和全局审批视图读回串成一个更完整的集成测试或脚本化验收场景。
+### 推进记录：Hub 发布包显式携带 review_evidence（2026-06-30）
+
+上一轮 GUI 安装侧已经可以从 `app.governance.submission.review_evidence` 读取 Hub 审核证据，并写入安装审计、`install_evidence` 和 DataSrv app-installations metadata。本轮继续补齐 Hub 输出端，避免安装侧只能消费手写或模拟 package 中的审核证据。
+
+本轮完成：
+
+1. `CapabilityMaclawAppPackageHandler` 返回的 `maclaw.app.pack.v1` 顶层新增：
+   - `review_evidence`
+   - `maclaw_app_review_evidence`
+2. `applyMaclawAppReviewMetadataToEntry` 将 Hub capability metadata 中的 `review_evidence` / `maclaw_app_review_evidence` 合并进 `app.governance.submission`。
+3. 扩展 `TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack`，验证：
+   - 下载包顶层暴露 Hub review evidence；
+   - entry 内 `governance.submission.review_evidence` 保留同一份审核证据；
+   - 现有 package signature、resolved dependencies、workspace layout、workflow contract、test evidence、approval instance 断言继续成立。
+
+验证命令：
+
+```powershell
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack -count=1
+```
+
+这使链路更接近真实生产路径：
+
+```text
+Hub 审核/发布 metadata.review_evidence
+  -> package download 顶层 review_evidence
+  -> entry.governance.submission.review_evidence
+  -> GUI InstallSelectedMaclawAppPackageFromHub
+  -> install_evidence.review_evidence / install registry review_evidence
+  -> DataSrv app-installations.metadata.review_evidence
+```
+### 推进记录：安装后保留 Hub submission 身份（2026-06-30）
+
+本轮继续补齐 Hub 发布身份在企业本地安装后的可追踪性。此前安装侧已经能保留 Hub `review_evidence`，但 DataSrv app-installations metadata 和本地安装审计缺少稳定的 Hub capability/version 摊平字段；企业后端可以看到证据，却不容易直接反查该安装对应哪个 Hub capability、哪个 version key、哪个审核状态。
+
+本轮完成：
+
+1. GUI backend 新增 `maclawAppSubmissionMetadataForEntry`，统一从 `app.governance.submission` 提取 Hub submission 身份。
+2. `maclawAppInstallEvidenceByApp` 在每个 App 的 `install_evidence` 中新增 `submission`，保留：
+   - `capability_id`
+   - `market_capability_id`
+   - `submission_id`
+   - `version_key`
+   - `status`
+   - `package_sha256`
+3. `maclawAppInstallRecord` 新增 `submission` 字段，本地安装审计可直接回溯 Hub 发布身份。
+4. `maclawAppDataSrvInstallationPayloads` 在 DataSrv app-installations metadata 中写入完整 `submission`，并摊平关键字段：
+   - `hub_capability_id`
+   - `hub_market_capability_id`
+   - `hub_submission_id`
+   - `hub_version_key`
+   - `hub_review_status`
+   - `hub_package_sha256`
+5. 扩展 `TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence`，验证 Hub submission 身份进入：
+   - `install_evidence.submission`
+   - DataSrv registration metadata
+   - 本地安装 registry audit record
+
+验证命令：
+
+```powershell
+go test ./gui -run TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence -count=1
+go test ./gui -run "TestMaclawAppInstallEvidenceGeneratesDependencyVerification|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+Hub package entry.governance.submission
+  -> GUI install_evidence.submission
+  -> 本地 maclaw app install registry submission
+  -> DataSrv app-installations.metadata.submission / hub_* identity fields
+```
+### 推进记录：安装证据中的 Hub 身份进入应用面板可见层（2026-06-30）
+
+本轮把上一段后端已经保留下来的 Hub `submission` / `review_evidence` 继续接到 GUI 应用面板。目标是让企业用户不只在本地审计和 DataSrv metadata 中能追溯安装来源，也能在已安装应用的运行详情里直接看到该 App 来自哪个 Hub capability、哪个 version key，以及安装时对应的审核状态。
+
+本轮完成：
+1. GUI 前端 `BackendAppInstallRecord` 消费 `submission` / `review_evidence`，并在 `InstallRecordEvidenceSnapshot` 中新增 Hub 来源摘要：审核状态、capability id、version key 或 submission id。
+2. `dataSrvInstalledInstallEvidence` 从 DataSrv `app_installations.metadata` 恢复 installed evidence 时，支持两类来源：
+   - 直接嵌套的 `metadata.submission` / `metadata.review_evidence`；
+   - 摊平字段 `hub_capability_id`、`hub_market_capability_id`、`hub_submission_id`、`hub_version_key`、`hub_review_status`、`hub_package_sha256`。
+3. 从 Hub 审核队列安装 approved 企业审批型 App 后，本地 AppEntry 的 `installEvidence` 保留并展示 Hub 发布身份和审核证据。
+4. 从 DataSrv 冷启动恢复企业普通应用时，即使只有摊平 `hub_*` 字段，也能合成 `installEvidence.submission` 并继续保留 `review_evidence`。
+
+验证命令：
+```powershell
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates"
+```
+
+当前链路进一步变为：
+
+```text
+Hub package entry.governance.submission / review_evidence
+  -> GUI install_evidence.submission / review_evidence
+  -> 本地 AppEntry.installEvidence
+  -> 运行详情安装证据条显示 Hub 来源、审核状态、capability、version key
+  -> DataSrv app-installations.metadata.submission / hub_* / review_evidence
+  -> GUI 冷启动恢复同一份 Hub 安装身份
+```
+
+剩余缺口：继续把这条 UI 可见链和真实 Hub 审核发布接口、DataSrv app_installations schema/openapi、依赖 Skill 下载验签、审批 workflow 启动与结果回读串成更完整的黄金路径验收。
+### 推进记录：DataSrv app_installations 正式承认 Hub 安装身份字段（2026-06-30）
+
+本轮把上一段 GUI 已经能展示的 Hub `submission` / `review_evidence` 下沉到 MaClaw DataSrv 服务端契约。此前 GUI 安装侧会把这些字段写进 DataSrv metadata，GUI 冷启动也能从 `hub_*` 摊平字段恢复；但 DataSrv 自身的 metadata normalize、OpenAPI 和审计摘要还没有把这些字段当成正式 app_installations 合同。
+
+本轮完成：
+1. `normalizeAppInstallationMetadata` 新增 Hub identity 归一化：
+   - 接受 `metadata.submission` 或 `metadata.governance.submission`；
+   - 规范 camelCase / snake_case 字段到 `submission.capability_id`、`market_capability_id`、`submission_id`、`version_key`、`status`、`package_sha256`；
+   - 同步派生 `hub_capability_id`、`hub_market_capability_id`、`hub_submission_id`、`hub_version_key`、`hub_review_status`、`hub_package_sha256`。
+2. `reviewEvidence` / `review_evidence` / `maclaw_app_review_evidence` 统一归一为 `review_evidence`，并保留 `maclaw_app_review_evidence` 兼容别名。
+3. DataSrv app installation 审计摘要白名单新增轻量 Hub 身份字段，避免审计只能看到 source=enterprise_hub 而无法反查 capability/version/submission。
+4. DataSrv OpenAPI 的 app-installations metadata schema 显式声明：
+   - `submission`
+   - `review_evidence`
+   - `maclaw_app_review_evidence`
+   - `hub_capability_id`
+   - `hub_market_capability_id`
+   - `hub_submission_id`
+   - `hub_version_key`
+   - `hub_review_status`
+   - `hub_package_sha256`
+5. 新增 DataSrv 服务测试，验证 Upsert -> stored metadata -> capabilities -> audit log 都保留 Hub 安装身份和审核证据。
+
+验证命令：
+```powershell
+cd datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestUpsertAppInstallationSynthesizesTestEvidenceFromSummaryMetadata" -count=1
+go test ./structureddata -run TestHTTPServerRequiresBearerTokenAndHandlesRecords -count=1
+go test ./structureddata -run "TestUpsertAppInstallation|TestHTTPServerAppInstallation" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+Hub package entry.governance.submission / review_evidence
+  -> GUI RecordMaclawAppInstall 写 DataSrv app_installations.metadata
+  -> DataSrv normalize canonical submission + review_evidence
+  -> DataSrv OpenAPI 明确声明 hub_* 字段
+  -> DataSrv capabilities / audit log 可追踪 Hub capability、version、submission、review status
+  -> GUI 冷启动恢复和应用详情继续展示同一份来源身份
+```
+
+剩余缺口：继续把 DataSrv 这一正式合同纳入跨服务黄金路径，尤其是 Hub 真实 approve/publish、依赖 Skill 下载验签、审批 workflow 发起、DataSrv RecordApproval 同步、单 App/全局审批中心结果和文件回读的同一实例验收。
+
+### 推进记录：DataSrv app_installations 支持按 Hub 安装身份查询（2026-06-30）
+
+本轮在上一段“DataSrv 正式承认 Hub 安装身份字段”的基础上继续收口查询合同。此前 `app_installations.metadata` 已能保存并归一化 Hub `submission` / `review_evidence`，但运维、GUI 冷启动恢复和跨服务黄金路径还缺少稳定查询入口，无法直接问“某个 Hub capability/version/submission/review status 在本租户安装了哪些 App”。
+
+本轮完成：
+
+1. `QueryAppInstallationsInput` 新增 Hub 身份过滤字段：
+   - `hub_capability_id`
+   - `hub_market_capability_id`
+   - `hub_submission_id`
+   - `hub_version_key`
+   - `hub_review_status`
+2. DataSrv HTTP GET `/api/v1/data/app-installations` 新增同名查询参数，并提供兼容别名：
+   - `capability_id`
+   - `market_capability_id`
+   - `submission_id`
+   - `version_key`
+   - `review_status`
+3. SQLite app_installations 过滤器支持同时从摊平字段和嵌套字段匹配：
+   - `hub_*`
+   - `submission.*`
+   - `governance.submission.*`
+4. `appInstallationMapHasAnyIdentifier` 支持点路径读取，避免嵌套 submission 只能靠 normalize 后的摊平字段查询。
+5. DataSrv OpenAPI 将上述查询参数纳入 `/api/v1/data/app-installations` 参数列表。
+6. 服务层测试验证 5 个 Hub 身份字段均可查回同一安装记录，错误 capability 会返回空结果。
+7. HTTP 层测试验证标准 `hub_*` 参数组合可查回安装记录，兼容别名的错误 capability 会正确排除。
+
+验证命令：
+
+```powershell
+cd datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestHTTPServerAppInstallationsOverrideObjectRoleBindings|TestHTTPServerRequiresBearerTokenAndHandlesRecords" -count=1
+go test ./structureddata -run "TestUpsertAppInstallation|TestHTTPServerAppInstallation" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+Hub package submission / review_evidence
+  -> GUI 安装写入 DataSrv app_installations.metadata
+  -> DataSrv normalize canonical submission + hub_* summaries
+  -> DataSrv OpenAPI 暴露 Hub 身份查询参数
+  -> GUI / 运维 / 黄金路径验收可按 capability、market capability、submission、version key、review status 查询安装记录
+```
+
+剩余缺口：继续把这条可查询的 DataSrv 合同接入跨服务黄金路径，重点是 Hub 真实 approve/publish、依赖 Skill 下载验签、审批 workflow 发起、DataSrv RecordApproval 同步、单 App/全局审批中心结果和文件回读的同一实例验收。
+
+### 推进记录：Hub submit/approve/publish/list/download 黄金路径验收（2026-06-30）
+
+本轮把 Hub 后端侧此前分散的 MaClaw App 提交、审核、发布、市场列表和下载包能力串成一条连续验收。目标是证明 GUI `SearchMixedSkills` / Add from market 安装前预览所依赖的市场 metadata，不只是前端 mock 或单点 handler 假设，而是来自真实 Hub handler 状态流转后的同一份 capability/version/package 数据。
+
+本轮完成：
+
+1. 新增 Hub 后端组合测试 `TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath`。
+2. 测试链路覆盖：
+   - `POST /api/capabilities/maclaw-apps/submit`
+   - `POST /api/admin/capabilities/maclaw-apps/{id}/approve`
+   - `POST /api/admin/capabilities/maclaw-apps/{id}/publish`
+   - `GET /api/capabilities?type=skill`
+   - `GET /api/capabilities/maclaw-apps/{id}/package`
+3. 发布后的 marketplace list 断言同一 capability：
+   - 状态为 `published`
+   - metadata 保留 `review_state=published`、`published_by`、`package_signature`
+   - metadata 暴露 GUI 安装前预览需要的 `review_evidence`
+   - metadata 暴露动态 UI layout 摘要、依赖数量、result coverage、output/artifact 数量
+4. 下载包断言同一 package：
+   - 顶层携带 `review_evidence` 和 `package_signature`
+   - app entry 的 `governance.submission` 携带 Hub 发布身份、published 状态、发布人、签名和 review evidence
+   - 动态 UI、审批测试证据和结果包仍由原始 package/manifest 保留
+5. 扩展既有下载包测试，显式验证 `review_evidence` 同时进入 package 顶层和 entry submission，避免 Hub 下载包只保留签名而丢失审核摘要。
+
+验证命令：
+
+```powershell
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestAdminCapabilityMaclawAppPublishPublishesApprovedVersion" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+App Studio submit package
+  -> Hub pending_review capability/version
+  -> Hub approve 生成 review_evidence
+  -> Hub publish 生成 package_signature 并保持 review_evidence
+  -> /api/capabilities?type=skill 市场列表可见 published + review_evidence + layout/result/dependency 摘要
+  -> /api/capabilities/maclaw-apps/{id}/package 下载包携带 signature + review_evidence + governance.submission
+  -> GUI 市场安装前预览和安装后审计消费同一份 Hub 发布证据
+```
+
+剩余缺口：下一步继续把 Hub 后端黄金路径和 GUI 市场安装测试、DataSrv app_installations 查询、审批 workflow 运行/结果回读接成一条跨服务最终样例，减少纯前端 mock 和分段验证之间的空隙。
+### 推进记录：GUI Hub 安装后按 DataSrv Hub 身份查询回读（2026-06-30）
+
+本轮继续把 Hub 发布身份、GUI 安装审计和 DataSrv `app_installations` 查询合同接起来。上一轮 DataSrv 已经支持按 `hub_capability_id` / `hub_version_key` / `hub_review_status` 查询安装记录，Hub 后端也已经通过 submit/approve/publish/list/download 黄金路径证明市场 metadata 和下载包会携带同一份 review evidence 与发布身份。本轮把这个合同落到 GUI 安装侧验收。
+
+本轮完成：
+
+1. 扩展 `TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence`。
+2. 测试中的 DataSrv mock 从只接收 PUT 注册升级为支持：
+   - `PUT /api/v1/data/app-installations/expense-approval`
+   - `GET /api/v1/data/app-installations?hub_capability_id=...&hub_version_key=...&hub_review_status=...`
+3. Hub 下载包夹具携带 `governance.submission` 和 `review_evidence`，模拟真实 Hub published package。
+4. GUI 安装后继续断言：
+   - `install_evidence.review_evidence` 保留 run、审批状态和当前节点
+   - `install_evidence.submission` 保留 capability、version key、package sha
+   - DataSrv registration metadata 保留 `review_evidence`、`submission`、`hub_*` 摘要字段
+   - 本地安装审计保留 `ReviewEvidence` 和 `Submission`
+5. 新增安装后 DataSrv GET 查询断言：按 `hub_capability_id + hub_version_key + hub_review_status` 能查回同一个 `expense-approval` 安装记录，并保留审批实例摘要 `test_evidence_approval_id=approval-expense-1001`。
+
+验证命令：
+
+```powershell
+go test ./gui -run TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubInstallsDepsAndRegistersDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps|TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnostics" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+Hub published package governance.submission / review_evidence
+  -> GUI InstallSelectedMaclawAppPackageFromHub
+  -> InstallMaclawAppDependencies 安装 app/workflow Skill 依赖
+  -> RecordMaclawAppInstall 写本地安装审计和 DataSrv app_installations metadata
+  -> DataSrv 可按 hub_capability_id / hub_version_key / hub_review_status 查回同一安装记录
+  -> 查询结果继续保留审批实例、结果包、review evidence 和 Hub 发布身份
+```
+
+剩余缺口：继续把安装后的“查询到安装记录”推进到“发起审批 workflow、同步 RecordApproval、审批节点状态流转、单 App/全局审批中心读取同一实例结果和文件”的最终跨服务样例。
+### 推进记录：审批 workflow 运行后单 App/全局审批中心同实例回读（2026-06-30）
+本轮把“已安装审批型 App -> 发起审批 workflow Skill -> DataSrv RecordApproval 同步 -> GUI 审批中心回读”的验收再向前收紧一层。此前测试已经证明 workflow skill 的 progress/final 结果会写回 DataSrv，并能从全局审批中心读取；本轮补上单 App 详情页视角，确保企业审批型应用的“我的申请/我审批的/已处理”实例数据不是只在全局中心可见，而是能按 App 维度回到同一条审批实例。
+
+本轮完成：
+1. 扩展 `TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult` 的 DataSrv 请求捕获，记录 `/api/v1/data/approvals` 的 RawQuery。
+2. 审批 workflow final sync 后同时调用：
+   - `ListMaclawAppApprovalInstances("expense-approval", "handled", 10)`
+   - `ListMaclawAppApprovalInstancesAll("handled", 10)`
+3. 断言单 App 视图与全局审批中心读到的是同一个实例：`app_id`、`approval_id`、`workflow_instance_id`、`workflow_decision_id` 一致。
+4. 断言两边都保留最终结果反馈：`result_payload`、内容输出、文件 artifact。
+5. 断言 GUI 对 DataSrv 发起了两类读取：
+   - App scoped：`app_id=expense-approval&lane=handled&limit=10`
+   - Global：`lane=handled&limit=10`
+
+验证命令：
+```powershell
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+```
+
+当前链路进一步变为：
+
+```text
+Hub published approval app
+  -> GUI install + dependency skill verification
+  -> DataSrv app_installations registration/query by Hub identity
+  -> StartMaclawAppApprovalWorkflow
+  -> workflow Skill returns progress_instances + final approval_instance
+  -> GUI syncs progress/review to DataSrv RecordApproval
+  -> single App approval lane reads app_id-scoped handled instance
+  -> global approval center reads same handled instance
+  -> both preserve approval result, text output, file artifact, node path, workflow decision identity
+```
+
+剩余缺口：继续把这条后端/GUI 运行样例推到前端页面层和 App Studio 层，重点是动态界面生成/可视化布局保存、制作-测试-上传 Hub 的可视化闭环、安装依赖诊断 UI、以及审批实例列表在 `AppsPage` 中按“企业审批型应用 / 企业普通应用 / 工具型应用”完整呈现。
+### 推进记录：App 运行页常态显示安装治理/依赖/Hub/DataSrv 证据（2026-06-30）
+本轮推进前端页面层，把此前已经打通的 Hub 发布证据、安装依赖检查、DataSrv 注册和安装审计信息，从“安装结果/市场行/头部摘要”进一步落到 App 运行页。目标是让用户打开企业审批型 App 后，不需要回到市场或安装记录，也能在传统软件式运行界面中看到这个 App 为什么可信、依赖是否齐、是否已经注册到 DataSrv。
+
+本轮完成：
+1. 在 `AppsPage` 新增运行时 `RuntimeInstallGovernancePanel`，复用既有 `installRecordEvidenceItems`，不新增后端契约。
+2. 面板常态展示安装治理摘要：
+   - Hub/市场来源与发布状态
+   - 动态 UI 布局入口、模板、密度
+   - result contract 与 result coverage
+   - 测试证据与审批实例证据
+   - 依赖验证数量与阻断数量
+   - DataSrv 绑定注册状态
+3. 修正动态布局缺口：当 App 安装证据或依赖验证计划存在时，即使 manifest 的 runtime layout 没有显式声明 `detail/status` 区，也保留运行状态区，避免治理证据被布局配置隐藏。
+4. 为运行治理面板补充产品型样式：紧凑事实表、低噪声边框、语义状态色，延续当前 MaClaw GUI 风格。
+5. 扩展前端测试 `installs approved Hub MaClaw Apps from market search results`：安装 approved Hub MaClaw App 后打开 App，断言运行页可见 `Install governance`，并能看到 Hub published 来源、依赖验证、DataSrv 注册状态。
+6. 调整冷启动恢复测试，允许安装证据在头部摘要和运行页治理面板两个位置同时出现，验证冷启动后仍可恢复动态布局和安装证据。
+
+验证命令：
+```powershell
+cd gui/frontend
+npm.cmd test -- AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results|restores dynamic layout and install evidence from stored app entries after cold start"
+cd ../..
+git diff --check -- gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\AppsPage.css gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx
+```
+
+完整 `AppsPage.test.tsx` 当前仍有 3 个非本轮新增失败，集中在此前工作树已有的“workflow contract / governance review 是否阻止运行或发布”的语义切换测试上；本轮相关两个前端用例已通过。
+
+当前链路进一步变为：
+
+```text
+Hub published MaClaw App + review_evidence
+  -> GUI market install + dependency skill verification
+  -> local install audit / DataSrv registration / install_evidence
+  -> App runtime opens with dynamic layout
+  -> runtime status area always preserves install governance evidence when present
+  -> user can see Hub source, dependency verification, DataSrv registration, result/test/approval evidence before running or continuing workflow
+```
+
+剩余缺口：继续把 App Studio 的可视化设计器做实，包括动态 UI 自动生成后的可视化位置调节、layout 保存到应用信息文件、测试运行证据与上传 Hub 审核包的一键串联；同时需要收口 workflow contract / governance review 的运行时与发布时边界语义，让前端测试全集重新一致。
+### 推进记录：发布/运行边界语义收口（2026-06-30）
+
+本轮收口 `AppsPage` 中 MaClaw App 发布、安装、运行三类边界的校验语义，重点是把“本地运行可容忍的治理提示”和“发布/市场安装必须阻断的问题”区分开，同时保留后端 `PlanMaclawAppInstall` 对当前 App 的权威判断。
+
+本轮完成：
+
+1. 发布前校验顺序调整为：
+   - 先读取后端 `PlanMaclawAppInstall`；
+   - 如果后端计划对当前 App 有依赖、workflow contract、governance review 或阻断依赖信号，则采用后端计划；
+   - 如果后端计划为空计划，则沿用安装证据或最近运行证据中的 `dependencyVerification`，避免空计划覆盖已有验证证据；
+   - 当前 App 的 workflow contract issue 优先阻断发布；
+   - 当前 App 的必需依赖缺失/停用用具体依赖错误阻断发布；
+   - governance review issue 阻断发布和市场安装，但不阻断本地运行；
+   - 最后再执行 declared Skill dependencies 与 verification plan 的一致性检查。
+2. `appDependencyVerificationPublishCheckForPlan` 改为按当前 App ID 过滤 workflow/governance/dependency 信号，避免同一包里其它 App 的阻断依赖误伤当前 App。
+3. 运行态继续阻断缺失/停用必需 Skill 和 workflow contract drift；治理审核问题保留为发布/安装门禁，不阻断本地 tool/normal app 运行。
+4. 市场单 App 安装继续阻断 governance review issue 和 workflow contract issue，确保企业能力市场分发入口不会绕过审核合同。
+5. 修复此前前端全集中 7 个失败用例：审核退回后可重新提交、必需依赖停用时展示具体依赖阻断文案、result contract 覆盖证据满足后允许提交、dependency verification 覆盖 declared Skill 后允许提交、审批实例证据完整后允许审批型 App 提交、企业动态 UI metadata 进入提交包、durable queue review status 合并后可重新提交。
+
+验证命令：
+
+```powershell
+cd gui/frontend
+npm.cmd test -- AppsPage.test.tsx -t "shows returned review status and allows resubmission|blocks app package review submission when required dependencies are unavailable|requires run evidence to cover the declared primary result contract|requires dependency verification to cover declared app Skill dependencies before publishing|requires approval instance evidence before publishing approval apps|includes enterprise visual UI metadata in market submission packages|merges durable queue review status into local publish cards"
+npm.cmd test -- AppsPage.test.tsx
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 204 passed
+```
+
+当前链路进一步变为：
+
+```text
+App Studio / installed MaClaw App
+  -> submit publish
+  -> PlanMaclawAppInstall backend preflight
+  -> current App scoped dependency / workflow contract / governance review gates
+  -> existing dependencyVerification evidence preserved when backend returns empty plan
+  -> package governance.testEvidence + dependencyVerification submitted
+  -> local queue / Hub review / market install consume the same boundary semantics
+```
+
+剩余缺口：继续把当前分段验证串成最终黄金路径，重点是 App Studio 可视化布局编辑真实交互、Hub 真实 approve/publish 后市场可搜索、依赖 Skill 下载/验签安装、DataSrv app_installations 注册查询、审批 workflow 发起与节点同步、单 App/全局审批中心读取同一实例的结果和文件。前端 `AppsPage` 页面层已经恢复全量一致，下一步应优先补跨服务黄金样例和后端字段合同巡检。
+### 推进记录：签名 Hub 安装运行黄金链补强 Hub 审核身份证据（2026-06-30）
+
+本轮继续把跨服务黄金路径向“同一条链路同时证明发布身份、安装依赖、DataSrv 注册、审批运行和结果回读”收紧。此前 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 已经覆盖签名 Hub 包下载、依赖 Skill 下载/验签安装、DataSrv app-installations 注册、审批 workflow 发起、running/final 节点同步、requires_input 补充提交和单 App/全局审批结果回读；但这条签名运行链还没有显式断言 Hub `submission` / `reviewEvidence` 在本地安装审计中保真。
+
+本轮完成：
+
+1. 在签名 Hub MaClaw App package 的 governance 中加入：
+   - `reviewEvidence.run_id / test_protocol_fingerprint / result_coverage / approval_status / current_node`；
+   - `submission.channel/status/capability_id/market_capability_id/submission_id/version_key/package_sha256`；
+   - `submission.review_evidence`，模拟 Hub published package 下载时携带的审核摘要。
+2. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 断言：
+   - `installRecord.Submission` 必须保留 `cap-expense-approval`、`enterprise_hub:skill:maclaw-app:expense-approval@pkg` 和 `published`；
+   - `installRecord.ReviewEvidence` 必须保留 `run-expense-golden`、`approved`、`expense.result`；
+   - 原有依赖验签、DataSrv 注册、审批 workflow 运行、补充提交、同一实例回读断言继续成立。
+
+验证命令：
+
+```powershell
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：全部通过。
+
+当前链路进一步变为：
+
+```text
+Hub published signed MaClaw App package
+  -> package carries submission + reviewEvidence + package signature
+  -> GUI downloads package from Hub
+  -> installs/verifies app Skill + workflow Skill dependencies
+  -> RecordMaclawAppInstall persists local audit + DataSrv registration
+  -> install audit preserves Hub submission identity and review evidence
+  -> StartMaclawAppApprovalWorkflow runs installed workflow Skill
+  -> DataSrv RecordApproval sync receives running/final/continue events
+  -> ListMaclawAppApprovalInstances / ListMaclawAppApprovalInstancesAll read back same instance result and files
+```
+
+剩余缺口：继续把这条后端/GUI 黄金链上移到真实前端用户操作层，尤其是 App Studio 可视化布局拖拽/调整、测试运行、提交 Hub、审核发布、市场搜索安装、打开 App 运行和审批中心回看的一条 UI 级自动化验收；同时继续巡检 DataSrv OpenAPI / metadata schema 是否已经把这些字段全部声明为稳定契约。
+### 推进记录：DataSrv app_installations 稳定声明 Hub review evidence 摘要字段（2026-06-30）
+
+本轮继续收口 DataSrv 正式合同。此前 `app_installations.metadata` 已经能保留 `review_evidence` / `maclaw_app_review_evidence` 对象和 Hub `submission` 身份，也能按 Hub capability/version/review status 查询；但审核证据中的常用摘要仍主要藏在深层 JSON 里。企业集成方、审计任务和 GUI 冷启动恢复如果只想快速判断“这个 App 是不是经过哪次测试、覆盖了哪些结果、审批状态到哪个节点”，仍需要解析不稳定的嵌套结构。
+
+本轮完成：
+
+1. DataSrv `normalizeAppInstallationHubIdentityMetadata` 增强为同时归一化 Hub review evidence：
+   - 支持 `metadata.review_evidence`、`metadata.reviewEvidence`、`metadata.maclaw_app_review_evidence`；
+   - 支持从 `metadata.submission.review_evidence` 或 `metadata.governance.reviewEvidence` 兜底提取；
+   - 支持 flat evidence 和 `{app_id: evidence}` 映射型 evidence。
+2. 新增稳定摊平字段：
+   - `review_evidence_status`
+   - `review_evidence_run_id`
+   - `review_evidence_test_protocol_fingerprint`
+   - `review_evidence_result_contract_primary`
+   - `review_evidence_result_coverage_primary`
+   - `review_evidence_result_coverage_covered_count`
+   - `review_evidence_result_coverage_missing_count`
+   - `review_evidence_output_count`
+   - `review_evidence_artifact_count`
+   - `review_evidence_approval_status`
+   - `review_evidence_current_node`
+3. `appInstallationAuditMetadata` 将这些 review evidence 摘要纳入安装审计日志，避免审计侧只能看到 Hub 身份而看不到审核证据摘要。
+4. DataSrv OpenAPI `appInstallationMetadataOpenAPISchema` 显式声明这些字段，HTTP OpenAPI 测试也把它们纳入 `/api/v1/data/app-installations` POST/PUT metadata 合同。
+5. 扩展 `TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence`：断言 normalize、Capabilities 返回、audit log 都能看到 Hub identity + review evidence 摘要。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence|TestHTTPServerCoreEndpoints" -count=1
+go test ./structureddata -count=1
+cd D:\workprj\aicoder
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：全部通过。
+
+当前链路进一步变为：
+
+```text
+Hub review_evidence / submission
+  -> GUI install record
+  -> DataSrv app_installations.metadata
+  -> canonical review_evidence + maclaw_app_review_evidence
+  -> stable review_evidence_* summary fields
+  -> Capabilities / audit log / OpenAPI all expose the same contract
+  -> GUI cold start and enterprise audit can consume summaries without parsing deep package JSON
+```
+
+剩余缺口：继续把前端 UI 级黄金路径补齐，重点是 App Studio 可视化布局调整、测试运行、提交 Hub、审核发布、市场搜索安装、打开 App 发起审批、单 App/全局审批中心回看同一实例结果和文件。DataSrv 合同层下一步只需要继续巡检是否还有 `approval_instance` / `result_payload` / `dependency_verification` 命名别名遗漏。
+
+### 推进记录：App Studio 可视化布局证据进入保存与提交闭环（2026-06-30）
+
+本轮继续收口 App Studio 层。此前动态 UI 布局已经能写入 manifest，并能在发布检查里作为 `Workspace layout` 证据出现；但用户在设计器里的可视化调节动作还主要靠模板、密度、主区、输出区这些字段验证，缺少一个稳定的“布局证据摘要”来支撑保存、提交、Hub 审核和冷启动回放之间的同一性比对。
+
+本轮完成：
+
+1. 在 `StudioLayoutDesigner` 画布中新增布局证据条，常态展示：
+   - layout template / density
+   - primary region
+   - output region
+   - visible region count / total region count
+   - layout fingerprint
+2. 新增稳定布局指纹 `workspaceLayoutFingerprint`，按 `entry + template + density + primaryRegion + outputRegion + ordered regions(id/role/placement/visible/order)` 计算 8 位摘要。
+3. `appWorkspaceLayoutEvidence` 现在随治理证据输出：
+   - `visibleRegionCount`
+   - `regionIds`
+   - `fingerprint`
+4. 扩展 App Studio 保存测试，覆盖真实可视化编辑动作：
+   - 在画布选择右侧主操作区；
+   - 将输出区放到底部；
+   - 隐藏 `approval_detail` 明细区；
+   - 调整 `request_form` 区域顺序；
+   - 保存到 Skill 后断言 manifest 中保留 `visible:false`、`order`、`regionIds`、`visibleRegionCount` 和 `fingerprint`。
+5. 扩展 App Studio 测试运行 + 提交 Hub 测试，确认同一套布局证据进入提交包 `governance.workspaceLayout`，不是只存在于本地设计器。
+6. 新增紧凑样式 `apps-layout-designer__evidence`，保持现有 MaClaw GUI 的企业工作台风格：低噪声、可扫读、可审计，不改成营销式卡片。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- AppsPage.test.tsx -t "dynamic layout"
+npm.cmd test -- AppsPage.test.tsx
+cd D:\workprj\aicoder
+git diff --check -- gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\AppsPage.css gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 204 passed
+diff --check: 仅有既有 CRLF/LF 提示，无新增空白错误
+```
+
+当前链路进一步变为：
+
+```text
+App Studio visual layout designer
+  -> user adjusts template / density / primary / output / visibility / order
+  -> layout evidence strip shows visible count + fingerprint
+  -> Save to Skill writes manifest.ui.layouts.*.regions
+  -> governance.workspaceLayout carries regionIds + visibleRegionCount + fingerprint
+  -> Submit to Hub package preserves the same layout evidence
+  -> Publish checklist and later install audit can compare the same UI layout identity
+```
+
+剩余缺口：继续把 UI 级黄金路径从“App Studio 制作 + 提交包证据”推进到“一条用户级自动化链路”：Hub 审核发布、能力市场搜索安装、打开已安装 App、发起审批 workflow、单 App 审批中心和全局审批中心回看同一实例的结果与文件。随后再巡检 DataSrv/GUI 前端之间 `approval_instance`、`result_payload`、`dependency_verification`、`workspace_layout` 的别名兼容是否完整。
+
+### 推进记录：市场安装后继续审批并在单 App/全局审批中心回看同一最终实例（2026-06-30）
+
+本轮继续把 UI 级黄金路径向后收紧。此前前端已经能验证 Hub 市场搜索、签名包安装、依赖诊断、安装治理证据、requires_input 补充提交参数；但市场安装后的审批续办链路在测试里结束于 `Continue with supplement` 的 payload 断言，还没有继续验证“续办后的最终审批实例，能同时在当前 App 的审批工作台和全局审批中心读到同一结果与文件”。
+
+本轮完成：
+
+1. 扩展 `installs approved Hub MaClaw Apps from market search results` 前端用例。
+2. 在安装后的审批型 App 中构造完整终态实例 `installedApprovedAfterSupplement`：
+   - `approval_id = approval-market-contract-input-1`
+   - `instance_id = wf-market-contract-input-1`
+   - `lane = handled`
+   - `status/result_status = approved`
+   - `current_node = contract.result_feedback`
+   - `result_payload.business_record.id = contract-input-1`
+   - 输出 `Approval decision`
+   - 文件 `contract-final-approval.pdf`
+3. 继续审批后验证单 App 视角：
+   - `ListMaclawAppApprovalInstances(installedAppID, "handled", ...)` 能返回同一终态实例；
+   - App 内 `Handled` lane 展示同一 `approval_id`、`workflow instance`、结果输出和文件。
+4. 继续审批后验证全局审批中心视角：
+   - `Approval status` 入口读取全局实例；
+   - 全局审批中心 `Handled` 视图展示同一 App、同一 `approval_id`、同一 `workflow instance`、同一结果输出和文件。
+5. 保持运行治理面板断言：安装后打开 App 仍能看到 Hub published 来源、依赖验证摘要和 DataSrv 注册状态。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- AppsPage.test.tsx
+cd D:\workprj\aicoder
+git diff --check -- gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 204 passed
+diff --check: 无新增空白错误
+```
+
+当前链路进一步变为：
+
+```text
+Hub published approval app
+  -> market search shows review evidence
+  -> one-click install selected MaClaw App from signed Hub package
+  -> install evidence preserves submission / review / dependency / DataSrv registration
+  -> open installed App runtime governance panel
+  -> requires_input approval instance appears in App workspace
+  -> requester continues with supplement while preserving approval_id / workflow_instance_id
+  -> workflow returns approved final instance with output and artifact
+  -> single App handled lane reads same final instance
+  -> global approval center handled lane reads same final instance
+```
+
+剩余缺口：前端 UI 黄金路径已经覆盖“市场安装后续办审批并回看结果”，下一步应继续把更前面的“App Studio 制作 -> 本地提交队列 -> Hub 同步/审核/发布 -> 市场搜索安装”与这段运行审批回看合并成一个端到端样例，或者在后端 GUI/Hub/DataSrv 跨服务测试里加入同等的真实 Hub publish + signed package + DataSrv approval readback 组合验证。
+
+### 推进记录：App Studio 布局证据贯通提交队列详情、Hub 包和安装审计（2026-06-30）
+
+本轮继续把“App Studio 制作”和“Hub/市场安装运行”两段 UI 黄金路径接紧。此前 App Studio 侧已经会生成 `workspaceLayout.fingerprint`，市场安装侧也能保留安装治理证据；但用户在发布队列详情中还只能看到应用名、审计事件、review evidence，不能直接确认 Hub 包中携带的动态 UI 布局是否就是 App Studio 保存的那一版。
+
+本轮完成：
+
+1. 新增 `packageWorkspaceLayoutSummariesFromRecord`，从提交队列详情 record 的 `package.apps[*].app.governance.workspaceLayout` 或 `app.binding.ui` 中提取布局摘要。
+2. 发布队列详情 UI 新增 `Workspace layout` 摘要行，展示：
+   - App 名称
+   - workspace entry
+   - template
+   - density
+   - visible/region count
+   - layout fingerprint
+3. 扩展 `syncs a local submission to Hub, refreshes published status, then installs it from market search`：
+   - 本地/Hub 提交详情包携带 `governance.workspaceLayout.fingerprint = layoutflow1`
+   - Hub 下载包携带同一 `binding.ui` 和 `governance.workspaceLayout`
+   - 安装审计 `installEvidence.workspace_layout` 保留同一 fingerprint、template、density、primary/output region、visible count
+   - 队列详情 UI 明确显示 `Workspace layout: Flow Approval App · approval_workspace · left_nav · compact · 3 regions · fp:layoutflow1`
+4. 这使前端链路能用同一个布局指纹串联：
+   - App Studio 生成/保存的动态 UI
+   - 本地提交队列详情
+   - Hub published package
+   - 市场安装结果
+   - 本地 install evidence
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- AppsPage.test.tsx -t "syncs a local submission to Hub"
+npm.cmd test -- AppsPage.test.tsx
+cd D:\workprj\aicoder
+git diff --check -- gui\frontend\src\components\pages\AppsPage.tsx gui\frontend\src\components\pages\__tests__\AppsPage.test.tsx
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 204 passed
+diff --check: 仅有既有 CRLF/LF 提示
+```
+
+当前链路进一步变为：
+
+```text
+App Studio dynamic UI layout
+  -> workspaceLayout fingerprint
+  -> local submission queue package detail
+  -> Hub published package binding.ui / governance.workspaceLayout
+  -> market install selected MaClaw App
+  -> installEvidence.workspace_layout keeps same fingerprint
+  -> runtime install governance can be audited against the same UI identity
+```
+
+剩余缺口：下一步优先补后端跨服务组合验证，把 GUI 前端已串起来的证据链落到真实 Hub submit/approve/publish/download、GUI install、DataSrv app_installations 查询和 approval_instances 回读的同一测试样例里，减少前端 mock 与跨服务真实行为之间的剩余空隙。
+
+### 推进记录：签名 Hub 安装链把 App Studio 布局证据落到 DataSrv 注册 payload（2026-06-30）
+
+本轮继续补后端跨服务组合验证。此前前端和本地安装审计已经能看到 `workspaceLayout.fingerprint`，但真实 DataSrv app-installations 注册 payload 的扁平摘要还缺少 `fingerprint`、`visibleRegionCount` 和稳定 `regionIds`，导致企业审计侧仍可能需要解析深层 `workspace_layout` JSON 才能确认安装的是 App Studio 保存的那版动态界面。
+
+本轮完成：
+
+1. `maclawAppWorkspaceLayoutMetadataForEntry` 现在优先采用带 App Studio 证据的 `governance.workspaceLayout`：
+   - `fingerprint`
+   - `regionIds`
+   - `visibleRegionCount`
+   - `studio.editable / savedInManifest / updatedBy`
+   - 若无这些治理证据，则继续兼容 `app.ui` / `binding.ui` 的既有提取路径。
+2. `maclawAppDataSrvInstallationPayloads` 将布局证据提升为稳定 DataSrv metadata 摘要字段：
+   - `workspace_layout_fingerprint`
+   - `workspace_layout_visible_region_count`
+   - `workspace_layout_region_ids`
+   - 同时保留已有 template、density、primary/output region、region count。
+3. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`：
+   - 签名 Hub MaClaw App 包现在携带 4 个布局区域，其中 `approval_detail` 为隐藏区域；
+   - `regionIds = approval_inbox, request_form, approval_detail, result_panel`；
+   - `visibleRegionCount = 3`；
+   - `fingerprint = layout-expense-golden`；
+   - 本地 install audit 必须保存同一套布局证据；
+   - DataSrv mock 捕获 PUT `/api/v1/data/app-installations/expense-approval` body，并断言 metadata 中同样存在布局指纹、区域数量和区域顺序。
+4. 同步升级 `TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence` 的相邻断言，使 DataSrv metadata 查询视角也验证同一布局指纹与隐藏区域。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+```
+
+验证结果：
+
+```text
+ok github.com/RapidAI/CodeClaw/gui
+```
+
+当前链路进一步变为：
+
+```text
+Hub signed MaClaw App package
+  -> governance.workspaceLayout carries App Studio fingerprint / region order / hidden region
+  -> GUI install prefers governance layout evidence over generated fallback UI
+  -> local install audit preserves same workspace layout identity
+  -> DataSrv app-installations PUT metadata exposes same fingerprint / visible count / region ids
+  -> approval workflow start / sync / single App readback / global approval center readback still pass
+```
+
+剩余缺口：继续补 DataSrv 正式 schema/OpenAPI 对 `workspace_layout_fingerprint`、`workspace_layout_visible_region_count`、`workspace_layout_region_ids` 的声明与查询覆盖，并把企业普通应用、工具型应用也补齐同等制作、安装、运行闭环样例。
+
+### 推进记录：DataSrv 正式合同声明 App Studio 布局指纹并支持查询（2026-06-30）
+
+本轮把上一轮 GUI 注册 payload 中已经出现的布局证据，继续推进到 DataSrv 正式合同层。此前 `workspace_layout_fingerprint`、`workspace_layout_visible_region_count`、`workspace_layout_region_ids` 已经能从 GUI 安装链路发到 DataSrv，但 DataSrv normalize、audit、HTTP 查询和 OpenAPI 对这些字段的承认还不完整。
+
+本轮完成：
+
+1. `normalizeAppInstallationWorkspaceLayoutMetadata` 增强：
+   - 规范 `workspace_layout.fingerprint` 并提升为 `workspace_layout_fingerprint`；
+   - 规范 `visibleRegionCount / visible_region_count` 并提升为 `workspace_layout_visible_region_count`；
+   - 规范 `regionIds / region_ids`，并在有 `regions` 时稳定回写区域顺序；
+   - 从 `regions[*].visible` 推导可见区域数；
+   - 规范 `studio.savedInManifest / editable / updatedBy` 并提升为 `workspace_layout_studio_*` 摘要字段。
+2. DataSrv app installation audit 白名单加入：
+   - `workspace_layout_fingerprint`
+   - `workspace_layout_visible_region_count`
+   - `workspace_layout_studio_saved_in_manifest`
+   - `workspace_layout_studio_editable`
+   - `workspace_layout_studio_updated_by`
+3. `QueryAppInstallationsInput` 新增 `WorkspaceLayoutFingerprint`，HTTP GET `/api/v1/data/app-installations` 支持：
+   - `workspace_layout_fingerprint`
+   - `layout_fingerprint`
+4. SQLite metadata filter 支持按布局指纹匹配：
+   - 顶层 `workspace_layout_fingerprint`
+   - `workspace_layout.fingerprint`
+   - `governance.workspaceLayout.fingerprint`
+   - `install_evidence.workspace_layout.fingerprint`
+5. OpenAPI 补齐：
+   - GET query 参数 `workspace_layout_fingerprint / layout_fingerprint`
+   - metadata schema 字段 `workspace_layout_fingerprint`
+   - metadata schema 字段 `workspace_layout_visible_region_count`
+   - metadata schema 字段 `workspace_layout_studio_*`
+6. 扩展测试：
+   - DataSrv normalize/audit 测试验证布局指纹、可见区域数和 Studio 保存证据；
+   - Hub submission/review evidence 用例验证可按布局指纹查询安装记录；
+   - HTTP 核心接口测试验证 `GET /app-installations?workspace_layout_fingerprint=...`；
+   - OpenAPI 测试验证 query 参数和 metadata 字段声明。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesGovernanceResultContract|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence|TestHTTPServerCoreEndpoints|TestOpenAPISchema" -count=1
+go test ./structureddata -count=1
+cd D:\workprj\aicoder
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+```
+
+验证结果：
+
+```text
+datasrv/structureddata: ok
+gui: ok
+```
+
+当前链路进一步变为：
+
+```text
+App Studio layout evidence
+  -> Hub package governance.workspaceLayout
+  -> GUI install / DataSrv registration payload
+  -> DataSrv normalize canonical workspace_layout
+  -> stable workspace_layout_* metadata summaries
+  -> audit log / Capabilities / HTTP list response / OpenAPI schema
+  -> GET app-installations by workspace_layout_fingerprint
+```
+
+剩余缺口：接下来应补企业普通应用和工具型应用的端到端样例，使三类 App 都具备制作、测试、上传、市场安装、依赖检查、运行、结果反馈和审计查询的完整闭环；审批型应用则继续补异常/失败/回滚场景。
+
+### 推进记录：企业普通应用和工具型应用补齐安装审计与运行结果证据（2026-06-30）
+
+本轮继续把三类 MaClaw App 的闭环从审批型应用扩展到企业普通应用和工具型应用。此前审批型应用已经能把 App Studio 布局、Hub 审核证据、依赖验证、DataSrv 注册、审批实例和结果文件串起来；企业普通应用和工具型应用虽然已有安装/运行路径，但安装审计中对动态布局、结果合同、运行输出和附件证据的断言还不够硬，容易出现“能安装，但企业审计侧看不出它实际运行产出了什么”的断点。
+
+本轮完成：
+
+1. 企业普通应用 Hub 安装夹具补齐完整治理证据：
+   - `workspaceLayout.fingerprint = layout-normal-hub-install`
+   - `visibleRegionCount = 3`
+   - `studio.editable / savedInManifest / updatedBy`
+   - `resultContract.primary = business_status`
+   - result types 覆盖 `business_status / business_record / content / artifact`
+   - test evidence 保存 `business_status`、`business_record`、`content` 和附件 `hub-install-export`
+2. 扩展 `TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall`，验证：
+   - DataSrv 注册 metadata 保留 layout fingerprint、visible region count 和 result contract；
+   - 企业普通应用的业务运行证据、业务记录输出、附件证据进入 DataSrv registration；
+   - 本地 install audit 保留同一份 layout / result / test evidence；
+   - DataSrv registration status 仍为成功。
+3. 工具型应用签名 Hub 安装夹具补齐完整治理证据：
+   - `workspaceLayout.fingerprint = layout-tool-signed-install`
+   - `visibleRegionCount = 2`
+   - `studio.editable / savedInManifest / updatedBy`
+   - `resultContract.primary = document`
+   - result types 覆盖 `document / content / artifact`
+   - test evidence 保存 document 输出和附件 `signed-output.pdf`
+4. 扩展 `TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill`，验证：
+   - 依赖 Skill 从签名包下载并保留 signature / integrity metadata；
+   - 工具型应用 install plan 为 ready；
+   - 因工具型应用没有 DataSrv role bindings，DataSrv registration 明确为 `skipped`，reason 为 `no datasrv role bindings`；
+   - 本地 install audit 仍保留工具型应用的 layout fingerprint、document result contract、test evidence 和 artifact evidence。
+5. 三类 App 后端主链路定向回归通过：
+   - 企业审批型应用：Hub 安装、DataSrv 注册、workflow 发起、审批实例同步、单 App/全局审批中心回看；
+   - 企业普通应用：Hub 安装、DataSrv 注册、business action/query/report/dashboard 结果包；
+   - 工具型应用：签名包安装、依赖验签、无 DataSrv 绑定时显式跳过注册、document/artifact 结果审计。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall -count=1
+go test ./gui -run TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill -count=1
+go test ./gui -run "TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestExecuteMaclawAppBusinessOperationRunsPreferredAction|TestExecuteMaclawAppBusinessOperationQueriesPreferredView|TestExecuteMaclawAppBusinessOperationRunsPreferredReport|TestExecuteMaclawAppBusinessOperationRunsPreferredDashboard" -count=1
+```
+
+验证结果：
+
+```text
+ok github.com/RapidAI/CodeClaw/gui
+```
+
+当前链路进一步变为：
+
+```text
+Enterprise approval app
+  -> workflow approval instance / DataSrv approval readback / result artifacts
+
+Enterprise normal app
+  -> Hub install / DataSrv registration / business operation result package / artifact evidence
+
+Tool app
+  -> signed Hub install / dependency integrity / local runtime evidence / explicit DataSrv registration skip
+```
+
+剩余缺口：下一步继续把企业普通应用和工具型应用上移到前端 App Studio/市场安装/运行 UI 级验收，尤其是安装后的运行结果、附件和布局证据在应用面板中的可见性；同时继续补审批型应用的失败、回滚、依赖修复和真实跨服务黄金路径。
+
+### 推进记录：企业普通应用 DataSrv 回流后运行页治理证据可见（2026-06-30）
+
+本轮继续把企业普通应用从“后端安装审计有证据”推进到“用户在应用面板能回看证据”。此前 DataSrv capabilities 回流已能把已安装企业普通应用恢复成可添加 App，并保留 result contract、test evidence、Hub submission 和 DataSrv registration；但测试只停在 localStorage / installEvidence 对象层，没有打开运行页验证用户能看到这些证据。
+
+本轮完成：
+
+1. 扩展 `restores DataSrv installed enterprise normal app run evidence into app candidates` 前端验收。
+2. DataSrv 回流夹具补齐：
+   - `workspace_layout`：business workspace、classic split、compact、layout fingerprint、可见区域和 Studio 保存证据；
+   - `dependency_verification`：依赖 Skill 数量、无 blocking dependency、`customer-console-skill` 已安装；
+   - 既有 Hub submission、review evidence、result contract、test evidence、result coverage、DataSrv registration 继续保留。
+3. 加到面板后打开 `Customer Console Installed` 运行页，断言 `Install governance` 面板显示：
+   - Source：published Hub capability；
+   - Workspace layout：`business_workspace · classic_split · compact`；
+   - Result contract：`business_status · 3 types`；
+   - Test evidence：`run-customer-imported · proto-customer`；
+   - Result coverage：`business_status · Covered: 3`；
+   - Dependency verification：`Skill dependencies: 1 · Blocking deps: 0`；
+   - DataSrv：`DataSrv bindings registered: 1/1`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates"
+```
+
+验证结果：
+
+```text
+1 passed | 203 skipped
+```
+
+当前链路进一步变为：
+
+```text
+DataSrv app_installations enterprise_normal_app
+  -> GUI discovery candidate
+  -> Add to panel
+  -> installEvidence / importedRunEvidence restored
+  -> open app runtime
+  -> install governance panel shows Hub / layout / result / test / dependency / DataSrv evidence
+```
+
+剩余缺口：工具型应用仍需补同等级“安装后打开运行页可见 document/artifact 结果证据”的 UI 级验收；三类 App 的最终真实跨服务黄金路径仍需继续把 Hub submit/approve/publish/download、GUI install、DataSrv 查询和运行结果回读串到同一条集成样例。
+
+### 推进记录：工具型应用安装后运行页可见 document/artifact 结果证据（2026-06-30）
+
+本轮继续收口工具型应用。此前工具型应用从市场安装后能看到依赖验证和基础 test evidence，但结果合同仍偏向简单 `artifact` 摘要，缺少对“工具型 App 输出文档/附件”的 UI 级回看验收。对 PDF 翻译、合同归档、文档生成等工具型 App 来说，安装后用户必须能在运行页确认这个 App 预期输出的是文档，且测试证据中确实有输出块和附件。
+
+本轮完成：
+
+1. 扩展 `keeps dependency verification visible after single market app install` 前端验收。
+2. 工具型市场安装证据升级为：
+   - `result_contract.primary = document`
+   - result types 覆盖 `document / content / artifact`
+   - test evidence 包含 `primaryResult = document`
+   - result payload 包含 `document = contract-archive.pdf`
+   - outputs 包含 `Archived contract`
+   - artifacts 包含 `contract-archive.pdf`
+   - result coverage 覆盖 3 类结果且无缺失。
+3. 市场安装行内证据现在断言：
+   - Workspace layout；
+   - Result contract：`document · 3 types`；
+   - Test evidence；
+   - Result coverage：`document · Covered: 3`；
+   - Result package：`Output: 1 · Output artifacts: 1`。
+4. 打开已安装工具型 App 运行页后，`Install governance` 面板同样断言上述 document/artifact 结果证据和依赖验证可见。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- AppsPage.test.tsx -t "keeps dependency verification visible after single market app install"
+```
+
+验证结果：
+
+```text
+1 passed | 203 skipped
+```
+
+当前链路进一步变为：
+
+```text
+Tool app market install
+  -> dependency verification
+  -> install evidence carries document result contract
+  -> test evidence carries outputs + artifacts
+  -> market row shows result package
+  -> installed app runtime governance shows document/artifact evidence
+```
+
+剩余缺口：企业普通应用和工具型应用的 UI 可见性已继续推进；下一步应优先补最终真实跨服务黄金路径，把 Hub submit/approve/publish/download、GUI install、DataSrv app_installations 查询、审批 workflow 运行和结果回读放进同一条集成样例，同时补审批型应用失败/回滚/依赖修复场景。
+
+### 推进记录：Hub review evidence 摘要进入 GUI 到 DataSrv 注册 payload（2026-06-30）
+
+本轮继续把最终跨服务黄金路径往真实注册层压实。Hub 后端已经能在 `submit -> approve -> publish -> list -> download package` 链路中保留 `review_evidence`，GUI 安装审计也能保存 Hub submission / review evidence；但在签名 Hub 审批型 App 安装到 DataSrv 时，GUI 发出的 app-installations payload 主要携带嵌套 `review_evidence`，扁平 `review_evidence_*` 摘要依赖 DataSrv normalize 后才出现。为了让 GUI、DataSrv、审计代理和运维抓包都能看到同一组稳定字段，本轮把这些摘要提前补到 GUI 注册 payload。
+
+本轮完成：
+
+1. GUI 后端新增 `applyMaclawAppDataSrvReviewEvidenceMetadata`：
+   - 兼容扁平 review evidence；
+   - 兼容 `{appID: evidence}` / 嵌套 evidence；
+   - 提升 `review_evidence_run_id`；
+   - 提升 `review_evidence_test_protocol_fingerprint`；
+   - 提升 `review_evidence_result_contract_primary`；
+   - 提升 `review_evidence_result_coverage_primary / covered_count / missing_count`；
+   - 提升 `review_evidence_output_count / artifact_count`；
+   - 提升 `review_evidence_approval_status / current_node`。
+2. `maclawAppDataSrvInstallationPayloads` 在写入 `metadata.review_evidence` 后立即写入这些稳定摘要字段。
+3. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`，真实捕获 PUT `/api/v1/data/app-installations/expense-approval` 的 body，并断言 DataSrv 注册 payload 已经包含：
+   - Hub published identity：`hub_capability_id / hub_version_key / hub_package_sha256 / hub_review_status`；
+   - Hub review evidence summaries：`review_evidence_run_id / approval_status / current_node`；
+   - result contract 与 test coverage summaries；
+   - dependency verification summaries；
+   - 原有 App Studio workspace layout fingerprint / region ids 继续保留。
+4. 同时复跑 Hub 后端黄金路径，确认 Hub 侧 `submit -> approve -> publish -> list -> download package` 仍保留 review evidence 和 package signature。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+```
+
+当前链路进一步变为：
+
+```text
+Hub submit / approve / publish
+  -> marketplace metadata review_evidence
+  -> published package governance.submission.review_evidence
+  -> GUI signed package install
+  -> dependency Skill download + integrity metadata
+  -> GUI DataSrv app-installations PUT payload
+  -> stable hub_* / review_evidence_* / result_contract_* / test_evidence_* / dependency_* summaries
+  -> DataSrv normalize/audit/query can consume the same fields without deep JSON parsing
+```
+
+剩余缺口：继续把同一条黄金链扩展成“Hub 真实发布包 -> GUI 安装 -> DataSrv app_installations 查询 -> 审批 workflow 运行 -> 单 App/全局审批中心回读同一实例”的单个更完整集成样例；同时补审批型应用失败/回滚/依赖修复场景。
+
+### 推进记录：签名 Hub 安装后按 DataSrv app_installations 查询回读同一注册证据（2026-06-30）
+
+本轮继续把上一段“GUI 写入 DataSrv 注册 payload”推进到“DataSrv 查询回读”。此前 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 已经捕获 PUT `/api/v1/data/app-installations/expense-approval` body，并断言 Hub identity、review evidence、layout fingerprint、result/test/dependency 摘要都进入注册 payload；但同一测试还没有走 GET `/api/v1/data/app-installations` 查询视角，无法证明运维、GUI 冷启动、MIS Tool 或审计任务能按这些稳定字段找回同一个安装记录。
+
+本轮完成：
+
+1. 扩展签名 Hub 审批型 App 黄金测试中的 mock DataSrv：
+   - PUT `/api/v1/data/app-installations/expense-approval` 保存注册 payload；
+   - GET `/api/v1/data/app-installations` 支持按 `hub_capability_id`、`hub_version_key`、`hub_review_status`、`workspace_layout_fingerprint` 过滤；
+   - 返回同一份注册 payload，模拟真实 DataSrv 查询回读。
+2. 安装完成后新增查询断言：
+   - `hub_capability_id = cap-expense-approval`
+   - `hub_version_key = enterprise_hub:skill:maclaw-app:expense-approval@pkg`
+   - `hub_review_status = published`
+   - `workspace_layout_fingerprint = layout-expense-golden`
+3. 查询结果必须回读到同一个 `expense-approval` app，并保留：
+   - Hub published identity；
+   - `review_evidence_run_id = run-expense-golden`；
+   - App Studio layout fingerprint；
+   - 后续审批 workflow 运行、DataSrv progress/final sync、单 App/全局审批中心 handled lane 回读仍在同一测试中继续通过。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestHTTPServerCoreEndpoints" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+Signed Hub package install
+  -> dependency Skill integrity install
+  -> GUI registers DataSrv app_installations payload
+  -> DataSrv query by Hub identity + workspace layout fingerprint
+  -> same installed app metadata read back
+  -> approval workflow start / progress / final sync
+  -> single App and global approval center read the same handled instance
+```
+
+剩余缺口：最终黄金链的关键段已经合并得更紧，下一步可以继续补“真实 Hub submit/approve/publish 产出的包直接喂给 GUI 安装测试”的组合样例，减少 Hub handler 测试和 GUI 安装测试之间仍存在的夹具间隙；同时补审批型应用失败/回滚/依赖修复的端到端回看。
+
+### 推进记录：GUI 下载 Hub 包时校验已发布治理语义和审核证据（2026-06-30）
+
+本轮继续收紧 Hub 后端发布包与 GUI 安装之间的夹具间隙。此前 GUI `DownloadMaclawAppPackageFromHub` 已经会校验签名并解析 MaClaw App entries，但只要包签名正确，即使包内缺少 Hub 已发布 submission、版本键或 review evidence，也可能进入后续安装流程。这会让测试夹具看起来能跑通，但真实市场分发语义没有被 GUI 安装入口强制执行。
+
+本轮完成：
+
+1. GUI 后端新增 `validateDownloadedMaclawAppHubPackageGovernance`，在签名校验和 entries 解析后执行，要求 Hub 下载包必须具备：
+   - `package_signature`
+   - `package_sha256`
+   - 至少一个 App entry
+   - 每个 App 的 `governance.submission`
+   - submission `status = published`
+   - submission `capability_id` 与请求的 capability 一致
+   - submission `version_key`
+   - submission `review_evidence`
+2. `DownloadMaclawAppPackageFromHub` 现在会拒绝“签名正确但缺少已发布治理证据”的包，防止未完成 Hub 审核/发布语义的 MaClaw App 被安装。
+3. 补充 GUI 测试：
+   - `TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint` 的成功包补齐 published submission 和 review evidence。
+   - 新增 `TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance`，验证签名正确但缺少 Hub governance submission 的包会被拒绝。
+   - `TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill` 的签名安装包补齐 published submission，继续验证依赖 Skill 签名信任与安装证据。
+4. 复跑审批型黄金链路、Hub 发布黄金链路和 DataSrv review evidence 归一化回归，确认新校验与现有服务端包结构兼容。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsInvalidPackageSignature|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestHTTPServerCoreEndpoints" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+Hub submit / approve / publish
+  -> signed package download
+  -> GUI verifies package signature
+  -> GUI verifies published governance submission + review_evidence
+  -> dependency Skill integrity install
+  -> DataSrv registration/query
+  -> approval workflow/runtime/result readback
+```
+
+剩余缺口：下一步继续把“Hub handler 真实发布包直接进入 GUI 安装测试”的组合样例压实，或先补审批型应用失败/拒绝/需关注/依赖修复/回滚重试等异常闭环；App Studio 制作、测试、上传的可视化产品流也仍需继续推进。
+
+### 推进记录：GUI 下载校验对齐 Hub handler 顶层包证据（2026-06-30）
+
+本轮继续把 GUI 下载包校验向真实 Hub handler 输出结构对齐。Hub `CapabilityMaclawAppPackageHandler` 返回的已发布 MaClaw App 包不仅在 entry 内写入 `governance.submission.review_evidence`，还会在包顶层写入 `capability`、`review_evidence`、`maclaw_app_review_evidence`、`package_sha256`、`package_signature` 和 `resolved_dependencies`。上一轮 GUI 已经要求 entry submission 是 published，但还没有强制顶层 package review evidence 存在。
+
+本轮完成：
+
+1. `validateDownloadedMaclawAppHubPackageGovernance` 继续收紧：
+   - 如果 package `capability.status/state` 存在，必须为 `published`；
+   - package 顶层必须存在 `review_evidence` / `reviewEvidence` / `maclaw_app_review_evidence`；
+   - 仍保持先校验 entry submission，再校验顶层 package evidence，错误信息能指向真正缺失层级。
+2. GUI 下载测试 helper `markMaclawAppPackageAsPublishedHubDownloadTest` 对齐真实 Hub handler：
+   - 写入 package 顶层 `capability`；
+   - 写入 package 顶层 `review_evidence` 和 `maclaw_app_review_evidence`；
+   - entry 内继续写入 `governance.submission.review_evidence`。
+3. 新增负例 `TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence`：
+   - 包签名正确；
+   - entry submission/review evidence 完整；
+   - 但顶层 package review evidence 被删除；
+   - GUI 下载必须拒绝，防止市场包审核摘要在分发边界丢失。
+4. 审批型黄金测试的 mock Hub 包补齐顶层 `capability` 和 package review evidence，使它更接近 Hub 后端真实下载响应。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestDownloadMaclawAppPackageFromHubRejectsInvalidPackageSignature|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestHTTPServerCoreEndpoints" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+Hub published package
+  -> package capability.status = published
+  -> package top-level review_evidence/maclaw_app_review_evidence
+  -> entry governance.submission.review_evidence
+  -> GUI download verifies all published package evidence layers
+  -> install/dependency/DataSrv/workflow chain continues
+```
+
+剩余缺口：Hub handler 与 GUI 之间仍不是同一个测试进程直接串联，下一步可以继续通过共享 fixture builder 或外部 black-box server 方式减少 mock 包手写比例；同时推进审批异常态和 App Studio 可视化制作/测试/上传的产品级验收。
+
+### 推进记录：审批异常态单 App 与全局审批中心一致回读（2026-06-30）
+
+本轮转向审批型应用的非通过结果态。此前 `approved` 黄金链路已经能证明 workflow Skill 运行结果进入 DataSrv review/final sync，并能被单 App 和全局审批中心回读；`attention`、`rejected`、`timeout`、`cancelled` 等异常/非通过状态也已有 workflow 写回和单 App lane 验证，但还没有统一证明全局审批中心能看到同一条实例、同一套结果包和同一组状态字段。
+
+本轮完成：
+
+1. 新增测试辅助断言 `assertMaclawAppApprovalReadbackSameInstanceForTest`，统一校验：
+   - 单 App 工作台与全局审批中心的 `app_id / approval_id / instance_id / workflow_decision_id` 一致；
+   - `status / lane / current_node / result_status / business_status` 一致；
+   - outputs/artifacts 数量一致。
+2. `attention` 视图型结果补全全局回读：
+   - workflow 结果为 `attention`；
+   - 不调用 DataSrv `/review`，只更新业务记录为 view-only evidence；
+   - 单 App `attention` lane 与全局 `attention` lane 均能回读同一实例。
+3. `rejected`、`timeout`、`cancelled` 终态补全全局回读：
+   - workflow result sync 会调用 DataSrv `/review`；
+   - 单 App `handled` lane 与全局 `handled` lane 均能回读同一实例；
+   - DataSrv 查询同时覆盖 app-scoped 查询 `app_id=expense-approval&lane=handled&limit=10` 和 global 查询 `lane=handled&limit=10`；
+   - 输出块和 workflow decision id 在两种视角一致。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult" -count=1
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestListMaclawAppApprovalInstancesAll|TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane|TestListMaclawAppApprovalInstancesAllInfersDataSrvLanesForCurrentUser" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+workflow Skill result
+  -> approved / rejected / timeout / cancelled => DataSrv review final sync
+  -> attention => view-only business record update
+  -> local approval registry + DataSrv approvals readback
+  -> single App lane and global approval center show the same instance/result package
+```
+
+剩余缺口：审批异常态已经覆盖了主要终态和 view-only 关注态；后续还需要继续补 requires_input/补充材料后的继续运行、依赖修复后重试、失败回滚、以及 App Studio 可视化制作/测试/上传到 Hub 的更真实产品级验收。
+
+### 推进记录：requires_input 补充材料后同实例续跑并进入 handled（2026-06-30）
+
+本轮继续补齐审批型应用里的“需补充材料”闭环。`requires_input` 不应被视为最终失败或最终完成，它是审批实例暂停在申请人侧、等待补录数据/文件后继续运行 workflow Skill 的中间状态。此前已经覆盖了 workflow 返回 `requires_input` 时不调用 DataSrv `/review`、只写 progress，并显示在单 App `my_requests` lane；也已有续跑测试证明不会新建 DataSrv approval。但仍缺少两个产品级断言：补充后最终通过必须从 `my_requests` 移出，并且单 App 与全局审批中心都能回读同一条实例。
+
+本轮完成：
+
+1. 补强 `TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement`：
+   - 已存在 `requires_input` 实例 `wf-input-runner-2 / approval-input-runner-2`；
+   - 用户提交 `FormData` 和 `BusinessPayload` 作为补充材料；
+   - `StartMaclawAppApprovalWorkflow` 使用 `ContinueFromID` 和 `ApprovalID` 续跑；
+   - workflow Skill 返回 `approved`；
+   - DataSrv 只收到 existing approval 的 `/progress` 与 `/review`，不会重新 POST `/records/{id}/approvals`；
+   - final review 保留同一 `workflow_instance_id`、`approval_id`、`workflow_decision_id`；
+   - 单 App `handled` lane 和全局 `handled` lane 均能回读同一实例；
+   - 续跑完成后单 App `my_requests` lane 不再显示该已 approved 实例。
+2. 修正 lane 过滤：
+   - `my_requests` 现在继续显示 `requires_input`；
+   - 对普通 `lane=my_requests` 的记录，只在 `draft/pending` 未完成状态下显示；
+   - `approved/rejected/failed/cancelled/timeout` 等终态即使历史 lane 残留为 `my_requests`，也不会污染“我的申请/待补充”列表。
+3. 补充查询形态断言：
+   - app-scoped handled 查询：`app_id=expense-approval&lane=handled&limit=10`；
+   - global handled 查询：`lane=handled&limit=10`；
+   - 两者返回同一 workflow instance/result package。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -count=1
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestListMaclawAppApprovalInstancesAll|TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane|TestListMaclawAppApprovalInstancesAllInfersDataSrvLanesForCurrentUser" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+workflow Skill returns requires_input
+  -> DataSrv approval progress
+  -> single App my_requests / global request-side visibility
+  -> user submits supplemental FormData/BusinessPayload
+  -> same approval instance continues
+  -> workflow Skill returns approved
+  -> DataSrv review final sync
+  -> single App handled + global handled read back same instance
+  -> my_requests no longer shows completed instance
+```
+
+剩余缺口：审批型 workflow 的主要状态闭环已经更完整；后续优先继续补依赖缺失/修复后重试、workflow 运行失败/回滚、以及 App Studio 从制作到测试上传 Hub 的更真实 UI/集成验收。
+
+### 推进记录：workflow Skill 运行失败进入 failed 结果闭环（2026-07-01）
+
+本轮补齐审批型应用的 workflow 运行失败路径。企业审批型 App 不能把 workflow Skill 的执行失败直接变成 API error 丢给用户，也不能让审批实例卡在 pending；它应该生成可审计的 `failed` 审批结果，带错误证据、输出块、DataSrv final review，同步进入单 App 和全局审批中心的 handled lane。
+
+本轮完成：
+
+1. 补强 `TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult`：
+   - workflow Skill 命令退出失败；
+   - `StartMaclawAppApprovalWorkflow` 不返回 error，而是返回 `workflow_run.ran=false` 和 `workflow_run.error`；
+   - 本地审批实例进入 `status=failed / lane=handled / business_status=workflow_failed / result_status=failed`；
+   - result payload 保留 `approval_result=failed`、`business_status=workflow_failed`、`result_status=failed`、`error`、`text`；
+   - outputs 保留 `Workflow failed` 输出块；
+   - DataSrv `/review` 收到 `decision=failed`、`workflow_node_id=workflow.failed`、失败业务状态和输出块；
+   - 单 App `handled` lane 与全局 `handled` lane 均能回读同一实例；
+   - app-scoped handled 查询和 global handled 查询都被覆盖。
+2. 与上一轮 lane 修正组合验证：
+   - `requires_input` 仍留在 `my_requests`；
+   - 补充后 `approved` 不再污染 `my_requests`；
+   - `failed` 与其他终态一样稳定进入 handled。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult -count=1
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult|TestListMaclawAppApprovalInstancesAll|TestListMaclawAppApprovalInstancesAllLoadsDataSrvLane|TestListMaclawAppApprovalInstancesAllInfersDataSrvLanesForCurrentUser" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+workflow Skill execution error
+  -> workflow_run.ran=false + error evidence
+  -> approval instance status=failed / lane=handled
+  -> DataSrv review decision=failed
+  -> single App handled + global handled read back same failed instance
+```
+
+剩余缺口：失败路径已经具备结果反馈和审计回看；后续继续补依赖缺失/依赖修复后重试，以及 Hub/App Studio 真实 UI 操作链路里的失败提示与修复入口。
+
+### 推进记录：依赖修复后安装并运行审批 workflow 闭环（2026-07-01）
+
+本轮继续补齐 MaClaw App 作为“带特殊 app 数据的超级 Skill”时的依赖修复链路。企业审批型应用安装前必须检查依赖 Skill；如果审批 workflow Skill 缺失，安装应被阻断；用户执行依赖修复后，系统应能从企业 Hub 能力引用安装缺失 Skill，再重新登记 App，并允许审批 workflow 正常运行。
+
+本轮完成：
+
+1. 新增并修通 `TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun`：
+   - 初始环境只安装 app super skill `expense-super-skill`；
+   - App package 声明必需 workflow Skill `expense-workflow`，来源为 `enterprise_hub`，`install_ref=cap-expense-workflow`；
+   - `PlanMaclawAppInstall` 能识别缺失 workflow 依赖，并设置 `HasMissingRequired / HasBlockingDependency`；
+   - `RecordMaclawAppInstall` 在依赖缺失时拒绝安装；
+   - `InstallMaclawAppDependencies` 调用企业 Hub 安装入口修复 `expense-workflow`；
+   - 修复后的 plan 清除 blocking dependency，workflow dependency 变为 `installed / ready`；
+   - 再次 `RecordMaclawAppInstall` 成功，并把修复后的依赖摘要写入 DataSrv registration metadata；
+   - 安装后发起审批 workflow，workflow Skill 正常执行并返回 approved；
+   - DataSrv `/review` 收到最终审批结果；
+   - 单 App handled lane 与全局 handled lane 均能回读同一审批实例。
+
+2. 对 DataSrv 注册 payload 的测试断言改为稳定合同字段：
+   - `metadata.dependency_count = 2`；
+   - `metadata.has_blocking_dependency = false`；
+   - `metadata.dependency_verification.blockedCount = 0`；
+   - `metadata.dependency_verification.has_blocking_dependency = false`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun -count=1
+go test ./gui -run "TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun|TestInstallMaclawAppDependenciesInstallsHubBackedSources|TestInstallMaclawAppDependenciesClassifiesInstallFailures|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRecordsFailedWorkflowSkillResult" -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+install plan detects missing workflow Skill
+  -> install is blocked
+  -> dependency repair installs workflow Skill from enterprise Hub install_ref
+  -> repaired install plan is ready
+  -> App install registration writes dependency evidence to DataSrv
+  -> approval workflow Skill runs
+  -> DataSrv final review sync
+  -> single App handled + global handled read back the same instance
+```
+
+剩余缺口：依赖缺失/修复后的后端闭环已经可验收；下一步继续把“真实 Hub submit/approve/publish 产出的 signed package 直接进入 GUI 安装、依赖 Skill 下载验签安装、DataSrv 查询、审批 workflow 发起和结果回读”压成同一条跨服务黄金样例，并继续补 App Studio 可视化制作、测试、上传 Hub 的 UI 级自动化验收。
+
+### 推进记录：GUI 安装侧对齐 Hub handler 下载包证据（2026-07-01）
+
+本轮继续收窄 Hub 后端黄金路径和 GUI 安装运行黄金路径之间的夹具空隙。当前技术限制是：Hub 的真实 handler 位于 `hub/internal/httpapi`，GUI Go 包不能直接 import internal handler 做同进程跨包集成测试；因此先把 GUI 侧 httptest 返回包调整为更贴近 `CapabilityMaclawAppPackageHandler` 的真实输出，并在 GUI 安装用例中显式断言这些 Hub 发布证据没有在“选择子 App -> 安装 -> DataSrv 注册 -> 审批运行”过程中丢失。
+
+本轮完成：
+
+1. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`：
+   - 安装返回的 selected package 必须保留 `source=enterprise_hub`；
+   - top-level `capability.id` 必须是 `cap-expense-approval`；
+   - top-level `capability.status` 必须是 `published`；
+   - top-level `capability.current_version_key` 必须是 `enterprise_hub:skill:maclaw-app:expense-approval@pkg`；
+   - top-level `review_evidence.expense-approval.run_id` 必须是 `run-expense-golden`；
+   - top-level review evidence 必须保留 `approval_status=approved`。
+2. 扩展 selected app entry 的 Hub submission 断言：
+   - `submission.status=published`；
+   - `submission.capability_id=cap-expense-approval`；
+   - `submission.market_capability_id=expense-approval`；
+   - `submission.version_key=enterprise_hub:skill:maclaw-app:expense-approval@pkg`；
+   - `submission.package_signature` 必须存在；
+   - `submission.review_evidence.expense-approval.run_id=run-expense-golden`。
+3. 修正 GUI 测试夹具，使其模拟 Hub `applyMaclawAppReviewMetadataToEntry` 的真实行为：包级 `package_signature` 也写入 entry `governance.submission.package_signature`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun" -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+hub/internal/httpapi: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+Hub handler download package contract
+  -> top-level published capability + review evidence
+  -> entry governance.submission published identity + package signature
+  -> GUI selected package filtering keeps the same evidence
+  -> dependency Skill download/signature install
+  -> DataSrv app_installations registration
+  -> approval workflow run and readback
+```
+
+剩余缺口：GUI 包仍不能直接调用 `hub/internal/httpapi` handler，所以这还不是同进程真实 Hub handler 到 GUI 的端到端测试。下一步可以继续通过两条路推进：一是抽出共享的 Hub package fixture/contract builder，供 Hub handler 测试和 GUI 测试共用；二是增加外部 black-box server 级集成样例，让真实 Hub handler 通过 HTTP 产出的包直接被 GUI 安装测试消费。
+
+### 推进记录：Hub 下载包合同出口抽取并加固 golden path（2026-07-01）
+
+本轮继续推进上一段的第一条路径：先把 Hub handler 内部的下载包构造逻辑抽成明确的合同出口，减少后续 GUI 安装测试、Hub handler 测试和 black-box server 集成之间的字段漂移。
+
+本轮完成：
+
+1. 在 `hub/internal/httpapi/marketplace_handlers.go` 新增 `enterpriseMaclawAppDownloadPackage`：
+   - 统一输出 `schema=maclaw.app.pack.v1`；
+   - 统一输出 `privateMarker=x_maclaw_apps`；
+   - 统一输出 `source=enterprise_hub`；
+   - 统一输出 `package_signature`；
+   - 统一输出 published `capability` block；
+   - 统一输出 `package_sha256`；
+   - 统一输出 `review_evidence` / `maclaw_app_review_evidence`；
+   - 统一输出 `resolved_dependencies`；
+   - 统一输出 selected app entry。
+2. `CapabilityMaclawAppPackageHandler` 改为调用该合同出口，不再在 handler 尾部手写 package map。
+3. 扩展 Hub golden path `TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath`：
+   - 下载包必须携带 `source=enterprise_hub`；
+   - 下载包必须携带 published `capability.id/status/current_version_key`；
+   - 下载包必须携带 top-level review evidence 和 package signature；
+   - 下载包必须携带 2 条 resolved dependencies；
+   - app entry 必须携带 published submission、package signature 和 review evidence。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+go test ./gui -run "TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+hub/internal/httpapi: ok
+gui: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+Hub submit/approve/publish
+  -> CapabilityMaclawAppPackageHandler
+  -> enterpriseMaclawAppDownloadPackage contract出口
+  -> published capability + review evidence + submission + resolved dependencies
+  -> GUI signed Hub install test 对齐同一字段合同
+  -> dependency install + DataSrv registration + approval workflow run
+```
+
+剩余缺口：下载包合同出口已经明确，但 GUI 侧仍是用 httptest 模拟 Hub HTTP 响应。下一步继续推进第二条路径：做一个外部 black-box server 级测试，让真实 Hub handler 通过 HTTP 产出的 signed package 直接被 GUI 安装逻辑消费；如果跨包/模块边界仍阻碍测试组织，则先把可复用 package contract fixture 移到非 `internal` 的共享测试包或 `testdata`。
+
+### 推进记录：Hub/GUI 共享企业审批型 App 合同 fixture（2026-07-01）
+
+本轮继续处理真实 black-box 前的测试组织问题。直接在 GUI 包中 import `hub/internal/httpapi` 不可行，反向在 Hub 测试中 import GUI App 也会碰到 GUI 是 `package main` 的边界；因此先把可复用的企业审批型 App 基础包移到仓库根 `internal/testfixtures`，让 Hub handler 测试和 GUI 下载治理测试都从同一份 MaClaw App 合同 fixture 出发。
+
+本轮完成：
+
+1. 新增 `internal/testfixtures.ReadyEnterpriseApprovalMaclawAppSubmitPackage`：
+   - 企业审批型 App：`approval-ready-app`；
+   - app skill：`approval-ready-app-skill`；
+   - workflow skill：`approval-ready-workflow`；
+   - workspace layout：request form / approval lane / result panel；
+   - result contract：`approval_result` + content + artifact；
+   - workflow contract：要求 workflow_result / approval_instance / outputs / artifacts；
+   - test evidence：approved approval instance、outputs、artifact、result coverage；
+   - dependency verification：2 个依赖、无 missing/blocking。
+2. Hub `readyEnterpriseApprovalMaclawAppSubmitPackage` 改为转调共享 fixture，Hub submit/approve/publish/download golden path 继续使用同一份基础包。
+3. GUI 新增 `TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture`：
+   - 从共享 fixture 出发；
+   - 注入 published capability / submission；
+   - 注入 package signature；
+   - 通过 `DownloadMaclawAppPackageFromHub` 下载；
+   - 断言 GUI 能接受该企业审批型 published Hub 包，并保留 capability、review evidence 和 app id。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint" -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun" -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+cd D:\workprj\aicoder
+go test ./internal/testfixtures -count=1
+```
+
+验证结果：
+
+```text
+hub/internal/httpapi: ok
+gui: ok
+datasrv/structureddata: ok
+internal/testfixtures: no test files
+```
+
+当前链路进一步变为：
+
+```text
+shared enterprise approval app fixture
+  -> Hub submit/approve/publish/download golden path
+  -> Hub download package contract出口
+  -> GUI DownloadMaclawAppPackageFromHub governance validation
+  -> GUI signed install / dependency repair / DataSrv registration 回归
+```
+
+剩余缺口：共享 fixture 已经减少 Hub 与 GUI 的包合同漂移，但还不是“真实 Hub HTTP handler 产出的包直接被 GUI 安装入口消费”。下一步可以继续做外部 black-box server 集成，或者先把 GUI 安装入口的核心逻辑抽出到非 `package main` 的可导入包，便于 Hub 测试进程直接调用安装链。
+
+### 推进记录：企业普通应用运行页结果包 UI 验收补齐（2026-07-01）
+
+本轮从三类 App 的运行界面可见性继续收口。审批型应用和工具型应用此前已经覆盖了安装后运行页能看到结果包、输出块和文件产物；企业普通应用的 DataSrv 回流测试虽然已经保存了 `result_payload`、`outputs`、`result_coverage` 和依赖证据，但运行页只断言了 install governance、result contract、coverage、dependency verification 和 DataSrv 注册状态，没有锁住“普通企业应用也能在传统软件式运行界面看到结果包/附件”的用户可见行为。
+
+本轮完成：
+
+1. 扩展 `restores DataSrv installed enterprise normal app run evidence into app candidates` 前端验收：
+   - DataSrv 回流的企业普通应用 `Customer Console Installed` 增加 `test_evidence.artifacts`；
+   - `importedRunEvidence.artifacts` 必须保留 `customer-renewal.pdf`；
+   - `installEvidence.test_evidence.artifacts` 必须保留同一附件；
+   - 打开安装后的 App 运行页，在 `Install governance` 区域必须看到 `Result package`；
+   - 运行页必须显示 `Output: 1 · Output artifacts: 1`。
+2. 组合回归同时覆盖三类 App：
+   - 企业审批型：`installs an approved Hub approval app with runtime install evidence`；
+   - 企业普通应用：`restores DataSrv installed enterprise normal app run evidence into app candidates`；
+   - 工具型应用：`keeps dependency verification visible after single market app install`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates|keeps dependency verification visible after single market app install|installs an approved Hub approval app with runtime install evidence"
+```
+
+验证结果：
+
+```text
+targeted enterprise normal app UI: 1 passed
+three app-kind runtime evidence UI: 3 passed
+```
+
+当前链路进一步变为：
+
+```text
+DataSrv app_installations enterprise_normal_app
+  -> GUI candidate restore
+  -> importedRunEvidence result payload + outputs + artifacts
+  -> installEvidence test_evidence result package
+  -> installed App runtime governance
+  -> Result package visible in enterprise normal app UI
+```
+
+剩余缺口：三类 App 的运行页结果/依赖证据可见性都有 targeted UI 验收，但全量 `AppsPage.test.tsx` 和更真实的端到端点击流仍需要继续周期性补跑；App Studio 从制作、测试、提交、Hub 审核发布到市场安装的黑盒链路也还没完全合并成单条自动化样例。
+
+### 推进记录：签名 Hub 审批 App 运行同步 payload 审计补强（2026-07-01）
+
+本轮继续压紧“真实跨服务黄金路径”中的运行同步段。此前 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 已经覆盖签名 Hub 包下载、依赖 Skill 安装、DataSrv app_installations 登记、审批 workflow 发起、结果回写、单 App/全局审批中心回读；但 DataSrv mock 主要通过最终列表响应验证结果，缺少对 `/progress` 和 `/review` 请求体本身的审计断言。这样如果运行同步 payload 丢失 workflow 节点、result payload、outputs、artifacts 或补充材料，仍可能被后续 mock 列表数据掩盖。
+
+本轮完成：
+1. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`：
+   - 捕获 DataSrv `/api/v1/data/approvals/{id}/progress` 与 `/review` 请求体；
+   - 断言普通审批最终 `review` payload 保留 `decision=approved`、`workflow_instance_id`、`workflow_node_id`、`workflow_version`；
+   - 断言最终 `review` payload 保留 `result_payload`、输出块和 `expense-golden-approved.pdf` 文件产物；
+   - 断言 requires_input 补充材料后继续运行的最终 `review` payload 保留同一 `wf-golden-2`、`decision-golden-2` 和 `supplemental_input.form_data.invoice_attachment`；
+   - 继续保留“安装登记必须先于运行”的顺序断言。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+```
+
+当前链路进一步变为：
+
+```text
+signed Hub approval app package
+  -> GUI install + dependency Skill install
+  -> DataSrv app_installations registration
+  -> approval workflow start / progress / final review
+  -> DataSrv review payload carries workflow identity + result package + artifacts
+  -> single App and global approval center read back the same instance
+```
+
+剩余缺口：这一步补强了 GUI 运行同步到 DataSrv 的请求体审计，但仍不是“真实 Hub handler 产出的 signed package 直接被 GUI 安装入口消费”的外部 black-box 集成。下一步继续推进跨服务样例：真实 Hub submit/approve/publish/download 产物、GUI install、依赖下载验签、DataSrv 查询、审批 workflow 运行与结果回读尽量合并成单条自动化验收；同时继续补 App Studio 可视化制作/测试/提交的真实点击流。
+
+### 推进记录：共享 published Hub 下载包 fixture（2026-07-01）
+
+本轮继续减少 Hub handler 测试与 GUI 下载/安装测试之间的手写包合同漂移。此前 `internal/testfixtures` 已经提供 publish-ready 的企业审批型 App submit package，但 GUI 的 shared fixture 测试仍在本地临时补 `capability`、`review_evidence` 和 entry `submission`。这会让“Hub 发布后的下载包形状”仍有一部分只存在于 GUI 测试拼装逻辑里。
+
+本轮完成：
+1. 在 `internal/testfixtures` 新增 `ReadyEnterpriseApprovalMaclawAppPublishedHubPackage`：
+   - 基于同一份企业审批型 App fixture；
+   - 直接补齐 Hub download package 所需的 `source=enterprise_hub`、`capability`、`review_evidence`、`maclaw_app_review_evidence`；
+   - 在 App entry 的 `governance.submission` 中保存 `published` 状态、`capability_id`、`version_key` 和 review evidence。
+2. 新增共享 fixture 单元测试：
+   - 锁住 published capability 状态；
+   - 锁住 review evidence 摘要；
+   - 锁住 entry submission 元数据。
+3. GUI `TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture` 改为直接使用共享 published package fixture，然后只追加测试用 package signature。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/testfixtures -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath|TestCapabilityMaclawAppPackageDownloadReturnsApprovedPack|TestCapabilityMaclawAppPackageDownloadRequiresPublishedStatus" -count=1
+```
+
+验证结果：
+
+```text
+internal/testfixtures: ok
+gui: ok
+hub/internal/httpapi: ok
+```
+
+当前链路进一步变为：
+
+```text
+shared enterprise approval app submit fixture
+  -> shared published Hub package fixture
+  -> Hub handler golden path keeps same package contract
+  -> GUI DownloadMaclawAppPackageFromHub consumes the same published contract
+  -> GUI signed install / dependency install / DataSrv registration / approval runtime tests stay green
+```
+
+剩余缺口：共享 published package fixture 已经进一步压低 Hub/GUI 合同漂移，但仍不是外部进程级 black-box。下一步可以继续把真实 Hub handler 通过 HTTP 产出的 signed package 接到 GUI 安装入口，或先抽出 GUI 安装核心到可导入包，降低 `package main` 与 `hub/internal` 的测试边界成本。
+
+### 推进记录：共享 signed published Hub package fixture（2026-07-01）
+
+本轮继续把 published Hub 下载包 fixture 向“可直接模拟真实 Hub 签名下载包”推进。上一轮共享 fixture 已能提供 published `capability`、`review_evidence` 和 entry `submission`，但 GUI 测试仍在本地手写 `package_signature` 并同步写入 submission。这样签名 payload、public key fingerprint、顶层签名与 entry submission 镜像关系仍存在测试侧重复实现。
+
+本轮完成：
+1. 在 `internal/testfixtures` 新增 `SignPublishedMaclawAppHubPackage`：
+   - 生成 `maclaw.app.package_signature.v1`；
+   - 使用 GUI 相同的 `sha256:` public key fingerprint 规则；
+   - 生成 Hub package signature payload；
+   - 写入顶层 `package_sha256` / `package_signature`；
+   - 同步镜像到首个 App entry 的 `governance.submission.package_signature`。
+2. 新增 `MaclawAppHubPackagePublicKeyFingerprint`，作为共享测试包里的 GUI 兼容指纹生成器。
+3. 扩展 `internal/testfixtures` 单元测试：
+   - 验证签名算法、package hash 和 fingerprint；
+   - 验证顶层签名与 entry submission 签名一致。
+4. GUI `TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture` 改为使用共享签名 helper，只保留下载验签和 governance 校验职责。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/testfixtures -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint" -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+```
+
+验证结果：
+
+```text
+internal/testfixtures: ok
+gui: ok
+```
+
+当前链路进一步变为：
+
+```text
+shared enterprise approval app fixture
+  -> shared published Hub package fixture
+  -> shared signed package fixture
+  -> GUI DownloadMaclawAppPackageFromHub signature/governance validation
+  -> GUI signed install / dependency / DataSrv / approval runtime tests stay green
+```
+
+剩余缺口：签名 published package 的测试数据已经共享化，但真实 Hub handler 产出的 signed package 仍未在同一条 GUI install 测试里直接消费。下一步继续推进外部 black-box server 级样例，或抽出 GUI 安装核心逻辑，减少 `package main` / `hub/internal` 边界带来的测试组织成本。
+
+### 推进记录：DataSrv app_installations 正式声明 Hub package signature 证据（2026-07-01）
+
+本轮从 DataSrv 正式合同角度继续补齐 Hub 签名包链路。此前 GUI 安装和共享 fixture 已经能保存 signed published Hub package，entry `governance.submission.package_signature` 也会进入安装记录；但 DataSrv `app_installations` 只正式声明了 `hub_package_sha256`、Hub capability/version/review 字段，没有把 package signature 作为可审计元数据展开到顶层摘要和 OpenAPI schema。
+
+本轮完成：
+1. DataSrv `normalizeAppInstallationHubIdentityMetadata` 增加 package signature 归一化：
+   - 支持从 `submission.package_signature` / `submission.packageSignature` / 顶层 `package_signature` 读取；
+   - 输出 canonical `submission.package_signature`；
+   - 输出顶层 `hub_package_signature`；
+   - 输出 `hub_package_signature_algorithm`、`hub_package_signature_fingerprint`、`hub_package_signature_signed_at`、`hub_package_signature_signed_by`。
+2. DataSrv OpenAPI metadata schema 增加上述签名字段说明。
+3. 扩展 `TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence`：
+   - 输入 camelCase `packageSignature`；
+   - 断言 canonical submission 和顶层摘要均保留签名证据。
+4. 扩展 `TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence`，把 Hub package signature 字段纳入正式 schema 覆盖。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence" -count=1
+go test ./structureddata -run "TestHTTPServerCoreEndpoints|TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence" -count=1
+```
+
+验证结果：
+
+```text
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+signed Hub package
+  -> GUI install / RecordMaclawAppInstall
+  -> submission.package_signature
+  -> DataSrv app_installations canonical metadata
+  -> hub_package_signature + fingerprint/signed_at/signed_by summaries
+  -> OpenAPI contract declares the audit fields
+```
+
+剩余缺口：DataSrv 正式合同已承认签名包审计字段；下一步继续把真实 Hub handler 产出的 signed package 直接接到 GUI install，或者抽出 GUI 安装核心，减少目前依赖 shared fixture 间接证明的部分。
+
+### 推进记录：GUI 安装登记向 DataSrv 发送 Hub package signature 摘要（2026-07-01）
+
+上一轮 DataSrv 已经正式声明并归一化 `hub_package_signature` 等签名包审计字段。本轮继续把这份合同接回 GUI 安装登记链路：不能只让 DataSrv “能接收”，GUI 在 `RecordMaclawAppInstall` 注册 `app_installations` 时也必须把 signed Hub package 的签名证据送过去。
+
+本轮完成：
+1. GUI `maclawAppDataSrvInstallationPayloads` 在处理 `submission.package_signature` 时同步生成：
+   - `hub_package_signature`；
+   - `hub_package_signature_algorithm`；
+   - `hub_package_signature_fingerprint`；
+   - `hub_package_signature_signed_at`；
+   - `hub_package_signature_signed_by`。
+2. 扩展 `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`：
+   - 断言 DataSrv app installation payload 中保留 `submission.package_signature`；
+   - 断言 DataSrv app installation payload 中保留顶层 Hub package signature 摘要；
+   - 断言按 Hub/layout identity 查询回来的 installation metadata 仍保留签名摘要。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv -count=1
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run "TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence|TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+datasrv/structureddata: ok
+```
+
+当前链路进一步变为：
+
+```text
+signed Hub package
+  -> GUI InstallSelectedMaclawAppPackageFromHub
+  -> RecordMaclawAppInstall
+  -> DataSrv app_installations payload
+  -> submission.package_signature + hub_package_signature summaries
+  -> DataSrv canonical metadata / OpenAPI contract
+```
+
+剩余缺口：GUI 到 DataSrv 的签名审计字段已经闭合；下一步继续推进真实 Hub handler HTTP 产物直接进入 GUI install，或者抽出 GUI 安装核心逻辑，降低目前跨 `package main` / `hub/internal` 的测试组织成本。
+
+### 推进记录：GUI 运行页展示 Hub package signature 安装治理证据（2026-07-01）
+
+本轮继续把 Hub 签名包审计链路推进到用户可见层。此前 GUI 已经会把 signed Hub package 的 `package_signature` 摘要登记到 DataSrv，DataSrv 也会归一化为 `hub_package_signature`、`hub_package_signature_algorithm`、`hub_package_signature_fingerprint`、`hub_package_signature_signed_at`、`hub_package_signature_signed_by`；但 App 面板运行页的 `Install governance` 仍没有把这份证据展示出来，管理员只能在底层 metadata 中追查。
+
+本轮完成：
+
+1. 前端 `BackendAppInstallRecord` 增加 Hub package signature 摘要字段：
+   - `hub_package_signature`
+   - `hub_package_signature_algorithm`
+   - `hub_package_signature_fingerprint`
+   - `hub_package_signature_signed_at`
+   - `hub_package_signature_signed_by`
+2. DataSrv installed app 恢复为本地 AppEntry 时，`dataSrvInstalledInstallEvidence` 会从 DataSrv metadata、install evidence、submission 或 package signature 中提取签名证据，并写回 `installEvidence` 顶层与 `submission.package_signature`。
+3. `installRecordEvidenceItems` 在运行页 `Install governance` 中新增 `Package signature` 证据项，优先展示签名算法、public key fingerprint、签名人和签名时间。
+4. 扩展企业普通应用 DataSrv 回流前端验收，证明：
+   - DataSrv metadata 中的 Hub package signature 能保存到本地 `installEvidence`；
+   - 运行页 `Install governance` 可见 `Package signature`；
+   - UI 中能看到 `ed25519`、`sha256:customer-console-key` 和 `enterprise-market`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates|keeps dependency verification visible after single market app install|installs an approved Hub approval app with runtime install evidence"
+```
+
+验证结果：
+
+```text
+gui/frontend AppsPage targeted tests: ok
+```
+
+当前链路进一步变为：
+
+```text
+signed Hub package
+  -> GUI install / RecordMaclawAppInstall
+  -> DataSrv app_installations metadata
+  -> GUI DataSrv installed app restore
+  -> local AppEntry.installEvidence
+  -> runtime Install governance shows Package signature
+```
+
+剩余缺口：Hub package signature 已经从安装登记、DataSrv 合同、DataSrv 回流到 GUI 运行页可见性闭合；下一步继续推进真实 Hub handler HTTP 产物直接进入 GUI install 的 black-box 链路，或抽出 GUI 安装核心逻辑，减少 shared fixture 间接证明。
+
+### 推进记录：Hub handler 下载包锁定 GUI 安装合同字段（2026-07-01）
+
+本轮继续推进真实 Hub handler 到 GUI install 之间的合同收口。当前工程边界仍然存在：Hub handler 位于 `hub/internal/httpapi`，GUI 安装入口位于 `gui package main`，两者还不能直接在同一个 Go 测试中互相 import 调用。因此本轮先在真实 Hub submit/approve/publish/download golden path 上增加一组面向 GUI 安装入口的合同断言，确保 Hub handler 真实 HTTP 输出不会偏离 GUI `DownloadMaclawAppPackageFromHub` 已强制要求的字段。
+
+本轮完成：
+
+1. 在 Hub handler golden path 测试中新增 `assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract`。
+2. 该断言直接检查真实 `CapabilityMaclawAppPackageHandler` 下载响应必须包含：
+   - `schema=maclaw.app.pack.v1`
+   - `source=enterprise_hub`
+   - 顶层 `package_sha256`
+   - 顶层 `package_signature`，且算法为 `ed25519`，包含 payload、signature、public key 和 fingerprint
+   - 顶层 `capability.id/status/current_version_key`
+   - 顶层 `review_evidence` 与 `maclaw_app_review_evidence`
+   - 至少一个 `maclaw.app.v1` App entry
+   - 每个 entry 的 `governance.submission.status=published`
+   - 每个 entry 的 submission capability/version identity、package sha、package signature 和 review evidence
+   - `resolved_dependencies` 摘要
+3. 断言 entry `submission.package_signature.public_key_fingerprint` 必须镜像顶层 `package_signature.public_key_fingerprint`，防止 GUI 安装登记和 DataSrv 审计字段来源漂移。
+4. 复跑 Hub、GUI 和共享 fixture targeted tests，确认真实 handler 输出、GUI 下载/安装链路和共享签名 fixture 仍保持一致。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+go test ./internal/testfixtures -count=1
+```
+
+验证结果：
+
+```text
+hub/internal/httpapi: ok
+gui: ok
+internal/testfixtures: ok
+```
+
+当前链路进一步变为：
+
+```text
+real Hub submit
+  -> real Hub approve
+  -> real Hub publish
+  -> real CapabilityMaclawAppPackageHandler download
+  -> GUI install contract field matrix verified on handler output
+  -> shared signed fixture and GUI install tests remain green
+```
+
+剩余缺口：这一步把真实 Hub handler 输出锁到了 GUI 安装字段矩阵，但仍不是“同一条测试里真实 handler HTTP 响应直接被 GUI `DownloadMaclawAppPackageFromHub` 消费”。下一步继续推进两条路线之一：抽出 GUI 下载/安装核心到可导入包，或搭建外部 black-box server 级样例，让 GUI 测试通过 HTTP 直接消费真实 Hub server 输出。
+
+### 推进记录：抽取 Hub 下载包 GUI 安装共享合同校验（2026-07-01）
+
+上一轮 Hub handler golden path 已经增加了“GUI 安装字段矩阵”断言，但断言仍只存在于 Hub 测试内部，GUI 下载入口本身还在用自己的校验逻辑。这样虽然能减少漂移，但不能证明两边正在使用同一份合同。本轮继续收口：把这组跨服务合同抽到仓库根 `internal/maclawappcontract`，让真实 GUI 下载入口和 Hub handler 测试共同调用。
+
+本轮完成：
+
+1. 新增 `internal/maclawappcontract.ValidateGUIInstallHubPackage`：
+   - 校验 `maclaw.app.pack.v1` / `enterprise_hub` 下载包身份；
+   - 校验顶层 `package_sha256`；
+   - 校验顶层 `package_signature` 为 `ed25519`，并包含 payload、signature、公钥和 fingerprint；
+   - 校验 signature 中的 `package_sha256` 与包顶层 sha 一致；
+   - 校验 published capability identity；
+   - 校验 package review evidence；
+   - 校验每个 App entry 的 `governance.submission`、published 状态、capability/version identity、submission package sha、submission package signature、review evidence；
+   - 校验 entry signature fingerprint 与顶层 package signature fingerprint 不漂移；
+   - 校验 `resolved_dependencies` 摘要存在。
+2. GUI `validateDownloadedMaclawAppHubPackageGovernance` 前置调用共享合同校验；原有 parsed-entry 校验继续保留，作为 GUI 内部解析后的二次保护。
+3. Hub handler golden path 的 `assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract` 改为调用共享合同函数，不再维护一份测试内私有规则。
+4. 补充共享包单元测试：
+   - 接受 published Hub package；
+   - 拒绝缺少 package signature；
+   - 拒绝 entry submission signature fingerprint 与顶层 signature fingerprint 漂移。
+5. 修正共享 published fixture 与 GUI 手写 fixture：
+   - `SignPublishedMaclawAppHubPackage` 同步把 `package_sha256` 镜像到 entry submission；
+   - published fixture 增加 `resolved_dependencies`；
+   - GUI 手写 Hub 下载包 fixture 在 mark published 时同步写 submission sha/signature 和 resolved dependency 摘要。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./internal/testfixtures -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+internal/testfixtures: ok
+hub/internal/httpapi: ok
+gui: ok
+```
+
+当前链路进一步变为：
+
+```text
+shared GUI install contract
+  -> real Hub handler golden path validates downloaded package with same function
+  -> GUI DownloadMaclawAppPackageFromHub validates downloaded package with same function
+  -> shared signed fixture mirrors package sha/signature/resolved dependencies
+  -> GUI install + dependency trust + DataSrv runtime tests remain green
+```
+
+剩余缺口：共享合同已经让 Hub handler 测试和 GUI 下载入口使用同一份字段规则，但还不是“真实 Hub server 响应在同一条测试里被 GUI 直接 HTTP 消费”。下一步可以继续推进外部 black-box server 样例，或把 GUI HTTP 下载核心抽到非 `package main` 可导入包，进一步消除测试组织边界。
+
+### 推进记录：共享 GUI HTTP 下载 client 消费真实 Hub handler 输出（2026-07-01）
+
+上一轮已经把 Hub 下载包字段规则抽成共享合同函数，GUI 下载入口和 Hub handler 测试都调用同一份 `ValidateGUIInstallHubPackage`。但真实 HTTP 消费路径仍在 GUI `package main` 内部，Hub golden path 只能直接调用 handler 并手动 decode 响应。本轮继续把 GUI 的 HTTP 下载核心抽成共享 client，并在 Hub golden path 中用这个共享 client 通过 httptest server 消费真实 `CapabilityMaclawAppPackageHandler` 输出。
+
+本轮完成：
+
+1. 新增 `internal/maclawappcontract.DownloadGUIInstallHubPackage`：
+   - 拼接 `/api/capabilities/maclaw-apps/{capabilityID}/package`；
+   - 发送 `Authorization: Bearer <token>`；
+   - 处理非 2xx HTTP 错误并保留响应摘要；
+   - 解码 JSON package；
+   - 调用 `ValidateGUIInstallHubPackage` 校验共享安装合同。
+2. GUI `DownloadMaclawAppPackageFromHub` 改为使用共享 HTTP client 获取 Hub package；后续仍保留 GUI 自己的签名验签、可信 fingerprint 合并、entry 解析、安装记录 payload 生成。
+3. Hub handler golden path 增加 black-box 段：
+   - 使用 `httptest.NewServer` 暴露真实 `CapabilityMaclawAppPackageHandler`；
+   - 使用 `DownloadGUIInstallHubPackage` 通过 HTTP 下载真实 handler 输出；
+   - 断言返回包保留 capability identity 和 package signature fingerprint。
+4. 共享包新增 HTTP client 单测：
+   - 验证请求 path 和 Authorization；
+   - 验证下载后合同校验；
+   - 验证 HTTP 错误会带状态码和响应摘要。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./internal/testfixtures -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutPublishedGovernance|TestDownloadMaclawAppPackageFromHubRejectsSignedPackageWithoutTopLevelReviewEvidence|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+internal/testfixtures: ok
+hub/internal/httpapi: ok
+gui: ok
+```
+
+当前链路进一步变为：
+
+```text
+real Hub submit/approve/publish
+  -> httptest server exposes real CapabilityMaclawAppPackageHandler
+  -> shared GUI HTTP download client requests real handler output
+  -> shared GUI install contract validates package
+  -> GUI DownloadMaclawAppPackageFromHub uses same shared HTTP client
+  -> GUI signature trust / dependency install / DataSrv runtime tests remain green
+```
+
+剩余缺口：这已经是“真实 Hub handler HTTP 输出被 GUI 共享下载 client 消费”的 black-box 样例；但还不是完整 GUI `App.DownloadMaclawAppPackageFromHub` 直接连真实 Hub server，因为 GUI 仍在 `package main`，Hub 测试无法直接 import。下一步若继续压缩边界，可以把签名验签和 download result 组装也逐步抽到 `internal/maclawappcontract`，或增加一个外部进程级测试，让 GUI 包通过配置 URL 直连真实 Hub test server。
+
+### 推进记录：Hub package signature 验签逻辑共享化（2026-07-01）
+
+上一轮已经把 GUI HTTP 下载核心抽到 `internal/maclawappcontract.DownloadGUIInstallHubPackage`，Hub handler golden path 也能通过共享 HTTP client 消费真实 handler 输出。本轮继续把 GUI 内部的 Hub package signature 验签逻辑抽到同一共享合同包，减少 GUI `package main` 与 Hub/fixture 之间的签名规则漂移。
+
+本轮完成：
+
+1. 新增 `internal/maclawappcontract.VerifyHubPackageSignature`：
+   - 支持 `ed25519` 签名；
+   - 支持 `public_key_base64` / `public_key`；
+   - 支持 `signature_base64` / `signature`；
+   - 支持 `base64:`、`ed25519:` 前缀剥离；
+   - 计算 `sha256:<public-key>` fingerprint；
+   - 校验声明 fingerprint；
+   - 校验 signature `package_sha256` 与 package 顶层 `package_sha256` 一致；
+   - 执行 ed25519 payload 验签。
+2. 新增 `HubPackagePublicKeyFingerprint`，并让 `internal/testfixtures.MaclawAppHubPackagePublicKeyFingerprint` 转调共享函数，避免 fixture 继续维护第三份 fingerprint 规则。
+3. GUI `verifyMaclawAppHubPackageSignature` 改为薄包装，转调 `maclawappcontract.VerifyHubPackageSignature`。
+4. 保留 GUI 安全顺序：
+   - 共享 HTTP client 只下载并解码 package；
+   - GUI 先做 cryptographic package signature 验证；
+   - 再执行 parsed-entry 解析和共享治理合同校验。
+   这样签名被篡改时会优先报签名错误，不会被后续治理字段缺失掩盖。
+5. 共享包补充签名单元测试：
+   - 接受真实 ed25519 签名；
+   - 拒绝 package sha mismatch；
+   - 拒绝 tampered payload。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./internal/testfixtures -count=1
+go test ./gui -run "TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture|TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint|TestDownloadMaclawAppPackageFromHubRejectsInvalidPackageSignature|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+internal/testfixtures: ok
+gui: ok
+hub/internal/httpapi: ok
+```
+
+当前链路进一步变为：
+
+```text
+shared GUI HTTP download client
+  -> shared Hub package signature verification
+  -> GUI trust fingerprint merge
+  -> shared GUI install governance contract
+  -> Hub handler black-box test and GUI install tests use the same signature/contract rules
+```
+
+剩余缺口：HTTP 下载、签名验签、治理字段合同都已共享化；GUI 仍保留 download result 组装、entry parse 和 trusted fingerprint 写配置逻辑。下一步可以继续把 download result 组装抽为共享 helper，或转向 App Studio 可视化制作/测试/上传链路这个更大的产品级缺口。
+
+### 推进记录：App Studio 动态布局指纹合同硬化（2026-07-01）
+
+本轮转向 App Studio 可视化制作/测试/上传链路中最容易发生证据漂移的一段：用户在可视化布局设计器里移动区域、隐藏区域或调整输出位置后，保存到超级 Skill manifest、发布包 `app.ui` / `binding.ui`、治理证据 `governance.workspaceLayout` 必须使用同一份 canonical 布局和同一枚 fingerprint。此前已有测试证明布局能被保存和进入发布包，但对 fingerprint 与 regions 的一致性断言还不够硬，仍可能出现“治理证据按排序 regions 计算，manifest 保存另一份 regions 顺序”的隐性漂移。
+
+本轮完成：
+
+1. `applyStudioWorkspaceLayout` 保存布局时先 canonical 排序 regions，再写入 `layouts[entry].regions`，并同步写入 `layouts[entry].fingerprint`。
+2. `appWorkspaceLayoutEvidence` 改为返回同一份 canonical regions；`regionCount`、`regionIds` 和 `fingerprint` 都基于这份 regions 生成。
+3. 新增 `appWorkspaceUIForManifest`，发布 manifest 生成时把 `app.ui` 和 `app.binding.ui` 都规范化为带 fingerprint 的同一份动态 UI layout。
+4. 扩展 App Studio targeted tests，明确断言：
+   - 保存到超级 Skill 的 `binding.ui.layouts[entry].fingerprint` 等于 `governance.workspaceLayout.fingerprint`；
+   - 发布包里的 `app.ui.layouts[entry]`、`binding.ui.layouts[entry]` 与 `governance.workspaceLayout.regions` 完全一致；
+   - `regionIds` 等于 canonical regions 顺序。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves a newly created enterprise approval app into its app skill definition|creates, tests, and submits an enterprise approval app from App Studio|moves workspace regions from the visual layout preview into saved manifest regions"
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 3 passed
+```
+
+当前 App Studio 布局链路进一步变为：
+
+```text
+visual layout designer
+  -> canonical regions
+  -> layout fingerprint
+  -> maclaw.app.json ui.layouts[entry]
+  -> publish package app.ui / binding.ui
+  -> governance.workspaceLayout
+  -> targeted tests assert same regions + same fingerprint
+```
+
+剩余缺口：这一步压实了动态布局保存和发布证据的一致性，但 App Studio 仍缺一条更完整的真实点击流：生成企业审批型 App、绑定 workflow Skill、完成本地测试、提交 Hub、Hub 审核发布、市场安装、依赖安装、DataSrv 登记、审批运行和结果回读。下一步继续把这条链路拆成可维护的黑盒/半黑盒验收，优先补“制作/测试/提交 Hub”到“市场安装运行”的跨边界样例。
+
+### 推进记录：后端提交审核阻断布局指纹漂移（2026-07-01）
+
+上一轮已经在前端 App Studio 生成和发布包预览中保证 `app.ui`、`binding.ui`、`governance.workspaceLayout` 使用同一份 canonical regions 和同一枚 fingerprint。本轮继续把这条约束下沉到 GUI 后端 `SubmitMaclawAppPackage` 审核门禁，避免用户或旧工具绕过前端后提交一个“看起来有布局证据、但 fingerprint 与实际 regions 不一致”的包。
+
+本轮完成：
+
+1. `maclawAppGovernanceReviewIssuesFromPackage` 新增 workspace layout fingerprint 审核：
+   - `governance.workspaceLayout.fingerprint` 如已声明，必须等于后端按 entry/template/density/primaryRegion/outputRegion/regions 重新计算出的 fingerprint；
+   - `app.ui.layouts[entry].fingerprint` 如已声明，必须匹配其实际 regions；
+   - `binding.ui.layouts[entry].fingerprint` 如已声明，必须匹配其实际 regions；
+   - governance fingerprint 与 manifest UI fingerprint 同时存在时必须一致。
+2. 新增后端 canonical workspace regions 计算逻辑：
+   - 按 `order` 排序；
+   - 统一 `visible` 默认值；
+   - 统一写入 `id`、`role`、`placement`、`visible`、`order` 后再计算 hash。
+3. 新增 `TestSubmitMaclawAppPackageRejectsWorkspaceLayoutFingerprintMismatch`：
+   - 构造一个 definitionHash 已刷新、测试证据完整、依赖可用的工具型 App 包；
+   - 故意篡改 `governance.workspaceLayout.fingerprint`；
+   - 验证后端提交审核阻断，错误路径落在 `apps[0].app.governance.workspaceLayout.fingerprint`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestSubmitMaclawAppPackageRejectsWorkspaceLayoutFingerprintMismatch|TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenLegacyBindingUILayoutChanges|TestSubmitMaclawAppPackageFlagsStaleRunEvidenceWhenTopLevelUILayoutChanges" -count=1
+go test ./gui -run "TestSubmitMaclawAppPackage" -count=1
+```
+
+验证结果：
+
+```text
+gui: ok
+gui SubmitMaclawAppPackage targeted suite: ok
+```
+
+当前发布门禁进一步变为：
+
+```text
+App Studio canonical layout
+  -> manifest ui fingerprint
+  -> governance workspaceLayout fingerprint
+  -> GUI backend recomputes fingerprint at SubmitMaclawAppPackage
+  -> mismatched/stale layout evidence is blocked before Hub queue
+```
+
+剩余缺口：布局证据现在前后端都能防漂移；下一步继续把 App Studio 制作、测试、提交 Hub、真实 Hub 审核发布、市场安装、依赖安装、DataSrv 登记、审批运行与结果回读串成更完整的半黑盒/黑盒验收。
+
+### 推进记录：Hub 审核侧同步阻断布局指纹漂移（2026-07-01）
+
+上一轮 GUI 后端 `SubmitMaclawAppPackage` 已能阻断动态布局 fingerprint 与实际 regions 不一致的包。本轮继续把同一条规则推进到企业 Hub：即使包不是通过 GUI 正常提交，而是直接调用 Hub submit/review 接口，也不能绕过 App Studio 动态布局证据一致性检查。
+
+本轮完成：
+
+1. Hub `enterpriseMaclawAppReadyReviewIssues` 增加 workspace layout fingerprint 审核：
+   - `governance.workspaceLayout.fingerprint` 如存在，必须等于 Hub 侧按 canonical regions 重新计算的 fingerprint；
+   - `app.ui.layouts[entry].fingerprint` 如存在，必须匹配实际 regions；
+   - `binding.ui.layouts[entry].fingerprint` 如存在，必须匹配实际 regions；
+   - governance fingerprint 与 manifest UI fingerprint 同时存在时必须一致。
+2. Hub `enterpriseMaclawAppWorkspaceLayoutForEntry` 保留 layout `fingerprint`，避免审核、metadata 和下载包之间丢失布局指纹。
+3. 新增 Hub 侧 canonical workspace regions/hash 计算：
+   - 按 `order` 排序；
+   - 补齐 `visible=true` 默认值；
+   - 使用 entry/template/density/primaryRegion/outputRegion/regions 计算稳定 hash。
+4. 扩展 `TestCapabilityMaclawAppSubmitRejectsUnreadyPackage`：
+   - 构造新版 App Studio 布局证据形态；
+   - 故意写入错误 `workspaceLayout.fingerprint`；
+   - 验证 Hub submit 直接返回 `MACLAW_APP_PACKAGE_NOT_READY`，且 message 包含 workspace layout fingerprint mismatch。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitRejectsUnreadyPackage|TestAdminCapabilityMaclawAppReviewBlocksUnreadyApproval|TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath" -count=1
+```
+
+验证结果：
+
+```text
+hub/internal/httpapi: ok
+```
+
+当前布局发布门禁进一步变为：
+
+```text
+App Studio canonical layout
+  -> GUI publish package app.ui / binding.ui / governance.workspaceLayout
+  -> GUI SubmitMaclawAppPackage recomputes layout fingerprint
+  -> Hub submit/review recomputes layout fingerprint
+  -> Hub approve/publish/download only sees layout-consistent packages
+```
+
+剩余缺口：GUI 和 Hub 都已经能阻断布局证据漂移；下一步应继续把“提交后真实 Hub 审核发布 -> 市场安装 -> DataSrv 登记 -> 审批运行结果回读”合并成更强的跨边界验收，并逐步减少 GUI package main 与 Hub internal 包之间的测试组织边界。
+
+### 推进记录：Hub 市场安装后即时回灌 package signature 证据（2026-07-01）
+
+上一轮已经让 Hub submit/review 阻断动态布局证据漂移。本轮继续压紧“Hub 发布后被市场安装”的运行态证据回灌：此前 DataSrv 恢复出的已安装应用能够显示 Hub package signature，但前端市场安装当场的 `installEvidenceRecordForApp` 归一化结果没有把 `hub_package_signature`、fingerprint、signed_by、signed_at 等字段带回本地 AppEntry。这样会出现“DataSrv 二次恢复后能审计签名，但刚安装完打开运行页时证据不完整”的断层。
+
+本轮完成：
+
+1. `installEvidenceRecordForApp` 保留 Hub package signature 证据：
+   - `hub_package_signature`
+   - `hub_package_signature_algorithm`
+   - `hub_package_signature_fingerprint`
+   - `hub_package_signature_signed_at`
+   - `hub_package_signature_signed_by`
+2. 扩展 `installs an approved Hub approval app with runtime install evidence` 前端验收：
+   - mock Hub install record 顶层和 app 级 install_evidence 都携带 package signature；
+   - 断言安装后的本地 AppEntry `installEvidence` 保留 signature fingerprint 和 signed_by；
+   - 断言运行页 `Install governance` 立即显示 `Package signature`，不必等 DataSrv 重新发现后才可见。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+```
+
+验证结果：
+
+```text
+AppsPage.test.tsx: 1 passed
+```
+
+当前市场安装证据链进一步变为：
+
+```text
+Hub approved signed package
+  -> GUI market install
+  -> install_record / install_evidence
+  -> local AppEntry.installEvidence
+  -> runtime Install governance shows package signature immediately
+  -> DataSrv restore remains consistent with the same signature fields
+```
+
+剩余缺口：安装后的 package signature 运行态可见性已补齐；下一步继续把真实 Hub 发布产物、市场安装、DataSrv 登记、审批 workflow 运行、审批实例列表回读压成更完整的跨边界验收。
+
+### 推进记录：真实 Hub 下载产物进入 GUI 安装前门禁时必须可验签（2026-07-01）
+
+上一轮已经让前端市场安装后的本地运行态即时展示 Hub package signature。本轮继续向真实全链路推进，把“Hub submit/approve/publish 后由下载 handler 生成的包”接到共享 GUI 安装前门禁上，不再只检查字段存在，而是验证该真实 Hub 下载产物的 ed25519 包签名可以被 GUI 信任链接受。
+
+本轮完成：
+
+1. Hub golden path `TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath` 的 `assertDownloadedMaclawAppPackageSatisfiesGUIInstallContract` 增强为双门禁：
+   - 调用 `maclawappcontract.ValidateGUIInstallHubPackage` 校验 GUI 安装所需的 Hub 身份、published 状态、review evidence、submission、resolved dependencies 等合同字段；
+   - 调用 `maclawappcontract.VerifyHubPackageSignature` 对真实 `CapabilityMaclawAppPackageHandler` 输出的 package signature 做 ed25519 验签；
+   - 要求返回非空 public-key fingerprint，证明 GUI 安装可把该 Hub 包签名纳入依赖 Skill 信任链。
+2. 共享 contract 测试 `TestDownloadGUIInstallHubPackageFetchesAndValidatesPackage` 从“只下载 JSON”升级为“下载后可安装门禁校验且可验签”：
+   - httptest server 返回签名后的 MaClaw App Hub 包；
+   - 下载后立即跑 `ValidateGUIInstallHubPackage`；
+   - 再跑 `VerifyHubPackageSignature` 并断言 fingerprint 与签名公钥一致。
+3. 测试签名夹具 `signedHubPackage` 同步回填 app governance submission 中的 `package_sha256` 与 `package_signature`，保证顶层 package signature 与 app entry submission signature 是同一份可追溯证据。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+hub/internal/httpapi golden path: ok
+```
+
+当前 Hub -> GUI 安装前门禁进一步变为：
+
+```text
+App Studio package
+  -> Hub submit
+  -> Hub approve
+  -> Hub publish/sign
+  -> CapabilityMaclawAppPackageHandler real download output
+  -> shared GUI HTTP client consumes handler output
+  -> shared GUI install contract validates package identity/evidence/dependencies
+  -> shared signature verifier proves package signature trust fingerprint
+```
+
+剩余缺口：真实 Hub 下载产物已经能通过共享 GUI 安装前合同和签名验真；下一步还需要继续跨过 GUI `package main` 边界，把真实 Hub handler 输出直接喂给 GUI 安装入口，连同依赖 Skill 安装、DataSrv app_installations 登记、审批 workflow 运行、我的申请/待我审批/已处理列表和结果回读做成一条更完整的半黑盒验收。
+
+### 推进记录：GUI signed Hub 多 App 选择安装收窄审计证据（2026-07-01）
+
+上一轮把真实 Hub handler 下载产物接入共享 GUI 安装前合同与签名验真。本轮继续推进 GUI 安装入口本身，补齐“一个 Hub capability 包含多个 MaClaw App，用户只选择其中一个安装”的 signed package 路径：安装子包必须只保留被选 App 与其依赖、review evidence 也必须同步收窄，同时仍保留原始 Hub package signature 作为来源信任证据。
+
+本轮完成：
+
+1. `maclawAppPackageForSelectedAppIDs` 选择安装时同步过滤审计证据：
+   - 顶层 `review_evidence` 只保留选中 App；
+   - 顶层 `maclaw_app_review_evidence` 只保留选中 App；
+   - 选中 app entry 的 `governance.submission.review_evidence` / `maclaw_app_review_evidence` 同步收窄；
+   - 兼容老式扁平 review evidence：如果 evidence 不是按 app_id 分组，保留原证据，避免误删历史包。
+2. `TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps` 升级为 signed published Hub 包：
+   - 生成 ed25519 package signature；
+   - 顶层 capability/status/version、resolved dependencies、review evidence、每个 app 的 governance submission 都按 Hub published 包形态构造；
+   - 断言 GUI 下载门禁可接受签名包；
+   - 断言选择安装后只剩被选 app/dependency；
+   - 断言本地 install audit 不再包含未选 App 的 run evidence；
+   - 断言安装子包仍保留原始 Hub package signature fingerprint/package_sha256。
+3. 新增测试 helper `normalizeMaclawAppPackageWorkspaceFingerprintsForTest`：
+   - 先按 GUI 安装解析逻辑归一化动态 UI；
+   - 让 `app.ui.layouts[entry]` 与 `governance.workspaceLayout` 对齐，模拟 App Studio 保存后的真实 manifest；
+   - 按生产算法刷新 workspace layout fingerprint；
+   - 二次归一化后刷新 testEvidence `definitionHash`，避免 signed install 夹具在布局门禁和运行证据门禁之间漂移。
+4. 顺手修复 signed Hub 安装回归夹具：
+   - `TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill`
+   - `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv`
+   这两条测试不再依赖占位 `layout-*` 字符串，而是使用生产算法计算出的真实 workspace layout fingerprint，并同步刷新 definitionHash。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps|TestSelectedMaclawAppPackageFiltersResolvedDependencies" -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+```
+
+验证结果：
+
+```text
+gui selected app install targeted suite: ok
+gui signed Hub install targeted suite: ok
+```
+
+当前 GUI 市场安装链路进一步变为：
+
+```text
+signed Hub package
+  -> GUI download verifies package signature/trust fingerprint
+  -> user selects one App from multi-App capability package
+  -> install package keeps only selected apps/dependencies
+  -> review evidence is scoped to selected App
+  -> original Hub package signature remains available as source trust evidence
+  -> dependency install / DataSrv registration / approval runtime tests continue to pass
+```
+
+剩余缺口：GUI 选择安装和 signed approval runtime 的关键路径已经补强；下一步继续把真实 Hub `CapabilityMaclawAppPackageHandler` 的 httptest 输出进一步接入 GUI 安装入口，减少手工拼 Hub server 响应，并把 App Studio 点击流、Hub 审核发布、市场安装、DataSrv 审批实例回读压成更完整的半黑盒验收。
+
+### 推进记录：App Studio workspace layout fingerprint 算法共享化（2026-07-01）
+
+上一轮补强了 GUI signed Hub 多 App 选择安装，但也暴露出一个更基础的风险：App Studio 动态布局 fingerprint 在前端、GUI 后端、Hub 审核侧各自实现，测试夹具还需要手工跟随规则。这样在“设计 -> 保存 -> 测试 -> 提交 -> Hub 审核 -> 市场安装”的长链路里，很容易出现某一端计算规则细微漂移，导致真实包被误拒或错误放行。
+
+本轮完成：
+
+1. 新增共享合同函数 `internal/maclawappcontract.WorkspaceLayoutFingerprint`：
+   - 输入 `entryName + layout map`；
+   - 统一读取 `template/density/primaryRegion/outputRegion`；
+   - 兼容 `primary_region/output_region`；
+   - 对 regions 按 `order`、原始位置稳定排序；
+   - `visible` 默认 `true`；
+   - 使用同一 FNV-1a text hash 输出 8 位 fingerprint。
+2. 新增 `internal/maclawappcontract.CanonicalWorkspaceLayoutRegions`：
+   - 作为 fingerprint 的 canonical regions 来源；
+   - 单测覆盖排序、默认 visible、默认 order 与 snake/camel 字段兼容。
+3. GUI 后端 `maclawAppWorkspaceLayoutFingerprint` 改为薄包装：
+   - 直接调用 `maclawappcontract.WorkspaceLayoutFingerprint`；
+   - GUI submit/install/runtime 门禁继续走原入口，但算法来源变成共享合同。
+4. Hub 审核侧 `enterpriseMaclawAppWorkspaceLayoutFingerprint` 改为薄包装：
+   - 直接调用同一共享合同函数；
+   - Hub submit/review/publish/download 与 GUI 安装门禁不再维护两份 fingerprint 算法。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./hub/internal/httpapi -run "TestCapabilityMaclawAppSubmitRejectsUnreadyPackage|TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath" -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+hub/internal/httpapi layout/golden path targeted suite: ok
+gui signed Hub install targeted suite: ok
+```
+
+当前布局证据链进一步变为：
+
+```text
+App Studio saves layout regions
+  -> frontend writes fingerprint
+  -> GUI backend validates through shared contract fingerprint
+  -> Hub submit/review validates through same shared contract fingerprint
+  -> GUI Hub install validates through same shared contract fingerprint
+```
+
+剩余缺口：布局 fingerprint 规则已经后端共享化；前端 TypeScript 仍有独立实现，后续可考虑用同一份 golden fixture 或导出 wasm/JSON contract test 做前后端一致性校验。主流程上继续推进真实 Hub handler 输出进入 GUI 安装入口、DataSrv 审批实例回读和 App Studio 点击流验收。
+
+### 推进记录：Hub 下载包选择安装子包筛选逻辑共享化（2026-07-01）
+
+上一轮把 workspace layout fingerprint 规则抽成共享合同。本轮继续把 GUI 安装入口里的“多 App 包选择安装”逻辑抽到共享合同层，目标是让真实 Hub `CapabilityMaclawAppPackageHandler` 输出不只通过下载合同和签名验真，还能进一步进入 GUI 安装准备阶段：按用户选择的 App 生成安装子包、收窄依赖和 review evidence，并继续满足 GUI install contract。
+
+本轮完成：
+
+1. 新增 `internal/maclawappcontract.SelectHubPackageApps`：
+   - 输入 Hub 下载包和 `selectedAppIDs`；
+   - 空选择时返回完整 clone 包；
+   - 支持 `market-xxx` 与原始 app id 互相匹配；
+   - 过滤 `apps`，只保留被选 App；
+   - 过滤顶层 `resolved_dependencies`；
+   - 过滤 app entry 内 `resolved_dependencies`；
+   - 过滤顶层 `review_evidence` / `maclaw_app_review_evidence`；
+   - 过滤 `governance.submission.review_evidence` / `maclaw_app_review_evidence`；
+   - 保留原始 Hub `package_signature` / submission signature 作为来源信任证据。
+2. 新增共享 selector 单测：
+   - `TestSelectHubPackageAppsFiltersAppsDependenciesAndReviewEvidence`
+   - `TestSelectHubPackageAppsKeepsFlatReviewEvidence`
+   - `TestSelectHubPackageAppsRejectsMissingSelection`
+   覆盖选择安装、扁平旧式 review evidence 兼容、缺失选择报错。
+3. GUI `maclawAppPackageForSelectedAppIDs` 改为调用共享 selector：
+   - GUI 仍用自己的 parser 生成 typed `parsedMaclawAppEntry`；
+   - 但安装子包的 map 级筛选规则由 `internal/maclawappcontract` 统一提供。
+4. Hub golden path 增加真实 handler 输出到共享 selector 的断言：
+   - `CapabilityMaclawAppPackageHandler` 真实输出；
+   - `DownloadGUIInstallHubPackage` 共享 HTTP client 下载；
+   - `SelectHubPackageApps(..., ["market-approval-ready-app"])` 生成选中 App 安装子包；
+   - 子包再次通过 `ValidateGUIInstallHubPackage` 与 `VerifyHubPackageSignature`。
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps|TestSelectedMaclawAppPackageFiltersResolvedDependencies" -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+internal/maclawappcontract: ok
+gui selected app install targeted suite: ok
+gui signed Hub install targeted suite: ok
+hub/internal/httpapi golden path: ok
+```
+
+当前真实 Hub 输出到 GUI 安装准备链路进一步变为：
+
+```text
+Hub submit/approve/publish
+  -> CapabilityMaclawAppPackageHandler real output
+  -> shared GUI HTTP client downloads package
+  -> shared package signature verifier proves trust fingerprint
+  -> shared package selector creates selected-App install package
+  -> selected package still satisfies GUI install contract
+  -> GUI install entry uses the same shared selector before dependency install/DataSrv registration
+```
+
+剩余缺口：真实 Hub handler 输出已经进入共享 GUI 安装准备阶段；下一步继续减少 GUI 测试中手工模拟 Hub dependency skill download 的部分，逐步把“真实 Hub handler 输出 -> GUI 安装入口 -> 依赖 Skill 安装 -> DataSrv 登记 -> 审批 workflow 运行/回读”压成更完整的半黑盒验收。
+
+### 推进记录：Enterprise Hub signed Skill 依赖安装测试夹具共享化（2026-07-01）
+
+本轮继续减少 GUI 安装链路里手工拼装 Hub dependency Skill 响应的比例。MaClaw App 安装时会把 Hub package signature 的公钥指纹纳入依赖 Skill 信任链，因此测试夹具也必须稳定模拟“已发布 signed Skill capability + 可验签 Skill 下载包”这组真实输入，而不是每条用例各自临时拼 JSON。
+
+本轮完成：
+
+1. 新增共享测试夹具：
+   - `SignedEnterpriseHubSkillPackage(id, version, instructions, publicKey, privateKey)` 生成 signed Skill JSON body、sha256 与 ed25519 signature metadata；
+   - `PublishedEnterpriseHubSkillCapability(skillID, capabilityID, version, packageSHA, packageSignature)` 生成 published Hub Skill capability 摘要和 metadata_json；
+   - signature metadata 与 GUI 依赖安装验签逻辑使用同一套 public key fingerprint 规则。
+2. GUI signed Hub 安装测试改为复用共享夹具：
+   - `TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill` 不再手工拼 `signed-skill` capability metadata；
+   - `TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv` 不再使用本地 `signedSkill` 闭包，而是为 `expense-super-skill@1.4.0` 与 `expense-workflow@2.1.0` 生成真实版本一致的 signed Skill 包；
+   - Hub capability 响应统一使用 `PublishedEnterpriseHubSkillCapability`，避免测试里手写 `metadata_json` 与 package signature 字段漂移。
+3. 这一步把审批型 App 的依赖安装验收推进为：
+
+```text
+signed Hub MaClaw App package
+  -> package signature seeds trusted dependency key fingerprint
+  -> GUI resolves enterprise_hub Skill install_ref
+  -> Hub returns published signed Skill capability
+  -> GUI downloads signed Skill package
+  -> dependency Skill signature verifies with seeded trust
+  -> DataSrv registration and approval workflow runtime continue to pass
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/testfixtures -count=1
+go test ./gui -run "TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+go test ./internal/maclawappcontract -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+internal/testfixtures: ok
+gui signed Hub install targeted suite: ok
+internal/maclawappcontract: ok
+hub/internal/httpapi golden path: ok
+```
+
+剩余缺口：依赖 Skill 下载/验签的 GUI 测试夹具已经共享化；下一步继续把真实 Hub `CapabilityMaclawAppPackageHandler` 输出直接接入 GUI 安装入口、依赖 Skill 安装、DataSrv app_installations 登记、审批 workflow 运行、单 App/全局审批中心回读，形成更少 mock 的最终黄金样例。
+
+### 推进记录：共享 published approval fixture 升级为安装级 DataSrv 验收样例（2026-07-01）
+
+本轮把 `internal/testfixtures.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage` 从“GUI 可下载验签”的样例继续升级为“GUI 可安装、可装依赖、可登记 DataSrv”的审批型 Hub 样例。目标是减少 GUI、Hub、contract 各自手工构造 MaClaw App package 的比例，让后续最终 golden path 使用同一份更接近真实发布产物的 fixture。
+
+本轮完成：
+
+1. 共享 approval fixture 补齐安装级合同字段：
+   - `binding.datasrv`：`finance.expense_forms`、`expense_request`、`finance.expense.v1`；
+   - `binding.mis.approvalBindings`：`finance.submitted -> approval-ready-workflow@1.0.0`；
+   - `binding.appSkill` 与 `binding.dependencies.skills` 改为 `enterprise_hub://capabilities/...` install_ref；
+   - `app.ui.layouts`、`binding.ui.layouts`、`governance.workspaceLayout` 使用同一份 canonical layout，并通过共享 `WorkspaceLayoutFingerprint` 计算 fingerprint；
+   - `governance.testProtocol`、`testEvidence.approvalInstance`、approval result payload、outputs、artifacts、view verification 全部补齐；
+   - `dependencyVerification.skills` 与 `dependencyVerification.dependencies` 双字段保真，避免发布/安装门禁字段漂移。
+2. `ApplyPublishedMaclawAppHubDownloadGovernance` 同步输出 installation-ready resolved dependencies：
+   - package 顶层 `resolved_dependencies`；
+   - app entry 内 `resolved_dependencies`；
+   - source 为 `enterprise_hub`，install_ref 指向 signed Skill capability。
+3. 新增 GUI 后端验收 `TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv`：
+   - Hub 返回共享 signed MaClaw App package；
+   - GUI 下载并验 package signature；
+   - package signature 公钥指纹进入依赖 Skill trust；
+   - GUI preflight 两个 enterprise Hub Skill capability；
+   - GUI 下载并验签 `approval-ready-app-skill` 与 `approval-ready-workflow`；
+   - `InstallSelectedMaclawAppPackageFromHub` 真实写入 DataSrv `/api/v1/data/app-installations/approval-ready-app`；
+   - DataSrv registration metadata 保留 Hub capability、published 状态、workflow contract、workspace layout fingerprint。
+4. Hub golden path 断言同步更新为 canonical layout 语义：
+   - `workspace_layout_primary_region=center`；
+   - `workspace_layout_output_region=bottom`；
+   - 继续断言 dependency summary 与 package signature/review evidence 保真。
+
+当前链路进一步变为：
+
+```text
+shared published approval Hub package
+  -> GUI DownloadMaclawAppPackageFromHub validates governance/signature
+  -> GUI InstallSelectedMaclawAppPackageFromHub selects app
+  -> enterprise_hub dependency preflight reads published Skill capability
+  -> signed dependency Skill packages download and verify
+  -> RecordMaclawAppInstall registers app_installations to DataSrv
+  -> local install audit keeps DataSrv/workflow/layout/review evidence
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/testfixtures -count=1
+go test ./gui -run "TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv|TestDownloadMaclawAppPackageFromHubAcceptsSharedApprovalFixture" -count=1
+go test ./gui -run "TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps" -count=1
+go test ./internal/maclawappcontract -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+internal/testfixtures: ok
+gui shared published approval install/DataSrv targeted suite: ok
+gui signed Hub install targeted suite: ok
+internal/maclawappcontract: ok
+hub/internal/httpapi golden path: ok
+```
+
+剩余缺口：共享 published approval fixture 现在已经覆盖“下载 -> 选择安装 -> 依赖验签安装 -> DataSrv app_installations 登记”。下一步应继续把同一份 fixture 接到审批 workflow 启动与 DataSrv approval instance 回读，压成“安装后直接发起审批 -> workflow Skill 运行 -> 单 App/全局审批中心回看结果和文件”的最终少 mock golden path。
+
+### 推进记录：共享 published approval fixture 串到审批 workflow 运行与审批中心回读（2026-07-01）
+
+本轮继续沿用上一节已经升级为安装级样例的 `ReadyEnterpriseApprovalMaclawAppPublishedHubPackage`，把链路从 DataSrv app_installations 登记继续推进到运行态：安装完成后直接发起审批、运行 workflow Skill、同步 DataSrv approval instance，并从单 App 审批工作台和全局审批中心回读最终结果与文件产物。
+
+本轮完成：
+
+1. 扩展 GUI 后端验收 `TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv`：
+   - 先走真实 Hub package 下载、签名验证、选择安装、enterprise_hub 依赖 preflight、signed Skill 下载验签、DataSrv app_installations 登记；
+   - 再注册已安装的 `approval-ready-workflow` runner；
+   - 调用真实 `StartMaclawAppApprovalWorkflow(... RunWorkflowSkill=true)` 发起审批；
+   - workflow Skill 返回 running progress 与 final approved approval instance；
+   - GUI 把 progress 同步到 DataSrv `/api/v1/data/approvals/{id}/progress`；
+   - GUI 把 final result 同步到 DataSrv `/api/v1/data/approvals/{id}/review`。
+2. 新增运行态回读断言：
+   - `ListMaclawAppApprovalInstances("approval-ready-app", "handled", 10)` 能从单 App 审批工作台读回；
+   - `ListMaclawAppApprovalInstancesAll("handled", 10)` 能从全局审批中心读回；
+   - 两个视角必须是同一个 workflow instance / approval id / decision id；
+   - 回读结果保留 `approval_result=approved`、workflow node path、文本输出和 `approval-ready-run.pdf` 文件产物。
+3. 这一步让同一份共享 fixture 覆盖到：
+
+```text
+Hub published approval package
+  -> GUI install selected App
+  -> signed dependency Skill install
+  -> DataSrv app_installations registration
+  -> StartMaclawAppApprovalWorkflow
+  -> workflow Skill running progress
+  -> DataSrv approval progress sync
+  -> workflow Skill final approved result
+  -> DataSrv approval review sync
+  -> single-App handled lane readback
+  -> global handled lane readback
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv -count=1
+go test ./gui -run "TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv|TestInstallSelectedMaclawAppPackageFromHubUsesPackageSignatureTrustForDependencySkill|TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv|TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult" -count=1
+go test ./internal/testfixtures ./internal/maclawappcontract -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+```
+
+验证结果：
+
+```text
+gui shared published approval install/run/readback golden path: ok
+gui signed install + workflow runner targeted suite: ok
+internal/testfixtures + internal/maclawappcontract: ok
+hub/internal/httpapi golden path: ok
+```
+
+剩余缺口：共享 fixture 已经把后端少 mock golden path 压到“安装 -> 运行 -> 回读”。下一步应继续补 UI 层验收：App Studio/市场安装后的可视化运行页是否用同一份 install evidence 与 approval instance 数据驱动传统软件式工作台，包括我的申请、待我审批、已处理、需关注和文件结果展示。
+### 推进记录：审批型 App UI 工作台 lane 与结果文件回读验收（2026-07-01）
+本轮继续补齐运行态 UI 层证据。前一阶段已经证明后端 golden path 能从 Hub 安装、依赖 Skill 安装、DataSrv app_installations 登记推进到审批 workflow 运行与审批实例回读；本轮把同类数据推进到 `AppsPage` 的全局审批中心，验证企业审批型 App 的传统工作台视图不是只展示单条表单，而是能按审批工作语义组织实例。
+
+本轮完成：
+1. 新增前端验收 `shows approval instances across request, approval, attention, and handled lanes`：
+   - mock `ListMaclawAppApprovalInstancesAll("all", 200)` 返回四条 DataSrv 审批实例；
+   - 覆盖 `my_requests`、`pending_my_approval`、`attention`、`handled` 四类 lane；
+   - 验证 lane 计数分别为 1，且切换 lane 后只展示对应业务实例；
+   - 验证详情区保留 workflow skill/version、当前节点路径、业务记录 ID、远程 approval id、business/result status；
+   - 验证结果包展示 structured payload、文本输出、业务记录输出和 PDF artifact；
+   - 验证已处理实例的 Approve / Reject / Mark attention 操作保持只读禁用。
+2. 复跑已有 Hub 安装证据 UI 回读用例：
+   - `installs an approved Hub approval app with runtime install evidence` 继续通过；
+   - 证明新增 lane 验收没有破坏 Hub 审核通过 App 安装后，运行页和全局审批中心读取 install evidence / approval instance / artifact 的路径。
+
+当前 UI 验收链路变为：
+
+```text
+DataSrv approval instances
+  -> AppsPage global Approval status
+  -> lane counts
+  -> my requests / pending my approval / needs attention / handled filters
+  -> approval detail facts
+  -> result package payload
+  -> document artifact display
+  -> handled approval read-only actions
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows approval instances across request, approval, attention, and handled lanes"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs an approved Hub approval app with runtime install evidence"
+```
+
+验证结果：
+```text
+AppsPage approval lane UI targeted test: ok
+AppsPage Hub install evidence UI targeted test: ok
+```
+
+### 推进记录：企业普通 App Studio 动态布局保存验收（2026-07-01）
+本轮继续推进 App Studio 制作端闭环。上一轮补齐了审批型 App 运行态多 lane 工作台；本轮把同一套“动态 UI 生成、用户可视化调节、保存到 app 信息文件、进入治理证据”的要求扩展到企业普通应用，避免 App Studio 只对审批型 App 有完整布局证据。
+
+本轮完成：
+1. 新增前端验收 `saves an enterprise normal app Studio layout into its app skill definition`：
+   - 在 App Studio 创建 `enterprise_normal_app`；
+   - 选择 `customer-console-skill` 作为 appSkill；
+   - 配置 DataSrv domain、objectRole、preferredAction、preferredView、preferredReport、preferredDashboard；
+   - 使用可视化布局设计器把 `business_workspace` 调整为 `dashboard / spacious / primaryRegion=center / outputRegion=right`；
+   - 调整 `operation_form`、`record_detail`、`record_list`、`output_panel` 的布局区域和顺序；
+   - 点击 `Save to Skill` 后断言写入 `customer-console-skill/maclaw.app.json`。
+2. 验证保存产物同时进入 `app.binding.datasrv`、`app.binding.appSkill`、`app.binding.ui.layouts.business_workspace`、`app.governance.workspaceLayout`、`app.governance.resultContract`、`app.governance.testProtocol`。
+3. 验证 `business_workspace` 的 template、density、primaryRegion、outputRegion 与用户可视化调节一致，regions 保留 role、placement、order，且 governance.workspaceLayout 与 binding.ui layout 共享 fingerprint。
+
+当前制作端链路进一步变为：
+
+```text
+App Studio create enterprise_normal_app
+  -> choose appSkill
+  -> configure DataSrv operation/view/report/dashboard
+  -> visually adjust business_workspace layout
+  -> save maclaw.app.json to Skill
+  -> binding.ui + governance.workspaceLayout share fingerprint
+  -> resultContract/testProtocol stay attached to the app package contract
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves an enterprise normal app Studio layout into its app skill definition"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "creates, tests, and submits an enterprise approval app from App Studio"
+```
+
+验证结果：
+```text
+AppsPage enterprise normal Studio layout save targeted test: ok
+AppsPage enterprise approval Studio create/test/submit targeted test: ok
+```
+
+### 推进记录：工具型 App Studio 动态布局保存与上传前测试证据验收（2026-07-01）
+
+本轮继续补齐 App Studio 制作端闭环，把工具型 App 从“选择 Skill + 保存名称”的薄验收推进到“可视化布局调节 + 保存到 app 信息文件 + 当前版本测试证据 + 上传前自动保存”的完整链路。这样三类 App（企业审批型、企业普通型、工具型）在 Studio 侧都开始具备动态 UI 布局进入 manifest 和 governance evidence 的验收锚点。
+
+本轮完成：
+
+1. 扩展前端验收为 `saves the latest tool app layout and test evidence before uploading to SkillMarket`：
+   - 在 App Studio 中选择已安装 `invoice-review` Skill；
+   - 将工具型 App 命名为 `发票审核`；
+   - 通过可视化布局设计器调整 `tool_workspace` 为 `dashboard / compact / primaryRegion=center / outputRegion=bottom`；
+   - 调整 `file_queue`、`settings_panel`、`preview_panel`、`output_panel` 的 placement、visible、order；
+   - 保存到 `invoice-review/maclaw.app.json` 后，为当前版本种入成功运行证据；
+   - 点击 `上传到 SkillMarket` 时，先自动保存最新 app 定义，再调用 `UploadNLSkillToMarket("invoice-review")`。
+2. 修正上传前保存路径的证据桥接：
+   - `uploadSelectedSkillApp` 现在先保存通过闸门校验的 `currentRunEvidence`；
+   - `persistSkillAppDefinition(currentRunEvidence)` 将面板入口上的当前版本测试证据带入本次 Skill manifest；
+   - `appToManifest` 因此能在保存产物中生成 `app.governance.testEvidence`，避免上传通过但 Skill 定义缺少测试证据。
+3. 验证保存产物包含完整工具型 App 契约：
+   - `schema = maclaw.app.v1`、`privateMarker = x_maclaw_apps`、`installUnit = skill`；
+   - `app.kind = tool_app`、`launchMode = fixed_skill_ui`；
+   - `app.binding.skill.appDefinitionFile = maclaw.app.json`；
+   - `app.binding.ui.entry = tool_workspace`；
+   - `app.binding.ui.layouts.tool_workspace` 保存 template、density、primaryRegion、outputRegion、regions 与 studio 标记；
+   - `app.governance.workspaceLayout` 与 binding layout 共享 fingerprint，并记录 visibleRegionCount、regionIds、regions；
+   - `app.governance.resultContract`、`app.governance.testProtocol`、`app.governance.testEvidence` 同时进入上传前保存产物；
+   - test evidence 覆盖 artifact、output、resultCoverage，证明“当前版本已测试”不只是上传按钮闸门，而是可分发治理证据。
+
+当前工具型制作端链路变为：
+
+```text
+App Studio create/select tool_app
+  -> choose installed Skill
+  -> visually adjust tool_workspace layout
+  -> save maclaw.app.json to Skill
+  -> run/test current app version
+  -> upload to SkillMarket
+  -> auto-save latest manifest before upload
+  -> binding.ui + governance.workspaceLayout + governance.testEvidence preserved
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves the latest tool app layout and test evidence before uploading to SkillMarket"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves an enterprise normal app Studio layout into its app skill definition"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "creates, tests, and submits an enterprise approval app from App Studio"
+```
+
+验证结果：
+
+```text
+AppsPage tool App Studio layout/test-evidence upload targeted test: ok
+AppsPage enterprise normal Studio layout save targeted test: ok
+AppsPage enterprise approval Studio create/test/submit targeted test: ok
+```
+
+剩余缺口：Studio 制作端三类 App 的主闭环已经进一步收口；后续应继续推进安装/运行端对工具型 App 的布局恢复、Hub 安装后的依赖检查证据回读，以及 DataSrv/Hub/GUI 对同一份 app governance evidence 的跨层一致性验收。
+
+### 推进记录：工具型 App 市场安装后运行端布局与测试证据回读（2026-07-01）
+
+本轮从制作端继续推进到安装/运行端。上一轮已经证明工具型 App 在 App Studio 中可以保存 `tool_workspace` 动态布局，并在上传前把当前版本测试证据写入 `app.governance.testEvidence`；本轮补齐“被安装的一方”是否还能读回这份布局和证据，避免能力市场分发后运行界面退回成固定表单。
+
+本轮完成：
+
+1. 修正 `maclaw.app.v1` 市场包解析：
+   - `manifestToAppEntry` 现在读取 `app.governance.testEvidence` / `test_evidence`；
+   - 将 `runId/runID/run_id`、`verifiedAt/verified_at`、`definitionHash`、artifact、outputs、resultCoverage 等测试证据归一为 `importedRunEvidence`；
+   - 同时保留 `governance.workflowContract`，让市场安装包和已安装 Skill 定义在治理证据语义上保持一致。
+2. 新增前端验收 `restores installed tool app workspace layout and test evidence in the runtime UI`：
+   - 从市场粘贴安装一个 `tool_app`；
+   - manifest 中携带 `binding.ui.layouts.tool_workspace`，布局为 `dashboard / compact / primaryRegion=center / outputRegion=bottom`；
+   - regions 覆盖 `file_queue`、`settings_panel`、`output_panel`、`preview_panel`，包含 placement、visible、order；
+   - governance 中携带 `workspaceLayout`、`resultContract`、`testProtocol`、`testEvidence`；
+   - 安装后打开 App，验证运行页 `.apps-runtime-layout` 的 `data-template`、`data-density`、`data-primary-region`、`data-output-region`、`data-region-count`；
+   - 验证输入区、状态区、输出区、运行历史分别恢复到 manifest 指定的 center/right/bottom 区域；
+   - 验证运行历史读取安装包中的 `run-tool-layout-install` 和 `translated-output.pdf`；
+   - 验证本地面板保存的 AppEntry 已保留 `importedRunEvidence` 和 `tool_workspace` 布局。
+
+当前安装/运行端链路变为：
+
+```text
+SkillMarket maclaw.app.v1 package
+  -> manifestToAppEntry
+  -> binding.ui.tool_workspace saved in AppEntry.manifest
+  -> governance.testEvidence normalized to importedRunEvidence
+  -> install into app panel
+  -> open runtime AppPreview
+  -> runtimeWorkspaceLayoutForApp
+  -> apps-runtime-layout data attributes
+  -> input/status/output/history regions restored
+  -> imported run evidence appears in run history
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores installed tool app workspace layout and test evidence in the runtime UI"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "uses installed skill app output modes in the runtime UI"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores enterprise MaClaw App skill definitions without downgrading them to tool apps"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "saves the latest tool app layout and test evidence before uploading to SkillMarket"
+```
+
+验证结果：
+
+```text
+AppsPage installed tool runtime layout/test-evidence readback targeted test: ok
+AppsPage installed skill app output modes targeted test: ok
+AppsPage enterprise skill definition restore targeted test: ok
+AppsPage tool Studio upload evidence targeted test: ok
+```
+
+剩余缺口：工具型 App 从 Studio 保存、测试、上传到市场安装后的运行页布局/证据回读已经形成一条前端闭环。后续应继续推进 Hub 安装 API 与 DataSrv app_installations 记录中的同一份 `workspace_layout`、`test_evidence`、`dependency_verification` 跨层一致性，尤其是企业审批型 App 的审批实例与工具型 App 的运行历史在安装记录中的统一治理证据模型。
+
+### 推进记录：DataSrv app_installations 治理证据同源一致性（2026-07-01）
+
+本轮继续把前端闭环向后端安装记录推进。前面已经证明工具型 App 安装后运行页能恢复 `tool_workspace` 布局和测试证据；本轮补齐 GUI 安装记录写入 DataSrv `app_installations` 时，`workspace_layout`、`test_evidence`、`dependency_verification` 不能只作为 UI 临时状态存在，而要进入 DataSrv metadata 与 `install_evidence` 的同一套治理证据。
+
+本轮完成：
+
+1. 修正 `maclawAppWorkspaceLayoutMetadataForEntry`：
+   - 当 `app.governance.workspaceLayout` 存在且带 fingerprint/regionIds/visibleRegionCount 时，仍优先使用治理摘要；
+   - 同时从 `binding.ui.layouts[entry]` 补齐 governance 摘要缺失的 `regions`、`regionCount`、`visibleRegionCount`、`schema`、`generated`、`studio`；
+   - 保留 governance fingerprint 与主布局字段，避免因为摘要优先而丢掉动态 UI 的完整区域结构。
+2. 扩展后端验收 `TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp`：
+   - 为 `enterprise_normal_app` 加入 `business_workspace` 动态布局；
+   - 验证 DataSrv metadata 写入 `workspace_layout`；
+   - 验证扁平字段 `workspace_layout_entry/template/density/primary_region/output_region/fingerprint/region_count/visible_region_count/region_ids`；
+   - 验证 `metadata.install_evidence.workspace_layout` 与 metadata 顶层布局同源；
+   - 验证 `metadata.install_evidence.test_evidence` 保留 `run-selected-1`；
+   - 验证 `metadata.install_evidence.dependency_verification` 是按 App 过滤后的依赖验证结果，不串入其它 App 的依赖。
+
+当前 DataSrv 安装登记链路变为：
+
+```text
+maclaw.app.v1 package
+  -> parseMaclawAppInstallEntries
+  -> PlanMaclawAppInstall dependency verification
+  -> maclawAppInstallEvidenceByApp
+  -> maclawAppDataSrvInstallationPayloads
+  -> metadata.workspace_layout
+  -> metadata.test_evidence
+  -> metadata.dependency_verification
+  -> metadata.install_evidence.{workspace_layout,test_evidence,dependency_verification}
+  -> PUT /api/v1/data/app-installations/{app_id}
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp -count=1
+go test ./gui -run "TestRecordMaclawAppInstallPersistsNewestInstallAudit|TestMaclawAppInstallEvidenceGeneratesDependencyVerification|TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp" -count=1
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores installed tool app workspace layout and test evidence in the runtime UI"
+```
+
+验证结果：
+
+```text
+GUI DataSrv app_installations governance evidence payload targeted test: ok
+GUI install audit/evidence regression targeted suite: ok
+AppsPage installed tool runtime layout/test-evidence readback targeted test: ok
+```
+
+剩余缺口：DataSrv 安装登记 payload 已经能承载布局、测试证据和依赖验证；后续应继续推进 DataSrv 持久化/HTTP 层对这些字段的 round-trip 验收，以及 GUI 从 DataSrv `ListMaclawAppInstalls` / installed app discovery 回读同一份治理证据后驱动审批中心和工具运行页。
+
+剩余缺口：运行态审批中心已经具备多 lane 和结果文件的 UI 证据；下一步应继续推进 App Studio 制作端闭环，把自动生成的企业审批型/企业普通型/工具型工作台布局、用户可视化调节、布局保存、测试证据生成和上传 Hub 串到同一份 app 信息文件与能力市场发布流程。
+
+### 推进记录：DataSrv app_installations 持久化与 HTTP 回读治理证据验收（2026-07-01）
+
+本轮把上一轮的 GUI -> DataSrv 安装登记 payload 继续向 DataSrv 自身收口。上一轮已经证明 GUI 写入 `metadata.workspace_layout`、`metadata.test_evidence`、`metadata.dependency_verification` 与 `metadata.install_evidence`；本轮补上 DataSrv 的 SQLite 持久化和 HTTP round-trip 证据，避免这些字段只在创建响应中短暂存在，重启/重新打开数据库后丢失。
+
+本轮完成：
+
+1. 新增 DataSrv HTTP 验收 `TestHTTPServerAppInstallationPersistsGovernanceEvidenceAcrossSQLiteReopen`：
+   - 通过 `PUT /api/v1/data/app-installations/{appId}` 写入一个企业审批型 App；
+   - metadata 同时携带 `workspace_layout`、`workflow_contract`、`result_contract`、`dependency_verification`、`test_evidence`、`install_evidence`；
+   - 关闭 SQLite store 后重新打开同一个 `data.db`；
+   - 使用新的 HTTP server 执行 `GET /api/v1/data/app-installations/{appId}`；
+   - 验证回读后仍保留完整 `workspace_layout.regions`、`workspace_layout.fingerprint`、`test_evidence.artifacts`、`dependency_verification.dependencies`；
+   - 验证 `install_evidence.workspace_layout` 与 `install_evidence.dependency_verification` 没有被 DataSrv 扁平化过程吞掉。
+
+2. 同一测试继续验证过滤查询在重开库后仍可命中：
+   - `workspace_layout_fingerprint=layout-roundtrip-approval`；
+   - `definition_fingerprint=sha256:governance-roundtrip`；
+   - `has_blocking_dependency=false`。
+
+当前 DataSrv 证据链路变为：
+
+```text
+GUI install payload
+  -> PUT /api/v1/data/app-installations/{appId}
+  -> normalizeAppInstallationMetadata
+  -> SQLite app_installations.metadata_json
+  -> reopen SQLite store
+  -> GET /api/v1/data/app-installations/{appId}
+  -> List /api/v1/data/app-installations filters
+  -> workspace_layout/test_evidence/dependency_verification/install_evidence round-trip verified
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\datasrv
+go test ./structureddata -run TestHTTPServerAppInstallationPersistsGovernanceEvidenceAcrossSQLiteReopen -count=1
+go test ./structureddata -run "Test.*AppInstallation.*" -count=1
+go test ./structureddata -run "TestHTTPServerAppInstallationsOverrideObjectRoleBindings|TestHTTPServerAppInstallationPUTRoundTripsGUIEquivalentPayloadThroughCapabilities|TestHTTPServerAppInstallationPUTNormalizesStudioGovernancePayload|TestHTTPServerAppInstallationPersistsGovernanceEvidenceAcrossSQLiteReopen" -count=1
+```
+
+验证结果：
+
+```text
+DataSrv app_installations SQLite reopen/HTTP round-trip targeted test: ok
+DataSrv app installation targeted suite: ok
+DataSrv app installation HTTP targeted suite: ok
+```
+
+剩余缺口：DataSrv 自身对治理证据的持久化与 HTTP 回读已经有直接验收；下一步应继续推进 GUI 从 DataSrv `ListMaclawAppInstalls` / installed app discovery 回读同一份 `workspace_layout`、`test_evidence`、`dependency_verification` 后驱动运行页和审批中心，随后再把真实 Hub handler 输出、GUI 安装入口、依赖 Skill 安装、DataSrv 登记、审批 workflow 运行与结果回读压成更少 mock 的黄金链路。
+
+### 推进记录：GUI 从 DataSrv install_evidence 回读并驱动运行页（2026-07-01）
+
+本轮承接 DataSrv `app_installations` 持久化/HTTP round-trip 的结果，继续补 GUI installed app discovery 的回读闭环。目标是证明 DataSrv 重启或重新打开数据库后返回的 `install_evidence`，不只是显示在治理摘要里，而是能恢复 MaClaw App 的动态布局、测试证据和依赖验证，并驱动运行页的传统软件式工作台。
+
+本轮完成：
+
+1. 加强 `dataSrvInstalledRunEvidence`：
+   - 原来主要读取顶层 `metadata.test_evidence`；
+   - 现在在顶层缺失时 fallback 到 `metadata.install_evidence.test_evidence` / `installEvidence.testEvidence`；
+   - `importedRunEvidence` 因此能从安装证据里恢复 `runID`、`definitionFingerprint`、`testProtocolFingerprint`、`outputs`、`artifacts`、`approvalInstance`。
+
+2. 加强 `dataSrvInstalledWorkspaceLayout`：
+   - 原来主要读取顶层 `metadata.workspace_layout`；
+   - 现在在顶层缺失时 fallback 到 `metadata.install_evidence.workspace_layout` / `installEvidence.workspaceLayout`；
+   - 运行页 `runtimeWorkspaceLayoutForApp` 可以继续拿到 `entry/template/density/primaryRegion/outputRegion/regions/navigation/list`。
+
+3. 加强 `dataSrvInstalledDependencyVerificationEvidence`：
+   - 原来主要读取测试证据或顶层依赖验证；
+   - 现在支持从 `install_evidence.dependency_verification` 恢复依赖检查结果；
+   - `importedRunEvidence.dependencyVerification` 和运行态依赖面板能保留 `dependencies/install_ref/installed/health`。
+
+4. 加强 `dataSrvInstalledTestProtocol`：
+   - 支持从 `install_evidence.test_evidence.test_protocol` 读取测试协议；
+   - 保留测试协议 fingerprint，避免安装证据回读后测试证据摘要降级。
+
+5. 新增前端验收 `restores DataSrv reopened install evidence into runtime layout and evidence panels`：
+   - 模拟 DataSrv 返回一个企业审批型 App，顶层不重复 `workspace_layout/test_evidence/dependency_verification`，只在 `install_evidence` 里携带完整证据；
+   - 从 App Studio “可生成应用”加入面板；
+   - 验证保存后的 AppEntry 恢复：
+     - `manifest.ui.layouts.approval_workspace`；
+     - `importedRunEvidence`；
+     - `installEvidence.workspace_layout/test_evidence/dependency_verification`；
+   - 打开运行页，验证 `.apps-runtime-layout` 的 `data-template/data-density/data-primary-region/data-output-region/data-region-count`；
+   - 验证输入区、审批工作台、输出区分别落到 DataSrv install evidence 指定的 region；
+   - 验证运行页 `Install governance` 面板显示 workspace layout、test evidence、dependency verification。
+
+当前 GUI 回读链路变为：
+
+```text
+DataSrv app_installations HTTP response
+  -> app_installations[].metadata.install_evidence
+  -> buildDataSrvAppCandidates
+  -> dataSrvInstalledAppCandidate
+  -> manifest.ui.layouts[approval_workspace]
+  -> importedRunEvidence
+  -> installEvidence
+  -> AppPreview runtimeWorkspaceLayoutForApp
+  -> apps-runtime-layout + Install governance panel
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv reopened install evidence into runtime layout and evidence panels"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv installed enterprise normal app run evidence into app candidates"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "blocks DataSrv installed MaClaw apps at runtime when dependency verification fails"
+```
+
+验证结果：
+
+```text
+AppsPage DataSrv reopened install_evidence runtime layout/evidence targeted test: ok
+AppsPage DataSrv enterprise normal installed evidence targeted test: ok
+AppsPage DataSrv approval installed app candidate targeted test: ok
+AppsPage DataSrv installed dependency blocking runtime targeted test: ok
+```
+
+剩余缺口：DataSrv -> GUI 回读同一份安装治理证据并驱动运行页已经闭合；下一步应继续把真实 Hub handler 输出、GUI 安装入口、依赖 Skill 下载验签安装、DataSrv 登记、审批 workflow 运行、单 App/全局审批中心回读整合成更少 mock 的黄金链路。
+
+### 推进记录：Hub 安装包签名证据进入 GUI 运行态治理面板验收（2026-07-01）
+
+本轮继续压实“真实 Hub 治理证据 -> GUI 安装 -> 运行页回读”的 UI 验收。此前 Hub golden path 已经证明真实 `CapabilityMaclawAppPackageHandler` 的下载结果可以被共享 `maclawappcontract.DownloadGUIInstallHubPackage` 与 `SelectHubPackageApps` 消费；本轮把前端市场安装用例中的 Hub 包签名证据补齐，避免安装成功后运行态只显示来源、依赖和 DataSrv 登记，而没有验收签名信任链。
+
+本轮完成：
+1. 扩展前端验收 `installs approved Hub MaClaw Apps from market search results`：
+   - 在 Hub package mock 中加入 `package_signature`；
+   - 在 `install_record` 顶层加入 `package_sha/package_sha256`、`hub_package_signature` 和签名摘要字段；
+   - 在单 App `install_evidence.submission.package_signature` 中保留同一份签名证据；
+   - 验证市场安装行的 install evidence snapshot 显示 `Package signature`；
+   - 验证安装后保存到面板的 `AppEntry.installEvidence.hub_package_signature` 保留 algorithm、fingerprint、signed_by；
+   - 验证运行页 `Install governance` 面板显示 `ed25519 · sha256:contract-package-key · enterprise-market`。
+2. 复跑 DataSrv 回读相关前端用例，确认签名证据补强没有破坏 DataSrv `install_evidence` 回读、动态布局恢复和已安装 App 候选生成。
+
+当前 GUI 运行态治理证据链路进一步变为：
+
+```text
+Enterprise Hub package_signature
+  -> GUI market install result.install_record.hub_package_signature
+  -> per-App install_evidence.submission.package_signature
+  -> local AppEntry.installEvidence
+  -> InstallRecordEvidenceSnapshot
+  -> RuntimeInstallGovernancePanel
+  -> Package signature evidence visible beside source/layout/test/dependency/DataSrv evidence
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv reopened install evidence into runtime layout and evidence panels"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+```
+
+验证结果：
+
+```text
+AppsPage Hub market install package-signature governance targeted test: ok
+AppsPage DataSrv reopened install_evidence runtime layout/evidence targeted test: ok
+AppsPage DataSrv installed app candidate layout metadata targeted test: ok
+```
+
+剩余缺口：Hub handler 输出到 GUI 安装运行态的签名证据展示已经有前端验收；后续仍需把真实依赖 Skill 下载、依赖包签名/完整性诊断、DataSrv 登记、审批 workflow 运行与审批中心回读合成更少 mock 的端到端黄金链路，并补失败路径（签名失败、依赖缺失、DataSrv 登记部分失败、workflow 需补充/拒绝/需关注）。
+
+### 推进记录：依赖 Skill 预检/完整性诊断进入 DataSrv 安装治理证据（2026-07-01）
+
+本轮继续推进 MaClaw App 安装时的 Skill 依赖治理闭环。前面已经覆盖了依赖安装失败分类、SkillMarket/Enterprise Hub 预检，以及 Hub 包签名在 GUI 运行态的展示；本轮补上一个更底层的证据一致性缺口：当 App manifest 自带 `governance.dependencyVerification` 时，GUI 后端合并安装计划依赖不应只保留 `id/source/action/health`，还必须把安装引用解析、远端预检、包校验、包签名和完整性诊断写入同一份 `dependency_verification.dependencies[]`，并随 DataSrv `app_installations.metadata.install_evidence` 回读。
+
+本轮完成：
+1. 扩展 `maclawAppMergedDependencyVerificationItems`：
+   - 合并 `install_ref_kind/install_ref_target/install_ref_version/install_ref_status/install_ref_message`；
+   - 合并 `preflight_status/preflight_code/preflight_stage/preflight_message`；
+   - 合并 `package_sha256/package_checksum/package_signature/package_download_url`；
+   - 合并 `integrity_status/integrity_code/integrity_stage/integrity_message`；
+   - 合并 `install_error_code/install_error_stage/install_error_detail`。
+2. 补齐 `dependency_verification` 时间字段别名：
+   - manifest 中已有 `verifiedAt` 时，DataSrv/GUI 可同时得到 `verified_at`；
+   - 已有 `verified_at` 时，也保留 `verifiedAt`；
+   - 避免 Hub/GUI/DataSrv 在 camelCase/snake_case 之间丢失依赖验证时间。
+3. 扩展后端验收 `TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp`：
+   - 构造已有 `governance.dependencyVerification` 的企业普通应用；
+   - 构造带 `install_ref`、预检、包签名、完整性诊断的依赖；
+   - 验证 DataSrv 顶层 `metadata.dependency_verification.dependencies[]` 保留这些字段；
+   - 验证 `metadata.install_evidence.dependency_verification.dependencies[]` 同步保留下载 URL 和完整性 stage；
+   - 继续验证依赖按 App 作用域过滤，不串入其它 App 的阻塞依赖。
+
+当前依赖治理证据链路进一步变为：
+
+```text
+maclaw.app dependency declaration
+  -> install_ref parsing
+  -> SkillMarket / Enterprise Hub preflight
+  -> package sha/signature/download URL integrity metadata
+  -> InstallMaclawAppDependencies install diagnostics
+  -> maclawAppMergedDependencyVerificationItems
+  -> metadata.dependency_verification.dependencies[]
+  -> metadata.install_evidence.dependency_verification.dependencies[]
+  -> DataSrv app_installations
+  -> GUI installed app discovery / runtime Install governance
+```
+
+验证命令：
+
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp -count=1
+go test ./gui -run "TestRecordMaclawAppInstallPersistsNewestInstallAudit|TestMaclawAppInstallEvidenceGeneratesDependencyVerification|TestMaclawAppDataSrvInstallationPayloadsScopeDependenciesPerApp" -count=1
+go test ./gui -run "TestInstallMaclawAppDependenciesClassifiesInstallFailures|TestPlanMaclawAppInstallPreflightsSkillMarketDependency|TestPlanMaclawAppInstallPreflightsEnterpriseHubCapability" -count=1
+```
+
+验证结果：
+
+```text
+GUI DataSrv dependency verification diagnostics payload targeted test: ok
+GUI install audit/evidence dependency verification regression suite: ok
+GUI dependency install failure/preflight targeted suite: ok
+```
+
+过程中还发现当前工作树里 `gui/skill_runner.go` 的 live output 改动曾阻塞 `go test ./gui` 编译；对该文件执行 `gofmt` 后语法阻塞解除，未改变本轮 MaClaw App 依赖治理逻辑。
+
+剩余缺口：依赖预检/完整性诊断已经能进入 DataSrv 安装治理证据；下一步应继续把真实依赖 Skill 下载与包签名校验本身纳入少 mock 黄金链路，并让 GUI 运行态对依赖诊断提供更可操作的展示，例如安装引用目标、远端预检失败原因、包签名缺失/不可信、下载 URL 与完整性状态。
+
+### 推进记录：GUI 运行态展示依赖预检与完整性诊断（2026-07-01）
+
+本轮把上一节已经进入 DataSrv 安装治理证据的依赖诊断继续推进到 GUI 运行态。目标是让企业用户安装或运行 MaClaw App 时，不只看到“依赖数量/阻塞数量”，还可以直接审计每个依赖 Skill 的安装引用、预检状态、包指纹、包签名、下载来源和完整性诊断。
+
+本轮完成：
+1. 在 `InstallRecordEvidenceSnapshot` 与 `RuntimeInstallGovernancePanel` 共享的 `installRecordEvidenceItems` 中新增 `Dependency diagnostics / 依赖诊断` 证据行：
+   - 优先读取 `install_record.dependency_verification.dependencies[]`；
+   - 没有 verification 细节时回退到 `install_record.dependencies[]`；
+   - 展示 `ref-kind`、`target`、`ref-status`、`preflight`、`integrity`、`sha`、`signature:available`、`download:available` 和安装错误阶段；
+   - 最多展示前两个依赖，更多依赖用 `+N` 收敛，避免运行页治理区变成日志墙。
+2. 扩展前端 Hub 市场安装验收 `installs approved Hub MaClaw Apps from market search results`：
+   - mock 的 `contract-workflow` 依赖现在携带 `install_ref`、`install_ref_target/version/status`、`preflight_status/code/stage`、`package_sha256`、`package_signature`、`package_download_url`、`integrity_status/code/stage`；
+   - 市场安装快照断言能看到 `Dependency diagnostics`；
+   - 运行态 `Install governance` 断言能看到同一份依赖诊断，包括 `target:contract-workflow@1.0.0`、`integrity:ready`、`sha:sha-contract-workflow`、`signature:available`、`download:available`。
+3. 调整市场安装失败反馈：
+   - `MarketInstallFeedbackMessage` 改为函数声明，避免运行态引用初始化顺序问题；
+   - 依赖安装失败时直接显示原始诊断摘要，不再把 `signed-workflow / package_integrity_failed / skillhub_download / public key fingerprint not trusted` 这类可操作信息折叠在额外点击后。
+4. 顺手把前端测试中的旧 tab 文案 `Add from market` 对齐为当前界面 `App Market`，并修复测试文件中残留的编码替换字符，避免后续前端用例被无关编码问题阻塞。
+
+当前 GUI 运行态治理证据链变为：
+
+```text
+install_record.dependency_verification.dependencies[]
+  -> installRecordDependencyDiagnostics
+  -> InstallRecordEvidenceSnapshot
+  -> RuntimeInstallGovernancePanel
+  -> market install success evidence
+  -> runtime Install governance
+  -> dependency install failure diagnostics visible in market row
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "installs approved Hub MaClaw Apps from market search results"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "restores DataSrv reopened install evidence into runtime layout and evidence panels"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "turns DataSrv installed MaClaw apps into addable app candidates with layout metadata"
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "shows Hub MaClaw App dependency install diagnostics when one-click install fails"
+```
+
+验证结果：
+```text
+AppsPage Hub market install dependency diagnostics targeted test: ok
+AppsPage DataSrv reopened install_evidence runtime layout/evidence targeted test: ok
+AppsPage DataSrv installed app candidate layout metadata targeted test: ok
+AppsPage Hub dependency install failure diagnostics targeted test: ok
+```
+
+剩余缺口：GUI 运行态现在能展示依赖预检/完整性诊断；下一步继续把真实 Hub handler 输出、真实依赖 Skill 下载验签、DataSrv app_installations 登记、审批 workflow 运行、单 App/全局审批中心回读压成更少 mock 的端到端黄金链路，并补齐签名失败、依赖缺失、DataSrv 登记部分失败、审批拒绝/需关注/补充材料等失败路径。

@@ -201,7 +201,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolPassthroughTask(args) })
 
 	// --- Merged skill management tool (progress-aware for run action) ---
-	regP("manage_skill", skill.ManageSkillDescription(),
+	regCtxP("manage_skill", skill.ManageSkillDescription(),
 		ToolCategoryBuiltin, append([]string{"skill"}, skill.ManageSkillActionNames()...),
 		map[string]interface{}{
 			"action":                    map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
@@ -229,8 +229,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"approved_review_trace_ids": map[string]string{"type": "array", "description": "Completed skill_draft_review trace ids whose stored draft_id should be executed through approved_draft_ids."},
 			"allow_duplicate_retire":    map[string]string{"type": "boolean", "description": "Allow execute_maintenance_plan to disable the recommended duplicate skill after merge draft review."},
 		}, []string{"action"},
-		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return h.toolManageSkill(args, onProgress)
+		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return h.toolManageSkill(ctx, args, onProgress)
 		})
 
 	// Legacy backward-compat aliases (handler only, no definition generation)
@@ -240,9 +240,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolSearchSkillHub(args) })
 	reg("install_skill_hub", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolInstallSkillHub(args) })
-	regP("run_skill", "", ToolCategoryBuiltin, nil, nil, nil,
-		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return h.toolRunSkill(args, onProgress)
+	regCtxP("run_skill", "", ToolCategoryBuiltin, nil, nil, nil,
+		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return h.toolRunSkill(ctx, args, onProgress)
 		})
 	reg("get_skill_run", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolGetSkillRun(args) })
@@ -336,15 +336,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		})
 
 	// --- Local machine tools ---
-	regP("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
+	regCtxP("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
 		ToolCategoryBuiltin, []string{"shell", "bash", "command", "execute"},
 		map[string]interface{}{
 			"command":     map[string]interface{}{"type": "string", "description": "要执行的 shell 命令", "maxLength": maxAgentLoopInlineBashCommandRunes},
 			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
 		}, []string{"command"},
-		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return h.toolBash(args, onProgress)
+		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			return h.toolBash(ctx, args, onProgress)
 		})
 
 	reg("read_file", "读取本机文件内容（小文件自动全量返回；大文件自动返回结构摘要+预览，可用 start_line 精准读取特定段落）",

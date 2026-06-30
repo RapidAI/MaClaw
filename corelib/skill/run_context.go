@@ -329,7 +329,7 @@ func isRunControlKey(key string) bool {
 		return true
 	}
 	switch key {
-	case "args", "env", "extra_env", "environment", "steps", "step", "operation", "dry_run", "pipeline_stack", "pipeline_internal_call":
+	case "args", "env", "extra_env", "environment", "steps", "step", "operation", "dry_run", "pipeline_stack", "pipeline_internal_call", "staged_cleanup_paths", "live_output":
 		return true
 	default:
 		return false

@@ -162,6 +162,12 @@ type QueryAppInstallationsInput struct {
 	RecordID                     string `json:"record_id,omitempty"`
 	ResultType                   string `json:"result_type,omitempty"`
 	DefinitionFingerprint        string `json:"definition_fingerprint,omitempty"`
+	WorkspaceLayoutFingerprint   string `json:"workspace_layout_fingerprint,omitempty"`
+	HubCapabilityID              string `json:"hub_capability_id,omitempty"`
+	HubMarketCapabilityID        string `json:"hub_market_capability_id,omitempty"`
+	HubSubmissionID              string `json:"hub_submission_id,omitempty"`
+	HubVersionKey                string `json:"hub_version_key,omitempty"`
+	HubReviewStatus              string `json:"hub_review_status,omitempty"`
 	HasBlockingDependency        *bool  `json:"has_blocking_dependency,omitempty"`
 	HasMissingRequiredDependency *bool  `json:"has_missing_required_dependency,omitempty"`
 	DataSrvRegistrationSynced    *bool  `json:"datasrv_registration_synced,omitempty"`

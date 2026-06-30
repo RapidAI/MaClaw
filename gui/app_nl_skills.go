@@ -2244,6 +2244,21 @@ func stagedAppInputPathsFromRunArgs(runArgs map[string]interface{}) []string {
 		seen[path] = struct{}{}
 		out = append(out, path)
 	}
+	addPath := func(value interface{}) {
+		path := ""
+		switch v := value.(type) {
+		case string:
+			path = strings.TrimSpace(v)
+		}
+		if path == "" {
+			return
+		}
+		if _, exists := seen[path]; exists {
+			return
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
 	add(runArgs["file"])
 	if files, ok := runArgs["files"].([]interface{}); ok {
 		for _, item := range files {
@@ -2253,6 +2268,17 @@ func stagedAppInputPathsFromRunArgs(runArgs map[string]interface{}) []string {
 	if files, ok := runArgs["files"].([]map[string]interface{}); ok {
 		for _, item := range files {
 			add(item)
+		}
+	}
+	// paramMapping mode: staged paths passed as _staged_cleanup_paths control key
+	if paths, ok := runArgs["_staged_cleanup_paths"].([]interface{}); ok {
+		for _, item := range paths {
+			addPath(item)
+		}
+	}
+	if paths, ok := runArgs["_staged_cleanup_paths"].([]string); ok {
+		for _, item := range paths {
+			addPath(item)
 		}
 	}
 	return out
@@ -2288,6 +2314,9 @@ func withSkillAppInputFileAliases(runArgs map[string]interface{}) map[string]int
 	addStringAlias("input_file_path", stagedPath)
 	addStringAlias("local_file_path", stagedPath)
 	addStringAlias("uploaded_file_path", stagedPath)
+	// Skill templates use {{input}} for the input file path. Set "input" alias
+	// so NormalizeRunVars can resolve it directly without relying on inference.
+	addStringAlias("input", stagedPath)
 	if _, exists := out["file_paths"]; !exists {
 		if paths := stagedAppInputPathsFromRunArgs(out); len(paths) > 0 {
 			out["file_paths"] = paths
@@ -2296,7 +2325,70 @@ func withSkillAppInputFileAliases(runArgs map[string]interface{}) map[string]int
 	if name, _ := file["name"].(string); strings.TrimSpace(name) != "" {
 		addStringAlias("file_name", name)
 	}
+
+	// Synthesize "output" path for file-conversion skills when the caller
+	// provided output_mode (format name like "docx") but not an explicit
+	// output file path. Derive: same directory as input, same base name,
+	// extension replaced by output_mode.
+	if _, hasOutput := out["output"]; !hasOutput {
+		outputMode := skillAppOutputModeFromRunArgs(out)
+		if outputMode != "" {
+			outputPath := synthesizeSkillAppOutputPath(stagedPath, outputMode)
+			if outputPath != "" {
+				out["output"] = outputPath
+				log.Printf("[skill-app] synthesized output path: %s (input=%s, mode=%s)", outputPath, filepath.Base(stagedPath), outputMode)
+			}
+		}
+	}
 	return out
+}
+
+// skillAppOutputModeFromRunArgs extracts the output format identifier from
+// app-panel run args. The frontend passes it as "output_mode" in legacy mode.
+// We intentionally do NOT check "format" here — it is too generic and may
+// mean data serialization format (json/xml) rather than output file format.
+func skillAppOutputModeFromRunArgs(runArgs map[string]interface{}) string {
+	for _, key := range []string{"output_mode", "outputMode", "output_format"} {
+		if raw, ok := runArgs[key]; ok {
+			if s, ok := raw.(string); ok {
+				s = strings.TrimSpace(strings.ToLower(s))
+				if s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// synthesizeSkillAppOutputPath derives an output file path from the input path
+// and the desired output format extension. Returns empty string if synthesis
+// is not possible (e.g. missing input path or format).
+//
+// Strategy: place the output file next to the input file with the same base
+// name and the target format as extension. If the input already has that
+// extension, append "_output" to avoid overwriting.
+func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
+	inputPath = strings.TrimSpace(inputPath)
+	outputFormat = strings.TrimSpace(strings.ToLower(outputFormat))
+	if inputPath == "" || outputFormat == "" {
+		return ""
+	}
+	// Normalize format to a file extension (no leading dot)
+	outputFormat = strings.TrimPrefix(outputFormat, ".")
+
+	dir := filepath.Dir(inputPath)
+	base := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+	if base == "" {
+		base = "output"
+	}
+
+	outputPath := filepath.Join(dir, base+"."+outputFormat)
+	// Avoid overwriting input when formats match (e.g. pdf→pdf)
+	if strings.EqualFold(outputPath, inputPath) {
+		outputPath = filepath.Join(dir, base+"_output."+outputFormat)
+	}
+	return outputPath
 }
 
 func sanitizeSkillAppInputFileName(name string) string {
@@ -4128,6 +4220,13 @@ func (a *App) CleanupStaleNLSkills() []string {
 
 // RunNLSkillAsync starts a skill run asynchronously for Wails.
 func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) (string, error) {
+	// Log incoming args for debugging App → Skill parameter passing
+	argKeys := make([]string, 0, len(runArgs))
+	for k := range runArgs {
+		argKeys = append(argKeys, k)
+	}
+	log.Printf("[skill-app] RunNLSkillAsync skill=%q arg_keys=%v arg_count=%d", skillName, argKeys, len(runArgs))
+
 	runArgs = withSkillAppInputFileAliases(runArgs)
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
@@ -4138,11 +4237,39 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	}
 	runID, err := a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
 	if err != nil {
+		log.Printf("[skill-app] RunNLSkillAsync FAILED skill=%q err=%v", skillName, err)
+		// Detailed diagnostic for AI tools: log the full runArgs values (not just keys)
+		// so the exact parameter mismatch can be identified from the log file.
+		log.Printf("[skill-app-diag] === RUN FAILURE DIAGNOSTIC ===")
+		log.Printf("[skill-app-diag] skill=%q", skillName)
+		for k, v := range runArgs {
+			switch val := v.(type) {
+			case string:
+				if len(val) > 200 {
+					log.Printf("[skill-app-diag] arg %s = %q (len=%d, truncated)", k, val[:200], len(val))
+				} else {
+					log.Printf("[skill-app-diag] arg %s = %q", k, val)
+				}
+			case nil:
+				log.Printf("[skill-app-diag] arg %s = nil", k)
+			case bool:
+				log.Printf("[skill-app-diag] arg %s = %v", k, val)
+			default:
+				s := fmt.Sprintf("%v", v)
+				if len(s) > 300 {
+					log.Printf("[skill-app-diag] arg %s = (%T) %s...(len=%d)", k, v, s[:300], len(s))
+				} else {
+					log.Printf("[skill-app-diag] arg %s = (%T) %s", k, v, s)
+				}
+			}
+		}
+		log.Printf("[skill-app-diag] === END DIAGNOSTIC ===")
 		if cleanupErr := a.cleanupStagedSkillAppInputFilesFromRunArgs(runArgs); cleanupErr != nil {
 			log.Printf("[skill-app] cleanup staged input after start failure: %v", cleanupErr)
 		}
 		return "", err
 	}
+	log.Printf("[skill-app] RunNLSkillAsync OK skill=%q run_id=%s", skillName, runID)
 	return runID, nil
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -121,7 +122,7 @@ func TestToolBashEmptyRuntimeOwnerFailsClosed(t *testing.T) {
 		lastUserID: desktopUserID + ":" + tmpDir,
 	}
 
-	got := h.toolBash(map[string]interface{}{
+	got := h.toolBash(context.Background(), map[string]interface{}{
 		"command":                        "pwd",
 		registeredToolPolicyOwnerIDField: "",
 	}, nil)

@@ -540,7 +540,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
 			waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-			status, statusErr := waitForSkillRunnerSnapshot(h.getSkillRunner(), runID, waitDuration)
+			status, statusErr := waitForSkillRunnerSnapshot(context.Background(), h.getSkillRunner(), runID, waitDuration)
 			if statusErr != nil {
 				b.WriteString(fmt.Sprintf("已启动（run_id=%s），但读取状态失败: %s", runID, statusErr.Error()))
 			} else {

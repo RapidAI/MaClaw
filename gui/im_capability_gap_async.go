@@ -106,7 +106,7 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, gapText, recove
 		return
 	}
 
-	installResult := h.installAndExecuteSkill(installCtx, best, userText, platform, userID, policyOwnerID, func(status string) {
+	installResult := h.installSkillOnly(installCtx, best, userText, platform, userID, policyOwnerID, func(status string) {
 		log.Printf("[skill-auto-async] %s", status)
 	})
 	h.pendingCapabilityGap.Store(userID, &pendingCapabilityGapResult{

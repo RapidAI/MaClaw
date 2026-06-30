@@ -24,14 +24,18 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 		Version: "1.0.0",
 		Metadata: map[string]any{
 			"workspace_layout": map[string]any{
-				"schema":        "maclaw.app.ui.v1",
-				"entry":         "tool_workspace",
-				"template":      "document_workspace",
-				"density":       "compact",
-				"primaryRegion": "left",
-				"output_region": "right",
-				"navigation":    []any{"input", "output"},
-				"list":          map[string]any{"columns": []any{"title", "status"}},
+				"schema":             "maclaw.app.ui.v1",
+				"entry":              "tool_workspace",
+				"template":           "document_workspace",
+				"density":            "compact",
+				"primaryRegion":      "left",
+				"output_region":      "right",
+				"fingerprint":        "layout-tool-pdf",
+				"visibleRegionCount": float64(1),
+				"regionIds":          []any{"file_queue", "output_panel"},
+				"studio":             map[string]any{"saved_in_manifest": true, "editable": true, "updated_by": "app_studio"},
+				"navigation":         []any{"input", "output"},
+				"list":               map[string]any{"columns": []any{"title", "status"}},
 				"regions": []any{
 					map[string]any{"id": "file_queue", "role": "input", "placement": "left"},
 					map[string]any{"id": "output_panel", "role": "output", "placement": "right", "visible": false},
@@ -85,12 +89,17 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	if ids := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(ids) != 2 || ids[0] != "file_queue" || ids[1] != "output_panel" {
 		t.Fatalf("expected workspace region ids: %#v", installed.Metadata)
 	}
+	if installed.Metadata["workspace_layout_fingerprint"] != "layout-tool-pdf" || !appInstallationNumberEquals(installed.Metadata["workspace_layout_visible_region_count"], 1) || installed.Metadata["workspace_layout_studio_saved_in_manifest"] != true || installed.Metadata["workspace_layout_studio_editable"] != true || installed.Metadata["workspace_layout_studio_updated_by"] != "app_studio" {
+		t.Fatalf("expected workspace layout fingerprint and App Studio summaries: %#v", installed.Metadata)
+	}
 	if layout, ok := installed.Metadata["workspace_layout"].(map[string]any); !ok {
 		t.Fatalf("expected canonical workspace layout: %#v", installed.Metadata)
 	} else if regions, ok := layout["regions"].([]any); !ok || len(regions) != 2 {
 		t.Fatalf("expected canonical workspace regions: %#v", layout)
 	} else if output, ok := regions[1].(map[string]any); !ok || output["visible"] != false {
 		t.Fatalf("expected workspace region visibility to roundtrip: %#v", regions[1])
+	} else if layout["fingerprint"] != "layout-tool-pdf" || !appInstallationNumberEquals(layout["visibleRegionCount"], 1) {
+		t.Fatalf("expected canonical workspace layout fingerprint and visible count: %#v", layout)
 	}
 	if navigation := appInstallationStringList(installed.Metadata["workspace_layout_navigation"]); len(navigation) != 2 || navigation[0] != "input" || navigation[1] != "output" {
 		t.Fatalf("expected workspace navigation summary: %#v", installed.Metadata)
@@ -134,6 +143,9 @@ func TestUpsertAppInstallationNormalizesGovernanceResultContract(t *testing.T) {
 	}
 	if ids := appInstallationStringList(metadata["workspace_layout_region_ids"]); len(ids) != 2 || ids[0] != "file_queue" || ids[1] != "output_panel" {
 		t.Fatalf("expected audit workspace region ids: %#v", metadata)
+	}
+	if metadata["workspace_layout_fingerprint"] != "layout-tool-pdf" || !appInstallationNumberEquals(metadata["workspace_layout_visible_region_count"], 1) || metadata["workspace_layout_studio_saved_in_manifest"] != true || metadata["workspace_layout_studio_editable"] != true || metadata["workspace_layout_studio_updated_by"] != "app_studio" {
+		t.Fatalf("expected audit workspace layout fingerprint and App Studio summaries: %#v", metadata)
 	}
 	if columns := appInstallationStringList(metadata["workspace_layout_list_columns"]); len(columns) != 2 || columns[0] != "title" || columns[1] != "status" {
 		t.Fatalf("expected audit workspace list column summary: %#v", metadata)
@@ -225,6 +237,167 @@ func TestUpsertAppInstallationSummarizesToolResultEvidence(t *testing.T) {
 	}
 	if _, ok := metadata["test_evidence_result_payload"]; ok {
 		t.Fatalf("audit metadata should not include bulky test evidence result payload: %#v", metadata)
+	}
+}
+func TestUpsertAppInstallationNormalizesHubSubmissionAndReviewEvidence(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "installer_1", Role: "data_admin"}
+
+	installed, err := svc.UpsertAppInstallation(context.Background(), principal, "expense.approval.hub", UpsertAppInstallationInput{
+		AppID:   "expense.approval.hub",
+		Name:    "Expense Approval Hub",
+		Kind:    "enterprise_approval_app",
+		Source:  "enterprise_hub",
+		Version: "8",
+		Metadata: map[string]any{
+			"submission": map[string]any{
+				"capabilityID":       "cap-expense-approval",
+				"submissionID":       "hub-review-expense-approval",
+				"versionKey":         "enterprise_hub:skill:maclaw-app:expense.approval@8",
+				"reviewStatus":       "published",
+				"packageSHA256":      "sha256-expense-package",
+				"marketCapabilityID": "market-cap-expense-approval",
+				"packageSignature": map[string]any{
+					"schema":                 "maclaw.app.package_signature.v1",
+					"algorithm":              "ed25519",
+					"public_key_fingerprint": "sha256:expense-package-key",
+					"signed_at":              "2026-07-01T01:00:00Z",
+					"signed_by":              "hub-admin",
+					"package_sha256":         "sha256-expense-package",
+				},
+			},
+			"reviewEvidence": map[string]any{
+				"status":                        "published",
+				"run_id":                        "run-expense-review",
+				"test_protocol_fingerprint":     "proto-expense-review",
+				"result_contract_primary":       "approval_result",
+				"result_coverage_primary":       "approval_result",
+				"result_coverage_covered_count": float64(4),
+				"result_coverage_missing_count": float64(0),
+				"output_count":                  float64(2),
+				"artifact_count":                float64(1),
+				"approval_status":               "approved",
+				"current_node":                  "expense.result",
+			},
+			"governance": map[string]any{
+				"workspaceLayout": map[string]any{
+					"schema":             "maclaw.app.ui.v1",
+					"entry":              "approval_workspace",
+					"template":           "left_nav",
+					"density":            "compact",
+					"primaryRegion":      "center",
+					"outputRegion":       "bottom",
+					"fingerprint":        "layout-expense-review",
+					"visibleRegionCount": float64(3),
+					"regionIds":          []any{"approval_inbox", "request_form", "approval_detail", "result_panel"},
+					"studio":             map[string]any{"savedInManifest": true, "editable": true, "updatedBy": "app_studio"},
+					"regions": []any{
+						map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "left"},
+						map[string]any{"id": "request_form", "role": "input", "placement": "center"},
+						map[string]any{"id": "approval_detail", "role": "detail", "placement": "right", "visible": false},
+						map[string]any{"id": "result_panel", "role": "output", "placement": "bottom"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation: %v", err)
+	}
+	submission, ok := installed.Metadata["submission"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected canonical submission metadata: %#v", installed.Metadata)
+	}
+	if submission["capability_id"] != "cap-expense-approval" || submission["market_capability_id"] != "market-cap-expense-approval" || submission["submission_id"] != "hub-review-expense-approval" || submission["version_key"] != "enterprise_hub:skill:maclaw-app:expense.approval@8" || submission["status"] != "published" || submission["package_sha256"] != "sha256-expense-package" {
+		t.Fatalf("expected canonical submission identity: %#v", submission)
+	}
+	submissionSignature, ok := submission["package_signature"].(map[string]any)
+	if !ok || submissionSignature["public_key_fingerprint"] != "sha256:expense-package-key" || submissionSignature["algorithm"] != "ed25519" {
+		t.Fatalf("expected canonical submission package signature: %#v", submission)
+	}
+	if installed.Metadata["hub_capability_id"] != "cap-expense-approval" || installed.Metadata["hub_market_capability_id"] != "market-cap-expense-approval" || installed.Metadata["hub_submission_id"] != "hub-review-expense-approval" || installed.Metadata["hub_version_key"] != "enterprise_hub:skill:maclaw-app:expense.approval@8" || installed.Metadata["hub_review_status"] != "published" || installed.Metadata["hub_package_sha256"] != "sha256-expense-package" {
+		t.Fatalf("expected flattened Hub identity summaries: %#v", installed.Metadata)
+	}
+	if signature, ok := installed.Metadata["hub_package_signature"].(map[string]any); !ok || signature["package_sha256"] != "sha256-expense-package" || installed.Metadata["hub_package_signature_algorithm"] != "ed25519" || installed.Metadata["hub_package_signature_fingerprint"] != "sha256:expense-package-key" || installed.Metadata["hub_package_signature_signed_at"] != "2026-07-01T01:00:00Z" || installed.Metadata["hub_package_signature_signed_by"] != "hub-admin" {
+		t.Fatalf("expected flattened Hub package signature summaries: %#v", installed.Metadata)
+	}
+	reviewEvidence, ok := installed.Metadata["review_evidence"].(map[string]any)
+	if !ok || reviewEvidence["run_id"] != "run-expense-review" || reviewEvidence["approval_status"] != "approved" {
+		t.Fatalf("expected canonical review evidence: %#v", installed.Metadata)
+	}
+	if alias, ok := installed.Metadata["maclaw_app_review_evidence"].(map[string]any); !ok || alias["test_protocol_fingerprint"] != "proto-expense-review" {
+		t.Fatalf("expected MaClaw App review evidence alias: %#v", installed.Metadata)
+	}
+	if installed.Metadata["review_evidence_status"] != "published" || installed.Metadata["review_evidence_run_id"] != "run-expense-review" || installed.Metadata["review_evidence_test_protocol_fingerprint"] != "proto-expense-review" || installed.Metadata["review_evidence_approval_status"] != "approved" || installed.Metadata["review_evidence_current_node"] != "expense.result" {
+		t.Fatalf("expected flattened review evidence summaries: %#v", installed.Metadata)
+	}
+	if installed.Metadata["review_evidence_result_contract_primary"] != "approval_result" || installed.Metadata["review_evidence_result_coverage_primary"] != "approval_result" || !appInstallationNumberEquals(installed.Metadata["review_evidence_result_coverage_covered_count"], 4) || !appInstallationNumberEquals(installed.Metadata["review_evidence_result_coverage_missing_count"], 0) || !appInstallationNumberEquals(installed.Metadata["review_evidence_output_count"], 2) || !appInstallationNumberEquals(installed.Metadata["review_evidence_artifact_count"], 1) {
+		t.Fatalf("expected flattened review evidence coverage/output summaries: %#v", installed.Metadata)
+	}
+	if installed.Metadata["workspace_layout_fingerprint"] != "layout-expense-review" || !appInstallationNumberEquals(installed.Metadata["workspace_layout_visible_region_count"], 3) || installed.Metadata["workspace_layout_studio_saved_in_manifest"] != true || installed.Metadata["workspace_layout_studio_editable"] != true || installed.Metadata["workspace_layout_studio_updated_by"] != "app_studio" {
+		t.Fatalf("expected flattened workspace layout evidence summaries: %#v", installed.Metadata)
+	}
+	if ids := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(ids) != 4 || ids[0] != "approval_inbox" || ids[2] != "approval_detail" || ids[3] != "result_panel" {
+		t.Fatalf("expected flattened workspace layout region ids: %#v", installed.Metadata)
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   QueryAppInstallationsInput
+	}{
+		{name: "hub capability", in: QueryAppInstallationsInput{HubCapabilityID: "cap-expense-approval"}},
+		{name: "hub market capability", in: QueryAppInstallationsInput{HubMarketCapabilityID: "market-cap-expense-approval"}},
+		{name: "hub submission", in: QueryAppInstallationsInput{HubSubmissionID: "hub-review-expense-approval"}},
+		{name: "hub version", in: QueryAppInstallationsInput{HubVersionKey: "enterprise_hub:skill:maclaw-app:expense.approval@8"}},
+		{name: "hub review status", in: QueryAppInstallationsInput{HubReviewStatus: "published"}},
+		{name: "workspace layout fingerprint", in: QueryAppInstallationsInput{WorkspaceLayoutFingerprint: "layout-expense-review"}},
+	} {
+		listed, err := svc.ListAppInstallations(context.Background(), principal, tc.in)
+		if err != nil {
+			t.Fatalf("ListAppInstallations by %s: %v", tc.name, err)
+		}
+		if len(listed) != 1 || listed[0].AppID != "expense.approval.hub" {
+			t.Fatalf("expected Hub identity filter %s to match installed app: %#v", tc.name, listed)
+		}
+	}
+	missing, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{HubCapabilityID: "cap-other"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by missing Hub capability: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected missing Hub capability filter to exclude installed app: %#v", missing)
+	}
+	missingLayout, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{WorkspaceLayoutFingerprint: "layout-other"})
+	if err != nil {
+		t.Fatalf("ListAppInstallations by missing workspace layout fingerprint: %v", err)
+	}
+	if len(missingLayout) != 0 {
+		t.Fatalf("expected missing workspace layout fingerprint filter to exclude installed app: %#v", missingLayout)
+	}
+
+	caps, err := svc.Capabilities(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if len(caps.AppInstallations) != 1 {
+		t.Fatalf("expected capabilities app installation: %#v", caps.AppInstallations)
+	}
+	capSubmission, ok := caps.AppInstallations[0].Metadata["submission"].(map[string]any)
+	if !ok || capSubmission["version_key"] != "enterprise_hub:skill:maclaw-app:expense.approval@8" || caps.AppInstallations[0].Metadata["hub_review_status"] != "published" || caps.AppInstallations[0].Metadata["review_evidence_run_id"] != "run-expense-review" {
+		t.Fatalf("expected capabilities to expose Hub submission identity: %#v", caps.AppInstallations[0].Metadata)
+	}
+
+	audit, err := svc.QueryAuditLogs(context.Background(), principal, QueryAuditLogsInput{Action: "app.installation_upsert", TargetType: "app_installation", TargetID: "expense.approval.hub", Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAuditLogs: %v", err)
+	}
+	if len(audit) != 1 || audit[0].Metadata["hub_capability_id"] != "cap-expense-approval" || audit[0].Metadata["hub_review_status"] != "published" || audit[0].Metadata["review_evidence_run_id"] != "run-expense-review" || audit[0].Metadata["review_evidence_approval_status"] != "approved" || audit[0].Metadata["workspace_layout_fingerprint"] != "layout-expense-review" || !appInstallationNumberEquals(audit[0].Metadata["workspace_layout_visible_region_count"], 3) {
+		t.Fatalf("expected audit Hub identity summaries: %#v", audit)
 	}
 }
 func TestUpsertAppInstallationInfersWorkspacePrimaryAndOutputRegions(t *testing.T) {
@@ -1387,8 +1560,28 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 		"app_skill_source",
 		"workspace_layout_primary_region",
 		"workspace_layout_output_region",
+		"workspace_layout_fingerprint",
 		"workspace_layout_region_count",
+		"workspace_layout_visible_region_count",
 		"workspace_layout_region_ids",
+		"workspace_layout_studio_saved_in_manifest",
+		"workspace_layout_studio_editable",
+		"workspace_layout_studio_updated_by",
+		"review_evidence_run_id",
+		"review_evidence_test_protocol_fingerprint",
+		"review_evidence_result_contract_primary",
+		"review_evidence_result_coverage_primary",
+		"review_evidence_result_coverage_covered_count",
+		"review_evidence_result_coverage_missing_count",
+		"review_evidence_output_count",
+		"review_evidence_artifact_count",
+		"review_evidence_approval_status",
+		"review_evidence_current_node",
+		"hub_package_signature",
+		"hub_package_signature_algorithm",
+		"hub_package_signature_fingerprint",
+		"hub_package_signature_signed_at",
+		"hub_package_signature_signed_by",
 		"test_evidence_outputs",
 		"test_evidence_artifacts",
 		"test_evidence_result_payload",
@@ -1560,6 +1753,13 @@ func TestAppInstallationOpenAPISchemaDocumentsFullTestEvidence(t *testing.T) {
 	}
 	if description, _ := workspaceRegionIDs["description"].(string); !strings.Contains(description, "workspace_layout.regions") {
 		t.Fatalf("expected workspace_layout_region_ids description to document preserved regions, got %q", description)
+	}
+	workspaceFingerprint, ok := metadata["workspace_layout_fingerprint"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected workspace_layout_fingerprint schema object: %#v", metadata["workspace_layout_fingerprint"])
+	}
+	if description, _ := workspaceFingerprint["description"].(string); !strings.Contains(description, "reviewed Hub package") {
+		t.Fatalf("expected workspace_layout_fingerprint description to document reviewed package comparison, got %q", description)
 	}
 	workflowMapping, ok := metadata["workflow_mapping"].(map[string]interface{})
 	if !ok {

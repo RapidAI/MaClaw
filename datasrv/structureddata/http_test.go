@@ -288,7 +288,18 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi app installation body missing %s: %#v", name, paths["/api/v1/data/app-installations"])
 		}
 	}
-	for _, name := range []string{"schema", "package_sha256", "package_bytes", "app_skill_id", "app_skill_source", "version_snapshot", "dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "datasrv_registration", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence", "governance_status", "governance_risk_level"} {
+	for _, name := range []string{
+		"schema", "package_sha256", "package_bytes",
+		"submission", "review_evidence", "maclaw_app_review_evidence",
+		"hub_capability_id", "hub_market_capability_id", "hub_submission_id", "hub_version_key", "hub_review_status", "hub_package_sha256",
+		"review_evidence_status", "review_evidence_run_id", "review_evidence_test_protocol_fingerprint", "review_evidence_result_contract_primary",
+		"review_evidence_result_coverage_primary", "review_evidence_result_coverage_covered_count", "review_evidence_result_coverage_missing_count",
+		"review_evidence_output_count", "review_evidence_artifact_count", "review_evidence_approval_status", "review_evidence_current_node",
+		"app_skill_id", "app_skill_source", "version_snapshot",
+		"dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency",
+		"datasrv_registration", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence",
+		"governance_status", "governance_risk_level",
+	} {
 		if !openAPIRequestBodyNestedPropertyHasProperty(paths, "/api/v1/data/app-installations", "post", "metadata", name) {
 			t.Fatalf("openapi app installation metadata missing %s: %#v", name, openAPIRequestBodyProperty(paths, "/api/v1/data/app-installations", "post", "metadata"))
 		}
@@ -613,7 +624,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_result_status", "approval_decision", "decision", "applicant_id", "submitted_by", "created_by", "approver_id", "assigned_to", "current_assignee", "approval_id", "record_approval_id", "workflow_instance_id", "approval_instance_id", "instance_id", "dataset_id", "dataset", "object_role", "object", "record_id", "business_record_id", "result_type", "output_type", "definition_fingerprint", "definition_hash", "app_definition_hash", "app_definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency", "has_missing_required", "datasrv_registration_synced", "data_srv_registration_synced", "datasrv_registration_failed", "data_srv_registration_failed", "datasrv_registration_partial", "data_srv_registration_partial"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_result_status", "approval_decision", "decision", "applicant_id", "submitted_by", "created_by", "approver_id", "assigned_to", "current_assignee", "approval_id", "record_approval_id", "workflow_instance_id", "approval_instance_id", "instance_id", "dataset_id", "dataset", "object_role", "object", "record_id", "business_record_id", "result_type", "output_type", "definition_fingerprint", "definition_hash", "app_definition_hash", "app_definition_fingerprint", "workspace_layout_fingerprint", "layout_fingerprint", "hub_capability_id", "capability_id", "hub_market_capability_id", "market_capability_id", "hub_submission_id", "submission_id", "hub_version_key", "version_key", "hub_review_status", "review_status", "has_blocking_dependency", "has_missing_required_dependency", "has_missing_required", "datasrv_registration_synced", "data_srv_registration_synced", "datasrv_registration_failed", "data_srv_registration_failed", "datasrv_registration_partial", "data_srv_registration_partial"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -5586,9 +5597,22 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			Required:   true,
 		}},
 		Metadata: map[string]any{
-			"schema":             "maclaw.app.v1",
-			"package_sha256":     "sha256:expense-package",
-			"package_bytes":      4096,
+			"schema":         "maclaw.app.v1",
+			"package_sha256": "sha256:expense-package",
+			"package_bytes":  4096,
+			"submission": map[string]any{
+				"capabilityID":       "cap-expense-app",
+				"marketCapabilityID": "market-cap-expense-app",
+				"submissionID":       "hub-review-expense",
+				"versionKey":         "enterprise_hub:skill:maclaw-app:mis.expense@1.2.3",
+				"reviewStatus":       "published",
+				"packageSHA256":      "sha256:expense-package",
+			},
+			"reviewEvidence": map[string]any{
+				"status":          "published",
+				"run_id":          "run-expense-review",
+				"approval_status": "approved",
+			},
 			"app_skill_id":       "mis-expense-claim",
 			"app_skill_source":   "hub",
 			"workflow_skill_ids": []any{"skill.expense.approval"},
@@ -5640,6 +5664,7 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"workspace_layout_density":        "comfortable",
 			"workspace_layout_primary_region": "left",
 			"workspace_layout_output_region":  "bottom",
+			"workspace_layout_fingerprint":    "layout-http-expense",
 			"workspace_layout_navigation":     []any{"my_requests", "pending_my_approval", "attention"},
 			"workspace_layout_list_columns":   []any{"title", "applicant", "current_node", "status"},
 			"workspace_layout": map[string]any{
@@ -5649,12 +5674,14 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 				"density":       "comfortable",
 				"primaryRegion": "left",
 				"outputRegion":  "bottom",
+				"fingerprint":   "layout-http-expense",
+				"studio":        map[string]any{"savedInManifest": true, "editable": true, "updatedBy": "app_studio"},
 				"navigation":    []any{"my_requests", "pending_my_approval", "attention"},
 				"list":          map[string]any{"columns": []any{"title", "applicant", "current_node", "status"}},
 				"regions": []any{
 					map[string]any{"id": "request_form", "role": "input", "placement": "left"},
 					map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "center"},
-					map[string]any{"id": "result_panel", "role": "output", "placement": "bottom"},
+					map[string]any{"id": "result_panel", "role": "output", "placement": "bottom", "visible": false},
 				},
 			},
 			"governance_status":     "local_tested",
@@ -5749,6 +5776,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	if installed.Metadata["schema"] != "maclaw.app.v1" || installed.Metadata["package_sha256"] != "sha256:expense-package" || installed.Metadata["package_bytes"] != float64(4096) {
 		t.Fatalf("app installation should persist package evidence metadata: %#v", installed.Metadata)
 	}
+	if installed.Metadata["hub_capability_id"] != "cap-expense-app" || installed.Metadata["hub_market_capability_id"] != "market-cap-expense-app" || installed.Metadata["hub_submission_id"] != "hub-review-expense" || installed.Metadata["hub_version_key"] != "enterprise_hub:skill:maclaw-app:mis.expense@1.2.3" || installed.Metadata["hub_review_status"] != "published" {
+		t.Fatalf("app installation should expose Hub submission summaries: %#v", installed.Metadata)
+	}
+	if reviewEvidence, ok := installed.Metadata["review_evidence"].(map[string]any); !ok || reviewEvidence["run_id"] != "run-expense-review" {
+		t.Fatalf("app installation should preserve Hub review evidence: %#v", installed.Metadata)
+	}
 	if versionSnapshot, ok := installed.Metadata["version_snapshot"].(map[string]any); !ok || versionSnapshot["app_entry_version"] != "1.2.3" {
 		t.Fatalf("app installation should persist version snapshot metadata: %#v", installed.Metadata)
 	}
@@ -5766,6 +5799,9 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if installed.Metadata["workspace_layout_primary_region"] != "left" || installed.Metadata["workspace_layout_output_region"] != "bottom" || installed.Metadata["workspace_layout_region_count"] != float64(3) {
 		t.Fatalf("app installation should expose workspace placement summaries: %#v", installed.Metadata)
+	}
+	if installed.Metadata["workspace_layout_fingerprint"] != "layout-http-expense" || installed.Metadata["workspace_layout_visible_region_count"] != float64(2) || installed.Metadata["workspace_layout_studio_saved_in_manifest"] != true || installed.Metadata["workspace_layout_studio_editable"] != true || installed.Metadata["workspace_layout_studio_updated_by"] != "app_studio" {
+		t.Fatalf("app installation should expose workspace layout fingerprint and studio summaries: %#v", installed.Metadata)
 	}
 	if regionIDs := appInstallationStringList(installed.Metadata["workspace_layout_region_ids"]); len(regionIDs) != 3 || regionIDs[0] != "request_form" || regionIDs[2] != "result_panel" {
 		t.Fatalf("app installation should expose workspace region ids: %#v", installed.Metadata)
@@ -5981,6 +6017,51 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(definitionListed.Items) != 1 || definitionListed.Items[0].AppID != "mis.expense" {
 		t.Fatalf("expected definition-filtered app installation: %#v", definitionListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?hub_capability_id=cap-expense-app&hub_market_capability_id=market-cap-expense-app&hub_submission_id=hub-review-expense&hub_version_key="+url.QueryEscape("enterprise_hub:skill:maclaw-app:mis.expense@1.2.3")+"&hub_review_status=published", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by Hub identity status=%d body=%s", w.Code, w.Body.String())
+	}
+	var hubIdentityListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&hubIdentityListed); err != nil {
+		t.Fatalf("decode Hub identity-filtered app installations: %v", err)
+	}
+	if len(hubIdentityListed.Items) != 1 || hubIdentityListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected Hub identity-filtered app installation: %#v", hubIdentityListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workspace_layout_fingerprint=layout-http-expense", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by workspace layout fingerprint status=%d body=%s", w.Code, w.Body.String())
+	}
+	var layoutFingerprintListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&layoutFingerprintListed); err != nil {
+		t.Fatalf("decode workspace layout fingerprint-filtered app installations: %v", err)
+	}
+	if len(layoutFingerprintListed.Items) != 1 || layoutFingerprintListed.Items[0].AppID != "mis.expense" || layoutFingerprintListed.Items[0].Metadata["workspace_layout_fingerprint"] != "layout-http-expense" {
+		t.Fatalf("expected workspace layout fingerprint-filtered app installation: %#v", layoutFingerprintListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?capability_id=cap-missing&review_status=published", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by missing Hub identity status=%d body=%s", w.Code, w.Body.String())
+	}
+	var missingHubIdentityListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&missingHubIdentityListed); err != nil {
+		t.Fatalf("decode missing Hub identity-filtered app installations: %v", err)
+	}
+	if len(missingHubIdentityListed.Items) != 0 {
+		t.Fatalf("expected missing Hub identity filter to exclude installed app: %#v", missingHubIdentityListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?approval_id=approval-remote-datasrv-1&workflow_instance_id=workflow-expense-datasrv-1&dataset_id=finance.expense_forms&object_role=expense_report&record_id=expense-1", nil)
@@ -6554,6 +6635,173 @@ func TestHTTPServerAppInstallationPUTNormalizesStudioGovernancePayload(t *testin
 		t.Fatalf("capabilities should expose normalized Studio layout and artifact summaries: %#v", capsApp.Metadata)
 	}
 }
+
+func TestHTTPServerAppInstallationPersistsGovernanceEvidenceAcrossSQLiteReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	server := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "test")
+
+	body := map[string]any{
+		"app_id":  "expense-governance-roundtrip",
+		"name":    "Expense Governance Roundtrip",
+		"version": "3.4.5",
+		"kind":    "enterprise_approval_app",
+		"source":  "hub",
+		"metadata": map[string]any{
+			"schema": "maclaw.app.v1",
+			"workspace_layout": map[string]any{
+				"schema":        "maclaw.app.ui.v1",
+				"entry":         "approval_workspace",
+				"template":      "dashboard",
+				"density":       "compact",
+				"primaryRegion": "center",
+				"outputRegion":  "bottom",
+				"fingerprint":   "layout-roundtrip-approval",
+				"studio":        map[string]any{"savedInManifest": true, "editable": true, "updatedBy": "app_studio"},
+				"regions": []any{
+					map[string]any{"id": "request_form", "role": "input", "placement": "center"},
+					map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "left"},
+					map[string]any{"id": "result_panel", "role": "output", "placement": "bottom", "visible": false},
+				},
+			},
+			"workflow_contract": map[string]any{
+				"schema":          "maclaw.app.workflow_contract.v1",
+				"workflowSkillId": "skill.expense.roundtrip",
+				"workflowVersion": "3.0.0",
+				"objectRole":      "expense_report",
+			},
+			"result_contract": map[string]any{
+				"schema":  "maclaw.app.result.v1",
+				"primary": "approval_result",
+				"types":   []any{"approval_result", "document", "inline_content"},
+			},
+			"dependency_verification": map[string]any{
+				"schema":                  "maclaw.app.install_plan.v1",
+				"verified_at":             "2026-07-01T09:00:00Z",
+				"dependency_count":        2,
+				"has_missing_required":    false,
+				"has_blocking_dependency": false,
+				"dependencies": []any{
+					map[string]any{"id": "expense-governance-roundtrip", "kind": "app_skill", "installed": true, "health": "ready"},
+					map[string]any{"id": "skill.expense.roundtrip", "kind": "workflow_skill", "installed": true, "health": "ready"},
+				},
+			},
+			"test_evidence": map[string]any{
+				"runId":                 "run-governance-roundtrip",
+				"definitionFingerprint": "sha256:governance-roundtrip",
+				"primaryResult":         "approval_result",
+				"resultPayload":         map[string]any{"decision": "approved", "business_status": "approved"},
+				"outputs":               []any{map[string]any{"kind": "document", "title": "Approval PDF", "status": "ready"}},
+				"artifacts":             []any{map[string]any{"id": "approval-pdf", "name": "approval.pdf", "uri": "artifact://approval.pdf", "type": "document"}},
+			},
+			"install_evidence": map[string]any{
+				"workspace_layout": map[string]any{
+					"schema":      "maclaw.app.ui.v1",
+					"entry":       "approval_workspace",
+					"template":    "dashboard",
+					"fingerprint": "layout-roundtrip-approval",
+					"regions": []any{
+						map[string]any{"id": "request_form", "role": "input", "placement": "center"},
+						map[string]any{"id": "approval_inbox", "role": "instance_list", "placement": "left"},
+						map[string]any{"id": "result_panel", "role": "output", "placement": "bottom", "visible": false},
+					},
+				},
+				"test_evidence": map[string]any{
+					"run_id":                 "run-governance-roundtrip",
+					"definition_fingerprint": "sha256:governance-roundtrip",
+					"artifacts":              []any{map[string]any{"name": "approval.pdf", "uri": "artifact://approval.pdf", "type": "document"}},
+				},
+				"dependency_verification": map[string]any{
+					"schema":                  "maclaw.app.install_plan.v1",
+					"dependency_count":        2,
+					"has_missing_required":    false,
+					"has_blocking_dependency": false,
+				},
+			},
+		},
+	}
+	req := jsonRequest(http.MethodPut, "/api/v1/data/app-installations/expense-governance-roundtrip", body)
+	auth(req)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen SQLite store: %v", err)
+	}
+	defer reopened.Close()
+	server = NewHTTPServer(NewService(reopened, "sqlite"), "test-token-0123456789012345", "test")
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations/expense-governance-roundtrip", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get app installation after reopen status=%d body=%s", w.Code, w.Body.String())
+	}
+	var installed AppInstallation
+	if err := json.NewDecoder(w.Body).Decode(&installed); err != nil {
+		t.Fatalf("decode reopened app installation: %v", err)
+	}
+	if installed.Metadata["workspace_layout_fingerprint"] != "layout-roundtrip-approval" || installed.Metadata["workspace_layout_region_count"] != float64(3) || installed.Metadata["workspace_layout_visible_region_count"] != float64(2) {
+		t.Fatalf("reopened app should preserve workspace layout summaries: %#v", installed.Metadata)
+	}
+	layout, ok := installed.Metadata["workspace_layout"].(map[string]any)
+	if !ok || layout["fingerprint"] != "layout-roundtrip-approval" {
+		t.Fatalf("reopened app should preserve canonical workspace layout: %#v", installed.Metadata["workspace_layout"])
+	}
+	if regions, ok := layout["regions"].([]any); !ok || len(regions) != 3 {
+		t.Fatalf("reopened app should preserve workspace layout regions: %#v", layout)
+	}
+	testEvidence, ok := installed.Metadata["test_evidence"].(map[string]any)
+	if !ok || testEvidence["run_id"] != "run-governance-roundtrip" || testEvidence["definition_fingerprint"] != "sha256:governance-roundtrip" {
+		t.Fatalf("reopened app should preserve test evidence: %#v", installed.Metadata["test_evidence"])
+	}
+	if artifacts, ok := testEvidence["artifacts"].([]any); !ok || len(artifacts) != 1 {
+		t.Fatalf("reopened app should preserve test evidence artifacts: %#v", testEvidence)
+	}
+	verification, ok := installed.Metadata["dependency_verification"].(map[string]any)
+	if !ok || verification["has_blocking_dependency"] != false || verification["dependency_count"] != float64(2) {
+		t.Fatalf("reopened app should preserve dependency verification: %#v", installed.Metadata["dependency_verification"])
+	}
+	installEvidence, ok := installed.Metadata["install_evidence"].(map[string]any)
+	if !ok {
+		t.Fatalf("reopened app should preserve install evidence: %#v", installed.Metadata["install_evidence"])
+	}
+	installLayout, ok := installEvidence["workspace_layout"].(map[string]any)
+	if !ok || installLayout["fingerprint"] != "layout-roundtrip-approval" {
+		t.Fatalf("reopened app should preserve install evidence workspace layout: %#v", installEvidence)
+	}
+	installVerification, ok := installEvidence["dependency_verification"].(map[string]any)
+	if !ok || installVerification["has_blocking_dependency"] != false {
+		t.Fatalf("reopened app should preserve install evidence dependency verification: %#v", installEvidence)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?workspace_layout_fingerprint=layout-roundtrip-approval&definition_fingerprint=sha256:governance-roundtrip&has_blocking_dependency=false", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list reopened app installation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var listed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode reopened filtered app installations: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].AppID != "expense-governance-roundtrip" {
+		t.Fatalf("expected reopened governance evidence filters to match installed app: %#v", listed)
+	}
+}
+
 func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

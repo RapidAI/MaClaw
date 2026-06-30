@@ -17,7 +17,7 @@ func TestToolRunSkill_MissingName(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	if got := h.toolRunSkill(map[string]interface{}{}, nil); got != "缺少 name 参数" {
+	if got := h.toolRunSkill(context.Background(), map[string]interface{}{}, nil); got != "缺少 name 参数" {
 		t.Fatalf("expected missing name error, got %s", got)
 	}
 }
@@ -26,7 +26,7 @@ func TestToolRunSkill_StartFailure(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "missing-skill"}, nil)
 	if !strings.Contains(got, "Skill 启动失败") {
 		t.Fatalf("expected start failure message, got %s", got)
 	}
@@ -73,7 +73,7 @@ func TestWaitForSkillRunnerSnapshot_DoesNotExtendForTerminalBashStep(t *testing.
 	}}
 
 	startedAt := time.Now()
-	status, err := waitForSkillRunnerSnapshot(runner, "run-bash", 20*time.Millisecond)
+	status, err := waitForSkillRunnerSnapshot(context.Background(), runner, "run-bash", 20*time.Millisecond)
 	if err != nil {
 		t.Fatalf("waitForSkillRunnerSnapshot() error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill", "wait_seconds": float64(99)}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "missing-skill", "wait_seconds": float64(99)}, nil)
 	if !strings.Contains(got, "Skill 启动失败") {
 		t.Fatalf("expected start failure message even with wait_seconds, got %s", got)
 	}
@@ -236,7 +236,7 @@ func TestToolRunSkill_OpensAgentViewForMissingRequiredParams(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolRunSkill(map[string]interface{}{"name": "needs-input"}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "needs-input"}, nil)
 	// After mechanism fix (#97): missing params return a structured error for
 	// the LLM to auto-fill, instead of popping an AgentView form.
 	if !strings.Contains(got, "缺少必要参数") {
@@ -303,7 +303,7 @@ func TestToolRunSkill_ForwardsModeToWhenCondition(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolRunSkill(map[string]interface{}{"name": "mode-skill", "mode": "advanced", "wait_seconds": float64(2)}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "mode-skill", "mode": "advanced", "wait_seconds": float64(2)}, nil)
 	if !strings.Contains(got, "advanced-mode") {
 		t.Fatalf("mode was not forwarded into when-conditioned step, got %s", got)
 	}
@@ -335,7 +335,7 @@ func TestToolRunSkill_ForwardsQueryToWhenCondition(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolRunSkill(map[string]interface{}{"name": "query-skill", "query": "weather in Chengdu", "wait_seconds": float64(2)}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "query-skill", "query": "weather in Chengdu", "wait_seconds": float64(2)}, nil)
 	if !strings.Contains(got, "query-city") {
 		t.Fatalf("query was not forwarded into when-conditioned step, got %s", got)
 	}
@@ -366,7 +366,7 @@ func TestToolRunSkill_PipelineRecursionSurfacesInRunStatus(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	started := h.toolRunSkill(map[string]interface{}{
+	started := h.toolRunSkill(context.Background(), map[string]interface{}{
 		"name":         "pipeline-self",
 		"wait_seconds": float64(2),
 	}, nil)
@@ -427,7 +427,7 @@ func TestToolRunSkill_ExternalPrivatePipelineStackDoesNotTripRecursion(t *testin
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolRunSkill(map[string]interface{}{
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{
 		"name":                     "pipeline-stack",
 		cskill.PipelineRunStackArg: []string{"pipeline-stack"},
 		"wait_seconds":             float64(2),
@@ -455,7 +455,7 @@ func TestToolRunSkill_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
 
-	got := h.toolRunSkill(map[string]interface{}{"name": "doc-only"}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "doc-only"}, nil)
 	if !strings.Contains(got, "Skill 启动失败") || !strings.Contains(got, "has no executable steps") {
 		t.Fatalf("expected no executable steps failure, got %s", got)
 	}
@@ -491,7 +491,7 @@ func TestToolRunSkill_ReportsRunMeta(t *testing.T) {
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0)}, nil)
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0)}, nil)
 	if !strings.Contains(got, "✅ Skill 已启动") {
 		t.Fatalf("expected started message, got %s", got)
 	}
@@ -514,7 +514,7 @@ func TestToolRunSkill_EmitsProgressStages(t *testing.T) {
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
 	var progress []string
-	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, func(msg string) {
+	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "missing-skill"}, func(msg string) {
 		progress = append(progress, msg)
 	})
 	if !strings.Contains(got, "Skill 启动失败") {
@@ -621,7 +621,7 @@ func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *t
 	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := &IMMessageHandler{app: app}
-	started := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(1)}, nil)
+	started := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(1)}, nil)
 	if !strings.Contains(started, "- run_id:") {
 		t.Fatalf("expected run_id in start output, got %s", started)
 	}
@@ -703,7 +703,7 @@ func TestToolRunSkill_RealXhMdToPdfVerifiesArtifact(t *testing.T) {
 		t.Fatalf("WriteFile(input) error = %v", err)
 	}
 
-	started := h.toolRunSkill(map[string]interface{}{
+	started := h.toolRunSkill(context.Background(), map[string]interface{}{
 		"name":         "xh-md-to-pdf",
 		"input":        inputPath,
 		"output":       outputPath,

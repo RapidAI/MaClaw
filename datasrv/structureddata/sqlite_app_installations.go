@@ -241,6 +241,24 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if definitionFingerprint := strings.TrimSpace(in.DefinitionFingerprint); definitionFingerprint != "" && !appInstallationHasIdentifier(app.Metadata, definitionFingerprint, []string{"definition_fingerprint", "definitionFingerprint", "definition_hash", "definitionHash", "test_evidence_definition_fingerprint", "app_definition_hash", "appDefinitionHash", "app_definition_fingerprint", "appDefinitionFingerprint"}) {
 		return false
 	}
+	if workspaceLayoutFingerprint := strings.TrimSpace(in.WorkspaceLayoutFingerprint); workspaceLayoutFingerprint != "" && !appInstallationHasIdentifier(app.Metadata, workspaceLayoutFingerprint, []string{"workspace_layout_fingerprint", "layout_fingerprint", "workspace_layout.fingerprint", "workspaceLayout.fingerprint", "governance.workspace_layout.fingerprint", "governance.workspaceLayout.fingerprint", "install_evidence.workspace_layout.fingerprint", "installEvidence.workspaceLayout.fingerprint"}) {
+		return false
+	}
+	if hubCapabilityID := strings.TrimSpace(in.HubCapabilityID); hubCapabilityID != "" && !appInstallationHasIdentifier(app.Metadata, hubCapabilityID, []string{"hub_capability_id", "capability_id", "capabilityID", "submission.capability_id", "submission.capabilityID", "governance.submission.capability_id", "governance.submission.capabilityID"}) {
+		return false
+	}
+	if hubMarketCapabilityID := strings.TrimSpace(in.HubMarketCapabilityID); hubMarketCapabilityID != "" && !appInstallationHasIdentifier(app.Metadata, hubMarketCapabilityID, []string{"hub_market_capability_id", "market_capability_id", "marketCapabilityID", "submission.market_capability_id", "submission.marketCapabilityID", "governance.submission.market_capability_id", "governance.submission.marketCapabilityID"}) {
+		return false
+	}
+	if hubSubmissionID := strings.TrimSpace(in.HubSubmissionID); hubSubmissionID != "" && !appInstallationHasIdentifier(app.Metadata, hubSubmissionID, []string{"hub_submission_id", "submission_id", "submissionID", "submission.submission_id", "submission.submissionID", "governance.submission.submission_id", "governance.submission.submissionID"}) {
+		return false
+	}
+	if hubVersionKey := strings.TrimSpace(in.HubVersionKey); hubVersionKey != "" && !appInstallationHasIdentifier(app.Metadata, hubVersionKey, []string{"hub_version_key", "version_key", "versionKey", "submission.version_key", "submission.versionKey", "governance.submission.version_key", "governance.submission.versionKey"}) {
+		return false
+	}
+	if hubReviewStatus := strings.TrimSpace(in.HubReviewStatus); hubReviewStatus != "" && !appInstallationHasIdentifier(app.Metadata, hubReviewStatus, []string{"hub_review_status", "review_status", "reviewStatus", "submission.status", "submission.review_status", "submission.reviewStatus", "governance.submission.status", "governance.submission.review_status", "governance.submission.reviewStatus"}) {
+		return false
+	}
 	if in.HasBlockingDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_blocking_dependency", "dependency_verification.hasBlockingDependency", "install_evidence.dependency_verification.has_blocking_dependency", "install_evidence.dependency_verification.hasBlockingDependency", "installEvidence.dependencyVerification.hasBlockingDependency", "install_evidence.has_blocking_dependency", "installEvidence.hasBlockingDependency", "has_blocking_dependency", "test_evidence.dependency_verification.has_blocking_dependency", "test_evidence.dependency_verification.hasBlockingDependency", "test_evidence_dependency_blocking") != *in.HasBlockingDependency {
 		return false
 	}
@@ -273,6 +291,12 @@ func appInstallationHasMetadataFilters(in QueryAppInstallationsInput) bool {
 		strings.TrimSpace(in.RecordID) != "" ||
 		strings.TrimSpace(in.ResultType) != "" ||
 		strings.TrimSpace(in.DefinitionFingerprint) != "" ||
+		strings.TrimSpace(in.WorkspaceLayoutFingerprint) != "" ||
+		strings.TrimSpace(in.HubCapabilityID) != "" ||
+		strings.TrimSpace(in.HubMarketCapabilityID) != "" ||
+		strings.TrimSpace(in.HubSubmissionID) != "" ||
+		strings.TrimSpace(in.HubVersionKey) != "" ||
+		strings.TrimSpace(in.HubReviewStatus) != "" ||
 		in.HasBlockingDependency != nil ||
 		in.HasMissingRequiredDependency != nil ||
 		in.DataSrvRegistrationSynced != nil ||
@@ -332,16 +356,32 @@ func appInstallationHasIdentifier(metadata map[string]any, expected string, keys
 
 func appInstallationMapHasAnyIdentifier(values map[string]any, expected string, keys []string) bool {
 	for _, key := range keys {
-		if value, ok := values[key].(string); ok && strings.TrimSpace(value) == expected {
+		value := appInstallationMapPathValue(values, key)
+		if text, ok := value.(string); ok && strings.TrimSpace(text) == expected {
 			return true
 		}
-		for _, value := range appInstallationStringList(values[key]) {
-			if value == expected {
+		for _, item := range appInstallationStringList(value) {
+			if item == expected {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func appInstallationMapPathValue(values map[string]any, key string) any {
+	cursor := values
+	parts := strings.Split(key, ".")
+	for index, part := range parts {
+		if index == len(parts)-1 {
+			return cursor[part]
+		}
+		cursor = appInstallationMap(cursor[part])
+		if cursor == nil {
+			return nil
+		}
+	}
+	return nil
 }
 
 func appInstallationMetadataBool(metadata map[string]any, keys ...string) bool {

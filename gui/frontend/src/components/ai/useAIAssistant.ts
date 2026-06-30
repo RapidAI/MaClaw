@@ -4556,11 +4556,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             setMessages(prev => markRoundCancelled(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
         stopResponseTimeout(canceledRound.requestId);
-        if (!cancelingDetachedRound) {
-            resetActiveRound(nextGeneration);
-        }
+        // Do NOT resetActiveRound here — keep the spinner/lock visible until
+        // the backend confirms the loop has fully exited (state.mu released).
+        // Otherwise the user sees an unlocked input box but state.mu is still
+        // held by the dying goroutine, causing "系统正在恢复中" on next send.
         forgetInFlightRound(canceledRound.requestId);
-        if (!cancelingDetachedRound) clearTransientProgress();
         if (pendingTaskAtCancel) {
             clearPendingTaskForRequest(pendingTaskAtCancel.requestId);
         }
@@ -4592,7 +4592,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const cancelTail = cancelBackend.then(() => true).catch(() => true);
         foregroundSendTailRef.current = cancelTail;
         foregroundSendTailsBySessionRef.current.set(sessionKeyAtCancel || 'desktop-user', cancelTail);
-        return await cancelBackend;
+        const result = await cancelBackend;
+        // Backend confirmed loop exit — NOW it's safe to reset the round
+        // (stop spinner, unlock input box). The state.mu is released.
+        if (!cancelingDetachedRound) {
+            resetActiveRound(nextGeneration);
+            clearTransientProgress();
+        }
+        return result;
     }, [activeSessionKeyForEvents, clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, forgetInFlightRound, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     // injectSupplementary sends a supplementary message into the running

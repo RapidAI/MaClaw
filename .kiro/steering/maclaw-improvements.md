@@ -6899,3 +6899,122 @@ iter N+2: LLM 没有 write_file → 使用 bash + Python 写文件 → 成功
 - IM 通道和 TUI 不受影响
 - 所有 6 个修改文件零诊断错误
 
+
+
+### 116. 取消任务后"系统正在恢复中"——bash 子进程不响应取消 + 前端提前恢复输入框
+
+**来源**：用户取消正在执行的 babeldoc 翻译任务后，面板显示"⚠️ 系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。"
+
+**根因（两层叠加）**：
+
+#### 层 1 (P0): bash 工具注册为 `HandlerProg`，不接收 cancellable context——子进程无法被取消信号 kill
+
+`toolBash` 通过 `regP`（`HandlerProg` 签名）注册到 ToolRegistry。`HandlerProg` 的签名是 `func(args, onProgress) string`，不接收 context。当 agent loop 执行工具时，走的是：
+
+```
+executeToolDetailedWithRuntimeContext(execCtx, ...) 
+  → tool.HandlerProg(args, onProgress)  // execCtx 被丢弃！
+```
+
+`toolBash` 内部创建了**独立的** context：
+```go
+ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+```
+
+这个 context 只关联超时，**不关联 LoopContext.CancelC**。用户取消时 `CancelC` 关闭，`BeginReplannableOperation` 派生的 `execCtx` 被 cancel，但 `toolBash` 的独立 context 不受影响。子进程（babeldoc）继续运行直到自己的超时到期。
+
+**阻塞链路**：
+1. 用户点取消 → `CancelC` 关闭 → `execCtx` 被 cancel
+2. 但 `toolBash` 的 `cmd.Wait()` 仍在阻塞（babeldoc 没被 kill）
+3. `toolBash` 返回需要等 babeldoc 完成或超时（可能 10-30 分钟）
+4. `toolBash` 不返回 → `executeAgentLoopToolCall` 不返回 → `executeAgentLoopToolCalls` 不返回
+5. Agent loop goroutine 卡在工具执行中，无法检查 `IsCancelled()`
+6. `state.mu` 被 agent loop goroutine 通过 `defer serialization.Unlock()` 持有，无法释放
+
+同时，`CancelSessionForUser` 等待 `DoneC` 10 秒后超时，强制关闭 `DoneC`。这让 `hasActiveInterruptableLoop` 返回 false，但 **`state.mu` 仍然被持有**。
+
+#### 层 2 (P1): 前端在后端取消完成前就恢复了输入框
+
+`cancelSession`（`useAIAssistant.ts`）的执行顺序：
+```typescript
+// 1. 立即重置 round 状态（停转圈、恢复输入框）
+resetActiveRound(nextGeneration);     // ← 用户以为可以发消息了
+clearTransientProgress();
+
+// 2. 然后才异步等后端完成
+const cancelResult = await CancelAIAssistantSessionForSession(sessionKey);
+```
+
+用户看到输入框可用 → 发新消息 → `enterIMMessageSerializationBoundary` → `state.mu.TryLock()` 失败（仍被旧 goroutine 持有）→ 60 秒轮询超时 → "系统恢复中"。
+
+**修复**：
+
+#### Fix 1 (P0, 根因): bash 工具改为 `HandlerCtx` 注册，接收并传递 cancellable context
+
+- `gui/tool_registry_builtin.go`：bash 从 `regP`（`HandlerProg`）改为 `regCtxP`（`HandlerCtx`）注册
+- `gui/im_tools_local.go`：`toolBash` 签名改为 `func(ctx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string`
+  - 内部 `context.WithTimeout(context.Background(), ...)` 改为 `context.WithTimeout(ctx, ...)`
+  - 当外层 ctx 被 cancel（用户取消）时，`WaitCommandWithContext` 检测到 `ctx.Done()` → `TerminateCommandTree(cmd)` 杀掉整个进程树（babeldoc 及其子进程）→ bash 立即返回
+  - 超时行为不变：如果用户不取消，timeout 参数仍然控制最大执行时间
+
+**效果**：用户取消 → `CancelC` 关闭 → `BeginReplannableOperation` 的 execCtx 被 cancel → `toolBash` 的 ctx 被 cancel → `WaitCommandWithContext` 的 `<-ctx.Done()` 分支触发 → `TerminateCommandTree` 杀掉子进程树 → bash 在 <5 秒内返回 → agent loop 检查 `IsCancelled()` → 正常退出 → `state.mu` 释放。
+
+#### Fix 2 (P0): 其他长时间工具同步改为 HandlerCtx
+
+以下工具同样存在不响应取消的问题，应同步修复：
+- `manage_skill`（Skill 运行可能耗时分钟级）：如果内部调用 bash 执行脚本，需传递 ctx
+- `open`（fire-and-forget，不阻塞，不需要改）
+
+所有通过 `exec.Command` 启动子进程且可能长时间运行的工具，都应使用从 ctx 派生的 context 并用 `WaitCommandWithContext` 等待。
+
+#### Fix 3 (P1): 前端取消流程改为"先等后端确认，再恢复输入框"
+
+- `gui/frontend/src/components/ai/useAIAssistant.ts`：`cancelSession` 流程重构为：
+  1. 立即标记消息为 cancelled（视觉反馈"已取消"标签）
+  2. **保持转圈状态**（设置 `cancelPending=true`，显示"正在停止..."替代进度文本）
+  3. `await CancelAIAssistantSessionForSession(sessionKey)` — 等后端彻底完成
+  4. 后端返回后才 `resetActiveRound`（停转圈、恢复输入框）
+  - 如果后端 30 秒仍未返回（极端情况），前端显示"停止超时，建议重启"但不恢复输入框
+
+**设计原则**：取消是一个**异步操作**，不是瞬时状态切换。前端的 UI 状态必须反映后端的实际状态。"正在停止..."是诚实的状态表达——告诉用户系统正在终止子进程。提前恢复输入框是欺骗用户——让用户以为可以操作了但实际不能。
+
+#### Fix 4 (P1): CancelSessionForUser 超时从 10s 提升到 30s
+
+- `gui/im_loop_control.go`：`CancelSessionForUser` 的 `time.After(10 * time.Second)` 改为 `time.After(30 * time.Second)`
+- 根因修复后（Fix 1），bash 子进程被 kill 后通常在 <5s 内退出
+- 30s 作为安全边界覆盖极端情况（如进程树 kill 后 orphan 进程清理、Windows 上 WER 弹窗等）
+- 超时后仍然 force-close DoneC（兜底，不变）
+
+#### Fix 5 (P2): toolBash 取消时返回明确的取消消息
+
+- `gui/im_tools_local.go`：`WaitCommandWithContext` 返回 `ctx.Err() == context.Canceled`（区分于 `DeadlineExceeded`）时，返回 `[取消] 命令已被用户取消并终止`（而非超时消息）
+- Agent loop 的 `IsCancelled()` 检查在下一个循环点捕获取消状态，正常走 `cancelledExitResponse`
+
+**触发链路（修复后）**：
+```
+用户点取消
+  → 前端：标记消息 cancelled + 显示"正在停止..." + 保持转圈
+  → 前端：await CancelAIAssistantSessionForSession(key)
+  → 后端：CancelSessionForUser → ctx.Cancel() → CancelC 关闭
+  → bash 工具：ctx.Done() → TerminateCommandTree(babeldoc) → 子进程被 kill
+  → bash 工具：WaitCommandWithContext 返回 → toolBash 返回 "[取消] 命令已被用户取消"
+  → agent loop：下一个 IsCancelled() 检查 → cancelledExitResponse → saveConversationHistoryTimed
+  → agent loop：正常退出 → state.mu 释放 → ctx.Done() 关闭 DoneC
+  → 后端：CancelSessionForUser 从 DoneC 返回
+  → 前端：await 完成 → resetActiveRound → 停转圈 → 恢复输入框
+```
+
+**时间预期**：
+- 用户取消到子进程被 kill：<100ms（CancelC → execCtx cancel → ctx.Done()）
+- 子进程被 kill 到 bash 返回：<5s（TerminateCommandTree + Wait）
+- Bash 返回到 state.mu 释放：<100ms（IsCancelled → save → return）
+- 总延迟：用户点取消后 ~5 秒内恢复输入框（而非之前的 60 秒超时 + 错误提示）
+
+**验收标准**：
+- babeldoc 翻译进行中取消 → 子进程被 kill → 5 秒内输入框恢复 → 无"系统恢复中"错误
+- 取消期间前端显示"正在停止..."转圈，不提前恢复输入框
+- bash 命令正常超时 → 行为不变（timeout 参数仍然生效）
+- 短命令（如 `echo hello`）取消 → 立即返回
+- `CancelSessionForUser` 不再需要 force-close DoneC（正常场景下 goroutine 在 30s 内退出）
+- 所有 IsCancelled / RunAgentLoop / CancelSession 测试通过
+- GUI Go 编译通过 + 前端 TypeScript 编译通过

@@ -64,8 +64,18 @@ type HANodeConfig struct {
 	NodeID       string `yaml:"node_id"`
 	NodeName     string `yaml:"node_name"`
 	AdvertiseURL string `yaml:"advertise_url"`
+	PublicURL    string `yaml:"public_url,omitempty"`
 	PublicKeyPEM string `yaml:"public_key"`
 	Enabled      bool   `yaml:"enabled"`
+}
+
+// ClientFacingURL returns the URL that should be exposed to external clients.
+// It prefers PublicURL (HTTPS domain) over AdvertiseURL (internal HTTP IP).
+func (n HANodeConfig) ClientFacingURL() string {
+	if u := strings.TrimSpace(n.PublicURL); u != "" {
+		return u
+	}
+	return n.AdvertiseURL
 }
 
 type HAConfig struct {
@@ -295,6 +305,7 @@ func normalizeResolvedHAConfig(cfg HAConfig) HAConfig {
 			NodeID:       strings.TrimSpace(node.NodeID),
 			NodeName:     strings.TrimSpace(node.NodeName),
 			AdvertiseURL: NormalizeHAURL(node.AdvertiseURL),
+			PublicURL:    NormalizeHAURL(node.PublicURL),
 			PublicKeyPEM: strings.TrimSpace(node.PublicKeyPEM),
 			Enabled:      node.Enabled || strings.TrimSpace(node.FQDN) != "" || strings.TrimSpace(node.NodeID) != "" || strings.TrimSpace(node.NodeName) != "" || strings.TrimSpace(node.AdvertiseURL) != "" || strings.TrimSpace(node.PublicKeyPEM) != "",
 		}

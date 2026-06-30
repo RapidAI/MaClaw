@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -3315,7 +3316,7 @@ func TestRouteTools_SSHIntentKeepsBashButHidesMCPGateway(t *testing.T) {
 
 func TestToolBashRejectsRawSSHCommand(t *testing.T) {
 	handler := &IMMessageHandler{}
-	result := handler.toolBash(map[string]interface{}{"command": "ssh root@example.com uptime"}, nil)
+	result := handler.toolBash(context.Background(), map[string]interface{}{"command": "ssh root@example.com uptime"}, nil)
 	if !strings.Contains(result, "Raw ssh/scp/sftp") || !strings.Contains(result, "builtin ssh tool") {
 		t.Fatalf("expected raw ssh command rejection, got: %s", result)
 	}
@@ -3323,7 +3324,7 @@ func TestToolBashRejectsRawSSHCommand(t *testing.T) {
 
 func TestToolBashRejectsBroadBrowserKillCommand(t *testing.T) {
 	handler := &IMMessageHandler{}
-	result := handler.toolBash(map[string]interface{}{"command": "taskkill /f /im chrome.exe"}, nil)
+	result := handler.toolBash(context.Background(), map[string]interface{}{"command": "taskkill /f /im chrome.exe"}, nil)
 	if !strings.Contains(result, "Broad Chrome/Edge process kill") || !strings.Contains(result, "persistent browser process and login/cookies are preserved") {
 		t.Fatalf("expected browser kill rejection, got: %s", result)
 	}
@@ -3331,7 +3332,7 @@ func TestToolBashRejectsBroadBrowserKillCommand(t *testing.T) {
 
 func TestToolBashRejectsShellBrowserAutomationCommand(t *testing.T) {
 	handler := &IMMessageHandler{}
-	result := handler.toolBash(map[string]interface{}{"command": `python -c "from playwright.sync_api import sync_playwright; sync_playwright().start().chromium.connect_over_cdp('http://127.0.0.1:3888')"`}, nil)
+	result := handler.toolBash(context.Background(), map[string]interface{}{"command": `python -c "from playwright.sync_api import sync_playwright; sync_playwright().start().chromium.connect_over_cdp('http://127.0.0.1:3888')"`}, nil)
 	if !strings.Contains(result, "Shell Playwright/Puppeteer/Selenium/CDP/screenshot browser automation is disabled") || !strings.Contains(result, "stable browser tool/session mechanism") {
 		t.Fatalf("expected shell browser automation rejection, got: %s", result)
 	}
@@ -3339,7 +3340,7 @@ func TestToolBashRejectsShellBrowserAutomationCommand(t *testing.T) {
 
 func TestToolBashRejectsAuthenticatedBrowserSideEffectHTTPCommand(t *testing.T) {
 	handler := &IMMessageHandler{}
-	result := handler.toolBash(map[string]interface{}{"command": `curl -X POST https://www.zhihu.com/api/v4/pins -H "x-csrftoken: token" --data-raw "{}"`}, nil)
+	result := handler.toolBash(context.Background(), map[string]interface{}{"command": `curl -X POST https://www.zhihu.com/api/v4/pins -H "x-csrftoken: token" --data-raw "{}"`}, nil)
 	if !strings.Contains(result, "Direct authenticated browser-side HTTP side effects") || !strings.Contains(result, "Use the browser tool") {
 		t.Fatalf("expected browser side-effect HTTP rejection, got: %s", result)
 	}

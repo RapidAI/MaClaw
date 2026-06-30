@@ -2120,20 +2120,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // (every 33ms). Without this cache, all N messages get full Markdown
     // re-parsing on every token batch flush.
     const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage> }>>(new Map());
-    // Track render-config: when theme/lang/callback/etc change, invalidate entire cache
+    // Track render-config: when theme/lang/callback change, invalidate entire cache
     // to avoid returning stale renders with old styles or stale closures.
-    const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; isBusy: boolean; execAction: typeof panelExecuteAction } | null>(null);
-    if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.isBusy !== isBusy || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
-        prevRenderConfigRef.current = { t, lang, savedFileLabel, isBusy, execAction: panelExecuteAction };
+    // NOTE: isBusy is NOT included here — it only affects the last assistant message's
+    // <details open> state, handled via the per-message contentKey below.
+    const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; execAction: typeof panelExecuteAction } | null>(null);
+    if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
+        prevRenderConfigRef.current = { t, lang, savedFileLabel, execAction: panelExecuteAction };
         msgRenderCacheRef.current.clear();
     }
     const renderedOtherMessages = useMemo(() => {
         const cache = msgRenderCacheRef.current;
+        // Cap cache size to prevent unbounded growth across long sessions.
+        // When the cache exceeds 200 entries (well above typical conversation
+        // length), clear it entirely — the cost of one full re-render is
+        // negligible vs the risk of memory bloat.
+        if (cache.size > 200) {
+            cache.clear();
+        }
         return otherMessages.map((msg: ChatMessage, idx: number) => {
             const isLast = idx === lastAssistantIdx;
             // Content key captures message-specific fields that affect render.
-            // Unchanged messages between streaming ticks hit the cache.
-            const contentKey = `${msg.content?.length ?? 0}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}`;
+            // isBusy is included only for the last assistant (affects <details open>).
+            // Use -1 for undefined content to distinguish from empty string (length 0).
+            const contentLen = msg.content == null ? -1 : msg.content.length;
+            const contentKey = `${contentLen}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;

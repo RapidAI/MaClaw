@@ -23,7 +23,7 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if hasRuntimeOwner && ownerID == "" {
 		return "bash failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
@@ -89,7 +89,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 
 	workDir := h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(execCtx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	var shellName string
@@ -114,6 +114,11 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
 	coretool.PrepareCommandForTreeKill(cmd)
+
+	// Early exit if already cancelled — avoid spawning a process just to kill it.
+	if execCtx.Err() != nil {
+		return "[取消] 命令已被用户取消"
+	}
 
 	// Start the command and send periodic heartbeats for long-running ops.
 	err := cmd.Start()
@@ -171,6 +176,8 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
+		} else if execCtx.Err() == context.Canceled {
+			b.WriteString("\n[取消] 命令已被用户取消并终止")
 		} else {
 			b.WriteString(fmt.Sprintf("\n[错误] 退出码: %v", err))
 		}

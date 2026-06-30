@@ -176,7 +176,7 @@ func TestRunSkillUsesRuntimePolicyOwner(t *testing.T) {
 	}
 	handler.currentLoopCtx = loopCtx
 
-	text := handler.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, nil)
+	text := handler.toolRunSkill(context.Background(), map[string]interface{}{"name": "missing-skill"}, nil)
 	if strings.Contains(text, "not allowed by the current workflow tool policy") {
 		t.Fatalf("run_skill should use runtime owner, not desktop workflow policy: %s", text)
 	}
@@ -186,7 +186,7 @@ func TestRunSkillWithoutRuntimeOwnerDoesNotBypassWorkflowOwner(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	handler.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-empty-run-skill-owner"}}
 
-	text := handler.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, nil)
+	text := handler.toolRunSkill(context.Background(), map[string]interface{}{"name": "missing-skill"}, nil)
 	if !strings.Contains(text, "runtime owner is missing") {
 		t.Fatalf("run_skill without runtime owner should fail closed, got %q", text)
 	}
@@ -534,7 +534,7 @@ func TestManageSkillCarriesRuntimeOwnerAndPlatform(t *testing.T) {
 
 func TestManageSkillEmptyRuntimeOwnerFailsClosedAtMergedEntry(t *testing.T) {
 	handler := &IMMessageHandler{}
-	got := handler.toolManageSkill(map[string]interface{}{
+	got := handler.toolManageSkill(context.Background(), map[string]interface{}{
 		"action":                         "list",
 		registeredToolPolicyOwnerIDField: "",
 	}, nil)

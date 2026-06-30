@@ -127,15 +127,6 @@ func (s *Store) contentHashIdxAdd(hash string, index int) {
 	s.contentHashIdx[hash] = index
 }
 
-// contentHashIdxRemove removes a hash from the index. Must be called
-// with s.mu held.
-func (s *Store) contentHashIdxRemove(hash string) {
-	if hash == "" || s.contentHashIdx == nil {
-		return
-	}
-	delete(s.contentHashIdx, hash)
-}
-
 // Paginator returns the store's CursorPaginator for cursor-based pagination.
 // Used by HandleTool to dispatch paginated recall requests.
 func (s *Store) Paginator() *CursorPaginator {
