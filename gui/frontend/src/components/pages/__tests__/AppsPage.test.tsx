@@ -8376,6 +8376,14 @@ describe('AppsPage', () => {
                     ],
                 },
                 has_missing_required: true,
+                datasrv_registration: {
+                    synced: false,
+                    eligible_count: 2,
+                    synced_count: 1,
+                    failed_count: 1,
+                    reason: 'policy role binding pending',
+                    items: [{ app_id: 'contract-audit', synced: false, reason: 'policy role binding pending', role_binding_count: 1 }],
+                },
                 package: installedPackage,
             },
         ]);
@@ -8424,6 +8432,11 @@ describe('AppsPage', () => {
         expect(within(evidenceSnapshot).getByText('run-contract-audit · proto-contract')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Dependency verification')).not.toBeNull();
         expect(within(evidenceSnapshot).getByText('Skill dependencies: 2 · Blocking deps: 1')).not.toBeNull();
+        const dataSrvEvidence = within(evidenceSnapshot).getByText(/DataSrv bindings partially registered/).closest('[role="listitem"]') as HTMLElement;
+        expect(dataSrvEvidence).not.toBeNull();
+        expect(dataSrvEvidence.dataset.state).toBe('partial');
+        expect(dataSrvEvidence.textContent).toContain('1/2');
+        expect(dataSrvEvidence.textContent).toContain('policy role binding pending');
         expect(listMaclawAppInstallsMock).toHaveBeenCalledWith(6);
 
         fireEvent.click(screen.getByText('Check dependencies'));

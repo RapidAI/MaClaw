@@ -12266,3 +12266,53 @@ GUI 安装 MaClaw App 并登记 DataSrv
   -> App Studio 候选与添加到面板后的 installEvidence 保留 datasrv_registration
   -> 最近安装、运行态候选、诊断与重启恢复都能看到同一份企业数据底座登记事实
 ```
+
+### 推进记录：DataSrv 安装登记状态查询补齐（2026-06-30）
+
+本轮继续从“能力市场安装 -> Skill 依赖检查/安装 -> DataSrv app installation 登记 -> GUI/运维反向恢复”的全链路审计角度推进。此前 Hub/GUI 已经会把 `datasrv_registration` 写入安装审计和 DataSrv metadata，但 DataSrv 查询层只能保存，不能按登记结果定位“已同步 / 有失败 / 部分成功”的 App。
+
+已完成：
+
+- `QueryAppInstallationsInput` 增加 DataSrv 登记状态过滤字段：
+  - `datasrv_registration_synced`
+  - `datasrv_registration_failed`
+  - `datasrv_registration_partial`
+- `/api/v1/data/app-installations` 增加对应查询参数，并提供 `data_srv_registration_*` 别名。
+- SQLite metadata 过滤支持读取：
+  - `metadata.datasrv_registration`
+  - `metadata.dataSrvRegistration`
+  - `metadata.install_evidence.datasrv_registration`
+  - `metadata.installEvidence.dataSrvRegistration`
+- OpenAPI 暴露新查询参数和 `metadata.datasrv_registration` schema。
+- 新增服务层测试，覆盖顶层登记、install evidence 内嵌登记、camelCase 登记，以及 synced/failed/partial 三种过滤。
+- 扩展 HTTP 测试，确认 GET 查询能按 DataSrv 登记状态返回安装记录。
+
+验证：
+
+```powershell
+go test ./structureddata -count=1 -vet=off -run "TestListAppInstallationsFiltersByDataSrvRegistration|TestListAppInstallationsFiltersByDependencyHealth|TestHTTPServerAppInstallationsOverrideObjectRoleBindings|TestOpenAPISpecIncludesBusinessContractSchemas" -timeout 240s
+```
+
+结果：通过。
+### 推进记录：GUI/MIS Tool 接入 DataSrv 登记状态过滤（2026-06-30）
+
+本轮继续把上一段 DataSrv `app-installations` 登记状态查询接到 GUI/agent 工具链。DataSrv 已能按 `datasrv_registration_synced` / `datasrv_registration_failed` / `datasrv_registration_partial` 过滤，但 GUI 的 `executeMISDataTool(list_app_installations)` 尚未透传这些参数，导致前端诊断、agent 运维工具和 App Studio 恢复检查仍不能直接列出“DataSrv 登记失败 / 部分成功 / 已同步”的 MaClaw App。
+
+已完成：
+
+- `executeMISDataTool` 的 `list_app_installations` action 增加布尔过滤透传：
+  - `datasrv_registration_synced` / `dataSrvRegistrationSynced` / `data_srv_registration_synced`
+  - `datasrv_registration_failed` / `dataSrvRegistrationFailed` / `data_srv_registration_failed`
+  - `datasrv_registration_partial` / `dataSrvRegistrationPartial` / `data_srv_registration_partial`
+- 扩展 GUI 工具层测试，确认混合 snake_case、camelCase、data_srv 前缀入参会统一转成 DataSrv 标准 query：
+  - `datasrv_registration_synced=true`
+  - `datasrv_registration_failed=false`
+  - `datasrv_registration_partial=false`
+
+验证：
+
+```powershell
+go test ./gui -count=1 -vet=off -run "TestExecuteMISDataToolListAppInstallationsPassesDependencyFilters|TestExecuteMISDataToolGetAppInstallation" -timeout 240s
+```
+
+结果：通过。

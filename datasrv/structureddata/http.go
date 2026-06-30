@@ -528,6 +528,21 @@ func (s *HTTPServer) handleListAppInstallations(w http.ResponseWriter, r *http.R
 		writeError(w, err)
 		return
 	}
+	dataSrvRegistrationSynced, err := parseOptionalBoolQueryPointer(r, "datasrv_registration_synced", "data_srv_registration_synced")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	dataSrvRegistrationFailed, err := parseOptionalBoolQueryPointer(r, "datasrv_registration_failed", "data_srv_registration_failed")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	dataSrvRegistrationPartial, err := parseOptionalBoolQueryPointer(r, "datasrv_registration_partial", "data_srv_registration_partial")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	in := QueryAppInstallationsInput{
 		AppID:                        strings.TrimSpace(r.URL.Query().Get("app_id")),
 		BlueprintID:                  strings.TrimSpace(r.URL.Query().Get("blueprint_id")),
@@ -548,6 +563,9 @@ func (s *HTTPServer) handleListAppInstallations(w http.ResponseWriter, r *http.R
 		DefinitionFingerprint:        strings.TrimSpace(firstNonEmptyQueryValue(r.URL.Query().Get("definition_fingerprint"), r.URL.Query().Get("definition_hash"), r.URL.Query().Get("app_definition_hash"), r.URL.Query().Get("app_definition_fingerprint"))),
 		HasBlockingDependency:        hasBlockingDependency,
 		HasMissingRequiredDependency: hasMissingRequiredDependency,
+		DataSrvRegistrationSynced:    dataSrvRegistrationSynced,
+		DataSrvRegistrationFailed:    dataSrvRegistrationFailed,
+		DataSrvRegistrationPartial:   dataSrvRegistrationPartial,
 		Status:                       strings.TrimSpace(r.URL.Query().Get("status")),
 		Limit:                        effectiveLimit(limit, 100, 500),
 		Before:                       strings.TrimSpace(r.URL.Query().Get("before")),

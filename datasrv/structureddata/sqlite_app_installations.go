@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -246,6 +247,15 @@ func appInstallationMatchesMetadataFilters(app AppInstallation, in QueryAppInsta
 	if in.HasMissingRequiredDependency != nil && appInstallationMetadataBool(app.Metadata, "dependency_verification.has_missing_required", "dependency_verification.hasMissingRequired", "install_evidence.dependency_verification.has_missing_required", "install_evidence.dependency_verification.hasMissingRequired", "installEvidence.dependencyVerification.hasMissingRequired", "install_evidence.has_missing_required", "installEvidence.hasMissingRequired", "has_missing_required_dependency", "has_missing_required", "test_evidence.dependency_verification.has_missing_required", "test_evidence.dependency_verification.hasMissingRequired", "test_evidence_dependency_missing_required") != *in.HasMissingRequiredDependency {
 		return false
 	}
+	if in.DataSrvRegistrationSynced != nil && appInstallationDataSrvRegistrationSynced(app.Metadata) != *in.DataSrvRegistrationSynced {
+		return false
+	}
+	if in.DataSrvRegistrationFailed != nil && appInstallationDataSrvRegistrationFailed(app.Metadata) != *in.DataSrvRegistrationFailed {
+		return false
+	}
+	if in.DataSrvRegistrationPartial != nil && appInstallationDataSrvRegistrationPartial(app.Metadata) != *in.DataSrvRegistrationPartial {
+		return false
+	}
 	return true
 }
 
@@ -264,7 +274,10 @@ func appInstallationHasMetadataFilters(in QueryAppInstallationsInput) bool {
 		strings.TrimSpace(in.ResultType) != "" ||
 		strings.TrimSpace(in.DefinitionFingerprint) != "" ||
 		in.HasBlockingDependency != nil ||
-		in.HasMissingRequiredDependency != nil
+		in.HasMissingRequiredDependency != nil ||
+		in.DataSrvRegistrationSynced != nil ||
+		in.DataSrvRegistrationFailed != nil ||
+		in.DataSrvRegistrationPartial != nil
 }
 
 func appInstallationHasRoleBindingFilters(in QueryAppInstallationsInput) bool {
@@ -609,6 +622,92 @@ func appInstallationInstallEvidenceMaps(metadata map[string]any) []map[string]an
 		}
 	}
 	return out
+}
+
+func appInstallationDataSrvRegistrationMaps(metadata map[string]any) []map[string]any {
+	out := []map[string]any{}
+	for _, key := range []string{"datasrv_registration", "dataSrvRegistration"} {
+		if value := appInstallationMap(metadata[key]); value != nil {
+			out = append(out, value)
+		}
+	}
+	for _, evidence := range appInstallationInstallEvidenceMaps(metadata) {
+		for _, key := range []string{"datasrv_registration", "dataSrvRegistration"} {
+			if value := appInstallationMap(evidence[key]); value != nil {
+				out = append(out, value)
+			}
+		}
+	}
+	return out
+}
+
+func appInstallationDataSrvRegistrationSynced(metadata map[string]any) bool {
+	for _, registration := range appInstallationDataSrvRegistrationMaps(metadata) {
+		if value, ok := firstAppInstallationBool(registration["synced"], registration["is_synced"], registration["isSynced"]); ok {
+			return value
+		}
+		eligible := appInstallationInt(registration["eligible_count"], registration["eligibleCount"])
+		synced := appInstallationInt(registration["synced_count"], registration["syncedCount"])
+		failed := appInstallationInt(registration["failed_count"], registration["failedCount"])
+		if eligible > 0 {
+			return synced >= eligible && failed == 0
+		}
+	}
+	return false
+}
+
+func appInstallationDataSrvRegistrationFailed(metadata map[string]any) bool {
+	for _, registration := range appInstallationDataSrvRegistrationMaps(metadata) {
+		if appInstallationInt(registration["failed_count"], registration["failedCount"]) > 0 {
+			return true
+		}
+		for _, item := range appInstallationMapList(registration["items"]) {
+			if value, ok := firstAppInstallationBool(item["synced"], item["is_synced"], item["isSynced"]); ok && !value {
+				return true
+			}
+			if strings.TrimSpace(appInstallationString(item, "error", "message", "reason")) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appInstallationDataSrvRegistrationPartial(metadata map[string]any) bool {
+	for _, registration := range appInstallationDataSrvRegistrationMaps(metadata) {
+		synced := appInstallationInt(registration["synced_count"], registration["syncedCount"])
+		failed := appInstallationInt(registration["failed_count"], registration["failedCount"])
+		eligible := appInstallationInt(registration["eligible_count"], registration["eligibleCount"])
+		if synced > 0 && failed > 0 {
+			return true
+		}
+		if eligible > 0 && synced > 0 && synced < eligible {
+			return true
+		}
+	}
+	return false
+}
+
+func appInstallationInt(values ...any) int {
+	for _, value := range values {
+		switch typed := value.(type) {
+		case int:
+			return typed
+		case int64:
+			return int(typed)
+		case float64:
+			return int(typed)
+		case json.Number:
+			if parsed, err := typed.Int64(); err == nil {
+				return int(parsed)
+			}
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 func appInstallationHasWorkflowSkillID(metadata map[string]any, workflowSkillID string) bool {

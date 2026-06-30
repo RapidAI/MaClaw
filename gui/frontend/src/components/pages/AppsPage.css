@@ -808,41 +808,14 @@
 
 .apps-runtime-section {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 8px 12px;
+    gap: 10px;
     min-width: 0;
-    align-items: start;
-}
-
-.apps-runtime-section > :first-child {
-    grid-column: 1;
-    grid-row: 1;
-}
-
-.apps-runtime-section > :not(:first-child) {
-    grid-column: 2;
 }
 
 .apps-runtime-section__title {
     color: var(--theme-text-primary);
     font-size: 0.78rem;
     font-weight: 800;
-    white-space: nowrap;
-    padding-top: 2px;
-}
-
-/* Sections with complex first-child (title-row with badge) revert to single-column */
-.apps-business-workspace {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.apps-business-workspace > :first-child {
-    grid-column: 1;
-    grid-row: auto;
-}
-
-.apps-business-workspace > :not(:first-child) {
-    grid-column: 1;
 }
 
 .apps-runtime-section + .apps-runtime-section {
@@ -3505,6 +3478,38 @@
     font-style: normal;
     font-weight: 850;
 }
+.apps-install-evidence-snapshot span[data-state='ready'] {
+    border-color: color-mix(in srgb, var(--theme-success) 28%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-success-bg) 48%, var(--theme-surface));
+}
+
+.apps-install-evidence-snapshot span[data-state='ready'] em {
+    color: var(--theme-success);
+}
+
+.apps-install-evidence-snapshot span[data-state='partial'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 30%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-warning-bg) 44%, var(--theme-surface));
+}
+
+.apps-install-evidence-snapshot span[data-state='partial'] em {
+    color: var(--theme-warning);
+}
+
+.apps-install-evidence-snapshot span[data-state='failed'] {
+    border-color: color-mix(in srgb, var(--theme-danger) 28%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-danger-bg) 42%, var(--theme-surface));
+}
+
+.apps-install-evidence-snapshot span[data-state='failed'] em {
+    color: var(--theme-danger);
+}
+
+.apps-install-evidence-snapshot span[data-state='skipped'] {
+    border-color: color-mix(in srgb, var(--theme-text-muted) 22%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-surface-muted) 62%, var(--theme-surface));
+}
+
 
 .apps-workflow-contract-summary {
     min-width: 0;

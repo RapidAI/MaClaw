@@ -1150,6 +1150,7 @@ const labels = {
         installRecords: '\u6700\u8fd1\u5b89\u88c5',
         installRecordsHint: '\u672c\u673a\u5e94\u7528\u5305\u5b89\u88c5\u548c Skill \u4f9d\u8d56\u5ba1\u8ba1',
         datasrvRegistrationReady: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u5df2\u6ce8\u518c',
+        datasrvRegistrationPartial: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u90e8\u5206\u6ce8\u518c',
         datasrvRegistrationSkipped: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u672a\u6ce8\u518c',
         datasrvRegistrationFailed: '\u0044\u0061\u0074\u0061\u0053\u0072\u0076 \u7ed1\u5b9a\u6ce8\u518c\u5931\u8d25',
         installRecordsLoading: '\u6b63\u5728\u8bfb\u53d6\u5b89\u88c5\u8bb0\u5f55',
@@ -1496,6 +1497,7 @@ const labels = {
         installRecords: 'Recent installs',
         installRecordsHint: 'Local app package installs and Skill dependency audit',
         datasrvRegistrationReady: 'DataSrv bindings registered',
+        datasrvRegistrationPartial: 'DataSrv bindings partially registered',
         datasrvRegistrationSkipped: 'DataSrv bindings not registered',
         datasrvRegistrationFailed: 'DataSrv binding registration failed',
         installRecordsLoading: 'Reading install records',
@@ -9681,14 +9683,28 @@ function dataSrvRegistrationNumber(value: unknown) {
     return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
-function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration | undefined | null, text: typeof labels.zh) {
+type DataSrvRegistrationState = 'ready' | 'partial' | 'failed' | 'skipped';
+
+function dataSrvRegistrationState(registration: BackendAppDataSrvRegistration | undefined | null): { state: DataSrvRegistrationState; eligibleCount: number; syncedCount: number; failedCount: number; reason: string } | null {
     const eligibleCount = dataSrvRegistrationNumber(registration?.eligible_count);
-    if (!registration || eligibleCount <= 0) return '';
+    if (!registration || eligibleCount <= 0) return null;
     const syncedCount = dataSrvRegistrationNumber(registration.synced_count);
+    const failedCount = dataSrvRegistrationNumber(registration.failed_count);
     const reason = String(registration.reason || '').trim();
-    if (registration.synced) return `${text.datasrvRegistrationReady}: ${syncedCount || eligibleCount}/${eligibleCount}`;
-    if (syncedCount > 0) return `${text.datasrvRegistrationFailed}: ${syncedCount}/${eligibleCount}${reason ? ` · ${reason}` : ''}`;
-    return `${text.datasrvRegistrationSkipped}: ${reason || `${syncedCount}/${eligibleCount}`}`;
+    if (registration.synced || (syncedCount >= eligibleCount && failedCount === 0)) return { state: 'ready', eligibleCount, syncedCount: syncedCount || eligibleCount, failedCount, reason };
+    if (syncedCount > 0 && (failedCount > 0 || syncedCount < eligibleCount)) return { state: 'partial', eligibleCount, syncedCount, failedCount, reason };
+    if (failedCount > 0) return { state: 'failed', eligibleCount, syncedCount, failedCount, reason };
+    return { state: 'skipped', eligibleCount, syncedCount, failedCount, reason };
+}
+
+function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration | undefined | null, text: typeof labels.zh) {
+    const status = dataSrvRegistrationState(registration);
+    if (!status) return '';
+    const ratio = `${status.syncedCount}/${status.eligibleCount}`;
+    if (status.state === 'ready') return `${text.datasrvRegistrationReady}: ${ratio}`;
+    if (status.state === 'partial') return `${text.datasrvRegistrationPartial}: ${ratio}${status.reason ? ` · ${status.reason}` : ''}`;
+    if (status.state === 'failed') return `${text.datasrvRegistrationFailed}: ${status.reason || ratio}`;
+    return `${text.datasrvRegistrationSkipped}: ${status.reason || ratio}`;
 }
 
 function dataSrvRegistrationSummaryForApp(registration: BackendAppDataSrvRegistration | undefined | null, appID: string, text: typeof labels.zh) {
@@ -9895,7 +9911,7 @@ function installRecordStringList(value: unknown): string[] {
 }
 
 function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeof labels.zh) {
-    const items: Array<{ label: string; value: string }> = [];
+    const items: Array<{ label: string; value: string; state?: DataSrvRegistrationState }> = [];
     const layout = record.workspace_layout || {};
     const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' · ');
     if (layoutValue) items.push({ label: text.workspaceLayout, value: layoutValue });
@@ -9964,8 +9980,9 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     if (installRecordString(dependencyVerification.schema) || dependencyCount > 0 || blockingCount > 0) {
         items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} · ${text.missingDependencyCount}: ${blockingCount}` });
     }
+    const dataSrvStatus = dataSrvRegistrationState(record.datasrv_registration);
     const dataSrvValue = dataSrvRegistrationSummary(record.datasrv_registration, text);
-    if (dataSrvValue) items.push({ label: 'DataSrv', value: dataSrvValue });
+    if (dataSrvValue) items.push({ label: 'DataSrv', value: dataSrvValue, state: dataSrvStatus?.state });
     return items;
 }
 
@@ -9975,7 +9992,7 @@ const InstallRecordEvidenceSnapshot = ({ record, text }: { record: BackendAppIns
     return (
         <div className="apps-install-version-snapshot apps-install-evidence-snapshot" role="list" aria-label={text.testEvidence}>
             {items.map((item, index) => (
-                <span role="listitem" key={item.label + ':' + item.value + ':' + index}>
+                <span role="listitem" data-state={item.state} key={item.label + ':' + item.value + ':' + index}>
                     <strong>{item.label}</strong>
                     <em>{item.value}</em>
                 </span>

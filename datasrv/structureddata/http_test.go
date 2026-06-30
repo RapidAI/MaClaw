@@ -288,7 +288,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi app installation body missing %s: %#v", name, paths["/api/v1/data/app-installations"])
 		}
 	}
-	for _, name := range []string{"schema", "package_sha256", "package_bytes", "app_skill_id", "app_skill_source", "version_snapshot", "dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence", "governance_status", "governance_risk_level"} {
+	for _, name := range []string{"schema", "package_sha256", "package_bytes", "app_skill_id", "app_skill_source", "version_snapshot", "dependencies", "dependency_count", "has_missing_required_dependency", "has_blocking_dependency", "datasrv_registration", "workspace_layout", "workflow_mapping", "workflow_contract", "result_contract", "test_evidence", "governance_status", "governance_risk_level"} {
 		if !openAPIRequestBodyNestedPropertyHasProperty(paths, "/api/v1/data/app-installations", "post", "metadata", name) {
 			t.Fatalf("openapi app installation metadata missing %s: %#v", name, openAPIRequestBodyProperty(paths, "/api/v1/data/app-installations", "post", "metadata"))
 		}
@@ -613,7 +613,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		"/api/v1/data/import-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/export-jobs":                           {"dataset_id", "status"},
 		"/api/v1/data/operation-plans":                       {"dataset_id", "operation", "status"},
-		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_result_status", "approval_decision", "decision", "applicant_id", "submitted_by", "created_by", "approver_id", "assigned_to", "current_assignee", "approval_id", "record_approval_id", "workflow_instance_id", "approval_instance_id", "instance_id", "dataset_id", "dataset", "object_role", "object", "record_id", "business_record_id", "result_type", "output_type", "definition_fingerprint", "definition_hash", "app_definition_hash", "app_definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency", "has_missing_required"},
+		"/api/v1/data/app-installations":                     {"app_id", "blueprint_id", "kind", "source", "status", "workflow_skill_id", "workflow_node", "approval_status", "approval_result_status", "approval_decision", "decision", "applicant_id", "submitted_by", "created_by", "approver_id", "assigned_to", "current_assignee", "approval_id", "record_approval_id", "workflow_instance_id", "approval_instance_id", "instance_id", "dataset_id", "dataset", "object_role", "object", "record_id", "business_record_id", "result_type", "output_type", "definition_fingerprint", "definition_hash", "app_definition_hash", "app_definition_fingerprint", "has_blocking_dependency", "has_missing_required_dependency", "has_missing_required", "datasrv_registration_synced", "data_srv_registration_synced", "datasrv_registration_failed", "data_srv_registration_failed", "datasrv_registration_partial", "data_srv_registration_partial"},
 		"/api/v1/data/approvals":                             {"dataset_id", "record_id", "app_id", "blueprint_id", "object_role", "approval_workflow_id", "trigger_event", "submitted_by", "current_assignee", "current_assignee_type", "from_status", "to_status", "status", "kind", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "current_node_id", "current_node", "workflow_node", "business_status", "result_status", "assigned_to", "created_by", "reviewed_by", "lane", "overdue", "before", "before_id"},
 		"/api/v1/data/datasets/{datasetId}/schema-proposals": {"status"},
 		"/api/v1/data/datasets/{datasetId}/records":          {"q", "tag"},
@@ -5629,6 +5629,12 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 			"dependency_count":                2,
 			"has_missing_required_dependency": false,
 			"has_blocking_dependency":         true,
+			"datasrv_registration": map[string]any{
+				"synced":         true,
+				"eligible_count": 1,
+				"synced_count":   1,
+				"failed_count":   0,
+			},
 			"workspace_layout_entry":          "approval_workspace",
 			"workspace_layout_template":       "classic_split",
 			"workspace_layout_density":        "comfortable",
@@ -6050,6 +6056,21 @@ func TestHTTPServerAppInstallationsOverrideObjectRoleBindings(t *testing.T) {
 	}
 	if len(missingRequiredDependencyListed.Items) != 0 {
 		t.Fatalf("expected missing dependency filter to exclude installed app: %#v", missingRequiredDependencyListed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/app-installations?datasrv_registration_synced=true&datasrv_registration_failed=false&datasrv_registration_partial=false", nil)
+	auth(req)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list app installations by DataSrv registration status=%d body=%s", w.Code, w.Body.String())
+	}
+	var dataSrvRegistrationListed ListResponse[AppInstallation]
+	if err := json.NewDecoder(w.Body).Decode(&dataSrvRegistrationListed); err != nil {
+		t.Fatalf("decode DataSrv registration-filtered app installations: %v", err)
+	}
+	if len(dataSrvRegistrationListed.Items) != 1 || dataSrvRegistrationListed.Items[0].AppID != "mis.expense" {
+		t.Fatalf("expected DataSrv registration filter to match installed app: %#v", dataSrvRegistrationListed)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/data/business-objects?app_id=mis.expense&object_role=expense_report", nil)

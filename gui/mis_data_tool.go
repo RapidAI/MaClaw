@@ -568,6 +568,15 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		if value, ok := misBoolQueryArg(args, "has_missing_required_dependency", "hasMissingRequiredDependency", "has_missing_required", "hasMissingRequired"); ok {
 			values.Set("has_missing_required_dependency", value)
 		}
+		if value, ok := misBoolQueryArg(args, "datasrv_registration_synced", "dataSrvRegistrationSynced", "data_srv_registration_synced"); ok {
+			values.Set("datasrv_registration_synced", value)
+		}
+		if value, ok := misBoolQueryArg(args, "datasrv_registration_failed", "dataSrvRegistrationFailed", "data_srv_registration_failed"); ok {
+			values.Set("datasrv_registration_failed", value)
+		}
+		if value, ok := misBoolQueryArg(args, "datasrv_registration_partial", "dataSrvRegistrationPartial", "data_srv_registration_partial"); ok {
+			values.Set("datasrv_registration_partial", value)
+		}
 		if limit := strings.TrimSpace(fmt.Sprint(args["limit"])); limit != "" && limit != "<nil>" {
 			values.Set("limit", limit)
 		}

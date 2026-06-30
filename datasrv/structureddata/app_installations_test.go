@@ -901,6 +901,99 @@ func TestListAppInstallationsFiltersByDependencyHealth(t *testing.T) {
 	}
 }
 
+func TestListAppInstallationsFiltersByDataSrvRegistration(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(store, "sqlite")
+	principal := Principal{TenantID: "tenant_1", UserID: "user_1", Role: "data_admin"}
+
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "sales.synced", UpsertAppInstallationInput{
+		AppID: "sales.synced",
+		Name:  "Synced Sales Console",
+		Kind:  "enterprise_normal_app",
+		Metadata: map[string]any{
+			"datasrv_registration": map[string]any{
+				"synced":         true,
+				"eligible_count": 1,
+				"synced_count":   1,
+				"failed_count":   0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation synced: %v", err)
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "expense.failed", UpsertAppInstallationInput{
+		AppID: "expense.failed",
+		Name:  "Failed Expense Approval",
+		Kind:  "enterprise_approval_app",
+		Metadata: map[string]any{
+			"install_evidence": map[string]any{
+				"datasrv_registration": map[string]any{
+					"synced":         false,
+					"eligible_count": 1,
+					"synced_count":   0,
+					"failed_count":   1,
+					"items": []any{
+						map[string]any{"app_id": "expense.failed", "synced": false, "error": "role binding missing"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation failed: %v", err)
+	}
+	_, err = svc.UpsertAppInstallation(context.Background(), principal, "ops.partial", UpsertAppInstallationInput{
+		AppID: "ops.partial",
+		Name:  "Partial Ops App",
+		Kind:  "enterprise_normal_app",
+		Metadata: map[string]any{
+			"dataSrvRegistration": map[string]any{
+				"eligibleCount": 2,
+				"syncedCount":   1,
+				"failedCount":   1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertAppInstallation partial: %v", err)
+	}
+
+	synced := true
+	syncedItems, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DataSrvRegistrationSynced: &synced})
+	if err != nil {
+		t.Fatalf("ListAppInstallations synced DataSrv registration: %v", err)
+	}
+	if len(syncedItems) != 1 || syncedItems[0].AppID != "sales.synced" {
+		t.Fatalf("expected synced DataSrv registration filter to return synced app: %#v", syncedItems)
+	}
+
+	failed := true
+	failedItems, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DataSrvRegistrationFailed: &failed})
+	if err != nil {
+		t.Fatalf("ListAppInstallations failed DataSrv registration: %v", err)
+	}
+	failedByID := map[string]bool{}
+	for _, app := range failedItems {
+		failedByID[app.AppID] = true
+	}
+	if len(failedItems) != 2 || !failedByID["expense.failed"] || !failedByID["ops.partial"] {
+		t.Fatalf("expected failed DataSrv registration filter to return failed and partial apps: %#v", failedItems)
+	}
+
+	partial := true
+	partialItems, err := svc.ListAppInstallations(context.Background(), principal, QueryAppInstallationsInput{DataSrvRegistrationPartial: &partial})
+	if err != nil {
+		t.Fatalf("ListAppInstallations partial DataSrv registration: %v", err)
+	}
+	if len(partialItems) != 1 || partialItems[0].AppID != "ops.partial" {
+		t.Fatalf("expected partial DataSrv registration filter to return partial app: %#v", partialItems)
+	}
+}
 func TestListAppInstallationsFiltersByRoleBinding(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

@@ -164,6 +164,9 @@ type QueryAppInstallationsInput struct {
 	DefinitionFingerprint        string `json:"definition_fingerprint,omitempty"`
 	HasBlockingDependency        *bool  `json:"has_blocking_dependency,omitempty"`
 	HasMissingRequiredDependency *bool  `json:"has_missing_required_dependency,omitempty"`
+	DataSrvRegistrationSynced    *bool  `json:"datasrv_registration_synced,omitempty"`
+	DataSrvRegistrationFailed    *bool  `json:"datasrv_registration_failed,omitempty"`
+	DataSrvRegistrationPartial   *bool  `json:"datasrv_registration_partial,omitempty"`
 	Status                       string `json:"status,omitempty"`
 	Limit                        int    `json:"limit,omitempty"`
 	Before                       string `json:"before,omitempty"`
