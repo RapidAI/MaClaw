@@ -2046,25 +2046,56 @@ func (a *App) domReady(ctx context.Context) {
 	}
 
 	// Background update check: non-blocking, notify the frontend if new version available.
+	// First check after 1 minute (let startup settle), then repeat every 30 minutes.
 	go func() {
 		// Wait for startup to settle: avoid competing with other network
 		// requests and ensure the UI is fully interactive before showing the
 		// in-app update affordance.
-		time.Sleep(60 * time.Second)
-		cfg, _ := a.LoadConfig()
-		var result UpdateResult
-		var err error
-		if cfg.PreferBetaChannel {
-			result, err = a.CheckUpdateBeta(remoteAppVersion())
-		} else {
-			result, err = a.CheckUpdate(remoteAppVersion())
-		}
-		if err != nil {
-			a.log(fmt.Sprintf("[update-check] background check failed: %v", err))
+		select {
+		case <-time.After(60 * time.Second):
+		case <-a.ctx.Done():
 			return
 		}
-		if result.HasUpdate {
-			a.emitEvent(EventAppUpdateAvailable, result)
+
+		var lastNotifiedVersion string
+
+		doCheck := func() {
+			cfg, _ := a.LoadConfig()
+			var result UpdateResult
+			var err error
+			if cfg.PreferBetaChannel {
+				result, err = a.CheckUpdateBeta(remoteAppVersion())
+			} else {
+				result, err = a.CheckUpdate(remoteAppVersion())
+			}
+			if err != nil {
+				a.log(fmt.Sprintf("[update-check] background check failed: %v", err))
+				return
+			}
+			if result.HasUpdate && result.LatestVersion != lastNotifiedVersion {
+				lastNotifiedVersion = result.LatestVersion
+				a.emitEvent(EventAppUpdateAvailable, result)
+			}
+		}
+
+		// First check immediately after the initial 1-minute delay.
+		doCheck()
+
+		// Then check every 30 minutes.
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				// Re-check the config each time: user might have disabled
+				// update checks while the app is running.
+				if cfg, err := a.LoadConfig(); err == nil && !cfg.CheckUpdateOnStartup {
+					continue
+				}
+				doCheck()
+			case <-a.ctx.Done():
+				return
+			}
 		}
 	}()
 }

@@ -920,6 +920,9 @@ func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[str
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	dataSrvRegistration := a.registerMaclawAppInstallationsToDataSrv(entries, source, packageSHA, packageSize, plan.Dependencies)
+	if err := maclawAppBlockingDataSrvRegistrationError(entries, dataSrvRegistration); err != nil {
+		return nil, err
+	}
 	registry, err := a.readMaclawAppInstallRegistry()
 	if err != nil {
 		return nil, err
@@ -1096,6 +1099,94 @@ func (a *App) registerMaclawAppInstallationsToDataSrv(entries []parsedMaclawAppE
 		result["reason"] = "one or more app installations failed to register"
 	}
 	return result
+}
+
+func maclawAppBlockingDataSrvRegistrationError(entries []parsedMaclawAppEntry, registration map[string]any) error {
+	if len(entries) == 0 || registration == nil {
+		return nil
+	}
+	eligibleCount := maclawAppIntFromRegistration(registration["eligible_count"])
+	if eligibleCount <= 0 {
+		return nil
+	}
+	hasEnterpriseDataApp := false
+	for _, entry := range entries {
+		switch normalizeMaclawAppKind(entry.Kind) {
+		case "enterprise_approval_app", "enterprise_normal_app":
+			if len(maclawAppDataSrvRoleBindingsForEntry(entry)) > 0 {
+				hasEnterpriseDataApp = true
+			}
+		}
+	}
+	if !hasEnterpriseDataApp {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(stringMapValue(registration, "status")))
+	failedCount := maclawAppIntFromRegistration(registration["failed_count"])
+	if status == "ready" && failedCount == 0 {
+		return nil
+	}
+	if status == "" {
+		status = maclawAppDataSrvRegistrationStatus(eligibleCount, maclawAppIntFromRegistration(registration["synced_count"]), failedCount)
+	}
+	detail := strings.TrimSpace(stringMapValue(registration, "reason"))
+	if detail == "" {
+		detail = "DataSrv app installation registration did not complete"
+	}
+	if itemDetail := maclawAppDataSrvRegistrationFailureItemDetail(registration); itemDetail != "" {
+		detail += ": " + itemDetail
+	}
+	return fmt.Errorf("cannot install MaClaw App: DataSrv app installation registration failed: status=%s: %s", status, detail)
+}
+
+func maclawAppDataSrvRegistrationFailureItemDetail(registration map[string]any) string {
+	items := []map[string]any{}
+	switch typed := registration["items"].(type) {
+	case []map[string]any:
+		items = typed
+	case []any:
+		for _, raw := range typed {
+			if item := anyMap(raw); item != nil {
+				items = append(items, item)
+			}
+		}
+	}
+	for _, item := range items {
+		if synced, _ := item["synced"].(bool); synced {
+			continue
+		}
+		appID := strings.TrimSpace(stringMapValue(item, "app_id"))
+		reason := strings.TrimSpace(stringMapValue(item, "reason"))
+		switch {
+		case appID != "" && reason != "":
+			return appID + ": " + reason
+		case appID != "":
+			return appID
+		case reason != "":
+			return reason
+		}
+	}
+	return ""
+}
+
+func maclawAppIntFromRegistration(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if n, err := typed.Int64(); err == nil {
+			return int(n)
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // ListMaclawAppInstalls returns newest-first local install audit records.

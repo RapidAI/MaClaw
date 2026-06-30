@@ -879,7 +879,7 @@ const labels = {
         appHubDeprecatedReason: '\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u5df2\u505c\u6b62\u6b64\u5e94\u7528\u7684\u65b0\u88c5\u6216\u8fd0\u884c\uff0c\u5165\u53e3\u548c\u5386\u53f2\u5df2\u4fdd\u7559',
         appHubRevokedReason: '\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u5df2\u64a4\u56de\u6b64\u5e94\u7528\uff0c\u5165\u53e3\u548c\u5386\u53f2\u5df2\u4fdd\u7559',
         apps: '\u5e94\u7528',
-        appStudio: '\u5e94\u7528\u7a0b\u5e8f\u5de5\u4f5c\u5ba4',
+        appStudio: 'MaClaw \u5e94\u7528\u5de5\u4f5c\u5ba4',
         studioSubtitle: '\u521b\u5efa\u3001\u7ba1\u7406\u3001\u4ece\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u6dfb\u52a0\u5e94\u7528\u3002',
         createTab: '\u521b\u5efa\u5e94\u7528',
         promptDraft: '\u7528\u5bf9\u8bdd\u751f\u6210\u8349\u7a3f',
@@ -1252,7 +1252,7 @@ const labels = {
         appHubDeprecatedReason: 'Deprecated by the enterprise capability market. The entry and history are retained.',
         appHubRevokedReason: 'Revoked by the enterprise capability market. The entry and history are retained.',
         apps: 'Apps',
-        appStudio: 'App Studio',
+        appStudio: 'MaClaw App Studio',
         studioSubtitle: 'Create, manage, and add apps from the capability market.',
         createTab: 'Create app',
         promptDraft: 'Generate draft from chat',
@@ -6230,7 +6230,7 @@ function appNeedsRuntimeDependencyCheck(app: AppEntry) {
     return appDependencyEvidence(app).length > 0;
 }
 function appNeedsAutomaticRuntimeDependencyCheck(app: AppEntry) {
-    return (app.source === 'market' || app.source === 'skill' || app.source === 'datasrv') && appDependencyEvidence(app).length > 0;
+    return (app.source === 'market' || app.source === 'skill' || app.source === 'datasrv' || app.studioOrigin === 'app_studio') && appDependencyEvidence(app).length > 0;
 }
 function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmission, overrides: AppGovernanceOverrides = {}) {
     const evidence = latestAppRunEvidence(app);
@@ -7001,8 +7001,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     </div>
                     <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
                         <span className="apps-studio-button__icon" aria-hidden="true">
-                            <Icon name="dashboard" />
-                            <svg className="apps-studio-button__plus" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 2v8M2 6h8" /></svg>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><path d="M17.5 14v7M14 17.5h7" /></svg>
                         </span>
                     </button>
                     <div className="apps-filter-row">
@@ -8902,9 +8901,33 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             }
             const finalStatus = String(startedInstance?.status || startedInstance?.result_status || startedInstance?.resultStatus || '').trim().toLowerCase().replace('-', '_');
             const stillRunning = ['pending', 'running', 'submitted', 'requires_input', 'in_progress'].includes(finalStatus);
-            setRunID(String(startedInstance?.workflow_decision_id || startedInstance?.workflowDecisionID || started?.approval_id || instance.approvalID || instance.id).trim());
+            const supplementRunID = String(startedInstance?.workflow_decision_id || startedInstance?.workflowDecisionID || started?.approval_id || instance.approvalID || instance.id).trim();
+            setRunID(supplementRunID);
             setRunState(stillRunning ? 'running' : 'done');
             setValidationMessage('');
+            if (startedInstance) {
+                const verifiedAt = new Date().toISOString();
+                const approvalInstance = appRunApprovalInstanceEvidenceFromBackend(startedInstance, verifiedAt);
+                const startedResultPayload = (startedInstance.result_payload || startedInstance.resultPayload || {}) as Record<string, unknown>;
+                const historyResultPayload = { ...resultPayload, ...startedResultPayload };
+                if (approvalInstance?.resultPayload && !approvalInstance.resultPayload.supplemental_input) {
+                    approvalInstance.resultPayload = { ...approvalInstance.resultPayload, supplemental_input: resultPayload.supplemental_input };
+                }
+                if (approvalInstance && workflowRunProgressInstances.length > 0) {
+                    approvalInstance.progressInstances = workflowRunProgressInstances.map((item) => appRunApprovalInstanceEvidenceFromBackend(item, verifiedAt)).filter(Boolean) as AppRunApprovalInstanceEvidence[];
+                }
+                recordRunHistory({
+                    runID: supplementRunID || `supplement-${Date.now().toString(36)}`,
+                    status: 'done',
+                    outputMode: 'approval',
+                    inputSummary,
+                    message: String(startedInstance.result || startedInstance.result_status || startedInstance.resultStatus || text.supplementContinue).slice(0, 180),
+                    resultPayload: historyResultPayload,
+                    outputs: normalizeApprovalOutputs((startedInstance.outputs || []) as any[]),
+                    artifacts: normalizeApprovalArtifacts((startedInstance.artifacts || []) as any[]),
+                    approvalInstance,
+                });
+            }
             void loadApprovalInstances('all');
         } catch (error: any) {
             const message = setRuntimeError(error, text.skillRunFailed);
@@ -9253,23 +9276,29 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                         {isApproval && showWorkspaceRegion && <ApprovalWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} backendInstances={approvalInstances} approvalLoadState={approvalInstancesLoadState} lang={lang} text={text} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} onRefresh={loadApprovalInstances} onDecision={updateApprovalInstanceDecision} onSupplement={continueApprovalInstanceWithSupplement} />}
                         {isBusiness && showWorkspaceRegion && <BusinessWorkspace app={app} runState={runState} businessEntity={businessEntity} businessAction={businessAction} businessNote={businessNote} lang={lang} style={{ order: runtimeOrder.approval }} layoutRegion={workspaceRegion} />}
                         {showStatusRegion && <section className="apps-runtime-section apps-runtime-status" data-region={statusRegion} style={{ order: runtimeOrder.status }}>
-                            <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
-								<div className={`apps-result-panel${showRuntimeDependencyDetails || runtimeBusinessError ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
-									<span>{runtimeStatusMessage}</span>
-									{runtimeBusinessError && <StructuredBusinessErrorDetails error={runtimeBusinessError} text={text} />}
-									{isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
-								{showRuntimeDependencyDetails && runState !== 'running' && runState !== 'done' && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
-                                {canInstallRuntimeDependencies && runState !== 'running' && runState !== 'done' && (
-                                    <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
-                                        {dependencyRepairState === 'installing' ? text.installingDependencies : text.installDependenciesAndRun}
-                                    </button>
-                                )}
-                            </div>
-                            {runState !== 'running' && runState !== 'done' && <RuntimeInstallGovernancePanel record={app.installEvidence} text={text} />}
-                            {runState !== 'running' && runState !== 'done' && runtimeVisibleDependencyPlan && (
-                                <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} />
-                            )}
-                            {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
+                            <RuntimeStatusSection
+                                runState={runState}
+                                runtimeStatusState={runtimeStatusState}
+                                runtimeStatusMessage={runtimeStatusMessage}
+                                runtimeBusinessError={runtimeBusinessError}
+                                runtimeDependencyBlocked={runtimeDependencyBlocked}
+                                showRuntimeDependencyDetails={showRuntimeDependencyDetails}
+                                visibleRuntimeDependencyDetails={visibleRuntimeDependencyDetails}
+                                canInstallRuntimeDependencies={canInstallRuntimeDependencies}
+                                dependencyRepairState={dependencyRepairState}
+                                installRuntimeDependenciesAndRun={installRuntimeDependenciesAndRun}
+                                isApproval={isApproval}
+                                runtimeWorkflowContractState={runtimeWorkflowContractState}
+                                runtimeWorkflowContract={runtimeWorkflowContract}
+                                runtimeWorkflowContractIssue={runtimeWorkflowContractIssue}
+                                app={app}
+                                runtimeVisibleDependencyPlan={runtimeVisibleDependencyPlan}
+                                runtimeDependencyPanelState={runtimeDependencyPanelState}
+                                runtimeAppID={runtimeAppID}
+                                isTool={isTool}
+                                skillRunStatus={skillRunStatus}
+                                text={text}
+                            />
                         </section>}
                         {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
                             <button className="apps-secondary-button" type="button" onClick={() => {
@@ -10920,6 +10949,79 @@ const InstallRecordEvidenceSnapshot = ({ record, text }: { record: BackendAppIns
             ))}
         </div>
 		);
+};
+
+const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessage, runtimeBusinessError, runtimeDependencyBlocked, showRuntimeDependencyDetails, visibleRuntimeDependencyDetails, canInstallRuntimeDependencies, dependencyRepairState, installRuntimeDependenciesAndRun, isApproval, runtimeWorkflowContractState, runtimeWorkflowContract, runtimeWorkflowContractIssue, app, runtimeVisibleDependencyPlan, runtimeDependencyPanelState, runtimeAppID, isTool, skillRunStatus, text }: {
+    runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled';
+    runtimeStatusState: string;
+    runtimeStatusMessage: string;
+    runtimeBusinessError: any;
+    runtimeDependencyBlocked: boolean;
+    showRuntimeDependencyDetails: boolean;
+    visibleRuntimeDependencyDetails: any[];
+    canInstallRuntimeDependencies: boolean;
+    dependencyRepairState: string;
+    installRuntimeDependenciesAndRun: () => Promise<void>;
+    isApproval: boolean;
+    runtimeWorkflowContractState: string;
+    runtimeWorkflowContract: any;
+    runtimeWorkflowContractIssue: any;
+    app: AppEntry;
+    runtimeVisibleDependencyPlan: BackendAppInstallPlan | null;
+    runtimeDependencyPanelState: 'idle' | 'loading' | 'repairing' | 'ready' | 'error';
+    runtimeAppID: string;
+    isTool: boolean;
+    skillRunStatus: SkillRunStatusView | null;
+    text: typeof labels.zh;
+}) => {
+    // Auto-expand when there are real blocking issues (missing deps, workflow contract issues, business errors).
+    // Do NOT auto-expand for: governance-only review issues, or normal run lifecycle (running/done/error/cancelled).
+    // Run lifecycle states show progress in the result-panel above, not in the detail section.
+    const hasRealBlockingIssue = runtimeDependencyBlocked || !!runtimeBusinessError || (isApproval && runtimeWorkflowContractState === 'blocked');
+    const shouldAutoExpand = hasRealBlockingIssue;
+    const [detailOpen, setDetailOpen] = useState(shouldAutoExpand);
+
+    // Sync auto-expand when blocking state changes
+    useEffect(() => {
+        if (shouldAutoExpand) setDetailOpen(true);
+    }, [shouldAutoExpand]);
+
+    // Detail content exists when there are governance/dependency panels to show (only in idle/pre-run states)
+    const isPreRun = runState !== 'running' && runState !== 'done';
+    const hasDetailContent = isPreRun && (!!app.installEvidence || !!runtimeVisibleDependencyPlan);
+
+    return (
+        <>
+            <div className="apps-runtime-section__title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>{text.runtimeStatus}</span>
+                {hasDetailContent && (
+                    <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)} style={{ marginLeft: 'auto' }}>
+                        {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
+                    </button>
+                )}
+            </div>
+            <div className={`apps-result-panel${showRuntimeDependencyDetails || runtimeBusinessError ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
+                <span>{runtimeStatusMessage}</span>
+                {runtimeBusinessError && <StructuredBusinessErrorDetails error={runtimeBusinessError} text={text} />}
+                {isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
+                {showRuntimeDependencyDetails && isPreRun && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
+                {canInstallRuntimeDependencies && isPreRun && (
+                    <button className="apps-secondary-button apps-result-panel__action" type="button" disabled={dependencyRepairState === 'installing'} onClick={() => void installRuntimeDependenciesAndRun()}>
+                        {dependencyRepairState === 'installing' ? text.installingDependencies : text.installDependenciesAndRun}
+                    </button>
+                )}
+            </div>
+            {detailOpen && isPreRun && (
+                <>
+                    <RuntimeInstallGovernancePanel record={app.installEvidence} text={text} />
+                    {runtimeVisibleDependencyPlan && (
+                        <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} defaultOpen={false} />
+                    )}
+                </>
+            )}
+            {isTool && <SkillRunEvidence status={skillRunStatus} runState={runState} text={text} />}
+        </>
+    );
 };
 
 const RuntimeInstallGovernancePanel = ({ record, text }: { record?: BackendAppInstallRecord; text: typeof labels.zh }) => {

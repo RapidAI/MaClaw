@@ -11719,6 +11719,8 @@ describe('AppsPage', () => {
     });
 
     it('continues a requires-input approval instance with supplemental input from the runtime workbench', async () => {
+        const designedApprovalApp = { ...dynamicApprovalApp(), source: 'local', studioOrigin: 'app_studio' };
+        seedDynamicAppsPanel([designedApprovalApp, ...testDynamicApps.filter((app) => app.id !== designedApprovalApp.id)]);
         const requiresInputInstance = {
             instance_id: 'wf-input-ui-1',
             app_id: 'expense',
@@ -11768,15 +11770,34 @@ describe('AppsPage', () => {
                 instance: { ...requiresInputInstance, status: 'approved', lane: 'handled', result_status: 'approved', business_status: 'approved', result: 'approved after supplement' },
             },
         });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'supplement-publish-submission', submitted_at: '2026-06-30T09:15:00Z', status: 'submitted', message: 'queued' });
+        (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
+        const dependencyEvidence = testDependencyVerificationForApp(designedApprovalApp);
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: designedApprovalApp.id, name: designedApprovalApp.name, kind: designedApprovalApp.kind }],
+            dependencies: dependencyEvidence.dependencies,
+            dependency_count: dependencyEvidence.dependencies.length,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_workflow_contract_issue: false,
+            workflow_contract_issue_count: 0,
+            has_governance_review_issue: false,
+            governance_review_issue_count: 0,
+        });
 
         render(<AppsPage lang="en" />);
         fireEvent.click(screen.getByRole('button', { name: /报销申请/ }));
 
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
         await waitFor(() => expect(screen.getByText('Missing materials')).not.toBeNull());
         expect(screen.getByText('invoice_attachment')).not.toBeNull();
+        const continueButton = screen.getByRole('button', { name: 'Continue with supplement' }) as HTMLButtonElement;
+        expect(continueButton.disabled).toBe(true);
         fireEvent.change(screen.getByPlaceholderText('Describe what was added'), { target: { value: 'uploaded signed invoice' } });
+        expect(continueButton.disabled).toBe(false);
         fireEvent.change(screen.getByPlaceholderText('artifact://...'), { target: { value: 'artifact://expense/invoice.pdf' } });
-        fireEvent.click(screen.getByText('Continue with supplement'));
+        fireEvent.click(continueButton);
 
         await waitFor(() => expect(startMaclawAppApprovalWorkflowMock).toHaveBeenCalled());
         const payload = startMaclawAppApprovalWorkflowMock.mock.calls.at(-1)?.[0];
@@ -11793,6 +11814,61 @@ describe('AppsPage', () => {
         expect(payload.business_payload).toMatchObject({ approval_id: 'approval-input-ui-1', continue_from_instance_id: 'wf-input-ui-1', supplement_reference: 'artifact://expense/invoice.pdf' });
         expect(payload.result_payload.supplemental_input.form_data).toMatchObject({ supplement_note: 'uploaded signed invoice' });
         expect(payload.workflow_run_args.supplemental_input.business_payload).toMatchObject({ continue_from_instance_id: 'wf-input-ui-1' });
+        await waitFor(() => {
+            const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+            expect(history.expense?.[0]).toMatchObject({
+                status: 'done',
+                outputMode: 'approval',
+                approvalInstance: {
+                    instanceId: 'wf-input-ui-1',
+                    approvalID: 'approval-input-ui-1',
+                    status: 'approved',
+                    resultStatus: 'approved',
+                    progressInstances: [expect.objectContaining({ status: 'running', currentNode: 'expense.manager_review' })],
+                },
+            });
+            expect(history.expense?.[0]?.resultPayload?.supplemental_input?.form_data).toMatchObject({ supplement_note: 'uploaded signed invoice' });
+        });
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('报销申请')) as HTMLElement;
+        expect(publishCard).toBeTruthy();
+        expect(within(publishCard).getByText('Ready to submit')).not.toBeNull();
+        fireEvent.click(within(publishCard).getByText('Submit for review'));
+
+        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
+        const publishPayload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
+        const evidence = publishPayload.apps[0].app.governance.testEvidence;
+        expect(evidence.runId).toBe('approval-input-ui-1');
+        expect(evidence.definitionHash).toMatch(/^[0-9a-f]{8}$/);
+        expect(evidence.resultPayload.supplemental_input.form_data).toMatchObject({
+            supplement_note: 'uploaded signed invoice',
+            supplement_reference: 'artifact://expense/invoice.pdf',
+        });
+        expect(evidence.approvalInstance).toMatchObject({
+            instanceId: 'wf-input-ui-1',
+            approvalID: 'approval-input-ui-1',
+            status: 'approved',
+            resultStatus: 'approved',
+            workflowSkillId: 'expense-approval-workflow',
+            workflowVersion: '1.0.0',
+            approvalEvent: 'expense.submitted',
+            recordID: 'expense-record-input-1',
+            approvalInstanceViewVerified: true,
+            resultPayload: expect.objectContaining({
+                supplemental_input: expect.objectContaining({
+                    form_data: expect.objectContaining({ supplement_note: 'uploaded signed invoice' }),
+                    business_payload: expect.objectContaining({ continue_from_instance_id: 'wf-input-ui-1' }),
+                }),
+            }),
+            progressInstances: [expect.objectContaining({ status: 'running', currentNode: 'expense.manager_review' })],
+        });
+        expect(evidence.resultCoverage).toEqual(expect.objectContaining({
+            ok: true,
+            primary: 'approval_result',
+            missingTypes: [],
+        }));
     });
     it('blocks DataSrv installed MaClaw apps at runtime when dependency verification fails', async () => {
         getMISDataConfigMock.mockResolvedValue({ enabled: true, endpoint: 'http://datasrv.test', token: 'token' });

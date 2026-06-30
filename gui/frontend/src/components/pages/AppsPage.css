@@ -121,24 +121,11 @@
     border-radius: var(--radius-sm);
     color: currentColor;
     background: transparent;
-    position: relative;
 }
 
-.apps-studio-button__icon > svg:not(.apps-studio-button__plus) {
-    width: 15px;
-    height: 15px;
-}
-
-.apps-studio-button__plus {
-    width: 12px;
-    height: 12px;
-    position: absolute;
-    right: -3px;
-    bottom: -3px;
-    border: 1px solid var(--theme-primary);
-    border-radius: 999px;
-    color: var(--theme-primary);
-    background: var(--theme-on-primary, #ffffff);
+.apps-studio-button__icon > svg {
+    width: 18px;
+    height: 18px;
 }
 
 .apps-studio-button:hover,

@@ -17482,3 +17482,395 @@ AppsPage Hub dependency install failure diagnostics targeted test: ok
 ```
 
 剩余缺口：GUI 运行态现在能展示依赖预检/完整性诊断；下一步继续把真实 Hub handler 输出、真实依赖 Skill 下载验签、DataSrv app_installations 登记、审批 workflow 运行、单 App/全局审批中心回读压成更少 mock 的端到端黄金链路，并补齐签名失败、依赖缺失、DataSrv 登记部分失败、审批拒绝/需关注/补充材料等失败路径。
+
+### 推进记录：共享 GUI 安装合同强制依赖验证明细（2026-07-01）
+
+本轮继续把少 mock 黄金链路向合同层收紧。此前真实 Hub `CapabilityMaclawAppPackageHandler` 输出已经可以被共享 GUI HTTP 下载客户端、包签名校验和子 App 选择逻辑消费；本轮进一步要求 Hub 下载包中每个 App 的 `governance.dependencyVerification` 必须完整存在，且必须包含非阻塞的依赖明细。这样 GUI 安装入口在真正开始安装前，就能通过共享合同确认“这个 MaClaw App 不只是发布状态正确，还带着可审计的依赖验证证据”。
+
+本轮完成：
+1. 扩展 `internal/maclawappcontract.ValidateGUIInstallHubPackage`：
+   - 每个下载 App 必须包含 `governance.dependencyVerification` 或 `governance.dependency_verification`；
+   - `blocked / has_blocking_dependency / has_missing_required` 等字段不能声明阻塞；
+   - `dependencies` 或 `skills` 必须至少包含一条依赖明细；
+   - 继续保留原有包签名、submission、review evidence、resolved dependencies 等检查。
+2. 补充合同负向测试：
+   - 缺失 dependency verification 时拒绝；
+   - dependency verification 声明阻塞依赖时拒绝。
+3. 强化 Hub 真实 handler golden path `TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath`：
+   - 真实提交 -> 审批 -> 发布 -> 列表 -> `CapabilityMaclawAppPackageHandler` 下载；
+   - 共享 `DownloadGUIInstallHubPackage` 通过真实 handler 输出下载；
+   - 共享 `SelectHubPackageApps` 选择 `market-approval-ready-app` 后再次通过 GUI 安装合同；
+   - 明确断言选择后的包仍保留 `resolved_dependencies`、`dependencyVerification.dependencies[]` 和 workflow dependency 的 `install_ref`。
+4. 回归 GUI 后端共享审批 fixture：确认更严格的合同没有破坏 `Hub 下载 -> 依赖 signed Skill 下载验签 -> DataSrv app_installations 登记 -> workflow Skill 运行 -> 单 App/全局审批中心回读`。
+
+当前合同门禁链路变为：
+
+```text
+CapabilityMaclawAppPackageHandler real output
+  -> DownloadGUIInstallHubPackage
+  -> VerifyHubPackageSignature
+  -> ValidateGUIInstallHubPackage
+      -> package signature
+      -> Hub submission/review evidence
+      -> resolved_dependencies
+      -> governance.dependencyVerification.dependencies[] non-blocking
+  -> SelectHubPackageApps
+  -> ValidateGUIInstallHubPackage again
+  -> GUI install / dependency install / DataSrv registration / workflow run
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder
+go test ./internal/maclawappcontract -run "TestValidateGUIInstallHubPackage|TestSelectHubPackageApps" -count=1
+go test ./hub/internal/httpapi -run TestCapabilityMaclawAppSubmitApprovePublishListAndDownloadGoldenPath -count=1
+go test ./gui -run TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv -count=1
+```
+
+验证结果：
+```text
+internal/maclawappcontract GUI install contract dependency verification tests: ok
+Hub real handler submit/approve/publish/download GUI contract golden path: ok
+GUI shared approval fixture install/dependency/DataSrv/workflow/readback golden path: ok
+```
+
+剩余缺口：少 mock 后端黄金链路已经继续收紧到共享合同层；下一步应补失败路径的端到端验收，优先覆盖真实 Hub 包签名失败、依赖 Skill 包签名不可信、DataSrv 登记部分失败，以及审批 workflow 产生拒绝/需关注/补充材料时的 DataSrv 与 GUI 回读一致性。
+
+### 推进记录：依赖 Skill 包签名不可信时阻断 MaClaw App 安装（2026-07-01）
+
+本轮继续补全失败路径的端到端验收，优先覆盖“App 包签名可信，但它依赖的 workflow Skill 包由未信任密钥签名”的高风险场景。这个场景必须在安装阶段被阻断，不能等到 App 已写入本地面板或 DataSrv `app_installations` 后才暴露，否则企业审批型应用会出现“入口已安装、审批流不可运行、审计证据不可信”的断链。
+
+本轮完成：
+1. 新增 GUI 后端验收 `TestInstallSharedPublishedApprovalFixtureBlocksUntrustedDependencySkillSignature`：
+   - MaClaw App Hub package 使用可信公钥签名；
+   - App Skill 依赖也使用同一可信密钥签名，可以通过安装；
+   - workflow Skill 依赖使用另一组未信任密钥签名；
+   - 安装 `approval-ready-app` 时必须在 workflow Skill 完整性校验阶段失败。
+2. 明确失败边界：
+   - 错误信息必须暴露 `approval-ready-workflow`、`package_integrity_failed`、`enterprise_hub_install` 和 signature 诊断；
+   - DataSrv mock 不应被调用，证明失败发生在 app_installations 登记之前；
+   - 本地 `app_install_records.json` 不应落入失败安装记录；
+   - 信任库只保留 App package 公钥指纹，不能把未信任 workflow Skill 的公钥指纹写入 `TrustedSkillPackageKeyFingerprints`。
+3. 回归原有成功链路：
+   - 同一套共享审批 fixture 的成功安装、依赖安装、DataSrv 登记、workflow 运行和审批中心回读仍然通过；
+   - 说明新增失败路径没有削弱正常的企业审批型 App 安装链路。
+
+当前依赖包信任边界变为：
+
+```text
+trusted MaClaw App package signature
+  -> seeds trusted package key fingerprint
+  -> installs trusted app Skill dependency
+  -> downloads workflow Skill dependency
+  -> verifies workflow Skill package signature against trusted fingerprints
+  -> blocks untrusted workflow Skill before DataSrv registration
+  -> keeps trust store and install audit clean
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run TestInstallSharedPublishedApprovalFixtureBlocksUntrustedDependencySkillSignature -count=1
+go test ./gui -run "TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv|TestInstallSharedPublishedApprovalFixtureBlocksUntrustedDependencySkillSignature" -count=1
+```
+
+验证结果：
+```text
+GUI untrusted dependency Skill signature failure path: ok
+GUI shared approval fixture success/failure dependency signature suite: ok
+```
+
+剩余缺口：依赖 Skill 包签名不可信的阻断链路已经有端到端验收；下一步继续补 Hub 包签名失败、DataSrv 登记部分失败，以及审批 workflow 返回拒绝/需关注/补充材料时的 DataSrv 与 GUI 回读一致性。
+
+### 推进记录：Hub MaClaw App 包签名无效时阻断安装（2026-07-01）
+
+本轮继续把能力市场安装入口的信任链前移到 Hub package 本体。依赖 Skill 的签名校验已经能阻断不可信 workflow Skill；但在此之前，MaClaw App 自身的 Hub 下载包也必须先通过签名验证。若 App 包签名无效，GUI 不能继续解析为可安装 App、不能安装依赖、不能写 DataSrv，也不能把包公钥写入本地 Skill 包信任库。
+
+本轮完成：
+1. 新增 GUI 后端验收 `TestInstallSharedPublishedApprovalFixtureBlocksInvalidHubPackageSignature`：
+   - 使用共享企业审批型 App fixture，保留完整 published governance、resolved dependencies、dependency verification 和 workflow contract；
+   - 先用 Hub package 私钥正常签名，再篡改 `package_signature.signature_base64`；
+   - 从真实安装入口 `InstallSelectedMaclawAppPackageFromHub` 发起安装，确保失败发生在 `DownloadMaclawAppPackageFromHub -> verifyMaclawAppHubPackageSignature` 阶段。
+2. 明确失败边界：
+   - 错误信息必须暴露 `package signature` 与 `verification failed`；
+   - 不应请求任何依赖 Skill capability 或下载端点；
+   - 不应调用 DataSrv；
+   - 不应写入本地安装审计；
+   - 不应把无效 Hub package 的公钥指纹写入 `TrustedSkillPackageKeyFingerprints`。
+3. 与相邻成功/失败链路一起回归：
+   - 正常共享审批 fixture 仍能完成 Hub 安装、依赖安装、DataSrv 登记、workflow 运行和审批中心回读；
+   - App 包签名失败会在依赖安装前阻断；
+   - 依赖 Skill 包签名不可信会在 DataSrv 登记前阻断。
+
+当前 Hub 安装信任链变为：
+
+```text
+Download Hub MaClaw App package
+  -> Validate GUI install package contract
+  -> Verify Hub package signature
+      -> reject invalid app package signature before dependency install
+      -> seed trusted package key only after verification succeeds
+  -> Install dependency Skills with trusted fingerprints
+  -> Record install / DataSrv app_installations
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv|TestInstallSharedPublishedApprovalFixtureBlocksInvalidHubPackageSignature|TestInstallSharedPublishedApprovalFixtureBlocksUntrustedDependencySkillSignature" -count=1
+```
+
+验证结果：
+```text
+GUI shared approval fixture Hub package signature success/failure and dependency signature suite: ok
+```
+
+剩余缺口：Hub App 包签名失败、依赖 Skill 包签名不可信两类信任链失败路径已经补齐；下一步继续补 DataSrv 登记部分失败，以及审批 workflow 返回拒绝/需关注/补充材料时的 DataSrv 与 GUI 回读一致性。
+
+### 推进记录：DataSrv app_installations 登记失败时阻断企业 App 安装（2026-07-01）
+
+本轮继续补齐 Hub 安装信任链之后的企业数据登记边界。对企业审批型/企业普通型 App 来说，安装不是“本地面板出现入口”就算完成；只要 App 带 DataSrv role bindings，它就必须成功登记到 DataSrv `app_installations`，否则后续审批实例管理、治理证据恢复、二次发布和审计都会断链。因此 DataSrv 登记失败不能再作为 install audit 中的一个 failed evidence 被宽容保存，而应阻断企业 App 安装。
+
+本轮完成：
+1. 调整 `RecordMaclawAppInstall`：
+   - `registerMaclawAppInstallationsToDataSrv` 之后、写本地 `app_install_records.json` 之前新增阻断检查；
+   - 企业审批型/企业普通型 App 只要存在 DataSrv role bindings，且登记结果不是 `ready`，就返回错误；
+   - 错误信息保留 `status=failed/partial/skipped`、顶层 reason、失败 app_id 和 DataSrv HTTP 错误原因；
+   - 无 DataSrv role bindings 的 App 仍可保持 skipped，不影响工具型/纯本地入口。
+2. 新增后端安装记录层验收 `TestRecordMaclawAppInstallBlocksDataSrvRegistrationFailure`：
+   - 企业普通 App 调用 `RecordMaclawAppInstall`；
+   - DataSrv `PUT /api/v1/data/app-installations/{appID}` 返回 503；
+   - 安装必须失败，错误包含 `datasrv-offline-app` 和 `datasrv offline`；
+   - 本地安装审计不能落盘。
+3. 新增 Hub 全链路验收 `TestInstallSharedPublishedApprovalFixtureBlocksDataSrvRegistrationFailure`：
+   - Hub MaClaw App 包签名可信；
+   - app Skill 和 workflow Skill 依赖包签名可信并成功下载；
+   - 进入 DataSrv app_installations 登记时返回 500；
+   - 安装失败，且不写本地 install audit；
+   - 验证失败阶段发生在依赖安装之后、审批 workflow 运行之前。
+4. 更新旧语义测试：
+   - 原先“DataSrv 登记失败也保留安装审计”的测试语义已不符合企业 App 完整安装原则；
+   - 已改为“DataSrv 登记失败必须阻断安装并保留可诊断错误”。
+
+当前安装阶段边界变为：
+
+```text
+Hub package signature verified
+  -> dependency Skills installed and verified
+  -> RecordMaclawAppInstall
+      -> DataSrv app_installations registration
+      -> if enterprise app has DataSrv bindings and registration != ready: block install
+      -> only after DataSrv ready: write local app_install_records.json
+  -> app can appear in local panel and approval/runtime recovery
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestRecordMaclawAppInstallBlocksDataSrvRegistrationFailure|TestInstallSharedPublishedApprovalFixtureBlocksDataSrvRegistrationFailure|TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegistersDataSrv" -count=1
+```
+
+验证结果：
+```text
+GUI DataSrv registration failure blocking and shared approval success path: ok
+```
+
+剩余缺口：安装阶段的三类关键失败边界（Hub App 包签名失败、依赖 Skill 包签名不可信、DataSrv app_installations 登记失败）已经补齐；下一步继续推进审批 workflow 返回拒绝/需关注/补充材料时的 DataSrv 与 GUI 回读一致性。
+
+### 推进记录：审批 workflow 非通过结果与补充材料回读一致性（2026-07-01）
+
+本轮继续推进企业审批型应用运行态结果闭环。此前安装阶段的关键失败边界已经收口；运行阶段还必须证明 workflow Skill 返回的非通过结果不会只停留在 run evidence 中，而是能同步到 DataSrv，并被单 App 审批工作台和全局审批中心按正确 lane 回读。
+
+本轮完成：
+1. 复核并回归现有审批结果状态链路：
+   - `approved` 进入 `handled`，同步 DataSrv review，保留 result payload、outputs、artifacts；
+   - `rejected` 进入 `handled`，同步 DataSrv review，单 App/全局 handled 回读一致；
+   - `attention` 进入 `attention`，只做 view-only 业务记录同步，不 review DataSrv approval，单 App/全局 attention 回读一致；
+   - `timeout` / `cancelled` 进入 `handled`，同步 DataSrv review，保留 workflow node path 和输出块；
+   - workflow Skill 执行失败进入 `failed`，同步失败结果包。
+2. 补强 `requires_input` 回读验收：
+   - workflow Skill 返回 `requires_input` 时，实例 lane 归为 `my_requests`；
+   - DataSrv 同步走 `update_record_approval_progress`，不走 review；
+   - 单 App `my_requests` 能看到待补充实例；
+   - 新增全局 `ListMaclawAppApprovalInstancesAll("my_requests")` 断言，确认全局审批中心也能看到同一实例；
+   - 断言 app-scoped 与 global 两个查询分别使用 `app_id=...&lane=my_requests` 和 `lane=my_requests`。
+3. 回归补充材料后继续流程：
+   - `ContinueFromID + ApprovalID` 复用原审批实例，不新建 DataSrv approval；
+   - supplemental input 写入 progress；
+   - workflow 最终 approved 后进入 handled；
+   - 单 App/全局 handled 回读一致，my_requests 清空。
+
+当前审批结果回读链路变为：
+
+```text
+workflow Skill result
+  -> approval_instance status
+      -> approved/rejected/timeout/cancelled/failed => handled
+      -> attention => attention view-only
+      -> requires_input => my_requests progress
+  -> SyncMaclawAppApprovalInstanceToDataSrv
+  -> DataSrv approvals list
+  -> single App approval workspace
+  -> global approval center
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult|TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult|TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -count=1
+```
+
+验证结果：
+```text
+GUI approval workflow result states and supplement readback suite: ok
+```
+
+剩余缺口：审批 workflow 的主要结果状态（通过、拒绝、需关注、超时、取消、失败、待补充、补充后继续）已经有 DataSrv 与 GUI 回读一致性验收；下一步应继续把这些状态在前端审批工作台的交互显示、补充材料面板、运行历史 evidence 与 Hub/DataSrv 安装恢复后的二次运行串成更少 mock 的 UI 回归。
+
+### 推进记录：前端审批补充材料面板交互门禁（2026-07-01）
+
+本轮继续把后端 `requires_input` 状态闭环推进到 GUI 运行态工作台。后端已经证明 workflow Skill 返回 `requires_input` 时会进入 `my_requests`，并能在单 App/全局审批中心回读；前端还需要证明用户在传统软件式审批详情区里不会提交空补充材料，只有填写说明或附件引用后才允许继续 workflow。
+
+本轮完成：
+1. 补强前端运行态用例 `continues a requires-input approval instance with supplemental input from the runtime workbench`：
+   - 打开企业审批型 App 的运行态工作台；
+   - DataSrv/后端 mock 返回 `requires_input` 审批实例；
+   - 断言补充材料面板展示 `Missing materials` 和缺失字段 `invoice_attachment`；
+   - 新增断言：补充说明和附件引用都为空时，`Continue with supplement` 按钮禁用；
+   - 填写补充说明后按钮启用；
+   - 提交后继续断言 `StartMaclawAppApprovalWorkflow` payload 保留 `approval_id`、`continue_from_instance_id`、`form_data`、`business_payload`、`result_payload.supplemental_input` 和 `workflow_run_args.supplemental_input`。
+2. 保持 UI 形态不变：
+   - 继续使用现有 `ApprovalSupplementPanel` 内联面板；
+   - 不引入 modal，不把审批详情退化成单纯表单；
+   - 保持运行态工作台的补充材料作为审批详情的一部分。
+
+当前前端补充材料交互链路变为：
+
+```text
+requires_input approval instance
+  -> ApprovalDetail
+  -> ApprovalSupplementPanel
+      -> empty note/reference disables continue
+      -> note or artifact reference enables continue
+  -> StartMaclawAppApprovalWorkflow(ContinueFromID + ApprovalID)
+  -> supplemental_input enters workflow run args and result payload
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "continues a requires-input approval instance with supplemental input from the runtime workbench"
+```
+
+验证结果：
+```text
+AppsPage requires-input supplemental interaction targeted test: ok
+```
+
+剩余缺口：前端补充材料面板已经具备空提交门禁与继续流程 payload 验收；下一步应继续压缩前端 App 运行态/审批中心/安装恢复之间的 mock 距离，并补运行历史 evidence 对 `requires_input -> supplemented -> approved/rejected` 链路的展示一致性。
+
+### 推进记录：补充材料继续流程写入运行历史证据（2026-07-01）
+
+本轮继续补齐 `requires_input -> supplemented -> final result` 的前端证据链。前面已经证明补充材料面板能阻止空提交，并且继续流程 payload 会携带 `supplemental_input`；但成功继续后，运行历史也必须保存同一份补充材料证据和最终审批实例，否则 App Studio 复测、二次发布、安装恢复后的证据面板会只能看到最终 approved/rejected，却丢失“用户补了什么”的过程事实。
+
+本轮完成：
+1. 调整前端 `continueApprovalInstanceWithSupplement` 成功分支：
+   - 继续 workflow 成功返回 `startedInstance` 后，写入一条 `AppRunHistoryEntry`；
+   - `runID` 使用 workflow decision id / approval id / instance id；
+   - `outputMode` 固定为 `approval`；
+   - `approvalInstance` 来自后端返回的最终实例；
+   - `progressInstances` 保存 workflow run 中的中间进度实例；
+   - 顶层 `resultPayload` 合并补充输入和最终 workflow 结果，避免最终 approved/rejected payload 覆盖 `supplemental_input`；
+   - `approvalInstance.resultPayload` 同步保留 `supplemental_input`。
+2. 扩展前端运行态测试：
+   - 在补充材料提交成功后读取 `maclaw:apps-run-history:v1`；
+   - 断言最新历史记录为 `done / approval`；
+   - 断言 `approvalInstance` 保留 `instanceId`、`approvalID`、最终 `approved` 状态和 running progress instance；
+   - 断言 `resultPayload.supplemental_input.form_data.supplement_note` 保留用户填写的补充说明。
+
+当前补充材料证据链变为：
+
+```text
+requires_input approval instance
+  -> user submits supplement note/reference
+  -> StartMaclawAppApprovalWorkflow continues existing ApprovalID
+  -> workflow_run.progress_instances + final instance
+  -> runtime approval workspace
+  -> local run history evidence
+      -> supplemental_input
+      -> final approvalInstance
+      -> progressInstances
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "continues a requires-input approval instance with supplemental input from the runtime workbench"
+
+cd D:\workprj\aicoder
+go test ./gui -run "TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult|TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement" -count=1
+```
+
+验证结果：
+```text
+AppsPage requires-input supplemental run history evidence targeted test: ok
+GUI requires-input backend workflow continuation suite: ok
+```
+
+剩余缺口：补充材料继续流程已经进入运行历史 evidence；下一步应继续把运行历史中的补充链路接入 App Studio 发布门禁/测试证据选择，以及 DataSrv install evidence 恢复后的二次运行与二次发布回归。
+
+### 推进记录：补充材料审批链路进入 App Studio 发布证据（2026-07-01）
+
+本轮把上一步的运行历史 evidence 继续接到 App Studio 发布门禁。MaClaw App 的制作链路不能只证明“运行态能继续审批”，还必须证明“设计后的 App 在上传 Hub 能力市场前，测试证据包保留同一条审批事实链”。尤其是 `requires_input -> supplement -> approved/rejected` 场景，发布包里必须同时保留补充材料、最终审批实例、进度节点、结果契约覆盖和 Skill 依赖验证，否则安装方无法判断这个企业审批型 App 是否真的按审批 workflow 运行过。
+
+本轮完成：
+1. 调整前端运行态依赖检查条件：
+   - `appNeedsAutomaticRuntimeDependencyCheck` 将 `studioOrigin === 'app_studio'` 的本地 MaClaw App 纳入自动依赖检查；
+   - App Studio 设计出的本地审批 App 在运行测试前会触发 `PlanMaclawAppInstall`；
+   - 运行历史写入时可携带 dependencyVerification，避免发布门禁卡在“缺少依赖验证证据”。
+2. 扩展前端补充材料测试为“运行 + 发布”闭环：
+   - 将 `报销申请` 场景切换为 App Studio 设计出的本地审批 App；
+   - 等待运行前 Skill 依赖计划检查完成；
+   - 继续提交补充材料并断言运行历史保留 `supplemental_input`；
+   - 打开 App Studio 的 `Review / publish`；
+   - 断言发布卡片达到 `Ready to submit`；
+   - 点击 `Submit for review` 后检查上传包 `governance.testEvidence`。
+3. 新增发布包证据断言：
+   - `testEvidence.runId` 来源于继续审批的 approval/workflow id；
+   - `definitionHash` 匹配当前 App 定义；
+   - 顶层 `resultPayload.supplemental_input.form_data` 保留补充说明和附件引用；
+   - `approvalInstance` 保留 `instanceId`、`approvalID`、最终 `approved`、`workflowSkillId`、`workflowVersion`、`approvalEvent`、`recordID`；
+   - `approvalInstance.resultPayload.supplemental_input` 与顶层结果一致；
+   - `progressInstances` 保留 running 审批节点；
+   - `resultCoverage` 对 `approval_result` 通过，`missingTypes` 为空。
+
+当前制作、测试、上传证据链变为：
+
+```text
+App Studio designed approval app
+  -> automatic Skill dependency plan check
+  -> runtime approval workspace
+  -> requires_input instance
+  -> user submits supplemental input
+  -> StartMaclawAppApprovalWorkflow continues existing ApprovalID
+  -> local run history evidence
+      -> dependencyVerification
+      -> supplemental_input
+      -> final approvalInstance
+      -> progressInstances
+  -> App Studio Review / publish
+  -> governance.testEvidence in Hub upload package
+```
+
+验证命令：
+```powershell
+cd D:\workprj\aicoder\gui\frontend
+npm.cmd test -- src/components/pages/__tests__/AppsPage.test.tsx -t "continues a requires-input approval instance with supplemental input from the runtime workbench"
+```
+
+验证结果：
+```text
+AppsPage requires-input supplemental publish evidence targeted test: ok
+```
+
+剩余缺口：App Studio 本地设计 App 的补充审批 evidence 已可进入发布包；下一步应继续补 DataSrv install evidence 恢复后的二次发布/二次运行回归，并检查 Hub/DataSrv 对 `supplemental_input`、`progressInstances`、dependencyVerification 的持久化和 OpenAPI/schema 暴露是否完全一致。

@@ -2355,42 +2355,34 @@ func TestInstallMaclawAppPackageFromHubDownloadsAndRecordsInstall(t *testing.T) 
 		t.Fatalf("install audit should persist DataSrv registration status: %#v", records[0].DataSrvRegistration)
 	}
 }
-func TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure(t *testing.T) {
+func TestRecordMaclawAppInstallBlocksDataSrvRegistrationFailure(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/capabilities/maclaw-apps/cap-datasrv-offline/package" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		pkg := maclawAppPackageWithCurrentDefinitionHashes(t, `{
-			"schema": "maclaw.app.pack.v1",
+	pkg := maclawAppPackageWithCurrentDefinitionHashes(t, `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"source": "market",
+		"apps": [{
+			"schema": "maclaw.app.v1",
 			"privateMarker": "x_maclaw_apps",
-			"source": "enterprise_hub",
-			"apps": [{
-				"schema": "maclaw.app.v1",
-				"privateMarker": "x_maclaw_apps",
-				"app": {
-					"id": "datasrv-offline-app",
-					"name": "DataSrv Offline App",
-					"version": "1.0.0",
-					"kind": "enterprise_normal_app",
-					"binding": {
-						"datasrv": {"domain":"ops", "datasetID":"ops.offline_records", "templateID":"ops.offline_template", "objectRole":"offline_record", "preferredAction":"ops.offline_upsert"}
-					},
-					"ui": {"schema":"maclaw.app.ui.v1", "entry":"normal_workspace", "layouts":{"normal_workspace":{"template":"classic_split", "density":"compact", "regions":[{"id":"input_form", "role":"input", "placement":"left"}, {"id":"record_grid", "role":"record_list", "placement":"center"}, {"id":"result_panel", "role":"output", "placement":"right"}]}}},
+			"app": {
+				"id": "datasrv-offline-app",
+				"name": "DataSrv Offline App",
+				"version": "1.0.0",
+				"kind": "enterprise_normal_app",
+				"binding": {
+					"datasrv": {"domain":"ops", "datasetID":"ops.offline_records", "templateID":"ops.offline_template", "objectRole":"offline_record", "preferredAction":"ops.offline_upsert"}
+				},
+				"ui": {"schema":"maclaw.app.ui.v1", "entry":"normal_workspace", "layouts":{"normal_workspace":{"template":"classic_split", "density":"compact", "regions":[{"id":"input_form", "role":"input", "placement":"left"}, {"id":"record_grid", "role":"record_list", "placement":"center"}, {"id":"result_panel", "role":"output", "placement":"right"}]}}},
+				"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"normal_workspace", "template":"classic_split", "density":"compact", "regionCount":3, "regions":[{"id":"input_form", "role":"input", "placement":"left"}, {"id":"record_grid", "role":"record_list", "placement":"center"}, {"id":"result_panel", "role":"output", "placement":"right"}]},
 					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
-					"governance": {
-						"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"normal_workspace", "template":"classic_split", "density":"compact", "regionCount":3, "regions":[{"id":"input_form", "role":"input", "placement":"left"}, {"id":"record_grid", "role":"record_list", "placement":"center"}, {"id":"result_panel", "role":"output", "placement":"right"}]},
-						"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
-						"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-datasrv-offline", "sampleInput":{"id":"offline-1"}, "expectedOutput":{"content":"ok"}},
-						"testEvidence": {"runId":"run-datasrv-offline", "testProtocolFingerprint":"proto-datasrv-offline", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "title":"Result", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
-					}
+					"testProtocol": {"schema":"maclaw.app.test_protocol.v1", "fingerprint":"proto-datasrv-offline", "sampleInput":{"id":"offline-1"}, "expectedOutput":{"content":"ok"}},
+					"testEvidence": {"runId":"run-datasrv-offline", "testProtocolFingerprint":"proto-datasrv-offline", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "title":"Result", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
 				}
-			}]
-		}`)
-		_, _ = w.Write([]byte(pkg))
-	}))
-	defer server.Close()
+			}
+		}]
+	}`)
 	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/data/app-installations/datasrv-offline-app" {
 			t.Fatalf("unexpected DataSrv request: %s %s", r.Method, r.URL.Path)
@@ -2398,53 +2390,24 @@ func TestInstallMaclawAppPackageFromHubPersistsDataSrvRegistrationFailure(t *tes
 		http.Error(w, "datasrv offline", http.StatusServiceUnavailable)
 	}))
 	defer dataSrv.Close()
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
-		t.Fatalf("SaveConfig() error = %v", err)
-	}
 	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
 		t.Fatalf("SaveMISDataConfig() error = %v", err)
 	}
 
-	result, err := app.InstallMaclawAppPackageFromHub("cap-datasrv-offline")
-	if err != nil {
-		t.Fatalf("InstallMaclawAppPackageFromHub() should keep install audit when DataSrv registration fails: %v", err)
+	_, err := app.RecordMaclawAppInstall(pkg, "market")
+	if err == nil {
+		t.Fatalf("RecordMaclawAppInstall should reject failed DataSrv registration")
 	}
-	installRecord, ok := result["install_record"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing install record: %#v", result["install_record"])
-	}
-	registration := anyMap(installRecord["datasrv_registration"])
-	if registration["synced"] != false || registration["status"] != "failed" || maclawAppIntValueForTest(registration["eligible_count"]) != 1 || maclawAppIntValueForTest(registration["synced_count"]) != 0 || maclawAppIntValueForTest(registration["failed_count"]) != 1 {
-		t.Fatalf("failed DataSrv registration should be persisted as failed audit: %#v", registration)
-	}
-	if !strings.Contains(maclawAppStringFromAny(registration["reason"]), "failed to register") {
-		t.Fatalf("failed DataSrv registration should include top-level reason: %#v", registration)
-	}
-	var item map[string]any
-	switch items := registration["items"].(type) {
-	case []map[string]any:
-		if len(items) == 1 {
-			item = items[0]
-		}
-
-	default:
-		itemsAny := anySlice(registration["items"])
-		if len(itemsAny) == 1 {
-			item = anyMap(itemsAny[0])
-		}
-	}
-	if len(item) == 0 {
-		t.Fatalf("failed DataSrv registration should keep item diagnostics: %#v", registration)
-	}
-	if item["app_id"] != "datasrv-offline-app" || item["synced"] != false || !strings.Contains(maclawAppStringFromAny(item["reason"]), "datasrv offline") {
-		t.Fatalf("failed DataSrv item should preserve app id and HTTP reason: %#v", item)
+	errText := strings.ToLower(err.Error())
+	if !strings.Contains(errText, "datasrv app installation registration failed") || !strings.Contains(errText, "status=failed") || !strings.Contains(errText, "datasrv-offline-app") || !strings.Contains(errText, "datasrv offline") {
+		t.Fatalf("DataSrv registration failure should preserve app id and HTTP reason, got %v", err)
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
 	}
-	if len(records) != 1 || records[0].AppID != "datasrv-offline-app" || records[0].DataSrvRegistration["status"] != "failed" || records[0].DataSrvRegistration["synced"] != false {
-		t.Fatalf("local install audit should persist failed DataSrv registration: %#v", records)
+	if len(records) != 0 {
+		t.Fatalf("failed DataSrv registration should not persist local install audit: %#v", records)
 	}
 }
 func TestDownloadMaclawAppPackageFromHubTrustsSignedPackageFingerprint(t *testing.T) {
@@ -2796,6 +2759,288 @@ func TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegi
 	}
 	if !sawProgress || !sawReview || !sawAppScopedHandled || !sawGlobalHandled {
 		t.Fatalf("shared fixture should sync progress/review and query both approval centers, progress=%v review=%v app=%v global=%v requests=%#v", sawProgress, sawReview, sawAppScopedHandled, sawGlobalHandled, dataSrvRequests)
+	}
+}
+
+func TestInstallSharedPublishedApprovalFixtureBlocksInvalidHubPackageSignature(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey error = %v", err)
+	}
+	capabilityID := "cap-approval-ready-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:approval-ready-app@pkg"
+	fixtureData, err := json.Marshal(maclawapptest.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage(capabilityID, versionKey))
+	if err != nil {
+		t.Fatalf("marshal shared approval fixture: %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, string(fixtureData))), &pkg); err != nil {
+		t.Fatalf("decode shared approval fixture: %v", err)
+	}
+	maclawapptest.SignPublishedMaclawAppHubPackage(pkg, publicKey, privateKey, strings.Repeat("b", 64), versionKey, "2026-07-01T03:30:00Z", "hub-admin")
+	if signature := anyMap(pkg["package_signature"]); signature != nil {
+		signature["signature_base64"] = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
+	}
+	dependencyRequests := 0
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+			t.Fatalf("Authorization = %q for %s", got, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/capabilities/maclaw-apps/cap-approval-ready-app/package":
+			_ = json.NewEncoder(w).Encode(pkg)
+		default:
+			dependencyRequests++
+			http.Error(w, "dependency endpoints should not be reached after Hub package signature failure", http.StatusInternalServerError)
+		}
+	}))
+	defer hub.Close()
+	dataSrvCalled := false
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dataSrvCalled = true
+		t.Fatalf("DataSrv should not be called when Hub package signature is invalid: %s %s", r.Method, r.URL.Path)
+	}))
+	defer dataSrv.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	_, err = app.InstallSelectedMaclawAppPackageFromHub(capabilityID, []string{"approval-ready-app"})
+	if err == nil {
+		t.Fatalf("InstallSelectedMaclawAppPackageFromHub should reject invalid Hub package signature")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "package signature") || !strings.Contains(strings.ToLower(err.Error()), "verification failed") {
+		t.Fatalf("install error should expose Hub package signature verification failure, got %v", err)
+	}
+	if dependencyRequests != 0 {
+		t.Fatalf("dependency endpoints should not be called after Hub package signature failure, got %d", dependencyRequests)
+	}
+	if dataSrvCalled {
+		t.Fatalf("DataSrv registration should not run after invalid Hub package signature")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.TrustedSkillPackageKeyFingerprints) != 0 {
+		t.Fatalf("invalid Hub package signature should not seed trusted fingerprints: %#v", cfg.TrustedSkillPackageKeyFingerprints)
+	}
+	records, listErr := app.ListMaclawAppInstalls(10)
+	if listErr != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("failed Hub package signature install should not persist app install audit: %#v", records)
+	}
+}
+
+func TestInstallSharedPublishedApprovalFixtureBlocksUntrustedDependencySkillSignature(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	trustedPublicKey, trustedPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey trusted error = %v", err)
+	}
+	untrustedPublicKey, untrustedPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey untrusted error = %v", err)
+	}
+	capabilityID := "cap-approval-ready-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:approval-ready-app@pkg"
+	fixtureData, err := json.Marshal(maclawapptest.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage(capabilityID, versionKey))
+	if err != nil {
+		t.Fatalf("marshal shared approval fixture: %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, string(fixtureData))), &pkg); err != nil {
+		t.Fatalf("decode shared approval fixture: %v", err)
+	}
+	maclawapptest.SignPublishedMaclawAppHubPackage(pkg, trustedPublicKey, trustedPrivateKey, strings.Repeat("a", 64), versionKey, "2026-07-01T03:00:00Z", "hub-admin")
+	appSkillBody, appSkillSHA, appSkillSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-app-skill", "1.0.0", "run approval app", trustedPublicKey, trustedPrivateKey)
+	if err != nil {
+		t.Fatalf("signed trusted app skill fixture: %v", err)
+	}
+	workflowBody, workflowSHA, workflowSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-workflow", "1.0.0", "run approval workflow", untrustedPublicKey, untrustedPrivateKey)
+	if err != nil {
+		t.Fatalf("signed untrusted workflow fixture: %v", err)
+	}
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+			t.Fatalf("Authorization = %q for %s", got, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/capabilities/maclaw-apps/cap-approval-ready-app/package":
+			_ = json.NewEncoder(w).Encode(pkg)
+		case "/api/capabilities/cap-approval-ready-app-skill":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-app-skill", "cap-approval-ready-app-skill", "1.0.0", appSkillSHA, appSkillSignature))
+		case "/api/capabilities/cap-approval-ready-workflow":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-workflow", "cap-approval-ready-workflow", "1.0.0", workflowSHA, workflowSignature))
+		case "/api/v1/skills/approval-ready-app-skill/download":
+			_, _ = w.Write(appSkillBody)
+		case "/api/v1/skills/approval-ready-workflow/download":
+			_, _ = w.Write(workflowBody)
+		case "/api/capabilities/inventory":
+			if r.Method != http.MethodPut {
+				t.Fatalf("inventory method = %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
+		}
+	}))
+	defer hub.Close()
+	dataSrvCalled := false
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dataSrvCalled = true
+		t.Fatalf("DataSrv should not be called when dependency Skill signature is untrusted: %s %s", r.Method, r.URL.Path)
+	}))
+	defer dataSrv.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	_, err = app.InstallSelectedMaclawAppPackageFromHub(capabilityID, []string{"approval-ready-app"})
+	if err == nil {
+		t.Fatalf("InstallSelectedMaclawAppPackageFromHub should reject untrusted dependency Skill signature")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "approval-ready-workflow") || !strings.Contains(errText, "package_integrity_failed") || !strings.Contains(errText, "enterprise_hub_install") || !strings.Contains(strings.ToLower(errText), "signature") {
+		t.Fatalf("install error should expose workflow dependency signature diagnostics, got %v", err)
+	}
+	if dataSrvCalled {
+		t.Fatalf("DataSrv registration should not run after untrusted dependency Skill signature")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	trustedFingerprint := downloadedSkillPublicKeyFingerprint(trustedPublicKey)
+	untrustedFingerprint := downloadedSkillPublicKeyFingerprint(untrustedPublicKey)
+	if len(cfg.TrustedSkillPackageKeyFingerprints) != 1 || normalizeDownloadedSkillPublicKeyFingerprint(cfg.TrustedSkillPackageKeyFingerprints[0]) != trustedFingerprint {
+		t.Fatalf("trusted fingerprint should come only from app package signature: %#v", cfg.TrustedSkillPackageKeyFingerprints)
+	}
+	for _, fingerprint := range cfg.TrustedSkillPackageKeyFingerprints {
+		if normalizeDownloadedSkillPublicKeyFingerprint(fingerprint) == untrustedFingerprint {
+			t.Fatalf("untrusted dependency Skill key should not be added to trust store: %#v", cfg.TrustedSkillPackageKeyFingerprints)
+		}
+	}
+	records, listErr := app.ListMaclawAppInstalls(10)
+	if listErr != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("failed untrusted dependency install should not persist app install audit: %#v", records)
+	}
+}
+
+func TestInstallSharedPublishedApprovalFixtureBlocksDataSrvRegistrationFailure(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey error = %v", err)
+	}
+	capabilityID := "cap-approval-ready-app"
+	versionKey := "enterprise_hub:skill:maclaw-app:approval-ready-app@pkg"
+	fixtureData, err := json.Marshal(maclawapptest.ReadyEnterpriseApprovalMaclawAppPublishedHubPackage(capabilityID, versionKey))
+	if err != nil {
+		t.Fatalf("marshal shared approval fixture: %v", err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, string(fixtureData))), &pkg); err != nil {
+		t.Fatalf("decode shared approval fixture: %v", err)
+	}
+	maclawapptest.SignPublishedMaclawAppHubPackage(pkg, publicKey, privateKey, strings.Repeat("c", 64), versionKey, "2026-07-01T04:00:00Z", "hub-admin")
+	appSkillBody, appSkillSHA, appSkillSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-app-skill", "1.0.0", "run approval app", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed app skill fixture: %v", err)
+	}
+	workflowBody, workflowSHA, workflowSignature, err := maclawapptest.SignedEnterpriseHubSkillPackage("approval-ready-workflow", "1.0.0", "run approval workflow", publicKey, privateKey)
+	if err != nil {
+		t.Fatalf("signed workflow fixture: %v", err)
+	}
+	dependencyDownloads := 0
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+			t.Fatalf("Authorization = %q for %s", got, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/capabilities/maclaw-apps/cap-approval-ready-app/package":
+			_ = json.NewEncoder(w).Encode(pkg)
+		case "/api/capabilities/cap-approval-ready-app-skill":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-app-skill", "cap-approval-ready-app-skill", "1.0.0", appSkillSHA, appSkillSignature))
+		case "/api/capabilities/cap-approval-ready-workflow":
+			_ = json.NewEncoder(w).Encode(maclawapptest.PublishedEnterpriseHubSkillCapability("approval-ready-workflow", "cap-approval-ready-workflow", "1.0.0", workflowSHA, workflowSignature))
+		case "/api/v1/skills/approval-ready-app-skill/download":
+			dependencyDownloads++
+			_, _ = w.Write(appSkillBody)
+		case "/api/v1/skills/approval-ready-workflow/download":
+			dependencyDownloads++
+			_, _ = w.Write(workflowBody)
+		case "/api/capabilities/inventory":
+			if r.Method != http.MethodPut {
+				t.Fatalf("inventory method = %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
+		}
+	}))
+	defer hub.Close()
+	dataSrvCalls := 0
+	dataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer data-token" {
+			t.Fatalf("DataSrv Authorization = %q for %s", got, r.URL.Path)
+		}
+		if r.Method == http.MethodPut && r.URL.Path == "/api/v1/data/app-installations/approval-ready-app" {
+			dataSrvCalls++
+			http.Error(w, `{"error":"sqlite locked"}`, http.StatusInternalServerError)
+			return
+		}
+		t.Fatalf("unexpected DataSrv request after registration failure boundary: %s %s", r.Method, r.URL.Path)
+	}))
+	defer dataSrv.Close()
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMISDataConfig(corelib.MISDataConfig{Enabled: true, Endpoint: dataSrv.URL, Token: "data-token", TenantID: "tenant", UserID: "alice", Role: "data_admin"}); err != nil {
+		t.Fatalf("SaveMISDataConfig() error = %v", err)
+	}
+	_, err = app.InstallSelectedMaclawAppPackageFromHub(capabilityID, []string{"approval-ready-app"})
+	if err == nil {
+		t.Fatalf("InstallSelectedMaclawAppPackageFromHub should reject DataSrv app installation registration failure")
+	}
+	errText := strings.ToLower(err.Error())
+	if !strings.Contains(errText, "datasrv app installation registration failed") || !strings.Contains(errText, "status=failed") || !strings.Contains(errText, "approval-ready-app") {
+		t.Fatalf("install error should expose DataSrv registration failure detail, got %v", err)
+	}
+	if dependencyDownloads != 2 {
+		t.Fatalf("dependencies should be downloaded before DataSrv registration, got %d downloads", dependencyDownloads)
+	}
+	if dataSrvCalls != 1 {
+		t.Fatalf("DataSrv registration should be attempted exactly once, got %d", dataSrvCalls)
+	}
+	records, listErr := app.ListMaclawAppInstalls(10)
+	if listErr != nil {
+		t.Fatalf("ListMaclawAppInstalls() error = %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("failed DataSrv registration should not persist app install audit: %#v", records)
 	}
 }
 
@@ -8277,14 +8522,15 @@ func TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult(t *testing.T)
 }
 func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testing.T) {
 	type capturedRequest struct {
-		Method string
-		Path   string
-		Body   map[string]interface{}
+		Method   string
+		Path     string
+		RawQuery string
+		Body     map[string]interface{}
 	}
 	captured := []capturedRequest{}
 	progressSynced := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		item := capturedRequest{Method: r.Method, Path: r.URL.Path}
+		item := capturedRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&item.Body)
 		}
@@ -8406,12 +8652,35 @@ func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testin
 	if len(requests) != 1 || requests[0].Status != "requires_input" || requests[0].Lane != "my_requests" || requests[0].ResultPayload["approval_result"] != "requires_input" || len(requests[0].Outputs) != 1 {
 		t.Fatalf("workflow requires_input result should be visible in requester lane: %#v", requests)
 	}
+	globalRequests, err := app.ListMaclawAppApprovalInstancesAll("my_requests", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppApprovalInstancesAll my_requests error = %v", err)
+	}
+	if len(globalRequests) != 1 || globalRequests[0].Status != "requires_input" || globalRequests[0].Lane != "my_requests" || globalRequests[0].ResultPayload["approval_result"] != "requires_input" || len(globalRequests[0].Outputs) != 1 {
+		t.Fatalf("workflow requires_input result should be visible in global requester lane: %#v", globalRequests)
+	}
+	assertMaclawAppApprovalReadbackSameInstanceForTest(t, requests[0], globalRequests[0])
 	handled, err := app.ListMaclawAppApprovalInstances("expense-approval", "handled", 10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppApprovalInstances handled error = %v", err)
 	}
 	if len(handled) != 0 {
 		t.Fatalf("requires_input should not appear in handled lane: %#v", handled)
+	}
+	sawAppScopedRequestQuery := false
+	sawGlobalRequestQuery := false
+	for _, req := range captured {
+		if req.Method == http.MethodGet && req.Path == "/api/v1/data/approvals" {
+			if req.RawQuery == "app_id=expense-approval&lane=my_requests&limit=10" {
+				sawAppScopedRequestQuery = true
+			}
+			if req.RawQuery == "lane=my_requests&limit=10" {
+				sawGlobalRequestQuery = true
+			}
+		}
+	}
+	if !sawAppScopedRequestQuery || !sawGlobalRequestQuery {
+		t.Fatalf("requires_input approval readback should query both app-scoped and global requester lanes, appScoped=%v global=%v captured=%#v", sawAppScopedRequestQuery, sawGlobalRequestQuery, captured)
 	}
 }
 func TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement(t *testing.T) {
