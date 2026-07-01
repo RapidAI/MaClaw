@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
@@ -22,13 +25,17 @@ class ServersScreen extends ConsumerStatefulWidget {
 }
 
 class _ServersScreenState extends ConsumerState<ServersScreen> {
-  final _commandController = TextEditingController(text: 'journalctl -u nginx -n 100');
+  final _commandController =
+      TextEditingController(text: 'journalctl -u nginx -n 100 --no-pager');
   final _logController = TextEditingController();
   final _nameController = TextEditingController(text: '生产服务器');
   final _hostController = TextEditingController();
   final _portController = TextEditingController(text: '22');
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _privateKeyController = TextEditingController();
+  final _privateKeyPassphraseController = TextEditingController();
+  String _authMode = serverAuthModePassword;
 
   @override
   void dispose() {
@@ -39,10 +46,28 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     _portController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
+    _privateKeyController.dispose();
+    _privateKeyPassphraseController.dispose();
     super.dispose();
   }
 
+  Future<void> _importPrivateKey() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return;
+    final file = picked.files.single;
+    final bytes = file.bytes;
+    if (bytes == null) return;
+    _privateKeyController.text = utf8.decode(bytes, allowMalformed: true);
+    if (mounted) {
+      setState(() => _authMode = serverAuthModePrivateKey);
+    }
+  }
+
   void _addServer() {
+    final privateKey = _privateKeyController.text.trim();
     final profile = ServerProfile(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: _nameController.text.trim().isEmpty
@@ -51,13 +76,19 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       host: _hostController.text.trim(),
       port: int.tryParse(_portController.text.trim()) ?? 22,
       username: _usernameController.text.trim(),
-      authMode: 'password',
+      authMode: _authMode,
     );
     if (!profile.isValid) return;
+    if (_authMode == serverAuthModePrivateKey && privateKey.isEmpty) return;
     ref.read(serverProfilesProvider.notifier).addProfile(
           profile,
           password: _passwordController.text,
+          privateKey: privateKey,
+          privateKeyPassphrase: _privateKeyPassphraseController.text,
         );
+    _passwordController.clear();
+    _privateKeyController.clear();
+    _privateKeyPassphraseController.clear();
   }
 
   @override
@@ -80,12 +111,21 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           portController: _portController,
           usernameController: _usernameController,
           passwordController: _passwordController,
+          privateKeyController: _privateKeyController,
+          privateKeyPassphraseController: _privateKeyPassphraseController,
+          authMode: _authMode,
+          onAuthModeChanged: (value) => setState(() => _authMode = value),
+          onImportPrivateKey: _importPrivateKey,
           profiles: profiles,
           onAdd: _addServer,
         ),
         const SizedBox(height: 12),
         _SSHTerminalCard(
           profiles: profiles,
+          onAnalyzeOutput: (output) {
+            _logController.text = output;
+            ref.read(sshAnalysisProvider.notifier).analyze(output);
+          },
         ),
         const SizedBox(height: 12),
         _CommandRiskCard(
@@ -105,6 +145,533 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
               ref.read(sshAnalysisProvider.notifier).analyze(_logController.text),
         ),
       ],
+    );
+  }
+}
+
+class _ServerProfileCard extends StatelessWidget {
+  final TextEditingController nameController;
+  final TextEditingController hostController;
+  final TextEditingController portController;
+  final TextEditingController usernameController;
+  final TextEditingController passwordController;
+  final TextEditingController privateKeyController;
+  final TextEditingController privateKeyPassphraseController;
+  final String authMode;
+  final ValueChanged<String> onAuthModeChanged;
+  final VoidCallback onImportPrivateKey;
+  final AsyncValue<List<ServerProfile>> profiles;
+  final VoidCallback onAdd;
+
+  const _ServerProfileCard({
+    required this.nameController,
+    required this.hostController,
+    required this.portController,
+    required this.usernameController,
+    required this.passwordController,
+    required this.privateKeyController,
+    required this.privateKeyPassphraseController,
+    required this.authMode,
+    required this.onAuthModeChanged,
+    required this.onImportPrivateKey,
+    required this.profiles,
+    required this.onAdd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.dns_outlined, color: scheme.primary),
+                const SizedBox(width: 8),
+                Text('服务器配置', style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '名称',
+                prefixIcon: Icon(Icons.label_outline),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: hostController,
+              decoration: const InputDecoration(
+                labelText: 'Host',
+                prefixIcon: Icon(Icons.cloud_outlined),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: portController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '端口'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: usernameController,
+                    decoration: const InputDecoration(labelText: '用户名'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: serverAuthModePassword,
+                  icon: Icon(Icons.password_outlined),
+                  label: Text('密码'),
+                ),
+                ButtonSegment(
+                  value: serverAuthModePrivateKey,
+                  icon: Icon(Icons.vpn_key_outlined),
+                  label: Text('私钥'),
+                ),
+              ],
+              selected: {authMode},
+              onSelectionChanged: (values) => onAuthModeChanged(values.first),
+            ),
+            const SizedBox(height: 10),
+            if (authMode == serverAuthModePassword)
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: '密码',
+                  prefixIcon: Icon(Icons.password_outlined),
+                ),
+              )
+            else ...[
+              TextField(
+                controller: privateKeyController,
+                minLines: 4,
+                maxLines: 8,
+                decoration: InputDecoration(
+                  labelText: '私钥 PEM',
+                  prefixIcon: const Icon(Icons.vpn_key_outlined),
+                  suffixIcon: IconButton(
+                    tooltip: '从文件导入',
+                    onPressed: onImportPrivateKey,
+                    icon: const Icon(Icons.file_open_outlined),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: privateKeyPassphraseController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: '私钥口令（可选）',
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add),
+              label: const Text('添加服务器'),
+            ),
+            profiles.when(
+              data: (items) => items.isEmpty
+                  ? const SizedBox.shrink()
+                  : Column(
+                      children: [
+                        const SizedBox(height: 14),
+                        for (final server in items)
+                          ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.storage_outlined),
+                            title: Text(server.name),
+                            subtitle: Text(
+                              '${server.username}@${server.host}:${server.port} · ${serverAuthModeLabel(server.authMode)}',
+                            ),
+                          ),
+                      ],
+                    ),
+              error: (error, _) => Text('服务器配置加载失败：$error'),
+              loading: () => const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: LinearProgressIndicator(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SSHTerminalCard extends ConsumerStatefulWidget {
+  final AsyncValue<List<ServerProfile>> profiles;
+  final ValueChanged<String> onAnalyzeOutput;
+
+  const _SSHTerminalCard({
+    required this.profiles,
+    required this.onAnalyzeOutput,
+  });
+
+  @override
+  ConsumerState<_SSHTerminalCard> createState() => _SSHTerminalCardState();
+}
+
+enum _MobileSSHConnectionState { disconnected, connecting, connected }
+
+class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
+  static const _maxCapturedOutputChars = 12000;
+
+  final _terminal = Terminal(maxLines: 1000);
+  final _capturedOutput = StringBuffer();
+  SSHClient? _client;
+  StreamSubscription<String>? _stdoutSub;
+  StreamSubscription<String>? _stderrSub;
+  String? _selectedId;
+  ServerProfile? _activeProfile;
+  _MobileSSHConnectionState _connectionState =
+      _MobileSSHConnectionState.disconnected;
+  String? _lastError;
+
+  bool get _connecting =>
+      _connectionState == _MobileSSHConnectionState.connecting;
+  bool get _connected =>
+      _connectionState == _MobileSSHConnectionState.connected;
+
+  @override
+  void initState() {
+    super.initState();
+    _writeTerminal('选择服务器后连接 SSH。\r\n', capture: false);
+  }
+
+  @override
+  void dispose() {
+    _stdoutSub?.cancel();
+    _stderrSub?.cancel();
+    _client?.close();
+    super.dispose();
+  }
+
+  Future<void> _connect(List<ServerProfile> profiles) async {
+    ServerProfile? selected;
+    for (final profile in profiles) {
+      if (profile.id == _selectedId) {
+        selected = profile;
+        break;
+      }
+    }
+    if (selected == null || _connecting) return;
+    await _closeActiveConnection(manual: true);
+    _capturedOutput.clear();
+    setState(() {
+      _connectionState = _MobileSSHConnectionState.connecting;
+      _activeProfile = selected;
+      _lastError = null;
+    });
+    try {
+      final socket = await SSHSocket.connect(selected.host, selected.port)
+          .timeout(const Duration(seconds: 15));
+      final client = await _buildClient(socket, selected);
+      final session = await client.shell(
+        pty: SSHPtyConfig(
+          width: _terminal.viewWidth,
+          height: _terminal.viewHeight,
+        ),
+      );
+      _client = client;
+      _writeTerminal('已连接 ${selected.name}\r\n');
+      _terminal.onOutput = (data) {
+        session.write(utf8.encode(data));
+      };
+      _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+        session.resizeTerminal(width, height, pixelWidth, pixelHeight);
+      };
+      _stdoutSub = session.stdout
+          .cast<List<int>>()
+          .transform(const Utf8Decoder())
+          .listen(
+            _handleTerminalData,
+            onError: _handleStreamError,
+            onDone: _handleStreamDone,
+          );
+      _stderrSub = session.stderr
+          .cast<List<int>>()
+          .transform(const Utf8Decoder())
+          .listen(
+            _handleTerminalData,
+            onError: _handleStreamError,
+            onDone: _handleStreamDone,
+          );
+      if (mounted) {
+        setState(() => _connectionState = _MobileSSHConnectionState.connected);
+      }
+    } catch (error) {
+      _writeTerminal('连接失败：$error\r\n');
+      if (mounted) {
+        setState(() {
+          _connectionState = _MobileSSHConnectionState.disconnected;
+          _lastError = error.toString();
+        });
+      }
+      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+            title: 'SSH 连接异常',
+            body: '${selected.name} 连接失败',
+            payload: selected.id,
+          );
+    }
+  }
+
+  Future<SSHClient> _buildClient(SSHSocket socket, ServerProfile profile) async {
+    if (profile.authMode == serverAuthModePrivateKey) {
+      final vault = ref.read(secureVaultProvider);
+      final privateKey = await vault.readServerPrivateKey(profile.id);
+      if (privateKey == null || privateKey.trim().isEmpty) {
+        throw StateError('未保存 SSH 私钥。');
+      }
+      final passphrase =
+          await vault.readServerPrivateKeyPassphrase(profile.id) ?? '';
+      return SSHClient(
+        socket,
+        username: profile.username,
+        identities: SSHKeyPair.fromPem(privateKey, passphrase).toList(),
+      );
+    }
+    final password =
+        await ref.read(secureVaultProvider).readServerPassword(profile.id);
+    return SSHClient(
+      socket,
+      username: profile.username,
+      onPasswordRequest: () => password ?? '',
+    );
+  }
+
+  Future<void> _closeActiveConnection({required bool manual}) async {
+    final wasConnected = _connected;
+    await _stdoutSub?.cancel();
+    await _stderrSub?.cancel();
+    _stdoutSub = null;
+    _stderrSub = null;
+    _client?.close();
+    _client = null;
+    if (manual && wasConnected) {
+      _writeTerminal('已断开 SSH 连接。\r\n');
+    }
+    if (mounted) {
+      setState(() => _connectionState = _MobileSSHConnectionState.disconnected);
+    }
+  }
+
+  void _handleStreamError(Object error, StackTrace stackTrace) {
+    unawaited(_markDisconnected(error: error));
+  }
+
+  void _handleStreamDone() {
+    unawaited(_markDisconnected());
+  }
+
+  Future<void> _markDisconnected({Object? error}) async {
+    if (!_connected && !_connecting) return;
+    final profile = _activeProfile;
+    await _closeActiveConnection(manual: false);
+    final message = error == null ? 'SSH 连接已断开。' : 'SSH 连接已断开：$error';
+    _writeTerminal('$message\r\n');
+    if (mounted) {
+      setState(() => _lastError = error?.toString());
+    }
+    if (profile != null) {
+      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+            title: 'SSH 连接已断开',
+            body: profile.name,
+            payload: profile.id,
+          );
+    }
+  }
+
+  String _statusLabel() {
+    return switch (_connectionState) {
+      _MobileSSHConnectionState.connecting => '连接中',
+      _MobileSSHConnectionState.connected => '已连接',
+      _MobileSSHConnectionState.disconnected => '未连接',
+    };
+  }
+
+  Color _statusColor(ColorScheme scheme) {
+    return switch (_connectionState) {
+      _MobileSSHConnectionState.connecting => scheme.tertiary,
+      _MobileSSHConnectionState.connected => scheme.primary,
+      _MobileSSHConnectionState.disconnected => scheme.onSurfaceVariant,
+    };
+  }
+
+  void _handleTerminalData(String data) {
+    _writeTerminal(data);
+  }
+
+  void _writeTerminal(String data, {bool capture = true}) {
+    _terminal.write(data);
+    if (!capture || data.isEmpty) return;
+    final wasEmpty = _capturedOutput.isEmpty;
+    _capturedOutput.write(data);
+    final text = _capturedOutput.toString();
+    if (text.length > _maxCapturedOutputChars) {
+      _capturedOutput
+        ..clear()
+        ..write(text.substring(text.length - _maxCapturedOutputChars));
+    }
+    if (wasEmpty && mounted) {
+      setState(() {});
+    }
+  }
+
+  String _recentOutputForAI() {
+    return _capturedOutput.toString().trim();
+  }
+
+  void _sendOutputToAI() {
+    final output = _recentOutputForAI();
+    if (output.isEmpty) return;
+    widget.onAnalyzeOutput(output);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已发送最近终端输出给 AI 分析')),
+    );
+  }
+
+  Future<void> _copyRecentOutput() async {
+    final output = _recentOutputForAI();
+    if (output.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: output));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('终端输出已复制')),
+    );
+  }
+
+  void _clearCapturedOutput() {
+    _capturedOutput.clear();
+    _terminal.write('\x1B[2J\x1B[H');
+    _writeTerminal('终端输出已清空。\r\n', capture: false);
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: widget.profiles.when(
+          data: (profiles) {
+            final scheme = Theme.of(context).colorScheme;
+            final statusColor = _statusColor(scheme);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.terminal_outlined, color: scheme.primary),
+                    const SizedBox(width: 8),
+                    Text(
+                      '手动 SSH 终端',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const Spacer(),
+                    Chip(
+                      visualDensity: VisualDensity.compact,
+                      avatar: Icon(Icons.circle, size: 12, color: statusColor),
+                      label: Text(_statusLabel()),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _selectedId,
+                  items: [
+                    for (final profile in profiles)
+                      DropdownMenuItem(
+                        value: profile.id,
+                        child: Text(
+                          '${profile.name} · ${serverAuthModeLabel(profile.authMode)}',
+                        ),
+                      ),
+                  ],
+                  onChanged: _connecting || _connected
+                      ? null
+                      : (value) => setState(() => _selectedId = value),
+                  decoration: const InputDecoration(labelText: '服务器'),
+                ),
+                if (_lastError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '最近异常：$_lastError',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.error,
+                        ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _connecting ? null : () => _connect(profiles),
+                      icon: const Icon(Icons.power_settings_new),
+                      label: Text(_connected ? '重连 SSH' : '连接 SSH'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _connected
+                          ? () => _closeActiveConnection(manual: true)
+                          : null,
+                      icon: const Icon(Icons.link_off_outlined),
+                      label: const Text('断开'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _recentOutputForAI().isEmpty
+                          ? null
+                          : _sendOutputToAI,
+                      icon: const Icon(Icons.psychology_alt_outlined),
+                      label: const Text('交给 AI 分析'),
+                    ),
+                    IconButton.outlined(
+                      tooltip: '复制终端输出',
+                      onPressed: _recentOutputForAI().isEmpty
+                          ? null
+                          : _copyRecentOutput,
+                      icon: const Icon(Icons.content_copy_outlined),
+                    ),
+                    IconButton.outlined(
+                      tooltip: '清空终端输出',
+                      onPressed:
+                          _capturedOutput.isEmpty ? null : _clearCapturedOutput,
+                      icon: const Icon(Icons.cleaning_services_outlined),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 280,
+                  child: TerminalView(_terminal),
+                ),
+              ],
+            );
+          },
+          error: (error, _) => Text('终端加载失败：$error'),
+          loading: () => const LinearProgressIndicator(),
+        ),
+      ),
     );
   }
 }
@@ -291,263 +858,13 @@ class _SavedCommandsList extends ConsumerWidget {
             subtitle: Text(item.favorite ? '常用命令' : '历史命令'),
             trailing: IconButton(
               tooltip: '删除',
-              onPressed: () => ref
-                  .read(serverCommandsProvider.notifier)
-                  .remove(item.id),
+              onPressed: () =>
+                  ref.read(serverCommandsProvider.notifier).remove(item.id),
               icon: const Icon(Icons.delete_outline),
             ),
             onTap: () => onUseCommand(item.command),
           ),
       ],
-    );
-  }
-}
-
-class _ServerProfileCard extends StatelessWidget {
-  final TextEditingController nameController;
-  final TextEditingController hostController;
-  final TextEditingController portController;
-  final TextEditingController usernameController;
-  final TextEditingController passwordController;
-  final AsyncValue<List<ServerProfile>> profiles;
-  final VoidCallback onAdd;
-
-  const _ServerProfileCard({
-    required this.nameController,
-    required this.hostController,
-    required this.portController,
-    required this.usernameController,
-    required this.passwordController,
-    required this.profiles,
-    required this.onAdd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.dns_outlined, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text('服务器配置', style: Theme.of(context).textTheme.titleMedium),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '名称',
-                prefixIcon: Icon(Icons.label_outline),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: hostController,
-              decoration: const InputDecoration(
-                labelText: 'Host',
-                prefixIcon: Icon(Icons.cloud_outlined),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: passwordController,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: '密码',
-                prefixIcon: Icon(Icons.password_outlined),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: portController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: '端口'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: usernameController,
-                    decoration: const InputDecoration(labelText: '用户名'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: onAdd,
-              icon: const Icon(Icons.add),
-              label: const Text('添加服务器'),
-            ),
-            profiles.when(
-              data: (items) => items.isEmpty
-                  ? const SizedBox.shrink()
-                  : Column(
-                      children: [
-                        const SizedBox(height: 14),
-                        for (final server in items)
-                          ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.storage_outlined),
-                            title: Text(server.name),
-                            subtitle: Text(
-                              '${server.username}@${server.host}:${server.port}',
-                            ),
-                          ),
-                      ],
-                    ),
-              error: (error, _) => Text('服务器配置加载失败：$error'),
-              loading: () => const Padding(
-                padding: EdgeInsets.only(top: 12),
-                child: LinearProgressIndicator(),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SSHTerminalCard extends ConsumerStatefulWidget {
-  final AsyncValue<List<ServerProfile>> profiles;
-
-  const _SSHTerminalCard({required this.profiles});
-
-  @override
-  ConsumerState<_SSHTerminalCard> createState() => _SSHTerminalCardState();
-}
-
-class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
-  final _terminal = Terminal(maxLines: 1000);
-  SSHClient? _client;
-  String? _selectedId;
-  bool _connecting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _terminal.write('选择服务器后连接 SSH。\r\n');
-  }
-
-  @override
-  void dispose() {
-    _client?.close();
-    super.dispose();
-  }
-
-  Future<void> _connect(List<ServerProfile> profiles) async {
-    ServerProfile? selected;
-    for (final profile in profiles) {
-      if (profile.id == _selectedId) {
-        selected = profile;
-        break;
-      }
-    }
-    if (selected == null || _connecting) return;
-    setState(() => _connecting = true);
-    try {
-      final password =
-          await ref.read(secureVaultProvider).readServerPassword(selected.id);
-      final socket = await SSHSocket.connect(selected.host, selected.port);
-      final client = SSHClient(
-        socket,
-        username: selected.username,
-        onPasswordRequest: () => password ?? '',
-      );
-      final session = await client.shell(
-        pty: SSHPtyConfig(
-          width: _terminal.viewWidth,
-          height: _terminal.viewHeight,
-        ),
-      );
-      _client = client;
-      _terminal.write('已连接 ${selected.name}\r\n');
-      _terminal.onOutput = (data) {
-        session.write(utf8.encode(data));
-      };
-      _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-        session.resizeTerminal(width, height, pixelWidth, pixelHeight);
-      };
-      session.stdout
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(_terminal.write);
-      session.stderr
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(_terminal.write);
-    } catch (error) {
-      _terminal.write('连接失败：$error\r\n');
-      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: 'SSH 连接异常',
-            body: '${selected.name} 连接失败',
-            payload: selected.id,
-          );
-    } finally {
-      if (mounted) setState(() => _connecting = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: widget.profiles.when(
-          data: (profiles) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.terminal_outlined,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text('手动 SSH 终端', style: Theme.of(context).textTheme.titleMedium),
-                ],
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _selectedId,
-                items: [
-                  for (final profile in profiles)
-                    DropdownMenuItem(
-                      value: profile.id,
-                      child: Text(profile.name),
-                    ),
-                ],
-                onChanged: (value) => setState(() => _selectedId = value),
-                decoration: const InputDecoration(labelText: '服务器'),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _connecting ? null : () => _connect(profiles),
-                icon: const Icon(Icons.power_settings_new),
-                label: Text(_connecting ? '连接中' : '连接 SSH'),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 280,
-                child: TerminalView(_terminal),
-              ),
-            ],
-          ),
-          error: (error, _) => Text('终端加载失败：$error'),
-          loading: () => const LinearProgressIndicator(),
-        ),
-      ),
     );
   }
 }
@@ -578,7 +895,10 @@ class _SSHAnalysisCard extends StatelessWidget {
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
-                Text('AI 分析终端输出', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  'AI 分析终端输出',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ],
             ),
             const SizedBox(height: 12),

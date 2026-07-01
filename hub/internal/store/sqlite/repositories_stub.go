@@ -1852,6 +1852,9 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		return []store.UserDurationSummary{}, nil
 	}
 
+	// Duration is calculated exclusively from machine_heartbeat_log.
+	// See comment below at the heartbeat query for rationale.
+
 	type durationInterval struct {
 		start time.Time
 		end   time.Time
@@ -1885,69 +1888,11 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		return parsed, true
 	}
 
-	// Sessions are the durable source for historical and legacy duration data.
-	sessionRows, err := r.readDB.QueryContext(ctx, `
-		SELECT user_id, status, host_online, started_at, updated_at, ended_at
-		  FROM sessions
-		 WHERE tenant_id = ?
-		   AND started_at < ?`,
-		tenantID, end.Format(time.RFC3339))
-	if err != nil {
-		return nil, err
-	}
-	defer sessionRows.Close()
-	for sessionRows.Next() {
-		var userID, status string
-		var hostOnline bool
-		var startedRaw string
-		var updatedRaw, endedRaw sql.NullString
-		if err := sessionRows.Scan(&userID, &status, &hostOnline, &startedRaw, &updatedRaw, &endedRaw); err != nil {
-			return nil, err
-		}
-		startedAt, ok := parseTime(startedRaw)
-		if !ok {
-			continue
-		}
-		var finishedAt time.Time
-		finishedOK := false
-		if endedRaw.Valid {
-			finishedAt, finishedOK = parseTime(endedRaw.String)
-		}
-		if !finishedOK {
-			if strings.EqualFold(strings.TrimSpace(status), "running") || hostOnline {
-				finishedAt = now
-				finishedOK = true
-			}
-		}
-		if !finishedOK && updatedRaw.Valid {
-			// Only trust updated_at as a proxy for "last active" if the session
-			// is in a state that implies it was once active but didn't get a
-			// proper ended_at. For terminal states (ended/error/cancelled) with
-			// no ended_at, updated_at could be from any incidental UPDATE
-			// (preview_text, output_seq, etc.) and doesn't represent actual
-			// usage duration.
-			s := strings.ToLower(strings.TrimSpace(status))
-			if s == "" || s == "running" || s == "active" || s == "starting" {
-				finishedAt, finishedOK = parseTime(updatedRaw.String)
-			}
-		}
-		if !finishedOK {
-			// No ended_at, not running/host_online, no usable updated_at — this
-			// is a zombie session that was never truly active. Skip it entirely
-			// to avoid inflating duration with (now - started_at) for users who
-			// merely registered but never used the system.
-			continue
-		}
-		if finishedAt.After(start) {
-			addInterval(userID, startedAt, finishedAt)
-		}
-	}
-	if err := sessionRows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Heartbeats cover newer telemetry and are merged with session intervals to
-	// avoid double-counting overlap for the same user.
+	// Duration is calculated exclusively from machine_heartbeat_log, which only
+	// records entries when LLM token usage increases (see handlers_machine.go).
+	// This ensures the leaderboard shows "AI usage time", not "idle client uptime".
+	// The sessions table is NOT used for duration — it represents connection
+	// status (client connected to Hub), not actual AI interaction.
 	heartbeatRows, err := r.readDB.QueryContext(ctx, `
 		SELECT user_id, heartbeat_at
 		  FROM machine_heartbeat_log
@@ -2071,10 +2016,98 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		}
 		out = append(out, store.UserDurationSummary{UserEmail: email, DurationSeconds: seconds})
 	}
+
+	// Calculate online time from sessions table as tie-breaker for ranking.
+	// Online time = total connection uptime (client connected to Hub), distinct
+	// from usage time (actual LLM interaction measured by heartbeats above).
+	onlineByEmail := r.summarizeOnlineSeconds(ctx, tenantID, start, end, now, emailByUserID)
+	for i := range out {
+		out[i].OnlineSeconds = onlineByEmail[out[i].UserEmail]
+	}
+
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UserEmail < out[j].UserEmail
 	})
 	return out, nil
+}
+
+// summarizeOnlineSeconds calculates connection uptime from sessions table.
+// Used only as a tie-breaker in rankings (not as the primary "usage duration").
+func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID string, start, end, now time.Time, emailByUserID map[string]string) map[string]int64 {
+	result := make(map[string]int64)
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT user_id, status, host_online, started_at, ended_at
+		  FROM sessions
+		 WHERE tenant_id = ?
+		   AND started_at < ?`,
+		tenantID, end.Format(time.RFC3339))
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, status string
+		var hostOnline bool
+		var startedRaw string
+		var endedRaw sql.NullString
+		if err := rows.Scan(&userID, &status, &hostOnline, &startedRaw, &endedRaw); err != nil {
+			continue
+		}
+		startedRaw = strings.TrimSpace(startedRaw)
+		startedAt, err := time.Parse(time.RFC3339, startedRaw)
+		if err != nil {
+			continue
+		}
+		var finishedAt time.Time
+		if endedRaw.Valid {
+			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(endedRaw.String)); err == nil {
+				finishedAt = t
+			}
+		}
+		if finishedAt.IsZero() {
+			if strings.EqualFold(strings.TrimSpace(status), "running") || hostOnline {
+				finishedAt = now
+			}
+		}
+		if finishedAt.IsZero() || !finishedAt.After(startedAt) {
+			continue
+		}
+		// Clamp to query window
+		if startedAt.Before(start) {
+			startedAt = start
+		}
+		if finishedAt.After(end) {
+			finishedAt = end
+		}
+		if !finishedAt.After(startedAt) {
+			continue
+		}
+		email := emailByUserID[userID]
+		if email == "" {
+			if strings.Contains(userID, "@") {
+				email = strings.ToLower(strings.TrimSpace(userID))
+			}
+		}
+		if email == "" {
+			continue
+		}
+		result[email] += int64(finishedAt.Sub(startedAt).Seconds())
+	}
+
+	// Cap online seconds per user to the query window duration (prevent stale
+	// overlapping sessions from producing values exceeding calendar time).
+	maxOnline := int64(end.Sub(start).Seconds())
+	if now.Before(end) {
+		maxOnline = int64(now.Sub(start).Seconds())
+	}
+	for email, seconds := range result {
+		if seconds > maxOnline {
+			result[email] = maxOnline
+		}
+	}
+
+	return result
 }
 
 // resolveUserEmails batch-resolves user IDs to lowercase email addresses.

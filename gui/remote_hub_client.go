@@ -76,10 +76,11 @@ type RemoteHubClient struct {
 	configureIMHandler func(*IMMessageHandler)
 
 	// Digital employee discussion handler for pushed Hub discussion messages.
-	veHandlerMu     sync.Mutex
-	veHandler       *VEMessageHandler
-	groupDispatcher *GroupChatDispatcher
-	veDetailRefresh sync.Map // sessionID -> *veDetailRefreshState
+	veHandlerMu      sync.Mutex
+	veHandler        *VEMessageHandler
+	groupDispatcher  *GroupChatDispatcher
+	veDetailRefresh  sync.Map // sessionID -> *veDetailRefreshState
+	mobileTaskActive atomic.Bool
 
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
@@ -204,6 +205,7 @@ func (c *RemoteHubClient) Connect() error {
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
 	go c.SyncTools()
+	go c.mobileDigitalEmployeeTaskLoop()
 	if c.app.shouldAutoSyncHubManagedCapabilitiesOnConnect() {
 		c.app.TriggerHubManagedCapabilitySync("hub-connect")
 	}

@@ -1,3 +1,6 @@
+const serverAuthModePassword = 'password';
+const serverAuthModePrivateKey = 'private_key';
+
 class ServerProfile {
   final String id;
   final String name;
@@ -28,7 +31,7 @@ class ServerProfile {
       host: json['host'] as String? ?? '',
       port: json['port'] as int? ?? 22,
       username: json['username'] as String? ?? '',
-      authMode: json['auth_mode'] as String? ?? 'password',
+      authMode: json['auth_mode'] as String? ?? serverAuthModePassword,
       tag: json['tag'] as String?,
       note: json['note'] as String?,
     );
@@ -46,4 +49,11 @@ class ServerProfile {
       if (note != null) 'note': note,
     };
   }
+}
+
+String serverAuthModeLabel(String authMode) {
+  return switch (authMode) {
+    serverAuthModePrivateKey => '私钥',
+    _ => '密码',
+  };
 }

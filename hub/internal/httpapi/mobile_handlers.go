@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +44,21 @@ var mobileDigitalEmployeeTasks = struct {
 	tasks: make(map[string]mobileDigitalEmployeeTaskRecord),
 }
 
+var mobileStatePersistence = struct {
+	sync.Mutex
+	loaded bool
+}{}
+
+const mobileStatePathEnv = "MACLAW_MOBILE_STATE_PATH"
+
+type mobilePersistentState struct {
+	Drafts               map[string]mobileDocumentDraftRecord       `json:"drafts"`
+	Exports              map[string]mobileDocumentExportRecord      `json:"exports"`
+	Uploads              map[string]mobileDocumentUploadRecord      `json:"uploads"`
+	DigitalEmployeeTasks map[string]mobileDigitalEmployeeTaskRecord `json:"digital_employee_tasks"`
+	SavedAt              time.Time                                  `json:"saved_at"`
+}
+
 type mobileDocumentDraftRecord struct {
 	ID        string
 	OwnerID   string
@@ -61,14 +78,20 @@ type mobileDocumentExportRecord struct {
 }
 
 type mobileDocumentUploadRecord struct {
-	TaskID     string
-	OwnerID    string
-	Filename   string
-	Status     string
-	DraftID    string
-	Message    string
-	UploadedAt time.Time
-	UpdatedAt  time.Time
+	TaskID      string
+	OwnerID     string
+	Filename    string
+	ContentType string
+	Status      string
+	DraftID     string
+	Message     string
+	ClaimedBy   string
+	SourceBytes []byte
+	OCRMarkdown string
+	OCRMessage  string
+	OCRError    string
+	UploadedAt  time.Time
+	UpdatedAt   time.Time
 }
 
 type mobileDigitalEmployeeTaskRecord struct {
@@ -81,6 +104,98 @@ type mobileDigitalEmployeeTaskRecord struct {
 	ClaimedBy  string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+func mobileStatePath() string {
+	return strings.TrimSpace(os.Getenv(mobileStatePathEnv))
+}
+
+func mobileEnsureStateLoaded() {
+	mobileStatePersistence.Lock()
+	if mobileStatePersistence.loaded {
+		mobileStatePersistence.Unlock()
+		return
+	}
+	mobileStatePersistence.loaded = true
+	path := mobileStatePath()
+	mobileStatePersistence.Unlock()
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	var state mobilePersistentState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return
+	}
+	mobileDocuments.Lock()
+	if state.Drafts != nil {
+		mobileDocuments.drafts = state.Drafts
+	}
+	if state.Exports != nil {
+		mobileDocuments.exports = state.Exports
+	}
+	if state.Uploads != nil {
+		mobileDocuments.uploads = state.Uploads
+	}
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	if state.DigitalEmployeeTasks != nil {
+		mobileDigitalEmployeeTasks.tasks = state.DigitalEmployeeTasks
+	}
+	mobileDigitalEmployeeTasks.Unlock()
+}
+
+func mobilePersistState() {
+	path := mobileStatePath()
+	if path == "" {
+		return
+	}
+	state := mobilePersistentState{
+		Drafts:               make(map[string]mobileDocumentDraftRecord),
+		Exports:              make(map[string]mobileDocumentExportRecord),
+		Uploads:              make(map[string]mobileDocumentUploadRecord),
+		DigitalEmployeeTasks: make(map[string]mobileDigitalEmployeeTaskRecord),
+		SavedAt:              time.Now().UTC(),
+	}
+	mobileDocuments.Lock()
+	for id, record := range mobileDocuments.drafts {
+		state.Drafts[id] = record
+	}
+	for id, record := range mobileDocuments.exports {
+		state.Exports[id] = record
+	}
+	for id, record := range mobileDocuments.uploads {
+		state.Uploads[id] = record
+	}
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	for id, record := range mobileDigitalEmployeeTasks.tasks {
+		state.DigitalEmployeeTasks[id] = record
+	}
+	mobileDigitalEmployeeTasks.Unlock()
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
+func mobileResetStatePersistenceForTest() {
+	mobileStatePersistence.Lock()
+	mobileStatePersistence.loaded = false
+	mobileStatePersistence.Unlock()
 }
 
 // MobileBootstrapHandler returns the small, cheap payload the mobile app needs
@@ -152,21 +267,56 @@ func mobileDocumentExportPayload(record mobileDocumentExportRecord) map[string]a
 
 func mobileDocumentUploadPayload(record mobileDocumentUploadRecord) map[string]any {
 	payload := map[string]any{
-		"task_id":     record.TaskID,
-		"filename":    record.Filename,
-		"status":      record.Status,
-		"draft_id":    record.DraftID,
-		"message":     record.Message,
-		"uploaded_at": record.UploadedAt.Format(time.RFC3339),
-		"updated_at":  record.UpdatedAt.Format(time.RFC3339),
-		"owner_id":    record.OwnerID,
+		"task_id":      record.TaskID,
+		"filename":     record.Filename,
+		"content_type": record.ContentType,
+		"status":       record.Status,
+		"draft_id":     record.DraftID,
+		"message":      record.Message,
+		"claimed_by":   record.ClaimedBy,
+		"uploaded_at":  record.UploadedAt.Format(time.RFC3339),
+		"updated_at":   record.UpdatedAt.Format(time.RFC3339),
+		"owner_id":     record.OwnerID,
 	}
 	if record.DraftID != "" {
 		if draft, ok := mobileDocuments.drafts[record.DraftID]; ok {
 			payload["draft"] = mobileDocumentDraftPayload(draft)
 		}
 	}
+	if record.TaskID != "" && len(record.SourceBytes) > 0 {
+		payload["source_download_url"] = "/api/mobile/documents/upload/" + record.TaskID + "/source"
+	}
 	return payload
+}
+
+func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time.Time) (mobileDocumentUploadRecord, bool) {
+	if record.Status != "needs_ocr" {
+		return record, false
+	}
+	if strings.TrimSpace(record.OCRError) != "" {
+		record.Status = "failed"
+		record.Message = strings.TrimSpace(record.OCRError)
+		record.UpdatedAt = now
+		return record, true
+	}
+	ocrMarkdown := strings.TrimSpace(record.OCRMarkdown)
+	if ocrMarkdown == "" || record.DraftID == "" {
+		return record, false
+	}
+	draft, ok := mobileDocuments.drafts[record.DraftID]
+	if !ok || draft.OwnerID != record.OwnerID {
+		return record, false
+	}
+	draft.Markdown = ocrMarkdown
+	draft.UpdatedAt = now
+	mobileDocuments.drafts[draft.ID] = draft
+	record.Status = "ready"
+	record.Message = strings.TrimSpace(record.OCRMessage)
+	if record.Message == "" {
+		record.Message = "OCR/视觉识别已完成，已更新移动端文档草稿。"
+	}
+	record.UpdatedAt = now
+	return record, true
 }
 
 type mobileSearchRequest struct {
@@ -288,6 +438,13 @@ type mobileDocumentExportRequest struct {
 	Format  string `json:"format"`
 }
 
+type mobileDocumentUploadResultRequest struct {
+	Status   string `json:"status,omitempty"`
+	Markdown string `json:"markdown,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 type mobileSSHAnalyzeRequest struct {
 	Output string `json:"output"`
 }
@@ -364,6 +521,7 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 
 		var req mobileDocumentDraftRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
@@ -396,6 +554,7 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		mobileDocuments.Lock()
 		mobileDocuments.drafts[draftID] = record
 		mobileDocuments.Unlock()
+		mobilePersistState()
 
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
@@ -417,6 +576,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		draftID := strings.TrimSpace(r.PathValue("draftId"))
 		if draftID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "draft id is required")
@@ -451,6 +611,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
+		mobilePersistState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
 			"status": "draft_updated",
@@ -472,6 +633,7 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		draftID := strings.TrimSpace(r.PathValue("draftId"))
 		if draftID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "draft id is required")
@@ -501,6 +663,7 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
+		mobilePersistState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
 			"status": "processed",
@@ -593,7 +756,7 @@ func mobileProcessRewrite(title string, body []string) string {
 	b.WriteString(" 改写稿\n\n")
 	for _, line := range body {
 		b.WriteString("- ")
-		b.WriteString(strings.Trim(strings.TrimPrefix(line, "-"), " 。."))
+		b.WriteString(strings.Trim(strings.TrimPrefix(line, "-"), " 。"))
 		b.WriteString("。\n")
 	}
 	return b.String()
@@ -606,7 +769,7 @@ func mobileProcessExpand(title string, body []string) string {
 	b.WriteString(" 扩写稿\n\n")
 	for _, line := range body {
 		b.WriteString("## ")
-		b.WriteString(mobileTrimRunes(strings.Trim(strings.TrimPrefix(line, "-"), " 。."), 36))
+		b.WriteString(mobileTrimRunes(strings.Trim(strings.TrimPrefix(line, "-"), " 。"), 36))
 		b.WriteString("\n\n")
 		b.WriteString(line)
 		b.WriteString("\n\n待补充：背景、影响、处理建议和下一步行动。\n\n")
@@ -691,6 +854,7 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 
 		var req mobileDocumentExportRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
@@ -732,6 +896,7 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 		mobileDocuments.Lock()
 		mobileDocuments.exports[job.JobID] = job
 		mobileDocuments.Unlock()
+		mobilePersistState()
 		writeJSON(w, http.StatusAccepted, mobileDocumentExportPayload(job))
 	}
 }
@@ -744,6 +909,7 @@ func MobileDocumentExportStatusHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		jobID := strings.TrimSpace(r.PathValue("jobId"))
 		mobileDocuments.Lock()
 		job, ok := mobileDocuments.exports[jobID]
@@ -765,6 +931,7 @@ func MobileDocumentExportDownloadHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		jobID := strings.TrimSpace(r.PathValue("jobId"))
 		mobileDocuments.Lock()
 		job, ok := mobileDocuments.exports[jobID]
@@ -998,14 +1165,14 @@ func mobileDraftMarkdownFromUpload(filename string, raw []byte) (string, bool) {
 	}
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
-		text = "_Imported file was empty._"
+		text = "_导入文件为空。_"
 	}
 	if ext == ".md" || ext == ".markdown" {
 		return text + "\n", true
 	}
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
 	if title == "" {
-		title = "Imported document"
+		title = "导入文档"
 	}
 	switch ext {
 	case ".log":
@@ -1183,7 +1350,6 @@ func mobileDraftMarkdownFromImage(filename string, raw []byte) string {
 	b.WriteString("_OCR 完成后会把识别文本更新到这里。_\n")
 	return b.String()
 }
-
 func mobileImageDimensions(format string, raw []byte) (int, int) {
 	switch format {
 	case "png":
@@ -1526,7 +1692,7 @@ func mobileZipReadFile(zr *zip.Reader, name string) []byte {
 func mobileUploadTitle(filename string) string {
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
 	if title == "" {
-		return "Imported document"
+		return "导入文档"
 	}
 	return title
 }
@@ -1561,6 +1727,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		if err := r.ParseMultipartForm(mobileDocumentUploadMaxBytes); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_MULTIPART", "file upload must be multipart/form-data")
 			return
@@ -1586,13 +1753,15 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		}
 		now := time.Now().UTC()
 		record := mobileDocumentUploadRecord{
-			TaskID:     fmt.Sprintf("mobparse_%d", now.UnixNano()),
-			OwnerID:    principal.UserID,
-			Filename:   name,
-			Status:     "queued",
-			Message:    "Waiting for document parsing pipeline.",
-			UploadedAt: now,
-			UpdatedAt:  now,
+			TaskID:      fmt.Sprintf("mobparse_%d", now.UnixNano()),
+			OwnerID:     principal.UserID,
+			Filename:    name,
+			ContentType: strings.TrimSpace(header.Header.Get("Content-Type")),
+			Status:      "queued",
+			Message:     "已上传，等待文档解析管线处理。",
+			SourceBytes: append([]byte(nil), body...),
+			UploadedAt:  now,
+			UpdatedAt:   now,
 		}
 		if mobileUploadedFileIsImmediateDraft(name) {
 			if markdown, ok := mobileDraftMarkdownFromUpload(name, body); ok {
@@ -1609,16 +1778,17 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				}
 				record.Status = "ready"
 				record.DraftID = draft.ID
-				record.Message = "File parsed into a mobile draft."
+				record.Message = "文件已解析为移动端文档草稿。"
 				mobileDocuments.Lock()
 				mobileDocuments.drafts[draft.ID] = draft
 				mobileDocuments.uploads[record.TaskID] = record
 				payload := mobileDocumentUploadPayload(record)
 				mobileDocuments.Unlock()
+				mobilePersistState()
 				writeJSON(w, http.StatusAccepted, payload)
 				return
 			}
-			record.Message = "Uploaded file could not be parsed immediately; waiting for document parsing pipeline."
+			record.Message = "文件暂时无法立即解析，等待文档解析管线处理。"
 		}
 		if mobileUploadedFileIsImage(name) {
 			draft := mobileDocumentDraftRecord{
@@ -1631,12 +1801,13 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			}
 			record.Status = "needs_ocr"
 			record.DraftID = draft.ID
-			record.Message = "Image imported into a mobile draft; OCR is pending."
+			record.Message = "图片已导入为移动端草稿，等待 OCR/视觉模型识别。"
 			mobileDocuments.Lock()
 			mobileDocuments.drafts[draft.ID] = draft
 			mobileDocuments.uploads[record.TaskID] = record
 			payload := mobileDocumentUploadPayload(record)
 			mobileDocuments.Unlock()
+			mobilePersistState()
 			writeJSON(w, http.StatusAccepted, payload)
 			return
 		}
@@ -1644,6 +1815,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		mobileDocuments.uploads[record.TaskID] = record
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
+		mobilePersistState()
 		writeJSON(w, http.StatusAccepted, payload)
 	}
 }
@@ -1656,15 +1828,227 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		taskID := strings.TrimSpace(r.PathValue("taskId"))
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.uploads[taskID]
+		changed := false
+		if ok && record.OwnerID == principal.UserID {
+			record, changed = mobileApplyUploadPipelineResult(record, time.Now().UTC())
+			if changed {
+				mobileDocuments.uploads[taskID] = record
+			}
+		}
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
 		if !ok || record.OwnerID != principal.UserID {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
+		if changed {
+			mobilePersistState()
+		}
+		writeJSON(w, http.StatusOK, payload)
+	}
+}
+
+// MobileDocumentUploadSourceHandler streams the original upload to the claimed
+// official worker so OCR/Office parsing can run outside the phone.
+func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, ok := authenticateVEMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		mobileEnsureStateLoaded()
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		mobileDocuments.Lock()
+		record, exists := mobileDocuments.uploads[taskID]
+		mobileDocuments.Unlock()
+		if !exists || record.OwnerID != principal.UserID || len(record.SourceBytes) == 0 {
+			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
+			return
+		}
+		if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
+			writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
+			return
+		}
+		contentType := strings.TrimSpace(record.ContentType)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(record.Filename)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(record.SourceBytes)
+	}
+}
+
+// MobileDocumentUploadClaimHandler lets an authenticated official worker claim
+// one pending mobile document parse task for its user.
+func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, ok := authenticateVEMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		mobileEnsureStateLoaded()
+		claimKind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+		if claimKind == "" {
+			claimKind = "all"
+		}
+		if claimKind != "all" && claimKind != "document" && claimKind != "ocr" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "kind must be one of all, document, ocr")
+			return
+		}
+		now := time.Now().UTC()
+		var claimed mobileDocumentUploadRecord
+		mobileDocuments.Lock()
+		for taskID, record := range mobileDocuments.uploads {
+			if record.OwnerID != principal.UserID {
+				continue
+			}
+			if record.Status != "queued" && record.Status != "needs_ocr" {
+				continue
+			}
+			if claimKind == "document" && record.Status != "queued" {
+				continue
+			}
+			if claimKind == "ocr" && record.Status != "needs_ocr" {
+				continue
+			}
+			if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
+				continue
+			}
+			record.Status = "in_progress"
+			record.ClaimedBy = principal.MachineID
+			record.Message = "远程解析 worker 正在处理移动端文档。"
+			record.UpdatedAt = now
+			mobileDocuments.uploads[taskID] = record
+			claimed = record
+			break
+		}
+		payload := mobileDocumentUploadPayload(claimed)
+		mobileDocuments.Unlock()
+		if claimed.TaskID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "no_task",
+				"task":   nil,
+			})
+			return
+		}
+		mobilePersistState()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "claimed",
+			"task":   payload,
+		})
+	}
+}
+
+// MobileDocumentUploadResultHandler lets official Hub workers or remote digital
+// employees write OCR/vision parse results back into a mobile upload task.
+func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+			return
+		}
+		principal, ok := authenticateVEMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		mobileEnsureStateLoaded()
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		if taskID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "task id is required")
+			return
+		}
+		var req mobileDocumentUploadResultRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		markdown := strings.TrimSpace(req.Markdown)
+		message := strings.TrimSpace(req.Message)
+		errText := strings.TrimSpace(req.Error)
+		if status == "" {
+			if errText != "" {
+				status = "failed"
+			} else if markdown != "" {
+				status = "ready"
+			}
+		}
+		if status != "ready" && status != "failed" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "status must be ready or failed")
+			return
+		}
+		if status == "ready" && markdown == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "markdown is required when status is ready")
+			return
+		}
+		if status == "failed" && errText == "" {
+			if message != "" {
+				errText = message
+			} else {
+				errText = "OCR/视觉识别失败。"
+			}
+		}
+
+		now := time.Now().UTC()
+		mobileDocuments.Lock()
+		record, exists := mobileDocuments.uploads[taskID]
+		if exists && record.OwnerID == principal.UserID {
+			if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
+				mobileDocuments.Unlock()
+				writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
+				return
+			}
+			if record.Status == "ready" || record.Status == "failed" {
+				mobileDocuments.Unlock()
+				writeError(w, http.StatusConflict, "UPLOAD_ALREADY_FINISHED", "upload task already finished")
+				return
+			}
+			record.OCRMarkdown = markdown
+			record.OCRMessage = message
+			record.OCRError = errText
+			if record.Status == "" || record.Status == "queued" || record.Status == "in_progress" {
+				record.Status = "needs_ocr"
+			}
+			if markdown != "" {
+				draft, hasDraft := mobileDocuments.drafts[record.DraftID]
+				if record.DraftID == "" || !hasDraft || draft.OwnerID != record.OwnerID {
+					draft = mobileDocumentDraftRecord{
+						ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+						OwnerID:   record.OwnerID,
+						Title:     mobileUploadTitle(record.Filename),
+						Template:  "report",
+						Markdown:  markdown,
+						UpdatedAt: now,
+					}
+					record.DraftID = draft.ID
+					mobileDocuments.drafts[draft.ID] = draft
+				}
+			}
+			record.UpdatedAt = now
+			record, _ = mobileApplyUploadPipelineResult(record, now)
+			mobileDocuments.uploads[taskID] = record
+		}
+		payload := mobileDocumentUploadPayload(record)
+		mobileDocuments.Unlock()
+		if !exists || record.OwnerID != principal.UserID {
+			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
+			return
+		}
+		mobilePersistState()
 		writeJSON(w, http.StatusOK, payload)
 	}
 }
@@ -1749,6 +2133,7 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		employeeID := strings.TrimSpace(r.PathValue("employeeId"))
 		if employeeID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "employee id is required")
@@ -1778,6 +2163,7 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 		mobileDigitalEmployeeTasks.Lock()
 		mobileDigitalEmployeeTasks.tasks[record.TaskID] = record
 		mobileDigitalEmployeeTasks.Unlock()
+		mobilePersistState()
 		writeJSON(w, http.StatusAccepted, mobileDigitalEmployeeTaskPayload(record))
 	}
 }
@@ -1796,6 +2182,7 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		employeeID := strings.TrimSpace(r.PathValue("employeeId"))
 		if employeeID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "employee id is required")
@@ -1810,7 +2197,7 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 		var claimed mobileDigitalEmployeeTaskRecord
 		mobileDigitalEmployeeTasks.Lock()
 		for taskID, record := range mobileDigitalEmployeeTasks.tasks {
-			if record.EmployeeID != employeeID || record.OwnerID != principal.UserID || record.Status != "queued" {
+			if !groupDiscussionParticipantIdentityMatches(record.EmployeeID, employeeID) || record.OwnerID != principal.UserID || record.Status != "queued" {
 				continue
 			}
 			record.Status = "in_progress"
@@ -1829,6 +2216,7 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			})
 			return
 		}
+		mobilePersistState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"task":   mobileDigitalEmployeeTaskPayload(claimed),
 			"status": "claimed",
@@ -1849,6 +2237,7 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		taskID := strings.TrimSpace(r.PathValue("taskId"))
 		if taskID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "task id is required")
@@ -1897,6 +2286,7 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
+		mobilePersistState()
 		writeJSON(w, http.StatusOK, mobileDigitalEmployeeTaskPayload(record))
 	}
 }
@@ -1910,6 +2300,7 @@ func MobileDigitalEmployeeTaskStatusHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		taskID := strings.TrimSpace(r.PathValue("taskId"))
 		mobileDigitalEmployeeTasks.Lock()
 		record, ok := mobileDigitalEmployeeTasks.tasks[taskID]

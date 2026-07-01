@@ -193,7 +193,7 @@
         </div>
         <div class="tab-group" id="dimensionTabs">
           <button data-dim="tokens" class="active"><span data-lang="en">Token Usage</span><span data-lang="zh">Token 用量</span></button>
-          <button data-dim="duration"><span data-lang="en">Online Time</span><span data-lang="zh">在线时长</span></button>
+          <button data-dim="duration"><span data-lang="en">Usage Time</span><span data-lang="zh">使用时长</span></button>
         </div>
         <div class="lang-sw">
           <button data-set-lang="en">EN</button>
@@ -287,9 +287,9 @@
       return s + (isZh()?' 秒':'s');
     }
     function primaryMetric(row) { return currentDimension === 'duration' ? formatDuration(row.duration_seconds) : formatTokens(row.total_tokens); }
-    function primaryLabel() { return currentDimension === 'duration' ? (isZh()?'在线时长':'Online') : 'Tokens'; }
+    function primaryLabel() { return currentDimension === 'duration' ? (isZh()?'使用时长':'Usage') : 'Tokens'; }
     function secondaryMetric(row) { return currentDimension === 'duration' ? formatTokens(row.total_tokens) : formatDuration(row.duration_seconds); }
-    function secondaryLabel() { return currentDimension === 'duration' ? 'Tokens' : (isZh()?'在线时长':'Online'); }
+    function secondaryLabel() { return currentDimension === 'duration' ? 'Tokens' : (isZh()?'使用时长':'Usage'); }
     function rankFor(row) { return currentDimension === 'duration' ? row.duration_rank : row.token_rank; }
     function esc(str) { var e = document.createElement('span'); e.textContent = str || ''; return e.innerHTML; }
 

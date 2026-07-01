@@ -288,6 +288,7 @@ type Session struct {
 type UserDurationSummary struct {
 	UserEmail       string
 	DurationSeconds int64
+	OnlineSeconds   int64 // connection uptime from sessions (tie-breaker for ranking)
 }
 
 type UserTokenUsage struct {

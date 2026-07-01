@@ -12,6 +12,7 @@ type publicUserRankingRow struct {
 	MaskedEmail     string `json:"masked_email"`
 	TotalTokens     int64  `json:"total_tokens"`
 	DurationSeconds int64  `json:"duration_seconds"`
+	OnlineSeconds   int64  `json:"online_seconds"`
 	TokenRank       int    `json:"token_rank"`
 	DurationRank    int    `json:"duration_rank"`
 }
@@ -133,6 +134,7 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 				byEmail[email] = row
 			}
 			row.DurationSeconds += d.DurationSeconds
+			row.OnlineSeconds += d.OnlineSeconds
 		}
 
 		merged := make([]userRankingRow, 0, len(byEmail))
@@ -159,6 +161,7 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 				MaskedEmail:     maskEmail(row.UserEmail),
 				TotalTokens:     row.TotalTokens,
 				DurationSeconds: row.DurationSeconds,
+				OnlineSeconds:   row.OnlineSeconds,
 				TokenRank:       row.TokenRank,
 				DurationRank:    row.DurationRank,
 			})

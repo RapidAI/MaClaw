@@ -3,9 +3,11 @@ package httpapi
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -226,6 +228,193 @@ func TestMobileDigitalEmployeeTaskPayloadIncludesRemoteWorkFields(t *testing.T) 
 	}
 }
 
+func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-ve@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"check disk"}`))
+	createReq.SetPathValue("employeeId", "ve_"+enroll.MachineID)
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	taskID, _ := created["task_id"].(string)
+	if taskID == "" {
+		t.Fatalf("created response missing task_id: %#v", created)
+	}
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/"+enroll.MachineID+"/tasks/claim", nil)
+	claimReq.SetPathValue("employeeId", enroll.MachineID)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim status = %d body=%s", claimRec.Code, claimRec.Body.String())
+	}
+	var claimed struct {
+		Status string `json:"status"`
+		Task   struct {
+			TaskID    string `json:"task_id"`
+			Status    string `json:"status"`
+			ClaimedBy string `json:"claimed_by"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if claimed.Status != "claimed" || claimed.Task.TaskID != taskID || claimed.Task.Status != "in_progress" || claimed.Task.ClaimedBy != enroll.MachineID {
+		t.Fatalf("claimed response = %+v, want alias-matched in_progress task", claimed)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"disk ok"}`))
+	updateReq.SetPathValue("taskId", taskID)
+	updateReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if updated["status"] != "done" || updated["result"] != "disk ok" || updated["claimed_by"] != enroll.MachineID {
+		t.Fatalf("updated response = %#v", updated)
+	}
+}
+
+func TestMobilePersistentStateRoundTrip(t *testing.T) {
+	clearMobileStateForTest(t)
+	path := filepath.Join(t.TempDir(), "mobile-state.json")
+	t.Setenv(mobileStatePathEnv, path)
+	mobileResetStatePersistenceForTest()
+	now := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["draft-1"] = mobileDocumentDraftRecord{
+		ID:        "draft-1",
+		OwnerID:   "user-1",
+		Title:     "应急报告",
+		Template:  "report",
+		Markdown:  "# 应急报告\n\n内容",
+		UpdatedAt: now,
+	}
+	mobileDocuments.exports["export-1"] = mobileDocumentExportRecord{
+		JobID:     "export-1",
+		DraftID:   "draft-1",
+		OwnerID:   "user-1",
+		Format:    "markdown",
+		Status:    "ready",
+		CreatedAt: now,
+	}
+	mobileDocuments.uploads["upload-1"] = mobileDocumentUploadRecord{
+		TaskID:     "upload-1",
+		OwnerID:    "user-1",
+		Filename:   "incident.md",
+		Status:     "ready",
+		DraftID:    "draft-1",
+		Message:    "文件已解析为移动端文档草稿。",
+		UploadedAt: now,
+		UpdatedAt:  now,
+	}
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	mobileDigitalEmployeeTasks.tasks["task-1"] = mobileDigitalEmployeeTaskRecord{
+		TaskID:     "task-1",
+		EmployeeID: "ve-machine",
+		OwnerID:    "user-1",
+		Prompt:     "检查磁盘",
+		Status:     "queued",
+		Result:     "任务已提交",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	mobileDigitalEmployeeTasks.Unlock()
+
+	mobilePersistState()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts = make(map[string]mobileDocumentDraftRecord)
+	mobileDocuments.exports = make(map[string]mobileDocumentExportRecord)
+	mobileDocuments.uploads = make(map[string]mobileDocumentUploadRecord)
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	mobileDigitalEmployeeTasks.tasks = make(map[string]mobileDigitalEmployeeTaskRecord)
+	mobileDigitalEmployeeTasks.Unlock()
+	mobileResetStatePersistenceForTest()
+
+	mobileEnsureStateLoaded()
+
+	mobileDocuments.Lock()
+	draft, hasDraft := mobileDocuments.drafts["draft-1"]
+	exportJob, hasExport := mobileDocuments.exports["export-1"]
+	upload, hasUpload := mobileDocuments.uploads["upload-1"]
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	task, hasTask := mobileDigitalEmployeeTasks.tasks["task-1"]
+	mobileDigitalEmployeeTasks.Unlock()
+	if !hasDraft || draft.Title != "应急报告" {
+		t.Fatalf("restored draft = %#v, present=%v", draft, hasDraft)
+	}
+	if !hasExport || exportJob.Status != "ready" {
+		t.Fatalf("restored export = %#v, present=%v", exportJob, hasExport)
+	}
+	if !hasUpload || upload.Message != "文件已解析为移动端文档草稿。" {
+		t.Fatalf("restored upload = %#v, present=%v", upload, hasUpload)
+	}
+	if !hasTask || task.Prompt != "检查磁盘" {
+		t.Fatalf("restored task = %#v, present=%v", task, hasTask)
+	}
+}
+
+func clearMobileDigitalEmployeeTasksForTest(t *testing.T) {
+	t.Helper()
+	mobileDigitalEmployeeTasks.Lock()
+	previous := mobileDigitalEmployeeTasks.tasks
+	mobileDigitalEmployeeTasks.tasks = make(map[string]mobileDigitalEmployeeTaskRecord)
+	mobileDigitalEmployeeTasks.Unlock()
+	t.Cleanup(func() {
+		mobileDigitalEmployeeTasks.Lock()
+		mobileDigitalEmployeeTasks.tasks = previous
+		mobileDigitalEmployeeTasks.Unlock()
+	})
+}
+
+func clearMobileStateForTest(t *testing.T) {
+	t.Helper()
+	mobileDocuments.Lock()
+	previousDrafts := mobileDocuments.drafts
+	previousExports := mobileDocuments.exports
+	previousUploads := mobileDocuments.uploads
+	mobileDocuments.drafts = make(map[string]mobileDocumentDraftRecord)
+	mobileDocuments.exports = make(map[string]mobileDocumentExportRecord)
+	mobileDocuments.uploads = make(map[string]mobileDocumentUploadRecord)
+	mobileDocuments.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	previousTasks := mobileDigitalEmployeeTasks.tasks
+	mobileDigitalEmployeeTasks.tasks = make(map[string]mobileDigitalEmployeeTaskRecord)
+	mobileDigitalEmployeeTasks.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		mobileDocuments.drafts = previousDrafts
+		mobileDocuments.exports = previousExports
+		mobileDocuments.uploads = previousUploads
+		mobileDocuments.Unlock()
+		mobileDigitalEmployeeTasks.Lock()
+		mobileDigitalEmployeeTasks.tasks = previousTasks
+		mobileDigitalEmployeeTasks.Unlock()
+		mobileResetStatePersistenceForTest()
+	})
+}
+
 func TestMobileProcessDocumentMarkdown(t *testing.T) {
 	markdown := "# Incident\n\nService returned 502 for 10 minutes.\n\nNginx was restarted."
 
@@ -265,6 +454,327 @@ func TestMobileDocumentUploadStatusHandlerRequiresViewerToken(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentUploadClaimHandlerClaimsPendingTask(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-claim@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 50, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-claim"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-claim",
+		OwnerID:     enroll.UserID,
+		Filename:    "screenshot.png",
+		ContentType: "image/png",
+		Status:      "needs_ocr",
+		Message:     "图片已导入为移动端草稿，等待 OCR/视觉模型识别。",
+		SourceBytes: []byte("png bytes"),
+		UploadedAt:  now,
+		UpdatedAt:   now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim", nil)
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "claimed" {
+		t.Fatalf("payload = %#v, want claimed", payload)
+	}
+	task, ok := payload["task"].(map[string]any)
+	if !ok || task["task_id"] != "upload-claim" || task["status"] != "in_progress" || task["claimed_by"] != enroll.MachineID {
+		t.Fatalf("task = %#v, want claimed in_progress task", payload["task"])
+	}
+	if task["source_download_url"] != "/api/mobile/documents/upload/upload-claim/source" {
+		t.Fatalf("source_download_url = %v, want source URL", task["source_download_url"])
+	}
+}
+
+func TestMobileDocumentUploadClaimHandlerDocumentKindSkipsOCRTasks(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-claim-document@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 52, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-ocr"] = mobileDocumentUploadRecord{
+		TaskID:     "upload-ocr",
+		OwnerID:    enroll.UserID,
+		Filename:   "screenshot.png",
+		Status:     "needs_ocr",
+		UploadedAt: now,
+		UpdatedAt:  now,
+	}
+	mobileDocuments.uploads["upload-doc"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-doc",
+		OwnerID:     enroll.UserID,
+		Filename:    "legacy.doc",
+		Status:      "queued",
+		SourceBytes: []byte("doc"),
+		UploadedAt:  now,
+		UpdatedAt:   now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim?kind=document", nil)
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	task, ok := payload["task"].(map[string]any)
+	if !ok || task["task_id"] != "upload-doc" {
+		t.Fatalf("task = %#v, want queued document task", payload["task"])
+	}
+}
+
+func TestMobileDocumentUploadClaimHandlerRequiresMachineToken(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-claim-viewer@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s, want unauthorized", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMobileDocumentUploadSourceHandlerDownloadsClaimedSource(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-source@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 55, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-source"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-source",
+		OwnerID:     enroll.UserID,
+		Filename:    "incident.pdf",
+		ContentType: "application/pdf",
+		Status:      "in_progress",
+		ClaimedBy:   enroll.MachineID,
+		SourceBytes: []byte("%PDF mobile"),
+		UpdatedAt:   now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/upload/upload-source/source", nil)
+	req.SetPathValue("taskId", "upload-source")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadSourceHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/pdf" {
+		t.Fatalf("content-type = %q, want application/pdf", rec.Header().Get("Content-Type"))
+	}
+	if rec.Body.String() != "%PDF mobile" {
+		t.Fatalf("body = %q, want source bytes", rec.Body.String())
+	}
+}
+
+func TestMobileDocumentUploadSourceHandlerRejectsOtherClaimedWorker(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-source-other@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 58, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-source-other"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-source-other",
+		OwnerID:     enroll.UserID,
+		Filename:    "incident.pdf",
+		Status:      "in_progress",
+		ClaimedBy:   "different-machine",
+		SourceBytes: []byte("source"),
+		UpdatedAt:   now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/upload/upload-source-other/source", nil)
+	req.SetPathValue("taskId", "upload-source-other")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadSourceHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want forbidden", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMobileDocumentUploadResultHandlerCompletesQueuedTask(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-ocr@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-queued"] = mobileDocumentUploadRecord{
+		TaskID:     "upload-queued",
+		OwnerID:    enroll.UserID,
+		Filename:   "incident.pdf",
+		Status:     "queued",
+		Message:    "已上传，等待文档解析管线处理。",
+		UploadedAt: now,
+		UpdatedAt:  now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-queued/result", strings.NewReader(`{"status":"ready","markdown":"# Incident\n\nOCR text","message":"解析完成"}`))
+	req.SetPathValue("taskId", "upload-queued")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "ready" || payload["message"] != "解析完成" {
+		t.Fatalf("payload = %#v, want ready parsed result", payload)
+	}
+	draft, ok := payload["draft"].(map[string]any)
+	if !ok || !strings.Contains(draft["markdown"].(string), "OCR text") {
+		t.Fatalf("payload draft = %#v, want OCR markdown draft", payload["draft"])
+	}
+}
+
+func TestMobileDocumentUploadResultHandlerCompletesClaimedTask(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-claimed-result@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 10, 3, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-claimed"] = mobileDocumentUploadRecord{
+		TaskID:    "upload-claimed",
+		OwnerID:   enroll.UserID,
+		Filename:  "screenshot.png",
+		Status:    "in_progress",
+		ClaimedBy: enroll.MachineID,
+		UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-claimed/result", strings.NewReader(`{"status":"ready","markdown":"# Screenshot\n\nOCR done"}`))
+	req.SetPathValue("taskId", "upload-claimed")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "ready" {
+		t.Fatalf("payload = %#v, want ready", payload)
+	}
+}
+
+func TestMobileDocumentUploadResultHandlerRejectsOtherClaimedWorker(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, ownerEnroll := issueViewerToken(t, identity, "mobile-claim-owner@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 10, 4, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-other-worker"] = mobileDocumentUploadRecord{
+		TaskID:    "upload-other-worker",
+		OwnerID:   ownerEnroll.UserID,
+		Filename:  "screenshot.png",
+		Status:    "in_progress",
+		ClaimedBy: "different-machine",
+		UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-other-worker/result", strings.NewReader(`{"status":"ready","markdown":"# no"}`))
+	req.SetPathValue("taskId", "upload-other-worker")
+	req.Header.Set("Authorization", "Bearer "+ownerEnroll.MachineToken)
+	req.Header.Set("X-Machine-ID", ownerEnroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want forbidden", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMobileDocumentUploadResultHandlerFailsOCRTask(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-ocr-fail@example.com")
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 10, 5, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-ocr"] = mobileDocumentUploadRecord{
+		TaskID:     "upload-ocr",
+		OwnerID:    enroll.UserID,
+		Filename:   "screenshot.png",
+		Status:     "needs_ocr",
+		DraftID:    "draft-ocr",
+		UploadedAt: now,
+		UpdatedAt:  now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-ocr/result", strings.NewReader(`{"status":"failed","error":"OCR 服务暂不可用。"}`))
+	req.SetPathValue("taskId", "upload-ocr")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "failed" || payload["message"] != "OCR 服务暂不可用。" {
+		t.Fatalf("payload = %#v, want failed OCR result", payload)
+	}
+}
+
+func TestMobileDocumentUploadResultHandlerRequiresMachineToken(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-ocr-viewer@example.com")
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-1/result", strings.NewReader(`{"status":"ready","markdown":"# ok"}`))
+	req.SetPathValue("taskId", "upload-1")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s, want unauthorized", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMobileSSHAnalysisPayloadDetectsDiskFull(t *testing.T) {
 	payload := mobileSSHAnalysisPayload("write failed: no space left on device")
 
@@ -289,6 +799,22 @@ func TestMobileUploadedTextDraftMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "```text") {
 		t.Fatalf("markdown = %q, want text fence", markdown)
+	}
+}
+
+func TestMobileUploadedEmptyTextDraftMarkdownUsesChineseFallback(t *testing.T) {
+	markdown, ok := mobileDraftMarkdownFromUpload("empty.txt", []byte("  \n"))
+	if !ok {
+		t.Fatal("mobileDraftMarkdownFromUpload returned ok=false")
+	}
+	if !strings.Contains(markdown, "导入文件为空") {
+		t.Fatalf("markdown = %q, want Chinese empty-file fallback", markdown)
+	}
+}
+
+func TestMobileUploadTitleUsesChineseFallback(t *testing.T) {
+	if title := mobileUploadTitle(".txt"); title != "导入文档" {
+		t.Fatalf("title = %q, want 导入文档", title)
 	}
 }
 
@@ -357,6 +883,78 @@ func TestMobileUploadedImageDraftMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "640 x 480") {
 		t.Fatalf("markdown = %q, want dimensions", markdown)
+	}
+}
+
+func TestMobileApplyUploadPipelineResultCompletesOCRDraft(t *testing.T) {
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 30, 0, 0, time.UTC)
+	draft := mobileDocumentDraftRecord{
+		ID:        "draft-ocr",
+		OwnerID:   "user-ocr",
+		Title:     "screenshot",
+		Template:  "report",
+		Markdown:  "# screenshot\n\n等待 OCR",
+		UpdatedAt: now.Add(-time.Minute),
+	}
+	record := mobileDocumentUploadRecord{
+		TaskID:      "upload-ocr",
+		OwnerID:     "user-ocr",
+		Filename:    "screenshot.png",
+		Status:      "needs_ocr",
+		DraftID:     draft.ID,
+		Message:     "图片已导入为移动端草稿，等待 OCR/视觉模型识别。",
+		OCRMarkdown: "# screenshot\n\n识别文本：服务报错 502。",
+		OCRMessage:  "OCR 已完成。",
+		UploadedAt:  now.Add(-time.Minute),
+		UpdatedAt:   now.Add(-time.Minute),
+	}
+
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[draft.ID] = draft
+	updated, changed := mobileApplyUploadPipelineResult(record, now)
+	updatedDraft := mobileDocuments.drafts[draft.ID]
+	mobileDocuments.Unlock()
+
+	if !changed {
+		t.Fatal("expected OCR result to change upload state")
+	}
+	if updated.Status != "ready" || updated.Message != "OCR 已完成。" {
+		t.Fatalf("updated upload = %#v, want ready OCR completion", updated)
+	}
+	if !strings.Contains(updatedDraft.Markdown, "服务报错 502") {
+		t.Fatalf("updated draft markdown = %q, want OCR text", updatedDraft.Markdown)
+	}
+	if !updatedDraft.UpdatedAt.Equal(now) {
+		t.Fatalf("updated draft time = %v, want %v", updatedDraft.UpdatedAt, now)
+	}
+}
+
+func TestMobileApplyUploadPipelineResultFailsOCRDraft(t *testing.T) {
+	clearMobileStateForTest(t)
+	now := time.Date(2026, 7, 1, 9, 35, 0, 0, time.UTC)
+	record := mobileDocumentUploadRecord{
+		TaskID:    "upload-ocr-fail",
+		OwnerID:   "user-ocr",
+		Filename:  "screenshot.png",
+		Status:    "needs_ocr",
+		DraftID:   "draft-ocr",
+		OCRError:  "OCR 服务暂不可用。",
+		UpdatedAt: now.Add(-time.Minute),
+	}
+
+	mobileDocuments.Lock()
+	updated, changed := mobileApplyUploadPipelineResult(record, now)
+	mobileDocuments.Unlock()
+
+	if !changed {
+		t.Fatal("expected OCR error to change upload state")
+	}
+	if updated.Status != "failed" || updated.Message != "OCR 服务暂不可用。" {
+		t.Fatalf("updated upload = %#v, want failed OCR error", updated)
+	}
+	if !updated.UpdatedAt.Equal(now) {
+		t.Fatalf("updated upload time = %v, want %v", updated.UpdatedAt, now)
 	}
 }
 

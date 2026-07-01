@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../features/assistant/search_history.dart';
 import '../../features/digital_employees/digital_employee_prompt.dart';
+import '../../features/documents/document_draft.dart';
 import '../../features/servers/server_command.dart';
 import '../../features/servers/server_profile.dart';
 
@@ -51,6 +52,22 @@ class MobileLocalStore {
     await file.parent.create(recursive: true);
     final data = [for (final entry in entries) entry.toJson()];
     await file.writeAsString(jsonEncode(data));
+  }
+
+  Future<DocumentDraft?> loadLastDocumentDraft() async {
+    final file = await _lastDocumentDraftFile();
+    if (!await file.exists()) return null;
+    final raw = await file.readAsString();
+    if (raw.trim().isEmpty) return null;
+    return DocumentDraft.fromJson(
+      Map<String, dynamic>.from(jsonDecode(raw) as Map),
+    );
+  }
+
+  Future<void> saveLastDocumentDraft(DocumentDraft draft) async {
+    final file = await _lastDocumentDraftFile();
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode(draft.toJson()));
   }
 
   Future<List<ServerCommandEntry>> loadServerCommands() async {
@@ -108,6 +125,11 @@ class MobileLocalStore {
   Future<File> _serverCommandsFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/maclaw_mobile/server_commands.json');
+  }
+
+  Future<File> _lastDocumentDraftFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/maclaw_mobile/last_document_draft.json');
   }
 
   Future<File> _digitalEmployeePromptsFile() async {

@@ -35,6 +35,16 @@ class DocumentDraft {
     );
   }
 
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'template': documentTemplateWireValue(template),
+      'markdown': markdown,
+      'updated_at': updatedAt.toUtc().toIso8601String(),
+    };
+  }
+
   DocumentDraft copyWith({
     String? title,
     String? markdown,

@@ -4,6 +4,9 @@ class SecureVault {
   static const _tokenKey = 'maclaw.viewer_token';
   static const _hubUrlKey = 'maclaw.hub_url';
   static const _sshPasswordPrefix = 'maclaw.ssh.password.';
+  static const _sshPrivateKeyPrefix = 'maclaw.ssh.private_key.';
+  static const _sshPrivateKeyPassphrasePrefix =
+      'maclaw.ssh.private_key_passphrase.';
   final FlutterSecureStorage _storage;
 
   const SecureVault({
@@ -41,5 +44,37 @@ class SecureVault {
 
   Future<void> deleteServerPassword(String serverId) {
     return _storage.delete(key: '$_sshPasswordPrefix$serverId');
+  }
+
+  Future<void> saveServerPrivateKey({
+    required String serverId,
+    required String privateKey,
+    String passphrase = '',
+  }) {
+    return Future.wait([
+      _storage.write(key: '$_sshPrivateKeyPrefix$serverId', value: privateKey),
+      if (passphrase.isNotEmpty)
+        _storage.write(
+          key: '$_sshPrivateKeyPassphrasePrefix$serverId',
+          value: passphrase,
+        )
+      else
+        _storage.delete(key: '$_sshPrivateKeyPassphrasePrefix$serverId'),
+    ]);
+  }
+
+  Future<String?> readServerPrivateKey(String serverId) {
+    return _storage.read(key: '$_sshPrivateKeyPrefix$serverId');
+  }
+
+  Future<String?> readServerPrivateKeyPassphrase(String serverId) {
+    return _storage.read(key: '$_sshPrivateKeyPassphrasePrefix$serverId');
+  }
+
+  Future<void> deleteServerPrivateKey(String serverId) {
+    return Future.wait([
+      _storage.delete(key: '$_sshPrivateKeyPrefix$serverId'),
+      _storage.delete(key: '$_sshPrivateKeyPassphrasePrefix$serverId'),
+    ]);
   }
 }

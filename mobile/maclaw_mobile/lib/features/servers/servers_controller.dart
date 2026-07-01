@@ -27,7 +27,12 @@ class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
     return ref.watch(mobileLocalStoreProvider).loadServerProfiles();
   }
 
-  Future<void> addProfile(ServerProfile profile, {String password = ''}) async {
+  Future<void> addProfile(
+    ServerProfile profile, {
+    String password = '',
+    String privateKey = '',
+    String privateKeyPassphrase = '',
+  }) async {
     if (!profile.isValid) return;
     final current = state.valueOrNull ?? await future;
     final next = [
@@ -39,6 +44,13 @@ class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
       await ref.read(secureVaultProvider).saveServerPassword(
             serverId: profile.id,
             password: password,
+          );
+    }
+    if (privateKey.isNotEmpty) {
+      await ref.read(secureVaultProvider).saveServerPrivateKey(
+            serverId: profile.id,
+            privateKey: privateKey,
+            passphrase: privateKeyPassphrase,
           );
     }
     state = AsyncData(next);

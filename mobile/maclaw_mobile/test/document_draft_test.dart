@@ -43,4 +43,19 @@ void main() {
     expect(next.template, DocumentTemplate.report);
     expect(next.title, '新标题');
   });
+
+  test('serializes document draft for local cache', () {
+    final draft = DocumentDraft(
+      id: 'doc-cache',
+      title: 'Cache Draft',
+      template: DocumentTemplate.email,
+      markdown: '# Cache Draft',
+      updatedAt: DateTime.utc(2026, 7, 1),
+    );
+
+    final json = draft.toJson();
+    expect(json['id'], 'doc-cache');
+    expect(json['template'], 'email');
+    expect(json['updated_at'], '2026-07-01T00:00:00.000Z');
+  });
 }

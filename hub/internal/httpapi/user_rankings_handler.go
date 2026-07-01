@@ -16,6 +16,7 @@ type userRankingRow struct {
 	UserName        string `json:"user_name"`
 	TotalTokens     int64  `json:"total_tokens"`
 	DurationSeconds int64  `json:"duration_seconds"`
+	OnlineSeconds   int64  `json:"online_seconds"`
 	TokenRank       int    `json:"token_rank"`
 	DurationRank    int    `json:"duration_rank"`
 }
@@ -89,6 +90,7 @@ func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 				byEmail[email] = row
 			}
 			row.DurationSeconds += d.DurationSeconds
+			row.OnlineSeconds += d.OnlineSeconds
 		}
 		merged := make([]userRankingRow, 0, len(byEmail))
 		for _, row := range byEmail {
@@ -129,7 +131,10 @@ func assignUserRankingRanks(rows []userRankingRow) {
 	tokenOrder := append([]userRankingRow(nil), rows...)
 	sort.Slice(tokenOrder, func(i, j int) bool {
 		if tokenOrder[i].TotalTokens == tokenOrder[j].TotalTokens {
-			return tokenOrder[i].UserEmail < tokenOrder[j].UserEmail
+			if tokenOrder[i].OnlineSeconds == tokenOrder[j].OnlineSeconds {
+				return tokenOrder[i].UserEmail < tokenOrder[j].UserEmail
+			}
+			return tokenOrder[i].OnlineSeconds > tokenOrder[j].OnlineSeconds
 		}
 		return tokenOrder[i].TotalTokens > tokenOrder[j].TotalTokens
 	})
@@ -140,7 +145,10 @@ func assignUserRankingRanks(rows []userRankingRow) {
 	durationOrder := append([]userRankingRow(nil), rows...)
 	sort.Slice(durationOrder, func(i, j int) bool {
 		if durationOrder[i].DurationSeconds == durationOrder[j].DurationSeconds {
-			return durationOrder[i].UserEmail < durationOrder[j].UserEmail
+			if durationOrder[i].OnlineSeconds == durationOrder[j].OnlineSeconds {
+				return durationOrder[i].UserEmail < durationOrder[j].UserEmail
+			}
+			return durationOrder[i].OnlineSeconds > durationOrder[j].OnlineSeconds
 		}
 		return durationOrder[i].DurationSeconds > durationOrder[j].DurationSeconds
 	})
@@ -158,13 +166,19 @@ func sortUserRankingRows(rows []userRankingRow, dimension string) {
 	sort.Slice(rows, func(i, j int) bool {
 		if dimension == "duration" {
 			if rows[i].DurationSeconds == rows[j].DurationSeconds {
-				return rows[i].UserEmail < rows[j].UserEmail
+				if rows[i].OnlineSeconds == rows[j].OnlineSeconds {
+					return rows[i].UserEmail < rows[j].UserEmail
+				}
+				return rows[i].OnlineSeconds > rows[j].OnlineSeconds
 			}
 			return rows[i].DurationSeconds > rows[j].DurationSeconds
 		}
 		if rows[i].TotalTokens == rows[j].TotalTokens {
-			if dimension == "tokens" || rows[i].DurationSeconds == rows[j].DurationSeconds {
-				return rows[i].UserEmail < rows[j].UserEmail
+			if rows[i].DurationSeconds == rows[j].DurationSeconds {
+				if rows[i].OnlineSeconds == rows[j].OnlineSeconds {
+					return rows[i].UserEmail < rows[j].UserEmail
+				}
+				return rows[i].OnlineSeconds > rows[j].OnlineSeconds
 			}
 			return rows[i].DurationSeconds > rows[j].DurationSeconds
 		}

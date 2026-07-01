@@ -9439,7 +9439,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const runtimeDependencyReady = runtimeDependencyCheckState === 'ready' && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
     const runtimeEvidenceReady = runtimeDependencyCheckState === 'idle' && !!runtimeInstallEvidencePlan && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
     const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeVisibleDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeVisibleDependencyPlan, text, lang);
-    const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked || runtimeDependencyReady);
+    // Only show dependency details inline when there's a problem (blocked/error/installing).
+    // When everything is ready (runtimeDependencyReady), hide details by default — user can expand via "查看详情".
+    const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked);
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && (runtimeDependencyNeedsRepair || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runtimeDependencyPanelState = dependencyRepairState === 'installing'
         ? 'repairing'
@@ -11372,11 +11374,10 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
     skillRunStatus: SkillRunStatusView | null;
     text: typeof labels.zh;
 }) => {
-    // Auto-expand when there are real blocking issues or durable install evidence.
-    // Installed MaClaw Apps need their restored governance evidence visible before
-    // the next run so users can verify what Hub/DataSrv approved.
+    // Auto-expand only when there are real blocking issues that require user attention.
+    // Ready/healthy states keep details collapsed to reduce visual noise.
     const hasRealBlockingIssue = runtimeDependencyBlocked || !!runtimeBusinessError || (isApproval && runtimeWorkflowContractState === 'blocked');
-    const shouldAutoExpand = hasRealBlockingIssue || !!app.installEvidence;
+    const shouldAutoExpand = hasRealBlockingIssue;
     const [detailOpen, setDetailOpen] = useState(shouldAutoExpand);
     const [execDetailOpen, setExecDetailOpen] = useState(false);
 
@@ -11387,7 +11388,8 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
 
     // Detail content exists when there are governance/dependency panels to show (only in idle/pre-run states)
     const isPreRun = runState !== 'running' && runState !== 'done';
-    const hasDetailContent = isPreRun && (!!app.installEvidence || !!runtimeVisibleDependencyPlan);
+    const hasReadyDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked && !runtimeBusinessError && dependencyRepairState !== 'installing' && runState !== 'error';
+    const hasDetailContent = isPreRun && (!!app.installEvidence || !!runtimeVisibleDependencyPlan || hasReadyDependencyDetails);
 
     // Execution detail: show "详情" toggle when there are execution steps (for debugging)
     const hasExecDetail = isTool && runState !== 'idle' && (skillRunStatus?.steps?.length || 0) > 0;
@@ -11422,6 +11424,7 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
             </div>
             {detailOpen && isPreRun && (
                 <>
+                    {hasReadyDependencyDetails && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
                     <RuntimeInstallGovernancePanel record={app.installEvidence} text={text} />
                     {runtimeVisibleDependencyPlan && (
                         <DependencyVerificationPanel plan={runtimeVisibleDependencyPlan} state={runtimeDependencyPanelState} selectedAppIDs={[runtimeAppID]} text={text} defaultOpen={false} />

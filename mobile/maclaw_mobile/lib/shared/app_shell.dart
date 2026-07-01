@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class AppShell extends StatelessWidget {
+import '../core/shared_intents/shared_intent_bootstrap.dart';
+
+class AppShell extends ConsumerWidget {
   final Widget child;
 
   const AppShell({super.key, required this.child});
@@ -15,7 +18,21 @@ class AppShell extends StatelessWidget {
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.listen(mobileSharedIntentProvider, (previous, next) {
+      if (next == null) return;
+      final target = next.opensDocuments ? '/documents' : '/assistant';
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        context.go(target);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(next.opensDocuments ? '已接收分享文件' : '已接收分享内容'),
+          ),
+        );
+      });
+    });
+
     final location = GoRouterState.of(context).uri.path;
     final index = _tabs.indexWhere((tab) => location.startsWith(tab.path));
     final selectedIndex = index < 0 ? 0 : index;

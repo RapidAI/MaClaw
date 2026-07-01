@@ -9,8 +9,8 @@ things that make sense when a user is away from a desktop:
 - access digital employees on remote servers or desktops for delegated tasks;
 - check account, Hub, service, and credential status.
 
-The mobile app only connects to the official MaClaw service. It is not a
-general-purpose client for self-hosted or third-party Hub endpoints.
+The mobile app only connects to the official MaClaw service
+`https://hubs.mypapers.top`. It intentionally has no custom Hub URL setting.
 
 The previous mobile programs were intentionally removed. The active project is
 `maclaw_mobile/`.
@@ -31,4 +31,5 @@ them from this project directory:
 
 ```bash
 flutter create --platforms android,ios .
+python3 tool/configure_platforms.py
 ```

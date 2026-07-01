@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
@@ -74,8 +76,16 @@ class DigitalEmployeePromptHistoryController
 
 class DigitalEmployeeTaskController
     extends AsyncNotifier<MobileDigitalEmployeeTask?> {
+  Timer? _pollTimer;
+
   @override
-  Future<MobileDigitalEmployeeTask?> build() async => null;
+  Future<MobileDigitalEmployeeTask?> build() async {
+    ref.onDispose(() {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    });
+    return null;
+  }
 
   Future<void> createTask({
     required String employeeId,
@@ -89,7 +99,7 @@ class DigitalEmployeeTaskController
       return;
     }
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
+    final next = await AsyncValue.guard(() async {
       await ref.read(digitalEmployeePromptHistoryProvider.notifier).record(
             employeeId: employeeId,
             prompt: text,
@@ -105,9 +115,14 @@ class DigitalEmployeeTaskController
           );
       return task;
     });
+    state = next;
+    final task = next.valueOrNull;
+    if (task != null) {
+      _ensurePolling(task);
+    }
   }
 
-  Future<void> refreshTask() async {
+  Future<void> refreshTask({bool silent = false}) async {
     final current = state.valueOrNull;
     if (current == null) return;
     final client = ref.read(apiClientProvider);
@@ -115,8 +130,10 @@ class DigitalEmployeeTaskController
       state = AsyncError(StateError('请先登录官方服务。'), StackTrace.current);
       return;
     }
-    state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
+    if (!silent) {
+      state = const AsyncLoading();
+    }
+    final next = await AsyncValue.guard(() async {
       final task = await client.getDigitalEmployeeTask(current.taskId);
       if (task.status == 'done' || task.status == 'failed') {
         await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
@@ -127,5 +144,36 @@ class DigitalEmployeeTaskController
       }
       return task;
     });
+    state = next;
+    final task = next.valueOrNull;
+    if (task != null) {
+      _ensurePolling(task);
+    }
+  }
+
+  void _ensurePolling(MobileDigitalEmployeeTask task) {
+    if (_taskFinished(task)) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      return;
+    }
+    if (_pollTimer?.isActive ?? false) {
+      return;
+    }
+    _pollTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      final current = state.valueOrNull;
+      if (current == null || _taskFinished(current) || state.isLoading) {
+        if (current == null || _taskFinished(current)) {
+          _pollTimer?.cancel();
+          _pollTimer = null;
+        }
+        return;
+      }
+      unawaited(refreshTask(silent: true));
+    });
+  }
+
+  bool _taskFinished(MobileDigitalEmployeeTask task) {
+    return task.status == 'done' || task.status == 'failed';
   }
 }

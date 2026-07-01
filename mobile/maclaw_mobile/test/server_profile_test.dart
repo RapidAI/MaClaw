@@ -9,7 +9,7 @@ void main() {
       host: '10.0.0.8',
       port: 22,
       username: 'ops',
-      authMode: 'password',
+      authMode: serverAuthModePassword,
     );
     expect(valid.isValid, isTrue);
 
@@ -19,7 +19,7 @@ void main() {
       host: '',
       port: 0,
       username: '',
-      authMode: 'password',
+      authMode: serverAuthModePassword,
     );
     expect(invalid.isValid, isFalse);
   });
@@ -31,7 +31,7 @@ void main() {
       host: '10.0.0.8',
       port: 22,
       username: 'ops',
-      authMode: 'password',
+      authMode: serverAuthModePassword,
       tag: 'ops',
       note: 'primary',
     );
@@ -45,5 +45,24 @@ void main() {
     expect(restored.username, profile.username);
     expect(restored.authMode, profile.authMode);
     expect(profile.toJson().containsKey('password'), isFalse);
+  });
+
+  test('supports private key auth metadata without storing secrets', () {
+    const profile = ServerProfile(
+      id: 'srv-key',
+      name: 'jump',
+      host: 'jump.example.com',
+      port: 22,
+      username: 'ops',
+      authMode: serverAuthModePrivateKey,
+    );
+
+    final json = profile.toJson();
+    final restored = ServerProfile.fromJson(json);
+
+    expect(restored.authMode, serverAuthModePrivateKey);
+    expect(serverAuthModeLabel(restored.authMode), '私钥');
+    expect(json.containsKey('private_key'), isFalse);
+    expect(json.containsKey('private_key_passphrase'), isFalse);
   });
 }

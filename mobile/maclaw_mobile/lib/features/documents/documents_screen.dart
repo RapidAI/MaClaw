@@ -1,7 +1,8 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../shared/surface.dart';
 import 'document_draft.dart';
 import 'documents_controller.dart';
@@ -17,6 +18,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
   final _titleController = TextEditingController(text: '应急情况说明');
   final _contentController = TextEditingController();
   DocumentTemplate _template = DocumentTemplate.report;
+  String? _handledSharedIntentId;
 
   @override
   void dispose() {
@@ -33,8 +35,26 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         );
   }
 
+  void _consumeSharedIntent() {
+    final shared = ref.watch(mobileSharedIntentProvider);
+    if (shared == null ||
+        !shared.opensDocuments ||
+        shared.id == _handledSharedIntentId) {
+      return;
+    }
+    _handledSharedIntentId = shared.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(documentsControllerProvider.notifier).uploadSharedDocument(
+            shared.value,
+          );
+      ref.read(mobileSharedIntentProvider.notifier).clear(shared.id);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    _consumeSharedIntent();
     final state = ref.watch(documentsControllerProvider);
     return ScreenScaffold(
       title: '应急文档',
@@ -192,6 +212,23 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
     _editMarkdownController.text = draft.markdown;
   }
 
+  Future<void> _shareExport(DocumentExportJob job, DocumentDraft draft) async {
+    try {
+      final file = await ref
+          .read(documentsControllerProvider.notifier)
+          .downloadExportFile(job);
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: draft.title,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('分享导出文件失败：$error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
@@ -205,7 +242,7 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('杞婚噺缂栬緫', style: Theme.of(context).textTheme.titleMedium),
+            Text('轻量编辑', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 6),
             Text(
               documentTemplateLabel(draft.template),
@@ -281,14 +318,11 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
                   ),
                   if (state.exportJob!.downloadUrl.isNotEmpty)
                     OutlinedButton.icon(
-                      onPressed: () {
-                        final url = ref
-                            .read(documentsControllerProvider.notifier)
-                            .exportDownloadUrl(state.exportJob!);
-                        if (url != null) Share.share(url);
-                      },
+                      onPressed: state.exportJob!.status == 'ready'
+                          ? () => _shareExport(state.exportJob!, draft)
+                          : null,
                       icon: const Icon(Icons.ios_share_outlined),
-                      label: const Text('分享下载'),
+                      label: const Text('分享文件'),
                     ),
                 ],
               ),
@@ -380,6 +414,7 @@ class _UploadStatus extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final upload = state.uploadTask;
     if (upload == null) return const SizedBox.shrink();
+    final statusLabel = _uploadStatusLabel(upload.status);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -400,7 +435,7 @@ class _UploadStatus extends ConsumerWidget {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 4),
-                  Text('导入任务 ${upload.taskId}：${upload.status}'),
+                  Text('导入任务 ${upload.taskId}：$statusLabel'),
                   if (upload.message.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(upload.message),
@@ -421,6 +456,17 @@ class _UploadStatus extends ConsumerWidget {
       ),
     );
   }
+}
+
+String _uploadStatusLabel(String status) {
+  return switch (status) {
+    'queued' => '等待远程解析',
+    'in_progress' => '远程解析中',
+    'needs_ocr' => '等待 OCR/视觉识别',
+    'ready' => '已生成草稿',
+    'failed' => '解析失败',
+    _ => status,
+  };
 }
 
 class _ExportButton extends ConsumerWidget {

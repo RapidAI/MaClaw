@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 
 import '../../features/digital_employees/digital_employee.dart';
@@ -14,7 +16,7 @@ class ApiClient {
     SecureVault? vault,
     Dio? dio,
   })  : _vault = vault ?? const SecureVault(),
-        _dio = _officialDio(dio) {
+        _dio = officialServiceDio(dio) {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
@@ -26,20 +28,6 @@ class ApiClient {
         },
       ),
     );
-  }
-
-  static Dio _officialDio(Dio? dio) {
-    if (dio == null) {
-      return Dio(BaseOptions(baseUrl: maclawOfficialServiceUrl));
-    }
-    final baseUrl = dio.options.baseUrl.trim();
-    if (baseUrl.isNotEmpty && baseUrl != maclawOfficialServiceUrl) {
-      throw UnsupportedError(
-        'MaClaw Mobile only supports the official MaClaw service.',
-      );
-    }
-    dio.options.baseUrl = maclawOfficialServiceUrl;
-    return dio;
   }
 
   Future<MobileBootstrap> bootstrap() async {
@@ -141,6 +129,17 @@ class ApiClient {
       '/api/mobile/documents/export/$encodedJobId',
     );
     return DocumentExportJob.fromJson(response.data ?? const {});
+  }
+
+  Future<Uint8List> downloadDocumentExport(DocumentExportJob job) async {
+    if (job.downloadUrl.isEmpty) {
+      throw StateError('export job has no download URL');
+    }
+    final response = await _dio.get<List<int>>(
+      job.downloadUrl,
+      options: Options(responseType: ResponseType.bytes),
+    );
+    return Uint8List.fromList(response.data ?? const []);
   }
 
   String absoluteUrl(String path) {

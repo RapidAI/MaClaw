@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../shared/surface.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
@@ -23,6 +24,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _queryController = TextEditingController();
   final _speech = SpeechToText();
   bool _listening = false;
+  String? _handledSharedIntentId;
 
   @override
   void dispose() {
@@ -63,8 +65,24 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     _setQuery('请总结这个文件或截图的关键信息：$path');
   }
 
+  void _consumeSharedIntent() {
+    final shared = ref.watch(mobileSharedIntentProvider);
+    if (shared == null ||
+        !shared.opensAssistant ||
+        shared.id == _handledSharedIntentId) {
+      return;
+    }
+    _handledSharedIntentId = shared.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _setQuery(shared.assistantPrompt);
+      ref.read(mobileSharedIntentProvider.notifier).clear(shared.id);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    _consumeSharedIntent();
     final query = ref.watch(assistantQueryProvider);
     final result = ref.watch(assistantSearchProvider);
     final history = ref.watch(searchHistoryProvider);
@@ -99,9 +117,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               child: FilledButton.icon(
                 onPressed: query.trim().isEmpty
                     ? null
-                    : () => ref
-                        .read(assistantSearchProvider.notifier)
-                        .search(query),
+                    : () =>
+                        ref.read(assistantSearchProvider.notifier).search(query),
                 icon: const Icon(Icons.travel_explore),
                 label: const Text('联网查询'),
               ),

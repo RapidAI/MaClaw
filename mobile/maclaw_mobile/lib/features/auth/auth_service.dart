@@ -11,7 +11,7 @@ class AuthService {
     SecureVault? vault,
     Dio? dio,
   })  : _vault = vault ?? const SecureVault(),
-        _dio = dio ?? Dio(BaseOptions(baseUrl: maclawOfficialServiceUrl));
+        _dio = officialServiceDio(dio);
 
   Future<EmailLoginRequestResult> requestEmailLogin(String email) async {
     final response = await _dio.post<Map<String, dynamic>>(
