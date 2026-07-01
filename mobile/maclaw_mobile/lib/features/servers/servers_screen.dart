@@ -91,6 +91,34 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     _privateKeyPassphraseController.clear();
   }
 
+  Future<void> _deleteServer(ServerProfile profile) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除服务器配置？'),
+        content: Text(
+          '将删除 ${profile.name} 的连接配置，并清理本机保存的 SSH 密码/私钥。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref.read(serverProfilesProvider.notifier).removeProfile(profile.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已删除 ${profile.name}')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final risk = classifyCommandRisk(_commandController.text);
@@ -118,6 +146,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           onImportPrivateKey: _importPrivateKey,
           profiles: profiles,
           onAdd: _addServer,
+          onDelete: _deleteServer,
         ),
         const SizedBox(height: 12),
         _SSHTerminalCard(
@@ -162,6 +191,7 @@ class _ServerProfileCard extends StatelessWidget {
   final VoidCallback onImportPrivateKey;
   final AsyncValue<List<ServerProfile>> profiles;
   final VoidCallback onAdd;
+  final Future<void> Function(ServerProfile profile) onDelete;
 
   const _ServerProfileCard({
     required this.nameController,
@@ -176,6 +206,7 @@ class _ServerProfileCard extends StatelessWidget {
     required this.onImportPrivateKey,
     required this.profiles,
     required this.onAdd,
+    required this.onDelete,
   });
 
   @override
@@ -301,6 +332,11 @@ class _ServerProfileCard extends StatelessWidget {
                             title: Text(server.name),
                             subtitle: Text(
                               '${server.username}@${server.host}:${server.port} · ${serverAuthModeLabel(server.authMode)}',
+                            ),
+                            trailing: IconButton(
+                              tooltip: '删除服务器',
+                              onPressed: () => onDelete(server),
+                              icon: const Icon(Icons.delete_outline),
                             ),
                           ),
                       ],
@@ -751,6 +787,44 @@ class _CommandActionBar extends ConsumerWidget {
     required this.onUseCommand,
   });
 
+  Future<bool> _confirmHighRiskCommand(BuildContext context) async {
+    final risk = classifyCommandRisk(command);
+    if (risk != CommandRisk.dangerous) return true;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认保存高风险命令？'),
+        content: const Text(
+          '该命令可能重启服务、删除数据或影响系统可用性。保存后仍需手动复制/执行，请确认你理解风险。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('确认保存'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _recordCommand(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool favorite,
+  }) async {
+    if (!await _confirmHighRiskCommand(context)) return;
+    if (!context.mounted) return;
+    await ref.read(serverCommandsProvider.notifier).record(
+          command,
+          favorite: favorite,
+        );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final commands = ref.watch(serverCommandsProvider);
@@ -772,17 +846,14 @@ class _CommandActionBar extends ConsumerWidget {
             OutlinedButton.icon(
               onPressed: command.trim().isEmpty
                   ? null
-                  : () => ref
-                      .read(serverCommandsProvider.notifier)
-                      .record(command, favorite: true),
+                  : () => _recordCommand(context, ref, favorite: true),
               icon: const Icon(Icons.star_border),
               label: const Text('保存常用'),
             ),
             OutlinedButton.icon(
               onPressed: command.trim().isEmpty
                   ? null
-                  : () =>
-                      ref.read(serverCommandsProvider.notifier).record(command),
+                  : () => _recordCommand(context, ref, favorite: false),
               icon: const Icon(Icons.history),
               label: const Text('记录历史'),
             ),

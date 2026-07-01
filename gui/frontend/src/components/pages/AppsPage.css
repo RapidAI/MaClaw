@@ -28,13 +28,18 @@
     padding: 8px 9px;
     border-bottom: 1px solid var(--theme-border-subtle);
     background: var(--theme-surface-muted);
-    position: relative;
+}
+
+.apps-search-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .apps-search-wrap {
     position: relative;
     min-width: 0;
-    margin-right: 39px;
+    flex: 1;
 }
 
 .apps-search {
@@ -79,7 +84,6 @@
     outline: none;
 }
 
-.apps-studio-button,
 .apps-secondary-button,
 .apps-icon-button {
     border: 1px solid var(--theme-border);
@@ -92,24 +96,25 @@
 }
 
 .apps-studio-button {
-    width: 30px;
-    min-width: 0;
+    width: auto;
+    min-width: 30px;
     height: 30px;
-    padding: 0;
+    padding: 0 8px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 4px;
     white-space: nowrap;
-    font-size: 0.78rem;
-    position: absolute;
-    top: 11px;
-    right: 9px;
-    z-index: 2;
-    border-color: color-mix(in srgb, var(--theme-primary) 50%, var(--theme-border));
-    color: var(--theme-primary);
-    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
-    box-shadow: none;
+    font-size: 0.72rem;
+    flex-shrink: 0;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 50%, var(--theme-border));
+    border-radius: var(--radius-md);
+    color: var(--theme-on-primary);
+    background: var(--theme-primary);
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--theme-primary) 20%, transparent);
+    transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .apps-studio-button__icon {
@@ -124,11 +129,11 @@
 }
 
 .apps-studio-button__icon > svg {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
+    stroke-width: 1.8;
 }
 
-.apps-studio-button:hover,
 .apps-secondary-button:hover,
 .apps-icon-button:hover {
     color: var(--theme-primary-strong);
@@ -138,11 +143,12 @@
 
 .apps-studio-button:hover,
 .apps-studio-button:focus-visible {
-    color: var(--theme-primary-strong, var(--theme-primary));
-    border-color: color-mix(in srgb, var(--theme-primary) 60%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
-    outline: 2px solid color-mix(in srgb, var(--theme-primary) 24%, transparent);
-    outline-offset: 1px;
+    color: var(--theme-on-primary);
+    border-color: var(--theme-primary-strong, var(--theme-primary));
+    background: var(--theme-primary-strong, var(--theme-primary));
+    box-shadow:
+        0 2px 6px color-mix(in srgb, var(--theme-primary) 36%, transparent),
+        inset 0 0 0 1.5px color-mix(in srgb, var(--theme-on-primary) 40%, transparent);
 }
 
 .apps-studio-button:active {
@@ -3456,13 +3462,14 @@
 .apps-market-list__items {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
     gap: 8px;
 }
 
 .apps-market-row {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
+    align-items: start;
     gap: 10px;
     min-width: 0;
     padding: 9px 10px;
@@ -3488,6 +3495,7 @@
 .apps-market-row .apps-app-icon {
     width: 34px;
     height: 34px;
+    margin-top: 2px;
 }
 
 .apps-market-row__main {
@@ -3520,15 +3528,19 @@
     font-weight: 700;
 }
 
-.apps-market-row__main .apps-market-row__feedback {
+/* Feedback messages inside the install-detail section */
+.apps-market-row__install-detail .apps-market-row__feedback {
+    display: block;
     color: var(--theme-primary-strong);
+    font-size: 0.76rem;
+    font-weight: 700;
 }
 
-.apps-market-row__main .apps-market-row__feedback[data-state='error'] {
+.apps-market-row__install-detail .apps-market-row__feedback[data-state='error'] {
     color: var(--theme-danger);
 }
 
-.apps-market-row__main .apps-market-row__feedback[data-state='done'] {
+.apps-market-row__install-detail .apps-market-row__feedback[data-state='done'] {
     color: var(--theme-success);
 }
 
@@ -3558,8 +3570,24 @@
     margin-top: 2px;
 }
 
-.apps-market-row__main .apps-install-record__deps {
-    margin-top: 6px;
+.apps-market-row__install-detail .apps-install-record__deps {
+    margin-top: 2px;
+}
+
+.apps-market-row__install-detail {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    padding-top: 6px;
+    margin-top: -2px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.apps-market-row[data-state='blocked'] .apps-market-row__install-detail {
+    padding-top: 8px;
+    margin-top: -2px;
+    border-top-color: color-mix(in srgb, var(--theme-danger) 20%, var(--theme-border-subtle));
 }
 
 .apps-market-row > .apps-primary-button,

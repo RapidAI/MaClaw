@@ -112,6 +112,21 @@ class MobileLocalStore {
     await file.writeAsString(jsonEncode(data));
   }
 
+  Future<void> clearLocalCache() async {
+    final files = [
+      await _serverProfilesFile(),
+      await _searchHistoryFile(),
+      await _serverCommandsFile(),
+      await _lastDocumentDraftFile(),
+      await _digitalEmployeePromptsFile(),
+    ];
+    for (final file in files) {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    }
+  }
+
   Future<File> _serverProfilesFile() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/maclaw_mobile/server_profiles.json');

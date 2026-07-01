@@ -55,6 +55,18 @@ class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
     }
     state = AsyncData(next);
   }
+
+  Future<void> removeProfile(String id) async {
+    final current = state.valueOrNull ?? await future;
+    final next = current.where((item) => item.id != id).toList();
+    await ref.read(mobileLocalStoreProvider).saveServerProfiles(next);
+    final vault = ref.read(secureVaultProvider);
+    await Future.wait([
+      vault.deleteServerPassword(id),
+      vault.deleteServerPrivateKey(id),
+    ]);
+    state = AsyncData(next);
+  }
 }
 
 class ServerCommandsController extends AsyncNotifier<List<ServerCommandEntry>> {

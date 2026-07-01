@@ -99,13 +99,6 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         ),
         const SizedBox(height: 12),
         const _DocumentAIProcessPanel(),
-        const SizedBox(height: 12),
-        const ActionTile(
-          icon: Icons.ios_share_outlined,
-          title: '导出和分享',
-          subtitle: '生成 PDF、Word、Markdown 后保存或分享。',
-          actionLabel: '查看导出',
-        ),
       ],
     );
   }
@@ -301,7 +294,7 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
             if (state.exportJob != null) ...[
               const SizedBox(height: 10),
               Text(
-                '导出任务 ${state.exportJob!.jobId}：${state.exportJob!.status}',
+                '导出任务 ${state.exportJob!.jobId}：${_exportStatusLabel(state.exportJob!.status)}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -465,6 +458,16 @@ String _uploadStatusLabel(String status) {
     'needs_ocr' => '等待 OCR/视觉识别',
     'ready' => '已生成草稿',
     'failed' => '解析失败',
+    _ => status,
+  };
+}
+
+String _exportStatusLabel(String status) {
+  return switch (status) {
+    'queued' => '等待生成',
+    'in_progress' => '生成中',
+    'ready' => '已可分享',
+    'failed' => '导出失败',
     _ => status,
   };
 }

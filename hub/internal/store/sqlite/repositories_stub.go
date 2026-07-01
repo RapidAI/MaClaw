@@ -2099,10 +2099,13 @@ func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID strin
 	// overlapping sessions from producing values exceeding calendar time).
 	maxOnline := int64(end.Sub(start).Seconds())
 	if now.Before(end) {
-		maxOnline = int64(now.Sub(start).Seconds())
+		elapsed := int64(now.Sub(start).Seconds())
+		if elapsed > 0 {
+			maxOnline = elapsed
+		}
 	}
 	for email, seconds := range result {
-		if seconds > maxOnline {
+		if maxOnline > 0 && seconds > maxOnline {
 			result[email] = maxOnline
 		}
 	}

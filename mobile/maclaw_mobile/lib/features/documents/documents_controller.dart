@@ -126,7 +126,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       await _cacheDraft(updated);
       return DocumentsState(
         draft: updated,
-        exportJob: current.exportJob,
         uploadTask: current.uploadTask,
       );
     });
@@ -157,7 +156,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
           );
       return DocumentsState(
         draft: updated,
-        exportJob: current.exportJob,
         uploadTask: current.uploadTask,
       );
     });
@@ -209,7 +207,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       }
       return DocumentsState(
         draft: refreshed.draft ?? current.draft,
-        exportJob: current.exportJob,
+        exportJob: refreshed.draft == null ? current.exportJob : null,
         uploadTask: refreshed,
       );
     });
@@ -293,7 +291,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       }
       return DocumentsState(
         draft: upload.draft ?? current.draft,
-        exportJob: current.exportJob,
+        exportJob: upload.draft == null ? current.exportJob : null,
         uploadTask: upload,
       );
     });

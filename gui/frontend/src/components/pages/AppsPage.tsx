@@ -7285,27 +7285,29 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         <div className="apps-page">
             <aside className="apps-panel" aria-label={text.apps}>
                 <div className="apps-panel__top">
-                    <div className="apps-search-wrap">
-                        <input
-                            className="apps-search"
-                            value={query}
-                            onChange={(event) => setQuery(event.target.value)}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Escape' && query) setQuery('');
-                            }}
-                            placeholder={text.search}
-                        />
-                        {query && (
-                            <button className="apps-search-clear" type="button" title={text.clearSearch} aria-label={text.clearSearch} onClick={() => setQuery('')}>
-                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-                            </button>
-                        )}
+                    <div className="apps-search-row">
+                        <div className="apps-search-wrap">
+                            <input
+                                className="apps-search"
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Escape' && query) setQuery('');
+                                }}
+                                placeholder={text.search}
+                            />
+                            {query && (
+                                <button className="apps-search-clear" type="button" title={text.clearSearch} aria-label={text.clearSearch} onClick={() => setQuery('')}>
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                                </button>
+                            )}
+                        </div>
+                        <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
+                            <span className="apps-studio-button__icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4V2m0 2v2m0-2h2m-2 0h-2" /><path d="M8.5 8.5 3 21l12.5-5.5L21 3z" /><path d="m3 21 5.5-5.5" /></svg>
+                            </span>
+                        </button>
                     </div>
-                    <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
-                        <span className="apps-studio-button__icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4V2m0 2v2m0-2h2m-2 0h-2" /><path d="M8.5 8.5 3 21l12.5-5.5L21 3z" /><path d="m3 21 5.5-5.5" /></svg>
-                        </span>
-                    </button>
                     <div className="apps-filter-row">
                         <span className="apps-filter-label">{text.category}</span>
                         <select className="apps-category-select" value={category} onChange={(event) => setCategory(event.target.value)}>
@@ -15275,18 +15277,6 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                     <span>{app.description}</span>
                                     <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {app.marketReviewEvidence && <PublishReviewEvidenceStrip evidence={app.marketReviewEvidence} text={text} />}
-                                    {feedback && <MarketInstallFeedbackMessage feedback={feedback} text={text} />}
-                                    {feedback?.plan ? (
-                                        <DependencyVerificationPanel
-                                            plan={feedback.plan}
-                                            state={feedback.state === 'running' ? 'loading' : feedback.state === 'error' ? 'ready' : 'ready'}
-                                            selectedAppIDs={feedback.appIDs || [app.id]}
-                                            text={text}
-                                            defaultOpen={false}
-                                        />
-	                                    ) : feedback?.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
-	                                    <InstallVersionSnapshot snapshot={feedback?.versionSnapshot} text={text} />
-	                                    {feedback?.installEvidence && <InstallRecordEvidenceSnapshot record={feedback.installEvidence} text={text} />}
 	                                </div>
 	                                <div className="apps-actions">
 	                                    {feedback && feedback.state !== 'running' && (
@@ -15296,6 +15286,22 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
 	                                        {buttonText}
 	                                    </button>
 	                                </div>
+	                                {feedback && (
+	                                    <div className="apps-market-row__install-detail" aria-live="polite">
+	                                        <MarketInstallFeedbackMessage feedback={feedback} text={text} />
+	                                        {feedback.plan ? (
+	                                            <DependencyVerificationPanel
+	                                                plan={feedback.plan}
+	                                                state={feedback.state === 'running' ? 'loading' : feedback.state === 'error' ? 'ready' : 'ready'}
+	                                                selectedAppIDs={feedback.appIDs || [app.id]}
+	                                                text={text}
+	                                                defaultOpen={false}
+	                                            />
+	                                        ) : feedback.dependencies?.length ? <InstallRecordDependencies dependencies={feedback.dependencies} text={text} /> : null}
+	                                        <InstallVersionSnapshot snapshot={feedback.versionSnapshot} text={text} />
+	                                        {feedback.installEvidence && <InstallRecordEvidenceSnapshot record={feedback.installEvidence} text={text} />}
+	                                    </div>
+	                                )}
 	                            </div>
                         );
                     })}

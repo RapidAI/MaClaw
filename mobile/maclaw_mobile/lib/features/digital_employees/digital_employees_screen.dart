@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../shared/surface.dart';
 import 'digital_employee.dart';
@@ -7,6 +9,24 @@ import 'digital_employees_controller.dart';
 
 class DigitalEmployeesScreen extends ConsumerWidget {
   const DigitalEmployeesScreen({super.key});
+
+  void _showAccessPolicy(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('数字员工访问策略'),
+        content: const Text(
+          '手机端只向 MaClaw 官方服务提交任务。远程服务器或电脑上的数字员工会按机器端策略领取任务；私有、按次授权或需要确认的能力仍由远程端控制，手机不会绕过审批或自动执行高风险操作。',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -36,11 +56,12 @@ class DigitalEmployeesScreen extends ConsumerWidget {
           loading: () => const _EmployeeLoading(),
         ),
         const SizedBox(height: 12),
-        const ActionTile(
+        ActionTile(
           icon: Icons.security_outlined,
           title: '权限说明',
           subtitle: '私有或按次授权的数字员工会先向拥有者发起确认，手机不会绕过远程电脑策略。',
           actionLabel: '查看策略',
+          onPressed: () => _showAccessPolicy(context),
         ),
         const SizedBox(height: 12),
         const _TaskStatusCard(),
@@ -66,7 +87,7 @@ class _TaskStatusCard extends ConsumerWidget {
               children: [
                 Text('最近任务', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 6),
-                Text('状态：${value.status}'),
+                Text('状态：${_digitalEmployeeTaskStatusLabel(value.status)}'),
                 if (value.prompt.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text('任务：${value.prompt}'),
@@ -80,12 +101,32 @@ class _TaskStatusCard extends ConsumerWidget {
                   Text(value.result),
                 ],
                 const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: () => ref
-                      .read(digitalEmployeeTaskProvider.notifier)
-                      .refreshTask(),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('刷新状态'),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => ref
+                          .read(digitalEmployeeTaskProvider.notifier)
+                          .refreshTask(),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('刷新状态'),
+                    ),
+                    IconButton.outlined(
+                      tooltip: '复制结果',
+                      onPressed: value.result.isEmpty
+                          ? null
+                          : () => _copyTaskResult(context, value.result),
+                      icon: const Icon(Icons.content_copy_outlined),
+                    ),
+                    IconButton.outlined(
+                      tooltip: '分享结果',
+                      onPressed: value.result.isEmpty
+                          ? null
+                          : () => Share.share(value.result),
+                      icon: const Icon(Icons.ios_share_outlined),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -104,6 +145,14 @@ class _TaskStatusCard extends ConsumerWidget {
           child: LinearProgressIndicator(),
         ),
       ),
+    );
+  }
+
+  Future<void> _copyTaskResult(BuildContext context, String result) async {
+    await Clipboard.setData(ClipboardData(text: result));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('任务结果已复制')),
     );
   }
 }
@@ -236,7 +285,14 @@ class _DigitalEmployeeCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 IconButton.outlined(
                   tooltip: '分析日志/输出',
-                  onPressed: employee.online ? () {} : null,
+                  onPressed: employee.online
+                      ? () => _TaskButton.showTaskSheet(
+                            context,
+                            employee,
+                            initialPrompt:
+                                '请读取并分析远程服务器/电脑最近的关键日志和终端输出，重点说明异常、影响范围、排查依据和建议命令。高风险命令只给草案，不要自动执行。',
+                          )
+                      : null,
                   icon: const Icon(Icons.plagiarism_outlined),
                 ),
               ],
@@ -258,7 +314,7 @@ class _TaskButton extends ConsumerWidget {
     final task = ref.watch(digitalEmployeeTaskProvider);
     return FilledButton.icon(
       onPressed: employee.online
-          ? () => _showTaskSheet(context, ref)
+          ? () => showTaskSheet(context, employee)
           : null,
       icon: const Icon(Icons.chat_outlined),
       label: Text(
@@ -267,14 +323,23 @@ class _TaskButton extends ConsumerWidget {
     );
   }
 
-  Future<void> _showTaskSheet(BuildContext context, WidgetRef ref) async {
+  static Future<void> showTaskSheet(
+    BuildContext context,
+    DigitalEmployee employee, {
+    String? initialPrompt,
+  }) async {
     final prompt = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _DigitalEmployeeTaskSheet(employee: employee),
+      builder: (context) => _DigitalEmployeeTaskSheet(
+        employee: employee,
+        initialPrompt: initialPrompt,
+      ),
     );
     if (prompt == null || prompt.trim().isEmpty) return;
-    await ref.read(digitalEmployeeTaskProvider.notifier).createTask(
+    if (!context.mounted) return;
+    final container = ProviderScope.containerOf(context, listen: false);
+    await container.read(digitalEmployeeTaskProvider.notifier).createTask(
           employeeId: employee.id,
           prompt: prompt,
         );
@@ -283,8 +348,12 @@ class _TaskButton extends ConsumerWidget {
 
 class _DigitalEmployeeTaskSheet extends ConsumerStatefulWidget {
   final DigitalEmployee employee;
+  final String? initialPrompt;
 
-  const _DigitalEmployeeTaskSheet({required this.employee});
+  const _DigitalEmployeeTaskSheet({
+    required this.employee,
+    this.initialPrompt,
+  });
 
   @override
   ConsumerState<_DigitalEmployeeTaskSheet> createState() =>
@@ -305,7 +374,9 @@ class _DigitalEmployeeTaskSheetState
   @override
   void initState() {
     super.initState();
-    _promptController = TextEditingController(text: _templates.first);
+    _promptController = TextEditingController(
+      text: widget.initialPrompt ?? _templates.first,
+    );
   }
 
   @override
@@ -396,6 +467,17 @@ class _DigitalEmployeeTaskSheetState
       ),
     );
   }
+}
+
+String _digitalEmployeeTaskStatusLabel(String status) {
+  return switch (status) {
+    'queued' => '等待远程领取',
+    'claimed' => '远程处理中',
+    'running' => '远程处理中',
+    'done' => '已完成',
+    'failed' => '失败',
+    _ => status,
+  };
 }
 
 class _StatusChip extends StatelessWidget {

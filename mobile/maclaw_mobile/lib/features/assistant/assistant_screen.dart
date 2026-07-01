@@ -55,14 +55,42 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _pickImage() async {
     final image = await ImagePicker().pickImage(source: ImageSource.camera);
     if (image == null) return;
-    _setQuery('请分析这张图片，并给出可执行结论：${image.path}');
+    _setQuery('请分析刚拍摄的图片，并给出可执行结论。');
+    await _uploadToDocuments(
+      image.path,
+      successMessage: '图片已提交文档解析，完成后可在“文档”页继续处理',
+    );
   }
 
   Future<void> _pickFile() async {
     final file = await FilePicker.platform.pickFiles();
     final path = file?.files.single.path;
     if (path == null || path.isEmpty) return;
-    _setQuery('请总结这个文件或截图的关键信息：$path');
+    _setQuery('请总结刚导入文件或截图的关键信息。');
+    await _uploadToDocuments(
+      path,
+      successMessage: '文件已提交文档解析，完成后可在“文档”页继续处理',
+    );
+  }
+
+  Future<void> _uploadToDocuments(
+    String path, {
+    required String successMessage,
+  }) async {
+    await ref
+        .read(documentsControllerProvider.notifier)
+        .uploadSharedDocument(path);
+    if (!mounted) return;
+    final documentState = ref.read(documentsControllerProvider);
+    if (documentState.hasError) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('文档解析提交失败：${documentState.error}')),
+      );
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(successMessage)),
+    );
   }
 
   void _consumeSharedIntent() {
@@ -157,13 +185,6 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               child: LinearProgressIndicator(),
             ),
           ),
-        ),
-        const SizedBox(height: 12),
-        const ActionTile(
-          icon: Icons.article_outlined,
-          title: '整理为文档草稿',
-          subtitle: '把搜索结果转成通知、报告、邮件或会议纪要。',
-          actionLabel: '选择模板',
         ),
         const SizedBox(height: 12),
         _SearchHistoryCard(
@@ -303,13 +324,7 @@ class _SearchResultCard extends ConsumerWidget {
                   label: const Text('分享结果'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: () => ref
-                      .read(documentsControllerProvider.notifier)
-                      .createDraft(
-                        title: '信息查询整理',
-                        template: DocumentTemplate.report,
-                        content: markdown,
-                      ),
+                  onPressed: () => _createDocumentDraft(context, ref, markdown),
                   icon: const Icon(Icons.article_outlined),
                   label: const Text('整理为草稿'),
                 ),
@@ -357,4 +372,64 @@ class _SearchResultCard extends ConsumerWidget {
     }
     return buffer.toString();
   }
+
+  Future<void> _createDocumentDraft(
+    BuildContext context,
+    WidgetRef ref,
+    String markdown,
+  ) async {
+    final template = await showModalBottomSheet<DocumentTemplate>(
+      context: context,
+      builder: (context) => const _DocumentTemplateSheet(),
+    );
+    if (template == null || !context.mounted) return;
+    await ref.read(documentsControllerProvider.notifier).createDraft(
+          title: '信息查询整理',
+          template: template,
+          content: markdown,
+        );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已整理为${documentTemplateLabel(template)}草稿')),
+    );
+  }
+}
+
+class _DocumentTemplateSheet extends StatelessWidget {
+  const _DocumentTemplateSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('选择草稿模板', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            for (final template in DocumentTemplate.values)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(_documentTemplateIcon(template)),
+                title: Text(documentTemplateLabel(template)),
+                onTap: () => Navigator.of(context).pop(template),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+IconData _documentTemplateIcon(DocumentTemplate template) {
+  return switch (template) {
+    DocumentTemplate.notice => Icons.campaign_outlined,
+    DocumentTemplate.report => Icons.summarize_outlined,
+    DocumentTemplate.email => Icons.mail_outline,
+    DocumentTemplate.proposal => Icons.lightbulb_outline,
+    DocumentTemplate.meetingMinutes => Icons.groups_outlined,
+    DocumentTemplate.statement => Icons.description_outlined,
+  };
 }

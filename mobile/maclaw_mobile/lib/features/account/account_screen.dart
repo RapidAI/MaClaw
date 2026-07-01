@@ -3,11 +3,79 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/mobile_bootstrap.dart';
 import '../../core/api/official_service.dart';
+import '../../core/storage/mobile_local_store.dart';
 import '../../shared/surface.dart';
+import '../assistant/assistant_controller.dart';
 import '../auth/session_controller.dart';
+import '../digital_employees/digital_employees_controller.dart';
+import '../documents/documents_controller.dart';
+import '../servers/servers_controller.dart';
 
 class AccountScreen extends ConsumerWidget {
   const AccountScreen({super.key});
+
+  void _showPrivacyInfo(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('凭据与隐私'),
+        content: const Text(
+          '登录 Token、SSH 密码、私钥和私钥口令仅保存在系统安全存储中。终端输出或日志发送给 AI 分析前，需要用户手动触发。',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _clearLocalCache(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清理本地缓存？'),
+        content: const Text(
+          '将删除搜索历史、最近文档草稿、服务器配置、命令历史和数字员工任务模板，并清理已保存的 SSH 密码/私钥。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('清理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final store = ref.read(mobileLocalStoreProvider);
+    final profiles = await store.loadServerProfiles();
+    final vault = ref.read(secureVaultProvider);
+    await Future.wait([
+      for (final profile in profiles) ...[
+        vault.deleteServerPassword(profile.id),
+        vault.deleteServerPrivateKey(profile.id),
+      ],
+    ]);
+    await store.clearLocalCache();
+    ref
+      ..invalidate(searchHistoryProvider)
+      ..invalidate(documentsControllerProvider)
+      ..invalidate(serverProfilesProvider)
+      ..invalidate(serverCommandsProvider)
+      ..invalidate(digitalEmployeePromptHistoryProvider);
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('本地缓存和已保存 SSH 凭据已清理')),
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -23,11 +91,13 @@ class AccountScreen extends ConsumerWidget {
       ),
       children: [
         if (bootstrap == null)
-          const ActionTile(
+          ActionTile(
             icon: Icons.login_outlined,
             title: '未登录',
             subtitle: '移动端只支持接入 MaClaw 官方服务。',
             actionLabel: '去登录',
+            onPressed: () =>
+                ref.read(sessionControllerProvider.notifier).signOut(),
           )
         else ...[
           _AccountSummaryCard(
@@ -42,18 +112,20 @@ class AccountScreen extends ConsumerWidget {
           _LimitStatusCard(limits: bootstrap.limits),
         ],
         const SizedBox(height: 12),
-        const ActionTile(
+        ActionTile(
           icon: Icons.security_outlined,
           title: '凭据与隐私',
           subtitle: 'Token、SSH 密码、私钥口令保存在系统安全存储中。',
           actionLabel: '查看',
+          onPressed: () => _showPrivacyInfo(context),
         ),
         const SizedBox(height: 12),
-        const ActionTile(
+        ActionTile(
           icon: Icons.cleaning_services_outlined,
           title: '本地缓存',
           subtitle: '搜索历史、文档草稿、导出记录、服务器配置和命令历史。',
-          actionLabel: '查看',
+          actionLabel: '清理缓存',
+          onPressed: () => _clearLocalCache(context, ref),
         ),
       ],
     );

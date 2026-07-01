@@ -135,17 +135,16 @@ class ApiClient {
     if (job.downloadUrl.isEmpty) {
       throw StateError('export job has no download URL');
     }
+    final downloadUrl = maclawOfficialAbsoluteUrl(job.downloadUrl);
     final response = await _dio.get<List<int>>(
-      job.downloadUrl,
+      downloadUrl,
       options: Options(responseType: ResponseType.bytes),
     );
     return Uint8List.fromList(response.data ?? const []);
   }
 
   String absoluteUrl(String path) {
-    if (path.startsWith('http://') || path.startsWith('https://')) return path;
-    if (path.startsWith('/')) return '$maclawOfficialServiceUrl$path';
-    return '$maclawOfficialServiceUrl/$path';
+    return maclawOfficialAbsoluteUrl(path);
   }
 
   Future<MobileDocumentUploadTask> uploadDocument(String path) async {

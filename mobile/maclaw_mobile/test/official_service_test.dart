@@ -19,6 +19,19 @@ void main() {
     );
   });
 
+  test('api client accepts only official absolute URLs', () {
+    final client = ApiClient();
+
+    expect(
+      client.absoluteUrl('https://hubs.mypapers.top/api/mobile/bootstrap'),
+      'https://hubs.mypapers.top/api/mobile/bootstrap',
+    );
+    expect(
+      () => client.absoluteUrl('https://example.invalid/api/mobile/bootstrap'),
+      throwsUnsupportedError,
+    );
+  });
+
   test('api client rejects non-official service clients', () {
     expect(
       () => ApiClient(
