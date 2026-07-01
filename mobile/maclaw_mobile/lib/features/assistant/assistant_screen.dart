@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../shared/surface.dart';
 import '../documents/document_draft.dart';
@@ -46,8 +47,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final ready = await _speech.initialize();
     if (!ready) return;
     setState(() => _listening = true);
+    final language = ref.read(appPreferencesProvider).valueOrNull?.language ??
+        appLanguageChinese;
     await _speech.listen(
-      localeId: 'zh_CN',
+      localeId: language,
       onResult: (result) => _setQuery(result.recognizedWords),
     );
   }

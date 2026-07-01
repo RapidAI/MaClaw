@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/mobile_bootstrap.dart';
 import '../../core/api/official_service.dart';
+import '../../core/settings/app_preferences.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../../shared/surface.dart';
 import '../assistant/assistant_controller.dart';
@@ -81,6 +82,7 @@ class AccountScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider).valueOrNull;
     final bootstrap = session?.bootstrap;
+    final preferences = ref.watch(appPreferencesProvider);
     return ScreenScaffold(
       title: '我的',
       subtitle: '官方服务绑定、额度、模型/搜索状态、凭据和本地缓存。',
@@ -112,6 +114,8 @@ class AccountScreen extends ConsumerWidget {
           _LimitStatusCard(limits: bootstrap.limits),
         ],
         const SizedBox(height: 12),
+        _PreferenceCard(preferences: preferences),
+        const SizedBox(height: 12),
         ActionTile(
           icon: Icons.security_outlined,
           title: '凭据与隐私',
@@ -128,6 +132,86 @@ class AccountScreen extends ConsumerWidget {
           onPressed: () => _clearLocalCache(context, ref),
         ),
       ],
+    );
+  }
+}
+
+class _PreferenceCard extends ConsumerWidget {
+  final AsyncValue<AppPreferences> preferences;
+
+  const _PreferenceCard({required this.preferences});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: preferences.when(
+          data: (value) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.settings_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text('主题与语言', style: Theme.of(context).textTheme.titleMedium),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<ThemeMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: ThemeMode.system,
+                    icon: Icon(Icons.phone_android_outlined),
+                    label: Text('系统'),
+                  ),
+                  ButtonSegment(
+                    value: ThemeMode.light,
+                    icon: Icon(Icons.light_mode_outlined),
+                    label: Text('浅色'),
+                  ),
+                  ButtonSegment(
+                    value: ThemeMode.dark,
+                    icon: Icon(Icons.dark_mode_outlined),
+                    label: Text('深色'),
+                  ),
+                ],
+                selected: {value.themeMode},
+                onSelectionChanged: (next) => ref
+                    .read(appPreferencesProvider.notifier)
+                    .setThemeMode(next.first),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: value.language,
+                items: const [
+                  DropdownMenuItem(
+                    value: appLanguageChinese,
+                    child: Text('简体中文'),
+                  ),
+                  DropdownMenuItem(
+                    value: appLanguageEnglish,
+                    child: Text('English'),
+                  ),
+                ],
+                onChanged: (next) {
+                  if (next == null) return;
+                  ref.read(appPreferencesProvider.notifier).setLanguage(next);
+                },
+                decoration: const InputDecoration(
+                  labelText: '语音输入语言',
+                  prefixIcon: Icon(Icons.language_outlined),
+                ),
+              ),
+            ],
+          ),
+          error: (error, _) => Text('偏好设置加载失败：$error'),
+          loading: () => const LinearProgressIndicator(),
+        ),
+      ),
     );
   }
 }

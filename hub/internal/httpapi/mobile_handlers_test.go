@@ -54,7 +54,7 @@ func TestMobileSearchFormatsResultsWithCitations(t *testing.T) {
 		},
 	}
 
-	answer := mobileSearchAnswer("nginx 502", results)
+	answer := mobileSearchAnswer("nginx 502", results, nil)
 	if !strings.Contains(answer, "nginx 502") {
 		t.Fatalf("answer = %q, want query", answer)
 	}
@@ -74,6 +74,23 @@ func TestMobileSearchFormatsResultsWithCitations(t *testing.T) {
 	}
 	if citations[1]["title"] != "https://example.test/systemd" {
 		t.Fatalf("second citation = %#v, want URL title fallback", citations[1])
+	}
+}
+
+func TestMobileSearchKeepsSharedLinksAsCitations(t *testing.T) {
+	query := "总结这个链接 https://example.test/incident?from=mobile"
+	links := mobileExtractQueryLinks(query)
+	answer := mobileSearchAnswer(query, nil, links)
+	citations := mobileMergeLinkCitations(nil, links)
+
+	if !strings.Contains(answer, "已识别分享链接") {
+		t.Fatalf("answer = %q, want shared-link hint", answer)
+	}
+	if len(citations) != 1 {
+		t.Fatalf("len(citations) = %d, want 1", len(citations))
+	}
+	if citations[0]["url"] != "https://example.test/incident?from=mobile" {
+		t.Fatalf("citation = %#v, want shared URL", citations[0])
 	}
 }
 

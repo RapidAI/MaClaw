@@ -29,6 +29,8 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       TextEditingController(text: 'journalctl -u nginx -n 100 --no-pager');
   final _logController = TextEditingController();
   final _nameController = TextEditingController(text: '生产服务器');
+  final _tagController = TextEditingController(text: '生产');
+  final _noteController = TextEditingController();
   final _hostController = TextEditingController();
   final _portController = TextEditingController(text: '22');
   final _usernameController = TextEditingController();
@@ -42,6 +44,8 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     _commandController.dispose();
     _logController.dispose();
     _nameController.dispose();
+    _tagController.dispose();
+    _noteController.dispose();
     _hostController.dispose();
     _portController.dispose();
     _usernameController.dispose();
@@ -77,6 +81,11 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       port: int.tryParse(_portController.text.trim()) ?? 22,
       username: _usernameController.text.trim(),
       authMode: _authMode,
+      tag:
+          _tagController.text.trim().isEmpty ? null : _tagController.text.trim(),
+      note: _noteController.text.trim().isEmpty
+          ? null
+          : _noteController.text.trim(),
     );
     if (!profile.isValid) return;
     if (_authMode == serverAuthModePrivateKey && privateKey.isEmpty) return;
@@ -89,6 +98,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     _passwordController.clear();
     _privateKeyController.clear();
     _privateKeyPassphraseController.clear();
+    _noteController.clear();
   }
 
   Future<void> _deleteServer(ServerProfile profile) async {
@@ -135,6 +145,8 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       children: [
         _ServerProfileCard(
           nameController: _nameController,
+          tagController: _tagController,
+          noteController: _noteController,
           hostController: _hostController,
           portController: _portController,
           usernameController: _usernameController,
@@ -180,6 +192,8 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
 
 class _ServerProfileCard extends StatelessWidget {
   final TextEditingController nameController;
+  final TextEditingController tagController;
+  final TextEditingController noteController;
   final TextEditingController hostController;
   final TextEditingController portController;
   final TextEditingController usernameController;
@@ -195,6 +209,8 @@ class _ServerProfileCard extends StatelessWidget {
 
   const _ServerProfileCard({
     required this.nameController,
+    required this.tagController,
+    required this.noteController,
     required this.hostController,
     required this.portController,
     required this.usernameController,
@@ -208,6 +224,16 @@ class _ServerProfileCard extends StatelessWidget {
     required this.onAdd,
     required this.onDelete,
   });
+
+  String _serverSubtitle(ServerProfile server) {
+    final parts = [
+      '${server.username}@${server.host}:${server.port}',
+      serverAuthModeLabel(server.authMode),
+      if ((server.tag ?? '').trim().isNotEmpty) server.tag!.trim(),
+      if ((server.note ?? '').trim().isNotEmpty) server.note!.trim(),
+    ];
+    return parts.join(' · ');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -232,6 +258,24 @@ class _ServerProfileCard extends StatelessWidget {
                 labelText: '名称',
                 prefixIcon: Icon(Icons.label_outline),
               ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: tagController,
+                    decoration: const InputDecoration(labelText: '标签'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: noteController,
+                    decoration: const InputDecoration(labelText: '备注'),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 10),
             TextField(
@@ -331,7 +375,7 @@ class _ServerProfileCard extends StatelessWidget {
                             leading: const Icon(Icons.storage_outlined),
                             title: Text(server.name),
                             subtitle: Text(
-                              '${server.username}@${server.host}:${server.port} · ${serverAuthModeLabel(server.authMode)}',
+                              _serverSubtitle(server),
                             ),
                             trailing: IconButton(
                               tooltip: '删除服务器',

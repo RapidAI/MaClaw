@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -356,9 +357,12 @@ func MobileSearchHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
+		linkRefs := mobileExtractQueryLinks(query)
+		citations := mobileSearchCitations(results)
+		citations = mobileMergeLinkCitations(citations, linkRefs)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"answer":    mobileSearchAnswer(query, results),
-			"citations": mobileSearchCitations(results),
+			"answer":    mobileSearchAnswer(query, results, linkRefs),
+			"citations": citations,
 			"query":     query,
 			"tenant_id": principal.TenantID,
 			"user_id":   principal.UserID,
@@ -367,9 +371,12 @@ func MobileSearchHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func mobileSearchAnswer(query string, results []websearch.SearchResult) string {
+func mobileSearchAnswer(query string, results []websearch.SearchResult, links []string) string {
 	query = strings.TrimSpace(query)
 	if len(results) == 0 {
+		if len(links) > 0 {
+			return "已识别分享链接。当前没有额外搜索结果，已保留链接作为来源，可继续整理为文档草稿或补充问题。"
+		}
 		return "未找到可引用的搜索结果。请换一个更具体的问题再试。"
 	}
 	var b strings.Builder
@@ -397,6 +404,46 @@ func mobileSearchAnswer(query string, results []websearch.SearchResult) string {
 		}
 	}
 	return b.String()
+}
+
+func mobileExtractQueryLinks(query string) []string {
+	seen := map[string]bool{}
+	var links []string
+	for _, field := range strings.Fields(query) {
+		candidate := strings.Trim(field, " \t\r\n<>（）()[]{}，,。；;\"'")
+		u, err := url.Parse(candidate)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			continue
+		}
+		normalized := u.String()
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		links = append(links, normalized)
+	}
+	return links
+}
+
+func mobileMergeLinkCitations(citations []map[string]string, links []string) []map[string]string {
+	if len(links) == 0 {
+		return citations
+	}
+	seen := map[string]bool{}
+	for _, citation := range citations {
+		seen[strings.TrimSpace(citation["url"])] = true
+	}
+	for _, link := range links {
+		if seen[link] {
+			continue
+		}
+		citations = append(citations, map[string]string{
+			"title":   link,
+			"url":     link,
+			"snippet": "用户分享的链接",
+		})
+	}
+	return citations
 }
 func mobileSearchCitations(results []websearch.SearchResult) []map[string]string {
 	citations := make([]map[string]string, 0, len(results))

@@ -9,6 +9,7 @@ import 'features/auth/session_controller.dart';
 import 'features/digital_employees/digital_employees_screen.dart';
 import 'features/documents/documents_screen.dart';
 import 'features/servers/servers_screen.dart';
+import 'core/settings/app_preferences.dart';
 import 'shared/app_shell.dart';
 import 'shared/theme.dart';
 
@@ -59,11 +60,14 @@ class MaClawMobileApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider);
+    final preferences = ref.watch(appPreferencesProvider).valueOrNull ??
+        const AppPreferences();
     return MaterialApp.router(
       title: 'MaClaw Mobile',
       debugShowCheckedModeBanner: false,
       theme: buildMaClawTheme(Brightness.light),
       darkTheme: buildMaClawTheme(Brightness.dark),
+      themeMode: preferences.themeMode,
       routerConfig: session.maybeWhen(
         data: (state) => state.authenticated ? _router : _loginRouter,
         orElse: () => _loadingRouter,

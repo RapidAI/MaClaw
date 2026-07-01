@@ -222,6 +222,18 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
     }
   }
 
+  void _insertSnippet(String snippet) {
+    final text = _editMarkdownController.text;
+    final selection = _editMarkdownController.selection;
+    final start = selection.isValid ? selection.start : text.length;
+    final end = selection.isValid ? selection.end : text.length;
+    final next = text.replaceRange(start, end, snippet);
+    _editMarkdownController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + snippet.length),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
@@ -261,6 +273,25 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
                 alignLabelWithHint: true,
                 prefixIcon: Icon(Icons.notes_outlined),
               ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _insertSnippet(
+                    '\n\n| 项目 | 内容 | 负责人 |\n| --- | --- | --- |\n|  |  |  |\n',
+                  ),
+                  icon: const Icon(Icons.table_chart_outlined),
+                  label: const Text('插入表格'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _insertSnippet('\n\n> 批注：\n'),
+                  icon: const Icon(Icons.comment_outlined),
+                  label: const Text('插入批注'),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             Wrap(

@@ -33,7 +33,7 @@
 .apps-search-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
 }
 
 .apps-search-wrap {
@@ -96,42 +96,34 @@
 }
 
 .apps-studio-button {
-    width: auto;
+    width: 30px;
     min-width: 30px;
     height: 30px;
-    padding: 0 8px;
+    padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 4px;
-    white-space: nowrap;
-    font-size: 0.72rem;
     flex-shrink: 0;
-    border: 1px solid color-mix(in srgb, var(--theme-primary) 50%, var(--theme-border));
-    border-radius: var(--radius-md);
-    color: var(--theme-on-primary);
-    background: var(--theme-primary);
+    border: 1.5px solid var(--theme-primary);
+    border-radius: 50%;
+    color: var(--theme-primary);
+    background: transparent;
     font-weight: 700;
     cursor: pointer;
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--theme-primary) 20%, transparent);
-    transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .apps-studio-button__icon {
-    width: 20px;
-    height: 20px;
-    display: inline-grid;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: var(--radius-sm);
-    color: currentColor;
-    background: transparent;
 }
 
 .apps-studio-button__icon > svg {
-    width: 15px;
-    height: 15px;
-    stroke-width: 1.8;
+    width: 16px;
+    height: 16px;
 }
 
 .apps-secondary-button:hover,
@@ -143,12 +135,9 @@
 
 .apps-studio-button:hover,
 .apps-studio-button:focus-visible {
-    color: var(--theme-on-primary);
+    color: #fff;
     border-color: var(--theme-primary-strong, var(--theme-primary));
     background: var(--theme-primary-strong, var(--theme-primary));
-    box-shadow:
-        0 2px 6px color-mix(in srgb, var(--theme-primary) 36%, transparent),
-        inset 0 0 0 1.5px color-mix(in srgb, var(--theme-on-primary) 40%, transparent);
 }
 
 .apps-studio-button:active {
