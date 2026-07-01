@@ -7,7 +7,7 @@ import './AppsPage.css';
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
 type StudioTab = 'create' | 'manage' | 'market' | 'publish';
 type AppMoveTarget = -1 | 1 | 'top' | 'bottom';
-type AppOperation = 'approval_status' | 'run_history';
+type AppOperation = 'approval_status' | 'run_history' | 'market';
 type ApprovalLaneFilter = 'my_requests' | 'pending_my_approval' | 'handled' | 'attention' | 'all';
 
 type AppEntry = {
@@ -38,7 +38,7 @@ type AppEntry = {
     disabledSource?: 'local' | 'hub_governance';
 };
 
-type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot';
+type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot' | 'shop';
 
 type AppsPageProps = {
     lang?: string;
@@ -133,6 +133,8 @@ type BackendAppInstallSkillVersionSnapshot = {
 
 type BackendAppInstallApprovalBindingSnapshot = {
     event?: string;
+    dataset_id?: string;
+    blueprint_id?: string;
     object_role?: string;
     workflow_skill_id?: string;
     workflow_version?: string;
@@ -554,7 +556,9 @@ type ApprovalInstanceView = {
     lane: 'my_requests' | 'pending_my_approval' | 'handled' | 'attention';
     status: 'draft' | 'pending' | 'approved' | 'rejected' | 'attention' | 'requires_input' | 'failed' | 'cancelled' | 'timeout' | 'running' | 'submitted' | 'in_progress';
     currentNode: string;
+    currentNodeStatus?: string;
     currentNodeIDs?: string[];
+    nodeTasks?: Record<string, unknown>[];
     owner: string;
     applicant?: string;
     approver: string;
@@ -597,10 +601,18 @@ type BackendApprovalInstance = {
     status?: string;
     current_node?: string;
     currentNode?: string;
+    current_node_status?: string;
+    currentNodeStatus?: string;
+    node_status?: string;
+    nodeStatus?: string;
     current_node_ids?: string[];
     currentNodeIDs?: string[];
     workflow_node_ids?: string[];
     workflowNodeIDs?: string[];
+    node_tasks?: Record<string, unknown>[];
+    nodeTasks?: Record<string, unknown>[];
+    approval_tasks?: Record<string, unknown>[];
+    approvalTasks?: Record<string, unknown>[];
     owner?: string;
     applicant?: string;
     submitted_by?: string;
@@ -864,6 +876,8 @@ const labels = {
         approvalStatusHint: '\u6253\u5f00\u5ba1\u6279\u5b9e\u4f8b\u7ba1\u7406',
         runHistoryOps: '\u8fd0\u884c\u8bb0\u5f55',
         runHistoryOpsHint: '\u67e5\u770b\u5e94\u7528\u6267\u884c\u5386\u53f2',
+        marketOps: '\u5e94\u7528\u5e02\u573a',
+        marketOpsHint: '\u641c\u7d22\u4e0b\u8f7d\u5b89\u88c5\u5e94\u7528',
         all: '\u5168\u90e8\u5e94\u7528',
         otherApps: '\u5176\u4ed6\u5e94\u7528',
         pinned: '\u5e38\u7528\u5e94\u7528',
@@ -886,7 +900,6 @@ const labels = {
         generateDraft: '\u751f\u6210\u8349\u7a3f',
         draftPromptPlaceholder: '\u4f8b\uff1a\u505a\u4e00\u4e2a\u5408\u540c\u5f52\u6863\u5e94\u7528\uff0c\u4e0a\u4f20 Word/PDF\uff0c\u8f93\u51fa\u5f52\u6863\u7f16\u53f7\u548c\u5ba1\u6838\u7ed3\u679c',
         manageTab: '\u5e94\u7528\u7ba1\u7406',
-        marketTab: '\u5e94\u7528\u5e02\u573a',
         publishTab: '\u5ba1\u6838/\u53d1\u5e03',
         publishSubtitle: '\u68c0\u67e5\u672c\u5730\u5e94\u7528\u662f\u5426\u53ef\u4e0a\u4f20\u5230\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u3002',
         publishChecklist: '\u53d1\u5e03\u68c0\u67e5',
@@ -1040,6 +1053,8 @@ const labels = {
         openDataSrvRecord: '\u6253\u5f00\u8bb0\u5f55',
         approvalInstanceData: '\u5b9e\u4f8b\u6570\u636e',
         currentApprovalNode: '\u5f53\u524d\u8282\u70b9',
+        currentNodeStatus: '\u8282\u70b9\u72b6\u6001',
+        approvalNodeTasks: '\u8282\u70b9\u4efb\u52a1',
         approvalApplicantLabel: '\u7533\u8bf7\u4eba',
         approvalApproverLabel: '\u5ba1\u6279\u4eba',
         currentAssigneeLabel: '\u5f53\u524d\u5904\u7406\u4eba',
@@ -1125,7 +1140,7 @@ const labels = {
         appColor: '\u56fe\u6807\u989c\u8272',
         validationMissing: '\u8bf7\u8865\u5145\u5fc5\u586b\u8f93\u5165',
         installManifest: '\u5b89\u88c5\u5e94\u7528\u5305',
-        marketApps: '\u5e94\u7528\u5e02\u573a',
+        marketApps: '\u5e02\u573a\u5e94\u7528\u5217\u8868',
         marketAdvancedImport: '\u5bfc\u5165\u5e94\u7528\u5305',
         marketAdvancedImportHint: '\u7c98\u8d34\u5df2\u5ba1\u6838\u7684\u5e94\u7528\u5305 JSON\uff0c\u9002\u5408\u7ba1\u7406\u5458\u6216\u79c1\u6709\u5e94\u7528\u3002',
         marketSource: '\u6765\u6e90',
@@ -1237,6 +1252,8 @@ const labels = {
         approvalStatusHint: 'Open approval instance management',
         runHistoryOps: 'Run history',
         runHistoryOpsHint: 'Review app execution history',
+        marketOps: 'App Market',
+        marketOpsHint: 'Search and install apps',
         all: 'All apps',
         otherApps: 'Other apps',
         pinned: 'Pinned apps',
@@ -1259,7 +1276,6 @@ const labels = {
         generateDraft: 'Generate draft',
         draftPromptPlaceholder: 'Example: build a contract filing app, upload Word/PDF, output archive number and review result',
         manageTab: 'Manage apps',
-        marketTab: 'App Market',
         publishTab: 'Review / publish',
         publishSubtitle: 'Check whether local apps are ready for upload to the enterprise capability market.',
         publishChecklist: 'Publish checklist',
@@ -1413,6 +1429,8 @@ const labels = {
         openDataSrvRecord: 'Open record',
         approvalInstanceData: 'Instance data',
         currentApprovalNode: 'Current node',
+        currentNodeStatus: 'Node status',
+        approvalNodeTasks: 'Node tasks',
         approvalApplicantLabel: 'Applicant',
         approvalApproverLabel: 'Approver',
         currentAssigneeLabel: 'Current assignee',
@@ -1498,7 +1516,7 @@ const labels = {
         appColor: 'Icon color',
         validationMissing: 'Complete required input',
         installManifest: 'Install app package',
-        marketApps: 'App market',
+        marketApps: 'App catalog',
         marketAdvancedImport: 'Import app package',
         marketAdvancedImportHint: 'Paste reviewed app package JSON for admin installs or private apps.',
         marketSource: 'Source',
@@ -1653,6 +1671,7 @@ const appIconMeta: Record<AppIconName, { zh: string; en: string }> = {
     web: { zh: '\u7f51\u9875/\u91c7\u96c6', en: 'Web' },
     sync: { zh: '\u540c\u6b65/\u81ea\u52a8\u5316', en: 'Sync' },
     bot: { zh: 'Agent/\u81ea\u52a8\u5316', en: 'Agent' },
+    shop: { zh: '\u95e8\u5e97/\u96f6\u552e', en: 'Store' },
 };
 
 const appIconNames = Object.keys(appIconMeta) as AppIconName[];
@@ -6110,7 +6129,47 @@ function appRunApprovalInstanceEvidenceFromBackend(instance: BackendApprovalInst
         approvalInstanceViewVerified: true,
         approvalViews: { my_requests: true, all: true, verified: true },
         verifiedAt,
+	};
+}
+
+function approvalDecisionRunHistoryEntry(app: AppEntry | undefined, instance: BackendApprovalInstance, message: string, verifiedAt = new Date().toISOString()): AppRunHistoryEntry | null {
+    if (!app?.id) return null;
+    const approvalInstance = appRunApprovalInstanceEvidenceFromBackend(instance, verifiedAt);
+    if (!approvalInstance) return null;
+    const resultPayload = instance.result_payload && typeof instance.result_payload === 'object' && !Array.isArray(instance.result_payload)
+        ? instance.result_payload as Record<string, unknown>
+        : {};
+    const entry: AppRunHistoryEntry = {
+        runID: String(instance.workflow_decision_id || instance.approval_id || instance.record_approval_id || instance.instance_id || `approval-decision-${Date.now().toString(36)}`).trim(),
+        appID: app.id,
+        at: verifiedAt,
+        status: 'done',
+        definitionHash: appDefinitionFingerprint(app),
+        testProtocolFingerprint: appTestProtocolFingerprint(appTestProtocolForManifest(app)),
+        outputMode: 'approval',
+        inputSummary: String(instance.title || instance.business_action || 'approval decision').trim(),
+        message: String(message || instance.result || instance.status || 'approval decision').trim(),
+        resultPayload,
+        outputs: normalizeApprovalOutputs(instance.outputs as any),
+        artifacts: normalizeApprovalArtifacts(instance.artifacts as any),
+        approvalInstance,
     };
+    const coverage = appRunEvidenceContractCoverage(app, entry);
+    entry.resultCoverage = {
+        ok: coverage.ok,
+        primary: coverage.primary,
+        coveredTypes: coverage.coveredTypes,
+        missingTypes: coverage.missingTypes,
+    };
+    return entry;
+}
+
+function saveApprovalDecisionRunEvidence(app: AppEntry | undefined, instance: BackendApprovalInstance, message: string): AppRunHistoryEntry | null {
+    const entry = approvalDecisionRunHistoryEntry(app, instance, message);
+    if (!entry || !app?.id) return entry;
+    const next = [entry, ...loadAppRunHistory(app.id).filter((item) => item.runID !== entry.runID)].slice(0, 8);
+    saveAppRunHistory(app.id, next);
+    return entry;
 }
 
 function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
@@ -6358,12 +6417,18 @@ function formatRecentUsedAt(value?: string) {
     return new Date(timestamp).toLocaleString();
 }
 
+function appPanelStatusLabel(app: AppEntry, lang?: string) {
+    if (app.source !== 'skill') return '';
+    return isZh(lang) ? '已加入面板' : 'In panel';
+}
+
 function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
     const recent = formatRecentUsedAt(app.recentUsedAt);
+    const panelStatus = appPanelStatusLabel(app, lang);
     return [
         app.name,
         app.description,
-        `${appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · ${sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}`,
+        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' · '),
         `${text.appStatus}: ${statusLabel}`,
         `${text.recentUsed}: ${recent || text.neverUsed}`,
     ].filter(Boolean).join('\n');
@@ -6371,7 +6436,7 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
 
 function buildAppTileAriaLabel(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
     const locale = isZh(lang) ? 'zh' : 'en';
-    return `${app.name}, ${appKinds[app.kind][locale]}, ${sourceLabels[app.source][locale]}, ${text.appStatus}: ${statusLabel}`;
+    return [app.name, appKinds[app.kind][locale], sourceLabels[app.source][locale], appPanelStatusLabel(app, lang), `${text.appStatus}: ${statusLabel}`].filter(Boolean).join(', ');
 }
 
 function buildAppSearchText(app: AppEntry, lang?: string) {
@@ -6387,6 +6452,7 @@ function buildAppSearchText(app: AppEntry, lang?: string) {
         app.kind,
         sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'],
         app.source,
+        appPanelStatusLabel(app, lang),
         manifest?.launchMode,
         manifest?.installUnit,
         manifest?.appSkill?.id,
@@ -6548,6 +6614,8 @@ const Icon = ({ name }: { name: AppIconName }) => {
             return <svg viewBox="0 0 24 24" {...common}><path d="M20 7v5h-5" /><path d="M4 17v-5h5" /><path d="M18.2 9A7 7 0 0 0 6.1 7.2M5.8 15A7 7 0 0 0 17.9 16.8" /></svg>;
         case 'bot':
             return <svg viewBox="0 0 24 24" {...common}><path d="M12 4v3" /><rect x="5" y="7" width="14" height="11" rx="3" /><path d="M9 12h.01M15 12h.01M9 16h6" /><path d="M4 12H2M22 12h-2" /></svg>;
+        case 'shop':
+            return <svg viewBox="0 0 24 24" {...common}><path d="M3 9l1.5-5h15L21 9" /><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9z" /><path d="M9 9v2a3 3 0 0 1-6 0V9M15 9v2a3 3 0 0 1-6 0V9M21 9v2a3 3 0 0 1-6 0V9" /></svg>;
         default:
             return null;
     }
@@ -6569,10 +6637,11 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
     const [category, setCategory] = useState('all');
     const [openTabs, setOpenTabs] = useState<string[]>([]);
     const [activeTabId, setActiveTabId] = useState('');
-    const [studioOpen, setStudioOpen] = useState(false);
-    const [studioTab, setStudioTab] = useState<StudioTab>('create');
-    const [studioEditAppId, setStudioEditAppId] = useState('');
-    const [marketInstallPrefill, setMarketInstallPrefill] = useState<{ key: number; manifestText: string }>({ key: 0, manifestText: '' });
+	const [studioOpen, setStudioOpen] = useState(false);
+	const [studioTab, setStudioTab] = useState<StudioTab>('create');
+	const [studioEditAppId, setStudioEditAppId] = useState('');
+	const [marketInstallPrefill, setMarketInstallPrefill] = useState<{ key: number; manifestText: string }>({ key: 0, manifestText: '' });
+	const [studioMarketInstallResultVisible, setStudioMarketInstallResultVisible] = useState(false);
     const [activeOperation, setActiveOperation] = useState<AppOperation | null>(null);
     const [approvalInitialAppFilter, setApprovalInitialAppFilter] = useState('all');
     const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
@@ -6693,6 +6762,10 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
 
     const openOperation = (operation: AppOperation, options?: { appId?: string }) => {
         setTileMenu(null);
+        if (activeOperation === operation && !options?.appId) {
+            setActiveOperation(null);
+            return;
+        }
         setStudioOpen(false);
         setActiveOperation(operation);
         if (operation === 'approval_status') setApprovalInitialAppFilter(options?.appId || 'all');
@@ -6900,16 +6973,17 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
         setStudioTab('manage');
         setStudioEditAppId(appId);
     };
-    const installDependenciesFromPublish = (appId: string) => {
-        const app = apps.find((item) => item.id === appId);
-        if (!app) return;
-        setStudioOpen(true);
-        setStudioTab('market');
-        setMarketInstallPrefill((current) => ({
-            key: current.key + 1,
-            manifestText: JSON.stringify(appToManifest(app), null, 2),
-        }));
-    };
+	const installDependenciesFromPublish = (appId: string) => {
+		const app = apps.find((item) => item.id === appId);
+		if (!app) return;
+		setActiveOperation(null);
+		setStudioOpen(true);
+		setStudioTab('market');
+		setMarketInstallPrefill((current) => ({
+			key: current.key + 1,
+			manifestText: JSON.stringify(appToManifest(app), null, 2),
+	        }));
+	    };
 
     const appStatusInfo = (app: AppEntry): { key: 'available' | 'running' | 'loading' | 'disabled' | 'error'; label: string } => {
         if (app.disabled) return { key: 'disabled', label: app.disabledReason || text.appDisabled };
@@ -6971,11 +7045,11 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     event.preventDefault();
                     openTileMenu(app.id, event.clientX, event.clientY);
                 }}
-                onKeyDown={moveTileFocus}
-            >
-                <span className="apps-app-icon"><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-                <span className="apps-app-name">{app.name}</span>
-            </button>
+	                onKeyDown={moveTileFocus}
+	            >
+	                <span className="apps-app-icon"><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
+	                <span className="apps-app-name">{app.name}</span>
+	            </button>
         );
     };
 
@@ -7001,7 +7075,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     </div>
                     <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
                         <span className="apps-studio-button__icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><path d="M17.5 14v7M14 17.5h7" /></svg>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4V2m0 2v2m0-2h2m-2 0h-2" /><path d="M8.5 8.5 3 21l12.5-5.5L21 3z" /><path d="m3 21 5.5-5.5" /></svg>
                         </span>
                     </button>
                     <div className="apps-filter-row">
@@ -7032,6 +7106,10 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         <button className={`apps-ops__item ${activeOperation === 'run_history' ? 'is-active' : ''}`} type="button" aria-pressed={activeOperation === 'run_history'} onClick={() => openOperation('run_history')}>
                             <Icon name="sync" />
                             <span><strong>{text.runHistoryOps}</strong><small>{text.runHistoryOpsHint}</small></span>
+                        </button>
+                        <button className={`apps-ops__item ${activeOperation === 'market' ? 'is-active' : ''}`} type="button" aria-pressed={activeOperation === 'market'} onClick={() => openOperation('market')}>
+                            <Icon name="shop" />
+                            <span><strong>{text.marketOps}</strong><small>{text.marketOpsHint}</small></span>
                         </button>
                     </div>
                 </div>
@@ -7083,10 +7161,11 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     <AppStudio
                         apps={apps}
                         lang={lang}
-                        tab={studioTab}
-                        setTab={setStudioTab}
-                        onClose={() => setStudioOpen(false)}
-                        onTogglePin={togglePin}
+	                        tab={studioTab}
+	                        setTab={setStudioTab}
+	                        onClose={() => setStudioOpen(false)}
+	                        marketInstallResultVisible={studioMarketInstallResultVisible}
+	                        onTogglePin={togglePin}
                         onUpdateApp={updateApp}
                         onDuplicateApp={duplicateApp}
                         onMoveApp={moveApp}
@@ -7100,10 +7179,11 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         skillDiscovery={skillDiscovery}
                         onAddDiscoveredApp={addDiscoveredApp}
                         onCreateApp={addDiscoveredApp}
-                        onInstallMarketApp={installMarketApp}
-                        marketInstallPrefill={marketInstallPrefill}
-                        onEditApp={editAppFromStudio}
-                        onInstallDependencies={installDependenciesFromPublish}
+	                        onInstallMarketApp={installMarketApp}
+	                        marketInstallPrefill={marketInstallPrefill}
+	                        onMarketInstallResultVisibleChange={setStudioMarketInstallResultVisible}
+	                        onEditApp={editAppFromStudio}
+	                        onInstallDependencies={installDependenciesFromPublish}
                         onSyncHubAppGovernance={syncHubAppGovernance}
                     />
                 ) : activeOperation === 'approval_status' ? (
@@ -7114,7 +7194,13 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                     />
                 ) : activeOperation === 'run_history' ? (
                     <RunHistoryManager apps={apps} lang={lang} />
-                ) : (
+                ) : null}
+	                {!studioOpen && activeOperation === 'market' && (
+	                    <div className="apps-detail__body elegant-scrollbar apps-market-persistent">
+	                        <MarketPane apps={apps} lang={lang} onInstallApp={installMarketApp} prefill={marketInstallPrefill} />
+	                    </div>
+	                )}
+                <div className="apps-runtime-persistent" hidden={studioOpen || !!activeOperation}>
                     <AppRuntime
                         tabs={openTabApps}
                         activeApp={activeApp}
@@ -7126,7 +7212,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         onUse={markAppUsed}
                         onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
                     />
-                )}
+                </div>
             </main>
         </div>
     );
@@ -7199,13 +7285,22 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
                     );
                 })}
             </div>
-            <div
-                className="apps-runtime-shell"
-                role="tabpanel"
-                id={activeApp ? getRuntimePanelId(activeApp.id) : undefined}
-                aria-labelledby={activeApp ? getRuntimeTabId(activeApp.id) : undefined}
-            >
-                <AppPreview app={activeApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} />
+            <div className="apps-runtime-shell">
+                {tabs.map((tabApp) => {
+                    const isActive = activeApp?.id === tabApp.id;
+                    return (
+                        <div
+                            key={tabApp.id}
+                            id={getRuntimePanelId(tabApp.id)}
+                            aria-labelledby={getRuntimeTabId(tabApp.id)}
+                            role="tabpanel"
+                            className="apps-runtime-panel"
+                            hidden={!isActive}
+                        >
+                            <AppPreview app={tabApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} />
+                        </div>
+                    );
+                })}
             </div>
         </>
     );
@@ -7307,6 +7402,15 @@ function approvalCurrentNodeText(instance: Pick<ApprovalInstanceView, 'currentNo
     if (nodes.length > 0) return nodes.join(' / ');
     return String(instance.currentNode || 'Current node').trim();
 }
+function normalizeApprovalNodeTasks(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item));
+}
+function approvalNodeTaskCountText(instance: Pick<ApprovalInstanceView, 'nodeTasks'> | undefined, lang?: string): string {
+    const count = Array.isArray(instance?.nodeTasks) ? instance.nodeTasks.length : 0;
+    if (count <= 0) return '-';
+    return isZh(lang) ? `${count} \u4e2a\u4efb\u52a1` : `${count} task${count > 1 ? 's' : ''}`;
+}
 function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?: string): ApprovalInstanceView | null {
     const id = String(instance.instance_id || instance.instanceID || instance.instanceId || '').trim();
     const appTitle = String(instance.title || id).trim();
@@ -7334,6 +7438,7 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
     const resultPayload = compactApprovalRecord(instance.result_payload || instance.resultPayload);
     const currentNodeIDs = normalizeApprovalCurrentNodeIDs(instance);
     const currentNode = currentNodeIDs[0] || String(instance.current_node || instance.currentNode || 'Current node').trim();
+    const nodeTasks = normalizeApprovalNodeTasks(instance.node_tasks || instance.nodeTasks || instance.approval_tasks || instance.approvalTasks);
     return {
         id,
         appID,
@@ -7348,7 +7453,9 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         lane: lane === 'pending_my_approval' || lane === 'handled' || lane === 'attention' ? lane : 'my_requests',
         status: ['approved', 'rejected', 'attention', 'draft', 'requires_input', 'failed', 'cancelled', 'timeout', 'running', 'submitted', 'in_progress'].includes(status) ? status : 'pending',
         currentNode,
+        currentNodeStatus: String(instance.current_node_status || instance.currentNodeStatus || instance.node_status || instance.nodeStatus || '').trim(),
         currentNodeIDs,
+        nodeTasks: nodeTasks.length > 0 ? nodeTasks : undefined,
         owner,
         applicant,
         approver,
@@ -9058,15 +9165,23 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
             }
 			const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
-			const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
-			if (syncedView) {
-				setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
+				const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
+				if (syncedView) {
+					setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
+				}
+                const evidenceEntry = approvalDecisionRunHistoryEntry(app, syncedInstance, statusText);
+                if (evidenceEntry) {
+                    setRunHistory((current) => {
+                        const next = [evidenceEntry, ...current.filter((item) => item.runID !== evidenceEntry.runID)].slice(0, 8);
+                        saveAppRunHistory(app.id, next);
+                        return next;
+                    });
+                }
+			} catch (error: any) {
+				const businessError = structuredBusinessErrorFromUnknown(error);
+				setRuntimeBusinessError(businessError);
+				setValidationMessage(structuredBusinessErrorMessage(businessError, error?.message || String(error || text.validationMissing)));
 			}
-		} catch (error: any) {
-			const businessError = structuredBusinessErrorFromUnknown(error);
-			setRuntimeBusinessError(businessError);
-			setValidationMessage(structuredBusinessErrorMessage(businessError, error?.message || String(error || text.validationMissing)));
-		}
 	};
     const cancelRun = async () => {
         if (!runID) return;
@@ -9579,14 +9694,15 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             const savedInstance = saved || payload;
 			const view = backendApprovalInstanceToView(savedInstance, lang);
 			if (view) setInstances((current) => [view, ...current.filter((item) => item.id !== view.id)]);
-			if (app) {
-				const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
-				const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
-				if (syncedView) setInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)]);
-			}
-		} catch {
-			if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
-        }
+				if (app) {
+					const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
+					const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
+					if (syncedView) setInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)]);
+                    saveApprovalDecisionRunEvidence(app, syncedInstance, statusText);
+				}
+			} catch {
+				if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
+	        }
     };
 
     return (
@@ -9761,11 +9877,12 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
             </div>
             {instance ? (
                 <>
-                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}</span></div>
+                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}{instance.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${instance.currentNodeStatus}` : ''}</span></div>
                     <dl className="apps-approval-facts">
                         <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(instance)}</dd></div><div><dt>{text.approvalApproverLabel}</dt><dd>{instance.approver}</dd></div><div><dt>{text.currentAssigneeLabel}</dt><dd>{approvalCurrentAssigneeText(instance)}</dd></div><div><dt>{text.assigneeTypeLabel}</dt><dd>{instance.currentAssigneeType || '-'}</dd></div><div><dt>{text.statusTransitionLabel}</dt><dd>{approvalStatusTransitionText(instance, lang)}</dd></div><div><dt>{text.approvalResult}</dt><dd>{instance.result}</dd></div>
                         <div><dt>{text.workflowSkill}</dt><dd>{[instance.workflowSkillID, instance.workflowVersion ? 'v' + instance.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
+                        <div><dt>{text.currentNodeStatus}</dt><dd>{instance.currentNodeStatus || '-'}</dd></div><div><dt>{text.approvalNodeTasks}</dt><dd>{approvalNodeTaskCountText(instance, lang)}</dd></div>
                     </dl>
                     {instance.detailURL && <div className="apps-approval-detail__links"><button className="apps-link-button" type="button" onClick={() => instance.detailURL && BrowserOpenURL(instance.detailURL)}>{text.viewFullWorkflow}</button></div>}
                     {resultContract && <ResultContractPreview contract={resultContract} lang={lang} />}
@@ -9879,7 +9996,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)} · {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} · {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
                                 <small>{text.approvalInstanceId}: {item.id} · {item.updatedAt}</small>
                                 <div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div>
                             </div>
@@ -9896,7 +10013,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <>
                             <div className="apps-approval-detail__head">
                                 <strong>{selected.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}</span>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}{selected.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${selected.currentNodeStatus}` : ''}</span>
                             </div>
                             <dl className="apps-approval-facts">
                                 <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(selected)}</dd></div>
@@ -9911,6 +10028,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                 <div><dt>{text.remoteApprovalLabel}</dt><dd>{selected.approvalID || '-'}</dd></div>
                                 <div><dt>{text.businessStatusLabel}</dt><dd>{selected.businessStatus || '-'}</dd></div>
                                 <div><dt>{text.resultStatusLabel}</dt><dd>{selected.resultStatus || approvalStatusLabel(selected.status, lang)}</dd></div>
+                                <div><dt>{text.currentNodeStatus}</dt><dd>{selected.currentNodeStatus || '-'}</dd></div>
+                                <div><dt>{text.approvalNodeTasks}</dt><dd>{approvalNodeTaskCountText(selected, lang)}</dd></div>
                             </dl>
                             {selected.detailURL && (
                                 <div className="apps-approval-detail__links">
@@ -10974,14 +11093,14 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
     skillRunStatus: SkillRunStatusView | null;
     text: typeof labels.zh;
 }) => {
-    // Auto-expand when there are real blocking issues (missing deps, workflow contract issues, business errors).
-    // Do NOT auto-expand for: governance-only review issues, or normal run lifecycle (running/done/error/cancelled).
-    // Run lifecycle states show progress in the result-panel above, not in the detail section.
+    // Auto-expand when there are real blocking issues or durable install evidence.
+    // Installed MaClaw Apps need their restored governance evidence visible before
+    // the next run so users can verify what Hub/DataSrv approved.
     const hasRealBlockingIssue = runtimeDependencyBlocked || !!runtimeBusinessError || (isApproval && runtimeWorkflowContractState === 'blocked');
-    const shouldAutoExpand = hasRealBlockingIssue;
+    const shouldAutoExpand = hasRealBlockingIssue || !!app.installEvidence;
     const [detailOpen, setDetailOpen] = useState(shouldAutoExpand);
 
-    // Sync auto-expand when blocking state changes
+    // Sync auto-expand when blocking/evidence state changes.
     useEffect(() => {
         if (shouldAutoExpand) setDetailOpen(true);
     }, [shouldAutoExpand]);
@@ -11403,16 +11522,17 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, marketInstallPrefill, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
-    apps: AppEntry[];
-    hiddenApps: AppEntry[];
-    lang?: string;
-    tab: StudioTab;
-    setTab: (tab: StudioTab) => void;
-    onClose: () => void;
-    onTogglePin: (appId: string) => void;
-    onUpdateApp: (appId: string, patch: Partial<AppEntry>) => void;
-    onDuplicateApp: (appId: string) => void;
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, marketInstallResultVisible, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, marketInstallPrefill, onMarketInstallResultVisibleChange, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
+	apps: AppEntry[];
+	hiddenApps: AppEntry[];
+	lang?: string;
+	tab: StudioTab;
+	setTab: (tab: StudioTab) => void;
+	onClose: () => void;
+	marketInstallResultVisible?: boolean;
+	onTogglePin: (appId: string) => void;
+	onUpdateApp: (appId: string, patch: Partial<AppEntry>) => void;
+	onDuplicateApp: (appId: string) => void;
     onMoveApp: (appId: string, direction: AppMoveTarget) => void;
     onToggleDisableApp: (appId: string) => void;
     onRemoveApp: (appId: string) => void;
@@ -11421,21 +11541,22 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     onPendingEditConsumed: () => void;
     datasrvDiscovery: DataSrvDiscovery;
     skillDiscovery: SkillAppDiscovery;
-    onAddDiscoveredApp: (app: AppEntry) => void;
-    onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
-    onInstallMarketApp: (app: AppEntry) => void;
-    marketInstallPrefill: { key: number; manifestText: string };
-    onEditApp: (appId: string) => void;
-    onInstallDependencies: (appId: string) => void;
-    onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
+	onAddDiscoveredApp: (app: AppEntry) => void;
+	onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
+	onInstallMarketApp: (app: AppEntry) => void;
+	marketInstallPrefill?: { key: number; manifestText: string };
+	onMarketInstallResultVisibleChange?: (visible: boolean) => void;
+	onEditApp: (appId: string) => void;
+	onInstallDependencies: (appId: string) => void;
+	onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
 }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
-    const studioTabs: Array<{ id: StudioTab; label: string }> = [
-        { id: 'create', label: text.createTab },
-        { id: 'manage', label: text.manageTab },
-        { id: 'market', label: text.marketTab },
-        { id: 'publish', label: text.publishTab },
-    ];
+	const text = isZh(lang) ? labels.zh : labels.en;
+	const studioTabs: Array<{ id: StudioTab; label: string }> = [
+		{ id: 'create', label: text.createTab },
+		{ id: 'manage', label: text.manageTab },
+		{ id: 'market', label: text.marketOps },
+		{ id: 'publish', label: text.publishTab },
+	];
     const activeStudioTabIndex = Math.max(0, studioTabs.findIndex((item) => item.id === tab));
     const activateStudioTab = (nextTab: StudioTab, shouldFocus = false) => {
         setTab(nextTab);
@@ -11485,10 +11606,10 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                     <h2 className="apps-detail__title">{text.appStudio}</h2>
                     <p className="apps-detail__subtitle">{text.studioSubtitle}</p>
                 </div>
-                <div className="apps-detail__actions">
-                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} />
-                    <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
-                </div>
+	                <div className="apps-detail__actions">
+	                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} />
+	                    {!marketInstallResultVisible && <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>}
+	                </div>
             </div>
             <div className="apps-detail__body elegant-scrollbar">
                 <div className="apps-preview apps-preview--studio">
@@ -11520,10 +11641,10 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                         id={getStudioPanelId(tab)}
                         aria-labelledby={getStudioTabId(tab)}
                     >
-                        {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
-                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} />}
-                        {tab === 'market' && <MarketPane apps={apps} lang={lang} onInstallApp={onInstallMarketApp} prefill={marketInstallPrefill} />}
-                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} />}
+	                        {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
+	                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} />}
+	                        {tab === 'market' && <MarketPane apps={apps} lang={lang} onInstallApp={onInstallMarketApp} prefill={marketInstallPrefill} onInstallResultVisibleChange={onMarketInstallResultVisibleChange} />}
+	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} />}
                     </div>
                 </div>
             </div>
@@ -14011,7 +14132,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div>
                             <div className="apps-manage-row__name">{app.name}</div>
-                            <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
+	                            <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']} · {isZh(lang) ? '已加入面板' : 'In panel'}</div>
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>Top</button>
@@ -14338,7 +14459,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     );
 };
 
-const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void; prefill?: { key: number; manifestText: string } }) => {
+const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleChange }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void; prefill?: { key: number; manifestText: string }; onInstallResultVisibleChange?: (visible: boolean) => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestText, setManifestText] = useState('');
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
@@ -14358,10 +14479,14 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
     const [backendInstallPlanError, setBackendInstallPlanError] = useState('');
     const [installRecords, setInstallRecords] = useState<BackendAppInstallRecord[]>([]);
     const [installRecordsState, setInstallRecordsState] = useState<'loading' | 'ready' | 'error'>('loading');
-    const [installRecordsError, setInstallRecordsError] = useState('');
-    const [installRecordChecks, setInstallRecordChecks] = useState<Record<string, { state: 'loading' | 'repairing' | 'ready' | 'error'; plan?: BackendAppInstallPlan | null; error?: string }>>({});
-    const [installRecordDataSrvAudits, setInstallRecordDataSrvAudits] = useState<Record<string, { state: 'loading' | 'ready' | 'error'; message?: string; error?: string; resultState?: 'ready' | 'partial' | 'failed' | 'skipped' }>>({});
-    const refreshInstallRecords = useCallback(async () => {
+	    const [installRecordsError, setInstallRecordsError] = useState('');
+	    const [installRecordChecks, setInstallRecordChecks] = useState<Record<string, { state: 'loading' | 'repairing' | 'ready' | 'error'; plan?: BackendAppInstallPlan | null; error?: string }>>({});
+	    const [installRecordDataSrvAudits, setInstallRecordDataSrvAudits] = useState<Record<string, { state: 'loading' | 'ready' | 'error'; message?: string; error?: string; resultState?: 'ready' | 'partial' | 'failed' | 'skipped' }>>({});
+	    useEffect(() => {
+	        onInstallResultVisibleChange?.(installState !== 'idle');
+	        return () => onInstallResultVisibleChange?.(false);
+	    }, [installState, onInstallResultVisibleChange]);
+	    const refreshInstallRecords = useCallback(async () => {
         setInstallRecordsState('loading');
         setInstallRecordsError('');
         try {
@@ -15014,11 +15139,21 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill }: { apps: AppEntry[]; l
                             </div>
                         </div>
                     )}
-                    {installState !== 'idle' && (
-                        <div className={`apps-result-panel${installState === 'installed' && (installResultItems.length > 0 || installResultDependencyPlan) ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
-                            <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
-                            {installState === 'installed' && installResultItems.length > 0 && (
-                                <div className="apps-install-result" role="list" aria-label={text.installDetails}>
+	                    {installState !== 'idle' && (
+	                        <div className={`apps-result-panel${installState === 'installed' && (installResultItems.length > 0 || installResultDependencyPlan) ? ' apps-result-panel--stacked' : ''}`} data-state={installState === 'installed' ? 'done' : 'error'} role={installState === 'installed' ? 'status' : 'alert'} aria-live={installState === 'installed' ? 'polite' : undefined}>
+	                            <span>{installState === 'installed' ? installMessage : `${text.installError}: ${installMessage}`}</span>
+	                            <button className="apps-secondary-button" type="button" onClick={() => {
+	                                setInstallState('idle');
+	                                setInstallMessage('');
+	                                setInstallResultItems([]);
+	                                setInstallResultDependencyPlan(null);
+	                                setInstallResultAppIDs([]);
+	                                setManifestText('');
+	                                setSelectedInstallKeys(null);
+	                                setConfirmHighRiskInstall(false);
+	                            }}>{text.close}</button>
+	                            {installState === 'installed' && installResultItems.length > 0 && (
+	                                <div className="apps-install-result" role="list" aria-label={text.installDetails}>
                                     {installResultItems.map((item) => (
                                         <div className="apps-install-result__row" data-action={item.action} role="listitem" key={item.key}>
                                             <span className="apps-app-icon" style={{ '--apps-icon-color': item.accent } as CSSProperties}><AppIcon icon={item.icon} customIconDataUrl={item.customIconDataUrl} /></span>

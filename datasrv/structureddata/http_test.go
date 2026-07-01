@@ -538,7 +538,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"workflow_node_id", "workflow_node_ids", "workflow_version", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"workflow_node_id", "workflow_node_ids", "current_node_status", "node_tasks", "workflow_version", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/approvals/{approvalId}/review", name) {
 			t.Fatalf("openapi approval review body missing %s: %#v", name, paths["/api/v1/data/approvals/{approvalId}/review"])
 		}
@@ -554,7 +554,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 			t.Fatalf("openapi apply operation plan body missing %s: %#v", name, paths["/api/v1/data/operation-plans/{planId}/apply"])
 		}
 	}
-	for _, name := range []string{"app_id", "blueprint_id", "object_role", "kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_node_ids", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
+	for _, name := range []string{"app_id", "blueprint_id", "object_role", "kind", "priority", "summary", "request", "assigned_to", "due_at", "workflow_skill_id", "workflow_version", "workflow_instance_id", "workflow_node_id", "workflow_node_ids", "current_node_status", "node_tasks", "workflow_decision_id", "detail_url", "business_status", "result_status", "result_payload", "outputs", "artifacts"} {
 		if !openAPIPostRequestBodyHasProperty(paths, "/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals", name) {
 			t.Fatalf("openapi create approval body missing %s: %#v", name, paths["/api/v1/data/datasets/{datasetId}/records/{recordId}/approvals"])
 		}
@@ -6844,9 +6844,15 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 		return createApprovalWithRequest(req)
 	}
 
-	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", ApprovalWorkflowID: "expense_approval", TriggerEvent: "expense.submitted", SubmittedBy: "employee_1", CurrentAssignee: "user_1", CurrentAssigneeType: "user", FromStatus: "submitted", ToStatus: "pending_manager", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "manager_review", WorkflowNodeIDs: []string{"manager_review", "finance_review"}, AssignedTo: "user_1"})
+	expenseApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.expense", BlueprintID: "mis.expense.approval", ObjectRole: "expense_report", ApprovalWorkflowID: "expense_approval", TriggerEvent: "expense.submitted", SubmittedBy: "employee_1", CurrentAssignee: "user_1", CurrentAssigneeType: "user", FromStatus: "submitted", ToStatus: "pending_manager", Kind: "approval", Summary: "Expense approval", WorkflowSkillID: "skill.expense.approval", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "manager_review", WorkflowNodeIDs: []string{"manager_review", "finance_review"}, CurrentNodeStatus: "waiting", NodeTasks: []map[string]any{{"id": "task-manager-review", "title": "Manager review", "assignee": "user_1"}}, AssignedTo: "user_1"})
 	if expenseApproval.AppID != "mis.expense" || expenseApproval.BlueprintID != "mis.expense.approval" || expenseApproval.ObjectRole != "expense_report" || expenseApproval.ApprovalWorkflowID != "expense_approval" || expenseApproval.TriggerEvent != "expense.submitted" || expenseApproval.SubmittedBy != "employee_1" || expenseApproval.CurrentAssignee != "user_1" || expenseApproval.CurrentAssigneeType != "user" || expenseApproval.FromStatus != "submitted" || expenseApproval.ToStatus != "pending_manager" || expenseApproval.WorkflowInstanceID != "wf-exp-100" || expenseApproval.WorkflowNodeID != "manager_review" || len(expenseApproval.WorkflowNodeIDs) != 2 || expenseApproval.WorkflowNodeIDs[0] != "manager_review" || expenseApproval.WorkflowNodeIDs[1] != "finance_review" {
 		t.Fatalf("approval app semantics were not persisted: %#v", expenseApproval)
+	}
+	if expenseApproval.Request["current_node_status"] != "waiting" || expenseApproval.ResultPayload["current_node_status"] != "waiting" {
+		t.Fatalf("create approval should standardize current node status into request/result payload: %#v", expenseApproval)
+	}
+	if tasks, ok := expenseApproval.Request["node_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("create approval should standardize node tasks into request: %#v", expenseApproval.Request)
 	}
 
 	travelCreateResultPayload := map[string]any{
@@ -6868,7 +6874,7 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	}
 
 	progressApproval := createApproval(CreateRecordApprovalInput{AppID: "mis.progress", BlueprintID: "mis.progress.approval", ObjectRole: "progress_case", ApprovalWorkflowID: "progress_approval", TriggerEvent: "progress.submitted", SubmittedBy: "employee_2", CurrentAssignee: "manager_queue", CurrentAssigneeType: "queue", FromStatus: "submitted", ToStatus: "pending_manager", Kind: "approval", Summary: "Progress approval", WorkflowSkillID: "skill.progress.approval", WorkflowInstanceID: "wf-progress-100", WorkflowNodeID: "intake", WorkflowNodeIDs: []string{"intake"}, AssignedTo: "manager_queue"})
-	progressReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+progressApproval.ID+"/progress", UpdateRecordApprovalProgressInput{WorkflowInstanceID: "wf-progress-100", WorkflowNodeID: "finance.director_review", WorkflowNodeIDs: []string{"intake", "finance.director_review"}, WorkflowVersion: "2.1.0", WorkflowDecisionID: "progress-tick-1", DetailURL: "approval://instances/wf-progress-100?node=finance.director_review", BusinessStatus: "finance_reviewing", ResultStatus: "running", CurrentAssignee: "finance_director", CurrentAssigneeType: "role", FromStatus: "pending_manager", ToStatus: "finance_reviewing", Progress: "Director review started", ResultPayload: map[string]any{"progress": "Director review started", "current_node": "finance.director_review"}, Outputs: []RecordApprovalOutput{{Type: "text", Kind: "progress_note", Title: "Progress", Text: "Director review started", Status: "running"}}, Artifacts: []RecordApprovalArtifact{{ID: "progress-log", Name: "progress-log.txt", URI: "artifact://progress/log", MimeType: "text/plain", Status: "running", Presentation: "inline"}}})
+	progressReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+progressApproval.ID+"/progress", UpdateRecordApprovalProgressInput{WorkflowInstanceID: "wf-progress-100", WorkflowNodeID: "finance.director_review", WorkflowNodeIDs: []string{"intake", "finance.director_review"}, CurrentNodeStatus: "running", NodeTasks: []map[string]any{{"id": "task-director-review", "title": "Director review", "queue": "finance"}}, WorkflowVersion: "2.1.0", WorkflowDecisionID: "progress-tick-1", DetailURL: "approval://instances/wf-progress-100?node=finance.director_review", BusinessStatus: "finance_reviewing", ResultStatus: "running", CurrentAssignee: "finance_director", CurrentAssigneeType: "role", FromStatus: "pending_manager", ToStatus: "finance_reviewing", Progress: "Director review started", ResultPayload: map[string]any{"progress": "Director review started", "current_node": "finance.director_review"}, Outputs: []RecordApprovalOutput{{Type: "text", Kind: "progress_note", Title: "Progress", Text: "Director review started", Status: "running"}}, Artifacts: []RecordApprovalArtifact{{ID: "progress-log", Name: "progress-log.txt", URI: "artifact://progress/log", MimeType: "text/plain", Status: "running", Presentation: "inline"}}})
 	auth(progressReq)
 	progressW := httptest.NewRecorder()
 	server.Handler().ServeHTTP(progressW, progressReq)
@@ -6885,15 +6891,21 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	if progressedApproval.WorkflowNodeID != "finance.director_review" || len(progressedApproval.WorkflowNodeIDs) != 2 || progressedApproval.WorkflowNodeIDs[1] != "finance.director_review" || progressedApproval.WorkflowVersion != "2.1.0" || progressedApproval.WorkflowDecisionID != "progress-tick-1" || progressedApproval.DetailURL != "approval://instances/wf-progress-100?node=finance.director_review" || progressedApproval.BusinessStatus != "finance_reviewing" || progressedApproval.ResultStatus != "running" || progressedApproval.CurrentAssignee != "finance_director" || progressedApproval.CurrentAssigneeType != "role" || progressedApproval.FromStatus != "pending_manager" || progressedApproval.ToStatus != "finance_reviewing" {
 		t.Fatalf("progress update did not persist workflow state: %#v", progressedApproval)
 	}
-	if progressedApproval.ResultPayload["progress"] != "Director review started" || len(progressedApproval.Outputs) != 1 || progressedApproval.Outputs[0].Status != "running" || len(progressedApproval.Artifacts) != 1 || progressedApproval.Artifacts[0].Name != "progress-log.txt" {
+	if progressedApproval.ResultPayload["progress"] != "Director review started" || progressedApproval.ResultPayload["current_node_status"] != "running" || len(progressedApproval.Outputs) != 1 || progressedApproval.Outputs[0].Status != "running" || len(progressedApproval.Artifacts) != 1 || progressedApproval.Artifacts[0].Name != "progress-log.txt" {
 		t.Fatalf("progress update did not preserve running result package: %#v", progressedApproval)
+	}
+	if tasks, ok := progressedApproval.ResultPayload["node_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("progress update did not preserve node tasks: %#v", progressedApproval.ResultPayload)
 	}
 	progressRecord, err := svc.GetRecord(context.Background(), p, ds.ID, "exp-100")
 	if err != nil {
 		t.Fatalf("GetRecord after approval progress: %v", err)
 	}
-	if progressRecord.Data["approval_id"] != progressApproval.ID || progressRecord.Data["approval_status"] != recordApprovalStatusPending || progressRecord.Data["approval_lane"] != "pending_my_approval" || progressRecord.Data["approval_current_node"] != "finance.director_review" || progressRecord.Data["business_status"] != "finance_reviewing" || progressRecord.Data["result_status"] != "running" || progressRecord.Data["approval_current_assignee"] != "finance_director" {
+	if progressRecord.Data["approval_id"] != progressApproval.ID || progressRecord.Data["approval_status"] != recordApprovalStatusPending || progressRecord.Data["approval_lane"] != "pending_my_approval" || progressRecord.Data["approval_current_node"] != "finance.director_review" || progressRecord.Data["approval_current_node_status"] != "running" || progressRecord.Data["business_status"] != "finance_reviewing" || progressRecord.Data["result_status"] != "running" || progressRecord.Data["approval_current_assignee"] != "finance_director" {
 		t.Fatalf("progress update did not sync business record state: %#v", progressRecord.Data)
+	}
+	if tasks, ok := progressRecord.Data["approval_node_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("progress update did not sync node tasks: %#v", progressRecord.Data)
 	}
 	if fmt.Sprint(progressRecord.Data["approval_workflow_node_ids"]) != "[intake finance.director_review]" || fmt.Sprint(progressRecord.Data["approval_current_nodes"]) != "[intake finance.director_review]" {
 		t.Fatalf("progress update did not sync workflow path: %#v", progressRecord.Data)
@@ -7106,7 +7118,7 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	approvalArtifacts := []RecordApprovalArtifact{
 		{ID: "artifact-exp-100", Name: "expense-100-reimbursement.pdf", URI: "maclaw://artifacts/expense-100-reimbursement.pdf", MimeType: "application/pdf", SizeBytes: 4096, Status: "ready", Presentation: "download"},
 	}
-	reviewReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+expenseApproval.ID+"/review", ReviewRecordApprovalInput{Decision: "approve", BusinessStatus: "approved", ResultStatus: "completed", CurrentAssignee: "finance_queue", CurrentAssigneeType: "queue", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "finance_review", WorkflowNodeIDs: []string{"finance_review", "legal_review"}, ResultPayload: approvalResultPayload, Outputs: approvalOutputs, Artifacts: approvalArtifacts})
+	reviewReq := jsonRequest(http.MethodPost, "/api/v1/data/approvals/"+expenseApproval.ID+"/review", ReviewRecordApprovalInput{Decision: "approve", BusinessStatus: "approved", ResultStatus: "completed", CurrentAssignee: "finance_queue", CurrentAssigneeType: "queue", WorkflowInstanceID: "wf-exp-100", WorkflowNodeID: "finance_review", WorkflowNodeIDs: []string{"finance_review", "legal_review"}, CurrentNodeStatus: "completed", NodeTasks: []map[string]any{{"id": "task-finance-review", "title": "Finance review", "status": "done"}}, ResultPayload: approvalResultPayload, Outputs: approvalOutputs, Artifacts: approvalArtifacts})
 	auth(reviewReq)
 	reviewW := httptest.NewRecorder()
 	server.Handler().ServeHTTP(reviewW, reviewReq)
@@ -7117,8 +7129,11 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	if err := json.NewDecoder(reviewW.Body).Decode(&reviewedApproval); err != nil {
 		t.Fatalf("decode reviewed approval: %v", err)
 	}
-	if reviewedApproval.ResultPayload["summary"] != approvalResultPayload["summary"] || len(reviewedApproval.Outputs) != 2 || reviewedApproval.Outputs[1].ArtifactID != "artifact-exp-100" || len(reviewedApproval.Artifacts) != 1 || reviewedApproval.Artifacts[0].Name != "expense-100-reimbursement.pdf" {
+	if reviewedApproval.ResultPayload["summary"] != approvalResultPayload["summary"] || reviewedApproval.ResultPayload["current_node_status"] != "completed" || len(reviewedApproval.Outputs) != 2 || reviewedApproval.Outputs[1].ArtifactID != "artifact-exp-100" || len(reviewedApproval.Artifacts) != 1 || reviewedApproval.Artifacts[0].Name != "expense-100-reimbursement.pdf" {
 		t.Fatalf("review response should preserve approval result package: %#v", reviewedApproval)
+	}
+	if tasks, ok := reviewedApproval.ResultPayload["node_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("review response should preserve node tasks: %#v", reviewedApproval.ResultPayload)
 	}
 
 	laneReq = httptest.NewRequest(http.MethodGet, "/api/v1/data/approvals?lane=handled&app_id=mis.expense", nil)
@@ -7142,8 +7157,11 @@ func TestHTTPServerRecordApprovalsCarryMaClawAppSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRecord after approval review: %v", err)
 	}
-	if fmt.Sprint(updatedRecord.Data["approval_workflow_node_ids"]) != "[finance_review legal_review]" || fmt.Sprint(updatedRecord.Data["approval_current_nodes"]) != "[finance_review legal_review]" {
+	if fmt.Sprint(updatedRecord.Data["approval_workflow_node_ids"]) != "[finance_review legal_review]" || fmt.Sprint(updatedRecord.Data["approval_current_nodes"]) != "[finance_review legal_review]" || updatedRecord.Data["approval_current_node_status"] != "completed" {
 		t.Fatalf("business record should carry parallel approval nodes: %#v", updatedRecord.Data)
+	}
+	if tasks, ok := updatedRecord.Data["approval_node_tasks"].([]any); !ok || len(tasks) != 1 {
+		t.Fatalf("business record should carry approval node tasks: %#v", updatedRecord.Data)
 	}
 	if payload, ok := updatedRecord.Data["approval_result_payload"].(map[string]any); !ok || payload["summary"] != approvalResultPayload["summary"] {
 		t.Fatalf("business record should carry approval result payload: %#v", updatedRecord.Data)

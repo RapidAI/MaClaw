@@ -3252,6 +3252,11 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		command = mapPython3ToWindows(command)
 	}
 
+	// Map bare `pip`/`pip3` commands to `python -m pip` when pip.exe is not
+	// available on PATH. This handles the common case where maclaw's bundled
+	// Python has pip as a module but no standalone pip.exe.
+	command = mapBarePipToModule(command)
+
 	// BUG-001: Normalize Windows 8.3 short paths to long paths
 	if runtime.GOOS == "windows" {
 		command = normalizePathsInCommandGUI(command)
@@ -3874,6 +3879,32 @@ var python3NeedsMapping = sync.OnceValue(func() bool {
 	_, err2 := exec.LookPath("python")
 	return err2 == nil // map only if python exists
 })
+
+// mapBarePipToModule replaces bare `pip`/`pip3` command invocations with
+// `python -m pip` when pip.exe is not available on PATH. This is critical for
+// maclaw's bundled Python environment where pip exists only as a module
+// (no standalone pip.exe in Scripts/), and for SkillHub-installed skills that
+// use bare `pip install ...` commands.
+//
+// Only replaces when pip/pip3 appears at the start of a command line or after
+// a shell operator (&&, ||, ;). Does NOT replace `pip` inside paths or arguments.
+func mapBarePipToModule(command string) string {
+	return cskill.MapBarePipToModule(command)
+}
+
+// replacePipInLine is kept for backward compatibility with tests.
+func replacePipInLine(line string) string {
+	// Delegate to the shared implementation — this function only exists
+	// to avoid breaking any test that references it directly.
+	lines := strings.Split(cskill.MapBarePipToModule(line), "\n")
+	if len(lines) > 0 {
+		return lines[0]
+	}
+	return line
+}
+
+// pipNeedsModuleMapping delegates to the shared corelib implementation.
+var pipNeedsModuleMapping = cskill.PipNeedsModuleMapping
 
 // migrateLegacyCceasyPaths replaces references to the old .cceasy directory
 // with the current .maclaw directory in skill step commands. This fixes

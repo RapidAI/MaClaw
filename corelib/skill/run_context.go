@@ -1128,6 +1128,14 @@ func stepCanReceiveCommandEnv(step corelib.NLSkillStep) bool {
 
 func BuildCommandEnv(base []string, params map[string]interface{}) []string {
 	env := append([]string(nil), base...)
+
+	// Ensure the bundled Python/pip is reachable in PATH for skill bash steps.
+	// This is the single integration point between BuildCommandEnv and the
+	// bundled Python environment. Without this, skills using bare `pip` or
+	// `python` commands in bash steps would fail when the user has no system
+	// Python in PATH.
+	env = ensureBundledPythonInPATH(env)
+
 	for _, envName := range stringListParam(firstNonNilStepParam(params, "required_env", "requires_env", "required_environment")) {
 		if value := os.Getenv(envName); value != "" {
 			env = upsertCommandEnv(env, envName, value)

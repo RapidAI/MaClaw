@@ -17,7 +17,7 @@ import (
 
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 	legacydoc "github.com/shakinm/xlsReader/doc"
-	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -215,23 +215,25 @@ func extractTextViaPython(filePath, pythonTemplate string) (string, error) {
 	safeTemplate := strings.ReplaceAll(pythonTemplate, "r'%s'", "sys.argv[1]")
 	script := "import sys; " + safeTemplate
 
-	// Build list of Python executables to try:
-	// 1. maclaw's bundled uv venv Python ({MaclawBaseDir}/python/venv/Scripts/python.exe)
-	// 2. maclaw's bundled uv install Python ({MaclawBaseDir}/python/install/python.exe)
-	// 3. System python / python3
-	pyCmds := []string{"python", "python3"}
-	maclawBase := corelib.MaclawBaseDir()
-	// uv venv has installed packages (pymupdf etc.) — prefer it
-	for _, relPath := range []string{
-		filepath.Join("python", "venv", "Scripts", "python.exe"), // Windows uv venv
-		filepath.Join("python", "venv", "bin", "python"),         // Linux/Mac uv venv
-		filepath.Join("python", "install", "python.exe"),         // Windows uv install (bare)
-		filepath.Join("python", "install", "bin", "python"),      // Linux/Mac uv install
-	} {
-		candidate := filepath.Join(maclawBase, relPath)
-		if _, err := os.Stat(candidate); err == nil {
-			pyCmds = append([]string{candidate}, pyCmds...)
-			break // use the first found
+	// Build list of Python executables to try.
+	// Use the unified Python resolution from corelib/skill (checks system PATH
+	// then bundled install Python), plus system fallbacks.
+	var pyCmds []string
+	if primary := cskill.FindPython(); primary != "" {
+		pyCmds = append(pyCmds, primary)
+	}
+	// Always include system names as fallback (FindPython may return absolute path,
+	// but user could have installed Python after app startup without cache refresh).
+	for _, name := range []string{"python", "python3"} {
+		found := false
+		for _, existing := range pyCmds {
+			if existing == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			pyCmds = append(pyCmds, name)
 		}
 	}
 

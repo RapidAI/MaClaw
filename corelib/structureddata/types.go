@@ -1083,6 +1083,8 @@ type RecordApproval struct {
 	WorkflowInstanceID  string                   `json:"workflow_instance_id,omitempty"`
 	WorkflowNodeID      string                   `json:"workflow_node_id,omitempty"`
 	WorkflowNodeIDs     []string                 `json:"workflow_node_ids,omitempty"`
+	CurrentNodeStatus   string                   `json:"current_node_status,omitempty"`
+	NodeTasks           []map[string]any         `json:"node_tasks,omitempty"`
 	WorkflowDecisionID  string                   `json:"workflow_decision_id,omitempty"`
 	DetailURL           string                   `json:"detail_url,omitempty"`
 	BusinessStatus      string                   `json:"business_status,omitempty"`
@@ -1147,6 +1149,8 @@ type CreateRecordApprovalInput struct {
 	WorkflowInstanceID  string                   `json:"workflow_instance_id,omitempty"`
 	WorkflowNodeID      string                   `json:"workflow_node_id,omitempty"`
 	WorkflowNodeIDs     []string                 `json:"workflow_node_ids,omitempty"`
+	CurrentNodeStatus   string                   `json:"current_node_status,omitempty"`
+	NodeTasks           []map[string]any         `json:"node_tasks,omitempty"`
 	WorkflowDecisionID  string                   `json:"workflow_decision_id,omitempty"`
 	DetailURL           string                   `json:"detail_url,omitempty"`
 	BusinessStatus      string                   `json:"business_status,omitempty"`
@@ -1200,6 +1204,8 @@ type ReviewRecordApprovalInput struct {
 	ToStatus            string                   `json:"to_status,omitempty"`
 	WorkflowNodeID      string                   `json:"workflow_node_id,omitempty"`
 	WorkflowNodeIDs     []string                 `json:"workflow_node_ids,omitempty"`
+	CurrentNodeStatus   string                   `json:"current_node_status,omitempty"`
+	NodeTasks           []map[string]any         `json:"node_tasks,omitempty"`
 	WorkflowVersion     string                   `json:"workflow_version,omitempty"`
 	WorkflowDecisionID  string                   `json:"workflow_decision_id,omitempty"`
 	DetailURL           string                   `json:"detail_url,omitempty"`
@@ -1217,6 +1223,8 @@ type UpdateRecordApprovalProgressInput struct {
 	ToStatus            string                   `json:"to_status,omitempty"`
 	WorkflowNodeID      string                   `json:"workflow_node_id,omitempty"`
 	WorkflowNodeIDs     []string                 `json:"workflow_node_ids,omitempty"`
+	CurrentNodeStatus   string                   `json:"current_node_status,omitempty"`
+	NodeTasks           []map[string]any         `json:"node_tasks,omitempty"`
 	WorkflowVersion     string                   `json:"workflow_version,omitempty"`
 	WorkflowDecisionID  string                   `json:"workflow_decision_id,omitempty"`
 	DetailURL           string                   `json:"detail_url,omitempty"`

@@ -8,10 +8,15 @@ triggers:
     - data analysis
     - 数据分析
     - analyze spreadsheet
+requires:
+    python:
+        - pandas
+        - openpyxl
+        - matplotlib
 steps:
     - action: bash
       params:
-        command: pip install pandas openpyxl matplotlib --quiet 2>&1
+        command: python -m pip install pandas openpyxl matplotlib --quiet 2>&1
         timeout: 60000
       continue_on_error: true
 

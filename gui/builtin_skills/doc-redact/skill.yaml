@@ -7,10 +7,13 @@ triggers:
     - anonymize
     - 隐私保护
     - mask pii
+requires:
+    python:
+        - python-docx
 steps:
     - action: bash
       params:
-        command: pip install python-docx --quiet 2>&1
+        command: python -m pip install python-docx --quiet 2>&1
         timeout: 60000
       continue_on_error: true
 

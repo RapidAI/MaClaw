@@ -381,6 +381,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/model_download/trigger", requireGlobalAdmin(TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/service/account", GetLLMServiceAccountHandler(identity, system, securitySvc))
+	mux.HandleFunc("GET /api/mobile/bootstrap", MobileBootstrapHandler(identity))
+	mux.HandleFunc("GET /api/mobile/digital-employees", MobileDigitalEmployeesHandler(identity, system))
 	mux.HandleFunc("GET /api/my-ranking", GetMyRankingHandler(identity, sessionSvc))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))

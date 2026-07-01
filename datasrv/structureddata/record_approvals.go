@@ -63,6 +63,8 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		return &reused, nil
 	}
 	now := s.now().UTC()
+	request := recordApprovalContextWithNodeState(in.Request, in.CurrentNodeStatus, in.NodeTasks)
+	resultPayload := recordApprovalContextWithNodeState(in.ResultPayload, in.CurrentNodeStatus, in.NodeTasks)
 	approval := RecordApproval{
 		ID:                  newID("approval"),
 		TenantID:            p.TenantID,
@@ -82,7 +84,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		Kind:                kind,
 		Priority:            priority,
 		Summary:             strings.TrimSpace(in.Summary),
-		Request:             cloneJSONMap(in.Request),
+		Request:             request,
 		WorkflowSkillID:     strings.TrimSpace(in.WorkflowSkillID),
 		WorkflowVersion:     strings.TrimSpace(in.WorkflowVersion),
 		WorkflowInstanceID:  strings.TrimSpace(in.WorkflowInstanceID),
@@ -92,7 +94,7 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 		DetailURL:           strings.TrimSpace(in.DetailURL),
 		BusinessStatus:      strings.TrimSpace(in.BusinessStatus),
 		ResultStatus:        strings.TrimSpace(in.ResultStatus),
-		ResultPayload:       cloneJSONMap(in.ResultPayload),
+		ResultPayload:       resultPayload,
 		Outputs:             cloneJSONValue(in.Outputs),
 		Artifacts:           cloneJSONValue(in.Artifacts),
 		AssignedTo:          strings.TrimSpace(in.AssignedTo),
@@ -201,6 +203,30 @@ func normalizeRecordApprovalWorkflowNodes(workflowNodeID string, workflowNodeIDs
 	}
 	return primary, nodes
 }
+
+func recordApprovalContextWithNodeState(base map[string]any, currentNodeStatus string, nodeTasks []map[string]any) map[string]any {
+	out := cloneJSONMap(base)
+	currentNodeStatus = strings.TrimSpace(currentNodeStatus)
+	if currentNodeStatus != "" {
+		if out == nil {
+			out = map[string]any{}
+		}
+		out["current_node_status"] = currentNodeStatus
+		out["currentNodeStatus"] = currentNodeStatus
+	}
+	if nodeTasks != nil {
+		tasks := cloneJSONValue(nodeTasks)
+		if len(tasks) > 0 {
+			if out == nil {
+				out = map[string]any{}
+			}
+			out["node_tasks"] = tasks
+			out["nodeTasks"] = cloneJSONValue(tasks)
+		}
+	}
+	return out
+}
+
 func recordApprovalMetadata(approval RecordApproval) map[string]any {
 	return map[string]any{
 		"approval_id":           approval.ID,
@@ -289,7 +315,8 @@ func (s *Service) UpdateRecordApprovalProgress(ctx context.Context, p Principal,
 		toStatus = strings.TrimSpace(current.ToStatus)
 	}
 	workflowNodeID, workflowNodeIDs := normalizeRecordApprovalWorkflowNodes(in.WorkflowNodeID, in.WorkflowNodeIDs)
-	out, err := s.store.UpdateRecordApprovalProgress(ctx, p.TenantID, approvalID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	resultPayload := recordApprovalContextWithNodeState(in.ResultPayload, in.CurrentNodeStatus, in.NodeTasks)
+	out, err := s.store.UpdateRecordApprovalProgress(ctx, p.TenantID, approvalID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, resultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +362,8 @@ func (s *Service) ReviewRecordApproval(ctx context.Context, p Principal, approva
 		toStatus = status
 	}
 	workflowNodeID, workflowNodeIDs := normalizeRecordApprovalWorkflowNodes(in.WorkflowNodeID, in.WorkflowNodeIDs)
-	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, in.ResultPayload, in.Outputs, in.Artifacts, s.now().UTC())
+	resultPayload := recordApprovalContextWithNodeState(in.ResultPayload, in.CurrentNodeStatus, in.NodeTasks)
+	out, err := s.store.UpdateRecordApprovalStatus(ctx, p.TenantID, approvalID, status, decision, strings.TrimSpace(in.Reason), p.UserID, in.WorkflowInstanceID, workflowNodeID, workflowNodeIDs, in.WorkflowVersion, in.WorkflowDecisionID, in.DetailURL, in.BusinessStatus, in.ResultStatus, in.CurrentAssignee, in.CurrentAssigneeType, fromStatus, toStatus, resultPayload, in.Outputs, in.Artifacts, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +462,10 @@ func (s *Service) syncBusinessRecordFromApproval(ctx context.Context, p Principa
 	setString("approval_workflow_version", approval.WorkflowVersion)
 	setString("approval_workflow_node_id", approval.WorkflowNodeID)
 	setString("approval_current_node", approval.WorkflowNodeID)
+	setString("approval_current_node_status", recordApprovalNodeStatus(approval))
+	if tasks := recordApprovalNodeTasks(approval); len(tasks) > 0 {
+		setJSONValue("approval_node_tasks", tasks)
+	}
 	if len(approval.WorkflowNodeIDs) > 0 {
 		nextData["approval_workflow_node_ids"] = append([]string(nil), approval.WorkflowNodeIDs...)
 		nextData["approval_current_nodes"] = append([]string(nil), approval.WorkflowNodeIDs...)
@@ -496,6 +528,51 @@ func approvalBusinessRecordStatus(approval RecordApproval) string {
 		return strings.TrimSpace(approval.BusinessStatus)
 	}
 	return strings.TrimSpace(approval.Status)
+}
+
+func recordApprovalNodeStatus(approval RecordApproval) string {
+	for _, source := range []map[string]any{approval.ResultPayload, approval.Request} {
+		for _, key := range []string{"current_node_status", "currentNodeStatus", "node_status", "nodeStatus", "workflow_node_status", "workflowNodeStatus"} {
+			if value, ok := source[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func recordApprovalNodeTasks(approval RecordApproval) []map[string]any {
+	for _, source := range []map[string]any{approval.ResultPayload, approval.Request} {
+		for _, key := range []string{"node_tasks", "nodeTasks", "current_node_tasks", "currentNodeTasks", "approval_tasks", "approvalTasks", "tasks"} {
+			raw, ok := source[key]
+			if !ok {
+				continue
+			}
+			if tasks := normalizeRecordApprovalNodeTasks(raw); len(tasks) > 0 {
+				return tasks
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeRecordApprovalNodeTasks(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return cloneJSONValue(items)
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if task, ok := item.(map[string]any); ok {
+				out = append(out, cloneJSONMap(task))
+			}
+		}
+		return out
+	case map[string]any:
+		return []map[string]any{cloneJSONMap(items)}
+	default:
+		return nil
+	}
 }
 
 func recordApprovalResultSummary(approval RecordApproval) string {

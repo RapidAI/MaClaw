@@ -6,10 +6,14 @@ triggers:
     - pdf to docx
     - 转换PDF
     - convert pdf
+requires:
+    python:
+        - pymupdf
+        - python-docx
 steps:
     - action: bash
       params:
-        command: pip install pymupdf python-docx --quiet 2>&1
+        command: python -m pip install pymupdf python-docx --quiet 2>&1
         timeout: 60000
       continue_on_error: true
 

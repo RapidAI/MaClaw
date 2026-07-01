@@ -1055,6 +1055,8 @@ func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, di
 	if strings.TrimSpace(cmd) == "" {
 		return "", fmt.Errorf("bash step missing command parameter")
 	}
+	// Map bare pip/pip3 commands to python -m pip when pip.exe is not on PATH.
+	cmd = skill.MapBarePipToModule(cmd)
 	timeout := skill.RunnerStepTimeoutSeconds(step.Params, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 	wd, _ := step.Params["working_dir"].(string)
 	if wd == "" {

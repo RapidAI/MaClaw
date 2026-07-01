@@ -92,9 +92,9 @@
 }
 
 .apps-studio-button {
-    width: 34px;
+    width: 30px;
     min-width: 0;
-    height: 34px;
+    height: 30px;
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -103,18 +103,18 @@
     white-space: nowrap;
     font-size: 0.78rem;
     position: absolute;
-    top: 9px;
+    top: 11px;
     right: 9px;
     z-index: 2;
-    border-color: color-mix(in srgb, var(--theme-primary) 72%, var(--theme-border));
-    color: var(--theme-on-primary, #ffffff);
-    background: var(--theme-primary);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-surface) 72%, transparent);
+    border-color: color-mix(in srgb, var(--theme-primary) 50%, var(--theme-border));
+    color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
+    box-shadow: none;
 }
 
 .apps-studio-button__icon {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     display: inline-grid;
     align-items: center;
     justify-content: center;
@@ -124,8 +124,8 @@
 }
 
 .apps-studio-button__icon > svg {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
 }
 
 .apps-studio-button:hover,
@@ -138,11 +138,11 @@
 
 .apps-studio-button:hover,
 .apps-studio-button:focus-visible {
-    color: var(--theme-on-primary, #ffffff);
-    border-color: color-mix(in srgb, var(--theme-primary) 82%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-primary) 86%, #ffffff);
-    outline: 2px solid color-mix(in srgb, var(--theme-primary) 36%, transparent);
-    outline-offset: 2px;
+    color: var(--theme-primary-strong, var(--theme-primary));
+    border-color: color-mix(in srgb, var(--theme-primary) 60%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 24%, transparent);
+    outline-offset: 1px;
 }
 
 .apps-studio-button:active {
@@ -554,6 +554,37 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+}
+
+.apps-runtime-panel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.apps-runtime-panel[hidden] {
+    display: none;
+}
+
+.apps-runtime-persistent {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.apps-runtime-persistent[hidden] {
+    display: none;
+}
+
+.apps-market-persistent {
+    flex: 1;
+    min-height: 0;
+}
+
+.apps-market-persistent[hidden] {
+    display: none;
 }
 
 .apps-runtime-empty {
@@ -3317,6 +3348,7 @@
 }
 .apps-market-list__items {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
 }
 

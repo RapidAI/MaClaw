@@ -1277,6 +1277,8 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"workflow_instance_id":  firstNonEmptyMISAgentView(stringArg(args, "workflow_instance_id"), stringArg(args, "approval_instance_id")),
 			"workflow_node_id":      stringArg(args, "workflow_node_id"),
 			"workflow_node_ids":     args["workflow_node_ids"],
+			"current_node_status":   firstNonEmptyMISAgentView(stringArg(args, "current_node_status"), stringArg(args, "currentNodeStatus"), stringArg(args, "node_status"), stringArg(args, "nodeStatus")),
+			"node_tasks":            firstNonNilMISDataArg(args, "node_tasks", "nodeTasks", "approval_tasks", "approvalTasks"),
 			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
 			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
 			"business_status":       stringArg(args, "business_status"),
@@ -1375,6 +1377,8 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"to_status":             stringArg(args, "to_status"),
 			"workflow_node_id":      stringArg(args, "workflow_node_id"),
 			"workflow_node_ids":     args["workflow_node_ids"],
+			"current_node_status":   firstNonEmptyMISAgentView(stringArg(args, "current_node_status"), stringArg(args, "currentNodeStatus"), stringArg(args, "node_status"), stringArg(args, "nodeStatus")),
+			"node_tasks":            firstNonNilMISDataArg(args, "node_tasks", "nodeTasks", "approval_tasks", "approvalTasks"),
 			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
 			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
 			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
@@ -1401,6 +1405,8 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			"to_status":             stringArg(args, "to_status"),
 			"workflow_node_id":      stringArg(args, "workflow_node_id"),
 			"workflow_node_ids":     args["workflow_node_ids"],
+			"current_node_status":   firstNonEmptyMISAgentView(stringArg(args, "current_node_status"), stringArg(args, "currentNodeStatus"), stringArg(args, "node_status"), stringArg(args, "nodeStatus")),
+			"node_tasks":            firstNonNilMISDataArg(args, "node_tasks", "nodeTasks", "approval_tasks", "approvalTasks"),
 			"workflow_version":      firstNonEmptyMISAgentView(stringArg(args, "workflow_version"), stringArg(args, "approval_workflow_version"), stringArg(args, "workflowVersion")),
 			"workflow_decision_id":  stringArg(args, "workflow_decision_id"),
 			"detail_url":            firstNonEmptyMISAgentView(stringArg(args, "detail_url"), stringArg(args, "detailUrl")),
@@ -3466,6 +3472,15 @@ func firstNonEmptyMISAgentView(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonNilMISDataArg(args map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := args[key]; ok && value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func canonicalMISDataAppInstallationID(id string) string {

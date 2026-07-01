@@ -1,28 +1,31 @@
-# Mobile Apps
+# MaClaw Mobile
 
-This folder contains all mobile projects for MaClaw.
+MaClaw Mobile is the emergency mobile companion for MaClaw. It focuses on the
+things that make sense when a user is away from a desktop:
 
-## Layout
+- ask an AI assistant and search for current information;
+- create, edit, summarize, and export urgent documents;
+- connect to remote servers with a manual SSH terminal;
+- check account, Hub, service, and credential status.
 
-- `terminal/` — WebView Shell app (existing). Loads Hub web UI in a native WebView container.
-  - `android/` — Android shell project
-  - `ios/` — iOS shell project
-  - `shared/` — Shared bootstrap HTML entry point
-  - `ipa/` — iOS IPA artifacts
-- `chat/` — Flutter Chat app (new). Native IM with text/image/voice messaging and voice calls.
-  - Targets: Android, iOS, HarmonyOS (via flutter_ohos)
-- `dist/` — Consolidated packaging outputs for all mobile apps.
+The previous mobile programs were intentionally removed. The active project is
+`maclaw_mobile/`.
 
-## Chat App
+## Development
 
-The Chat app is a Flutter-based IM client supporting:
-- Text, image, and voice messages (single chat & group chat)
-- Real-time voice calls (1v1 and multi-party via WebRTC)
-- Native push notifications (APNs / FCM / HMS Push)
-- Local message caching with incremental sync
-- Human-to-human and human-to-machine(s) conversations
+This repository snapshot does not vendor Flutter. Install Flutter 3.22+ and run:
 
-## Terminal App
+```bash
+cd mobile/maclaw_mobile
+flutter pub get
+flutter test
+flutter run
+```
 
-The Terminal app is a lightweight WebView shell that connects to Hub Center
-and loads the Hub's web-based admin/management UI.
+If native Android/iOS wrapper files are missing in a fresh checkout, generate
+them from this project directory:
+
+```bash
+flutter create --platforms android,ios .
+```
+

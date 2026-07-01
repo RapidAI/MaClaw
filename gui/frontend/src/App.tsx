@@ -3348,8 +3348,12 @@ ${instruction}`;
                         />
                     )}
 
-                    {navTab === 'apps' && showAppEntryEnabled && (
-                        <AppsPage lang={lang} />
+                    {showAppEntryEnabled && (
+                        <div style={{ display: navTab === 'apps' ? undefined : 'none', height: '100%', minHeight: 0 }} hidden={navTab !== 'apps'}>
+                            <Suspense fallback={null}>
+                                <AppsPage lang={lang} />
+                            </Suspense>
+                        </div>
                     )}
 
                     {navTab === 'workflows' && (

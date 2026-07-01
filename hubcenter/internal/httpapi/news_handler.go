@@ -213,6 +213,15 @@ func AdminDeleteNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecord
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id is required")
 			return
 		}
+		existing, err := repo.GetByID(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "NEWS_DELETE_FAILED", err.Error())
+			return
+		}
+		if existing == nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "article not found")
+			return
+		}
 		if err := repo.Delete(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, "NEWS_DELETE_FAILED", err.Error())
 			return
