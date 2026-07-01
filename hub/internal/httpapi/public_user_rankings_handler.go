@@ -49,7 +49,7 @@ func maskEmail(email string) string {
 }
 
 // GetPublicUserRankingsHandler returns a public (no auth) leaderboard with masked emails.
-// Uses default tenant and monthly period.
+// Uses default tenant and supports daily/weekly/monthly period.
 func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
@@ -77,10 +77,29 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 		page := parseUserRankingPositiveInt(r.URL.Query().Get("page"), 1, 1, 10000)
 		pageSize := 100 // fixed at 100 per page for public leaderboard
 
-		// Always use monthly period (current month)
-		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		end := start.AddDate(0, 1, 0)
-		monthLabel := start.Format("2006-01")
+		// Support daily/weekly/monthly periods (default: monthly)
+		period := normalizePublicRankingPeriod(r.URL.Query().Get("period"))
+		var start, end time.Time
+		var periodLabel string
+		switch period {
+		case "daily":
+			start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+			end = start.AddDate(0, 0, 1)
+			periodLabel = start.Format("2006-01-02")
+		case "weekly":
+			// ISO week: Monday as first day
+			weekday := int(now.Weekday())
+			if weekday == 0 {
+				weekday = 7
+			}
+			start = time.Date(now.Year(), now.Month(), now.Day()-(weekday-1), 0, 0, 0, 0, time.UTC)
+			end = start.AddDate(0, 0, 7)
+			periodLabel = start.Format("2006-01-02")
+		default: // monthly
+			start = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			end = start.AddDate(0, 1, 0)
+			periodLabel = start.Format("2006-01")
+		}
 
 		ctx := store.WithTenant(r.Context(), tenantID)
 		tokenRows, err := sessions.SummarizeUserTokenUsage(ctx, tenantID, start, end)
@@ -146,8 +165,8 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 		}
 
 		resp := publicUserRankingResponse{
-			Period:      "monthly",
-			Month:       monthLabel,
+			Period:      period,
+			Month:       periodLabel,
 			Dimension:   dimension,
 			Page:        page,
 			PageSize:    pageSize,
@@ -156,5 +175,16 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 			GeneratedAt: now,
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func normalizePublicRankingPeriod(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "daily", "day", "today":
+		return "daily"
+	case "weekly", "week":
+		return "weekly"
+	default:
+		return "monthly"
 	}
 }

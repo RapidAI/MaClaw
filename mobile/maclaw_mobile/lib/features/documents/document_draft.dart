@@ -24,6 +24,17 @@ class DocumentDraft {
     required this.updatedAt,
   });
 
+  factory DocumentDraft.fromJson(Map<String, dynamic> json) {
+    return DocumentDraft(
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      template: documentTemplateFromWire(json['template'] as String?),
+      markdown: json['markdown'] as String? ?? '',
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
+
   DocumentDraft copyWith({
     String? title,
     String? markdown,
@@ -39,6 +50,28 @@ class DocumentDraft {
   }
 }
 
+DocumentTemplate documentTemplateFromWire(String? value) {
+  return switch ((value ?? '').trim()) {
+    'notice' => DocumentTemplate.notice,
+    'email' => DocumentTemplate.email,
+    'proposal' => DocumentTemplate.proposal,
+    'meeting_minutes' => DocumentTemplate.meetingMinutes,
+    'statement' => DocumentTemplate.statement,
+    _ => DocumentTemplate.report,
+  };
+}
+
+String documentTemplateWireValue(DocumentTemplate template) {
+  return switch (template) {
+    DocumentTemplate.notice => 'notice',
+    DocumentTemplate.report => 'report',
+    DocumentTemplate.email => 'email',
+    DocumentTemplate.proposal => 'proposal',
+    DocumentTemplate.meetingMinutes => 'meeting_minutes',
+    DocumentTemplate.statement => 'statement',
+  };
+}
+
 String documentTemplateLabel(DocumentTemplate template) {
   return switch (template) {
     DocumentTemplate.notice => '通知',
@@ -50,3 +83,48 @@ String documentTemplateLabel(DocumentTemplate template) {
   };
 }
 
+class DocumentExportJob {
+  final String jobId;
+  final String draftId;
+  final DocumentExportFormat format;
+  final String status;
+  final String downloadUrl;
+  final DateTime createdAt;
+
+  const DocumentExportJob({
+    required this.jobId,
+    required this.draftId,
+    required this.format,
+    required this.status,
+    required this.downloadUrl,
+    required this.createdAt,
+  });
+
+  factory DocumentExportJob.fromJson(Map<String, dynamic> json) {
+    return DocumentExportJob(
+      jobId: json['job_id'] as String? ?? '',
+      draftId: json['draft_id'] as String? ?? '',
+      format: documentExportFormatFromWire(json['format'] as String?),
+      status: json['status'] as String? ?? 'unknown',
+      downloadUrl: json['download_url'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
+}
+
+DocumentExportFormat documentExportFormatFromWire(String? value) {
+  return switch ((value ?? '').trim().toLowerCase()) {
+    'word' => DocumentExportFormat.word,
+    'markdown' => DocumentExportFormat.markdown,
+    _ => DocumentExportFormat.pdf,
+  };
+}
+
+String documentExportFormatWireValue(DocumentExportFormat format) {
+  return switch (format) {
+    DocumentExportFormat.pdf => 'pdf',
+    DocumentExportFormat.word => 'word',
+    DocumentExportFormat.markdown => 'markdown',
+  };
+}

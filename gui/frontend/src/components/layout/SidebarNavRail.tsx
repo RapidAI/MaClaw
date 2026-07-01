@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import { SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
-import { BrowserOpenURL } from '../../../wailsjs/runtime';
+import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -45,9 +45,7 @@ const zhHant = {
     monitor: '\u76e3\u63a7',
     settings: '\u8a2d\u5b9a',
 };
-
 // Guard anchor: left-nav-item--ai lives in SidebarPrimaryNav.
-
 export const SidebarNavRail = ({
     navTab,
     brandInfo,
@@ -70,17 +68,15 @@ export const SidebarNavRail = ({
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
-    // Hub ranking medal
     const showRanking = config?.show_hub_ranking !== false; // default: show
     const hasRegistered = !!(config?.remote_machine_id && config?.remote_machine_token);
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
     const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
-    useEffect(() => {
+
+    const fetchRanking = useCallback(() => {
         if (!showRanking || !hasRegistered) { setMedal(null); return; }
-        let cancelled = false;
         GetHubUserRanking()
             .then((result) => {
-                if (cancelled) return;
                 const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; rank_change?: number; error?: string } | null;
                 if (!r || r.error) return;
                 const tRank = r.token_rank || 0;
@@ -93,9 +89,41 @@ export const SidebarNavRail = ({
                 setMedal({ rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0, rankChange: r.rank_change || 0, trophyThreshold });
             })
             .catch(() => undefined);
-        return () => { cancelled = true; };
     }, [showRanking, hasRegistered, trophyThreshold]);
 
+    useEffect(() => {
+        fetchRanking();
+    }, [fetchRanking]);
+    const fetchRankingRef = useRef(fetchRanking);
+    useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
+    // Refresh ranking when token usage changes — throttled to avoid flooding Hub API.
+    useEffect(() => {
+        if (!showRanking || !hasRegistered) return;
+        let throttleTimer: number | undefined;
+        let pending = false;
+        const onTokenUsageChanged = () => {
+            if (throttleTimer !== undefined) {
+                pending = true;
+                return;
+            }
+            throttleTimer = window.setTimeout(() => {
+                throttleTimer = undefined;
+                fetchRankingRef.current();
+                if (pending) {
+                    pending = false;
+                    throttleTimer = window.setTimeout(() => {
+                        throttleTimer = undefined;
+                        fetchRankingRef.current();
+                    }, 60_000);
+                }
+            }, 5_000);
+        };
+        const unsubscribe = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        return () => {
+            window.clearTimeout(throttleTimer);
+            if (typeof unsubscribe === 'function') unsubscribe();
+        };
+    }, [showRanking, hasRegistered]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
@@ -107,7 +135,6 @@ export const SidebarNavRail = ({
         { id: 'mcp', icon: <MCPIcon />, label: 'MCP', visible: true },
         { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
     ];
-
     return (
         <div style={{
             width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
@@ -121,9 +148,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-
             <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} switchTool={switchTool} workflowLabel={workflowLabel} />
-
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
@@ -136,7 +161,6 @@ export const SidebarNavRail = ({
                     }}
                 />
             )}
-
             <FavoriteEmployeeButtons
                 slots={favoriteEmployees}
                 veAuthorized={veAuthorized}
@@ -149,9 +173,7 @@ export const SidebarNavRail = ({
                 onRename={onRenameFavorite}
                 lang={lang}
             />
-
             <div style={{ flex: 1 }} />
-
             <div
                 className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
                 onClick={() => setSystemMenuOpen(prev => !prev)}
@@ -161,12 +183,10 @@ export const SidebarNavRail = ({
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
             </div>
-
             <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'about' ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }} title={t('about')}>
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'about' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><AboutIcon /></span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
             </div>
-
             {medal && <SidebarLinkedMedal
                 medal={medal}
                 lang={lang}
@@ -176,7 +196,6 @@ export const SidebarNavRail = ({
                     if (hubUrl) BrowserOpenURL(hubUrl + '/user-ranking');
                 }}
             />}
-
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}

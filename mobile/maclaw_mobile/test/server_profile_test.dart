@@ -23,5 +23,27 @@ void main() {
     );
     expect(invalid.isValid, isFalse);
   });
-}
 
+  test('round trips server profile json without secrets', () {
+    const profile = ServerProfile(
+      id: 'srv-1',
+      name: 'prod',
+      host: '10.0.0.8',
+      port: 22,
+      username: 'ops',
+      authMode: 'password',
+      tag: 'ops',
+      note: 'primary',
+    );
+
+    final restored = ServerProfile.fromJson(profile.toJson());
+
+    expect(restored.id, profile.id);
+    expect(restored.name, profile.name);
+    expect(restored.host, profile.host);
+    expect(restored.port, profile.port);
+    expect(restored.username, profile.username);
+    expect(restored.authMode, profile.authMode);
+    expect(profile.toJson().containsKey('password'), isFalse);
+  });
+}

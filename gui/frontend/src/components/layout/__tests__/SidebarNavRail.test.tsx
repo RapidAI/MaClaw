@@ -7,6 +7,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
 }));
 
+vi.mock('../../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: vi.fn(),
+    EventsOn: vi.fn().mockReturnValue(() => {}),
+}));
+
 import { SidebarNavRail } from '../SidebarNavRail';
 
 function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRail>> = {}) {

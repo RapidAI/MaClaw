@@ -1,7 +1,23 @@
 """PDF to Word converter using PyMuPDF + python-docx."""
 import argparse
 import os
+import re
 import sys
+
+
+# XML 1.0 allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+# Remove all characters outside this set to prevent lxml ValueError.
+_ILLEGAL_XML_CHARS_RE = re.compile(
+    r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f'
+    r'\ud800-\udfff\ufdd0-\ufdef\ufffe\uffff]'
+)
+
+
+def _clean_xml_text(text: str) -> str:
+    """Remove characters that are not valid in XML 1.0."""
+    if not text:
+        return text
+    return _ILLEGAL_XML_CHARS_RE.sub('', text)
 
 def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
     """Convert a PDF file to DOCX preserving text and basic layout."""
@@ -52,6 +68,8 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
                     for span in line.get("spans", []):
                         text_parts.append(span["text"])
                     line_text = "".join(text_parts).strip()
+                    # Clean illegal XML characters that may exist in PDF text
+                    line_text = _clean_xml_text(line_text)
                     if line_text:
                         para = doc.add_paragraph()
                         # Detect heading by font size
@@ -64,7 +82,7 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
                             para.style = 'Normal'
                         
                         for span in line.get("spans", []):
-                            run = para.add_run(span["text"])
+                            run = para.add_run(_clean_xml_text(span["text"]))
                             run.font.size = Pt(span.get("size", 11))
                             flags = span.get("flags", 0)
                             if flags & 16:  # bit 4 = bold

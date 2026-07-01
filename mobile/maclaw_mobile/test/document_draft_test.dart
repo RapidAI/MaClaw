@@ -7,6 +7,28 @@ void main() {
     expect(documentTemplateLabel(DocumentTemplate.meetingMinutes), '会议纪要');
   });
 
+  test('parses document draft and export job wire values', () {
+    final draft = DocumentDraft.fromJson({
+      'id': 'd1',
+      'title': '应急通知',
+      'template': 'notice',
+      'markdown': '# 应急通知',
+      'updated_at': '2026-07-01T00:00:00Z',
+    });
+    expect(draft.template, DocumentTemplate.notice);
+    expect(documentTemplateWireValue(draft.template), 'notice');
+
+    final job = DocumentExportJob.fromJson({
+      'job_id': 'j1',
+      'draft_id': 'd1',
+      'format': 'word',
+      'status': 'queued',
+      'created_at': '2026-07-01T00:00:00Z',
+    });
+    expect(job.format, DocumentExportFormat.word);
+    expect(documentExportFormatWireValue(job.format), 'word');
+  });
+
   test('copyWith preserves template and id', () {
     final draft = DocumentDraft(
       id: 'doc-1',
@@ -22,4 +44,3 @@ void main() {
     expect(next.title, '新标题');
   });
 }
-

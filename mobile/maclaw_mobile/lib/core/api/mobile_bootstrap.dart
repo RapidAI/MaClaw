@@ -2,11 +2,13 @@ class MobileBootstrap {
   final MobileUser user;
   final MobileServices services;
   final MobileFeatures features;
+  final MobileLimits limits;
 
   const MobileBootstrap({
     required this.user,
     required this.services,
     required this.features,
+    required this.limits,
   });
 
   factory MobileBootstrap.fromJson(Map<String, dynamic> json) {
@@ -19,6 +21,9 @@ class MobileBootstrap {
       ),
       features: MobileFeatures.fromJson(
         Map<String, dynamic>.from(json['features'] as Map? ?? const {}),
+      ),
+      limits: MobileLimits.fromJson(
+        Map<String, dynamic>.from(json['limits'] as Map? ?? const {}),
       ),
     );
   }
@@ -48,11 +53,17 @@ class MobileServices {
   final String hubStatus;
   final String llmStatusPath;
   final String modelsPath;
+  final String searchPath;
+  final String documentsPath;
+  final String digitalEmployeesPath;
 
   const MobileServices({
     required this.hubStatus,
     required this.llmStatusPath,
     required this.modelsPath,
+    required this.searchPath,
+    required this.documentsPath,
+    required this.digitalEmployeesPath,
   });
 
   factory MobileServices.fromJson(Map<String, dynamic> json) {
@@ -60,6 +71,9 @@ class MobileServices {
       hubStatus: json['hub_status'] as String? ?? 'unknown',
       llmStatusPath: json['llm_status_path'] as String? ?? '',
       modelsPath: json['models_path'] as String? ?? '',
+      searchPath: json['search_path'] as String? ?? '',
+      documentsPath: json['documents_path'] as String? ?? '',
+      digitalEmployeesPath: json['digital_employees_path'] as String? ?? '',
     );
   }
 }
@@ -86,6 +100,23 @@ class MobileFeatures {
       localSsh: json['local_ssh'] as bool? ?? true,
       digitalEmployees: json['digital_employees'] as bool? ?? true,
       pushNotifications: json['push_notifications'] as bool? ?? false,
+    );
+  }
+}
+
+class MobileLimits {
+  final int maxUploadBytes;
+  final int maxExportJobs;
+
+  const MobileLimits({
+    required this.maxUploadBytes,
+    required this.maxExportJobs,
+  });
+
+  factory MobileLimits.fromJson(Map<String, dynamic> json) {
+    return MobileLimits(
+      maxUploadBytes: json['max_upload_bytes'] as int? ?? 0,
+      maxExportJobs: json['max_export_jobs'] as int? ?? 0,
     );
   }
 }

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'features/account/account_screen.dart';
 import 'features/assistant/assistant_screen.dart';
+import 'features/auth/login_screen.dart';
+import 'features/auth/session_controller.dart';
 import 'features/digital_employees/digital_employees_screen.dart';
 import 'features/documents/documents_screen.dart';
 import 'features/servers/servers_screen.dart';
@@ -50,17 +53,41 @@ final _router = GoRouter(
   ],
 );
 
-class MaClawMobileApp extends StatelessWidget {
+class MaClawMobileApp extends ConsumerWidget {
   const MaClawMobileApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(sessionControllerProvider);
     return MaterialApp.router(
       title: 'MaClaw Mobile',
       debugShowCheckedModeBanner: false,
       theme: buildMaClawTheme(Brightness.light),
       darkTheme: buildMaClawTheme(Brightness.dark),
-      routerConfig: _router,
+      routerConfig: session.maybeWhen(
+        data: (state) => state.authenticated ? _router : _loginRouter,
+        orElse: () => _loadingRouter,
+      ),
     );
   }
 }
+
+final _loginRouter = GoRouter(
+  routes: [
+    GoRoute(
+      path: '/',
+      builder: (context, state) => const LoginScreen(),
+    ),
+  ],
+);
+
+final _loadingRouter = GoRouter(
+  routes: [
+    GoRoute(
+      path: '/',
+      builder: (context, state) => const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      ),
+    ),
+  ],
+);

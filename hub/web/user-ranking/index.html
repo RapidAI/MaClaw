@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MaClaw 用户排行榜</title>
-  <meta name="app-version" content="user-ranking-20260629-v2" />
+  <meta name="app-version" content="user-ranking-20260701-v3" />
   <style>
     :root {
       color-scheme: light;
@@ -186,6 +186,11 @@
         </div>
       </div>
       <div class="controls">
+        <div class="tab-group" id="periodTabs">
+          <button data-period="daily"><span data-lang="en">Day</span><span data-lang="zh">日榜</span></button>
+          <button data-period="weekly"><span data-lang="en">Week</span><span data-lang="zh">周榜</span></button>
+          <button data-period="monthly" class="active"><span data-lang="en">Month</span><span data-lang="zh">月榜</span></button>
+        </div>
         <div class="tab-group" id="dimensionTabs">
           <button data-dim="tokens" class="active"><span data-lang="en">Token Usage</span><span data-lang="zh">Token 用量</span></button>
           <button data-dim="duration"><span data-lang="en">Online Time</span><span data-lang="zh">在线时长</span></button>
@@ -244,6 +249,7 @@
     var MEDAL_ICON = medalSvg('#7c8a9a');
 
     var currentDimension = 'tokens';
+    var currentPeriod = 'monthly';
     var currentPage = 1;
     var totalPages = 1;
     var lang = localStorage.getItem('maclaw-ranking-lang') || (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
@@ -260,6 +266,11 @@
     function setDimension(dim) {
       currentDimension = dim; currentPage = 1;
       document.querySelectorAll('#dimensionTabs button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-dim') === dim); });
+      loadData();
+    }
+    function setPeriod(period) {
+      currentPeriod = period; currentPage = 1;
+      document.querySelectorAll('#periodTabs button').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-period') === period); });
       loadData();
     }
 
@@ -343,7 +354,7 @@
 
       var qs = new URLSearchParams(window.location.search || '');
       var tid = qs.get('tenant_id') || '';
-      var url = '/api/public/user-rankings?dimension=' + currentDimension + '&page=' + currentPage;
+      var url = '/api/public/user-rankings?dimension=' + currentDimension + '&period=' + currentPeriod + '&page=' + currentPage;
       if (tid) url += '&tenant_id=' + encodeURIComponent(tid);
 
       fetch(url).then(function(r) {
@@ -368,6 +379,9 @@
     // ─── Events ───
     document.querySelectorAll('#dimensionTabs button').forEach(function(b) {
       b.addEventListener('click', function() { setDimension(b.getAttribute('data-dim')); });
+    });
+    document.querySelectorAll('#periodTabs button').forEach(function(b) {
+      b.addEventListener('click', function() { setPeriod(b.getAttribute('data-period')); });
     });
     document.querySelectorAll('.lang-sw button').forEach(function(b) {
       b.addEventListener('click', function() { setLang(b.getAttribute('data-set-lang')); });

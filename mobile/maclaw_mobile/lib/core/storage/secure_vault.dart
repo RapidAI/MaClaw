@@ -3,6 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 class SecureVault {
   static const _tokenKey = 'maclaw.viewer_token';
   static const _hubUrlKey = 'maclaw.hub_url';
+  static const _sshPasswordPrefix = 'maclaw.ssh.password.';
   final FlutterSecureStorage _storage;
 
   const SecureVault({
@@ -26,5 +27,19 @@ class SecureVault {
       _storage.delete(key: _tokenKey),
     ]);
   }
-}
 
+  Future<void> saveServerPassword({
+    required String serverId,
+    required String password,
+  }) {
+    return _storage.write(key: '$_sshPasswordPrefix$serverId', value: password);
+  }
+
+  Future<String?> readServerPassword(String serverId) {
+    return _storage.read(key: '$_sshPasswordPrefix$serverId');
+  }
+
+  Future<void> deleteServerPassword(String serverId) {
+    return _storage.delete(key: '$_sshPasswordPrefix$serverId');
+  }
+}

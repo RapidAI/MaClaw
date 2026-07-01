@@ -224,14 +224,55 @@ func buildSkillSubmitMultipart(zipPath, email string) ([]byte, string, error) {
 }
 
 func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []string, bodyBytes []byte, contentType string) (string, error) {
+	id, retryable, err := c.submitSkillToHubCenterOnce(ctx, bases, bodyBytes, contentType)
+	if err == nil {
+		return id, nil
+	}
+
+	// Only re-discover when the failure is connectivity/server-related (timeout,
+	// connection refused, 5xx). Do NOT re-discover for:
+	// - Authentication errors (401/403) — credential problem, not a dead server
+	// - Client errors (400, 422) — request is malformed, switching servers won't help
+	if !retryable {
+		return "", err
+	}
+
+	// All candidates failed with connectivity/server errors. The cached HubCenter
+	// URL may be stale (server died after the cache was populated). Invalidate
+	// cache and re-discover live nodes.
+	if c.app != nil && c.app.hubCenterCache != nil {
+		c.app.hubCenterCache.Invalidate()
+	}
+	freshBases, resolveErr := c.app.resolveHubCenterCandidates(ctx, c.client)
+	if resolveErr != nil || len(freshBases) == 0 {
+		return "", err // return original error if re-discovery also fails
+	}
+	// Only retry if we discovered at least one different candidate.
+	if remote.StringSliceEqual(freshBases, bases) {
+		return "", err
+	}
+	freshID, _, freshErr := c.submitSkillToHubCenterOnce(ctx, freshBases, bodyBytes, contentType)
+	if freshErr != nil {
+		return "", freshErr
+	}
+	return freshID, nil
+}
+
+// submitSkillToHubCenterOnce attempts to upload to each base in order.
+// Returns (submissionID, retryableWithDifferentNodes, error).
+// retryable=true means the failure is connectivity/server-related and might
+// succeed with different nodes (timeout, connection refused, 5xx).
+// retryable=false means the failure is client-side or auth-related (4xx).
+func (c *SkillMarketClient) submitSkillToHubCenterOnce(ctx context.Context, bases []string, bodyBytes []byte, contentType string) (string, bool, error) {
 	authHeader := c.skillMarketAuthHeader()
 
 	var lastErr error
 	authFailures := 0
+	connectivityFailures := 0
 	for _, base := range bases {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/skills/submit", bytes.NewReader(bodyBytes))
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		req.Header.Set("Content-Type", contentType)
 		if authHeader != "" {
@@ -239,7 +280,13 @@ func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []
 		}
 		resp, err := c.client.Do(req)
 		if err != nil {
+			// Context cancellation is not a connectivity failure — do not retry.
+			if ctx.Err() != nil {
+				return "", false, fmt.Errorf("submit skill via %s: %w", base, err)
+			}
+			// Connection error (timeout, refused, DNS failure) — retryable with different node
 			lastErr = fmt.Errorf("submit skill via %s: %w", base, err)
+			connectivityFailures++
 			continue
 		}
 		var result struct {
@@ -263,23 +310,28 @@ func (c *SkillMarketClient) submitSkillToHubCenter(ctx context.Context, bases []
 				continue
 			}
 			c.app.rememberHubCenterSelection(base, bases)
-			return result.SubmissionID, nil
+			return result.SubmissionID, false, nil
 		}
 		lastErr = reqErr
 		if isSkillSubmitAuthStatus(resp.StatusCode) {
 			authFailures++
+		} else if resp.StatusCode >= 500 {
+			connectivityFailures++
 		}
 		if !retry {
 			break
 		}
 	}
 	if authFailures > 0 && authFailures == len(bases) {
-		return "", fmt.Errorf("SkillMarket 认证失败或已过期，请重新登录 SkillMarket 后再上传；如果是多机集群，请确认各 HubCenter 使用相同 cluster_secret 并已同步 session revocation")
+		return "", false, fmt.Errorf("SkillMarket 认证失败或已过期，请重新登录 SkillMarket 后再上传；如果是多机集群，请确认各 HubCenter 使用相同 cluster_secret 并已同步 session revocation")
 	}
+	// retryable only when there were connectivity/server failures (the node
+	// may be dead), NOT when the error is a client-side 4xx.
+	retryable := connectivityFailures > 0
 	if lastErr != nil {
-		return "", lastErr
+		return "", retryable, lastErr
 	}
-	return "", fmt.Errorf("no reachable hubcenter")
+	return "", retryable, fmt.Errorf("no reachable hubcenter")
 }
 
 func (c *SkillMarketClient) submitSkillToEnterpriseHub(ctx context.Context, cfg corelib.AppConfig, bodyBytes []byte, contentType string) (string, error) {

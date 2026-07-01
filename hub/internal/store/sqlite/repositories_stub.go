@@ -1920,10 +1920,23 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 			}
 		}
 		if !finishedOK && updatedRaw.Valid {
-			finishedAt, finishedOK = parseTime(updatedRaw.String)
+			// Only trust updated_at as a proxy for "last active" if the session
+			// is in a state that implies it was once active but didn't get a
+			// proper ended_at. For terminal states (ended/error/cancelled) with
+			// no ended_at, updated_at could be from any incidental UPDATE
+			// (preview_text, output_seq, etc.) and doesn't represent actual
+			// usage duration.
+			s := strings.ToLower(strings.TrimSpace(status))
+			if s == "" || s == "running" || s == "active" || s == "starting" {
+				finishedAt, finishedOK = parseTime(updatedRaw.String)
+			}
 		}
 		if !finishedOK {
-			finishedAt = now
+			// No ended_at, not running/host_online, no usable updated_at — this
+			// is a zombie session that was never truly active. Skip it entirely
+			// to avoid inflating duration with (now - started_at) for users who
+			// merely registered but never used the system.
+			continue
 		}
 		if finishedAt.After(start) {
 			addInterval(userID, startedAt, finishedAt)

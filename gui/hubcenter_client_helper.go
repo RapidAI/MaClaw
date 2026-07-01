@@ -129,6 +129,11 @@ func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.C
 			}
 		}
 	}
+	// All candidates failed — invalidate cache so next call re-discovers live nodes.
+	// But do NOT invalidate on context cancellation (user cancelled, not server dead).
+	if a.hubCenterCache != nil && ctx.Err() == nil {
+		a.hubCenterCache.Invalidate()
+	}
 	if lastErr != nil {
 		return "", bases, lastErr
 	}
@@ -176,6 +181,11 @@ func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.
 		}
 		a.rememberHubCenterSelection(base, bases)
 		return base, bases, data, nil
+	}
+	// All candidates failed — invalidate cache so next call re-discovers live nodes.
+	// But do NOT invalidate on context cancellation (user cancelled, not server dead).
+	if a.hubCenterCache != nil && ctx.Err() == nil {
+		a.hubCenterCache.Invalidate()
 	}
 	if lastErr != nil {
 		return "", bases, nil, lastErr

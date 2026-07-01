@@ -6,6 +6,7 @@ const BrowserOpenURLMock = vi.fn();
 
 vi.mock('../../../wailsjs/runtime', () => ({
     BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
+    EventsOn: vi.fn().mockReturnValue(() => {}),
 }));
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
@@ -42,6 +43,7 @@ const baseProps = {
         aboutTenantName: 'Tenant',
         aboutRegisteredName: 'Registered Name',
         aboutHubUrl: 'Hub URL',
+        aboutHubCenterUrl: 'Hub Center URL',
         aboutAccountEmail: 'Account',
         aboutMachineId: 'Machine ID',
         remoteActivation: 'Registration',

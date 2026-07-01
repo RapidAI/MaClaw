@@ -59,6 +59,17 @@ func (c *HubCenterSelectionCache) Set(base string, all []string) {
 	c.resolvedAt = time.Now()
 }
 
+// Invalidate clears the cached HubCenter URL, forcing the next resolution to
+// perform a full discovery probe. Call this when all cached candidates fail
+// (connection refused, timeout, 5xx) — the cached address is likely stale/dead.
+func (c *HubCenterSelectionCache) Invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.base = ""
+	c.all = nil
+	c.resolvedAt = time.Time{}
+}
+
 // RememberSelectionThrottled persists the HubCenter selection only when it changes.
 // This is the single source of truth for the throttling logic.
 //

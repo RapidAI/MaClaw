@@ -610,7 +610,7 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 	if installPlan.HasGovernanceReviewIssue {
 		return nil, fmt.Errorf("cannot install MaClaw App from Hub: package governance review failed: %s", firstMaclawAppReviewIssueMessage(installPlan.GovernanceReviewIssues, "governance review issue"))
 	}
-	installRecord, err := a.RecordMaclawAppInstall(packageJSON, "enterprise_hub")
+	installRecord, err := a.recordMaclawAppInstall(packageJSON, "enterprise_hub", &installPlan)
 	if err != nil {
 		return nil, err
 	}
@@ -894,13 +894,26 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 // RecordMaclawAppInstall persists a local install audit record for installed
 // MaClaw App entries and their dependency state.
 func (a *App) RecordMaclawAppInstall(packageJSON string, source string) (map[string]any, error) {
+	return a.recordMaclawAppInstall(packageJSON, source, nil)
+}
+
+func (a *App) recordMaclawAppInstall(packageJSON string, source string, planOverride *maclawAppInstallPlan) (map[string]any, error) {
 	entries, err := parseMaclawAppInstallEntries(packageJSON)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := a.PlanMaclawAppInstall(packageJSON)
-	if err != nil {
-		return nil, err
+	var plan maclawAppInstallPlan
+	if planOverride != nil {
+		plan = *planOverride
+		plan.Apps = append([]maclawAppInstallPlanApp(nil), plan.Apps...)
+		plan.Dependencies = cloneMaclawAppPlanDependencies(plan.Dependencies)
+		plan.WorkflowContractIssues = append([]maclawAppReviewIssue(nil), plan.WorkflowContractIssues...)
+		plan.GovernanceReviewIssues = append([]maclawAppReviewIssue(nil), plan.GovernanceReviewIssues...)
+	} else {
+		plan, err = a.PlanMaclawAppInstall(packageJSON)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if plan.HasWorkflowContractIssue && maclawAppWorkflowContractIssuesShouldPrecedeDependencyBlock(plan.WorkflowContractIssues, plan.HasMissingRequired || plan.HasBlockingDependency) {
 		return nil, fmt.Errorf("cannot install MaClaw App: approval workflow contract is invalid: %s", firstMaclawAppReviewIssueMessage(plan.WorkflowContractIssues, "approval workflow contract issue"))
@@ -1590,7 +1603,7 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 		stored.RecordApprovalID = approvalID
 		stored, _ = a.RecordMaclawAppApprovalInstance(stored)
 	}
-	result := map[string]any{"started": true, "instance": stored, "sync": syncResult, "workflow_skill_id": stored.WorkflowSkillID, "workflow_version": stored.WorkflowVersion, "approval_id": stored.ApprovalID}
+	result := map[string]any{"started": true, "instance": stored, "sync": syncResult, "workflow_skill_id": stored.WorkflowSkillID, "workflow_version": stored.WorkflowVersion, "approval_id": stored.ApprovalID, "result_feedback": maclawAppApprovalResultFeedback(stored)}
 	if input.RunWorkflowSkill {
 		workflowRun, err := a.runMaclawAppApprovalWorkflowSkill(stored, input)
 		if err != nil {
@@ -1600,6 +1613,7 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 		if instance, ok := workflowRun["instance"].(maclawAppApprovalInstance); ok {
 			result["instance"] = instance
 			result["approval_id"] = instance.ApprovalID
+			result["result_feedback"] = maclawAppApprovalResultFeedback(instance)
 		}
 	}
 	return result, nil
@@ -1661,7 +1675,7 @@ func (a *App) runMaclawAppApprovalWorkflowSkill(base maclawAppApprovalInstance, 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"ran": true, "workflow_skill_id": workflowSkillID, "output": execResult.Output, "captured": execResult.Captured, "payload": payload, "progress_instances": progressInstances, "progress_sync": progressSyncs, "instance": instance, "sync": syncResult}, nil
+	return map[string]any{"ran": true, "workflow_skill_id": workflowSkillID, "output": execResult.Output, "captured": execResult.Captured, "payload": payload, "progress_instances": progressInstances, "progress_sync": progressSyncs, "instance": instance, "sync": syncResult, "result_feedback": maclawAppApprovalResultFeedback(instance)}, nil
 }
 
 func (a *App) maclawAppFailedWorkflowRun(base maclawAppApprovalInstance, workflowSkillID, output string, captured map[string]string, runErr error) (map[string]any, error) {
@@ -1698,7 +1712,7 @@ func (a *App) maclawAppFailedWorkflowRun(base maclawAppApprovalInstance, workflo
 		failed = stored
 	}
 	syncResult, syncErr := a.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: failed.DatasetID, ObjectRole: failed.ObjectRole, AppID: failed.AppID, BlueprintID: failed.BlueprintID, RecordID: failed.RecordID, ApprovalID: firstNonEmptyMaclawAppString(failed.ApprovalID, base.ApprovalID), Instance: failed})
-	workflowRun := map[string]any{"ran": false, "workflow_skill_id": workflowSkillID, "output": output, "captured": captured, "error": message, "payload": map[string]any{"approval_instance": failed, "result_payload": cloneMapAny(failed.ResultPayload), "outputs": cloneMaclawAppApprovalOutputs(failed.Outputs)}, "instance": failed, "sync": syncResult}
+	workflowRun := map[string]any{"ran": false, "workflow_skill_id": workflowSkillID, "output": output, "captured": captured, "error": message, "payload": map[string]any{"approval_instance": failed, "result_payload": cloneMapAny(failed.ResultPayload), "outputs": cloneMaclawAppApprovalOutputs(failed.Outputs)}, "instance": failed, "sync": syncResult, "result_feedback": maclawAppApprovalResultFeedback(failed)}
 	if syncErr != nil {
 		workflowRun["sync_error"] = syncErr.Error()
 	}
@@ -1871,6 +1885,62 @@ func maclawAppApprovalProgressInstancesFromWorkflowPayload(payload map[string]an
 		current = progress
 	}
 	return instances
+}
+
+func maclawAppApprovalResultFeedback(instance maclawAppApprovalInstance) map[string]any {
+	payload := cloneMapAny(instance.ResultPayload)
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	outputs := cloneMaclawAppApprovalOutputs(instance.Outputs)
+	artifacts := append([]maclawAppApprovalArtifact(nil), instance.Artifacts...)
+	approvalResult := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(payload, "approval_result", "approvalResult", "approval_status", "approvalStatus", "decision"),
+		instance.Status,
+	)
+	businessStatus := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(payload, "business_status", "businessStatus", "status"),
+		instance.BusinessStatus,
+	)
+	resultStatus := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(payload, "result_status", "resultStatus"),
+		instance.ResultStatus,
+		instance.Status,
+	)
+	content := firstNonEmptyMaclawAppString(
+		maclawAppStringValue(payload, "text", "content", "message", "summary", "result"),
+		instance.Result,
+	)
+	if content == "" {
+		for _, output := range outputs {
+			if output.Text != "" {
+				content = output.Text
+				break
+			}
+		}
+	}
+	var primaryArtifact map[string]any
+	if len(artifacts) > 0 {
+		primaryArtifact = compactPayload(map[string]any{
+			"id":     artifacts[0].ID,
+			"name":   artifacts[0].Name,
+			"uri":    artifacts[0].URI,
+			"status": artifacts[0].Status,
+		})
+	}
+	return compactPayload(map[string]any{
+		"status":           instance.Status,
+		"approval_result":  approvalResult,
+		"business_status":  businessStatus,
+		"result_status":    resultStatus,
+		"content":          content,
+		"result_payload":   payload,
+		"outputs":          outputs,
+		"artifacts":        artifacts,
+		"output_count":     len(outputs),
+		"artifact_count":   len(artifacts),
+		"primary_artifact": primaryArtifact,
+	})
 }
 
 func decodeMaclawAppApprovalOutputsFromAny(value any) []maclawAppApprovalOutput {
@@ -4335,6 +4405,7 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 				metadata["test_evidence"] = testEvidence
 				applyMaclawAppDataSrvTestEvidenceMetadata(metadata, testEvidence)
 			}
+			applyMaclawAppDataSrvDesignConsistencyMetadata(metadata, entry, governance)
 		}
 		if dependencyVerification := maclawAppDependencyVerificationMetadataForEntry(entry, dependencies); dependencyVerification != nil {
 			metadata["dependency_verification"] = dependencyVerification
@@ -4349,6 +4420,33 @@ func maclawAppDataSrvInstallationPayloads(entries []parsedMaclawAppEntry, source
 			}
 			if blocked, ok := firstNonEmptyMaclawAppAny(dependencyVerification["hasBlockingDependency"], dependencyVerification["has_blocking_dependency"]).(bool); ok {
 				metadata["test_evidence_dependency_blocking"] = blocked
+			}
+			if installTrace := anyMap(firstNonEmptyMaclawAppAny(dependencyVerification["install_trace"], dependencyVerification["installTrace"])); installTrace != nil {
+				metadata["dependency_install_trace"] = installTrace
+				for _, pair := range []struct {
+					keys []string
+					meta string
+				}{
+					{[]string{"preflight_checked_count", "preflightCheckedCount"}, "dependency_preflight_checked_count"},
+					{[]string{"preflight_ready_count", "preflightReadyCount"}, "dependency_preflight_ready_count"},
+					{[]string{"preflight_failed_count", "preflightFailedCount"}, "dependency_preflight_failed_count"},
+					{[]string{"integrity_checked_count", "integrityCheckedCount"}, "dependency_integrity_checked_count"},
+					{[]string{"integrity_ready_count", "integrityReadyCount"}, "dependency_integrity_ready_count"},
+					{[]string{"integrity_failed_count", "integrityFailedCount"}, "dependency_integrity_failed_count"},
+					{[]string{"download_available_count", "downloadAvailableCount"}, "dependency_download_available_count"},
+					{[]string{"signature_available_count", "signatureAvailableCount"}, "dependency_signature_available_count"},
+					{[]string{"install_error_count", "installErrorCount"}, "dependency_install_error_count"},
+				} {
+					for _, key := range pair.keys {
+						if value, ok := maclawAppNumberFromAny(installTrace[key]); ok {
+							metadata[pair.meta] = int(math.Floor(value))
+							break
+						}
+					}
+				}
+				if ok, exists := firstNonEmptyMaclawAppAny(installTrace["ok"], installTrace["traceOk"]).(bool); exists {
+					metadata["dependency_install_trace_ok"] = ok
+				}
 			}
 		}
 		appDependencies := cloneMaclawAppPlanDependenciesForApp(dependencies, entry.ID)
@@ -4466,6 +4564,7 @@ func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, 
 		{[]string{"verifiedAt", "verified_at"}, "test_evidence_verified_at"},
 		{[]string{"definitionFingerprint", "definition_fingerprint", "definitionHash", "definition_hash"}, "test_evidence_definition_fingerprint"},
 		{[]string{"testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash"}, "test_evidence_test_protocol_fingerprint"},
+		{[]string{"workspaceLayoutFingerprint", "workspace_layout_fingerprint", "workspaceLayoutHash", "workspace_layout_hash", "layoutFingerprint", "layout_fingerprint"}, "test_evidence_workspace_layout_fingerprint"},
 		{[]string{"artifactName", "artifact_name"}, "test_evidence_artifact_name"},
 		{[]string{"artifactURI", "artifactUri", "artifact_uri"}, "test_evidence_artifact_uri"},
 		{[]string{"artifactPath", "artifact_path"}, "test_evidence_artifact_path"},
@@ -4585,6 +4684,85 @@ func applyMaclawAppDataSrvTestEvidenceMetadata(metadata map[string]interface{}, 
 	}
 }
 
+func applyMaclawAppDataSrvDesignConsistencyMetadata(metadata map[string]interface{}, entry parsedMaclawAppEntry, governance map[string]any) {
+	if metadata == nil || governance == nil {
+		return
+	}
+	testEvidence := maclawAppTestEvidenceMap(governance)
+	if testEvidence == nil {
+		return
+	}
+	type consistencyItem struct {
+		Current  string
+		Evidence string
+		Matches  bool
+		Present  bool
+	}
+	definition := consistencyItem{
+		Current:  maclawAppDefinitionFingerprintForEntry(entry),
+		Evidence: strings.TrimSpace(maclawAppStringValue(testEvidence, "definitionHash", "definition_hash", "definitionFingerprint", "definition_fingerprint")),
+	}
+	protocol := maclawAppTestProtocolMap(governance, testEvidence)
+	protocolFingerprint := strings.TrimSpace(maclawAppStringValue(protocol, "fingerprint", "hash", "testProtocolFingerprint", "test_protocol_fingerprint", "protocolFingerprint", "protocol_fingerprint"))
+	testProtocol := consistencyItem{
+		Current:  firstNonEmptyMaclawAppString(protocolFingerprint, maclawAppTestProtocolFingerprint(protocol)),
+		Evidence: strings.TrimSpace(maclawAppStringValue(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash", "protocolFingerprint", "protocol_fingerprint", "protocolHash", "protocol_hash")),
+	}
+	workspaceLayout := consistencyItem{
+		Current:  maclawAppCurrentWorkspaceLayoutFingerprint(entry, governance),
+		Evidence: strings.TrimSpace(maclawAppStringValue(testEvidence, "workspaceLayoutFingerprint", "workspace_layout_fingerprint", "workspaceLayoutHash", "workspace_layout_hash", "layoutFingerprint", "layout_fingerprint", "layoutHash", "layout_hash")),
+	}
+	apply := func(prefix string, item consistencyItem) consistencyItem {
+		item.Present = item.Current != "" && item.Evidence != ""
+		item.Matches = item.Present && item.Current == item.Evidence
+		if item.Current != "" {
+			metadata["current_"+prefix+"_fingerprint"] = item.Current
+		}
+		if item.Evidence != "" {
+			metadata["test_evidence_"+prefix+"_fingerprint"] = item.Evidence
+		}
+		if item.Present {
+			metadata["test_evidence_"+prefix+"_matches_current"] = item.Matches
+		}
+		return item
+	}
+	definition = apply("definition", definition)
+	testProtocol = apply("test_protocol", testProtocol)
+	workspaceLayout = apply("workspace_layout", workspaceLayout)
+	checked := 0
+	matched := 0
+	for _, item := range []consistencyItem{definition, testProtocol, workspaceLayout} {
+		if item.Present {
+			checked++
+			if item.Matches {
+				matched++
+			}
+		}
+	}
+	if checked > 0 {
+		metadata["design_consistency_checked_count"] = checked
+		metadata["design_consistency_matched_count"] = matched
+		metadata["design_consistency_ok"] = checked == 3 && matched == 3
+		metadata["design_consistency"] = map[string]any{
+			"definition": map[string]any{
+				"current_fingerprint":  definition.Current,
+				"evidence_fingerprint": definition.Evidence,
+				"matches_current":      definition.Matches,
+			},
+			"test_protocol": map[string]any{
+				"current_fingerprint":  testProtocol.Current,
+				"evidence_fingerprint": testProtocol.Evidence,
+				"matches_current":      testProtocol.Matches,
+			},
+			"workspace_layout": map[string]any{
+				"current_fingerprint":  workspaceLayout.Current,
+				"evidence_fingerprint": workspaceLayout.Evidence,
+				"matches_current":      workspaceLayout.Matches,
+			},
+		}
+	}
+}
+
 func applyMaclawAppDataSrvResultPayloadMetadata(metadata map[string]interface{}, payload map[string]any) {
 	if metadata == nil || payload == nil {
 		return
@@ -4692,6 +4870,10 @@ func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry,
 				out["hasMissingRequired"] = hasMissingMaclawAppRequiredDependencyForApp(dependencies, entry.ID)
 				out["has_blocking_dependency"] = hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID)
 				out["hasBlockingDependency"] = hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID)
+				if trace := maclawAppDependencyInstallTraceSummary(appDependencies); trace != nil {
+					out["install_trace"] = trace
+					out["installTrace"] = trace
+				}
 			}
 			return compactPayload(out)
 		}
@@ -4706,8 +4888,121 @@ func maclawAppDependencyVerificationMetadataForEntry(entry parsedMaclawAppEntry,
 		"dependency_count":        len(appDependencies),
 		"has_missing_required":    hasMissingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
 		"has_blocking_dependency": hasBlockingMaclawAppRequiredDependencyForApp(dependencies, entry.ID),
+		"install_trace":           maclawAppDependencyInstallTraceSummary(appDependencies),
 		"dependencies":            appDependencies,
 	})
+}
+
+func maclawAppDependencyInstallTraceSummary(dependencies []maclawAppInstallPlanDependency) map[string]any {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	summary := map[string]any{
+		"schema":                       "maclaw.app.dependency_install_trace.v1",
+		"dependency_count":             len(dependencies),
+		"dependencyCount":              len(dependencies),
+		"preflight_checked_count":      0,
+		"preflightCheckedCount":        0,
+		"preflight_ready_count":        0,
+		"preflightReadyCount":          0,
+		"preflight_failed_count":       0,
+		"preflightFailedCount":         0,
+		"integrity_checked_count":      0,
+		"integrityCheckedCount":        0,
+		"integrity_ready_count":        0,
+		"integrityReadyCount":          0,
+		"integrity_failed_count":       0,
+		"integrityFailedCount":         0,
+		"download_available_count":     0,
+		"downloadAvailableCount":       0,
+		"signature_available_count":    0,
+		"signatureAvailableCount":      0,
+		"install_error_count":          0,
+		"installErrorCount":            0,
+		"required_install_error_count": 0,
+		"requiredInstallErrorCount":    0,
+		"ok":                           true,
+		"traceOk":                      true,
+	}
+	increment := func(snake, camel string) {
+		if current, ok := summary[snake].(int); ok {
+			summary[snake] = current + 1
+		}
+		if current, ok := summary[camel].(int); ok {
+			summary[camel] = current + 1
+		}
+	}
+	markFailed := func() {
+		summary["ok"] = false
+		summary["traceOk"] = false
+	}
+	for _, dep := range dependencies {
+		if strings.TrimSpace(dep.PreflightStatus) != "" || strings.TrimSpace(dep.PreflightCode) != "" || strings.TrimSpace(dep.PreflightStage) != "" {
+			increment("preflight_checked_count", "preflightCheckedCount")
+		}
+		if maclawAppDependencyDiagnosticStatusReady(dep.PreflightStatus) {
+			increment("preflight_ready_count", "preflightReadyCount")
+		}
+		if maclawAppDependencyDiagnosticStatusFailed(dep.PreflightStatus) || maclawAppDependencyDiagnosticCodeFailed(dep.PreflightCode) {
+			increment("preflight_failed_count", "preflightFailedCount")
+			markFailed()
+		}
+		if strings.TrimSpace(dep.IntegrityStatus) != "" || strings.TrimSpace(dep.IntegrityCode) != "" || strings.TrimSpace(dep.IntegrityStage) != "" {
+			increment("integrity_checked_count", "integrityCheckedCount")
+		}
+		if maclawAppDependencyDiagnosticStatusReady(dep.IntegrityStatus) {
+			increment("integrity_ready_count", "integrityReadyCount")
+		}
+		if maclawAppDependencyDiagnosticStatusFailed(dep.IntegrityStatus) || maclawAppDependencyDiagnosticCodeFailed(dep.IntegrityCode) {
+			increment("integrity_failed_count", "integrityFailedCount")
+			markFailed()
+		}
+		if strings.TrimSpace(dep.PackageDownloadURL) != "" {
+			increment("download_available_count", "downloadAvailableCount")
+		}
+		if strings.TrimSpace(dep.PackageSignature) != "" {
+			increment("signature_available_count", "signatureAvailableCount")
+		}
+		if strings.TrimSpace(dep.InstallErrorCode) != "" || strings.TrimSpace(dep.InstallErrorStage) != "" || strings.TrimSpace(dep.InstallErrorDetail) != "" {
+			increment("install_error_count", "installErrorCount")
+			if dep.Required {
+				increment("required_install_error_count", "requiredInstallErrorCount")
+			}
+			markFailed()
+		}
+	}
+	return compactPayload(summary)
+}
+
+func maclawAppDependencyDiagnosticStatusReady(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "ok", "passed", "ready", "success", "succeeded", "trusted", "verified":
+		return true
+	default:
+		return false
+	}
+}
+
+func maclawAppDependencyDiagnosticStatusFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "blocked", "denied", "disabled", "error", "failed", "failure", "invalid", "missing", "mismatch", "rejected", "tampered", "unhealthy", "untrusted":
+		return true
+	default:
+		return false
+	}
+}
+
+func maclawAppDependencyDiagnosticCodeFailed(code string) bool {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if code == "" {
+		return false
+	}
+	for _, marker := range []string{"blocked", "denied", "error", "fail", "invalid", "missing", "mismatch", "rejected", "tampered", "untrusted"} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawAppMergedDependencyVerificationItems(existing []any, appDependencies []maclawAppInstallPlanDependency) []any {
@@ -5842,6 +6137,9 @@ func maclawAppGovernanceReviewIssuesFromPackage(pkg map[string]any) []maclawAppR
 			if issue := maclawAppDefinitionHashReviewIssue(entry, governance, path); issue != nil {
 				issues = append(issues, *issue)
 			}
+			if issue := maclawAppWorkspaceLayoutEvidenceReviewIssue(entry, governance, path); issue != nil {
+				issues = append(issues, *issue)
+			}
 		}
 		if maclawAppHasPublishableTestEvidence(governance) && maclawAppHasPublishableResultContract(governance) {
 			if issue := maclawAppResultCoverageReviewIssue(governance, path); issue != nil {
@@ -6495,6 +6793,10 @@ func maclawAppVerifiedDependencyBlocked(dep map[string]any) bool {
 	health := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "health")))
 	action := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "action")))
 	status := strings.ToLower(strings.TrimSpace(maclawAppStringValue(dep, "installed_status", "installedStatus")))
+	preflightStatus := maclawAppStringValue(dep, "preflight_status", "preflightStatus")
+	preflightCode := maclawAppStringValue(dep, "preflight_code", "preflightCode")
+	integrityStatus := maclawAppStringValue(dep, "integrity_status", "integrityStatus")
+	integrityCode := maclawAppStringValue(dep, "integrity_code", "integrityCode")
 	if health == "missing" || health == "disabled" || health == "needs_setup" || health == "unhealthy" {
 		return true
 	}
@@ -6502,6 +6804,15 @@ func maclawAppVerifiedDependencyBlocked(dep map[string]any) bool {
 		return true
 	}
 	if status == "disabled" || status == "error" || status == "failed" {
+		return true
+	}
+	if strings.TrimSpace(maclawAppStringValue(dep, "install_error_code", "installErrorCode", "install_error_stage", "installErrorStage", "install_error_detail", "installErrorDetail")) != "" {
+		return true
+	}
+	if maclawAppDependencyDiagnosticStatusFailed(preflightStatus) || maclawAppDependencyDiagnosticCodeFailed(preflightCode) {
+		return true
+	}
+	if maclawAppDependencyDiagnosticStatusFailed(integrityStatus) || maclawAppDependencyDiagnosticCodeFailed(integrityCode) {
 		return true
 	}
 	return false
@@ -6588,6 +6899,60 @@ func maclawAppDefinitionFingerprintForEntry(entry parsedMaclawAppEntry) string {
 		return ""
 	}
 	return maclawAppFNV1aTextHash(encoded)
+}
+
+func maclawAppWorkspaceLayoutEvidenceReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
+	if governance == nil || !maclawAppHasPublishableTestEvidence(governance) {
+		return nil
+	}
+	testEvidence := maclawAppTestEvidenceMap(governance)
+	if testEvidence == nil {
+		return nil
+	}
+	declared := strings.TrimSpace(maclawAppStringValue(testEvidence, "workspaceLayoutFingerprint", "workspace_layout_fingerprint", "workspaceLayoutHash", "workspace_layout_hash", "layoutFingerprint", "layout_fingerprint", "layoutHash", "layout_hash"))
+	if declared == "" {
+		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.workspaceLayoutFingerprint", Severity: "error", Message: "run evidence is missing the current workspace layout fingerprint", Suggestion: "rerun the app test after saving the App Studio workspace layout"}
+	}
+	computed := maclawAppCurrentWorkspaceLayoutFingerprint(entry, governance)
+	if computed == "" || declared == computed {
+		return nil
+	}
+	return &maclawAppReviewIssue{
+		Path:       appPath + ".governance.testEvidence.workspaceLayoutFingerprint",
+		Severity:   "error",
+		Message:    "run evidence workspace layout fingerprint does not match the current workspace layout",
+		Suggestion: "rerun the app test after editing or saving the workspace layout",
+		Metadata: map[string]any{
+			"declared": declared,
+			"computed": computed,
+		},
+	}
+}
+
+func maclawAppCurrentWorkspaceLayoutFingerprint(entry parsedMaclawAppEntry, governance map[string]any) string {
+	var entryName string
+	if governanceLayout := anyMap(firstNonEmptyMaclawAppAny(governance["workspaceLayout"], governance["workspace_layout"])); governanceLayout != nil {
+		entryName = strings.TrimSpace(maclawAppStringValue(governanceLayout, "entry"))
+		if entryName == "" {
+			entryName = maclawAppWorkspaceLayoutEntryName(entry.App)
+		}
+		if entryName != "" {
+			return firstNonEmptyMaclawAppString(maclawAppWorkspaceLayoutFingerprint(entryName, governanceLayout), maclawAppStringValue(governanceLayout, "fingerprint"))
+		}
+	}
+	entryName = maclawAppWorkspaceLayoutEntryName(entry.App)
+	if entryName == "" {
+		return ""
+	}
+	for _, source := range maclawAppWorkspaceUILayoutSources(entry.App, entryName, "") {
+		if source.layout == nil {
+			continue
+		}
+		if fingerprint := firstNonEmptyMaclawAppString(maclawAppWorkspaceLayoutFingerprint(entryName, source.layout), maclawAppStringValue(source.layout, "fingerprint")); fingerprint != "" {
+			return fingerprint
+		}
+	}
+	return ""
 }
 
 func maclawAppNormalizedVersionAny(value any) int {

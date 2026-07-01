@@ -1,9 +1,9 @@
 import ReactMarkdown from 'react-markdown';
 import type { MouseEvent } from 'react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { BrowserOpenURL } from '../../wailsjs/runtime';
+import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
 import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
@@ -118,6 +118,7 @@ export function AboutPanel({
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
     const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
     const hubURL = String(config?.remote_hub_url || '').trim() || emptyValue;
+    const hubCenterURL = String(config?.remote_hubcenter_url || '').trim() || emptyValue;
     const remoteEmail = String(config?.remote_email || '').trim() || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
 
@@ -167,12 +168,11 @@ export function AboutPanel({
 
     // Hub user ranking stats
     const [ranking, setRanking] = useState<{ totalTokens: number; durationSeconds: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
-    useEffect(() => {
+
+    const fetchRanking = useCallback(() => {
         if (!hasRegisteredMachine) return;
-        let cancelled = false;
         GetHubUserRanking()
             .then((result) => {
-                if (cancelled) return;
                 const r = result as { total_tokens?: number; duration_seconds?: number; token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
                 if (!r || r.error) return;
                 setRanking({
@@ -184,7 +184,37 @@ export function AboutPanel({
                 });
             })
             .catch(() => undefined);
-        return () => { cancelled = true; };
+    }, [hasRegisteredMachine]);
+
+    useEffect(() => {
+        fetchRanking();
+    }, [fetchRanking]);
+
+    // Stable ref to latest fetchRanking — avoids re-subscribing event listener on identity change.
+    const fetchRankingRef = useRef(fetchRanking);
+    useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
+
+    // Refresh ranking when token usage changes — throttled (60s min interval)
+    useEffect(() => {
+        if (!hasRegisteredMachine) return;
+        let throttleTimer: number | undefined;
+        let pending = false;
+        const onTokenUsageChanged = () => {
+            if (throttleTimer !== undefined) { pending = true; return; }
+            throttleTimer = window.setTimeout(() => {
+                throttleTimer = undefined;
+                fetchRankingRef.current();
+                if (pending) {
+                    pending = false;
+                    throttleTimer = window.setTimeout(() => { throttleTimer = undefined; fetchRankingRef.current(); }, 60_000);
+                }
+            }, 5_000);
+        };
+        const unsubscribe = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        return () => {
+            window.clearTimeout(throttleTimer);
+            if (typeof unsubscribe === 'function') unsubscribe();
+        };
     }, [hasRegisteredMachine]);
 
     useEffect(() => {
@@ -288,19 +318,26 @@ export function AboutPanel({
                                 <dd className="about-identity-value about-identity-value--muted">{hubURL}</dd>
                             </div>
                             <div className="about-identity-item">
-                                <dt className="about-kv-label">{t("aboutAccountEmail")}</dt>
-                                <dd className="about-identity-value about-identity-value--muted">{remoteEmail}</dd>
+                                <dt className="about-kv-label">{t("aboutHubCenterUrl")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted">{hubCenterURL}</dd>
                             </div>
                         </div>
                         <div className="about-identity-row">
                             <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("aboutAccountEmail")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted">{remoteEmail}</dd>
+                            </div>
+                            <div className="about-identity-item">
                                 <dt className="about-kv-label">{t("aboutMachineId")}</dt>
                                 <dd className="about-identity-value about-identity-value--mono">{machineID}</dd>
                             </div>
+                        </div>
+                        <div className="about-identity-row">
                             <div className="about-identity-item">
                                 <dt className="about-kv-label">{t("remoteActivation")}</dt>
                                 <dd className="about-identity-value about-identity-value--muted">{hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}</dd>
                             </div>
+                            <div className="about-identity-item" />
                         </div>
                         {ranking && (ranking.totalTokens > 0 || ranking.durationSeconds > 0) && (
                             <div className="about-identity-row">
