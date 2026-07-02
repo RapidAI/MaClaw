@@ -48,7 +48,7 @@ type ToolExperience struct {
 	RecoveryTool string
 	FinalOutcome string
 	EventContext lifecycle.EventContext
-	TokensUsed   int // LLM tokens consumed during this tool invocation
+	TokensUsed   int               // LLM tokens consumed during this tool invocation
 	RunArgs      map[string]string // skill run arguments (for replay in RepairGate)
 }
 
@@ -81,13 +81,13 @@ func NewUsageTracker(path string) (*UsageTracker, error) {
 	return t, nil
 }
 
-// DefaultUsageTrackerPath returns ~/.maclaw/data/tool_usage.json.
+// DefaultUsageTrackerPath returns <MaclawBaseDir>/data/tool_usage.json.
 func DefaultUsageTrackerPath() string {
-	home, _ := os.UserHomeDir()
-	if home == "" {
+	base := maclawBaseDirFallback()
+	if base == "" {
 		return ""
 	}
-	return filepath.Join(home, ".maclaw", "data", "tool_usage.json")
+	return filepath.Join(base, "data", "tool_usage.json")
 }
 
 // Record logs a tool invocation result. Safe for concurrent use.
@@ -1446,7 +1446,6 @@ func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
 
 	return patterns
 }
-
 
 // RecentRunArgs extracts the most recent N run argument sets for a given tool
 // (typically a skill name like "manage_skill" or the actual skill name).

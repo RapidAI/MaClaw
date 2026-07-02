@@ -100,6 +100,19 @@ func RunMigrations(db *sql.DB) error {
 			UNIQUE(tenant_id, email)
 		);`,
 
+		`CREATE TABLE IF NOT EXISTS user_identities (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			user_id TEXT NOT NULL,
+			type TEXT NOT NULL,
+			value TEXT NOT NULL,
+			verified INTEGER NOT NULL DEFAULT 0,
+			verified_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, type, value)
+		);`,
+
 		`CREATE TABLE IF NOT EXISTS user_enrollments (
 			id TEXT PRIMARY KEY,
 			email TEXT NOT NULL,
@@ -930,11 +943,26 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_machines_user_tenant ON machines(tenant_id, user_id, status);`,
 		`CREATE INDEX IF NOT EXISTS idx_viewer_tokens_user_id ON viewer_tokens(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at ON login_tokens(expires_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(tenant_id, user_id);`,
 	}
 	for _, stmt := range perfIndexes {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("perf index: %w", err)
 		}
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		SELECT id || '_email', tenant_id, id, 'email', lower(trim(email)), email_verified, email_verified_at, created_at, updated_at
+		FROM users
+		WHERE trim(email) <> '' AND lower(trim(email)) NOT LIKE 'phone:%'`); err != nil {
+		return fmt.Errorf("backfill email user identities: %w", err)
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		SELECT id || '_phone', tenant_id, id, 'phone', substr(lower(trim(email)), 7), 1,
+		       CASE WHEN email_verified_at <> '' THEN email_verified_at ELSE updated_at END,
+		       created_at, updated_at
+		FROM users
+		WHERE lower(trim(email)) LIKE 'phone:%' AND length(substr(lower(trim(email)), 7)) >= 6`); err != nil {
+		return fmt.Errorf("backfill phone user identities: %w", err)
 	}
 
 	return nil

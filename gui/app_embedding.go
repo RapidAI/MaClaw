@@ -118,13 +118,12 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 	log.Printf("[startup] embedding sync: done in %v — UIC L2 now available", time.Since(t0))
 }
 
-// embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
+// embeddingModelsDir returns the effective local AI models directory, creating it if needed.
 func embeddingModelsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	dir := embedding.DefaultModelsDir()
+	if dir == "" {
+		return "", fmt.Errorf("cannot determine models directory")
 	}
-	dir := filepath.Join(home, ".maclaw", "models")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

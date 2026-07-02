@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -879,9 +878,11 @@ func (a *App) ensureHubSkillInstalled(ctx context.Context, item HubCapabilitySum
 	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), stringFromMap(metadata, "hub_skill_id"), item.CapabilityID, item.ID)
 	hubURL := firstCapabilityNonEmpty(stringFromMap(metadata, "hub_url"), stringFromMap(metadata, "skill_hub_url"), stringFromMap(metadata, "download_hub_url"))
 	if hubURL == "" {
-		cfg, err := a.LoadConfig()
-		if err == nil {
-			hubURL = firstCapabilityNonEmpty(cfg.RemoteHubURL, cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL))
+		if cfg, err := a.LoadConfig(); err == nil {
+			hubURL = strings.TrimSpace(cfg.RemoteHubURL)
+		}
+		if hubURL == "" {
+			hubURL = NewSkillMarketClient(a).baseURL()
 		}
 	}
 	if skillID == "" || hubURL == "" {
@@ -965,7 +966,11 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 	if existing := a.findManagedCapabilitySkill(item.ID, skillID, ""); existing != nil && managedSkillVersionCurrent(*existing, versionKey) {
 		return false, nil
 	}
-	stagingDir, err := cskill.PrepareStagingDir(firstCapabilityNonEmpty(skillID, "managed-external-skill"))
+	stagingRoot, err := a.skillStagingDir()
+	if err != nil {
+		return false, err
+	}
+	stagingDir, err := cskill.PrepareStagingDirInRoot(stagingRoot, firstCapabilityNonEmpty(skillID, "managed-external-skill"))
 	if err != nil {
 		return false, err
 	}
@@ -1036,7 +1041,12 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 		a.emitSkillInstallProgress(entry.Name, "approved", skillInstallRiskAllowedStatusForSource(originSource), report)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", report.FinalLevel, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", item.ID, entry.Name, report.Summary))
 	}
-	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
+	finalRoot, err := a.primarySkillsDir()
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return false, err
+	}
+	finalDir, err := cskill.CommitStagingToDir(stagingDir, entry.Name, finalRoot)
 	if err != nil {
 		cskill.CleanupStaging(stagingDir)
 		return false, err
@@ -1091,7 +1101,11 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	if existing := a.findManagedCapabilitySkill(capabilityID, skillID, ""); existing != nil && managedSkillVersionCurrent(*existing, versionKey) {
 		return false, nil
 	}
-	stagingDir, err := cskill.PrepareStagingDir(firstCapabilityNonEmpty(skillID, "managed-hub-skill"))
+	stagingRoot, err := a.skillStagingDir()
+	if err != nil {
+		return false, err
+	}
+	stagingDir, err := cskill.PrepareStagingDirInRoot(stagingRoot, firstCapabilityNonEmpty(skillID, "managed-hub-skill"))
 	if err != nil {
 		return false, err
 	}
@@ -1157,7 +1171,12 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 			fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", capabilityID, entry.Name, report.Summary),
 		)
 	}
-	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
+	finalRoot, err := a.primarySkillsDir()
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return false, err
+	}
+	finalDir, err := cskill.CommitStagingToDir(stagingDir, entry.Name, finalRoot)
 	if err != nil {
 		cskill.CleanupStaging(stagingDir)
 		return false, err

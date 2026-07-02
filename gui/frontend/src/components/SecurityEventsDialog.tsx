@@ -86,7 +86,7 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
                         </p>
                     )}
                     {!loading && error && (
-                        <p style={{ color: '#e74c3c', fontSize: '0.8rem' }}>
+                        <p style={{ color: 'var(--theme-danger, #e74c3c)', fontSize: '0.8rem' }}>
                             {t('securityEventsLoadFailed')}{error}
                         </p>
                     )}

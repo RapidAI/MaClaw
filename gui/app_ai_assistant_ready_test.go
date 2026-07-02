@@ -56,6 +56,88 @@ func TestGetAIAssistantInitStatusTracksPreheatLifecycle(t *testing.T) {
 	}
 }
 
+func TestAIAssistantReadySelfHealsMissingHubClientAfterWarmup(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), disableBackgroundEmbeddingForTest: true}
+	defer func() {
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	}()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+
+	if app.remoteSessions.GetHubClient() != nil {
+		t.Fatal("test setup expected missing hub client")
+	}
+	if !app.IsAIAssistantReady() {
+		t.Fatal("expected readiness check to create a local/degraded hub client after warmup")
+	}
+	client := app.remoteSessions.GetHubClient()
+	if client == nil {
+		t.Fatal("expected local/degraded hub client to be created")
+	}
+	if client.imHandler == nil {
+		t.Fatal("expected IM handler to be preinitialized")
+	}
+	if got := app.GetAIAssistantInitStatus(); got != "ready" {
+		t.Fatalf("status after self-heal = %q, want %q", got, "ready")
+	}
+}
+
+func TestAIAssistantControlBindingsSelfHealMissingHubClient(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), disableBackgroundEmbeddingForTest: true}
+	defer func() {
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	}()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+
+	if got := app.ListBackgroundLoops(); len(got) != 0 {
+		t.Fatalf("background loops before any loop = %#v, want empty", got)
+	}
+	if app.remoteSessions.GetHubClient() != nil {
+		t.Fatal("read-only background loop listing should not initialize hub client")
+	}
+	if err := app.ClearAIAssistantHistory(); err != nil {
+		t.Fatalf("ClearAIAssistantHistory self-heal failed: %v", err)
+	}
+	client := app.remoteSessions.GetHubClient()
+	if client == nil {
+		t.Fatal("expected control binding to create a local/degraded hub client")
+	}
+	if client.imHandler == nil {
+		t.Fatal("expected control binding self-heal to preinitialize IM handler")
+	}
+}
+
+func TestPrepareHubClientSyncIsIdempotent(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), disableBackgroundEmbeddingForTest: true}
+	defer func() {
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	}()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.interactionInfraDone.Store(true)
+
+	first := app.ensureHubClient()
+	if first == nil {
+		t.Fatal("expected first ensureHubClient to create hub client")
+	}
+	app.prepareHubClientSync()
+	second := app.remoteSessions.GetHubClient()
+	if second != first {
+		t.Fatal("prepareHubClientSync should not replace an existing hub client")
+	}
+	if third := app.ensureHubClient(); third != first {
+		t.Fatal("ensureHubClient should reuse the existing hub client")
+	}
+}
+
 func TestMarkAIAssistantReadyResetsFirstChatTelemetry(t *testing.T) {
 	app, _ := newTestAIAssistantApp()
 	app.aiAssistantFirstChatLogged.Store(true)

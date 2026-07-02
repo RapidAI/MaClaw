@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import run_release_gates
+
+
+def assert_in_order(test: unittest.TestCase, text: str, expected_parts: list[str]) -> None:
+    cursor = -1
+    for part in expected_parts:
+        index = text.find(part, cursor + 1)
+        test.assertNotEqual(
+            -1,
+            index,
+            f"{part!r} should appear after index {cursor}",
+        )
+        cursor = index
+
+
+class RunReleaseGatesTest(unittest.TestCase):
+    def test_release_gates_match_documented_order(self) -> None:
+        gates = run_release_gates.release_gates()
+
+        self.assertEqual(
+            [
+                "Go mobile API",
+                "Go mobile HubCenter discovery",
+                "Go mobile GUI and digital employee",
+                "Platform configuration tests",
+                "QA record validator tests",
+                "Runtime boundary verifier tests",
+                "Release gate runner tests",
+                "Release documentation tests",
+                "Generate Flutter native wrappers",
+                "Apply MaClaw native wrapper configuration",
+                "Runtime boundary verification",
+                "Flutter pub get",
+                "Flutter analyze",
+                "Flutter tests",
+                "Android debug APK",
+            ],
+            [gate.name for gate in gates],
+        )
+
+    def test_go_gates_run_from_repo_root_and_flutter_gates_from_mobile_root(self) -> None:
+        gates = run_release_gates.release_gates()
+        root = run_release_gates.repo_root()
+        mobile = run_release_gates.mobile_root()
+
+        self.assertEqual(root, gates[0].cwd)
+        self.assertEqual(root, gates[1].cwd)
+        self.assertEqual(root, gates[2].cwd)
+        for gate in gates[3:]:
+            self.assertEqual(mobile, gate.cwd)
+
+    def test_commands_include_release_critical_checks(self) -> None:
+        commands = run_release_gates.documented_commands()
+
+        for expected in [
+            'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
+            'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
+            'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1',
+            "python3 -m unittest tool/configure_platforms_test.py",
+            "python3 -m unittest tool/validate_qa_build_record_test.py",
+            "python3 -m unittest tool/verify_runtime_boundary_test.py",
+            "python3 -m unittest tool/run_release_gates_test.py",
+            "flutter test test/release_docs_test.dart --concurrency=1 --reporter compact",
+            "flutter create --platforms android,ios .",
+            "python3 tool/configure_platforms.py",
+            "python3 tool/verify_runtime_boundary.py",
+            "flutter pub get",
+            "flutter analyze",
+            "flutter test --concurrency=1",
+            "flutter build apk --debug",
+        ]:
+            self.assertTrue(
+                any(expected in command for command in commands),
+                f"missing command containing {expected!r}",
+            )
+
+    def test_dry_run_prints_gate_sequence_without_running_commands(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            self.assertEqual(0, run_release_gates.main(["--dry-run"]))
+
+        text = output.getvalue()
+        self.assertIn("Go mobile API", text)
+        self.assertIn("Android debug APK", text)
+        self.assertIn("flutter build apk --debug", text)
+
+    def test_dry_run_prints_numbered_gate_sequence(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            self.assertEqual(0, run_release_gates.main(["--dry-run"]))
+
+        lines = [line for line in output.getvalue().splitlines() if line.strip()]
+        gate_count = len(run_release_gates.release_gates())
+        self.assertEqual(gate_count, len(lines))
+        self.assertTrue(lines[0].startswith(f"[01/{gate_count}] Go mobile API:"))
+        self.assertTrue(
+            lines[-1].startswith(f"[{gate_count:02d}/{gate_count}] Android debug APK:")
+        )
+
+    def test_executable_command_resolves_windows_batch_shims(self) -> None:
+        with patch("run_release_gates.shutil.which", return_value=r"D:\flutter\bin\flutter.BAT"):
+            self.assertEqual(
+                [r"D:\flutter\bin\flutter.BAT", "test", "--concurrency=1"],
+                run_release_gates.executable_command(
+                    ["flutter", "test", "--concurrency=1"]
+                ),
+            )
+
+    def test_executable_command_keeps_unknown_commands_readable(self) -> None:
+        with patch("run_release_gates.shutil.which", return_value=None):
+            self.assertEqual(
+                ["flutter", "test"],
+                run_release_gates.executable_command(["flutter", "test"]),
+            )
+
+    def test_ci_workflow_covers_release_gate_commands_and_artifact_upload(self) -> None:
+        workflow = (
+            run_release_gates.repo_root() / ".github" / "workflows" / "maclaw-mobile.yml"
+        ).read_text(encoding="utf-8")
+
+        for expected in [
+            *run_release_gates.documented_commands(),
+            "actions/upload-artifact@v4",
+            "maclaw-mobile-debug-apk",
+            "mobile/maclaw_mobile/build/app/outputs/flutter-apk/app-debug.apk",
+        ]:
+            self.assertIn(expected, workflow)
+
+    def test_ci_workflow_runs_release_gate_commands_in_runner_order(self) -> None:
+        workflow = (
+            run_release_gates.repo_root() / ".github" / "workflows" / "maclaw-mobile.yml"
+        ).read_text(encoding="utf-8")
+
+        assert_in_order(self, workflow, run_release_gates.documented_commands())
+
+    def test_release_docs_run_gate_commands_in_runner_order(self) -> None:
+        mobile = run_release_gates.mobile_root()
+        checklist = (mobile / "docs" / "release_checklist.md").read_text(encoding="utf-8")
+        evidence = (mobile / "docs" / "release_evidence.md").read_text(encoding="utf-8")
+        commands = run_release_gates.documented_commands()
+
+        assert_in_order(self, checklist, commands)
+        assert_in_order(self, evidence, commands)
+
+
+if __name__ == "__main__":
+    unittest.main()

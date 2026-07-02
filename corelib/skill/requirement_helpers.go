@@ -249,17 +249,116 @@ func defaultCheckPipInstalled(python, name string) bool {
 	return cmd.Run() == nil
 }
 
-var installPipPkg = defaultInstallPipPkg
+// installPipPkgScoped installs a pip package with correct scoping:
+//   - If the resolved python is the bundled private Python → install normally
+//     (bundled Python's site-packages is private, no global pollution)
+//   - If the resolved python is a system Python → install with --user flag
+//     (per-user scope, no admin needed, Python auto-discovers user site-packages)
+//
+// The install scope is determined by the Python executable identity, ensuring
+// install-check-runtime symmetry: packages are always installed to a location
+// that the same Python's sys.path already includes.
+var installPipPkgScoped = defaultInstallPipPkgScoped
 
-func defaultInstallPipPkg(python, pkg string) error {
-	cmd := coretool.Command(python, "-m", "pip", "install", "--quiet", pkg)
+func defaultInstallPipPkgScoped(python, pkg string) error {
+	needsUserScope := !isIsolatedPythonEnvironment(python)
+	var args []string
+	if needsUserScope {
+		// System Python outside any virtual environment: install to user scope
+		// (--user). This avoids admin permissions while keeping packages
+		// accessible via Python's standard user site-packages directory.
+		args = []string{"-m", "pip", "install", "--quiet", "--user", pkg}
+	} else {
+		// Isolated Python (bundled maclaw Python or active virtualenv): install
+		// normally. The environment is inherently isolated — no global pollution.
+		// Using --user here would fail with "User site-packages are not visible
+		// in this environment" in virtualenvs.
+		args = []string{"-m", "pip", "install", "--quiet", pkg}
+	}
+	cmd := coretool.Command(python, args...)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("pip install %s failed: %v\n%s", pkg, err, strings.TrimSpace(string(out)))
 	}
-	log.Printf("[requirement] pip install %s success", pkg)
+	scope := "isolated"
+	if needsUserScope {
+		scope = "user"
+	}
+	log.Printf("[requirement] pip install %s success (scope=%s python=%s)", pkg, scope, python)
 	return nil
+}
+
+// isIsolatedPythonEnvironment returns true if the Python executable lives in
+// an isolated environment where global `pip install` is safe (won't pollute
+// the system). Two cases qualify:
+//  1. maclaw's bundled private Python (isBundledPythonPath)
+//  2. A virtualenv / venv (detected by checking for pyvenv.cfg or VIRTUAL_ENV)
+//
+// In both cases, --user is unnecessary (isolated) and may even fail (virtualenvs
+// disable user site-packages by default).
+func isIsolatedPythonEnvironment(pythonPath string) bool {
+	if isBundledPythonPath(pythonPath) {
+		return true
+	}
+	// Check for virtualenv/venv indicators:
+	// The standard signal is a pyvenv.cfg file in the same directory as the
+	// Python executable (or one level up on Windows where python.exe is in Scripts/).
+	resolved := pythonPath
+	if !filepath.IsAbs(pythonPath) {
+		if p, err := exec.LookPath(pythonPath); err == nil {
+			resolved = p
+		}
+	}
+	absPath, err := filepath.Abs(resolved)
+	if err != nil {
+		return false
+	}
+	dir := filepath.Dir(absPath)
+	// pyvenv.cfg in the same directory (Linux/macOS: bin/python → pyvenv.cfg is in parent)
+	if _, err := os.Stat(filepath.Join(dir, "pyvenv.cfg")); err == nil {
+		return true
+	}
+	// pyvenv.cfg one level up (common layout: venv/bin/python, venv/pyvenv.cfg)
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if _, err := os.Stat(filepath.Join(parent, "pyvenv.cfg")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// isBundledPythonPath returns true if the python executable path points to
+// maclaw's private bundled Python installation. This determines install scope:
+// bundled Python can install globally (it's private), system Python cannot.
+func isBundledPythonPath(pythonPath string) bool {
+	if pythonPath == "" {
+		return false
+	}
+	bundled := resolveBundledPython()
+	if bundled == "" {
+		return false
+	}
+	// Resolve bare command names (e.g. "python") to their actual path.
+	// Without this, filepath.Abs("python") produces a bogus path like
+	// "{cwd}/python" instead of the actual executable location.
+	resolved := pythonPath
+	if !filepath.IsAbs(pythonPath) {
+		if p, err := exec.LookPath(pythonPath); err == nil {
+			resolved = p
+		}
+	}
+	// Normalize and compare — on Windows paths are case-insensitive.
+	absP, err1 := filepath.Abs(resolved)
+	absB, err2 := filepath.Abs(bundled)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(absP, absB)
+	}
+	return absP == absB
 }
 
 // checkNpmInstalledInDir checks if an npm package is installed, optionally

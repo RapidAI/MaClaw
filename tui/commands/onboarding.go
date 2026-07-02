@@ -230,7 +230,7 @@ func activateRemoteForOnboarding(ctx context.Context, store *FileConfigStore, cf
 	if result.ClientID != "" && cfg.RemoteClientID == "" {
 		cfg.RemoteClientID = result.ClientID
 	}
-	if result.HubCenterURL != "" {
+	if result.HubCenterURL != "" && !remote.IsLoopbackURL(result.HubCenterURL) {
 		cfg.RemoteHubCenterURL = result.HubCenterURL
 	}
 	if len(result.DiscoveredURLs) > 0 {

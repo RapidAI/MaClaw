@@ -4305,6 +4305,9 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 			meta.Name = strings.TrimSpace(sf.Name)
 			meta.SkillID = strings.TrimSpace(sf.Name)
 			meta.Description = firstNonEmpty(meta.Description, sf.Description)
+			if v := strings.TrimSpace(sf.Version); v != "" {
+				meta.Version = v
+			}
 			meta.Triggers = append([]string(nil), sf.Triggers...)
 			for _, step := range sf.Steps {
 				onError := step.OnError

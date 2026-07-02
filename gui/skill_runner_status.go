@@ -235,10 +235,11 @@ func (s skillPipelineStatus) StepStatus() skillStepStatus {
 type skillEntryStatus string
 
 const (
-	skillEntryStatusUnknown    skillEntryStatus = ""
-	skillEntryStatusActive     skillEntryStatus = "active"
-	skillEntryStatusDisabled   skillEntryStatus = "disabled"
-	skillEntryStatusNeedsSetup skillEntryStatus = "needs_setup"
+	skillEntryStatusUnknown     skillEntryStatus = ""
+	skillEntryStatusActive      skillEntryStatus = "active"
+	skillEntryStatusDisabled    skillEntryStatus = "disabled"
+	skillEntryStatusNeedsSetup  skillEntryStatus = "needs_setup"
+	skillEntryStatusNeedsReview skillEntryStatus = "needs_review"
 )
 
 func normalizeSkillEntryStatus(status string) skillEntryStatus {
@@ -249,6 +250,8 @@ func normalizeSkillEntryStatus(status string) skillEntryStatus {
 		return skillEntryStatusDisabled
 	case skillEntryStatusNeedsSetup:
 		return skillEntryStatusNeedsSetup
+	case skillEntryStatusNeedsReview:
+		return skillEntryStatusNeedsReview
 	default:
 		return skillEntryStatusUnknown
 	}

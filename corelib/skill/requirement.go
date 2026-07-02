@@ -29,6 +29,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Requirement is the unified representation of a skill precondition.
@@ -94,6 +95,11 @@ type Fixer interface {
 	// Fix attempts to satisfy the requirement. Returns nil on success.
 	Fix(req Requirement) error
 }
+
+// FixProgressCallback reports auto-fix progress to the caller.
+// Used by FixAllWithProgress to provide real-time feedback during
+// potentially long-running operations (pip install, npm install).
+type FixProgressCallback func(message string)
 
 // Registry is the single dispatch point for requirement checking and fixing.
 type Registry struct {
@@ -161,23 +167,58 @@ func (r *Registry) CheckAll(reqs []Requirement) []Violation {
 // which violations to attempt fixing based on whether a Fixer is registered.
 // Callers should not pre-filter — pass the full CheckAll result.
 func (r *Registry) FixAll(violations []Violation) []Violation {
+	return r.FixAllWithProgress(violations, nil)
+}
+
+// FixAllWithProgress is like FixAll but reports progress via callback.
+// The callback receives messages like "正在安装 Python 包 pdfplumber..."
+// during potentially long-running fix operations.
+//
+// Mechanism: For transient failures (network timeout, DNS resolution, connection
+// refused), retries once with 3-second backoff. Permanent failures (package not
+// found, version conflict, permission denied) fail immediately.
+func (r *Registry) FixAllWithProgress(violations []Violation, progress FixProgressCallback) []Violation {
+	// Snapshot the fixers and checkers under lock, then release immediately.
+	// Fix/Check operations spawn subprocesses that may take seconds — holding
+	// the lock during that time would block concurrent CheckAll/Register calls.
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	fixerSnapshot := make(map[string]Fixer, len(r.fixers))
+	for k, v := range r.fixers {
+		fixerSnapshot[k] = v
+	}
+	checkerSnapshot := make(map[string]Checker, len(r.checkers))
+	for k, v := range r.checkers {
+		checkerSnapshot[k] = v
+	}
+	r.mu.RUnlock()
 
 	var remaining []Violation
 	for _, v := range violations {
-		fixer, ok := r.fixers[v.Requirement.Type]
+		fixer, ok := fixerSnapshot[v.Requirement.Type]
 		if !ok {
 			remaining = append(remaining, v)
 			continue
 		}
-		if err := fixer.Fix(v.Requirement); err != nil {
+		if progress != nil {
+			progress(fixProgressMessage(v.Requirement))
+		}
+		err := fixer.Fix(v.Requirement)
+		if err != nil && isTransientFixError(err) {
+			// Transient failure: retry once after 3s backoff.
+			log.Printf("[requirement] transient fix failure for %s:%s, retrying in 3s: %v", v.Requirement.Type, v.Requirement.Name, err)
+			if progress != nil {
+				progress(fmt.Sprintf("⏳ 安装 %s 遇到网络问题，3秒后重试...", v.Requirement.Name))
+			}
+			time.Sleep(3 * time.Second)
+			err = fixer.Fix(v.Requirement)
+		}
+		if err != nil {
 			log.Printf("[requirement] fix failed for %s:%s: %v", v.Requirement.Type, v.Requirement.Name, err)
 			remaining = append(remaining, v)
 			continue
 		}
 		// Verify the fix actually worked by re-checking.
-		checker, hasChecker := r.checkers[v.Requirement.Type]
+		checker, hasChecker := checkerSnapshot[v.Requirement.Type]
 		if hasChecker {
 			if recheck := checker.Check(v.Requirement); recheck != nil {
 				log.Printf("[requirement] fix for %s:%s returned success but re-check still fails: %s",
@@ -189,6 +230,50 @@ func (r *Registry) FixAll(violations []Violation) []Violation {
 		log.Printf("[requirement] fixed %s:%s", v.Requirement.Type, v.Requirement.Name)
 	}
 	return remaining
+}
+
+// isTransientFixError distinguishes transient network errors (retry-worthy)
+// from permanent errors (package not found, version conflict, permissions).
+// This is the single decision point — all Fixers benefit from this classification.
+//
+// False positive cost is low (one 3s retry on a deterministic error), but we
+// still use specific patterns to minimize wasted time.
+func isTransientFixError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Network/connectivity issues — transient, worth retrying.
+	transientPatterns := []string{
+		"connection refused", "connection reset", "connection timed out",
+		"timeout", "timed out",
+		"dns", "name resolution",
+		"network is unreachable", "network unreachable",
+		"no route to host",
+		"reset by peer",
+		"temporary failure in name resolution",
+		"broken pipe",
+		"503 service", "502 bad gateway",
+		"429", "rate limit", "too many requests",
+	}
+	for _, pattern := range transientPatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// fixProgressMessage generates a user-friendly progress message for a fix operation.
+func fixProgressMessage(req Requirement) string {
+	switch req.Type {
+	case "pip":
+		return fmt.Sprintf("📦 正在安装 Python 包 %s%s...", req.Name, req.Version)
+	case "npm":
+		return fmt.Sprintf("📦 正在安装 Node 包 %s%s...", req.Name, req.Version)
+	default:
+		return fmt.Sprintf("🔧 正在修复依赖 %s...", req.Name)
+	}
 }
 
 // HasFixer returns true if a fixer is registered for the given type.

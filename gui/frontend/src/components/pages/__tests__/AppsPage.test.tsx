@@ -71,6 +71,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 import { AppsPage } from '../AppsPage';
 
 const marketManifestPlaceholder = /(?:Paste app package JSON \(maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json\)|粘贴应用包 JSON（maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json）)/;
+const manageManifestTitle = /^(?:Manifest|清单)$/;
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 
 function getStudioButton() {
@@ -79,6 +80,15 @@ function getStudioButton() {
         || screen.queryByTitle('MaClaw 应用工作室室')
         || screen.queryByTitle('MaClaw 应用工作室')
         || screen.getByRole('button', { name: /MaClaw App Studio|App Studio|MaClaw 应用工作室|MaClaw 应用工作室室/ });
+}
+
+async function findRuntimeGovernancePanel() {
+    const existing = screen.queryByLabelText('Install governance');
+    if (existing) return existing;
+    screen.queryAllByRole('button', { name: 'Show details' }).forEach((button) => {
+        fireEvent.click(button);
+    });
+    return screen.findByLabelText('Install governance');
 }
 
 function getManageTab() {
@@ -849,12 +859,27 @@ describe('AppsPage', () => {
         expect(screen.getByPlaceholderText('\u641c\u7d22\u5e94\u7528')).not.toBeNull();
         const studioEntry = getStudioButton();
         expect(studioEntry).not.toBeNull();
-        expect(studioEntry.textContent).toBe('');
+        expect(studioEntry.textContent).toBe('\u5de5\u4f5c\u5ba4');
+        expect(studioEntry.closest('.apps-search-row')).not.toBeNull();
+        expect(studioEntry.closest('.apps-ops')).toBeNull();
+        expect(container.querySelector('.apps-ops__item--studio')).toBeNull();
         expect(container.querySelector('.apps-studio-button__icon svg:not(.apps-studio-button__plus)')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('\u6587\u6863\u5904\u7406 (2)')).not.toBeNull();
         expect(within(document.querySelector('.apps-category-select') as HTMLSelectElement).getByText('\u5168\u90e8\u5e94\u7528 (10)')).not.toBeNull();
         expect(screen.getAllByText('\u5e38\u7528\u5e94\u7528').length).toBeGreaterThan(0);
         expect(container.querySelectorAll('.apps-app-tile').length).toBeGreaterThan(6);
+    });
+
+    it('opens MIS data settings from the DataSrv discovery summary', () => {
+        const openMISDataSettings = vi.fn();
+        render(<AppsPage lang="zh-Hans" onOpenMISDataSettings={openMISDataSettings} />);
+
+        fireEvent.click(getStudioButton());
+        const summaryButton = screen.getByRole('button', { name: /DataSrv \u80fd\u529b\u53d1\u73b0.*MIS \u6570\u636e\u8bbe\u7f6e/ });
+        expect(within(summaryButton).getByText('\u8bbe\u7f6e')).not.toBeNull();
+        fireEvent.click(summaryButton);
+
+        expect(openMISDataSettings).toHaveBeenCalledTimes(1);
     });
 
     it('renders the app panel operation section without changing app category counts', () => {
@@ -3990,7 +4015,7 @@ describe('AppsPage', () => {
         expect(runtimeWorkflowContract).not.toBeNull();
         expect(within(runtimeWorkflowContract as HTMLElement).getByText('Runtime contract aligned')).not.toBeNull();
         expect(within(runtimeWorkflowContract as HTMLElement).getByText('approved-approval-workflow@v4.0.0')).not.toBeNull();
-        const runtimeGovernance = await screen.findByLabelText('Install governance');
+        const runtimeGovernance = await findRuntimeGovernancePanel();
         expect(within(runtimeGovernance).getByText('Package signature')).not.toBeNull();
         expect(within(runtimeGovernance).getByText(/ed25519.*sha256:approved-approval-key.*enterprise-market/)).not.toBeNull();
         expect(screen.getAllByText('approved · cap-approved-approval-app · enterprise_hub:skill:maclaw-app:approved-approval-app@7').length).toBeGreaterThan(0);
@@ -4694,7 +4719,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-create-form .apps-actions .apps-primary-button') as HTMLElement);
         fireEvent.click(document.getElementById('apps-studio-tab-manage') as HTMLElement);
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('approval-workbench')) as HTMLElement;
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
 
         expect(manifest.app.binding.appSkill.id).toBe('expense-super-app');
@@ -4735,7 +4760,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-create-form .apps-actions .apps-primary-button') as HTMLElement);
         fireEvent.click(document.getElementById('apps-studio-tab-manage') as HTMLElement);
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('approval-nodes')) as HTMLElement;
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.binding.workflow).toMatchObject({
             schema: 'maclaw.app.workflow.v1',
@@ -4779,7 +4804,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-create-form .apps-actions .apps-primary-button') as HTMLElement);
         fireEvent.click(document.getElementById('apps-studio-tab-manage') as HTMLElement);
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('layout-workbench')) as HTMLElement;
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifestText = document.querySelector('.apps-manage-manifest')?.textContent || '';
         const manifest = JSON.parse(manifestText);
         const layout = manifest.app.binding.ui.layouts.tool_workspace;
@@ -5104,7 +5129,7 @@ describe('AppsPage', () => {
         fireEvent.click(getManageTab());
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifestText = document.querySelector('.apps-manage-manifest')?.textContent || '';
         const manifest = JSON.parse(manifestText);
 
@@ -5144,7 +5169,7 @@ describe('AppsPage', () => {
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('旧版本地应用')) as HTMLElement;
         expect(row.textContent).toContain('本地');
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.source).toBe('local');
     });
@@ -6641,6 +6666,56 @@ describe('AppsPage', () => {
         expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
     });
 
+    it('explains needs-review runtime skill dependencies before running installed tool apps', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        { id: 'runtime-review-tool', skill_id: 'review-runtime-tool', name: '审核依赖工具', description: 'Runtime dependency review check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('审核依赖工具')[0]);
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'skill-app-review-runtime-tool-runtime-review-tool', name: '审核依赖工具', kind: 'tool_app' }],
+            dependencies: [{
+                id: 'review-runtime-tool',
+                version: '1.0.0',
+                kind: 'runtime_skill',
+                source: 'hub',
+                required: true,
+                installed: true,
+                installed_status: 'needs_review',
+                health: 'needs_review',
+                action: 'blocked',
+                app_ids: ['skill-app-review-runtime-tool-runtime-review-tool'],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: true,
+        });
+
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(screen.getAllByText('审核依赖工具暂不可用：review-runtime-tool 需要在技能管理中审核通过后才能使用。').length).toBeGreaterThan(0));
+        const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
+        const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;
+        expect(dependencyList).not.toBeNull();
+        const dependency = within(dependencyList).getByText('review-runtime-tool').closest('.apps-install-record__dep') as HTMLElement;
+        expect(dependency.dataset.state).toBe('blocked');
+        expect(dependency.textContent).toContain('runtime_skill · hub · v1.0.0 · needs_review');
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
+    });
+
     it('installs missing runtime dependencies and continues the installed app run', async () => {
         render(<AppsPage lang="zh-Hans" />);
 
@@ -7936,7 +8011,7 @@ describe('AppsPage', () => {
         fireEvent.click(getManageTab());
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
-        fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle('Manifest'));
+        fireEvent.click(within(manageRows[0] as HTMLElement).getByTitle(manageManifestTitle));
 
         expect(screen.getByText(/maclaw.app.v1/)).not.toBeNull();
         expect(screen.getByText(/agent_dynamic_ui/)).not.toBeNull();
@@ -7997,7 +8072,7 @@ describe('AppsPage', () => {
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('费用报销')) as HTMLElement;
         expect(editedRow.textContent).toContain('财务');
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"name": "费用报销');
         expect(manifest).toContain('"category": "财务"');
@@ -8032,7 +8107,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('保存'));
 
         const renamedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 快速版')) as HTMLElement;
-        fireEvent.click(within(renamedRow).getByTitle('Manifest'));
+        fireEvent.click(within(renamedRow).getByTitle(manageManifestTitle));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"name": "PDF 转 Word 快速版"');
         expect(manifest).toContain('"id": "pdf-to-word"');
@@ -8055,7 +8130,7 @@ describe('AppsPage', () => {
 
         const copiedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 副本')) as HTMLElement;
         expect(within(copiedRow).getByTitle('移除')).not.toBeNull();
-        fireEvent.click(within(copiedRow).getByTitle('Manifest'));
+        fireEvent.click(within(copiedRow).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         window.localStorage.setItem('maclaw:apps-run-history:v1', JSON.stringify({
             [manifest.app.id]: [{ appID: manifest.app.id, runID: 'run-copy-old', status: 'done', outputMode: 'pdf', inputSummary: 'old', message: 'old', at: new Date().toISOString() }],
@@ -8086,7 +8161,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"inputMode": "mixed"');
         expect(manifest).toContain('"xlsx"');
@@ -8113,7 +8188,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         const layout = manifest.app.binding.ui.layouts.tool_workspace;
         expect(layout.template).toBe('left_nav');
@@ -8232,7 +8307,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Approval Nodes')) as HTMLElement;
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.binding.workflow.approvalNode).toBe('finance.director_review');
         expect(manifest.app.binding.workflow.statusMapping.rejected).toBe('finance_rejected');
@@ -8259,7 +8334,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.binding.skill.id).toBe('pdf-word-v2');
         expect(manifest.app.binding.appSkill.id).toBe('pdf-word-v2');
@@ -8463,7 +8538,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
-        fireEvent.click(within(editedRow).getByTitle('Manifest'));
+        fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
         const manifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(manifest).toContain('"fields"');
         expect(manifest).toContain('"review_level"');
@@ -8962,7 +9037,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getAllByText('Close')[0]);
         fireEvent.click(screen.getByRole('button', { name: /Contract Approval/ }));
         await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith(installedAppID, 'all', expect.any(Number)));
-        const runtimeGovernance = await screen.findByLabelText('Install governance');
+        const runtimeGovernance = await findRuntimeGovernancePanel();
         expect(within(runtimeGovernance).getByText('Source')).not.toBeNull();
         expect(within(runtimeGovernance).getByText(/published · cap-hub-contract-approval/)).not.toBeNull();
         expect(within(runtimeGovernance).getByText('Package signature')).not.toBeNull();
@@ -9333,7 +9408,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('8/8')).not.toBeNull();
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('市场置顶文档')) as HTMLElement;
         expect(within(row).getByTitle('常用应用已满 8 个，请先取消一个')).not.toBeNull();
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         const manifest = JSON.parse(document.querySelector('.apps-manage-manifest')?.textContent || '{}');
         expect(manifest.app.panel.pinned).toBe(false);
     });
@@ -9429,7 +9504,7 @@ describe('AppsPage', () => {
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('文档脱敏增强')) as HTMLElement;
         expect(row).toBeTruthy();
         expect(row.textContent).toContain('文档处理');
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         expect(screen.getByText(/"version": 2/)).not.toBeNull();
         expect(screen.getByText(/"id": "admin-doc-redact-v2"/)).not.toBeNull();
         expect(screen.getByText(/"icon": "shield"/)).not.toBeNull();
@@ -9882,10 +9957,7 @@ describe('AppsPage', () => {
         });
         fireEvent.click(screen.getAllByText('Close')[0]);
         fireEvent.click(screen.getAllByText('合同归档')[0]);
-        await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
-        expect(screen.getAllByText('contract-archive-skill').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('run-contract-archive · proto-contract-archive').length).toBeGreaterThan(0);
-        const runtimeGovernance = await screen.findByLabelText('Install governance');
+        const runtimeGovernance = await findRuntimeGovernancePanel();
         expect(within(runtimeGovernance).getByText('Workspace layout')).not.toBeNull();
         expect(within(runtimeGovernance).getByText('tool_workspace · document_workspace · compact')).not.toBeNull();
         expect(within(runtimeGovernance).getByText('Result contract')).not.toBeNull();
@@ -10078,10 +10150,12 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.getAllByText('Cold Start Console').length).toBeGreaterThan(0));
         fireEvent.click(screen.getAllByText('Cold Start Console')[0]);
 
-        await waitFor(() => expect(screen.getAllByText('Dependency verification complete').length).toBeGreaterThan(0));
+        const runtimeGovernance = await findRuntimeGovernancePanel();
+        expect(within(runtimeGovernance).getByText('Dependency verification')).not.toBeNull();
+        expect(within(runtimeGovernance).getByText('Skill dependencies: 1 · Blocking deps: 0')).not.toBeNull();
         expect(screen.getAllByText('cold-layout-skill').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('tool_workspace · dashboard · compact').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('run-cold-start · proto-cold-start').length).toBeGreaterThan(0);
+        expect(within(runtimeGovernance).getByText('tool_workspace · dashboard · compact')).not.toBeNull();
+        expect(within(runtimeGovernance).getByText('run-cold-start · proto-cold-start')).not.toBeNull();
     });
 
     it('shows recent app install records in the market pane', async () => {
@@ -10495,7 +10569,7 @@ describe('AppsPage', () => {
             expect(found).toBeTruthy();
             return found as HTMLElement;
         });
-        fireEvent.click(within(row).getByTitle('Manifest'));
+        fireEvent.click(within(row).getByTitle(manageManifestTitle));
         expect(document.querySelector('.apps-manage-manifest')?.textContent).toContain(customIconDataUrl);
     });
 
@@ -11401,7 +11475,7 @@ describe('AppsPage', () => {
         });
 
         fireEvent.click(screen.getByRole('button', { name: /Customer Console Installed/ }));
-        const runtimeGovernance = await screen.findByLabelText('Install governance');
+        const runtimeGovernance = await findRuntimeGovernancePanel();
         expect(within(runtimeGovernance).getByText('Source')).not.toBeNull();
         expect(within(runtimeGovernance).getByText(/published · cap-sales-customer-console/)).not.toBeNull();
         expect(within(runtimeGovernance).getByText('Package signature')).not.toBeNull();
@@ -12044,7 +12118,7 @@ describe('AppsPage', () => {
         expect((runtimeLayout.querySelector('.apps-approval-workspace') as HTMLElement).dataset.region).toBe('left');
         expect((runtimeLayout.querySelector('.apps-runtime-output') as HTMLElement).dataset.region).toBe('bottom');
 
-        const runtimeGovernance = await screen.findByLabelText('Install governance');
+        const runtimeGovernance = await findRuntimeGovernancePanel();
         expect(within(runtimeGovernance).getByText('Workspace layout')).not.toBeNull();
         expect(within(runtimeGovernance).getByText('approval_workspace · dashboard · compact')).not.toBeNull();
         expect(within(runtimeGovernance).getByText('Test evidence')).not.toBeNull();

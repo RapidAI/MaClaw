@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	maclawapptest "github.com/RapidAI/CodeClaw/internal/testfixtures"
 )
 
@@ -1762,15 +1763,23 @@ func TestListMaclawAppPackageSubmissionsHandlesEmptyAndLimit(t *testing.T) {
 	}
 
 	pkg := func(id string) string {
-		return `{
-			"schema": "maclaw.app.pack.v1",
-			"privateMarker": "x_maclaw_apps",
-			"apps": [{
-				"schema": "maclaw.app.v1",
+		return maclawAppPackageWithCurrentDefinitionHashes(t, `{
+				"schema": "maclaw.app.pack.v1",
 				"privateMarker": "x_maclaw_apps",
-				"app": {"id": "` + id + `", "name": "App"}
-			}]
-		}`
+				"apps": [{
+					"schema": "maclaw.app.v1",
+					"privateMarker": "x_maclaw_apps",
+					"app": {
+						"id": "`+id+`",
+						"name": "App",
+						"kind": "tool_app",
+						"governance": {
+							"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+							"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-`+id+`","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-`+id+`", "runId":"run-`+id+`", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+						}
+					}
+				}]
+			}`)
 	}
 	if _, err := app.SubmitMaclawAppPackage(pkg("first-app")); err != nil {
 		t.Fatalf("submit first: %v", err)
@@ -1789,7 +1798,7 @@ func TestListMaclawAppPackageSubmissionsHandlesEmptyAndLimit(t *testing.T) {
 
 func TestGetMaclawAppPackageSubmissionReturnsFullPackage(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	pkg := `{
+	pkg := maclawAppPackageWithCurrentDefinitionHashes(t, `{
 		"schema": "maclaw.app.pack.v1",
 		"privateMarker": "x_maclaw_apps",
 		"apps": [{
@@ -1798,10 +1807,15 @@ func TestGetMaclawAppPackageSubmissionReturnsFullPackage(t *testing.T) {
 			"app": {
 				"id": "detail-app",
 				"name": "Detail App",
-				"runtime": {"type": "fixed_skill_ui"}
+				"runtime": {"type": "fixed_skill_ui"},
+				"kind": "tool_app",
+				"governance": {
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-detail-app","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-detail-app", "runId":"run-detail-app", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+				}
 			}
 		}]
-	}`
+	}`)
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -1851,15 +1865,7 @@ func TestGetMaclawAppPackageSubmissionHandlesMissingID(t *testing.T) {
 
 func TestWithdrawMaclawAppPackageSubmissionRemovesLocalOnly(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	pkg := `{
-		"schema": "maclaw.app.pack.v1",
-		"privateMarker": "x_maclaw_apps",
-		"apps": [{
-			"schema": "maclaw.app.v1",
-			"privateMarker": "x_maclaw_apps",
-			"app": {"id": "withdraw-app", "name": "App"}
-		}]
-	}`
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "withdraw-app")
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -1895,15 +1901,7 @@ func TestWithdrawMaclawAppPackageSubmissionRemovesLocalOnly(t *testing.T) {
 
 func TestUpdateMaclawAppPackageSubmissionStatus(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	pkg := `{
-		"schema": "maclaw.app.pack.v1",
-		"privateMarker": "x_maclaw_apps",
-		"apps": [{
-			"schema": "maclaw.app.v1",
-			"privateMarker": "x_maclaw_apps",
-			"app": {"id": "status-app", "name": "App"}
-		}]
-	}`
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "status-app")
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -4887,7 +4885,7 @@ func TestInstallSelectedMaclawApprovalAppFromHubPreservesApprovalEvidence(t *tes
 				"market_capability_id": "expense-approval",
 				"submission_id":        versionKey,
 				"version_key":          versionKey,
-				"package_sha256":       packageSHA,
+				"package_sha256":       "pkg-expense-approval",
 				"package_signature":    signature,
 				"review_evidence":      reviewEvidence,
 			}
@@ -5227,15 +5225,18 @@ func TestInstallMaclawAppPackageFromHubRejectsGovernanceReviewIssues(t *testing.
 	}
 
 	_, err := app.InstallMaclawAppPackageFromHub("cap-bad-governance")
-	if err == nil || !strings.Contains(err.Error(), "package governance review failed") || !strings.Contains(err.Error(), "missing successful local run evidence") {
-		t.Fatalf("expected governance install error, got %v", err)
+	// Governance review issues are non-blocking at install time (enforcement
+	// moved to Hub publish/approval endpoint). The install should succeed with
+	// a warning in logs.
+	if err != nil {
+		t.Fatalf("governance review should not block hub install, got error: %v", err)
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
 	}
-	if len(records) != 0 {
-		t.Fatalf("blocked hub install should not write install audit: %#v", records)
+	if len(records) == 0 {
+		t.Fatalf("hub install with governance warnings should still write install audit")
 	}
 }
 func TestInstallMaclawAppPackageFromHubUsesSessionTokenFallback(t *testing.T) {
@@ -5455,15 +5456,7 @@ func TestUpdateMaclawAppPackageSubmissionStatusRejectsDuplicateNextID(t *testing
 
 func TestUpdateMaclawAppPackageSubmissionStatusStoresReviewIssues(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	pkg := `{
-		"schema": "maclaw.app.pack.v1",
-		"privateMarker": "x_maclaw_apps",
-		"apps": [{
-			"schema": "maclaw.app.v1",
-			"privateMarker": "x_maclaw_apps",
-			"app": {"id": "issue-app", "name": "Issue App"}
-		}]
-	}`
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "issue-app")
 	result, err := app.SubmitMaclawAppPackage(pkg)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -5940,6 +5933,59 @@ func TestInstallMaclawAppDependenciesInstallsHubBackedSources(t *testing.T) {
 	}
 }
 
+func TestInstallMaclawAppDependenciesMatchesInstalledSkillByInstallRefTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillhub" || id != "RapidOCR" || installRef != "rapidocr" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "rapidocr-runtime")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "rapidocr-runtime",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillhub",
+			HubSkillID: "rapidocr",
+			HubVersion: "v1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "RapidOCR", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub", "install_ref": "hub://skills/rapidocr@1.0.0" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "rapidocr-runtime" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should be matched by install_ref target after install: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("install_ref target match should clear blocking flags: %#v", plan)
+	}
+}
+
 func TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -6315,7 +6361,9 @@ func TestPlanMaclawAppInstallPreflightsSkillMarketDependency(t *testing.T) {
 			var results []SkillSearchResult
 			switch query {
 			case "market-ready-workflow":
-				results = []SkillSearchResult{{ID: "market-ready-workflow", Name: "Market Ready Workflow", Version: "1.2.0", PackageSHA256: "sha-ready", PackageSignature: "sig-ready", PackageDownloadURL: "https://skillmarket.example/download/market-ready-workflow"}}
+				results = []SkillSearchResult{{ID: "market-ready-workflow", Name: "Market Ready Workflow", Version: "v1.2.0", PackageSHA256: "sha-ready", PackageSignature: "sig-ready", PackageDownloadURL: "https://skillmarket.example/download/market-ready-workflow"}}
+			case "market-newer-workflow":
+				results = []SkillSearchResult{{ID: "market-newer-workflow", Name: "Market Newer Workflow", Version: "2.5.0", PackageSHA256: "sha-newer", PackageSignature: "sig-newer", PackageDownloadURL: "https://skillmarket.example/download/market-newer-workflow"}}
 			case "market-old-workflow":
 				results = []SkillSearchResult{{ID: "market-old-workflow", Name: "Market Old Workflow", Version: "1.0.0", PackageSHA256: "sha-old"}}
 			case "market-missing-workflow":
@@ -6330,7 +6378,8 @@ func TestPlanMaclawAppInstallPreflightsSkillMarketDependency(t *testing.T) {
 	}))
 	defer server.Close()
 
-	app := &App{testHomeDir: t.TempDir()}
+	app := &App{testHomeDir: t.TempDir(), hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -6343,6 +6392,7 @@ func TestPlanMaclawAppInstallPreflightsSkillMarketDependency(t *testing.T) {
 			"kind": "enterprise_approval_app",
 			"dependencies": { "skills": [
 				{ "id": "market-ready-workflow", "version": "1.2.0", "kind": "workflow_skill", "required": true, "source": "skillmarket" },
+				{ "id": "market-newer-workflow", "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "skillmarket" },
 				{ "id": "market-old-workflow", "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "skillmarket" },
 				{ "id": "market-missing-workflow", "version": "1.0.0", "kind": "workflow_skill", "required": true, "source": "skillmarket" }
 			] }
@@ -6354,6 +6404,10 @@ func TestPlanMaclawAppInstallPreflightsSkillMarketDependency(t *testing.T) {
 	ready := maclawAppPlanDepForTest(plan, "market-ready-workflow")
 	if ready == nil || ready.PreflightStatus != "ready" || ready.PreflightCode != "skillmarket_target_ready" || ready.PreflightStage != "skillmarket_preflight" || ready.IntegrityStatus != "ready" || ready.IntegrityCode != "package_integrity_metadata_ready" || ready.PackageSHA256 != "sha-ready" || ready.PackageSignature != "sig-ready" || ready.PackageDownloadURL == "" {
 		t.Fatalf("ready SkillMarket dependency preflight mismatch: %#v", ready)
+	}
+	newer := maclawAppPlanDepForTest(plan, "market-newer-workflow")
+	if newer == nil || newer.PreflightStatus != "ready" || newer.PreflightCode != "skillmarket_target_ready" || newer.PackageSHA256 != "sha-newer" {
+		t.Fatalf("newer SkillMarket dependency should satisfy minimum required version: %#v", newer)
 	}
 	old := maclawAppPlanDepForTest(plan, "market-old-workflow")
 	if old == nil || old.PreflightStatus != "blocked" || old.PreflightCode != "version_mismatch" || old.Action != "blocked" || old.IntegrityStatus != "partial" || old.IntegrityCode != "signature_unavailable" || old.PackageSHA256 != "sha-old" || !strings.Contains(old.PreflightMessage, "version 1.0.0") {
@@ -6374,7 +6428,9 @@ func TestPlanMaclawAppInstallPreflightsEnterpriseHubCapability(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/api/capabilities/cap-ready-workflow":
-			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-ready-workflow", CapabilityID: "ready-workflow", CapabilityType: "skill", Status: "published", CurrentVersionKey: "1.2.0", MetadataJSON: `{"package_sha256":"enterprise-sha-ready","package_signature":"enterprise-sig-ready","package_download_url":"https://hub.example/packages/cap-ready-workflow"}`})
+			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-ready-workflow", CapabilityID: "ready-workflow", CapabilityType: "skill", Status: "published", CurrentVersionKey: "v1.2.0", MetadataJSON: `{"package_sha256":"enterprise-sha-ready","package_signature":"enterprise-sig-ready","package_download_url":"https://hub.example/packages/cap-ready-workflow"}`})
+		case "/api/capabilities/cap-newer-workflow":
+			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-newer-workflow", CapabilityID: "newer-workflow", CapabilityType: "skill", Status: "published", CurrentVersionKey: "2.5.0", PackageSHA256: "enterprise-sha-newer", PackageSignature: "enterprise-sig-newer"})
 		case "/api/capabilities/cap-old-workflow":
 			_ = json.NewEncoder(w).Encode(HubCapabilitySummary{ID: "cap-old-workflow", CapabilityID: "old-workflow", CapabilityType: "skill", Status: "published", CurrentVersionKey: "1.0.0", PackageSHA256: "enterprise-sha-old"})
 		case "/api/capabilities/cap-missing-workflow":
@@ -6398,6 +6454,7 @@ func TestPlanMaclawAppInstallPreflightsEnterpriseHubCapability(t *testing.T) {
 			"kind": "enterprise_approval_app",
 			"dependencies": { "skills": [
 				{ "id": "ready-workflow", "version": "1.2.0", "kind": "workflow_skill", "required": true, "source": "enterprise_hub", "install_ref": "enterprise_hub://capabilities/cap-ready-workflow@1.2.0" },
+				{ "id": "newer-workflow", "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "enterprise_hub", "install_ref": "enterprise_hub://capabilities/cap-newer-workflow@2.0.0" },
 				{ "id": "old-workflow", "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "enterprise_hub", "install_ref": "enterprise_hub://capabilities/cap-old-workflow@2.0.0" },
 				{ "id": "missing-workflow", "version": "1.0.0", "kind": "workflow_skill", "required": true, "source": "enterprise_hub", "install_ref": "enterprise_hub://capabilities/cap-missing-workflow@1.0.0" }
 			] }
@@ -6409,6 +6466,10 @@ func TestPlanMaclawAppInstallPreflightsEnterpriseHubCapability(t *testing.T) {
 	ready := maclawAppPlanDepForTest(plan, "ready-workflow")
 	if ready == nil || ready.PreflightStatus != "ready" || ready.PreflightCode != "enterprise_hub_target_ready" || ready.PreflightStage != "enterprise_hub_preflight" || ready.IntegrityStatus != "ready" || ready.PackageSHA256 != "enterprise-sha-ready" || ready.PackageSignature != "enterprise-sig-ready" || ready.PackageDownloadURL == "" {
 		t.Fatalf("ready enterprise dependency preflight mismatch: %#v", ready)
+	}
+	newer := maclawAppPlanDepForTest(plan, "newer-workflow")
+	if newer == nil || newer.PreflightStatus != "ready" || newer.PreflightCode != "enterprise_hub_target_ready" || newer.PackageSHA256 != "enterprise-sha-newer" || newer.PackageSignature != "enterprise-sig-newer" {
+		t.Fatalf("newer enterprise dependency should satisfy minimum required version: %#v", newer)
 	}
 	old := maclawAppPlanDepForTest(plan, "old-workflow")
 	if old == nil || old.PreflightStatus != "blocked" || old.PreflightCode != "version_mismatch" || old.Action != "blocked" || old.IntegrityStatus != "partial" || old.IntegrityCode != "signature_unavailable" || old.PackageSHA256 != "enterprise-sha-old" || !strings.Contains(old.PreflightMessage, "version 1.0.0") {
@@ -6970,15 +7031,21 @@ func TestRecordMaclawAppInstallRejectsGovernanceReviewErrors(t *testing.T) {
 		}
 	}`
 
-	if _, err := app.RecordMaclawAppInstall(pkg, "market"); err == nil || !strings.Contains(err.Error(), "package governance review failed") {
-		t.Fatalf("expected governance review install error, got %v", err)
+	// Governance review issues are non-blocking at install time (enforcement
+	// moved to Hub publish/approval endpoint). Local install should succeed.
+	result, err := app.RecordMaclawAppInstall(pkg, "market")
+	if err != nil {
+		t.Fatalf("governance review should not block local install, got error: %v", err)
+	}
+	if result == nil {
+		t.Fatalf("successful local install should return non-nil result")
 	}
 	records, err := app.ListMaclawAppInstalls(10)
 	if err != nil {
 		t.Fatalf("ListMaclawAppInstalls() error = %v", err)
 	}
-	if len(records) != 0 {
-		t.Fatalf("governance-blocked install should not write audit records: %#v", records)
+	if len(records) == 0 {
+		t.Fatalf("local install with governance warnings should still write audit records")
 	}
 }
 func TestMaclawAppWorkspaceLayoutMetadataFallsBackToGovernanceLayout(t *testing.T) {

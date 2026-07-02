@@ -9,6 +9,7 @@ const GetMaclawAgentMaxIterationsMock = vi.fn();
 const GetSubAgentConcurrencyMock = vi.fn();
 const GetHubLLMServiceStatusMock = vi.fn();
 const FetchProviderModelsMock = vi.fn();
+const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
@@ -28,6 +29,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ImportCodexAuth: vi.fn(),
     FetchCodeGenModels: vi.fn(),
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
+    CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
     SaveCodeGenModelChoice: vi.fn(),
 }));
 
@@ -64,6 +66,12 @@ describe('LLMConfigPanel test-and-save flow', () => {
         GetSubAgentConcurrencyMock.mockResolvedValue(2);
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
+        CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
+            status: 'created',
+            session_id: 'mlqr_test',
+            expires_at: '2026-07-02T12:00:00Z',
+            qr_payload: '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top"}',
+        });
         LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token' });
     });
 

@@ -241,7 +241,8 @@ func remoteActivate(args []string) error {
 	if result.ViewerToken != "" && cfg.SkillMarketSessionToken == "" {
 		smClient := remote.NewSkillMarketAuthClient()
 		smCtx, smCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		smResult, smErr := smClient.MachineLogin(smCtx, cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), result.Email, result.MachineID, result.ViewerToken)
+		smBaseURL := ResolveHubCenterWithFailover(cfg, cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
+		smResult, smErr := smClient.MachineLogin(smCtx, smBaseURL, result.Email, result.MachineID, result.ViewerToken)
 		smCancel()
 		if smErr == nil && smResult.SessionToken != "" {
 			cfg.SkillMarketSessionToken = smResult.SessionToken
@@ -282,11 +283,14 @@ func applyRemoteEnrollResultToConfig(cfg corelib.AppConfig, result *remote.Enrol
 	if result.ClientID != "" && cfg.RemoteClientID == "" {
 		cfg.RemoteClientID = result.ClientID
 	}
-	if result.HubCenterURL != "" {
-		cfg.RemoteHubCenterURL = result.HubCenterURL
-	}
-	if len(result.DiscoveredURLs) > 0 {
-		cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(result.DiscoveredURLs)
+	if result.HubCenterURL != "" || len(result.DiscoveredURLs) > 0 {
+		preferred, discovered := sanitizeRemoteHubCenterURLs(result.HubCenterURL, result.DiscoveredURLs)
+		if preferred != "" {
+			cfg.RemoteHubCenterURL = preferred
+		}
+		if len(discovered) > 0 || len(result.DiscoveredURLs) > 0 {
+			cfg.RemoteHubCenterURLs = discovered
+		}
 	}
 	cfg.OnboardingDone = remoteActivationComplete(cfg)
 	return cfg
@@ -327,6 +331,9 @@ func remoteSetHubCenter(args []string) error {
 	if !validRemoteHubCenterURL(hubCenterURL) {
 		return fmt.Errorf("HubCenter must be a valid http(s) URL: %s", fs.Arg(0))
 	}
+	if remote.IsLoopbackURL(hubCenterURL) {
+		return fmt.Errorf("HubCenter must be a public address, not a loopback address: %s", fs.Arg(0))
+	}
 
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
@@ -349,6 +356,22 @@ func validRemoteHubCenterURL(value string) bool {
 		return false
 	}
 	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
+func sanitizeRemoteHubCenterURLs(preferred string, discovered []string) (string, []string) {
+	candidates := append([]string{preferred}, discovered...)
+	normalized := remote.NormalizeHubCenterURLs(candidates)
+	public := make([]string, 0, len(normalized))
+	for _, value := range normalized {
+		if value == "" || remote.IsLoopbackURL(value) {
+			continue
+		}
+		public = append(public, value)
+	}
+	if len(public) == 0 {
+		return "", nil
+	}
+	return public[0], public
 }
 
 func remoteMachineActivationReady(cfg corelib.AppConfig) bool {
@@ -402,10 +425,10 @@ func yesNoEN(ok bool) string {
 }
 
 func effectiveRemoteHubCenterURL(cfg corelib.AppConfig) string {
-	if value := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/"); value != "" {
+	if value := cfg.ConfiguredHubCenterBaseURL(); value != "" {
 		return value
 	}
-	return remote.DefaultRemoteHubCenterURL
+	return "(auto-discover on activation)"
 }
 
 func remoteSetEmail(args []string) error {

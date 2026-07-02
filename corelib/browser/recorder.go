@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // BrowserRecorder records user browser operations via CDP events.
@@ -17,16 +19,15 @@ type BrowserRecorder struct {
 	startTime time.Time
 	startURL  string
 	steps     []RecordedStep
-	flowDir   string // ~/.maclaw/browser_flows/
+	flowDir   string // <MaclawBaseDir>/browser_flows/
 	sessionFn func() (*Session, error)
 	logger    func(string)
 }
 
 // NewBrowserRecorder creates a recorder.
 func NewBrowserRecorder(sessionFn func() (*Session, error), logger func(string)) *BrowserRecorder {
-	home, _ := os.UserHomeDir()
 	return &BrowserRecorder{
-		flowDir:   filepath.Join(home, ".maclaw", "browser_flows"),
+		flowDir:   filepath.Join(corelib.MaclawBaseDir(), "browser_flows"),
 		sessionFn: sessionFn,
 		logger:    logger,
 	}

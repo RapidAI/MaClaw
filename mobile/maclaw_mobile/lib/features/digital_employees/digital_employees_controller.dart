@@ -3,14 +3,15 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
 import 'digital_employee.dart';
 import 'digital_employee_prompt.dart';
 
-final digitalEmployeesProvider = AsyncNotifierProvider<
-    DigitalEmployeesController, List<DigitalEmployee>>(
+final digitalEmployeesProvider =
+    AsyncNotifierProvider<DigitalEmployeesController, List<DigitalEmployee>>(
   DigitalEmployeesController.new,
 );
 
@@ -32,8 +33,8 @@ class DigitalEmployeesController extends AsyncNotifier<List<DigitalEmployee>> {
   }
 }
 
-final digitalEmployeeTaskProvider =
-    AsyncNotifierProvider<DigitalEmployeeTaskController, MobileDigitalEmployeeTask?>(
+final digitalEmployeeTaskProvider = AsyncNotifierProvider<
+    DigitalEmployeeTaskController, MobileDigitalEmployeeTask?>(
   DigitalEmployeeTaskController.new,
 );
 
@@ -41,6 +42,25 @@ final digitalEmployeePromptHistoryProvider = AsyncNotifierProvider<
     DigitalEmployeePromptHistoryController, List<DigitalEmployeePromptEntry>>(
   DigitalEmployeePromptHistoryController.new,
 );
+
+final digitalEmployeeTaskHistoryProvider = AsyncNotifierProvider<
+    DigitalEmployeeTaskHistoryController, List<MobileDigitalEmployeeTask>>(
+  DigitalEmployeeTaskHistoryController.new,
+);
+
+class DigitalEmployeeTaskHistoryController
+    extends AsyncNotifier<List<MobileDigitalEmployeeTask>> {
+  @override
+  Future<List<MobileDigitalEmployeeTask>> build() {
+    return ref.watch(mobileLocalStoreProvider).loadRecentDigitalEmployeeTasks();
+  }
+
+  Future<void> refresh() async {
+    state = await AsyncValue.guard(
+      () => ref.read(mobileLocalStoreProvider).loadRecentDigitalEmployeeTasks(),
+    );
+  }
+}
 
 class DigitalEmployeePromptHistoryController
     extends AsyncNotifier<List<DigitalEmployeePromptEntry>> {
@@ -77,6 +97,7 @@ class DigitalEmployeePromptHistoryController
 class DigitalEmployeeTaskController
     extends AsyncNotifier<MobileDigitalEmployeeTask?> {
   Timer? _pollTimer;
+  final Set<String> _notifiedFinishedTasks = {};
 
   @override
   Future<MobileDigitalEmployeeTask?> build() async {
@@ -84,12 +105,19 @@ class DigitalEmployeeTaskController
       _pollTimer?.cancel();
       _pollTimer = null;
     });
-    return null;
+    final task =
+        await ref.watch(mobileLocalStoreProvider).loadLastDigitalEmployeeTask();
+    if (task != null) {
+      _ensurePolling(task);
+    }
+    return task;
   }
 
   Future<void> createTask({
     required String employeeId,
     required String prompt,
+    String taskType = 'general',
+    Map<String, String> context = const {},
   }) async {
     final text = prompt.trim();
     if (text.isEmpty) return;
@@ -107,10 +135,16 @@ class DigitalEmployeeTaskController
       final task = await client.createDigitalEmployeeTask(
         employeeId: employeeId,
         prompt: text,
+        taskType: taskType,
+        context: context,
       );
+      await ref
+          .read(mobileLocalStoreProvider)
+          .saveLastDigitalEmployeeTask(task);
+      ref.invalidate(digitalEmployeeTaskHistoryProvider);
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: '数字员工任务已提交',
-            body: '任务 ${task.taskId} 状态：${task.status}',
+            body: _taskNotificationBody(task),
             payload: task.taskId,
           );
       return task;
@@ -135,13 +169,11 @@ class DigitalEmployeeTaskController
     }
     final next = await AsyncValue.guard(() async {
       final task = await client.getDigitalEmployeeTask(current.taskId);
-      if (task.status == 'done' || task.status == 'failed') {
-        await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-              title: '数字员工任务更新',
-              body: '任务 ${task.taskId} 状态：${task.status}',
-              payload: task.taskId,
-            );
-      }
+      await ref
+          .read(mobileLocalStoreProvider)
+          .saveLastDigitalEmployeeTask(task);
+      await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
+      await _notifyTaskFinished(task);
       return task;
     });
     state = next;
@@ -149,6 +181,17 @@ class DigitalEmployeeTaskController
     if (task != null) {
       _ensurePolling(task);
     }
+  }
+
+  Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
+    if (!event.digitalEmployeeTask || event.payload.isEmpty) return;
+    final task = MobileDigitalEmployeeTask.fromJson(event.payload);
+    if (task.taskId.isEmpty) return;
+    await ref.read(mobileLocalStoreProvider).saveLastDigitalEmployeeTask(task);
+    await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
+    await _notifyTaskFinished(task);
+    state = AsyncData(task);
+    _ensurePolling(task);
   }
 
   void _ensurePolling(MobileDigitalEmployeeTask task) {
@@ -175,5 +218,30 @@ class DigitalEmployeeTaskController
 
   bool _taskFinished(MobileDigitalEmployeeTask task) {
     return task.status == 'done' || task.status == 'failed';
+  }
+
+  Future<void> selectTask(MobileDigitalEmployeeTask task) async {
+    await ref.read(mobileLocalStoreProvider).saveLastDigitalEmployeeTask(task);
+    await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
+    state = AsyncData(task);
+    _ensurePolling(task);
+  }
+
+  Future<void> _notifyTaskFinished(MobileDigitalEmployeeTask task) async {
+    if (!_taskFinished(task) || task.taskId.isEmpty) return;
+    if (!_notifiedFinishedTasks.add(task.taskId)) return;
+    await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+          title: task.status == 'failed' ? '数字员工任务失败' : '数字员工任务完成',
+          body: _taskNotificationBody(task),
+          payload: task.taskId,
+        );
+  }
+
+  String _taskNotificationBody(MobileDigitalEmployeeTask task) {
+    final message = task.message.trim();
+    if (message.isEmpty) {
+      return '任务 ${task.taskId} 状态：${task.status}';
+    }
+    return '任务 ${task.taskId} 状态：${task.status}，$message';
   }
 }

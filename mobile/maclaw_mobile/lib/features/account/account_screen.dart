@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/mobile_bootstrap.dart';
-import '../../core/api/official_service.dart';
+import '../../core/api/mobile_realtime_client.dart';
+import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../../shared/surface.dart';
@@ -11,6 +12,7 @@ import '../auth/session_controller.dart';
 import '../digital_employees/digital_employees_controller.dart';
 import '../documents/documents_controller.dart';
 import '../servers/servers_controller.dart';
+import 'llm_qr_authorization_screen.dart';
 
 class AccountScreen extends ConsumerWidget {
   const AccountScreen({super.key});
@@ -21,7 +23,7 @@ class AccountScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('凭据与隐私'),
         content: const Text(
-          '登录 Token、SSH 密码、私钥和私钥口令仅保存在系统安全存储中。终端输出或日志发送给 AI 分析前，需要用户手动触发。',
+          '登录 Token、SSH 密码、私钥和私钥口令仅保存在系统安全存储中。终端输出或日志发送给 AI 分析前，需要用户手动确认。',
         ),
         actions: [
           FilledButton(
@@ -33,13 +35,13 @@ class AccountScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _clearLocalCache(BuildContext context, WidgetRef ref) async {
+  Future<void> _clearLocalWorkCache(BuildContext context, WidgetRef ref) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('清理本地缓存？'),
+        title: const Text('清理本机工作记录？'),
         content: const Text(
-          '将删除搜索历史、最近文档草稿、服务器配置、命令历史和数字员工任务模板，并清理已保存的 SSH 密码/私钥。',
+          '将删除搜索历史、文档草稿、导入/导出任务、常用命令、数字员工提示、最近任务和本机偏好设置。本操作不会退出官方服务，也不会删除服务器配置或 SSH 凭据。',
         ),
         actions: [
           TextButton(
@@ -48,7 +50,49 @@ class AccountScreen extends ConsumerWidget {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('清理'),
+            child: const Text('清理记录'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await ref.read(mobileLocalStoreProvider).clearLocalWorkCache();
+    ref
+      ..invalidate(searchHistoryProvider)
+      ..invalidate(documentsControllerProvider)
+      ..invalidate(documentDraftHistoryProvider)
+      ..invalidate(serverCommandsProvider)
+      ..invalidate(digitalEmployeePromptHistoryProvider)
+      ..invalidate(digitalEmployeeTaskProvider)
+      ..invalidate(digitalEmployeeTaskHistoryProvider)
+      ..invalidate(appPreferencesProvider);
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('本机工作记录已清理，登录态、服务器配置和 SSH 凭据已保留')),
+    );
+  }
+
+  Future<void> _clearServerAccessData(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除服务器资料和 SSH 凭据？'),
+        content: const Text(
+          '将删除本机保存的服务器 Host、端口、用户名、标签、备注，以及对应 SSH 密码、私钥和私钥口令。官方服务登录不会受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
           ),
         ],
       ),
@@ -64,17 +108,80 @@ class AccountScreen extends ConsumerWidget {
         vault.deleteServerPrivateKey(profile.id),
       ],
     ]);
-    await store.clearLocalCache();
+    await store.clearServerProfiles();
     ref
-      ..invalidate(searchHistoryProvider)
-      ..invalidate(documentsControllerProvider)
       ..invalidate(serverProfilesProvider)
-      ..invalidate(serverCommandsProvider)
-      ..invalidate(digitalEmployeePromptHistoryProvider);
+      ..invalidate(serverCommandsProvider);
 
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('本地缓存和已保存 SSH 凭据已清理')),
+      const SnackBar(content: Text('服务器资料和已保存 SSH 凭据已删除')),
+    );
+  }
+
+  Future<void> _requestNotificationPermission(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final result =
+        await ref.read(mobileNotificationServiceProvider).requestPermissions();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result.message)),
+    );
+  }
+
+  Future<void> _refreshOfficialService(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    try {
+      await ref.read(sessionControllerProvider.notifier).refreshBootstrap();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('官方服务状态已刷新')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('刷新官方服务状态失败：$error')),
+      );
+    }
+  }
+
+  Future<void> _testRealtimeChannel(
+    BuildContext context,
+    WidgetRef ref,
+    MobileBootstrap? bootstrap,
+  ) async {
+    final services = bootstrap?.services;
+    if (services == null || !services.realtimeConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('官方服务尚未下发实时通道配置')),
+      );
+      return;
+    }
+    try {
+      await ref
+          .read(mobileRealtimeClientProvider)
+          .pingOnce(path: services.realtimePath);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('实时通道自检成功')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('实时通道自检失败：$error')),
+      );
+    }
+  }
+
+  Future<void> _openLlmQrAuthorization(BuildContext context) async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) => const LlmQrAuthorizationScreen(),
+      ),
     );
   }
 
@@ -85,7 +192,7 @@ class AccountScreen extends ConsumerWidget {
     final preferences = ref.watch(appPreferencesProvider);
     return ScreenScaffold(
       title: '我的',
-      subtitle: '官方服务绑定、额度、模型/搜索状态、凭据和本地缓存。',
+      subtitle: '官方服务绑定、额度、模型/搜索状态、凭据和本地隐私数据。',
       trailing: IconButton.filledTonal(
         tooltip: '退出登录',
         onPressed: () => ref.read(sessionControllerProvider.notifier).signOut(),
@@ -104,10 +211,40 @@ class AccountScreen extends ConsumerWidget {
         else ...[
           _AccountSummaryCard(
             bootstrap: bootstrap,
-            serviceUrl: maclawOfficialServiceUrl,
+            serviceUrl: session?.hubUrl ?? '',
+          ),
+          const SizedBox(height: 12),
+          _HubConnectionCard(
+            bootstrap: bootstrap,
+            sessionHubUrl: session?.hubUrl ?? '',
+          ),
+          const SizedBox(height: 12),
+          ActionTile(
+            icon: Icons.qr_code_scanner_outlined,
+            title: '第三方 LLM 授权',
+            subtitle:
+                '默认使用 MaClaw 官方 LLM；如需接入第三方 LLM，只能扫描 MaClaw GUI 生成的授权二维码。',
+            actionLabel: '扫码授权',
+            onPressed: () => _openLlmQrAuthorization(context),
           ),
           const SizedBox(height: 12),
           _ServiceStatusCard(bootstrap: bootstrap),
+          const SizedBox(height: 12),
+          ActionTile(
+            icon: Icons.sync_outlined,
+            title: '刷新官方服务状态',
+            subtitle: '重新获取额度、模型/搜索状态、实时通道和功能开关。',
+            actionLabel: '刷新',
+            onPressed: () => _refreshOfficialService(context, ref),
+          ),
+          const SizedBox(height: 12),
+          ActionTile(
+            icon: Icons.sensors_outlined,
+            title: '实时通道自检',
+            subtitle: '连接官方 WebSocket 并发送一次移动端 ping，用于确认长任务和数字员工状态通道可用。',
+            actionLabel: '开始自检',
+            onPressed: () => _testRealtimeChannel(context, ref, bootstrap),
+          ),
           const SizedBox(height: 12),
           _FeatureStatusCard(features: bootstrap.features),
           const SizedBox(height: 12),
@@ -115,6 +252,14 @@ class AccountScreen extends ConsumerWidget {
         ],
         const SizedBox(height: 12),
         _PreferenceCard(preferences: preferences),
+        const SizedBox(height: 12),
+        ActionTile(
+          icon: Icons.notifications_active_outlined,
+          title: '通知权限',
+          subtitle: _notificationSubtitle(bootstrap?.features),
+          actionLabel: '请求权限',
+          onPressed: () => _requestNotificationPermission(context, ref),
+        ),
         const SizedBox(height: 12),
         ActionTile(
           icon: Icons.security_outlined,
@@ -126,13 +271,28 @@ class AccountScreen extends ConsumerWidget {
         const SizedBox(height: 12),
         ActionTile(
           icon: Icons.cleaning_services_outlined,
-          title: '本地缓存',
-          subtitle: '搜索历史、文档草稿、导出记录、服务器配置和命令历史。',
-          actionLabel: '清理缓存',
-          onPressed: () => _clearLocalCache(context, ref),
+          title: '本机工作记录',
+          subtitle: '清理搜索、文档、导出、命令历史、数字员工临时记录和本机偏好，保留登录态、服务器配置和 SSH 凭据。',
+          actionLabel: '清理记录',
+          onPressed: () => _clearLocalWorkCache(context, ref),
+        ),
+        const SizedBox(height: 12),
+        ActionTile(
+          icon: Icons.key_off_outlined,
+          title: '服务器资料与 SSH 凭据',
+          subtitle: '删除本机服务器配置，以及对应 SSH 密码、私钥和私钥口令。',
+          actionLabel: '删除资料',
+          onPressed: () => _clearServerAccessData(context, ref),
         ),
       ],
     );
+  }
+
+  String _notificationSubtitle(MobileFeatures? features) {
+    final serviceState = features?.pushNotifications == true
+        ? '官方服务已开启通知能力'
+        : '官方服务未声明 Push 能力，本机仍可用于前台本地提醒';
+    return '$serviceState；用于文档导出、AI 长任务、数字员工任务和 SSH 连接异常提醒。';
   }
 }
 
@@ -186,7 +346,7 @@ class _PreferenceCard extends ConsumerWidget {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: value.language,
+                initialValue: value.language,
                 items: const [
                   DropdownMenuItem(
                     value: appLanguageChinese,
@@ -265,6 +425,12 @@ class _ServiceStatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final services = bootstrap.services;
+    final criticalReady = _serviceStatusHealthy(services.hubStatus) &&
+        _serviceStatusHealthy(services.llmStatus) &&
+        _serviceStatusHealthy(services.searchStatus) &&
+        _serviceStatusHealthy(services.documentsStatus) &&
+        _serviceStatusHealthy(services.digitalEmployeesStatus) &&
+        services.realtimeConfigured;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -282,18 +448,120 @@ class _ServiceStatusCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+            Text(
+              criticalReady ? '应急能力可用' : '部分能力需要检查',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: criticalReady
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).colorScheme.error,
+                  ),
+            ),
+            const SizedBox(height: 8),
             _StatusPill(label: 'Hub', value: services.hubStatus),
-            const SizedBox(height: 10),
-            _InfoRow(label: '模型状态', value: services.llmStatusPath),
+            _StatusPill(label: '模型/LLM', value: services.llmStatus),
+            _StatusPill(label: '联网搜索', value: services.searchStatus),
+            _StatusPill(label: '文档服务', value: services.documentsStatus),
+            _StatusPill(
+              label: '数字员工',
+              value: services.digitalEmployeesStatus,
+            ),
+            _StatusPill(
+              label: '实时',
+              value: services.realtimeConfigured ? 'configured' : 'missing',
+            ),
+            const SizedBox(height: 12),
+            _InfoRow(label: '模型状态接口', value: services.llmStatusPath),
             _InfoRow(label: '模型列表', value: services.modelsPath),
-            _InfoRow(label: '联网搜索', value: services.searchPath),
-            _InfoRow(label: '文档服务', value: services.documentsPath),
-            _InfoRow(label: '数字员工', value: services.digitalEmployeesPath),
+            _InfoRow(label: '联网搜索接口', value: services.searchPath),
+            _InfoRow(label: '文档服务接口', value: services.documentsPath),
+            _InfoRow(label: '数字员工接口', value: services.digitalEmployeesPath),
+            _InfoRow(label: '实时通道', value: services.realtimePath),
           ],
         ),
       ),
     );
   }
+}
+
+class _HubConnectionCard extends StatelessWidget {
+  final MobileBootstrap bootstrap;
+  final String sessionHubUrl;
+
+  const _HubConnectionCard({
+    required this.bootstrap,
+    required this.sessionHubUrl,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final connection = bootstrap.connection;
+    final llmAccess = bootstrap.llmAccess;
+    final hubUrl =
+        connection.hubUrl.isEmpty ? sessionHubUrl : connection.hubUrl;
+    final tenantId = connection.tenantId.isEmpty
+        ? bootstrap.user.tenantId
+        : connection.tenantId;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.hub_outlined,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text('Hub 接入', style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _InfoRow(
+              label: '候选',
+              value: connection.hubCenterCandidates.isEmpty
+                  ? '未下发'
+                  : connection.hubCenterCandidates.join(' / '),
+            ),
+            _InfoRow(
+              label: 'HubCenter',
+              value: connection.selectedHubCenterUrl,
+            ),
+            _InfoRow(label: 'Hub', value: hubUrl),
+            _InfoRow(label: 'Hub ID', value: connection.hubId),
+            _InfoRow(label: '租户', value: tenantId),
+            _InfoRow(label: 'LLM', value: _llmAccessLabel(llmAccess)),
+            _InfoRow(
+              label: 'LLM 状态',
+              value: _serviceStatusLabel(llmAccess.status),
+            ),
+            if (llmAccess.desktopQrDelegated)
+              _InfoRow(label: '授权', value: _llmAuthorizationLabel(llmAccess)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _llmAuthorizationLabel(MobileLlmAccess access) {
+  final parts = [
+    if (access.authorizationId.isNotEmpty) access.authorizationId,
+    if (access.authorizedBy.isNotEmpty) '来自 ${access.authorizedBy}',
+    if (access.authorizedAt != null) access.authorizedAt!.toLocal().toString(),
+  ];
+  return parts.isEmpty ? '桌面 GUI 二维码授权' : parts.join(' · ');
+}
+
+String _llmAccessLabel(MobileLlmAccess access) {
+  if (access.desktopQrDelegated) {
+    return access.authorizationId.isEmpty
+        ? '桌面 GUI 二维码授权的第三方 LLM'
+        : '桌面 GUI 二维码授权的第三方 LLM（${access.authorizationId}）';
+  }
+  if (access.official) return 'MaClaw 官方 LLM';
+  return access.mode.isEmpty ? '未声明' : access.mode;
 }
 
 class _FeatureStatusCard extends StatelessWidget {
@@ -368,18 +636,15 @@ class _LimitStatusCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            _InfoRow(label: '上传上限', value: _formatBytes(limits.maxUploadBytes)),
+            _InfoRow(
+              label: '上传上限',
+              value: _limitBytesLabel(limits.maxUploadBytes),
+            ),
             _InfoRow(label: '并发导出任务', value: '${limits.maxExportJobs}'),
           ],
         ),
       ),
     );
-  }
-
-  String _formatBytes(int value) {
-    if (value <= 0) return '未配置';
-    final mb = value / (1024 * 1024);
-    return '${mb.toStringAsFixed(mb >= 10 ? 0 : 1)} MB';
   }
 }
 
@@ -422,15 +687,55 @@ class _StatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final online = value.toLowerCase() == 'online';
-    return Chip(
-      avatar: Icon(
-        online ? Icons.check_circle_outline : Icons.info_outline,
-        color: online ? scheme.primary : scheme.onSurfaceVariant,
+    final lower = value.toLowerCase();
+    final healthy = _serviceStatusHealthy(lower);
+    return Tooltip(
+      message: value.isEmpty ? 'empty' : value,
+      child: Chip(
+        avatar: Icon(
+          healthy ? Icons.check_circle_outline : Icons.info_outline,
+          color: healthy ? scheme.primary : scheme.error,
+        ),
+        label: Text('$label：${_serviceStatusLabel(value)}'),
+        backgroundColor:
+            healthy ? scheme.secondaryContainer : scheme.errorContainer,
+        labelStyle: TextStyle(
+          color:
+              healthy ? scheme.onSecondaryContainer : scheme.onErrorContainer,
+        ),
       ),
-      label: Text('$label：$value'),
     );
   }
+}
+
+String _limitBytesLabel(int value) {
+  if (value <= 0) return '未配置';
+  return formatMobileFileSize(value);
+}
+
+bool _serviceStatusHealthy(String value) {
+  final lower = value.toLowerCase().trim();
+  return lower == 'online' ||
+      lower == 'configured' ||
+      lower == 'available' ||
+      lower == 'ready' ||
+      lower == 'enabled';
+}
+
+String _serviceStatusLabel(String value) {
+  return switch (value.toLowerCase().trim()) {
+    'online' => '在线',
+    'configured' => '已配置',
+    'available' => '可用',
+    'ready' => '就绪',
+    'enabled' => '已开启',
+    'missing' => '未配置',
+    'offline' => '离线',
+    'unavailable' => '不可用',
+    'disabled' => '已关闭',
+    '' => '未配置',
+    _ => value,
+  };
 }
 
 class _FeatureChip extends StatelessWidget {
@@ -449,7 +754,7 @@ class _FeatureChip extends StatelessWidget {
         enabled ? Icons.check_circle_outline : Icons.remove_circle_outline,
         color: enabled ? scheme.primary : scheme.onSurfaceVariant,
       ),
-      label: Text(label),
+      label: Text('$label：${enabled ? '已开启' : '未开启'}'),
     );
   }
 }

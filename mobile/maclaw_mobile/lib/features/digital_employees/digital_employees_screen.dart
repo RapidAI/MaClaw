@@ -3,9 +3,51 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/api/api_client.dart';
 import '../../shared/surface.dart';
+import '../documents/document_draft.dart';
+import '../documents/documents_controller.dart';
 import 'digital_employee.dart';
 import 'digital_employees_controller.dart';
+
+typedef DigitalEmployeeResultTextAction = Future<void> Function(String text);
+
+final digitalEmployeeResultClipboardWriterProvider =
+    Provider<DigitalEmployeeResultTextAction>(
+  (ref) => (text) => Clipboard.setData(ClipboardData(text: text)),
+);
+
+final digitalEmployeeResultShareProvider =
+    Provider<DigitalEmployeeResultTextAction>(
+  (ref) => (text) async {
+    await Share.share(text);
+  },
+);
+
+class DigitalEmployeeMobileTaskDraft {
+  final String prompt;
+  final DigitalEmployeeMobileTaskType type;
+  final bool requireManualConfirmation;
+
+  const DigitalEmployeeMobileTaskDraft({
+    required this.prompt,
+    required this.type,
+    required this.requireManualConfirmation,
+  });
+
+  String get taskTypeWireValue => digitalEmployeeMobileTaskTypeWireValue(type);
+
+  Map<String, String> contextFor(DigitalEmployee employee) {
+    return {
+      'source': 'maclaw_mobile',
+      'employee_id': employee.id,
+      'employee_name': employee.name,
+      'machine_id': employee.machineId,
+      'task_type_label': digitalEmployeeMobileTaskTypeLabel(type),
+      'manual_confirmation_required': requireManualConfirmation.toString(),
+    };
+  }
+}
 
 class DigitalEmployeesScreen extends ConsumerWidget {
   const DigitalEmployeesScreen({super.key});
@@ -36,8 +78,7 @@ class DigitalEmployeesScreen extends ConsumerWidget {
       subtitle: '接入远程服务器/电脑上的能力，让手机发起任务、查看结果和请求授权。',
       trailing: IconButton.filledTonal(
         tooltip: '刷新',
-        onPressed: () =>
-            ref.read(digitalEmployeesProvider.notifier).refresh(),
+        onPressed: () => ref.read(digitalEmployeesProvider.notifier).refresh(),
         icon: const Icon(Icons.refresh),
       ),
       children: [
@@ -65,7 +106,64 @@ class DigitalEmployeesScreen extends ConsumerWidget {
         ),
         const SizedBox(height: 12),
         const _TaskStatusCard(),
+        const SizedBox(height: 12),
+        const _TaskHistoryCard(),
       ],
+    );
+  }
+}
+
+class _TaskHistoryCard extends ConsumerWidget {
+  const _TaskHistoryCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final history = ref.watch(digitalEmployeeTaskHistoryProvider);
+    return history.when(
+      data: (tasks) {
+        if (tasks.length <= 1) return const SizedBox.shrink();
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '最近数字员工任务',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                for (final task in tasks.take(8))
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(_taskHistoryIcon(task.taskType)),
+                    title: Text(
+                      task.prompt.trim().isEmpty ? task.taskId : task.prompt,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${digitalEmployeeTaskTypeLabelFromWire(task.taskType)} · '
+                      '${digitalEmployeeTaskStatusLabel(task.status)}',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => ref
+                        .read(digitalEmployeeTaskProvider.notifier)
+                        .selectTask(task),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+      error: (error, _) => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text('最近任务加载失败：$error'),
+        ),
+      ),
+      loading: () => const SizedBox.shrink(),
     );
   }
 }
@@ -87,7 +185,11 @@ class _TaskStatusCard extends ConsumerWidget {
               children: [
                 Text('最近任务', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 6),
-                Text('状态：${_digitalEmployeeTaskStatusLabel(value.status)}'),
+                Text('状态：${digitalEmployeeTaskStatusLabel(value.status)}'),
+                if (digitalEmployeeTaskAwaitingAuthorization(value.status)) ...[
+                  const SizedBox(height: 8),
+                  _TaskAuthorizationNotice(task: value),
+                ],
                 if (value.prompt.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text('任务：${value.prompt}'),
@@ -95,6 +197,17 @@ class _TaskStatusCard extends ConsumerWidget {
                 if (value.claimedBy.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text('领取者：${value.claimedBy}'),
+                ],
+                if (value.message.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '说明：${value.message}',
+                    style: TextStyle(
+                      color: value.status == 'failed'
+                          ? Theme.of(context).colorScheme.error
+                          : null,
+                    ),
+                  ),
                 ],
                 if (value.result.isNotEmpty) ...[
                   const SizedBox(height: 6),
@@ -116,15 +229,24 @@ class _TaskStatusCard extends ConsumerWidget {
                       tooltip: '复制结果',
                       onPressed: value.result.isEmpty
                           ? null
-                          : () => _copyTaskResult(context, value.result),
+                          : () => _copyTaskResult(context, ref, value.result),
                       icon: const Icon(Icons.content_copy_outlined),
                     ),
                     IconButton.outlined(
                       tooltip: '分享结果',
                       onPressed: value.result.isEmpty
                           ? null
-                          : () => Share.share(value.result),
+                          : () => ref
+                              .read(digitalEmployeeResultShareProvider)
+                              .call(value.result),
                       icon: const Icon(Icons.ios_share_outlined),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: value.result.isEmpty
+                          ? null
+                          : () => _createResultDraft(context, ref, value),
+                      icon: const Icon(Icons.article_outlined),
+                      label: const Text('整理为草稿'),
                     ),
                   ],
                 ),
@@ -148,13 +270,68 @@ class _TaskStatusCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _copyTaskResult(BuildContext context, String result) async {
-    await Clipboard.setData(ClipboardData(text: result));
+  Future<void> _copyTaskResult(
+    BuildContext context,
+    WidgetRef ref,
+    String result,
+  ) async {
+    await ref.read(digitalEmployeeResultClipboardWriterProvider).call(result);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('任务结果已复制')),
     );
   }
+
+  Future<void> _createResultDraft(
+    BuildContext context,
+    WidgetRef ref,
+    MobileDigitalEmployeeTask task,
+  ) async {
+    final markdown = digitalEmployeeTaskDocumentMarkdown(task);
+    await ref.read(documentsControllerProvider.notifier).createDraft(
+          title: '数字员工任务结果',
+          template: DocumentTemplate.report,
+          content: markdown,
+        );
+    if (!context.mounted) return;
+    final documents = ref.read(documentsControllerProvider);
+    final error = documents.error;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          documents.hasError ? '整理为草稿失败：$error' : '已整理为文档草稿',
+        ),
+      ),
+    );
+  }
+}
+
+String digitalEmployeeTaskDocumentMarkdown(MobileDigitalEmployeeTask task) {
+  final buffer = StringBuffer()
+    ..writeln('# 数字员工任务结果')
+    ..writeln()
+    ..writeln('## 任务')
+    ..writeln(task.prompt.trim().isEmpty ? '未提供任务说明。' : task.prompt.trim())
+    ..writeln()
+    ..writeln('## 状态')
+    ..writeln(digitalEmployeeTaskStatusLabel(task.status));
+  if (task.claimedBy.trim().isNotEmpty) {
+    buffer
+      ..writeln()
+      ..writeln('## 领取者')
+      ..writeln(task.claimedBy.trim());
+  }
+  if (task.message.trim().isNotEmpty) {
+    buffer
+      ..writeln()
+      ..writeln('## 说明')
+      ..writeln(task.message.trim());
+  }
+  buffer
+    ..writeln()
+    ..writeln('## 结果')
+    ..writeln(task.result.trim().isEmpty ? '暂无结果。' : task.result.trim());
+  return buffer.toString().trim();
 }
 
 class _EmployeeLoading extends StatelessWidget {
@@ -247,7 +424,9 @@ class _DigitalEmployeeCard extends StatelessWidget {
                       ? scheme.secondaryContainer
                       : scheme.surfaceContainerHighest,
                   child: Icon(
-                    employee.online ? Icons.smart_toy_outlined : Icons.cloud_off,
+                    employee.online
+                        ? Icons.smart_toy_outlined
+                        : Icons.cloud_off,
                     color: employee.online
                         ? scheme.onSecondaryContainer
                         : scheme.onSurfaceVariant,
@@ -276,6 +455,26 @@ class _DigitalEmployeeCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(employee.skillDescription),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _EmployeeInfoChip(
+                  icon: Icons.security_outlined,
+                  label: employee.accessPolicyLabel,
+                ),
+                _EmployeeInfoChip(
+                  icon: Icons.memory_outlined,
+                  label: employee.runtimeLabel,
+                  emphasized: employee.runtimeMissing,
+                ),
+                _EmployeeInfoChip(
+                  icon: Icons.power_settings_new_outlined,
+                  label: employee.residencyLabel,
+                ),
+              ],
+            ),
             const SizedBox(height: 14),
             Row(
               children: [
@@ -285,7 +484,7 @@ class _DigitalEmployeeCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 IconButton.outlined(
                   tooltip: '分析日志/输出',
-                  onPressed: employee.online
+                  onPressed: employee.canSubmitTask
                       ? () => _TaskButton.showTaskSheet(
                             context,
                             employee,
@@ -313,7 +512,7 @@ class _TaskButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final task = ref.watch(digitalEmployeeTaskProvider);
     return FilledButton.icon(
-      onPressed: employee.online
+      onPressed: employee.canSubmitTask
           ? () => showTaskSheet(context, employee)
           : null,
       icon: const Icon(Icons.chat_outlined),
@@ -328,7 +527,7 @@ class _TaskButton extends ConsumerWidget {
     DigitalEmployee employee, {
     String? initialPrompt,
   }) async {
-    final prompt = await showModalBottomSheet<String>(
+    final draft = await showModalBottomSheet<DigitalEmployeeMobileTaskDraft>(
       context: context,
       isScrollControlled: true,
       builder: (context) => _DigitalEmployeeTaskSheet(
@@ -336,14 +535,90 @@ class _TaskButton extends ConsumerWidget {
         initialPrompt: initialPrompt,
       ),
     );
-    if (prompt == null || prompt.trim().isEmpty) return;
+    if (draft == null || draft.prompt.trim().isEmpty) return;
     if (!context.mounted) return;
     final container = ProviderScope.containerOf(context, listen: false);
     await container.read(digitalEmployeeTaskProvider.notifier).createTask(
           employeeId: employee.id,
-          prompt: prompt,
+          prompt: buildDigitalEmployeeMobilePrompt(
+            type: draft.type,
+            prompt: draft.prompt,
+            requireManualConfirmation: draft.requireManualConfirmation,
+          ),
+          taskType: draft.taskTypeWireValue,
+          context: draft.contextFor(employee),
         );
   }
+}
+
+enum DigitalEmployeeMobileTaskType {
+  serverMaintenance,
+  desktopAssist,
+  documentWork,
+  informationCheck,
+}
+
+String digitalEmployeeMobileTaskTypeLabel(DigitalEmployeeMobileTaskType type) {
+  return switch (type) {
+    DigitalEmployeeMobileTaskType.serverMaintenance => '服务器维护',
+    DigitalEmployeeMobileTaskType.desktopAssist => '远程电脑',
+    DigitalEmployeeMobileTaskType.documentWork => '文档处理',
+    DigitalEmployeeMobileTaskType.informationCheck => '信息核查',
+  };
+}
+
+String digitalEmployeeMobileTaskTypeWireValue(
+  DigitalEmployeeMobileTaskType type,
+) {
+  return switch (type) {
+    DigitalEmployeeMobileTaskType.serverMaintenance => 'server_maintenance',
+    DigitalEmployeeMobileTaskType.desktopAssist => 'desktop_assist',
+    DigitalEmployeeMobileTaskType.documentWork => 'document_work',
+    DigitalEmployeeMobileTaskType.informationCheck => 'information_check',
+  };
+}
+
+String digitalEmployeeTaskTypeLabelFromWire(String value) {
+  return switch (value.trim()) {
+    'server_maintenance' => '服务器维护',
+    'desktop_assist' => '远程电脑',
+    'document_work' => '文档处理',
+    'information_check' => '信息核查',
+    _ => '通用任务',
+  };
+}
+
+IconData _taskHistoryIcon(String value) {
+  return switch (value.trim()) {
+    'server_maintenance' => Icons.dns_outlined,
+    'desktop_assist' => Icons.desktop_windows_outlined,
+    'document_work' => Icons.description_outlined,
+    'information_check' => Icons.fact_check_outlined,
+    _ => Icons.smart_toy_outlined,
+  };
+}
+
+String buildDigitalEmployeeMobilePrompt({
+  required DigitalEmployeeMobileTaskType type,
+  required String prompt,
+  bool requireManualConfirmation = true,
+}) {
+  final text = prompt.trim();
+  final buffer = StringBuffer()
+    ..writeln('【MaClaw Mobile 应急任务】')
+    ..writeln('任务类型：${digitalEmployeeMobileTaskTypeLabel(type)}')
+    ..writeln()
+    ..writeln('移动端要求：')
+    ..writeln('- 请先给结论、影响范围、证据和下一步，输出适合手机快速阅读。')
+    ..writeln('- 如需操作远程服务器/电脑，请说明目标、风险、验证方式和回滚方式。');
+  if (requireManualConfirmation) {
+    buffer.writeln('- 高风险命令只生成命令草案，等待用户手动确认，不要自动执行。');
+  }
+  buffer
+    ..writeln()
+    ..writeln('用户说明：')
+    ..writeln(text.isEmpty ? '请根据当前远程环境执行一次应急检查。' : text);
+  return buffer.toString().trim();
 }
 
 class _DigitalEmployeeTaskSheet extends ConsumerStatefulWidget {
@@ -363,6 +638,8 @@ class _DigitalEmployeeTaskSheet extends ConsumerStatefulWidget {
 class _DigitalEmployeeTaskSheetState
     extends ConsumerState<_DigitalEmployeeTaskSheet> {
   late final TextEditingController _promptController;
+  var _taskType = DigitalEmployeeMobileTaskType.serverMaintenance;
+  var _requireManualConfirmation = true;
 
   static const _templates = [
     '请检查远程电脑/服务器当前运行状态，列出异常、风险和建议操作。',
@@ -401,6 +678,37 @@ class _DigitalEmployeeTaskSheetState
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
+            Text('任务类型', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: 8),
+            SegmentedButton<DigitalEmployeeMobileTaskType>(
+              segments: const [
+                ButtonSegment(
+                  value: DigitalEmployeeMobileTaskType.serverMaintenance,
+                  icon: Icon(Icons.dns_outlined),
+                  label: Text('服务器'),
+                ),
+                ButtonSegment(
+                  value: DigitalEmployeeMobileTaskType.desktopAssist,
+                  icon: Icon(Icons.desktop_windows_outlined),
+                  label: Text('电脑'),
+                ),
+                ButtonSegment(
+                  value: DigitalEmployeeMobileTaskType.documentWork,
+                  icon: Icon(Icons.description_outlined),
+                  label: Text('文档'),
+                ),
+                ButtonSegment(
+                  value: DigitalEmployeeMobileTaskType.informationCheck,
+                  icon: Icon(Icons.fact_check_outlined),
+                  label: Text('核查'),
+                ),
+              ],
+              selected: {_taskType},
+              onSelectionChanged: (selection) {
+                setState(() => _taskType = selection.single);
+              },
+            ),
+            const SizedBox(height: 12),
             TextField(
               controller: _promptController,
               minLines: 4,
@@ -410,6 +718,17 @@ class _DigitalEmployeeTaskSheetState
                 alignLabelWithHint: true,
                 prefixIcon: Icon(Icons.task_alt_outlined),
               ),
+            ),
+            const SizedBox(height: 8),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _requireManualConfirmation,
+              onChanged: (value) => setState(
+                () => _requireManualConfirmation = value ?? true,
+              ),
+              title: const Text('高风险命令只给草案'),
+              subtitle: const Text('远程端不要自动执行删除、重启、改权限等高风险操作。'),
+              controlAffinity: ListTileControlAffinity.leading,
             ),
             const SizedBox(height: 12),
             Text('任务模板', style: Theme.of(context).textTheme.labelLarge),
@@ -456,8 +775,13 @@ class _DigitalEmployeeTaskSheetState
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () =>
-                    Navigator.of(context).pop(_promptController.text),
+                onPressed: () => Navigator.of(context).pop(
+                  DigitalEmployeeMobileTaskDraft(
+                    prompt: _promptController.text,
+                    type: _taskType,
+                    requireManualConfirmation: _requireManualConfirmation,
+                  ),
+                ),
                 icon: const Icon(Icons.send_outlined),
                 label: const Text('提交任务'),
               ),
@@ -469,15 +793,107 @@ class _DigitalEmployeeTaskSheetState
   }
 }
 
-String _digitalEmployeeTaskStatusLabel(String status) {
-  return switch (status) {
+String digitalEmployeeTaskStatusLabel(String status) {
+  return switch (status.trim().toLowerCase()) {
     'queued' => '等待远程领取',
     'claimed' => '远程处理中',
     'running' => '远程处理中',
+    'in_progress' => '远程处理中',
+    'approval_required' => '等待远程授权',
+    'pending_approval' => '等待远程授权',
+    'awaiting_approval' => '等待远程授权',
+    'authorization_required' => '等待远程授权',
+    'waiting_authorization' => '等待远程授权',
+    'approval_denied' => '远程授权被拒绝',
+    'authorization_denied' => '远程授权被拒绝',
+    'rejected' => '远程授权被拒绝',
     'done' => '已完成',
+    'completed' => '已完成',
     'failed' => '失败',
     _ => status,
   };
+}
+
+bool digitalEmployeeTaskAwaitingAuthorization(String status) {
+  return switch (status.trim().toLowerCase()) {
+    'approval_required' ||
+    'pending_approval' ||
+    'awaiting_approval' ||
+    'authorization_required' ||
+    'waiting_authorization' =>
+      true,
+    _ => false,
+  };
+}
+
+class _TaskAuthorizationNotice extends StatelessWidget {
+  final MobileDigitalEmployeeTask task;
+
+  const _TaskAuthorizationNotice({required this.task});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final owner =
+        task.claimedBy.trim().isEmpty ? '远程端拥有者' : task.claimedBy.trim();
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.verified_user_outlined,
+              color: scheme.onTertiaryContainer,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '正在等待 $owner 在远程服务器/电脑上确认授权。手机端不会绕过远程策略；确认后可刷新查看结果。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onTertiaryContainer,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmployeeInfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool emphasized;
+
+  const _EmployeeInfoChip({
+    required this.icon,
+    required this.label,
+    this.emphasized = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Chip(
+      visualDensity: VisualDensity.compact,
+      avatar: Icon(icon, size: 18),
+      label: Text(label),
+      backgroundColor:
+          emphasized ? scheme.errorContainer : scheme.surfaceContainerHighest,
+      labelStyle: emphasized
+          ? TextStyle(color: scheme.onErrorContainer)
+          : TextStyle(color: scheme.onSurfaceVariant),
+      side: BorderSide(
+        color: emphasized ? scheme.error : scheme.outlineVariant,
+      ),
+    );
+  }
 }
 
 class _StatusChip extends StatelessWidget {

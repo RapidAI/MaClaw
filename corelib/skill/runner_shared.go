@@ -523,13 +523,20 @@ func ResolveStepsForRunnerPrecheck(steps []corelib.NLSkillStep, vars map[string]
 }
 
 func CheckRunnerRequirements(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string) []Violation {
+	return CheckRunnerRequirementsWithProgress(entry, extraEnv, runner, nil)
+}
+
+// CheckRunnerRequirementsWithProgress validates requirements and attempts auto-fix
+// with progress reporting. The progress callback receives messages like
+// "📦 正在安装 Python 包 pdfplumber..." during fix operations.
+func CheckRunnerRequirementsWithProgress(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string, progress FixProgressCallback) []Violation {
 	reqs := ExtractRequirements(entry, BuildRunCheckContextForRunner(entry, extraEnv, runner))
 	if len(reqs) == 0 {
 		return nil
 	}
 	registry := DefaultRegistry()
 	violations := registry.CheckAll(reqs)
-	remaining := registry.FixAll(violations)
+	remaining := registry.FixAllWithProgress(violations, progress)
 	return PromoteRunnerBlockingViolations(remaining)
 }
 
@@ -594,6 +601,15 @@ func PreparePipelineRunnerExecution(entry *corelib.NLSkillEntry, vars map[string
 // a skill run. Callers should normalize/hydrate the skill first, then use this
 // once after any runner-specific fallback step synthesis.
 func PrepareRunnerExecution(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string) (*RunnerExecutionPreparation, error) {
+	return PrepareRunnerExecutionWithProgress(entry, vars, runArgs, extraEnv, runner, nil)
+}
+
+// PrepareRunnerExecutionWithProgress is like PrepareRunnerExecution but reports
+// dependency installation progress via callback. When a Fixer needs to install
+// packages (pip/npm), the progress callback receives messages like
+// "📦 正在安装 Python 包 pdfplumber..." so the caller can display real-time
+// status to the user.
+func PrepareRunnerExecutionWithProgress(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string, progress FixProgressCallback) (*RunnerExecutionPreparation, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("skill entry is nil")
 	}
@@ -634,7 +650,7 @@ func PrepareRunnerExecution(entry *corelib.NLSkillEntry, vars map[string]string,
 	fileCheckEntry := *entry
 	fileCheckEntry.Steps = resolvedPrecheckSteps
 	fileCheckEntry.Params = precheckParams
-	remaining := CheckRunnerRequirements(&fileCheckEntry, extraEnv, runner)
+	remaining := CheckRunnerRequirementsWithProgress(&fileCheckEntry, extraEnv, runner, progress)
 	errors := FilterErrors(remaining)
 	if len(errors) > 0 {
 		return nil, fmt.Errorf("skill %q runner requirements not satisfied: %s", entry.Name, FormatViolations(errors))

@@ -1001,7 +1001,12 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
-		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
+		serviceReg, err := llmservice.LoadRegistry(ctx, system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			return
+		}
+		status, _, err := llmservice.ResolveStatusFromRegistryForUser(ctx, serviceReg, securitySvc, principal.UserID, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1028,7 +1033,12 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
+		serviceReg, err := llmservice.LoadRegistry(ctx, system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
+			return
+		}
+		status, _, err := llmservice.ResolveStatusFromRegistryForUser(ctx, serviceReg, securitySvc, principal.UserID, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1084,11 +1094,12 @@ func RedeemLLMServiceCardHandler(identity *auth.IdentityService, system store.Sy
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		status, err := llmservice.RedeemCard(ctx, system, securitySvc, principal.Email, req.Code, externalLLMBaseURL(r))
+		status, err := llmservice.RedeemCardForUserID(ctx, system, securitySvc, principal.UserID, principal.Email, req.Code, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_REDEEM_FAILED", err.Error())
 			return
 		}
+		invalidateLLMRuntimeCaches(system)
 		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -1111,7 +1122,7 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		status, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.Email)
+		status, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1133,7 +1144,7 @@ func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettin
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.Email)
+		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1289,12 +1300,12 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
 		)
-		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.Email, providerReg)
+		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.UserID, principal.Email, providerReg)
 		if err != nil {
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.Email, body, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, body, models)
 		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, billableModels)
 		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel)
 		logRequestedModel = strings.TrimSpace(requestedModel)
@@ -1343,7 +1354,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 								userGroupIDs = resolved
 							}
 						}
-						enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+						enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 					}
 					return
 				}
@@ -1388,7 +1399,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 						userGroupIDs = resolved
 					}
 				}
-				enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+				enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 			}
 			return
 		}
@@ -1447,7 +1458,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					userGroupIDs = resolved
 				}
 			}
-			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 		}
 		if statusCode >= 400 {
 			bodySnippet := string(respBody)
@@ -1611,12 +1622,12 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
 		)
-		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.Email, providerReg)
+		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.UserID, principal.Email, providerReg)
 		if err != nil {
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.Email, chatBody, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, chatBody, models)
 		authorizedModel, requestedModel, err := resolveAuthorizedModel(chatBody, billableModels)
 		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel)
 		logRequestedModel = strings.TrimSpace(requestedModel)
@@ -1664,7 +1675,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 						userGroupIDs = resolved
 					}
 				}
-				enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+				enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 			}
 			if err != nil {
 				if wroteStream {
@@ -1759,7 +1770,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 					userGroupIDs = resolved
 				}
 			}
-			enqueueLLMUsage(system, usedProviderID, usageStat, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
 		}
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
 			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
@@ -4122,19 +4133,19 @@ func preserveCardHashes(next *llmservice.Registry, old *llmservice.Registry) {
 	}
 }
 
-func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, *llmservice.Registry, error) {
+func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID string, email string) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *im.LLMProviderRegistry, *llmservice.Registry, error) {
 	providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	status, models, serviceReg, err := resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, email, providerReg)
+	status, models, serviceReg, err := resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, userID, email, providerReg)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	return status, models, providerReg, serviceReg, nil
 }
 
-func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, email string, providerReg *im.LLMProviderRegistry) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *llmservice.Registry, error) {
+func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID string, email string, providerReg *im.LLMProviderRegistry) (*llmservice.ServiceStatus, []llmservice.AuthorizedModel, *llmservice.Registry, error) {
 	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
 		return nil, nil, nil, err
@@ -4145,7 +4156,7 @@ func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Re
 			return nil, nil, nil, err
 		}
 	}
-	status, models, err := llmservice.ResolveStatusFromRegistry(ctx, reg, securitySvc, email, externalLLMBaseURL(r))
+	status, models, err := llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, userID, email, externalLLMBaseURL(r))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -4160,12 +4171,12 @@ type llmBillingDenial struct {
 	RetryAfterAt      string
 }
 
-func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
+func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
 	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
 	denied := map[string]llmBillingDenial{}
 	firstDenial := llmBillingDenial{}
 	for i := range models {
-		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(reg, email, body, &models[i])
+		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(reg, userID, email, body, &models[i])
 		if err != nil {
 			if denial.Message == "" {
 				denial.Message = err.Error()
@@ -4181,7 +4192,7 @@ func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, email 
 	return filtered, denied, firstDenial
 }
 
-func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
+func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, userID string, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
 	if model == nil || reg == nil {
 		return model, llmBillingDenial{}, nil
 	}
@@ -4193,7 +4204,7 @@ func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, email s
 	firstDenial := llmBillingDenial{}
 	now := time.Now().UTC()
 	for _, providerID := range orderedProviders {
-		allowed, denial := billingEligibilityForProvider(reg, email, llmservice.ServiceGroupIDsForProvider(model, providerID), now)
+		allowed, denial := billingEligibilityForProvider(reg, userID, email, llmservice.ServiceGroupIDsForProvider(model, providerID), now)
 		if allowed {
 			eligibleProviderIDs = append(eligibleProviderIDs, providerID)
 			continue
@@ -4237,16 +4248,16 @@ func llmBillingDenialHTTPStatus(denial llmBillingDenial) int {
 	return http.StatusForbidden
 }
 
-func billingEligibilityForProvider(reg *llmservice.Registry, email string, serviceGroupIDs []string, now time.Time) (bool, llmBillingDenial) {
-	allowed, _, code, message, _, _, _ := llmservice.BillingEligibilityForServiceGroups(reg, email, serviceGroupIDs, now)
+func billingEligibilityForProvider(reg *llmservice.Registry, userID string, email string, serviceGroupIDs []string, now time.Time) (bool, llmBillingDenial) {
+	allowed, _, code, message, _, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(reg, userID, email, serviceGroupIDs, now)
 	denial := llmBillingDenial{Code: code, Message: message}
 	if !allowed && code == "LLM_SERVICE_PERIOD_LIMITED" {
-		if retryAt := llmservice.PeriodLimitRetryAtForServiceGroups(reg, email, serviceGroupIDs, now); retryAt != nil && retryAt.After(now) {
+		if retryAt := llmservice.PeriodLimitRetryAtForServiceGroupsForUserID(reg, userID, email, serviceGroupIDs, now); retryAt != nil && retryAt.After(now) {
 			denial.RetryAfterAt = retryAt.Format(time.RFC3339)
 			denial.RetryAfterSeconds = int64((retryAt.Sub(now) + time.Second - 1) / time.Second)
 		}
 	} else if !allowed && code == "LLM_SERVICE_GRANT_QUEUED" {
-		if startsAt := llmservice.GrantStartAtForServiceGroups(reg, email, serviceGroupIDs, now); startsAt != nil && startsAt.After(now) {
+		if startsAt := llmservice.GrantStartAtForServiceGroupsForUserID(reg, userID, email, serviceGroupIDs, now); startsAt != nil && startsAt.After(now) {
 			denial.RetryAfterAt = startsAt.Format(time.RFC3339)
 			denial.RetryAfterSeconds = int64((startsAt.Sub(now) + time.Second - 1) / time.Second)
 		}

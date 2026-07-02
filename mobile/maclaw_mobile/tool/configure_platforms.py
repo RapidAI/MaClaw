@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Apply MaClaw Mobile native settings after `flutter create`.
 
-The repository intentionally keeps the Flutter project lightweight. CI and
-developers can regenerate Android/iOS wrappers, then run this script to restore
-the mobile-specific permissions and sharing entry points.
+The repository keeps Android/iOS wrappers deterministic. Run this script after
+`flutter create --platforms android,ios .` to restore the MaClaw package ids,
+permissions, share entry points, URL schemes, and iOS Share Extension files.
 """
 
 from __future__ import annotations
 
 import plistlib
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -18,8 +19,51 @@ ANDROID_NS = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", ANDROID_NS)
 
 IOS_BUNDLE_ID = "top.mypapers.maclaw.mobile"
+IOS_TEST_BUNDLE_ID = f"{IOS_BUNDLE_ID}.RunnerTests"
 IOS_APP_GROUP_ID = f"group.{IOS_BUNDLE_ID}"
 IOS_SHARE_EXTENSION_NAME = "ShareExtension"
+ANDROID_PACKAGE_ID = IOS_BUNDLE_ID
+
+IOS_USAGE_DESCRIPTIONS = {
+    "NSCameraUsageDescription": "\u7528\u4e8e\u62cd\u7167\u63d0\u95ee\u548c\u5bfc\u5165\u56fe\u7247\u6587\u6863\u3002",
+    "NSMicrophoneUsageDescription": "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002",
+    "NSSpeechRecognitionUsageDescription": "\u7528\u4e8e\u5c06\u8bed\u97f3\u63d0\u95ee\u8f6c\u6210\u6587\u5b57\u3002",
+    "NSPhotoLibraryUsageDescription": "\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002",
+    "NSLocalNetworkUsageDescription": "\u7528\u4e8e\u8fde\u63a5\u672c\u5730\u6216\u5185\u7f51\u670d\u52a1\u5668\u8fdb\u884c SSH \u5e94\u6025\u7ef4\u62a4\u3002",
+}
+
+IOS_CORRUPT_USAGE_MARKERS = [
+    "?/string>",
+    "\u9422",
+    "\u95bb",
+    "\ufffd",
+]
+
+ANDROID_PERMISSIONS = [
+    ("android.permission.INTERNET", {}),
+    ("android.permission.CAMERA", {}),
+    ("android.permission.RECORD_AUDIO", {}),
+    ("android.permission.POST_NOTIFICATIONS", {}),
+    ("android.permission.READ_MEDIA_IMAGES", {}),
+    ("android.permission.READ_MEDIA_VIDEO", {}),
+    ("android.permission.READ_EXTERNAL_STORAGE", {"maxSdkVersion": "32"}),
+]
+
+SHARE_MIME_TYPES = [
+    "text/plain",
+    "image/*",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+]
+
+FLUTTER_TEMPLATE_WIDGET_TEST_MARKERS = [
+    "Counter increments smoke test",
+    "await tester.pumpWidget(const MyApp())",
+]
 
 
 def android_attr(name: str) -> str:
@@ -79,25 +123,22 @@ def build_deep_link_filter() -> ET.Element:
 
 
 def configure_android() -> None:
+    configure_android_root_gradle()
+    configure_android_gradle()
+    configure_android_gradle_properties()
+    configure_android_main_activity()
     manifest_path = ROOT / "android/app/src/main/AndroidManifest.xml"
     if not manifest_path.exists():
         return
     tree = ET.parse(manifest_path)
     manifest = tree.getroot()
-    ensure_permission(manifest, "android.permission.INTERNET")
-    ensure_permission(manifest, "android.permission.CAMERA")
-    ensure_permission(manifest, "android.permission.RECORD_AUDIO")
-    ensure_permission(manifest, "android.permission.READ_MEDIA_IMAGES")
-    ensure_permission(manifest, "android.permission.READ_MEDIA_VIDEO")
-    ensure_permission(
-        manifest,
-        "android.permission.READ_EXTERNAL_STORAGE",
-        maxSdkVersion="32",
-    )
+    for name, attrs in ANDROID_PERMISSIONS:
+        ensure_permission(manifest, name, **attrs)
 
     application = manifest.find("application")
     if application is None:
         return
+    application.set(android_attr("label"), "MaClaw Mobile")
     activity = application.find("activity")
     if activity is None:
         return
@@ -111,24 +152,133 @@ def configure_android() -> None:
         "android.intent.action.SEND",
         "android.intent.action.SEND_MULTIPLE",
     ]:
-        for mime_type in [
-            "text/plain",
-            "image/*",
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.ms-excel",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "text/csv",
-        ]:
+        for mime_type in SHARE_MIME_TYPES:
             filters.append(build_share_intent_filter(action, mime_type))
     for filter_node in filters:
         signature = intent_filter_signature(filter_node)
         if signature not in existing:
             activity.append(filter_node)
             existing.add(signature)
+    ET.indent(tree, space="    ")
     tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 
+
+
+def configure_android_root_gradle() -> None:
+    gradle_path = ROOT / "android/build.gradle.kts"
+    if not gradle_path.exists():
+        return
+    text = gradle_path.read_text(encoding="utf-8")
+    marker = "compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)"
+    if marker in text:
+        return
+    block = """
+subprojects {
+    plugins.withId("com.android.application") {
+        extensions.configure<com.android.build.gradle.AppExtension>("android") {
+            compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+            }
+        }
+    }
+    plugins.withId("com.android.library") {
+        extensions.configure<com.android.build.gradle.LibraryExtension>("android") {
+            compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+            }
+        }
+    }
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+""".lstrip()
+    text = re.sub(r"(?m)^subprojects \{\r?\n    val newSubprojectBuildDir", block + "subprojects {\n    val newSubprojectBuildDir", text, count=1)
+    gradle_path.write_text(text, encoding="utf-8")
+
+
+def configure_android_gradle_properties() -> None:
+    properties_path = ROOT / "android/gradle.properties"
+    if not properties_path.exists():
+        return
+    text = properties_path.read_text(encoding="utf-8")
+    for line in [
+        "kotlin.incremental=false",
+        "kotlin.jvm.target.validation.mode=ignore",
+    ]:
+        if line not in text:
+            text = text.rstrip() + f"\n{line}\n"
+    properties_path.write_text(text, encoding="utf-8")
+
+def configure_android_gradle() -> None:
+    gradle_path = ROOT / "android/app/build.gradle.kts"
+    if not gradle_path.exists():
+        return
+    text = gradle_path.read_text(encoding="utf-8")
+    text = text.replace(
+        'namespace = "com.example.maclaw_mobile"',
+        f'namespace = "{ANDROID_PACKAGE_ID}"',
+    )
+    text = text.replace(
+        'applicationId = "com.example.maclaw_mobile"',
+        f'applicationId = "{ANDROID_PACKAGE_ID}"',
+    )
+    if "isCoreLibraryDesugaringEnabled = true" not in text:
+        text = text.replace(
+            "targetCompatibility = JavaVersion.VERSION_17",
+            "targetCompatibility = JavaVersion.VERSION_17\n        isCoreLibraryDesugaringEnabled = true",
+            1,
+        )
+    if "coreLibraryDesugaring(" not in text:
+        text = text.rstrip() + (
+            "\n\ndependencies {\n"
+            "    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.1.5\")\n"
+            "}\n"
+        )
+    gradle_path.write_text(text, encoding="utf-8")
+
+
+
+def configure_android_main_activity() -> None:
+    kotlin_root = ROOT / "android/app/src/main/kotlin"
+    if not kotlin_root.exists():
+        return
+    package_dir = kotlin_root / Path(ANDROID_PACKAGE_ID.replace(".", "/"))
+    package_dir.mkdir(parents=True, exist_ok=True)
+    target = package_dir / "MainActivity.kt"
+    candidates = [
+        kotlin_root / "com/example/maclaw_mobile/MainActivity.kt",
+        target,
+    ]
+    source = next((item for item in candidates if item.exists()), None)
+    if source is None:
+        return
+    body = source.read_text(encoding="utf-8")
+    body = re.sub(
+        r"^package\s+[A-Za-z0-9_.]+",
+        f"package {ANDROID_PACKAGE_ID}",
+        body,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    target.write_text(body, encoding="utf-8")
+    if source != target:
+        source.unlink()
+        prune_empty_dirs(source.parent, kotlin_root)
+
+
+def prune_empty_dirs(path: Path, stop: Path) -> None:
+    current = path
+    stop = stop.resolve()
+    while current.resolve() != stop and current.exists():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
 
 def configure_ios() -> None:
     plist_path = ROOT / "ios/Runner/Info.plist"
@@ -137,10 +287,8 @@ def configure_ios() -> None:
     with plist_path.open("rb") as fh:
         plist = plistlib.load(fh)
     plist["AppGroupId"] = "$(CUSTOM_GROUP_ID)"
-    plist.setdefault("NSCameraUsageDescription", "用于拍照提问和导入图片文档。")
-    plist.setdefault("NSMicrophoneUsageDescription", "用于语音提问。")
-    plist.setdefault("NSSpeechRecognitionUsageDescription", "用于将语音提问转成文字。")
-    plist.setdefault("NSPhotoLibraryUsageDescription", "用于从相册导入图片或截图。")
+    plist["CFBundleDisplayName"] = "MaClaw Mobile"
+    apply_ios_usage_descriptions(plist)
     url_types = plist.setdefault("CFBundleURLTypes", [])
     if not any("maclaw" in item.get("CFBundleURLSchemes", []) for item in url_types):
         url_types.append(
@@ -162,6 +310,22 @@ def configure_ios() -> None:
         plistlib.dump(plist, fh)
     configure_ios_entitlements()
     configure_ios_share_extension()
+    configure_ios_project_settings()
+
+
+def apply_ios_usage_descriptions(plist: dict[str, object]) -> None:
+    for key, value in IOS_USAGE_DESCRIPTIONS.items():
+        if key not in plist or is_corrupt_ios_usage_description(plist[key]):
+            plist[key] = value
+
+
+def is_corrupt_ios_usage_description(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    text = value.strip()
+    if not text:
+        return True
+    return any(marker in text for marker in IOS_CORRUPT_USAGE_MARKERS)
 
 
 def entitlement_payload() -> dict[str, object]:
@@ -240,6 +404,37 @@ class ShareViewController: RSIShareViewController {
     )
 
 
+def configure_ios_project_settings() -> None:
+    project_path = ROOT / "ios/Runner.xcodeproj/project.pbxproj"
+    if not project_path.exists():
+        return
+    text = project_path.read_text(encoding="utf-8", errors="ignore")
+    text = text.replace(
+        "PRODUCT_BUNDLE_IDENTIFIER = com.example.maclawMobile;",
+        f"PRODUCT_BUNDLE_IDENTIFIER = {IOS_BUNDLE_ID};",
+    )
+    text = re.sub(
+        r"PRODUCT_BUNDLE_IDENTIFIER = com\.example\.maclawMobile\.RunnerTests;",
+        f"PRODUCT_BUNDLE_IDENTIFIER = {IOS_TEST_BUNDLE_ID};",
+        text,
+    )
+    text = add_build_setting_if_missing(
+        text,
+        "CUSTOM_GROUP_ID",
+        IOS_APP_GROUP_ID,
+    )
+    project_path.write_text(text, encoding="utf-8")
+
+
+def add_build_setting_if_missing(text: str, key: str, value: str) -> str:
+    if f"{key} =" in text:
+        return text
+    return text.replace(
+        "PRODUCT_BUNDLE_IDENTIFIER =",
+        f"{key} = {value};\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER =",
+    )
+
+
 def patch_ios_project_hint(project_path: Path) -> None:
     """Leave a machine-readable note when the generated Xcode project exists.
 
@@ -256,9 +451,19 @@ def patch_ios_project_hint(project_path: Path) -> None:
     project_path.write_text(text + f"\n/* {marker} */\n", encoding="utf-8")
 
 
+def remove_flutter_template_widget_test() -> None:
+    widget_test = ROOT / "test/widget_test.dart"
+    if not widget_test.exists():
+        return
+    text = widget_test.read_text(encoding="utf-8", errors="ignore")
+    if all(marker in text for marker in FLUTTER_TEMPLATE_WIDGET_TEST_MARKERS):
+        widget_test.unlink()
+
+
 def main() -> None:
     configure_android()
     configure_ios()
+    remove_flutter_template_widget_test()
 
 
 if __name__ == "__main__":

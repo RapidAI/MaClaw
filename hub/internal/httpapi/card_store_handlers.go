@@ -128,6 +128,7 @@ type cardStoreProduct struct {
 type cardStoreOrder struct {
 	OrderNo               string    `json:"order_no"`
 	TenantID              string    `json:"tenant_id,omitempty"`
+	UserID                string    `json:"user_id,omitempty"`
 	ProductID             string    `json:"product_id"`
 	ProductLabel          string    `json:"product_label,omitempty"`
 	Email                 string    `json:"email,omitempty"`
@@ -701,13 +702,13 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := normalizeCardStoreEmail(req.Email)
+		email := normalizeCardStoreUserIdentity(req.Email)
 		secondaryEmail := normalizeCardStoreEmail(req.SecondaryEmail)
-		if !validCardStoreEmail(email) || (secondaryEmail != "" && !validCardStoreEmail(secondaryEmail)) {
-			writeError(w, http.StatusBadRequest, "CARD_STORE_EMAIL_INVALID", "valid email is required")
+		if !validCardStoreUserIdentity(email) || (secondaryEmail != "" && !validCardStoreEmail(secondaryEmail)) {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_EMAIL_INVALID", "valid user identity is required")
 			return
 		}
-		tenantID, err := resolveCardStoreTenantForEmail(r.Context(), identity, req.TenantID, email)
+		tenantID, userID, err := resolveCardStoreTenantAndUserForIdentity(r.Context(), identity, req.TenantID, email)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_TENANT_REQUIRED", err.Error())
 			return
@@ -748,7 +749,7 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 		}
 		notifyURL = cardStoreNotifyURLWithTenant(notifyURL, tenantID)
 		now := time.Now().UTC()
-		order := cardStoreOrder{OrderNo: newCardStoreOrderNo(now), TenantID: tenantID, ProductID: product.ID, ProductLabel: product.Label, Email: email, SecondaryEmail: secondaryEmail, Amount: roundMoney(product.Price), Status: "created", PaymentMode: selectedMode, PayType: cfg.PayType, CreatedAt: now, UpdatedAt: now}
+		order := cardStoreOrder{OrderNo: newCardStoreOrderNo(now), TenantID: tenantID, UserID: userID, ProductID: product.ID, ProductLabel: product.Label, Email: email, SecondaryEmail: secondaryEmail, Amount: roundMoney(product.Price), Status: "created", PaymentMode: selectedMode, PayType: cfg.PayType, CreatedAt: now, UpdatedAt: now}
 		adapter := cardStorePaymentAdapterForMode(selectedMode)
 		startReq := req
 		if selectedPersonalChannel != "" {
@@ -1015,8 +1016,8 @@ func CardStorePaymentOpenedHandler(system store.SystemSettingsRepository, mailer
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := normalizeCardStoreEmail(req.Email)
-		if orderNo == "" || !validCardStoreEmail(email) {
+		email := normalizeCardStoreUserIdentity(req.Email)
+		if orderNo == "" || !validCardStoreUserIdentity(email) {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_OPENED_INVALID", "order_no and email are required")
 			return
 		}
@@ -1741,7 +1742,7 @@ func cardStoreOrderReturnRedirectURL(r *http.Request, tenantID string, order car
 	if store.NormalizeTenantID(tenantID) != store.DefaultTenantID {
 		qs.Set("tenant_id", store.NormalizeTenantID(tenantID))
 	}
-	if email := normalizeCardStoreEmail(order.Email); email != "" {
+	if email := normalizeCardStoreUserIdentity(order.Email); email != "" {
 		qs.Set("email", email)
 	}
 	if orderNo := strings.TrimSpace(order.OrderNo); orderNo != "" {
@@ -1914,24 +1915,121 @@ func paymentFMSign(merchantNum, orderNo, amount, notifyURL, accessKey string) st
 }
 
 func resolveCardStoreTenantForEmail(ctx context.Context, identity *auth.IdentityService, tenantID string, email string) (string, error) {
+	resolvedTenantID, _, err := resolveCardStoreTenantAndUserForIdentity(ctx, identity, tenantID, email)
+	return resolvedTenantID, err
+}
+
+func resolveCardStoreTenantAndUserForIdentity(ctx context.Context, identity *auth.IdentityService, tenantID string, email string) (string, string, error) {
 	tenantID = strings.TrimSpace(tenantID)
+	normalizedTenantID := store.NormalizeTenantID(tenantID)
 	if tenantID != "" {
-		return store.NormalizeTenantID(tenantID), nil
+		user, err := lookupCardStoreUserInTenant(ctx, identity, normalizedTenantID, email)
+		if err != nil {
+			return "", "", err
+		}
+		if user == nil {
+			return normalizedTenantID, "", nil
+		}
+		return store.NormalizeTenantID(user.TenantID), strings.TrimSpace(user.ID), nil
 	}
-	if identity == nil {
-		return store.DefaultTenantID, nil
+	if identity == nil || identity.UsersRepo() == nil {
+		return store.DefaultTenantID, "", nil
 	}
-	resolved, found, ambiguous, err := identity.ResolveTenantByEmail(ctx, email)
+	user, found, ambiguous, err := lookupCardStoreUserAcrossTenants(ctx, identity.UsersRepo(), email)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if ambiguous {
-		return "", fmt.Errorf("email belongs to multiple tenants; tenant_id is required")
+		return "", "", fmt.Errorf("user identity belongs to multiple tenants; tenant_id is required")
 	}
-	if found && strings.TrimSpace(resolved) != "" {
-		return store.NormalizeTenantID(resolved), nil
+	if found && user != nil {
+		return store.NormalizeTenantID(user.TenantID), strings.TrimSpace(user.ID), nil
 	}
-	return store.DefaultTenantID, nil
+	return store.DefaultTenantID, "", nil
+}
+
+func lookupCardStoreUserInTenant(ctx context.Context, identity *auth.IdentityService, tenantID string, identityValue string) (*store.User, error) {
+	if identity == nil || identity.UsersRepo() == nil {
+		return nil, nil
+	}
+	users := identity.UsersRepo()
+	identityValue = normalizeCardStoreUserIdentity(identityValue)
+	if strings.HasPrefix(identityValue, "phone:") {
+		return users.GetByTenantIdentity(ctx, tenantID, "phone", strings.TrimPrefix(identityValue, "phone:"))
+	}
+	return users.GetByTenantEmail(ctx, tenantID, identityValue)
+}
+
+func lookupCardStoreUserAcrossTenants(ctx context.Context, users store.UserRepository, identityValue string) (*store.User, bool, bool, error) {
+	if users == nil {
+		return nil, false, false, nil
+	}
+	identityValue = normalizeCardStoreUserIdentity(identityValue)
+	items, err := users.List(ctx)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if strings.HasPrefix(identityValue, "phone:") {
+		return lookupCardStorePhoneUserAcrossTenants(ctx, users, items, strings.TrimPrefix(identityValue, "phone:"))
+	}
+	var matched *store.User
+	for _, user := range items {
+		if user == nil {
+			continue
+		}
+		if !cardStoreUserMatchesIdentity(user, identityValue) {
+			continue
+		}
+		if matched != nil && !strings.EqualFold(store.NormalizeTenantID(matched.TenantID), store.NormalizeTenantID(user.TenantID)) {
+			return nil, true, true, nil
+		}
+		matched = user
+	}
+	if matched == nil {
+		return nil, false, false, nil
+	}
+	return matched, true, false, nil
+}
+
+func lookupCardStorePhoneUserAcrossTenants(ctx context.Context, users store.UserRepository, items []*store.User, digits string) (*store.User, bool, bool, error) {
+	seenTenants := map[string]struct{}{}
+	var matched *store.User
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		tenantID := store.NormalizeTenantID(item.TenantID)
+		if _, ok := seenTenants[tenantID]; ok {
+			continue
+		}
+		seenTenants[tenantID] = struct{}{}
+		user, err := users.GetByTenantIdentity(ctx, tenantID, "phone", digits)
+		if err != nil {
+			return nil, false, false, err
+		}
+		if user == nil {
+			continue
+		}
+		if matched != nil && !strings.EqualFold(store.NormalizeTenantID(matched.TenantID), store.NormalizeTenantID(user.TenantID)) {
+			return nil, true, true, nil
+		}
+		matched = user
+	}
+	if matched == nil {
+		return nil, false, false, nil
+	}
+	return matched, true, false, nil
+}
+
+func cardStoreUserMatchesIdentity(user *store.User, identityValue string) bool {
+	if user == nil {
+		return false
+	}
+	identityValue = normalizeCardStoreUserIdentity(identityValue)
+	if strings.HasPrefix(identityValue, "phone:") {
+		return strings.EqualFold(normalizeCardStoreUserIdentity(user.Email), identityValue)
+	}
+	return strings.EqualFold(normalizeCardStoreEmail(user.Email), normalizeCardStoreEmail(identityValue))
 }
 
 func firstTenantRepository(repos []store.TenantRepository) store.TenantRepository {
@@ -2137,9 +2235,9 @@ func sendCardStoreCodeEmail(ctx context.Context, mailer cardStoreMailer, order c
 	if mailer == nil || strings.TrimSpace(code) == "" {
 		return nil
 	}
-	recipients := []string{order.Email}
-	if secondary := normalizeCardStoreEmail(order.SecondaryEmail); secondary != "" && secondary != normalizeCardStoreEmail(order.Email) {
-		recipients = append(recipients, secondary)
+	recipients := cardStoreCodeEmailRecipients(order)
+	if len(recipients) == 0 {
+		return nil
 	}
 	subject := "MaClaw Hub 服务兑换码"
 	title := "MaClaw Hub 服务卡购买成功"
@@ -2149,8 +2247,19 @@ func sendCardStoreCodeEmail(ctx context.Context, mailer cardStoreMailer, order c
 		title = "MaClaw Hub 服务卡已自动兑换完成"
 		autoRedeemLine = fmt.Sprintf("兑换状态：已自动充值到账户\r\n兑换账户：%s\r\n兑换时间：%s\r\n", order.Email, order.AutoRedeemedAt.UTC().Format(time.RFC3339))
 	}
-	body := fmt.Sprintf("%s\r\n\r\n订单号：%s\r\n租户：%s\r\n购买邮箱：%s\r\n备用邮箱：%s\r\n商品：%s\r\n订单金额：%s\r\n实付金额：%s\r\n支付时间：%s\r\n支付方式：%s\r\n平台订单号：%s\r\n渠道订单号：%s\r\n服务卡 ID：%s\r\n%s服务兑换码：%s\r\n\r\n请妥善保存该兑换码，可用于后续核对或找回。\r\n", title, order.OrderNo, store.NormalizeTenantID(order.TenantID), order.Email, firstNonEmptyString(order.SecondaryEmail, "-"), order.ProductLabel, formatPaymentAmount(order.Amount), cardStoreActualPayAmountText(order), cardStorePayTimeText(order), firstNonEmptyString(order.PayChannelLabel, order.PayType, order.PaymentMode, "-"), firstNonEmptyString(order.PlatformOrderNo, "-"), firstNonEmptyString(order.ChannelOrderNo, "-"), firstNonEmptyString(order.CardID, "-"), autoRedeemLine, code)
+	body := fmt.Sprintf("%s\r\n\r\n订单号：%s\r\n租户：%s\r\n购买账户：%s\r\n备用邮箱：%s\r\n商品：%s\r\n订单金额：%s\r\n实付金额：%s\r\n支付时间：%s\r\n支付方式：%s\r\n平台订单号：%s\r\n渠道订单号：%s\r\n服务卡 ID：%s\r\n%s服务兑换码：%s\r\n\r\n请妥善保存该兑换码，可用于后续核对或找回。\r\n", title, order.OrderNo, store.NormalizeTenantID(order.TenantID), order.Email, firstNonEmptyString(order.SecondaryEmail, "-"), order.ProductLabel, formatPaymentAmount(order.Amount), cardStoreActualPayAmountText(order), cardStorePayTimeText(order), firstNonEmptyString(order.PayChannelLabel, order.PayType, order.PaymentMode, "-"), firstNonEmptyString(order.PlatformOrderNo, "-"), firstNonEmptyString(order.ChannelOrderNo, "-"), firstNonEmptyString(order.CardID, "-"), autoRedeemLine, code)
 	return mailer.Send(store.WithTenant(ctx, order.TenantID), recipients, subject, body)
+}
+
+func cardStoreCodeEmailRecipients(order cardStoreOrder) []string {
+	recipients := []string{}
+	if primary := normalizeCardStoreEmail(order.Email); validCardStoreEmail(primary) {
+		recipients = append(recipients, primary)
+	}
+	if secondary := normalizeCardStoreEmail(order.SecondaryEmail); validCardStoreEmail(secondary) && secondary != normalizeCardStoreEmail(order.Email) {
+		recipients = append(recipients, secondary)
+	}
+	return recipients
 }
 
 func sendCardStorePersonalPaymentReminder(ctx context.Context, mailer cardStoreMailer, cfg cardStoreConfig, order cardStoreOrder, baseURL string, approveToken string, deleteToken string) error {
@@ -2173,7 +2282,7 @@ func sendCardStorePersonalPaymentReminder(ctx context.Context, mailer cardStoreM
 	if deleteToken != "" {
 		deleteURL += "&token=" + url.QueryEscape(deleteToken)
 	}
-	body := fmt.Sprintf("MaClaw Hub personal payment needs confirmation\r\n\r\nOrder: %s\r\nTenant: %s\r\nProduct: %s\r\nBuyer email: %s\r\nPayment channel: %s\r\nPayee: %s\r\nAmount: %s\r\nRemark code: %s\r\nPayment QR: %s\r\nBuyer clicked paid at: %s\r\n\r\nCheck your Alipay/WeChat records before confirming:\r\n1. Amount equals %s\r\n2. Remark contains %s\r\n3. Payment time is after order creation\r\n\r\nOne-time confirm link: %s\r\nOne-time reject/delete link: %s\r\n\r\nEach link opens a review page and becomes invalid after confirm or reject succeeds.\r\n", order.OrderNo, order.TenantID, order.ProductLabel, order.Email, order.PayChannelLabel, order.Payee, formatPaymentAmount(order.Amount), order.PayCode, qrURL, order.OpenedPaymentAt.UTC().Format(time.RFC3339), formatPaymentAmount(order.Amount), order.PayCode, confirmURL, deleteURL)
+	body := fmt.Sprintf("MaClaw Hub personal payment needs confirmation\r\n\r\nOrder: %s\r\nTenant: %s\r\nProduct: %s\r\nBuyer account: %s\r\nPayment channel: %s\r\nPayee: %s\r\nAmount: %s\r\nRemark code: %s\r\nPayment QR: %s\r\nBuyer clicked paid at: %s\r\n\r\nCheck your Alipay/WeChat records before confirming:\r\n1. Amount equals %s\r\n2. Remark contains %s\r\n3. Payment time is after order creation\r\n\r\nOne-time confirm link: %s\r\nOne-time reject/delete link: %s\r\n\r\nEach link opens a review page and becomes invalid after confirm or reject succeeds.\r\n", order.OrderNo, order.TenantID, order.ProductLabel, order.Email, order.PayChannelLabel, order.Payee, formatPaymentAmount(order.Amount), order.PayCode, qrURL, order.OpenedPaymentAt.UTC().Format(time.RFC3339), formatPaymentAmount(order.Amount), order.PayCode, confirmURL, deleteURL)
 	return mailer.Send(store.WithTenant(ctx, order.TenantID), recipients, subject, body)
 }
 
@@ -2196,29 +2305,92 @@ func autoRedeemCardStoreOrder(ctx context.Context, identity *auth.IdentityServic
 		return false, nil
 	}
 	tenantID = store.NormalizeTenantID(firstNonEmptyString(tenantID, order.TenantID))
-	user, err := identity.UsersRepo().GetByTenantEmail(ctx, tenantID, order.Email)
+	redeemAccount, redeemUserID, err := canonicalCardStoreRedeemAccount(ctx, identity.UsersRepo(), tenantID, order)
 	if err != nil {
 		return false, err
 	}
-	if user == nil {
+	if strings.TrimSpace(redeemAccount) == "" && strings.TrimSpace(redeemUserID) == "" {
 		return false, nil
 	}
 	if strings.TrimSpace(hubBaseURL) == "" {
 		hubBaseURL = "/api/llm/v1"
 	}
-	if _, err := llmservice.RedeemCard(store.WithTenant(ctx, tenantID), system, nil, order.Email, code, hubBaseURL); err != nil {
+	if changed, err := llmservice.BackfillRegistryUserIDs(store.WithTenant(ctx, tenantID), system, identity.UsersRepo(), tenantID); err != nil {
+		return false, err
+	} else if changed {
+		invalidateLLMRuntimeCaches(system)
+	}
+	if _, err := llmservice.RedeemCardForUserID(store.WithTenant(ctx, tenantID), system, nil, redeemUserID, redeemAccount, code, hubBaseURL); err != nil {
 		if reg, loadErr := llmservice.LoadRegistry(ctx, system); loadErr == nil {
-			if card, _ := reg.FindCardByID(order.CardID); card != nil && strings.EqualFold(normalizeCardStoreEmail(card.RedeemedByEmail), normalizeCardStoreEmail(order.Email)) {
+			if card, _ := reg.FindCardByID(order.CardID); card != nil && (strings.EqualFold(strings.TrimSpace(card.RedeemedByUserID), strings.TrimSpace(redeemUserID)) || strings.EqualFold(normalizeCardStoreUserIdentity(card.RedeemedByEmail), normalizeCardStoreUserIdentity(order.Email)) || strings.EqualFold(normalizeCardStoreEmail(card.RedeemedByEmail), normalizeCardStoreEmail(redeemAccount))) {
+				invalidateLLMRuntimeCaches(system)
 				return true, nil
 			}
 		}
 		return false, err
 	}
+	invalidateLLMRuntimeCaches(system)
 	return true, nil
+}
+
+func canonicalCardStoreRedeemAccount(ctx context.Context, users store.UserRepository, tenantID string, order cardStoreOrder) (string, string, error) {
+	if users == nil {
+		return "", "", nil
+	}
+	identityValue := order.Email
+	identityValue = normalizeCardStoreUserIdentity(identityValue)
+	orderUserID := strings.TrimSpace(order.UserID)
+	if orderUserID != "" {
+		user, err := users.GetByID(ctx, orderUserID)
+		if err != nil {
+			return "", "", err
+		}
+		if user != nil && strings.EqualFold(store.NormalizeTenantID(user.TenantID), store.NormalizeTenantID(tenantID)) {
+			return normalizeCardStoreUserIdentity(user.Email), user.ID, nil
+		}
+	}
+	if strings.HasPrefix(identityValue, "phone:") {
+		digits := strings.TrimPrefix(identityValue, "phone:")
+		user, err := users.GetByTenantIdentity(ctx, tenantID, "phone", digits)
+		if err != nil || user == nil {
+			return "", "", err
+		}
+		return normalizeCardStoreUserIdentity(user.Email), firstNonEmptyString(orderUserID, user.ID), nil
+	}
+	user, err := users.GetByTenantEmail(ctx, tenantID, identityValue)
+	if err != nil || user == nil {
+		return "", "", err
+	}
+	return normalizeCardStoreUserIdentity(user.Email), firstNonEmptyString(orderUserID, user.ID), nil
 }
 
 func normalizeCardStoreEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
+}
+
+func normalizeCardStoreUserIdentity(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if strings.HasPrefix(value, "phone:") {
+		return phoneRegistrationIdentityFromDigits(value)
+	}
+	return normalizeCardStoreEmail(value)
+}
+
+func phoneRegistrationIdentityFromDigits(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if strings.HasPrefix(value, "phone:") {
+		value = strings.TrimPrefix(value, "phone:")
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "phone:" + b.String()
 }
 
 func cardStoreCardID(orderNo string) string {
@@ -2239,9 +2411,21 @@ func validCardStoreEmail(email string) bool {
 	return at > 0 && at < len(email)-3 && strings.Contains(email[at+1:], ".")
 }
 
+func validCardStoreUserIdentity(value string) bool {
+	value = normalizeCardStoreUserIdentity(value)
+	if validCardStoreEmail(value) {
+		return true
+	}
+	if !strings.HasPrefix(value, "phone:") {
+		return false
+	}
+	digits := strings.TrimPrefix(value, "phone:")
+	return validRegistrationPhoneNumber(digits)
+}
+
 func cardStoreOrderEmailMatches(order cardStoreOrder, email string) bool {
-	email = normalizeCardStoreEmail(email)
-	return email != "" && (normalizeCardStoreEmail(order.Email) == email || normalizeCardStoreEmail(order.SecondaryEmail) == email)
+	email = normalizeCardStoreUserIdentity(email)
+	return email != "" && (normalizeCardStoreUserIdentity(order.Email) == email || normalizeCardStoreEmail(order.SecondaryEmail) == email)
 }
 
 func loadCardStoreOrders(ctx context.Context, system store.SystemSettingsRepository) cardStoreOrders {
@@ -2445,7 +2629,8 @@ func markCardStoreOrderPaid(ctx context.Context, system store.SystemSettingsRepo
 				orders.Orders[i].PaidAt = update.PaidAt
 				paidAtChanged = true
 			}
-			if mailer == nil || (strings.EqualFold(strings.TrimSpace(orders.Orders[i].MailStatus), "sent") && !autoRedeemChanged) {
+			canSendCodeEmail := mailer != nil && len(cardStoreCodeEmailRecipients(orders.Orders[i])) > 0
+			if !canSendCodeEmail || (strings.EqualFold(strings.TrimSpace(orders.Orders[i].MailStatus), "sent") && !autoRedeemChanged) {
 				if autoRedeemChanged || paymentDetailsChanged || paidAtChanged {
 					orders.Orders[i].UpdatedAt = update.UpdatedAt
 					return saveCardStoreOrders(ctx, system, orders)
@@ -2505,7 +2690,7 @@ func markCardStoreOrderPaid(ctx context.Context, system store.SystemSettingsRepo
 		}
 		orders.Orders[i].PaidAt = update.PaidAt
 		orders.Orders[i].UpdatedAt = update.UpdatedAt
-		if code != "" && mailer != nil {
+		if code != "" && mailer != nil && len(cardStoreCodeEmailRecipients(orders.Orders[i])) > 0 {
 			mailErr = sendCardStoreCodeEmail(ctx, mailer, orders.Orders[i], code)
 			if mailErr != nil {
 				orders.Orders[i].MailStatus = "failed"
@@ -2647,8 +2832,8 @@ func canCompleteCardStoreOrder(status string) bool {
 func GetCardStoreOrderHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orderNo := strings.TrimSpace(r.PathValue("orderNo"))
-		email := normalizeCardStoreEmail(r.URL.Query().Get("email"))
-		if orderNo == "" || !validCardStoreEmail(email) {
+		email := normalizeCardStoreUserIdentity(r.URL.Query().Get("email"))
+		if orderNo == "" || !validCardStoreUserIdentity(email) {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_LOOKUP_INVALID", "order_no and email are required")
 			return
 		}

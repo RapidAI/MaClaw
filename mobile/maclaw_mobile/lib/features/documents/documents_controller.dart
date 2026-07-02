@@ -3,9 +3,11 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
@@ -16,9 +18,30 @@ final documentsControllerProvider =
   DocumentsController.new,
 );
 
+final documentDraftHistoryProvider =
+    AsyncNotifierProvider<DocumentDraftHistoryController, List<DocumentDraft>>(
+  DocumentDraftHistoryController.new,
+);
+
+class DocumentDraftHistoryController
+    extends AsyncNotifier<List<DocumentDraft>> {
+  @override
+  Future<List<DocumentDraft>> build() {
+    return ref.watch(mobileLocalStoreProvider).loadRecentDocumentDrafts();
+  }
+
+  Future<void> refresh() async {
+    state = await AsyncValue.guard(
+      () => ref.read(mobileLocalStoreProvider).loadRecentDocumentDrafts(),
+    );
+  }
+}
+
 class DocumentsController extends AsyncNotifier<DocumentsState> {
   Timer? _exportPollTimer;
   Timer? _uploadPollTimer;
+  final Set<String> _notifiedExportJobs = {};
+  final Set<String> _notifiedUploadTasks = {};
 
   @override
   Future<DocumentsState> build() async {
@@ -28,9 +51,23 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       _exportPollTimer = null;
       _uploadPollTimer = null;
     });
-    final cachedDraft =
-        await ref.read(mobileLocalStoreProvider).loadLastDocumentDraft();
-    return DocumentsState(draft: cachedDraft);
+    final store = ref.read(mobileLocalStoreProvider);
+    final cachedDraft = await store.loadLastDocumentDraft();
+    final cachedUpload = await store.loadLastDocumentUploadTask();
+    final cachedUploadPath = await store.loadLastDocumentUploadPath();
+    final cachedExport = await store.loadLastDocumentExportJob();
+    if (cachedUpload != null) {
+      _ensureUploadPolling(cachedUpload);
+    }
+    if (cachedExport != null) {
+      _ensureExportPolling(cachedExport);
+    }
+    return DocumentsState(
+      draft: cachedDraft,
+      uploadTask: cachedUpload,
+      exportJob: cachedExport,
+      lastUploadPath: cachedUploadPath,
+    );
   }
 
   Future<void> createDraft({
@@ -55,7 +92,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         content: content,
       );
       await _cacheDraft(draft);
-      return DocumentsState(draft: draft, uploadTask: current.uploadTask);
+      return DocumentsState(
+        draft: draft,
+        uploadTask: current.uploadTask,
+        lastUploadPath: current.lastUploadPath,
+      );
     });
   }
 
@@ -72,18 +113,15 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     state = const AsyncLoading();
     final next = await AsyncValue.guard(() async {
-      final job = await client.exportDocument(draftId: draft.id, format: format);
-      if (job.status == 'ready') {
-        await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-              title: '文档导出完成',
-              body: '${draft.title} 已生成 ${documentExportFormatWireValue(format)}。',
-              payload: job.downloadUrl,
-            );
-      }
+      final job =
+          await client.exportDocument(draftId: draft.id, format: format);
+      await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
+      await _notifyExportFinished(job, draft.title);
       return DocumentsState(
         draft: draft,
         exportJob: job,
         uploadTask: current.uploadTask,
+        lastUploadPath: current.lastUploadPath,
       );
     });
     state = next;
@@ -91,6 +129,19 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     if (job != null) {
       _ensureExportPolling(job);
     }
+  }
+
+  Future<void> retryLastExport() async {
+    final current = state.valueOrNull;
+    final job = current?.exportJob;
+    if (current == null || job == null || !current.canRetryLastExport) {
+      state = AsyncError(
+        StateError('没有可重试的导出任务。'),
+        StackTrace.current,
+      );
+      return;
+    }
+    await exportDraft(job.format);
   }
 
   Future<void> saveDraftEdits({
@@ -127,6 +178,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       return DocumentsState(
         draft: updated,
         uploadTask: current.uploadTask,
+        exportJob: current.exportJob,
+        lastUploadPath: current.lastUploadPath,
       );
     });
   }
@@ -157,6 +210,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       return DocumentsState(
         draft: updated,
         uploadTask: current.uploadTask,
+        exportJob: current.exportJob,
+        lastUploadPath: current.lastUploadPath,
       );
     });
   }
@@ -171,17 +226,15 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     final next = await AsyncValue.guard(() async {
       final refreshed = await client.getDocumentExportJob(job.jobId);
-      if (refreshed.status == 'ready') {
-        await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-              title: '文档导出完成',
-              body: '导出任务 ${refreshed.jobId} 已可下载。',
-              payload: refreshed.downloadUrl,
-            );
-      }
+      await ref
+          .read(mobileLocalStoreProvider)
+          .saveLastDocumentExportJob(refreshed);
+      await _notifyExportFinished(refreshed, current.draft?.title ?? '文档');
       return DocumentsState(
         draft: current.draft,
         exportJob: refreshed,
         uploadTask: current.uploadTask,
+        lastUploadPath: current.lastUploadPath,
       );
     });
     state = next;
@@ -201,6 +254,10 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     final next = await AsyncValue.guard(() async {
       final refreshed = await client.getDocumentUploadTask(upload.taskId);
+      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
+            refreshed,
+            sourcePath: current.lastUploadPath,
+          );
       await _notifyUploadReady(refreshed);
       if (refreshed.draft != null) {
         await _cacheDraft(refreshed.draft!);
@@ -209,6 +266,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         draft: refreshed.draft ?? current.draft,
         exportJob: refreshed.draft == null ? current.exportJob : null,
         uploadTask: refreshed,
+        lastUploadPath: current.lastUploadPath,
       );
     });
     state = next;
@@ -216,6 +274,59 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     if (refreshed != null) {
       _ensureUploadPolling(refreshed);
     }
+  }
+
+  Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
+    if (!event.documentTask) return;
+    final payload = event.payload;
+    if (payload.isEmpty) return;
+    if ((payload['job_id'] as String? ?? '').isNotEmpty) {
+      await _applyRealtimeExport(payload);
+      return;
+    }
+    if ((payload['task_id'] as String? ?? '').isNotEmpty) {
+      await _applyRealtimeUpload(payload);
+    }
+  }
+
+  Future<void> _applyRealtimeExport(Map<String, dynamic> payload) async {
+    final current = state.valueOrNull ?? const DocumentsState();
+    final job = DocumentExportJob.fromJson(payload);
+    if (job.jobId.isEmpty) return;
+    await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
+    await _notifyExportFinished(job, current.draft?.title ?? '文档');
+    state = AsyncData(
+      DocumentsState(
+        draft: current.draft,
+        exportJob: job,
+        uploadTask: current.uploadTask,
+        lastUploadPath: current.lastUploadPath,
+      ),
+    );
+    _ensureExportPolling(job);
+  }
+
+  Future<void> _applyRealtimeUpload(Map<String, dynamic> payload) async {
+    final current = state.valueOrNull ?? const DocumentsState();
+    final upload = MobileDocumentUploadTask.fromJson(payload);
+    if (upload.taskId.isEmpty) return;
+    await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
+          upload,
+          sourcePath: current.lastUploadPath,
+        );
+    await _notifyUploadReady(upload);
+    if (upload.draft != null) {
+      await _cacheDraft(upload.draft!);
+    }
+    state = AsyncData(
+      DocumentsState(
+        draft: upload.draft ?? current.draft,
+        exportJob: upload.draft == null ? current.exportJob : null,
+        uploadTask: upload,
+        lastUploadPath: current.lastUploadPath,
+      ),
+    );
+    _ensureUploadPolling(upload);
   }
 
   String? exportDownloadUrl(DocumentExportJob job) {
@@ -265,6 +376,13 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     await uploadSharedDocument(path);
   }
 
+  Future<void> pickImageAndUploadDocument(ImageSource source) async {
+    final picked = await ImagePicker().pickImage(source: source);
+    final path = picked?.path;
+    if (path == null || path.isEmpty) return;
+    await uploadSharedDocument(path);
+  }
+
   Future<void> uploadSharedDocument(String path) async {
     final client = ref.read(apiClientProvider);
     if (client == null) {
@@ -274,7 +392,24 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       );
       return;
     }
+    final sizeError = await _validateUploadSize(path);
+    if (sizeError != null) {
+      state = AsyncError(StateError(sizeError), StackTrace.current);
+      return;
+    }
     await _uploadDocumentPath(client: client, path: path);
+  }
+
+  Future<void> retryLastUpload() async {
+    final path = state.valueOrNull?.lastUploadPath;
+    if (path == null || path.trim().isEmpty) {
+      state = AsyncError(
+        StateError('没有可重试的导入文件。'),
+        StackTrace.current,
+      );
+      return;
+    }
+    await uploadSharedDocument(path);
   }
 
   Future<void> _uploadDocumentPath({
@@ -285,6 +420,10 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     state = const AsyncLoading();
     final next = await AsyncValue.guard(() async {
       final upload = await client.uploadDocument(path);
+      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
+            upload,
+            sourcePath: path,
+          );
       await _notifyUploadReady(upload);
       if (upload.draft != null) {
         await _cacheDraft(upload.draft!);
@@ -293,6 +432,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         draft: upload.draft ?? current.draft,
         exportJob: upload.draft == null ? current.exportJob : null,
         uploadTask: upload,
+        lastUploadPath: path,
       );
     });
     state = next;
@@ -302,20 +442,76 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
   }
 
+  Future<String?> _validateUploadSize(String path) async {
+    final maxUploadBytes = ref
+            .read(sessionControllerProvider)
+            .valueOrNull
+            ?.bootstrap
+            ?.limits
+            .maxUploadBytes ??
+        0;
+    if (maxUploadBytes <= 0) return null;
+    final file = File(path);
+    if (!await file.exists()) return null;
+    final length = await file.length();
+    if (length <= maxUploadBytes) return null;
+    return '文件大小 ${formatMobileFileSize(length)} 超过官方服务上传限制 '
+        '${formatMobileFileSize(maxUploadBytes)}，请压缩或拆分后再导入。';
+  }
+
   Future<void> _notifyUploadReady(MobileDocumentUploadTask upload) async {
-    if (upload.status == 'ready' || upload.status == 'failed') {
-      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: upload.status == 'failed' ? '文档解析失败' : '文档解析完成',
-            body: upload.status == 'failed'
-                ? '${upload.filename} 解析失败：${upload.message.isEmpty ? '请重新导入或改用文本/文档格式。' : upload.message}'
-                : '${upload.filename} 已生成移动草稿。',
-            payload: upload.draftId.isEmpty ? upload.taskId : upload.draftId,
-          );
+    if (!_uploadFinished(upload) || upload.taskId.isEmpty) return;
+    if (!_notifiedUploadTasks.add(upload.taskId)) return;
+    await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+          title: upload.status == 'failed' ? '文档解析失败' : '文档解析完成',
+          body: upload.status == 'failed'
+              ? '${upload.filename} 解析失败：${upload.message.isEmpty ? '请重新导入或改用文本/文档格式。' : upload.message}'
+              : '${upload.filename} 已生成移动草稿。',
+          payload: upload.draftId.isEmpty ? upload.taskId : upload.draftId,
+        );
+  }
+
+  Future<void> _notifyExportFinished(
+    DocumentExportJob job,
+    String draftTitle,
+  ) async {
+    if (!_exportFinished(job) || job.jobId.isEmpty) return;
+    if (!_notifiedExportJobs.add(job.jobId)) return;
+    final payload = _exportNotificationPayload(job);
+    await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+          title: job.status == 'failed' ? '文档导出失败' : '文档导出完成',
+          body: job.status == 'failed'
+              ? '$draftTitle 导出失败：${job.message.isEmpty ? '请重试或改用其他格式。' : job.message}'
+              : '$draftTitle 已生成 ${documentExportFormatWireValue(job.format)}。',
+          payload: payload,
+        );
+  }
+
+  String _exportNotificationPayload(DocumentExportJob job) {
+    if (job.downloadUrl.isEmpty) return job.jobId;
+    try {
+      return exportDownloadUrl(job) ?? job.jobId;
+    } on UnsupportedError {
+      return job.jobId;
     }
   }
 
   Future<void> _cacheDraft(DocumentDraft draft) {
-    return ref.read(mobileLocalStoreProvider).saveLastDocumentDraft(draft);
+    return ref.read(mobileLocalStoreProvider).saveLastDocumentDraft(draft).then(
+          (_) => ref.invalidate(documentDraftHistoryProvider),
+        );
+  }
+
+  Future<void> selectDraft(DocumentDraft draft) async {
+    await _cacheDraft(draft);
+    final current = state.valueOrNull ?? const DocumentsState();
+    state = AsyncData(
+      DocumentsState(
+        draft: draft,
+        uploadTask: current.uploadTask,
+        lastUploadPath: current.lastUploadPath,
+      ),
+    );
   }
 
   void _ensureExportPolling(DocumentExportJob job) {
@@ -369,8 +565,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   bool _uploadFinished(MobileDocumentUploadTask upload) {
-    return upload.status == 'ready' ||
-        upload.status == 'failed';
+    return upload.status == 'ready' || upload.status == 'failed';
   }
 
   String _exportFilename(String title, DocumentExportJob job) {
@@ -395,6 +590,32 @@ class DocumentsState {
   final DocumentDraft? draft;
   final DocumentExportJob? exportJob;
   final MobileDocumentUploadTask? uploadTask;
+  final String? lastUploadPath;
 
-  const DocumentsState({this.draft, this.exportJob, this.uploadTask});
+  const DocumentsState({
+    this.draft,
+    this.exportJob,
+    this.uploadTask,
+    this.lastUploadPath,
+  });
+
+  bool get canRetryLastUpload =>
+      uploadTask?.status == 'failed' && (lastUploadPath?.isNotEmpty ?? false);
+
+  bool get canRetryLastExport => draft != null && exportJob?.status == 'failed';
+}
+
+String formatMobileFileSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final units = ['KB', 'MB', 'GB'];
+  var value = bytes / 1024.0;
+  var unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024.0;
+    unitIndex++;
+  }
+  final text = value >= 10
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '');
+  return '$text ${units[unitIndex]}';
 }

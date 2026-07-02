@@ -38,6 +38,91 @@ func TestNormalizedRemotePlatform(t *testing.T) {
 	}
 }
 
+func TestNormalizeRemoteRegistrationPhoneNumber(t *testing.T) {
+	got := normalizeRemoteRegistrationPhoneNumber(" 199-0000 1111 ")
+	if got != "19900001111" {
+		t.Fatalf("normalize phone = %q, want 19900001111", got)
+	}
+	if short := normalizeRemoteRegistrationPhoneNumber("12-3"); len(short) >= 6 {
+		t.Fatalf("short phone normalized to unexpectedly valid value %q", short)
+	}
+}
+
+func TestVerifyRemoteActivationPreservesCredentialsOnNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/probe" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"not_found","message":"tenant route not found"}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteHubURL = server.URL
+		cfg.RemoteEmail = "owner@example.com"
+		cfg.RemoteMachineID = "machine-1"
+		cfg.RemoteMachineToken = "token-1"
+		cfg.RemoteViewerToken = "viewer-1"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	if !app.VerifyRemoteActivation() {
+		t.Fatal("not_found probe should be treated as still valid locally")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after verify error = %v", err)
+	}
+	if cfg.RemoteMachineID != "machine-1" || cfg.RemoteMachineToken != "token-1" || cfg.RemoteViewerToken != "viewer-1" {
+		t.Fatalf("credentials were unexpectedly cleared: machine_id=%q token=%q viewer=%q", cfg.RemoteMachineID, cfg.RemoteMachineToken, cfg.RemoteViewerToken)
+	}
+}
+
+func TestVerifyRemoteActivationClearsCredentialsOnBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/probe" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"blocked","message":"user blocked by admin"}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteHubURL = server.URL
+		cfg.RemoteEmail = "owner@example.com"
+		cfg.RemoteMachineID = "machine-1"
+		cfg.RemoteMachineToken = "token-1"
+		cfg.RemoteViewerToken = "viewer-1"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	if app.VerifyRemoteActivation() {
+		t.Fatal("blocked probe should invalidate local activation")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after verify error = %v", err)
+	}
+	if cfg.RemoteMachineID != "" || cfg.RemoteMachineToken != "" || cfg.RemoteViewerToken != "" {
+		t.Fatalf("credentials were not cleared: machine_id=%q token=%q viewer=%q", cfg.RemoteMachineID, cfg.RemoteMachineToken, cfg.RemoteViewerToken)
+	}
+	if cfg.RemoteEmail != "owner@example.com" || cfg.RemoteHubURL != server.URL {
+		t.Fatalf("email/hub should be preserved after clear: email=%q hub=%q", cfg.RemoteEmail, cfg.RemoteHubURL)
+	}
+}
+
 func TestResolveProjectProxyURL_ProjectSpecificPreferred(t *testing.T) {
 	app := &App{}
 	cfg := corelib.AppConfig{
@@ -229,7 +314,7 @@ func TestBuildClaudeLaunchSpec_UsesCurrentProjectAndTitle(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	projectPath := filepath.Clean(`D:\workprj\proj`)
 	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
@@ -283,7 +368,7 @@ func TestBuildClaudeLaunchSpec_UsesSavedCurrentProjectWhenProjectDirEmpty(t *tes
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	projectPath := filepath.Clean(`D:\workprj\proj-saved`)
 	cfg := corelib.AppConfig{
 		CurrentProject: "proj-1",
@@ -385,7 +470,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 		defaultRemoteHubCenterURL = origGUIDefault
 	}()
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	cfg := corelib.AppConfig{
 		RemoteHubCenterURL: center.URL,
 		RemoteNickname:     "Old Desk",
@@ -433,6 +518,113 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	// Verify RemoteEnabled is set
 	if !saved.RemoteEnabled {
 		t.Fatal("RemoteEnabled should be true after activation")
+	}
+}
+
+func TestActivateRemote_ReconfirmsHubViaHubCenterWhenCachedHubURLExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	staleHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("stale cached hub should not be used: %s", r.URL.Path)
+	}))
+	defer staleHub.Close()
+
+	resolvedHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "ok",
+				"tenant_id":     "tenant_dynamic",
+				"tenant_name":   "Dynamic Team",
+				"email":         "dynamic@example.com",
+				"sn":            "SN-DYNAMIC",
+				"machine_id":    "m_dynamic",
+				"machine_token": "mt_dynamic",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer resolvedHub.Close()
+
+	var resolveHits int32
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/entry/resolve":
+			atomic.AddInt32(&resolveHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"email":          "dynamic@example.com",
+				"mode":           "single",
+				"default_hub_id": "hub_dynamic",
+				"hubs": []map[string]any{{
+					"hub_id":   "hub_dynamic",
+					"base_url": resolvedHub.URL,
+					"status":   "online",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer center.Close()
+
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	origDefault := remote.DefaultRemoteHubCenterURL
+	origGUIDefault := defaultRemoteHubCenterURL
+	remote.DefaultRemoteHubCenterURLs = []string{center.URL}
+	remote.DefaultRemoteHubCenterURL = center.URL
+	defaultRemoteHubCenterURL = center.URL
+	defer func() {
+		remote.DefaultRemoteHubCenterURLs = origDefaults
+		remote.DefaultRemoteHubCenterURL = origDefault
+		defaultRemoteHubCenterURL = origGUIDefault
+	}()
+
+	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       staleHub.URL,
+		RemoteHubCenterURL: center.URL,
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("dynamic@example.com", "", ""); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+	if atomic.LoadInt32(&resolveHits) == 0 {
+		t.Fatal("HubCenter resolve endpoint was not called")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.RemoteHubURL != resolvedHub.URL {
+		t.Fatalf("RemoteHubURL = %q, want dynamically resolved %q", saved.RemoteHubURL, resolvedHub.URL)
+	}
+}
+
+func TestSanitizeHubCenterRegistrationURLsDropsLoopback(t *testing.T) {
+	preferred, discovered := sanitizeHubCenterRegistrationURLs(
+		"http://127.0.0.1:65140",
+		[]string{"http://127.0.0.1:65140", "https://hubs.mypapers.top/", "https://hubs.maclaw.top"},
+	)
+	if preferred != "https://hubs.mypapers.top" {
+		t.Fatalf("preferred = %q, want public URL", preferred)
+	}
+	if len(discovered) != 2 || discovered[0] != "https://hubs.mypapers.top" || discovered[1] != "https://hubs.maclaw.top" {
+		t.Fatalf("discovered = %#v", discovered)
+	}
+}
+
+func TestSanitizeHubCenterRegistrationURLsAllLoopback(t *testing.T) {
+	preferred, discovered := sanitizeHubCenterRegistrationURLs(
+		"http://127.0.0.1:65140",
+		[]string{"http://localhost:9388"},
+	)
+	if preferred != "" || discovered != nil {
+		t.Fatalf("preferred=%q discovered=%#v, want no unconfirmed HubCenter", preferred, discovered)
 	}
 }
 

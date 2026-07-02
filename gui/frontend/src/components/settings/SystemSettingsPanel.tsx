@@ -4,6 +4,7 @@ import { localizeText } from '../../i18n';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
 import { SystemTimeoutField } from './SystemTimeoutField';
+import { ToolCacheMaintenanceSection } from './ToolCacheMaintenanceSection';
 
 type AudioDeviceOption = {
     deviceId: string;
@@ -43,7 +44,7 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
         ['Client ID', config?.remote_client_id || emptyValue(lang, 'generated')],
         ['SN', config?.remote_sn || emptyValue(lang, 'inactive')],
         ['Hub URL', config?.remote_hub_url || emptyValue(lang, 'unset')],
-        ['Email', config?.remote_email || emptyValue(lang, 'unset')],
+        [textForLang(lang, 'Account', '\u8d26\u6237', '\u5e33\u6236'), config?.remote_email || emptyValue(lang, 'unset')],
         ['WeChat Mode', (config as any)?.weixin_local_mode === false ? textForLang(lang, 'Multi-device (Hub)', '\u591a\u673a (Hub)', '\u591a\u6a5f (Hub)') : textForLang(lang, 'Single-device (Local)', '\u5355\u673a (Local)', '\u55ae\u6a5f (Local)')],
     ];
 
@@ -132,6 +133,7 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
             </section>
 
             <DataDirectorySection config={config} setConfig={(c) => setConfig(c)} lang={lang} showToastMessage={showToastMessage} />
+            <ToolCacheMaintenanceSection config={config} setConfig={(c) => setConfig(c)} lang={lang} showToastMessage={showToastMessage} />
 
             <section className="system-settings-card system-settings-card--diagnostics">
                 <h4>

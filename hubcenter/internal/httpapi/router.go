@@ -17,15 +17,25 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 type EntryResolveRequest struct {
 	Email          string `json:"email"`
+	PhoneNumber    string `json:"phone_number,omitempty"`
 	Domain         string `json:"domain,omitempty"`
 	TenantID       string `json:"tenant_id,omitempty"`
 	InvitationCode string `json:"invitation_code,omitempty"`
+}
+
+type MobileServiceRedemptionRequest struct {
+	Code string `json:"code"`
+}
+
+type MobileDesktopQRSessionRequest struct {
+	QRPayload string `json:"qr_payload"`
 }
 
 // LLMRouteHook is called during router setup to register LLM service routes.
@@ -431,7 +441,8 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		resp, err := service.ResolveByEmailFromIP(r.Context(), req.Email, clientIPFromRequest(r), req.InvitationCode)
+		identity := entryResolveIdentity(req)
+		resp, err := service.ResolveByEmailFromIP(r.Context(), identity, clientIPFromRequest(r), req.InvitationCode)
 		if err != nil {
 			if errors.Is(err, entry.ErrIPBlocked) {
 				writeError(w, http.StatusForbidden, "IP_BLOCKED", err.Error())
@@ -442,6 +453,30 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func entryResolveIdentity(req EntryResolveRequest) string {
+	if phone := normalizeEntryResolvePhoneIdentity(req.PhoneNumber); phone != "" {
+		return phone
+	}
+	return strings.TrimSpace(req.Email)
+}
+
+func normalizeEntryResolvePhoneIdentity(phoneNumber string) string {
+	phoneNumber = strings.TrimSpace(phoneNumber)
+	if phoneNumber == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range phoneNumber {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() < 6 {
+		return ""
+	}
+	return "phone:" + b.String()
 }
 
 func EntryResolveDomainHandler(service *entry.Service) http.HandlerFunc {
@@ -564,6 +599,74 @@ func AdminInvitationCodeQueryHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
+func MobileServiceRedemptionHandler(service *entry.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req MobileServiceRedemptionRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		code := strings.TrimSpace(strings.ToUpper(req.Code))
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Service redemption code is required")
+			return
+		}
+		if service == nil {
+			writeError(w, http.StatusServiceUnavailable, "ENTRY_SERVICE_UNAVAILABLE", "HubCenter entry service is unavailable")
+			return
+		}
+		result, err := service.LookupInvitationCodeRoute(r.Context(), code)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SERVICE_REDEMPTION_LOOKUP_FAILED", err.Error())
+			return
+		}
+		if result == nil || !result.Found {
+			writeError(w, http.StatusNotFound, "SERVICE_REDEMPTION_NOT_FOUND", "Service redemption code was not found")
+			return
+		}
+		if strings.TrimSpace(result.HubURL) == "" {
+			message := strings.TrimSpace(result.Message)
+			if message == "" {
+				message = "The Hub for this service redemption code is not currently available"
+			}
+			writeError(w, http.StatusConflict, "SERVICE_REDEMPTION_HUB_UNAVAILABLE", message)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":      "requires_email_login",
+			"next_action": "email_login",
+			"message":     "Service code resolved. Continue with Hub email login so the Hub can issue a mobile viewer token.",
+			"code":        result.Code,
+			"hub": map[string]any{
+				"id":       result.HubID,
+				"name":     result.HubName,
+				"base_url": result.HubURL,
+				"status":   result.HubStatus,
+			},
+			"hub_id":        result.HubID,
+			"hub_url":       result.HubURL,
+			"tenant_id":     result.TenantID,
+			"tenant_name":   result.TenantName,
+			"used_by_email": result.UsedByEmail,
+		})
+	}
+}
+
+func MobileDesktopQRSessionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req MobileDesktopQRSessionRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.QRPayload) == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Desktop QR payload is required")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "DESKTOP_QR_SESSION_REQUIRES_SIGNED_GUI_PAYLOAD", "Desktop GUI QR login requires a Hub-signed mobile session payload. Provider-only LLM QR payloads can be authorized after mobile login.")
+	}
+}
+
 func externalizeAdminResolveResult(resp *entry.ResolveResult) {
 	if resp == nil {
 		return
@@ -576,6 +679,7 @@ func externalizeAdminResolveResult(resp *entry.ResolveResult) {
 func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, failureLogs store.FailureEventLogRepository, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository, haConfigSvc *ha.ConfigService, optionalSvcs ...any) http.Handler {
 	var haSvc *ha.Service
 	var userUsageRepo store.HubUserUsageRepository
+	var notifService *notification.Service
 	for _, svc := range optionalSvcs {
 		switch v := svc.(type) {
 		case *ha.Service:
@@ -584,6 +688,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 			}
 		case store.HubUserUsageRepository:
 			userUsageRepo = v
+		case *notification.Service:
+			notifService = v
 		}
 	}
 	mux := http.NewServeMux()
@@ -647,6 +753,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))
+	mux.HandleFunc("POST /api/mobile/service-redemptions", MobileServiceRedemptionHandler(entryService))
+	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileDesktopQRSessionHandler())
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
 	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))
@@ -721,6 +829,14 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/news", RequireAdmin(adminService, AdminCreateNewsHandler(newsRepo, haSvc)))
 	mux.HandleFunc("PUT /api/admin/news", RequireAdmin(adminService, AdminUpdateNewsHandler(newsRepo, haSvc)))
 	mux.HandleFunc("DELETE /api/admin/news", RequireAdmin(adminService, AdminDeleteNewsHandler(newsRepo, haSvc)))
+	// Notification - admin management (HubCenter cross-Hub notifications)
+	if notifService != nil {
+		notifHandlers := NewNotificationHandlers(notifService)
+		mux.HandleFunc("POST /api/v1/admin/notifications", RequireAdmin(adminService, notifHandlers.CreateNotification))
+		mux.HandleFunc("GET /api/v1/admin/notifications", RequireAdmin(adminService, notifHandlers.ListNotifications))
+		mux.HandleFunc("GET /api/v1/admin/notifications/{id}", RequireAdmin(adminService, notifHandlers.GetNotification))
+		mux.HandleFunc("POST /api/v1/admin/notifications/{id}/revoke", RequireAdmin(adminService, notifHandlers.RevokeNotification))
+	}
 	// SkillMarket API
 	if smHandlers != nil {
 		// Auth rate limiters

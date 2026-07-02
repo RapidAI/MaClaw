@@ -183,7 +183,8 @@ func IsSkillRuntimePackageDir(name string) bool {
 	case ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "node_modules":
 		return true
 	default:
-		return false
+		// Also exclude .prev backup directories created during CommitStaging updates.
+		return strings.HasSuffix(base, ".prev")
 	}
 }
 

@@ -18,9 +18,10 @@ const (
 	hubInboundMessageIMCancelSession    hubInboundMessageType = "im.cancel_session"
 	hubInboundMessageIMGatewayReply     hubInboundMessageType = "im.gateway_reply"
 	hubInboundMessageGatewayClaimResult hubInboundMessageType = "im.gateway_claim_result"
-	hubInboundMessageNicknameAssigned   hubInboundMessageType = "machine.nickname_assigned"
-	hubInboundMessageAck                hubInboundMessageType = "ack"
-	hubInboundMessageVEEvent            hubInboundMessageType = "ve_event" // sentinel for all ve:* events
+	hubInboundMessageNicknameAssigned    hubInboundMessageType = "machine.nickname_assigned"
+	hubInboundMessageNotificationPush    hubInboundMessageType = "notification.push"
+	hubInboundMessageAck                 hubInboundMessageType = "ack"
+	hubInboundMessageVEEvent             hubInboundMessageType = "ve_event" // sentinel for all ve:* events
 )
 
 func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
@@ -56,6 +57,8 @@ func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
 		return hubInboundMessageGatewayClaimResult
 	case hubInboundMessageNicknameAssigned:
 		return hubInboundMessageNicknameAssigned
+	case hubInboundMessageNotificationPush:
+		return hubInboundMessageNotificationPush
 	case hubInboundMessageAck:
 		return hubInboundMessageAck
 	default:

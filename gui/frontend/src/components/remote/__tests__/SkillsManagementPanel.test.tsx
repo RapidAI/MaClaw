@@ -2,9 +2,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 
+class ResizeObserverMock {
+    observe() { }
+    unobserve() { }
+    disconnect() { }
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
 const ListNLSkillsMock = vi.fn();
 const CreateNLSkillMock = vi.fn();
 const UpdateNLSkillMock = vi.fn();
+const SetNLSkillStatusMock = vi.fn();
 const DeleteNLSkillMock = vi.fn();
 const ImportNLSkillZipMock = vi.fn();
 const SearchMixedSkillsMock = vi.fn();
@@ -26,6 +35,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListNLSkills: (...args: unknown[]) => ListNLSkillsMock(...args),
     CreateNLSkill: (...args: unknown[]) => CreateNLSkillMock(...args),
     UpdateNLSkill: (...args: unknown[]) => UpdateNLSkillMock(...args),
+    SetNLSkillStatus: (...args: unknown[]) => SetNLSkillStatusMock(...args),
     DeleteNLSkill: (...args: unknown[]) => DeleteNLSkillMock(...args),
     ImportNLSkillZip: (...args: unknown[]) => ImportNLSkillZipMock(...args),
     SearchMixedSkills: (...args: unknown[]) => SearchMixedSkillsMock(...args),
@@ -128,10 +138,10 @@ describe('SkillsManagementPanel execution class', () => {
 
         expect(ListNLSkillsMock).toHaveBeenCalled();
         expect(screen.getByText('代理 Skill')).toBeTruthy();
-        expect(screen.getByText('原生 Skill')).toBeTruthy();
+        expect(screen.getAllByText('原生 Skill').length).toBeGreaterThan(0);
         expect(screen.getByTitle('导入的 Markdown 类 Skill，通过 agent skill 流程执行。')).toBeTruthy();
-        expect(screen.getByTitle('常规 Skill，直接由原生 skill runner 执行。')).toBeTruthy();
-        expect(screen.queryByText('invoice_app')).toBeNull();
+        expect(screen.getAllByTitle('常规 Skill，直接由原生 skill runner 执行。').length).toBeGreaterThan(0);
+        expect(screen.getByText('invoice_app')).toBeTruthy();
     });
     it('shows MaClaw App skills in their own category', async () => {
         renderPanel();
@@ -140,26 +150,57 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByText('MaClaw App'));
+        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
 
         expect(screen.getByText('invoice_app')).toBeTruthy();
-        expect(screen.getByText('maclaw.app.json')).toBeTruthy();
         expect(screen.queryByText('paper_digest')).toBeNull();
     });
-    it('opens the app panel from the MaClaw App category', async () => {
-        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+    it('shows review reasons and can approve a needs-review skill', async () => {
+        ListNLSkillsMock.mockResolvedValue([
+            {
+                name: 'RapidOCR',
+                description: 'OCR images',
+                triggers: ['ocr'],
+                steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+                status: 'needs_review',
+                review_reason: 'auto-repair blocked by security scan: level=high summary=uses shell',
+                last_error: 'auto-repair blocked by security scan',
+                created_at: '2026-04-09T00:00:00Z',
+                source: 'hub',
+                execution_class: 'native_skill',
+                usage_count: 5,
+                success_rate: 0.2,
+            },
+        ]);
+        SetNLSkillStatusMock.mockResolvedValue(undefined);
+
+        renderPanel();
+
+        await waitFor(() => expect(screen.getByText('RapidOCR')).toBeTruthy());
+        expect(screen.getAllByTitle('auto-repair blocked by security scan: level=high summary=uses shell').length).toBeGreaterThan(0);
+        expect(screen.getByText(/\u5ba1\u6838\u539f\u56e0/)).toBeTruthy();
+
+        fireEvent.click(screen.getByTitle('审核并启用'));
+        await waitFor(() => expect(screen.getAllByText(/auto-repair blocked by security scan/).length).toBeGreaterThan(0));
+        fireEvent.click(screen.getByRole('button', { name: '审核通过并启用' }));
+
+        await waitFor(() => {
+            expect(SetNLSkillStatusMock).toHaveBeenCalledWith('RapidOCR', 'active');
+        });
+    });
+    it('keeps MaClaw App skills filterable from their category', async () => {
         renderPanel();
 
         await waitFor(() => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByText('MaClaw App'));
-        fireEvent.click(screen.getByText('打开应用面板'));
+        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
 
-        expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'maclaw:open-apps-panel' }));
+        expect(screen.getByText('invoice_app')).toBeTruthy();
+        expect(screen.queryByText('paper_digest')).toBeNull();
     });
-    it('uploads a MaClaw App skill to the skill market', async () => {
+    it('does not show the obsolete MaClaw App upload action in the filtered category', async () => {
         UploadNLSkillToMarketMock.mockResolvedValue('submission-app-1');
         renderPanel();
 
@@ -167,12 +208,11 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByText('MaClaw App'));
-        fireEvent.click(screen.getByText('上传'));
+        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
 
-        await waitFor(() => {
-            expect(UploadNLSkillToMarketMock).toHaveBeenCalledWith('invoice_app');
-        });
+        expect(screen.getByText('invoice_app')).toBeTruthy();
+        expect(screen.queryByText('上传')).toBeNull();
+        expect(UploadNLSkillToMarketMock).not.toHaveBeenCalled();
     });
     it('shows public and private market source badges with tooltips for search results', async () => {
         SearchMixedSkillsMock.mockResolvedValue([
@@ -279,7 +319,7 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText(/Invoice Review/)).toBeTruthy();
         expect(screen.getByText('finance')).toBeTruthy();
         expect(screen.getByText('pdf')).toBeTruthy();
-        expect(screen.getByText('App Skill')).toBeTruthy();
+        expect(screen.getByTitle('MaClaw App Skill')).toBeTruthy();
     });
 
     it('marks MaClaw App Skill recommendations', async () => {
@@ -322,7 +362,7 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('Invoice App')).toBeTruthy();
         expect(screen.getByText(/Invoice Review/)).toBeTruthy();
         expect(screen.getByText('pdf')).toBeTruthy();
-        expect(screen.getByText('App Skill')).toBeTruthy();
+        expect(screen.getByTitle('MaClaw App Skill')).toBeTruthy();
     });
 });
 

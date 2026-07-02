@@ -1,6 +1,8 @@
 package remote
 
 import (
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +82,11 @@ func (c *HubCenterSelectionCache) Invalidate() {
 //
 // The function compares against the cache and only calls persister.SaveHubCenterURLs
 // when the base URL or discovered list actually changes.
+//
+// Local/loopback addresses (127.0.0.1, localhost) are never persisted as the
+// preferred URL - they are machine-specific and would be incorrect on restart
+// or when viewed in the "About" panel. If base is a local address, the first
+// public URL from discovered is used instead.
 func (c *HubCenterSelectionCache) RememberSelectionThrottled(persister HubCenterPersister, base string, discovered []string) {
 	if persister == nil || base == "" {
 		return
@@ -88,6 +95,37 @@ func (c *HubCenterSelectionCache) RememberSelectionThrottled(persister HubCenter
 	// Normalize the base URL.
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	discovered = NormalizeHubCenterURLs(discovered)
+
+	// Never persist a local/loopback address as preferred - find the first
+	// public URL from the discovered list instead.
+	if IsLoopbackURL(base) {
+		promoted := ""
+		for _, u := range discovered {
+			if !IsLoopbackURL(u) {
+				promoted = u
+				break
+			}
+		}
+		if promoted != "" {
+			base = promoted
+		}
+		// If all discovered URLs are also loopback, skip persistence entirely
+		// to avoid polluting config with unusable addresses.
+		if promoted == "" {
+			return
+		}
+	}
+
+	// Filter loopback URLs from the discovered list - they are machine-specific
+	// and would pollute the seed list on next startup, potentially being re-selected
+	// by SelectBestCenter.
+	filtered := make([]string, 0, len(discovered))
+	for _, u := range discovered {
+		if !IsLoopbackURL(u) {
+			filtered = append(filtered, u)
+		}
+	}
+	discovered = filtered
 
 	// Check cache to avoid redundant writes.
 	cachedBase, cachedAll := c.Get()
@@ -100,6 +138,41 @@ func (c *HubCenterSelectionCache) RememberSelectionThrottled(persister HubCenter
 
 	// Persist to disk.
 	_ = persister.SaveHubCenterURLs(base, discovered)
+}
+
+// IsLoopbackURL reports whether a URL points to a loopback/localhost address.
+// These addresses are machine-specific and should not be persisted as the
+// preferred HubCenter URL.
+func IsLoopbackURL(u string) bool {
+	value := strings.TrimSpace(u)
+	if value == "" {
+		return false
+	}
+	if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	host := ""
+	parseValue := value
+	if !strings.Contains(parseValue, "://") {
+		parseValue = "https://" + parseValue
+	}
+	if parsed, err := url.Parse(parseValue); err == nil {
+		host = strings.TrimSpace(parsed.Hostname())
+	}
+	if host == "" {
+		host = strings.TrimSpace(value)
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	return false
 }
 
 // StringSliceEqual reports whether two string slices have the same elements

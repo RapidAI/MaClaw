@@ -59,6 +59,7 @@ func ExplainEntitlementDiagnosticFromRegistry(ctx context.Context, reg *Registry
 	}
 	reg.Normalize()
 	email = normalizeEmail(email)
+	owner := newUserAccountRef("", email)
 	diag := &EntitlementDiagnostic{Email: email}
 	if email == "" {
 		status, _, err := ResolveStatusFromRegistry(ctx, reg, securitySvc, email, hubBaseURL)
@@ -89,7 +90,7 @@ func ExplainEntitlementDiagnosticFromRegistry(ctx context.Context, reg *Registry
 			diag.MatchedGroupBindings = appliedGroupBindings(reg, groupIDs)
 		}
 	}
-	_, grants, err := effectiveServiceGroupIDs(ctx, reg, securitySvc, email, time.Now().UTC())
+	_, grants, err := effectiveServiceGroupIDsForOwner(ctx, reg, securitySvc, owner, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +141,15 @@ func appliedGroupBindings(reg *Registry, groupIDs []string) []GroupBinding {
 }
 
 func ResolveServiceStatus(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email string, hubBaseURL string) (*ServiceStatus, error) {
+	return ResolveServiceStatusForUserID(ctx, system, securitySvc, "", email, hubBaseURL)
+}
+
+func ResolveServiceStatusForUserID(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, userID, email string, hubBaseURL string) (*ServiceStatus, error) {
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {
 		return nil, err
 	}
-	status, _, err := ResolveStatusFromRegistry(ctx, reg, securitySvc, email, hubBaseURL)
+	status, _, err := ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, userID, email, hubBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -152,13 +157,18 @@ func ResolveServiceStatus(ctx context.Context, system SystemSettingsRepository, 
 }
 
 func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, email string, hubBaseURL string) (*ServiceStatus, []AuthorizedModel, error) {
+	return ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, "", email, hubBaseURL)
+}
+
+func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, userID, email string, hubBaseURL string) (*ServiceStatus, []AuthorizedModel, error) {
 	if reg == nil {
 		reg = &Registry{}
 	}
 	reg.Normalize()
-	email = normalizeEmail(email)
+	owner := newUserAccountRef(userID, email)
+	email = owner.Email
 	now := time.Now().UTC()
-	serviceGroupIDs, grants, err := effectiveServiceGroupIDs(ctx, reg, securitySvc, email, now)
+	serviceGroupIDs, grants, err := effectiveServiceGroupIDsForOwner(ctx, reg, securitySvc, owner, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,7 +184,7 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	for _, model := range models {
 		availableModels = append(availableModels, model.Name)
 	}
-	active := hasEligibleAuthorizedModel(reg, email, models, now)
+	active := hasEligibleAuthorizedModel(reg, owner, models, now)
 	status := &ServiceStatus{
 		Active:            active,
 		SkipLLMConfig:     active,
@@ -187,7 +197,7 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 		HubLLMBaseURL:     strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
 		TokensPerCredit:   reg.TokensPerCredit,
 	}
-	status.CreditGrants = creditGrantSummaries(reg, email, now)
+	status.CreditGrants = creditGrantSummariesForOwner(reg, owner, now)
 	for _, g := range status.CreditGrants {
 		// Only accumulate credits from currently effective grants.
 		// Exclude "queued" (not yet started) and "expired" grants from totals
@@ -228,13 +238,13 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 		}
 	}
 	if len(serviceGroupIDs) > 0 {
-		creditsAvailable = AvailableCreditsForServiceGroups(reg, email, serviceGroupIDs, now)
+		creditsAvailable = availableCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
 	}
-	if effectiveExpiresAt := effectiveGrantExpiresAt(reg, email, now); effectiveExpiresAt != nil {
+	if effectiveExpiresAt := effectiveGrantExpiresAt(reg, owner, now); effectiveExpiresAt != nil {
 		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
 	}
 	status.CreditsAvailable = roundCredits(creditsAvailable)
-	if status.Active && len(serviceGroupIDs) > 0 && (HasUnlimitedActiveGrantForServiceGroups(reg, email, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, email, serviceGroupIDs, now)) {
+	if status.Active && len(serviceGroupIDs) > 0 && (hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now)) {
 		status.CreditsTotal = 0
 		status.CreditsUsed = 0
 		status.CreditsRemaining = 0
@@ -248,15 +258,59 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	return status, models, nil
 }
 
+type userAccountRef struct {
+	UserID string
+	Email  string
+}
+
+func newUserAccountRef(userID, email string) userAccountRef {
+	if strings.TrimSpace(email) == "" && strings.TrimSpace(userID) != "" {
+		value := strings.TrimSpace(userID)
+		if strings.Contains(value, "@") || strings.HasPrefix(strings.ToLower(value), "phone:") {
+			email = value
+			userID = ""
+		}
+	}
+	return userAccountRef{UserID: normalizeUserID(userID), Email: normalizeEmail(email)}
+}
+
+func (r userAccountRef) empty() bool {
+	return r.UserID == "" && r.Email == ""
+}
+
+func grantMatchesUser(g Grant, owner userAccountRef) bool {
+	if owner.UserID != "" && normalizeUserID(g.UserID) == owner.UserID {
+		return true
+	}
+	return owner.Email != "" && normalizeEmail(g.Email) == owner.Email
+}
+
+func bindingMatchesUser(binding UserBinding, owner userAccountRef) bool {
+	if owner.UserID != "" && normalizeUserID(binding.UserID) == owner.UserID {
+		return true
+	}
+	return owner.Email != "" && normalizeEmail(binding.Email) == owner.Email
+}
+
+func cardRedeemedByUser(card RechargeCard, owner userAccountRef) bool {
+	if owner.UserID != "" && normalizeUserID(card.RedeemedByUserID) == owner.UserID {
+		return true
+	}
+	return owner.Email != "" && normalizeEmail(card.RedeemedByEmail) == owner.Email
+}
+
 func creditGrantSummaries(reg *Registry, email string, now time.Time) []ActiveGrant {
+	return creditGrantSummariesForOwner(reg, newUserAccountRef("", email), now)
+}
+
+func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.Time) []ActiveGrant {
 	if reg == nil {
 		return nil
 	}
-	email = normalizeEmail(email)
 	items := make([]ActiveGrant, 0)
 	var latestExpired *Grant
 	for _, g := range reg.Grants {
-		if normalizeEmail(g.Email) != email {
+		if !grantMatchesUser(g, owner) {
 			continue
 		}
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
@@ -434,10 +488,15 @@ func grantStatus(g Grant, now time.Time) (string, string, bool, *time.Time) {
 }
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {
-	email = normalizeEmail(email)
+	return RedeemCardForUserID(ctx, system, securitySvc, "", email, code, hubBaseURL)
+}
+
+func RedeemCardForUserID(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, userID, email, code, hubBaseURL string) (*ServiceStatus, error) {
+	owner := newUserAccountRef(userID, email)
+	accountEmail := owner.Email
 	code = NormalizeCardCode(code)
-	if email == "" {
-		return nil, fmt.Errorf("email is required")
+	if owner.empty() {
+		return nil, fmt.Errorf("user is required")
 	}
 	if code == "" {
 		return nil, fmt.Errorf("redeem code is required")
@@ -486,11 +545,12 @@ func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySv
 		creditsPerGroup = card.Credits / float64(len(validServiceGroupIDs))
 	}
 	for _, serviceGroupID := range validServiceGroupIDs {
-		startsAt := nextGrantStart(reg, email, serviceGroupID, now)
+		startsAt := nextGrantStart(reg, owner, serviceGroupID, now)
 		expiresAt := startsAt.Add(time.Duration(days) * 24 * time.Hour)
 		reg.Grants = append(reg.Grants, Grant{
 			ID:             NewID("grant"),
-			Email:          email,
+			UserID:         owner.UserID,
+			Email:          accountEmail,
 			ServiceGroupID: serviceGroupID,
 			Source:         "card",
 			CardID:         card.ID,
@@ -501,19 +561,20 @@ func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySv
 			PeriodLimits:   card.PeriodLimits,
 		})
 	}
-	reg.Cards[idx].RedeemedByEmail = email
+	reg.Cards[idx].RedeemedByUserID = owner.UserID
+	reg.Cards[idx].RedeemedByEmail = accountEmail
 	reg.Cards[idx].RedeemedAt = &now
 	if err := SaveRegistry(ctx, system, reg); err != nil {
 		return nil, err
 	}
-	status, _, err := ResolveStatusFromRegistry(ctx, reg, securitySvc, email, hubBaseURL)
+	status, _, err := ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, owner.UserID, owner.Email, hubBaseURL)
 	if err != nil {
 		return nil, err
 	}
 	return status, nil
 }
 
-func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) time.Time {
+func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, now time.Time) time.Time {
 	// Scan currently-active grants (within their validity window right now)
 	// to determine whether the user has any remaining credits. If all active
 	// grants are exhausted, the new grant starts immediately so the top-up is
@@ -521,7 +582,7 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 	hasActiveWithCredits := false
 	latestActiveExpiry := now
 	for _, g := range reg.Grants {
-		if !strings.EqualFold(g.Email, email) || !strings.EqualFold(g.ServiceGroupID, serviceGroupID) {
+		if !grantMatchesUser(g, owner) || !strings.EqualFold(g.ServiceGroupID, serviceGroupID) {
 			continue
 		}
 		// Only consider grants currently within their validity window.
@@ -550,14 +611,13 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 	return latestActiveExpiry
 }
 
-func effectiveGrantExpiresAt(reg *Registry, email string, now time.Time) *time.Time {
+func effectiveGrantExpiresAt(reg *Registry, owner userAccountRef, now time.Time) *time.Time {
 	if reg == nil {
 		return nil
 	}
-	email = normalizeEmail(email)
 	var latest *time.Time
 	for _, g := range reg.Grants {
-		if normalizeEmail(g.Email) != email {
+		if !grantMatchesUser(g, owner) {
 			continue
 		}
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
@@ -578,19 +638,18 @@ func effectiveGrantExpiresAt(reg *Registry, email string, now time.Time) *time.T
 }
 
 func hasGrantWithSource(reg *Registry, email, serviceGroupID, source string) bool {
-	return findGrantWithSource(reg, email, serviceGroupID, source) != nil
+	return findGrantWithSource(reg, newUserAccountRef("", email), serviceGroupID, source) != nil
 }
 
-func findGrantWithSource(reg *Registry, email, serviceGroupID, source string) *Grant {
+func findGrantWithSource(reg *Registry, owner userAccountRef, serviceGroupID, source string) *Grant {
 	if reg == nil {
 		return nil
 	}
-	email = normalizeEmail(email)
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
 	source = strings.TrimSpace(source)
 	for i := range reg.Grants {
 		grant := &reg.Grants[i]
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(*grant, owner) {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
@@ -605,6 +664,10 @@ func findGrantWithSource(reg *Registry, email, serviceGroupID, source string) *G
 }
 
 func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc userGroupResolver, email string, now time.Time) ([]string, []Grant, error) {
+	return effectiveServiceGroupIDsForOwner(ctx, reg, securitySvc, newUserAccountRef("", email), now)
+}
+
+func effectiveServiceGroupIDsForOwner(ctx context.Context, reg *Registry, securitySvc userGroupResolver, owner userAccountRef, now time.Time) ([]string, []Grant, error) {
 	serviceGroupIDs := make([]string, 0)
 	seen := map[string]struct{}{}
 	appendID := func(id string) bool {
@@ -634,15 +697,15 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc us
 	}
 	policyApplied := false
 	for _, ub := range reg.UserBindings {
-		if normalizeEmail(ub.Email) != email {
+		if !bindingMatchesUser(ub, owner) {
 			continue
 		}
 		if appendIDs(ub.ServiceGroupIDs) {
 			policyApplied = true
 		}
 	}
-	if !policyApplied && securitySvc != nil && email != "" {
-		groupIDs, err := securitySvc.ResolveUserGroupChain(ctx, email)
+	if !policyApplied && securitySvc != nil && owner.Email != "" {
+		groupIDs, err := securitySvc.ResolveUserGroupChain(ctx, owner.Email)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -669,7 +732,7 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc us
 	}
 	activeGrants := make([]Grant, 0)
 	for _, g := range reg.Grants {
-		if normalizeEmail(g.Email) != email {
+		if !grantMatchesUser(g, owner) {
 			continue
 		}
 		if !now.Before(g.ExpiresAt) {
@@ -687,7 +750,7 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc us
 	return serviceGroupIDs, activeGrants, nil
 }
 
-func hasEligibleAuthorizedModel(reg *Registry, email string, models []AuthorizedModel, now time.Time) bool {
+func hasEligibleAuthorizedModel(reg *Registry, owner userAccountRef, models []AuthorizedModel, now time.Time) bool {
 	if len(models) == 0 {
 		return false
 	}
@@ -698,7 +761,7 @@ func hasEligibleAuthorizedModel(reg *Registry, email string, models []Authorized
 			providerIDs = keysOfProviderServiceGroups(model.ProviderServiceGroups)
 		}
 		for _, providerID := range providerIDs {
-			allowed, _, _, _, _, _, _ := BillingEligibilityForServiceGroups(reg, email, ServiceGroupIDsForProvider(model, providerID), now)
+			allowed, _, _, _, _, _, _ := billingEligibilityForServiceGroups(reg, owner, ServiceGroupIDsForProvider(model, providerID), now)
 			if allowed {
 				return true
 			}
@@ -965,15 +1028,36 @@ func firstNonEmpty(values ...string) string {
 }
 
 func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRepository, email string) error {
-	return grantNewUserBenefit(ctx, system, email, "new_user_default", 0.30, false)
+	return GrantDefaultServiceForNewUserID(ctx, system, "", email)
+}
+
+func GrantDefaultServiceForNewUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_default", 0.30, false)
 }
 
 func GrantEmailConfirmedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
-	return grantNewUserBenefit(ctx, system, email, "new_user_email_confirmed", 0.70, true)
+	return GrantEmailConfirmedBenefitForUserID(ctx, system, "", email)
+}
+
+func GrantEmailConfirmedBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_email_confirmed", 0.70, true)
+}
+
+func GrantPhoneVerifiedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
+	return GrantPhoneVerifiedBenefitForUserID(ctx, system, "", email)
+}
+
+func GrantPhoneVerifiedBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_phone_verified", 0.70, true)
 }
 
 func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSettingsRepository, email, invitationCodeID, serviceGroupID string, durationDays int, credits float64) error {
-	email = normalizeEmail(email)
+	return GrantInvitationCodeBenefitForUserID(ctx, system, "", email, invitationCodeID, serviceGroupID, durationDays, credits)
+}
+
+func GrantInvitationCodeBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email, invitationCodeID, serviceGroupID string, durationDays int, credits float64) error {
+	owner := newUserAccountRef(userID, email)
+	email = owner.Email
 	invitationCodeID = strings.TrimSpace(invitationCodeID)
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
 	if email == "" {
@@ -990,7 +1074,7 @@ func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSetting
 		return nil
 	}
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) == email &&
+		if grantMatchesUser(grant, owner) &&
 			strings.TrimSpace(grant.ServiceGroupID) == serviceGroupID &&
 			strings.TrimSpace(grant.Source) == "invitation_code" &&
 			strings.TrimSpace(grant.CardID) == invitationCodeID {
@@ -998,9 +1082,10 @@ func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSetting
 		}
 	}
 	now := time.Now().UTC()
-	startsAt := nextGrantStart(reg, email, serviceGroupID, now)
+	startsAt := nextGrantStart(reg, owner, serviceGroupID, now)
 	reg.Grants = append(reg.Grants, Grant{
 		ID:             NewID("grant"),
+		UserID:         owner.UserID,
 		Email:          email,
 		ServiceGroupID: serviceGroupID,
 		Source:         "invitation_code",
@@ -1014,7 +1099,12 @@ func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSetting
 }
 
 func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, email, source string, ratio float64, useRegistrationWindow bool) error {
-	email = normalizeEmail(email)
+	return grantNewUserBenefitForUserID(ctx, system, "", email, source, ratio, useRegistrationWindow)
+}
+
+func grantNewUserBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email, source string, ratio float64, useRegistrationWindow bool) error {
+	owner := newUserAccountRef(userID, email)
+	email = owner.Email
 	if email == "" {
 		return fmt.Errorf("email is required")
 	}
@@ -1050,13 +1140,13 @@ func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, e
 	now := time.Now().UTC()
 	created := false
 	for _, serviceGroupID := range validServiceGroupIDs {
-		if hasGrantWithSource(reg, email, serviceGroupID, source) {
+		if findGrantWithSource(reg, owner, serviceGroupID, source) != nil {
 			continue
 		}
-		startsAt := nextGrantStart(reg, email, serviceGroupID, now)
+		startsAt := nextGrantStart(reg, owner, serviceGroupID, now)
 		expiresAt := startsAt.Add(time.Duration(days) * 24 * time.Hour)
 		if useRegistrationWindow {
-			base := findGrantWithSource(reg, email, serviceGroupID, "new_user_default")
+			base := findGrantWithSource(reg, owner, serviceGroupID, "new_user_default")
 			if base == nil {
 				continue
 			}
@@ -1068,6 +1158,7 @@ func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, e
 		}
 		reg.Grants = append(reg.Grants, Grant{
 			ID:             NewID("grant"),
+			UserID:         owner.UserID,
 			Email:          email,
 			ServiceGroupID: serviceGroupID,
 			Source:         source,
@@ -1126,18 +1217,25 @@ func EstimateCreditsWithFloor(tokens int64, multiplier float64, tokensPerCredit 
 }
 
 func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []string, credits float64, now time.Time) float64 {
+	return applyCreditUsageToRegistry(reg, newUserAccountRef("", email), serviceGroupIDs, credits, now)
+}
+
+func ApplyCreditUsageToRegistryForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, credits float64, now time.Time) float64 {
+	return applyCreditUsageToRegistry(reg, newUserAccountRef(userID, email), serviceGroupIDs, credits, now)
+}
+
+func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGroupIDs []string, credits float64, now time.Time) float64 {
 	if reg == nil || credits <= 0 {
 		return 0
 	}
-	email = normalizeEmail(email)
 	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
-	if email == "" || len(serviceGroupIDs) == 0 {
+	if owner.empty() || len(serviceGroupIDs) == 0 {
 		return 0
 	}
-	if HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, email, serviceGroupIDs, now) {
+	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) {
 		return 0
 	}
-	if idx := earlyStartableUnmeteredUnlimitedGrantIndex(reg, email, serviceGroupIDs, now); idx >= 0 {
+	if idx := earlyStartableUnmeteredUnlimitedGrantIndex(reg, owner, serviceGroupIDs, now); idx >= 0 {
 		shiftGrantToEarlyStart(&reg.Grants[idx], now)
 		return 0
 	}
@@ -1152,7 +1250,7 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 		serviceGroupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
 	}
 	for i, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1163,7 +1261,7 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 		}
 		earlyStart := false
 		if now.Before(grant.StartsAt) {
-			if !canEarlyStartQueuedGrant(reg, email, grant, i, serviceGroupSet, now) {
+			if !canEarlyStartQueuedGrant(reg, owner, grant, i, serviceGroupSet, now) {
 				continue
 			}
 			earlyStart = true
@@ -1210,6 +1308,14 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 }
 
 func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) float64 {
+	return availableCreditsForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func AvailableCreditsForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
+	return availableCreditsForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
+func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) float64 {
 	if reg == nil {
 		return 0
 	}
@@ -1223,7 +1329,7 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 	}
 	total := 0.0
 	for i, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1233,7 +1339,7 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 			continue
 		}
 		if now.Before(grant.StartsAt) {
-			if !canEarlyStartQueuedGrant(reg, normalizeEmail(email), grant, i, serviceGroupSet, now) {
+			if !canEarlyStartQueuedGrant(reg, owner, grant, i, serviceGroupSet, now) {
 				continue
 			}
 			grant = grantWithEarlyStartWindow(grant, now)
@@ -1243,29 +1349,28 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 	return roundCredits(total)
 }
 
-func hasEarlyStartableUnmeteredUnlimitedGrant(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
-	return earlyStartableUnmeteredUnlimitedGrantIndex(reg, email, serviceGroupIDs, now) >= 0
+func hasEarlyStartableUnmeteredUnlimitedGrant(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
+	return earlyStartableUnmeteredUnlimitedGrantIndex(reg, owner, serviceGroupIDs, now) >= 0
 }
 
-func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, email string, serviceGroupIDs []string, now time.Time) int {
+func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) int {
 	if reg == nil {
 		return -1
 	}
-	email = normalizeEmail(email)
 	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
-	if email == "" || len(serviceGroupIDs) == 0 {
+	if owner.empty() || len(serviceGroupIDs) == 0 {
 		return -1
 	}
 	serviceGroupSet := map[string]struct{}{}
 	for _, id := range serviceGroupIDs {
 		serviceGroupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
 	}
-	if !queuedGrantBlockedOnlyByExhausted(reg, email, serviceGroupSet, now) {
+	if !queuedGrantBlockedOnlyByExhausted(reg, owner, serviceGroupSet, now) {
 		return -1
 	}
 	bestIdx := -1
 	for i, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1274,7 +1379,7 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, email string, ser
 		if grant.CreditsTotal > 0 || hasGrantPeriodLimits(grant) || !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
 			continue
 		}
-		if !canEarlyStartQueuedGrant(reg, email, grant, i, serviceGroupSet, now) {
+		if !canEarlyStartQueuedGrant(reg, owner, grant, i, serviceGroupSet, now) {
 			continue
 		}
 		if bestIdx < 0 || queuedGrantPrecedes(grant, i, reg.Grants[bestIdx], bestIdx) {
@@ -1284,10 +1389,10 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, email string, ser
 	return bestIdx
 }
 
-func queuedGrantBlockedOnlyByExhausted(reg *Registry, email string, serviceGroupSet map[string]struct{}, now time.Time) bool {
+func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) bool {
 	blockedByExhausted := false
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1310,7 +1415,7 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, email string, serviceGroup
 	return blockedByExhausted
 }
 
-func canEarlyStartQueuedGrant(reg *Registry, email string, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
+func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
 	if reg == nil || !queued.StartsAt.After(now) || !queued.ExpiresAt.After(now) {
 		return false
 	}
@@ -1320,7 +1425,7 @@ func canEarlyStartQueuedGrant(reg *Registry, email string, queued Grant, queuedI
 	blockedByExhausted := false
 	blockedByPeriodLimit := false
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1341,17 +1446,17 @@ func canEarlyStartQueuedGrant(reg *Registry, email string, queued Grant, queuedI
 		}
 	}
 	if blockedByPeriodLimit {
-		return !hasGrantPeriodLimits(queued) && !hasEarlierQueuedGrant(reg, email, queued, queuedIndex, serviceGroupSet, now, false)
+		return !hasGrantPeriodLimits(queued) && !hasEarlierQueuedGrant(reg, owner, queued, queuedIndex, serviceGroupSet, now, false)
 	}
-	return blockedByExhausted && !hasEarlierQueuedGrant(reg, email, queued, queuedIndex, serviceGroupSet, now, true)
+	return blockedByExhausted && !hasEarlierQueuedGrant(reg, owner, queued, queuedIndex, serviceGroupSet, now, true)
 }
 
-func hasEarlierQueuedGrant(reg *Registry, email string, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time, includePeriodLimited bool) bool {
+func hasEarlierQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time, includePeriodLimited bool) bool {
 	for idx, grant := range reg.Grants {
 		if idx == queuedIndex || (queued.ID != "" && grant.ID == queued.ID) {
 			continue
 		}
-		if normalizeEmail(grant.Email) != email {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1547,6 +1652,10 @@ func monthWindowStart(t time.Time) time.Time {
 }
 
 func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string) bool {
+	return hasAnyGrantForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs)
+}
+
+func hasAnyGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string) bool {
 	if reg == nil {
 		return false
 	}
@@ -1559,7 +1668,7 @@ func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; ok {
@@ -1570,6 +1679,14 @@ func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []
 }
 
 func GrantStartAtForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	return grantStartAtForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func GrantStartAtForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	return grantStartAtForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
+func grantStartAtForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) *time.Time {
 	if reg == nil {
 		return nil
 	}
@@ -1583,7 +1700,7 @@ func GrantStartAtForServiceGroups(reg *Registry, email string, serviceGroupIDs [
 	}
 	var startsAt *time.Time
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1604,6 +1721,10 @@ func GrantStartAtForServiceGroups(reg *Registry, email string, serviceGroupIDs [
 }
 
 func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	return hasActiveGrantForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func hasActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
 	if reg == nil {
 		return false
 	}
@@ -1616,7 +1737,7 @@ func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1630,6 +1751,14 @@ func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs
 	return false
 }
 func PeriodLimitRetryAtForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	return periodLimitRetryAtForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func PeriodLimitRetryAtForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	return periodLimitRetryAtForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
+func periodLimitRetryAtForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) *time.Time {
 	if reg == nil {
 		return nil
 	}
@@ -1643,7 +1772,7 @@ func PeriodLimitRetryAtForServiceGroups(reg *Registry, email string, serviceGrou
 	}
 	var retryAt *time.Time
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1665,6 +1794,10 @@ func PeriodLimitRetryAtForServiceGroups(reg *Registry, email string, serviceGrou
 }
 
 func HasUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	return hasUnlimitedActiveGrantForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func hasUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
 	if reg == nil {
 		return false
 	}
@@ -1677,7 +1810,7 @@ func HasUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, servic
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1695,6 +1828,10 @@ func HasUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, servic
 }
 
 func HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	return hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
 	if reg == nil {
 		return false
 	}
@@ -1707,7 +1844,7 @@ func HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, email strin
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
-		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+		if !grantMatchesUser(grant, owner) {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1724,6 +1861,14 @@ func HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, email strin
 }
 
 func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
+	return billingEligibilityForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
+}
+
+func BillingEligibilityForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
+	return billingEligibilityForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
+func billingEligibilityForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
 	if reg == nil {
 		return true, AccessPolicyFree, "", "", 0, false, false
 	}
@@ -1738,32 +1883,32 @@ func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGrou
 	if len(grantRequiredGroupIDs) == 0 {
 		return true, AccessPolicyFree, "", "", 0, false, false
 	}
-	if HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now) {
+	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now) {
 		return true, AccessPolicyGrantRequired, "", "", 0, true, true
 	}
-	if hasEarlyStartableUnmeteredUnlimitedGrant(reg, email, grantRequiredGroupIDs, now) {
+	if hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, grantRequiredGroupIDs, now) {
 		return true, AccessPolicyGrantRequired, "", "", 0, true, true
 	}
-	availableCredits := AvailableCreditsForServiceGroups(reg, email, grantRequiredGroupIDs, now)
+	availableCredits := availableCreditsForServiceGroups(reg, owner, grantRequiredGroupIDs, now)
 	if availableCredits > 0 {
 		return true, AccessPolicyGrantRequired, "", "", roundCredits(availableCredits), true, true
 	}
-	hasActiveGrant := HasActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now)
+	hasActiveGrant := hasActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now)
 	if hasActiveGrant {
-		if HasUnlimitedActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now) {
+		if hasUnlimitedActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now) {
 			return true, AccessPolicyGrantRequired, "", "", 0, true, true
 		}
-		if retryAt := PeriodLimitRetryAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); retryAt != nil {
+		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); retryAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
 		}
-		if startsAt := GrantStartAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); startsAt != nil {
+		if startsAt := grantStartAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, true, true
 		}
 		return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model grant credits are exhausted", 0, true, true
 	}
-	hasAnyGrant := HasAnyGrantForServiceGroups(reg, email, grantRequiredGroupIDs)
+	hasAnyGrant := hasAnyGrantForServiceGroups(reg, owner, grantRequiredGroupIDs)
 	if hasAnyGrant {
-		if startsAt := GrantStartAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); startsAt != nil {
+		if startsAt := grantStartAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, false, true
 		}
 		return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_EXPIRED", "selected model grant has expired", 0, false, true

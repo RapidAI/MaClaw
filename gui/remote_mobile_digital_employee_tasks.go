@@ -15,14 +15,16 @@ import (
 const mobileDigitalEmployeeTaskPollInterval = 12 * time.Second
 
 type mobileDigitalEmployeeTask struct {
-	TaskID     string `json:"task_id"`
-	EmployeeID string `json:"employee_id"`
-	Prompt     string `json:"prompt"`
-	Status     string `json:"status"`
-	Result     string `json:"result"`
-	ClaimedBy  string `json:"claimed_by"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	TaskID     string            `json:"task_id"`
+	EmployeeID string            `json:"employee_id"`
+	Prompt     string            `json:"prompt"`
+	TaskType   string            `json:"task_type"`
+	Context    map[string]string `json:"context"`
+	Status     string            `json:"status"`
+	Result     string            `json:"result"`
+	ClaimedBy  string            `json:"claimed_by"`
+	CreatedAt  string            `json:"created_at"`
+	UpdatedAt  string            `json:"updated_at"`
 }
 
 type mobileDigitalEmployeeTaskClaimResponse struct {
@@ -189,7 +191,7 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	sessionID := "mobile-digital-employee:" + taskID
-	result, err := handler.runAgentForVE(ctx, sessionID, prompt, taskID, func(string) {})
+	result, err := handler.runAgentForVE(ctx, sessionID, buildMobileDigitalEmployeeExecutionPrompt(task), taskID, func(string) {})
 	if err != nil {
 		_, _ = c.updateMobileDigitalEmployeeTask(taskID, "failed", err.Error())
 		return
@@ -199,4 +201,39 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 		result = "任务已完成，但没有生成可展示结果。"
 	}
 	_, _ = c.updateMobileDigitalEmployeeTask(taskID, "done", result)
+}
+
+func buildMobileDigitalEmployeeExecutionPrompt(task mobileDigitalEmployeeTask) string {
+	prompt := strings.TrimSpace(task.Prompt)
+	taskType := strings.TrimSpace(task.TaskType)
+	if taskType == "" {
+		taskType = "general"
+	}
+	var b strings.Builder
+	b.WriteString("[MaClaw Mobile emergency task]\n")
+	b.WriteString("Task type: ")
+	b.WriteString(taskType)
+	b.WriteString("\n")
+	if len(task.Context) > 0 {
+		b.WriteString("Context:\n")
+		for key, value := range task.Context {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if key == "" || value == "" {
+				continue
+			}
+			b.WriteString("- ")
+			b.WriteString(key)
+			b.WriteString(": ")
+			b.WriteString(value)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\nUser request:\n")
+	b.WriteString(prompt)
+	b.WriteString("\n\nMobile response requirements:\n")
+	b.WriteString("- Start with a concise conclusion suitable for phone reading.\n")
+	b.WriteString("- Include evidence, impact, and next steps.\n")
+	b.WriteString("- For high-risk server or desktop operations, provide command drafts and ask for manual confirmation instead of executing automatically.\n")
+	return strings.TrimSpace(b.String())
 }

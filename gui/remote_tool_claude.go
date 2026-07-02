@@ -201,8 +201,7 @@ func (a *ClaudeAdapter) buildCommandEnv(base map[string]string) map[string]strin
 		env[k] = v
 	}
 
-	home, _ := os.UserHomeDir()
-	localToolPath := filepath.Join(home, ".maclaw", "data", "tools")
+	localToolPath := privateToolsDirForApp(a.app)
 	npmPath := filepath.Join(os.Getenv("AppData"), "npm")
 	nodePath := `C:\Program Files\nodejs`
 	gitCmdPath := `C:\Program Files\Git\cmd`

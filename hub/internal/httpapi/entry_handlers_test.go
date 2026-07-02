@@ -44,6 +44,29 @@ func TestEntryProbeHandlerReturnsNotFoundForUnknownEmail(t *testing.T) {
 	}
 }
 
+func TestEntryProbeHandlerRoutesPhoneNumberIdentity(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+
+	bindResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/users/manual-bind", map[string]any{
+		"email": "phone:17000000000",
+	}, token)
+	if bindResp.Code != http.StatusOK {
+		t.Fatalf("manual bind status = %d body=%s", bindResp.Code, bindResp.Body.String())
+	}
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/entry/probe", map[string]any{
+		"phone_number": "170 0000 0000",
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	if !containsAll(body, "\"email\":\"phone:17000000000\"", "\"status\":\"bound\"", "\"bound\":true", "\"can_login\":true", "email=phone%3A17000000000") {
+		t.Fatalf("unexpected body=%s", body)
+	}
+}
+
 func TestEntryProbeHandlerReturnsBlockedForBlockedEmail(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)
@@ -63,7 +86,7 @@ func TestEntryProbeHandlerReturnsBlockedForBlockedEmail(t *testing.T) {
 		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !containsAll(body, "\"status\":\"blocked\"", "\"message\":\"Email is blocked\"") || strings.Contains(body, "\"pwa_url\"") {
+	if !containsAll(body, "\"status\":\"blocked\"", "\"message\":\"Account is blocked\"") || strings.Contains(body, "\"pwa_url\"") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }

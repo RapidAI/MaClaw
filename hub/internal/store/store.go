@@ -170,6 +170,18 @@ type User struct {
 	UpdatedAt        time.Time
 }
 
+type UserIdentity struct {
+	ID         string
+	TenantID   string
+	UserID     string
+	Type       string
+	Value      string
+	Verified   bool
+	VerifiedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type UserEnrollment struct {
 	ID        string
 	TenantID  string
@@ -358,6 +370,9 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByTenantEmail(ctx context.Context, tenantID, email string) (*User, error)
+	GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*User, error)
+	ListIdentitiesByUser(ctx context.Context, tenantID, userID string) ([]*UserIdentity, error)
+	UpsertIdentity(ctx context.Context, identity *UserIdentity) error
 	List(ctx context.Context) ([]*User, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]*User, error)
 	DeleteByEmail(ctx context.Context, email string) error

@@ -60,18 +60,18 @@ class _SharedIntentBootstrapState extends ConsumerState<SharedIntentBootstrap> {
   }
 
   void _handleMedia(List<SharedMediaFile> media) {
-    if (media.isEmpty) return;
-    final first = media.first;
-    final value = first.path.trim();
-    if (value.isEmpty && (first.message ?? '').trim().isEmpty) return;
-    ref.read(mobileSharedIntentProvider.notifier).accept(
-          MobileSharedIntent.fromMedia(
-            value: value,
-            typeName: first.type.name,
-            mimeType: first.mimeType,
-            message: first.message,
-          ),
-        );
+    final intent = MobileSharedIntent.fromPayloads(
+      media.map(
+        (item) => MobileSharedIntentPayload(
+          value: item.path,
+          typeName: item.type.name,
+          mimeType: item.mimeType,
+          message: item.message,
+        ),
+      ),
+    );
+    if (intent == null) return;
+    ref.read(mobileSharedIntentProvider.notifier).accept(intent);
   }
 
   @override

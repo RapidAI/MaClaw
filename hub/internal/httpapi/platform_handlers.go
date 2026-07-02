@@ -1168,7 +1168,7 @@ func PlatformSourceUserViewerTokenHandler(system store.SystemSettingsRepository,
 			return
 		}
 		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
-		if err := ensurePlatformLLMEntitlement(r.Context(), tenantSystem, user.Email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM), "ve_platform_source_user_token"); err != nil {
+		if err := ensurePlatformLLMEntitlementForUserID(r.Context(), tenantSystem, user.ID, user.Email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM), "ve_platform_source_user_token"); err != nil {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
 			return
 		}
@@ -1357,7 +1357,7 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 			}
 			runtimeChanged = true
 		}
-		if err := ensurePlatformEmployeeLLMEntitlement(r.Context(), tenantSystem, email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM)); err != nil {
+		if err := ensurePlatformEmployeeLLMEntitlementForUserID(r.Context(), tenantSystem, userID, email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM)); err != nil {
 			if runtimeChanged {
 				if restoreErr := saveMacLawSrvRuntimeRegistry(r.Context(), system, previousRuntimeReg); restoreErr != nil {
 					log.Printf("[platform-employee-register] rollback runtime registry failed tenant=%s employee=%s err=%v", tenantID, platformEmployeeID, restoreErr)
@@ -1458,13 +1458,22 @@ func platformRegistrationCanUpdateEntry(entry digitalEmployeeEntry) bool {
 }
 
 func ensurePlatformEmployeeLLMEntitlement(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, email, serviceGroupID string) error {
-	return ensurePlatformLLMEntitlement(ctx, tenantSystem, email, serviceGroupID, "ve_platform_employee")
+	return ensurePlatformEmployeeLLMEntitlementForUserID(ctx, tenantSystem, "", email, serviceGroupID)
+}
+
+func ensurePlatformEmployeeLLMEntitlementForUserID(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, userID, email, serviceGroupID string) error {
+	return ensurePlatformLLMEntitlementForUserID(ctx, tenantSystem, userID, email, serviceGroupID, "ve_platform_employee")
 }
 
 func ensurePlatformLLMEntitlement(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, email, serviceGroupID, source string) error {
+	return ensurePlatformLLMEntitlementForUserID(ctx, tenantSystem, "", email, serviceGroupID, source)
+}
+
+func ensurePlatformLLMEntitlementForUserID(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, userID, email, serviceGroupID, source string) error {
+	userID = strings.TrimSpace(userID)
 	email = strings.ToLower(strings.TrimSpace(email))
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
-	if email == "" || serviceGroupID == "" || strings.EqualFold(serviceGroupID, llmservice.DefaultModelServiceGroupID) {
+	if (userID == "" && email == "") || serviceGroupID == "" || strings.EqualFold(serviceGroupID, llmservice.DefaultModelServiceGroupID) {
 		return nil
 	}
 	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
@@ -1475,15 +1484,16 @@ func ensurePlatformLLMEntitlement(ctx context.Context, tenantSystem llmservice.S
 	if err != nil {
 		return err
 	}
-	changed := upsertPlatformEmployeeUserBinding(reg, email, serviceGroupID)
+	changed := upsertPlatformEmployeeUserBinding(reg, userID, email, serviceGroupID)
 	now := time.Now().UTC()
-	if group.AccessPolicy == llmservice.AccessPolicyGrantRequired && !platformEmployeeHasActiveGrant(reg, email, serviceGroupID, now) {
+	if group.AccessPolicy == llmservice.AccessPolicyGrantRequired && !platformEmployeeHasActiveGrant(reg, userID, email, serviceGroupID, now) {
 		source = strings.TrimSpace(source)
 		if source == "" {
 			source = "ve_platform"
 		}
 		reg.Grants = append(reg.Grants, llmservice.Grant{
 			ID:             llmservice.NewID("grant"),
+			UserID:         userID,
 			Email:          email,
 			ServiceGroupID: serviceGroupID,
 			Source:         source,
@@ -1496,7 +1506,11 @@ func ensurePlatformLLMEntitlement(ctx context.Context, tenantSystem llmservice.S
 	if !changed {
 		return nil
 	}
-	return llmservice.SaveRegistry(ctx, tenantSystem, reg)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, reg); err != nil {
+		return err
+	}
+	invalidateLLMRuntimeCaches(tenantSystem)
+	return nil
 }
 
 func validatePlatformEmployeeLLMServiceGroup(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, serviceGroupID string) error {
@@ -1527,26 +1541,47 @@ func validatePlatformEmployeeLLMServiceGroupInRegistry(reg *llmservice.Registry,
 	return group, nil
 }
 
-func upsertPlatformEmployeeUserBinding(reg *llmservice.Registry, email, serviceGroupID string) bool {
+func upsertPlatformEmployeeUserBinding(reg *llmservice.Registry, userID, email, serviceGroupID string) bool {
+	userID = strings.TrimSpace(userID)
 	for i := range reg.UserBindings {
-		if !strings.EqualFold(strings.TrimSpace(reg.UserBindings[i].Email), email) {
+		if !platformEmployeeUserBindingMatches(reg.UserBindings[i], userID, email) {
 			continue
+		}
+		changed := false
+		if userID != "" && strings.TrimSpace(reg.UserBindings[i].UserID) == "" {
+			reg.UserBindings[i].UserID = userID
+			changed = true
 		}
 		for _, id := range reg.UserBindings[i].ServiceGroupIDs {
 			if strings.EqualFold(strings.TrimSpace(id), serviceGroupID) {
-				return false
+				return changed
 			}
 		}
 		reg.UserBindings[i].ServiceGroupIDs = append(reg.UserBindings[i].ServiceGroupIDs, serviceGroupID)
 		return true
 	}
-	reg.UserBindings = append(reg.UserBindings, llmservice.UserBinding{Email: email, ServiceGroupIDs: []string{serviceGroupID}})
+	reg.UserBindings = append(reg.UserBindings, llmservice.UserBinding{UserID: userID, Email: email, ServiceGroupIDs: []string{serviceGroupID}})
 	return true
 }
 
-func platformEmployeeHasActiveGrant(reg *llmservice.Registry, email, serviceGroupID string, now time.Time) bool {
+func platformEmployeeUserBindingMatches(binding llmservice.UserBinding, userID, email string) bool {
+	if userID != "" && strings.TrimSpace(binding.UserID) == userID {
+		return true
+	}
+	return email != "" && strings.EqualFold(strings.TrimSpace(binding.Email), email)
+}
+
+func platformEmployeeGrantMatches(grant llmservice.Grant, userID, email string) bool {
+	if userID != "" && strings.TrimSpace(grant.UserID) == userID {
+		return true
+	}
+	return email != "" && strings.EqualFold(strings.TrimSpace(grant.Email), email)
+}
+
+func platformEmployeeHasActiveGrant(reg *llmservice.Registry, userID, email, serviceGroupID string, now time.Time) bool {
+	userID = strings.TrimSpace(userID)
 	for _, grant := range reg.Grants {
-		if !strings.EqualFold(strings.TrimSpace(grant.Email), email) || !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
+		if !platformEmployeeGrantMatches(grant, userID, email) || !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
 			continue
 		}
 		if !now.Before(grant.StartsAt) && now.Before(grant.ExpiresAt) {
@@ -1627,7 +1662,7 @@ func PlatformEmployeeViewerTokenHandler(system store.SystemSettingsRepository, t
 			return
 		}
 		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
-		if err := ensurePlatformLLMEntitlement(r.Context(), tenantSystem, user.Email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM), "ve_platform_employee_token"); err != nil {
+		if err := ensurePlatformLLMEntitlementForUserID(r.Context(), tenantSystem, user.ID, user.Email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM), "ve_platform_employee_token"); err != nil {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
 			return
 		}

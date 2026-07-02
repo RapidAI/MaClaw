@@ -1,6 +1,13 @@
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:async';
+
+import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/app.dart';
+import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
+import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
+import 'package:maclaw_mobile/core/settings/app_preferences.dart';
+import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 
 class _SignedOutSessionController extends SessionController {
@@ -8,21 +15,241 @@ class _SignedOutSessionController extends SessionController {
   Future<SessionState> build() async => const SessionState.signedOut();
 }
 
+class _SignedInSessionController extends SessionController {
+  final MobileLlmAccess llmAccess;
+
+  _SignedInSessionController(this.llmAccess);
+
+  @override
+  Future<SessionState> build() async => SessionState.signedIn(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: _bootstrap(llmAccess: llmAccess),
+      );
+}
+
+class _LoadingSessionController extends SessionController {
+  @override
+  Future<SessionState> build() => Completer<SessionState>().future;
+}
+
+class _TestAppPreferencesController extends AppPreferencesController {
+  @override
+  Future<AppPreferences> build() async => const AppPreferences();
+}
+
+const _connectingOfficialService =
+    '\u6b63\u5728\u8fde\u63a5 MaClaw \u5b98\u65b9\u670d\u52a1';
+const _llmSetupTitle = '\u914d\u7f6e MaClaw LLM \u670d\u52a1';
+const _connectOfficialService = '\u63a5\u5165\u5b98\u65b9\u670d\u52a1';
+const _connectQrProvider = '\u63a5\u5165\u4e8c\u7ef4\u7801\u670d\u52a1\u5546';
+const _lookupTab = '\u67e5\u4fe1\u606f';
+const _mainConversation = '\u4e3b\u5bf9\u8bdd';
+const _webLookup = '\u8054\u7f51\u67e5\u8be2';
+
 void main() {
-  testWidgets('renders login entry before Hub authentication', (tester) async {
+  testWidgets('startup shows MaClaw logo while session is loading',
+      (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(
+            _LoadingSessionController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+
+    expect(find.text('MaClaw Mobile'), findsOneWidget);
+    expect(find.text(_connectingOfficialService), findsOneWidget);
+  });
+
+  testWidgets('renders LLM setup before mobile service is configured',
+      (tester) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           sessionControllerProvider.overrideWith(
             _SignedOutSessionController.new,
           ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
         ],
         child: const MaClawMobileApp(),
       ),
     );
     await tester.pump();
-    expect(find.text('MaClaw Mobile'), findsOneWidget);
-    expect(find.textContaining('官方服务'), findsOneWidget);
-    expect(find.text('发送登录确认'), findsOneWidget);
+
+    expect(find.text(_llmSetupTitle), findsOneWidget);
+    expect(find.text(_connectOfficialService), findsOneWidget);
+    expect(find.text(_connectQrProvider), findsOneWidget);
+    expect(find.textContaining('https://hubs.mypapers.top'), findsOneWidget);
+    expect(find.textContaining('https://hubs.maclaw.top'), findsOneWidget);
+    expect(find.textContaining('https://hubs2.maclaw.top'), findsOneWidget);
   });
+
+  testWidgets('signed-in official LLM opens the assistant tab', (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+          sessionControllerProvider.overrideWith(
+            () => _SignedInSessionController(
+              const MobileLlmAccess(
+                mode: 'maclaw_official',
+                status: 'available',
+                authorizationId: '',
+                authorizedBy: '',
+                authorizedAt: null,
+              ),
+            ),
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_lookupTab), findsWidgets);
+    expect(find.text(_mainConversation), findsOneWidget);
+    expect(find.text(_webLookup), findsOneWidget);
+  });
+
+  testWidgets('signed-in missing LLM still requires setup', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(
+            () => _SignedInSessionController(
+              const MobileLlmAccess(
+                mode: 'maclaw_official',
+                status: 'missing',
+                authorizationId: '',
+                authorizedBy: '',
+                authorizedAt: null,
+              ),
+            ),
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_llmSetupTitle), findsOneWidget);
+  });
+
+  test('mobileLlmConfigured accepts official and desktop QR delegated access',
+      () {
+    expect(
+      mobileLlmConfigured(
+        _bootstrap(
+          llmAccess: const MobileLlmAccess(
+            mode: 'maclaw_official',
+            status: 'available',
+            authorizationId: '',
+            authorizedBy: '',
+            authorizedAt: null,
+          ),
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      mobileLlmConfigured(
+        _bootstrap(
+          llmAccess: const MobileLlmAccess(
+            mode: 'desktop_qr_third_party',
+            status: 'available',
+            authorizationId: 'auth-1',
+            authorizedBy: 'desktop',
+            authorizedAt: null,
+          ),
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      mobileLlmConfigured(
+        _bootstrap(
+          llmAccess: const MobileLlmAccess(
+            mode: 'maclaw_official',
+            status: 'not_configured',
+            authorizationId: '',
+            authorizedBy: '',
+            authorizedAt: null,
+          ),
+        ),
+      ),
+      isFalse,
+    );
+  });
+}
+
+MobileBootstrap _bootstrap({required MobileLlmAccess llmAccess}) {
+  return MobileBootstrap(
+    user: const MobileUser(
+      userId: 'u1',
+      email: 'user@example.com',
+      tenantId: 'tenant-a',
+    ),
+    services: const MobileServices(
+      hubStatus: 'online',
+      llmStatus: 'available',
+      searchStatus: 'available',
+      documentsStatus: 'available',
+      digitalEmployeesStatus: 'available',
+      llmStatusPath: '/api/llm/status',
+      modelsPath: '/api/llm/models',
+      searchPath: '/api/mobile/search',
+      documentsPath: '/api/mobile/documents',
+      digitalEmployeesPath: '/api/mobile/digital-employees',
+      realtimePath: '/api/mobile/realtime',
+    ),
+    connection: const MobileConnection(
+      hubCenterCandidates: [
+        'https://hubs.mypapers.top',
+        'https://hubs.maclaw.top',
+        'https://hubs2.maclaw.top',
+      ],
+      selectedHubCenterUrl: 'https://hubs.mypapers.top',
+      hubUrl: 'https://tenant-a.maclaw.top',
+      hubId: 'hub-a',
+      tenantId: 'tenant-a',
+    ),
+    llmAccess: llmAccess,
+    features: const MobileFeatures(
+      search: true,
+      documents: true,
+      localSsh: true,
+      digitalEmployees: true,
+      pushNotifications: true,
+    ),
+    limits: const MobileLimits(
+      maxUploadBytes: 1024,
+      maxExportJobs: 2,
+    ),
+  );
 }

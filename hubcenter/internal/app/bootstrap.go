@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
@@ -232,7 +234,16 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	_ = InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc)
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage)
+	// --- Notification Service Module ---
+	notifStore := notification.NewSQLiteStore(provider.Write)
+	if err := notifStore.InitSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("notification schema init: %w", err)
+	}
+	cascadeSvc := notification.NewCascadeService(notifStore)
+	hubNotifResolver := &hubServiceNotifResolver{hubService: hubService}
+	notifSvcCenter := notification.NewService(notifStore, cascadeSvc, hubNotifResolver)
+
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage, notifSvcCenter)
 
 	app.Store = st
 	app.AdminService = adminService

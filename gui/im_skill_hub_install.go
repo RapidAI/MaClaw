@@ -127,6 +127,13 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
 		}
 		skill.Source = "auto_clawhub"
+		// Assign a staging directory for ClawHub skills so they go through
+		// the same staging → security scan → commit isolation as Hub skills.
+		if skill.SkillDir == "" {
+			if stagingDir, stagingErr := cskill.PrepareStagingDir(skill.Name); stagingErr == nil {
+				skill.SkillDir = stagingDir
+			}
+		}
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, policyOwnerID, sendStatus)
 	}
 
@@ -448,7 +455,12 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	execResult, execErr := h.getSkillExecutor().Execute(skill.Name)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
-		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed but execution failed: %v", skill.Name, execErr)}
+		// Mark as needs_setup so the skill list shows it's not ready to use.
+		// The user/agent can retry with manage_skill(action="run") after fixing.
+		if updateErr := h.getSkillExecutor().UpdateStatus(skill.Name, "needs_setup"); updateErr != nil {
+			log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", skill.Name, updateErr)
+		}
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed but initial execution failed (marked as needs_setup): %v\nRun manage_skill(action=\"run\", name=\"%s\") to retry.", skill.Name, execErr, skill.Name)}
 	}
 	return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed and executed.\n%s", skill.Name, execResult), Success: true}
 }

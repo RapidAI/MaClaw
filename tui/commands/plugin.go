@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/plugin"
 )
 
@@ -169,11 +170,7 @@ func pluginCreate(args []string) error {
 	case "project":
 		baseDir = filepath.Join(".maclaw", "plugins", name)
 	case "user":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		baseDir = filepath.Join(home, ".maclaw", "plugins", name)
+		baseDir = filepath.Join(corelib.MaclawBaseDir(), "plugins", name)
 	default:
 		return NewUsageError("scope must be 'project' or 'user'")
 	}

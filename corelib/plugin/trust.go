@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // TrustConfirmFunc is a callback that asks the user whether to trust a
@@ -29,8 +31,7 @@ type trustFilePayload struct {
 // NewTrustStore creates a TrustStore with the given confirmation callback and
 // loads any previously trusted plugins from ~/.maclaw/data/trusted_plugins.json.
 func NewTrustStore(confirm TrustConfirmFunc) *TrustStore {
-	home, _ := os.UserHomeDir()
-	fp := filepath.Join(home, ".maclaw", "data", "trusted_plugins.json")
+	fp := filepath.Join(corelib.MaclawBaseDir(), "data", "trusted_plugins.json")
 
 	ts := &TrustStore{
 		trusted:  make(map[string]bool),

@@ -71,7 +71,7 @@ type DetectedTool struct {
 	Path        string `json:"path,omitempty"`
 }
 
-// DetectTools 检测所有已知工具的安装状态（使用 ~/.maclaw/data/tools 私有目录）。
+// DetectTools 检测所有已知工具的安装状态（使用当前数据目录下的私有 tools 目录）。
 func DetectTools() []DetectedTool {
 	coreTools := remote.DetectAllTools()
 	tools := make([]DetectedTool, len(coreTools))

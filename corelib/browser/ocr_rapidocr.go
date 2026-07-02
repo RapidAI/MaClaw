@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 )
 
@@ -67,16 +68,15 @@ type RapidOCRSidecar struct {
 	scanner   *bufio.Scanner
 	ready     bool
 	idleTimer *time.Timer
-	ocrDir    string // ~/.maclaw/ocr/
+	ocrDir    string // <MaclawBaseDir>/ocr/
 	logger    func(string)
 	statusC   chan string // optional: status messages for UI
 }
 
 // NewRapidOCRSidecar creates a sidecar manager.
 func NewRapidOCRSidecar(logger func(string)) *RapidOCRSidecar {
-	home, _ := os.UserHomeDir()
 	return &RapidOCRSidecar{
-		ocrDir: filepath.Join(home, ".maclaw", "ocr"),
+		ocrDir: filepath.Join(corelib.MaclawBaseDir(), "ocr"),
 		logger: logger,
 	}
 }

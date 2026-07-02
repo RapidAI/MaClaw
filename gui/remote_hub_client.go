@@ -214,6 +214,11 @@ func (c *RemoteHubClient) Connect() error {
 	// Re-send IM gateway claims for any already-connected gateways that are
 	// in hub mode. This covers both initial connect and reconnect scenarios.
 	go c.syncIMGatewayClaims()
+
+	// Pull unread notifications on (re)connect so the client syncs any
+	// notifications that arrived while offline.
+	go c.app.PullUnreadNotifications()
+
 	log.Printf("[onboarding] RemoteHubClient.Connect total=%s", time.Since(start))
 
 	return nil
@@ -313,24 +318,20 @@ func isDefinitiveAuthRejection(payload json.RawMessage) bool {
 	machineUserNotFound := []string{
 		"machine not found", "user not found", "device not found",
 		"token not found", "registration not found",
+		"machine not registered", "device not registered",
 	}
 	for _, phrase := range machineUserNotFound {
 		if strings.Contains(msg, phrase) || strings.Contains(reason, phrase) {
 			return true
 		}
 	}
+	if (strings.Contains(msg, "machine ") || strings.Contains(reason, "machine ")) &&
+		(strings.Contains(msg, "not registered") || strings.Contains(reason, "not registered")) {
+		return true
+	}
 
 	if isGenericRemoteHubRouteError(msg) || isGenericRemoteHubRouteError(reason) {
 		return false
-	}
-
-	// Code-level exact matches for known Hub rejection codes with no route-shaped
-	// error message attached.
-	exactCodes := []string{"not_found", "forbidden"}
-	for _, ec := range exactCodes {
-		if code == ec {
-			return true
-		}
 	}
 
 	return false
@@ -592,6 +593,11 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	}
 	c.startPreviewFlusher()
 	go c.syncIMGatewayClaims()
+
+	// Pull unread notifications on (re)connect so the client syncs any
+	// notifications that arrived while offline.
+	go c.app.PullUnreadNotifications()
+
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
 
 	return nil
@@ -1235,6 +1241,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleIMGatewayClaimResult(msg)
 		case hubInboundMessageNicknameAssigned:
 			c.handleNicknameAssigned(msg)
+		case hubInboundMessageNotificationPush:
+			go c.app.handleNotificationPush(msg.Payload)
 		case hubInboundMessageVEEvent:
 			c.handleVEEvent(msg)
 		case hubInboundMessageAck:

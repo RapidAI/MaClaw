@@ -3,6 +3,8 @@ package corelib
 // AppConfig is the complete application configuration for MaClaw.
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,22 +74,23 @@ type AppConfig struct {
 	RemoteClientID          string   `json:"remote_client_id"`
 	DefaultLaunchMode       string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
-	MaclawLLMUrl             string               `json:"maclaw_llm_url"`
-	MaclawLLMKey             string               `json:"maclaw_llm_key"`
-	MaclawLLMModel           string               `json:"maclaw_llm_model"`
-	MaclawLLMProtocol        string               `json:"maclaw_llm_protocol,omitempty"`
-	MaclawLLMContextLength   int                  `json:"maclaw_llm_context_length,omitempty"`
-	MaclawLLMTimeoutSec      int                  `json:"maclaw_llm_timeout_sec,omitempty"`
-	AgentResponseTimeoutSec  int                  `json:"agent_response_timeout_sec,omitempty"`
-	SkillRunnerTimeoutSec    int                  `json:"skill_runner_timeout_sec,omitempty"`
-	MaclawLLMProviders       []MaclawLLMProvider  `json:"maclaw_llm_providers,omitempty"`
-	MaclawLLMCurrentProvider string               `json:"maclaw_llm_current_provider,omitempty"`
-	LLMPromptCache           LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
-	WebSearchProviders       []WebSearchProvider  `json:"web_search_providers,omitempty"`
-	WebSearchCurrentProvider string               `json:"web_search_current_provider,omitempty"`
-	MaclawAgentMaxIterations int                  `json:"maclaw_agent_max_iterations,omitempty"`
-	SubAgentConcurrency      int                  `json:"subagent_concurrency,omitempty"`
-	SubAgentFullAccess       bool                 `json:"subagent_full_access,omitempty"`
+	MaclawLLMUrl             string                     `json:"maclaw_llm_url"`
+	MaclawLLMKey             string                     `json:"maclaw_llm_key"`
+	MaclawLLMModel           string                     `json:"maclaw_llm_model"`
+	MaclawLLMProtocol        string                     `json:"maclaw_llm_protocol,omitempty"`
+	MaclawLLMContextLength   int                        `json:"maclaw_llm_context_length,omitempty"`
+	MaclawLLMTimeoutSec      int                        `json:"maclaw_llm_timeout_sec,omitempty"`
+	AgentResponseTimeoutSec  int                        `json:"agent_response_timeout_sec,omitempty"`
+	SkillRunnerTimeoutSec    int                        `json:"skill_runner_timeout_sec,omitempty"`
+	MaclawLLMProviders       []MaclawLLMProvider        `json:"maclaw_llm_providers,omitempty"`
+	MaclawLLMCurrentProvider string                     `json:"maclaw_llm_current_provider,omitempty"`
+	LLMPromptCache           LLMPromptCacheConfig       `json:"llm_prompt_cache,omitempty"`
+	ToolCacheMaintenance     ToolCacheMaintenanceConfig `json:"tool_cache_maintenance,omitempty"`
+	WebSearchProviders       []WebSearchProvider        `json:"web_search_providers,omitempty"`
+	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
+	MaclawAgentMaxIterations int                        `json:"maclaw_agent_max_iterations,omitempty"`
+	SubAgentConcurrency      int                        `json:"subagent_concurrency,omitempty"`
+	SubAgentFullAccess       bool                       `json:"subagent_full_access,omitempty"`
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -343,6 +346,36 @@ type LLMPromptCacheConfig struct {
 	IgnoreUserField              bool   `json:"ignore_user_field,omitempty"`
 	IgnoreMetadataField          bool   `json:"ignore_metadata_field,omitempty"`
 	SingleflightWaitTimeoutMS    int    `json:"singleflight_wait_timeout_ms,omitempty"`
+}
+
+type ToolCacheMaintenanceConfig struct {
+	Enabled          bool   `json:"enabled"`
+	MaxBytes         int64  `json:"max_bytes,omitempty"`
+	MinIntervalHours int    `json:"min_interval_hours,omitempty"`
+	CleanOnStartup   bool   `json:"clean_on_startup"`
+	CleanOnExit      bool   `json:"clean_on_exit"`
+	LastCleanupAt    string `json:"last_cleanup_at,omitempty"`
+}
+
+func DefaultToolCacheMaintenanceConfig() ToolCacheMaintenanceConfig {
+	return ToolCacheMaintenanceConfig{
+		Enabled:          true,
+		MaxBytes:         512 * 1024 * 1024,
+		MinIntervalHours: 24,
+		CleanOnStartup:   true,
+		CleanOnExit:      true,
+	}
+}
+
+func (c ToolCacheMaintenanceConfig) WithDefaults() ToolCacheMaintenanceConfig {
+	defaults := DefaultToolCacheMaintenanceConfig()
+	if c.MaxBytes <= 0 {
+		c.MaxBytes = defaults.MaxBytes
+	}
+	if c.MinIntervalHours <= 0 {
+		c.MinIntervalHours = defaults.MinIntervalHours
+	}
+	return c
 }
 
 func DefaultLLMPromptCacheConfig() LLMPromptCacheConfig {
@@ -765,6 +798,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	c.ensureDefaultProject()
 	c.applyGroupDiscussionFieldDefaults()
 	c.LLMPromptCache = c.LLMPromptCache.WithDefaults()
+	c.ToolCacheMaintenance = c.ToolCacheMaintenance.WithDefaults()
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil
 }
@@ -796,6 +830,7 @@ func AppConfigDefaults() AppConfig {
 		IMProgressNudgeEnabled: boolPtrValue(true),
 		GroupDiscussion:        defaultGroupDiscussionConfig(),
 		LLMPromptCache:         DefaultLLMPromptCacheConfig(),
+		ToolCacheMaintenance:   DefaultToolCacheMaintenanceConfig(),
 		Projects:               defaultProjects(),
 		CurrentProject:         "default",
 	}
@@ -1079,9 +1114,12 @@ func (c *AppConfig) SetWorkflowEnabled(v bool) {
 func (c *AppConfig) HubCenterBaseURLs(defaultHubCenterURL string, defaultHubCenterURLs []string) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(defaultHubCenterURLs)+2)
-	add := func(value string) {
+	add := func(value string, allowLoopback bool) {
 		value = strings.TrimRight(strings.TrimSpace(value), "/")
 		if value == "" {
+			return
+		}
+		if !allowLoopback && isConfiguredHubCenterLoopbackURL(value) {
 			return
 		}
 		if _, ok := seen[value]; ok {
@@ -1090,27 +1128,65 @@ func (c *AppConfig) HubCenterBaseURLs(defaultHubCenterURL string, defaultHubCent
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	add(c.RemoteHubCenterURL)
+	add(c.RemoteHubCenterURL, false)
 	for _, value := range c.RemoteHubCenterURLs {
-		add(value)
+		add(value, false)
 	}
-	add(defaultHubCenterURL)
+	add(defaultHubCenterURL, true)
 	for _, value := range defaultHubCenterURLs {
-		add(value)
+		add(value, true)
 	}
 	return out
 }
 
-func (c *AppConfig) SkillHubBaseURL(defaultHubCenterURL string) string {
-	u := strings.TrimSpace(c.RemoteHubCenterURL)
-	if u == "" {
-		u = defaultHubCenterURL
+func (c *AppConfig) ConfiguredHubCenterBaseURL() string {
+	for _, value := range append([]string{c.RemoteHubCenterURL}, c.RemoteHubCenterURLs...) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value != "" && !isConfiguredHubCenterLoopbackURL(value) {
+			return value
+		}
 	}
-	return strings.TrimRight(u, "/")
+	return ""
+}
+
+func (c *AppConfig) SkillHubBaseURL(defaultHubCenterURL string) string {
+	return c.ConfiguredHubCenterBaseURL()
 }
 
 // SkillMarketBaseURL returns the base URL for SkillMarket APIs (/api/v1/skillmarket/*).
 // SkillMarket is hosted on the same HubCenter server as SkillHub.
 func (c *AppConfig) SkillMarketBaseURL(defaultHubCenterURL string) string {
 	return c.SkillHubBaseURL(defaultHubCenterURL)
+}
+
+func isConfiguredHubCenterLoopbackURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	parseValue := value
+	if !strings.Contains(parseValue, "://") {
+		parseValue = "https://" + parseValue
+	}
+	host := ""
+	if parsed, err := url.Parse(parseValue); err == nil {
+		host = strings.TrimSpace(parsed.Hostname())
+	}
+	if host == "" {
+		host = strings.TrimSpace(value)
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	return false
 }

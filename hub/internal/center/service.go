@@ -1543,14 +1543,20 @@ func (s *Service) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt
 	if len(tenantIDOpt) > 0 && strings.TrimSpace(tenantIDOpt[0]) != "" {
 		tenantID = store.NormalizeTenantID(tenantIDOpt[0])
 	}
-	payload, err := json.Marshal(entryResolveRequest{Email: email, Domain: extractEmailDomain(email), TenantID: tenantID})
+	resolvePath := "/api/entry/resolve-domain"
+	resolvePayload := entryResolveRequest{Email: email, Domain: extractEmailDomain(email), TenantID: tenantID}
+	if isPhoneRouteIdentity(email) {
+		resolvePath = "/api/entry/resolve"
+		resolvePayload.Domain = ""
+	}
+	payload, err := json.Marshal(resolvePayload)
 	if err != nil {
 		return false, "", err
 	}
 
 	var lastErr error
 	for _, baseURL := range baseURLs {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/entry/resolve-domain", bytes.NewReader(payload))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+resolvePath, bytes.NewReader(payload))
 		if err != nil {
 			lastErr = err
 			continue
@@ -2122,6 +2128,10 @@ func centerSyncTenantIDs(tenantIDs []string) []string {
 
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
+}
+
+func isPhoneRouteIdentity(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(value)), "phone:")
 }
 
 func isCenterUsageEmail(email string) bool {

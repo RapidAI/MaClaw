@@ -47,8 +47,11 @@ func AppendUTF8Env(base []string) []string {
 
 // CraftedToolsDir returns the directory for storing crafted tool scripts.
 func CraftedToolsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".maclaw", "data", "crafted_tools")
+	base := maclawBaseDirFallback()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "data", "crafted_tools")
 }
 
 // StripScriptCodeFences removes ```lang ... ``` wrappers from LLM output.

@@ -35,6 +35,13 @@ func (imBindingTestUsers) DeleteByEmail(context.Context, string) error          
 func (imBindingTestUsers) DeleteByTenantEmail(context.Context, string, string) error { return nil }
 func (imBindingTestUsers) UpdateSmartRoute(context.Context, string, bool) error      { return nil }
 func (imBindingTestUsers) MarkEmailVerified(context.Context, string, string) error   { return nil }
+func (imBindingTestUsers) GetByTenantIdentity(context.Context, string, string, string) (*store.User, error) {
+	return nil, nil
+}
+func (imBindingTestUsers) ListIdentitiesByUser(context.Context, string, string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (imBindingTestUsers) UpsertIdentity(context.Context, *store.UserIdentity) error { return nil }
 
 func requestWithTenantAdmin(method, target, tenantID string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)

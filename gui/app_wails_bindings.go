@@ -277,10 +277,7 @@ func (a *App) RecommendTool(taskDescription string) (string, string) {
 
 // SearchSkillHub searches configured SkillHubs for Skills matching the query (Wails binding).
 func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
-	hubURL := ""
-	if cfg, err := a.LoadConfig(); err == nil {
-		hubURL = cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
-	}
+	hubURL := NewSkillMarketClient(a).baseURL()
 	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "search", "query": query, "source": "skillhub", "hub_url": hubURL}); !ok {
 		return nil, fmt.Errorf("%s", reason)
 	}
@@ -356,7 +353,11 @@ func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPac
 		// deterministic download. Fall back to bare id (name-based) for
 		// backward compatibility with pre-enrichment packages.
 		downloadID := strings.TrimSpace(firstNonEmpty(installRef, id))
-		stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(id, "mixed-skill"))
+		stagingRoot, err := a.skillStagingDir()
+		if err != nil {
+			return err
+		}
+		stagingDir, err := cskill.PrepareStagingDirInRoot(stagingRoot, firstNonEmpty(id, "mixed-skill"))
 		if err != nil {
 			return err
 		}
@@ -376,7 +377,12 @@ func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPac
 		}
 		committedDir := ""
 		if strings.TrimSpace(skill.SkillDir) != "" {
-			finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
+			finalRoot, err := a.primarySkillsDir()
+			if err != nil {
+				cskill.CleanupStaging(stagingDir)
+				return err
+			}
+			finalDir, err := cskill.CommitStagingToDir(stagingDir, skill.Name, finalRoot)
 			if err != nil {
 				cskill.CleanupStaging(stagingDir)
 				return err
@@ -1403,7 +1409,13 @@ func (a *App) TriggerScheduledTask(id string) error {
 func (a *App) IsAIAssistantReady() bool {
 	hubClient := a.hubClient()
 	if hubClient == nil {
-		return false
+		if !a.warmupDone.Load() {
+			return false
+		}
+		hubClient = a.ensureHubClient()
+		if hubClient == nil {
+			return false
+		}
 	}
 	if !a.warmupDone.Load() {
 		return false
@@ -1417,10 +1429,14 @@ func (a *App) GetAIAssistantInitStatus() string {
 	hubClient := a.hubClient()
 	if hubClient == nil {
 		// No Hub client yet. If warmup is done (markAIAssistantReady was called)
-		// the system is waiting for Hub credentials/connection — show "degraded"
-		// so the frontend unlocks the input area (with Hub-offline indicator)
-		// instead of showing a forever-spinning "loading" state.
+		// the system should still be usable in local/degraded mode. Create the
+		// in-memory client/IM handler on demand instead of leaving the UI in a
+		// forever-spinning "loading" state when machine credentials were cleared.
 		if a.warmupDone.Load() {
+			hubClient = a.ensureHubClient()
+			if hubClient != nil && hubClient.imHandler != nil && a.interactionInfraReady() {
+				return "ready"
+			}
 			return "degraded"
 		}
 		if a.interactionInfraReady() {
@@ -1693,28 +1709,9 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		a.sessionEventScopeIDs.Store(userID, scopeID)
 	}
 
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
-		// Hub client not ready yet — move the wait into the async goroutine
-		// so we don't block the Wails IPC thread. Return Deferred immediately.
-		log.Printf("[AI assistant] hubClient nil at dispatch, will await in goroutine request_id=%s", requestID)
-		go func() {
-			waited := a.awaitHubClient(10 * time.Second)
-			if waited == nil {
-				log.Printf("[AI assistant] hubClient await timed out request_id=%s", requestID)
-				a.emitAIAssistantResponse(requestID, &IMAgentResponse{
-					RequestID:  requestID,
-					SessionKey: userID,
-					Error:      "AI 助手正在初始化，请稍后再试",
-				})
-				return
-			}
-			a.runAIAssistantMessageAsyncForUser(req, waited, requestID, text, userID)
-		}()
-		return &IMAgentResponse{
-			RequestID: requestID,
-			Deferred:  true,
-		}, nil
+		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
 	log.Printf("[AI assistant] enqueue request request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
 
@@ -2222,7 +2219,7 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	}
 
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2269,7 +2266,7 @@ func (a *App) ClearAIAssistantHistory() error {
 // An empty sessionKey defaults to the base desktopUserID for backward compat.
 func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		// Not initialized yet — nothing to clear. Return success (no-op).
 		return nil
@@ -2305,7 +2302,7 @@ func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskReques
 		return nil, err
 	}
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2338,7 +2335,7 @@ func (a *App) CancelAIAssistantTask(sessionID string) error {
 // CancelAIAssistantSession cancels the currently running AI assistant session.
 func (a *App) CancelAIAssistantSession() (string, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
@@ -2350,7 +2347,7 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 // legacy state.
 func (a *App) CancelAIAssistantSessionForSession(userID string) (string, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
@@ -2383,7 +2380,7 @@ func cancelAIAssistantSessionForHandler(handler *IMMessageHandler, userID string
 // no loop is active (caller should fall back to normal sendMessage).
 func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2397,7 +2394,7 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 // active.
 func (a *App) InjectAIAssistantSupplementaryForSession(text string, userID string) (bool, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2417,7 +2414,7 @@ func (a *App) InjectAIAssistantSupplementaryForSession(text string, userID strin
 // a new user turn and should not make the current session finalize by itself.
 func (a *App) InjectAIAssistantGuideReference(text string) (bool, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2431,7 +2428,7 @@ func (a *App) InjectAIAssistantGuideReference(text string) (bool, error) {
 // tabs are running concurrently.
 func (a *App) InjectAIAssistantGuideReferenceForSession(text string, userID string) (bool, error) {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
@@ -2478,7 +2475,7 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 	} else if strings.HasPrefix(confirmID, "skill_install_") {
 		return err
 	}
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return fmt.Errorf("AI assistant not initialized")
 	}
@@ -2561,7 +2558,7 @@ func (a *App) ListSSHBackgroundTasks() []SSHBackgroundTaskView {
 // StopAllBackgroundLoops stops all running background loops.
 // Returns the list of stopped loop IDs.
 func (a *App) StopAllBackgroundLoops() []string {
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return nil
 	}
@@ -2614,7 +2611,7 @@ func (a *App) DismissRemoteSession(sessionID string) error {
 
 // StopBackgroundLoop gracefully stops a background loop by ID.
 func (a *App) StopBackgroundLoop(loopID string) error {
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}
@@ -2628,7 +2625,7 @@ func (a *App) StopBackgroundLoop(loopID string) error {
 
 // ContinueBackgroundLoop sends additional rounds to a paused loop.
 func (a *App) ContinueBackgroundLoop(loopID string, additionalRounds int) error {
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}

@@ -23,22 +23,28 @@ type testInvitationCodeValidator struct {
 }
 
 type testUserRouteSyncer struct {
-	allowed     bool
-	targetHubID string
-	syncCalls   int
+	allowed      bool
+	targetHubID  string
+	syncCalls    int
+	replaceCalls int
+	accounts     []string
 }
 
 type testUserRouteSyncOnly struct {
-	syncCalls int
+	syncCalls    int
+	replaceCalls int
+	accounts     []string
 }
 
-func (s *testUserRouteSyncer) SyncUserRoute(context.Context, string, ...string) error {
+func (s *testUserRouteSyncer) SyncUserRoute(_ context.Context, account string, _ ...string) error {
 	s.syncCalls++
+	s.accounts = append(s.accounts, account)
 	return nil
 }
 
-func (s *testUserRouteSyncer) SyncUserRouteReplaceAll(context.Context, string, ...string) error {
-	s.syncCalls++
+func (s *testUserRouteSyncer) SyncUserRouteReplaceAll(_ context.Context, account string, _ ...string) error {
+	s.replaceCalls++
+	s.accounts = append(s.accounts, account)
 	return nil
 }
 
@@ -46,13 +52,15 @@ func (s *testUserRouteSyncer) AllowsUserRoute(context.Context, string, ...string
 	return s.allowed, s.targetHubID, nil
 }
 
-func (s *testUserRouteSyncOnly) SyncUserRoute(context.Context, string, ...string) error {
+func (s *testUserRouteSyncOnly) SyncUserRoute(_ context.Context, account string, _ ...string) error {
 	s.syncCalls++
+	s.accounts = append(s.accounts, account)
 	return nil
 }
 
-func (s *testUserRouteSyncOnly) SyncUserRouteReplaceAll(context.Context, string, ...string) error {
-	s.syncCalls++
+func (s *testUserRouteSyncOnly) SyncUserRouteReplaceAll(_ context.Context, account string, _ ...string) error {
+	s.replaceCalls++
+	s.accounts = append(s.accounts, account)
 	return nil
 }
 
@@ -72,6 +80,104 @@ func (v *testInvitationCodeValidator) ValidateAndConsumeForTenant(_ context.Cont
 	v.consumed++
 	return nil
 }
+
+func TestIdentityServiceBindVerifiedPhoneRejectsOverlongPhone(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               "user_phone_limit",
+		TenantID:         store.DefaultTenantID,
+		Email:            "buyer@example.com",
+		SN:               "SN-phone-limit",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := svc.BindVerifiedPhoneToUser(context.Background(), user, "123456789012345678901"); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("BindVerifiedPhoneToUser error = %v, want ErrInvalidEmail", err)
+	}
+	identities, err := deps.store.Users.ListIdentitiesByUser(context.Background(), store.DefaultTenantID, user.ID)
+	if err != nil {
+		t.Fatalf("list identities: %v", err)
+	}
+	for _, identity := range identities {
+		if identity.Type == "phone" {
+			t.Fatalf("overlong phone should not be bound: %#v", identity)
+		}
+	}
+}
+
+func TestIdentityServiceBindVerifiedPhoneSyncsRouteAndBackfillsLLMRegistry(t *testing.T) {
+	deps := newTestStore(t)
+	routeSyncer := &testUserRouteSyncOnly{}
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	svc.SetUserRouteSyncer(routeSyncer)
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               "user_bind_phone",
+		TenantID:         store.DefaultTenantID,
+		Email:            "buyer@example.com",
+		SN:               "SN-bind-phone",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := llmservice.SaveRegistry(context.Background(), deps.store.System, &llmservice.Registry{
+		Grants: []llmservice.Grant{{ID: "grant-phone", Email: "phone:19900001111", ServiceGroupID: "coding-basic"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+
+	if err := svc.BindVerifiedPhoneToUser(context.Background(), user, "19900001111"); err != nil {
+		t.Fatalf("BindVerifiedPhoneToUser: %v", err)
+	}
+	if routeSyncer.syncCalls != 0 || routeSyncer.replaceCalls != 1 || len(routeSyncer.accounts) != 1 || routeSyncer.accounts[0] != "phone:19900001111" {
+		t.Fatalf("expected verified phone route replace sync, syncCalls=%d replaceCalls=%d accounts=%#v", routeSyncer.syncCalls, routeSyncer.replaceCalls, routeSyncer.accounts)
+	}
+	reg, err := llmservice.LoadRegistry(context.Background(), deps.store.System)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].UserID != user.ID {
+		t.Fatalf("expected phone grant backfilled to user ID, grants=%#v", reg.Grants)
+	}
+}
+
 func (v *testInvitationCodeValidator) CheckExpiry(context.Context, string) (bool, *time.Time, error) {
 	return false, nil, nil
 }
@@ -167,6 +273,80 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	if user == nil || user.Email != "user@example.com" || user.SN != enroll.SN {
 		t.Fatalf("unexpected user after confirm: %+v", user)
 	}
+}
+
+func TestIdentityServiceEmailLoginIncludesMobileHubContext(t *testing.T) {
+	deps := newTestStore(t)
+	if err := deps.store.System.Set(context.Background(), systemKeyCenterRegistration, `{"hub_id":"hub_mobile"}`); err != nil {
+		t.Fatalf("seed center registration: %v", err)
+	}
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"https://tenant-a.maclaw.top",
+	)
+	ctx := context.Background()
+	if _, err := svc.StartEnrollment(ctx, "mobile@example.com", "phone", "ios", "", ""); err != nil {
+		t.Fatalf("StartEnrollment: %v", err)
+	}
+
+	req, err := svc.RequestEmailLogin(ctx, "mobile@example.com")
+	if err != nil {
+		t.Fatalf("RequestEmailLogin: %v", err)
+	}
+	if req.HubURL != "https://tenant-a.maclaw.top" || req.Hub == nil || req.Hub.ID != "hub_mobile" {
+		t.Fatalf("request mobile hub context = %+v", req)
+	}
+	if req.LLM == nil || req.LLM.Mode != defaultMobileOfficialLLMMode {
+		t.Fatalf("request llm context = %+v", req.LLM)
+	}
+
+	rawToken := extractIdentityDevConfirmToken(t, req.Message)
+	if _, _, err := svc.ConfirmEmailLogin(ctx, rawToken); err != nil {
+		t.Fatalf("ConfirmEmailLogin: %v", err)
+	}
+	poll, err := svc.PollEmailLogin(ctx, req.PollID)
+	if err != nil {
+		t.Fatalf("PollEmailLogin: %v", err)
+	}
+	if poll.Status != "confirmed" || poll.AccessToken == "" {
+		t.Fatalf("unexpected poll result: %+v", poll)
+	}
+	if poll.HubURL != "https://tenant-a.maclaw.top" || poll.Hub == nil || poll.Hub.ID != "hub_mobile" {
+		t.Fatalf("poll mobile hub context = %+v", poll)
+	}
+	if poll.User == nil || poll.User.TenantID != store.DefaultTenantID || poll.User.Email != "mobile@example.com" {
+		t.Fatalf("poll user context = %+v", poll.User)
+	}
+	if poll.LLM == nil || poll.LLM.Mode != defaultMobileOfficialLLMMode {
+		t.Fatalf("poll llm context = %+v", poll.LLM)
+	}
+}
+
+func extractIdentityDevConfirmToken(t *testing.T, message string) string {
+	t.Helper()
+	const prefix = "Use this confirm URL for development: "
+	if len(message) <= len(prefix) || message[:len(prefix)] != prefix {
+		t.Fatalf("unexpected confirm message: %q", message)
+	}
+	parsedURL, err := url.Parse(message[len(prefix):])
+	if err != nil {
+		t.Fatalf("parse confirm URL: %v", err)
+	}
+	rawToken := parsedURL.Query().Get("token")
+	if rawToken == "" {
+		t.Fatalf("missing token in confirm URL: %s", message)
+	}
+	return rawToken
 }
 
 func TestIdentityServiceRejectsNewUserWhenCenterRoutesEmailElsewhere(t *testing.T) {

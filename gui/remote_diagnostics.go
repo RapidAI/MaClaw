@@ -104,7 +104,7 @@ func (a *App) CheckRemoteToolReadiness(toolName, projectDir string, useProxy boo
 	readiness.ToolInstalled = status.Installed
 	readiness.ToolPath = status.Path
 	if !status.Installed || strings.TrimSpace(status.Path) == "" {
-		readiness.Issues = append(readiness.Issues, fmt.Sprintf("%s is not installed in ~/.maclaw/data/tools", tool))
+		readiness.Issues = append(readiness.Issues, fmt.Sprintf("%s is not installed in the active data directory tools folder", tool))
 	}
 
 	ptyProbe := a.CheckRemotePTYProbe()

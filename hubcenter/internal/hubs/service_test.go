@@ -1,4 +1,4 @@
-﻿package hubs
+package hubs
 
 import (
 	"context"
@@ -592,6 +592,57 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].HubID != hubB.ID {
 		t.Fatalf("expected only hub_b binding, got %+v", items)
+	}
+}
+
+func TestSyncHubUserLinkReplaceAllForPhoneKeepsEmailRoutes(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", HubSecretHash: hashToken("secret-a"), CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", HubSecretHash: hashToken("secret-b"), CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant(hubA.ID, "tenant_old", "phone:19900001111"), HubID: hubA.ID, TenantID: "tenant_old", Email: "phone:19900001111", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryUserLinkIDForTenant(hubA.ID, "tenant_email", "buyer@example.com"), HubID: hubA.ID, TenantID: "tenant_email", Email: "buyer@example.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "phone:19900001111", false, true, "tenant_new"); err != nil {
+		t.Fatalf("SyncHubUserLink phone replace all: %v", err)
+	}
+	phoneLinks, err := st.HubUserLinks.ListByEmail(ctx, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("ListByEmail phone: %v", err)
+	}
+	if len(phoneLinks) != 1 || phoneLinks[0].HubID != hubB.ID || phoneLinks[0].TenantID != "tenant_new" {
+		t.Fatalf("expected phone route to move to hub_b tenant_new only, got %+v", phoneLinks)
+	}
+	emailLinks, err := st.HubUserLinks.ListByEmail(ctx, "buyer@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail email: %v", err)
+	}
+	if len(emailLinks) != 1 || emailLinks[0].HubID != hubA.ID || emailLinks[0].TenantID != "tenant_email" {
+		t.Fatalf("expected unrelated email route to stay on hub_a, got %+v", emailLinks)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("ResolveByEmail phone: %v", err)
+	}
+	if len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != hubB.ID || resolved.Hubs[0].TenantID != "tenant_new" {
+		t.Fatalf("expected phone identity to resolve to hub_b tenant_new, got %+v", resolved)
 	}
 }
 
@@ -1231,7 +1282,7 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	hub := &store.HubInstance{ID: "hub_tenant_report", OwnerEmail: "owner@example.com", Name: "Tenant Report Hub", BaseURL: "https://hub.example.com", Status: "online", CapabilitiesJSON: mustJSON(map[string]any{
-		"tenant_names": map[string]any{"tenant_a": "寮€鍙戦儴", "tenant_b": "甯傚満閮?, "tenant_c": "娴嬭瘯閮?},
+		"tenant_names": map[string]any{"tenant_a": "Dev", "tenant_b": "Market", "tenant_c": "QA"},
 	}), CreatedAt: now, UpdatedAt: now}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("create hub: %v", err)
@@ -1262,7 +1313,7 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].TotalUsers != 3 {
 		t.Fatalf("physical hub total = %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_a"].TenantName != "寮€鍙戦儴" || byTenant["tenant_b"].TotalUsers != 1 || byTenant["tenant_b"].TenantName != "甯傚満閮? || byTenant["tenant_c"].TotalUsers != 0 || byTenant["tenant_c"].TenantName != "娴嬭瘯閮? {
+	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_a"].TenantName != "Dev" || byTenant["tenant_b"].TotalUsers != 1 || byTenant["tenant_b"].TenantName != "Market" || byTenant["tenant_c"].TotalUsers != 0 || byTenant["tenant_c"].TenantName != "QA" {
 		t.Fatalf("tenant report rows = %+v", byTenant)
 	}
 	listAll, _ := linkRepo.Calls()
@@ -1293,7 +1344,7 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 			"tenant_machine_counts": map[string]any{"tenant_a": 3, "tenant_b": 1},
 			"tenant_domains":        map[string]any{"tenant_a": []any{"acme.example"}, "tenant_b": []any{"beta.example"}},
 			"tenant_domain_source":  "configured",
-			"tenant_names":          map[string]any{"tenant_a": "寮€鍙戦儴", "tenant_b": "甯傚満閮?},
+			"tenant_names":          map[string]any{"tenant_a": "Dev", "tenant_b": "Market"},
 		}),
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
@@ -1310,10 +1361,10 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].UserCount != 3 || byTenant[""].MachineCount != 4 {
 		t.Fatalf("unexpected physical hub dashboard row: %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" || byTenant["tenant_a"].TenantName != "寮€鍙戦儴" {
+	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" || byTenant["tenant_a"].TenantName != "Dev" {
 		t.Fatalf("unexpected tenant_a dashboard row: %+v", byTenant["tenant_a"])
 	}
-	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" || byTenant["tenant_b"].TenantName != "甯傚満閮? {
+	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" || byTenant["tenant_b"].TenantName != "Market" {
 		t.Fatalf("unexpected tenant_b dashboard row: %+v", byTenant["tenant_b"])
 	}
 }

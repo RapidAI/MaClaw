@@ -265,6 +265,12 @@ type DeviceNotifyHook struct {
 	OnDisconnect func(userID, machineID, name string)
 }
 
+// NotificationMarkReader handles notification.ack messages from clients.
+// Implemented by notification.Service to avoid circular package dependencies.
+type NotificationMarkReader interface {
+	MarkRead(ctx context.Context, machineID, notificationID string) error
+}
+
 type Gateway struct {
 	Identity identityService
 	Devices  DeviceBinder
@@ -297,6 +303,10 @@ type Gateway struct {
 
 	// ConfigProvider provides Hub-managed client config options for heartbeat ack injection.
 	ConfigProvider HeartbeatConfigProvider
+
+	// NotificationService handles notification.ack messages from clients.
+	// Set via SetNotificationService after construction.
+	NotificationService NotificationMarkReader
 
 	mu                sync.RWMutex
 	viewersByMachine  map[string]map[*ConnContext]struct{}
@@ -345,6 +355,12 @@ func (g *Gateway) SetDeviceProfileUpdater(fn DeviceProfileUpdaterFunc) {
 // SetDeviceNotifyHook wires the device connect/disconnect notification hooks.
 func (g *Gateway) SetDeviceNotifyHook(hook DeviceNotifyHook) {
 	g.DeviceNotifyFunc = hook
+}
+
+// SetNotificationService wires the notification service for handling
+// notification.ack messages from clients.
+func (g *Gateway) SetNotificationService(svc NotificationMarkReader) {
+	g.NotificationService = svc
 }
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
@@ -534,6 +550,8 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if err := g.handleDeviceProfileUpdate(ctx, msg); err != nil {
 				return
 			}
+		case MessageTypeNotificationAck:
+			g.handleNotificationAck(ctx, msg)
 		default:
 			_ = writeWSError(conn, "UNKNOWN_MESSAGE", "Unsupported message type")
 		}
@@ -1581,6 +1599,44 @@ func (g *Gateway) handleDeviceProfileUpdate(ctx *ConnContext, msg Envelope) erro
 		g.DeviceProfileUpdater(ctx.TenantID, ctx.UserID, msg.Payload)
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+// handleNotificationAck processes a notification.ack message from a client.
+// The payload is expected to be {"notification_id": "...", "action": "read"}.
+// It delegates to NotificationService.MarkRead to persist the read status.
+func (g *Gateway) handleNotificationAck(ctx *ConnContext, msg Envelope) {
+	if ctx.MachineID == "" {
+		log.Printf("[ws] handleNotificationAck: no machine_id in context, ignoring")
+		return
+	}
+	if g.NotificationService == nil {
+		log.Printf("[ws] handleNotificationAck: NotificationService not configured, ignoring")
+		return
+	}
+
+	var payload struct {
+		NotificationID string `json:"notification_id"`
+		Action         string `json:"action"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleNotificationAck: invalid payload: %v", err)
+		return
+	}
+
+	if payload.NotificationID == "" {
+		log.Printf("[ws] handleNotificationAck: empty notification_id, ignoring")
+		return
+	}
+	if payload.Action != "read" {
+		log.Printf("[ws] handleNotificationAck: unsupported action %q, ignoring", payload.Action)
+		return
+	}
+
+	bgCtx := context.Background()
+	if err := g.NotificationService.MarkRead(bgCtx, ctx.MachineID, payload.NotificationID); err != nil {
+		log.Printf("[ws] handleNotificationAck: MarkRead failed (machine=%s notif=%s): %v",
+			ctx.MachineID, payload.NotificationID, err)
+	}
 }
 
 // handleMachineNicknameUpdate processes a runtime nickname change from a machine.

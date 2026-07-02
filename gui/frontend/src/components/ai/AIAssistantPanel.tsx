@@ -9,6 +9,7 @@ import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
 import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
+import { getAssistantLightScheme } from "./assistantLightSchemes";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
@@ -279,7 +280,7 @@ async function loadRestoredProjectConversationHistory(projectPath: string): Prom
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -309,7 +310,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const skillRecResolvedRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
-    const t = themeMode === 'dark' ? getAssistantDarkScheme(darkSchemeId).assistantTheme : (inline ? lightTheme : overlayTheme);
+    const t = useMemo(() => {
+        const base = themeMode === 'dark' ? getAssistantDarkScheme(darkSchemeId).assistantTheme : (lightSchemeId && lightSchemeId !== 'default' ? getAssistantLightScheme(lightSchemeId).assistantTheme : (inline ? lightTheme : overlayTheme));
+        return Object.assign({}, base, { isDark: themeMode === 'dark' });
+    }, [themeMode, darkSchemeId, lightSchemeId, inline]);
     const showMaximizeToggle = inline && !!onToggleMaximize;
     // Workflow toggle: load initial state from config, sync on config-changed event
     useEffect(() => {

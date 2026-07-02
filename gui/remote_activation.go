@@ -31,6 +31,21 @@ type RemoteActivationResult struct {
 	VIPFlag      bool   `json:"vip_flag,omitempty"`
 }
 
+type RemoteRegistrationAuthResult struct {
+	Method         string `json:"method"`
+	CodeTTLMinutes int    `json:"code_ttl_minutes,omitempty"`
+	CodeLength     int    `json:"code_length,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+}
+
+type RemoteSMSSendResult struct {
+	OK         bool   `json:"ok"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	ExpiresMin int    `json:"expires_min,omitempty"`
+	CodeLength int    `json:"code_length,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
 type RemoteProbeResult struct {
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
 	TenantID               string `json:"tenant_id,omitempty"`
@@ -50,6 +65,17 @@ type RemoteActivationStatus struct {
 	HubURL     string `json:"hub_url"`
 }
 
+func normalizeRemoteRegistrationPhoneNumber(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 type RemoteHubCenterHub struct {
 	HubID          string `json:"hub_id"`
 	Name           string `json:"name"`
@@ -63,6 +89,31 @@ type RemoteHubCenterHub struct {
 var remoteEnrollTimeout = remote.EnrollTimeout
 
 const skillMarketAutoLoginRetryDelay = 15 * time.Minute
+
+func sanitizeHubCenterRegistrationURLs(preferred string, discovered []string) (string, []string) {
+	candidates := append([]string{preferred}, discovered...)
+	normalized := remote.NormalizeHubCenterURLs(candidates)
+	public := make([]string, 0, len(normalized))
+	for _, value := range normalized {
+		if value == "" || remote.IsLoopbackURL(value) {
+			continue
+		}
+		public = append(public, value)
+	}
+	if len(public) == 0 {
+		return "", nil
+	}
+	return public[0], public
+}
+
+func hasPublicHubCenterURL(values []string) bool {
+	for _, value := range remote.NormalizeHubCenterURLs(values) {
+		if value != "" && !remote.IsLoopbackURL(value) {
+			return true
+		}
+	}
+	return false
+}
 
 func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
@@ -97,6 +148,64 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 		return RemoteProbeResult{}, fmt.Errorf("probe failed: %s", resp.Status)
 	}
 
+	return result, nil
+}
+
+func (a *App) GetRemoteRegistrationAuth(hubURL string) (RemoteRegistrationAuthResult, error) {
+	hubURL = strings.TrimSpace(hubURL)
+	if hubURL == "" {
+		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+	}
+	resp, err := hubHTTPClient.Get(strings.TrimRight(hubURL, "/") + "/api/enroll/registration-auth")
+	if err != nil {
+		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+	}
+	defer resp.Body.Close()
+	var result RemoteRegistrationAuthResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration auth config"); err != nil {
+		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+	}
+	if resp.StatusCode >= 300 || strings.TrimSpace(result.Method) == "" {
+		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+	}
+	if result.CodeTTLMinutes <= 0 {
+		result.CodeTTLMinutes = 5
+	}
+	if result.CodeLength <= 0 {
+		result.CodeLength = 4
+	}
+	return result, nil
+}
+
+func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string) (RemoteSMSSendResult, error) {
+	hubURL = strings.TrimSpace(hubURL)
+	if hubURL == "" {
+		return RemoteSMSSendResult{}, fmt.Errorf("hub URL is required")
+	}
+	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
+	if len(phoneNumber) < 6 {
+		return RemoteSMSSendResult{}, fmt.Errorf("valid phone number is required")
+	}
+	payload := map[string]string{"phone_number": phoneNumber}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(strings.TrimRight(hubURL, "/")+"/api/enroll/sms/send-code", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteSMSSendResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration SMS"); err != nil {
+		return RemoteSMSSendResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if result.Message != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s", result.Message)
+		}
+		return RemoteSMSSendResult{}, fmt.Errorf("send SMS failed: %s", resp.Status)
+	}
 	return result, nil
 }
 
@@ -151,6 +260,13 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		AppVersion:     profile.AppVersion,
 		HeartbeatSec:   profile.HeartbeatSec,
 	}
+	// Activation must dynamically confirm the HubCenter -> Hub routing instead
+	// of reusing a cached Hub URL. The HubCenter shown in About should be the
+	// node that actually resolved this registration.
+	enrollCfg.HubURL = ""
+	if remote.IsLoopbackURL(enrollCfg.HubCenterURL) && hasPublicHubCenterURL(enrollCfg.HubCenterURLs) {
+		enrollCfg.HubCenterURL = ""
+	}
 
 	// Ensure stable client_id.
 	if enrollCfg.ClientID == "" {
@@ -198,11 +314,14 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		if enrollResult.ClientID != "" && cfg.RemoteClientID == "" {
 			cfg.RemoteClientID = enrollResult.ClientID
 		}
-		if enrollResult.HubCenterURL != "" {
-			cfg.RemoteHubCenterURL = enrollResult.HubCenterURL
-		}
-		if len(enrollResult.DiscoveredURLs) > 0 {
-			cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(enrollResult.DiscoveredURLs)
+		if enrollResult.HubCenterURL != "" || len(enrollResult.DiscoveredURLs) > 0 {
+			nextCenterURL, nextCenterURLs := sanitizeHubCenterRegistrationURLs(enrollResult.HubCenterURL, enrollResult.DiscoveredURLs)
+			if nextCenterURL != "" {
+				cfg.RemoteHubCenterURL = nextCenterURL
+			}
+			if len(nextCenterURLs) > 0 || len(enrollResult.DiscoveredURLs) > 0 {
+				cfg.RemoteHubCenterURLs = nextCenterURLs
+			}
 		}
 	}); err != nil {
 		log.Printf("[onboarding] ActivateRemote PatchConfig:failed after=%s err=%v", time.Since(persistStart), err)
@@ -298,6 +417,153 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	return result, nil
 }
 
+func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode string, invitationCode string) (RemoteActivationResult, error) {
+	start := time.Now()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if hubURL == "" {
+		hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	}
+	if hubURL == "" {
+		return RemoteActivationResult{}, fmt.Errorf("hub URL is required")
+	}
+	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
+	if len(phoneNumber) < 6 {
+		return RemoteActivationResult{}, fmt.Errorf("valid phone number is required")
+	}
+	verifyCode = strings.TrimSpace(verifyCode)
+	if verifyCode == "" {
+		return RemoteActivationResult{}, fmt.Errorf("verification code is required")
+	}
+
+	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	clientID := strings.TrimSpace(cfg.RemoteClientID)
+	if clientID == "" {
+		clientID = remote.GenerateClientID()
+		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.RemoteClientID = clientID
+		}); err != nil {
+			return RemoteActivationResult{}, err
+		}
+	}
+	heartbeat := profile.HeartbeatSec
+	if heartbeat <= 0 {
+		heartbeat = 30
+	} else if heartbeat < 5 {
+		heartbeat = 5
+	}
+	body := map[string]any{
+		"phone_number":           phoneNumber,
+		"verify_code":            verifyCode,
+		"machine_name":           profile.Name,
+		"platform":               profile.Platform,
+		"hostname":               profile.Hostname,
+		"arch":                   profile.Arch,
+		"app_version":            profile.AppVersion,
+		"heartbeat_interval_sec": heartbeat,
+		"client_id":              clientID,
+	}
+	if strings.TrimSpace(invitationCode) != "" {
+		body["invitation_code"] = strings.TrimSpace(invitationCode)
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/sms/verify-and-start", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteActivationResult{}, err
+	}
+	defer resp.Body.Close()
+	var enrollResult remote.EnrollResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &enrollResult, "SMS registration"); err != nil {
+		return RemoteActivationResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if enrollResult.Code != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s: %s", enrollResult.Code, enrollResult.Message)
+		}
+		if enrollResult.Message != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s", enrollResult.Message)
+		}
+		return RemoteActivationResult{}, fmt.Errorf("SMS registration failed: %s", resp.Status)
+	}
+	enrollResult.HubURL = hubURL
+	enrollResult.ClientID = clientID
+
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteEmail = enrollResult.Email
+		cfg.RemoteSN = enrollResult.SN
+		cfg.RemoteUserID = enrollResult.UserID
+		cfg.RemoteTenantID = enrollResult.TenantID
+		cfg.RemoteTenantName = enrollResult.TenantName
+		cfg.RemoteMachineID = enrollResult.MachineID
+		cfg.RemoteMachineName = profile.Name
+		cfg.RemoteMachineToken = enrollResult.MachineToken
+		cfg.RemoteNickname = ""
+		cfg.RemoteHubURL = enrollResult.HubURL
+		cfg.RemoteEnabled = true
+		if enrollResult.ViewerToken != "" {
+			cfg.RemoteViewerToken = enrollResult.ViewerToken
+		} else {
+			cfg.RemoteViewerToken = ""
+		}
+		if enrollResult.ClientID != "" && cfg.RemoteClientID == "" {
+			cfg.RemoteClientID = enrollResult.ClientID
+		}
+	}); err != nil {
+		return RemoteActivationResult{}, err
+	}
+
+	go a.acquireSkillMarketTokenAfterEnroll(enrollResult.Email, enrollResult.MachineID, enrollResult.ViewerToken)
+
+	result := RemoteActivationResult{
+		Status:       enrollResult.Status,
+		HubID:        enrollResult.HubID,
+		TenantID:     enrollResult.TenantID,
+		TenantName:   enrollResult.TenantName,
+		Message:      enrollResult.Message,
+		Code:         enrollResult.Code,
+		UserID:       enrollResult.UserID,
+		Email:        enrollResult.Email,
+		SN:           enrollResult.SN,
+		MachineID:    enrollResult.MachineID,
+		MachineToken: enrollResult.MachineToken,
+		ViewerToken:  enrollResult.ViewerToken,
+		ExpiresAt:    enrollResult.ExpiresAt,
+		VIPFlag:      enrollResult.VIPFlag,
+	}
+
+	a.emitRemoteStateChanged()
+	if a.remoteActivationBackgroundDisabled {
+		log.Printf("[onboarding] ActivateRemoteSMS background connect skipped")
+		log.Printf("[onboarding] ActivateRemoteSMS total=%s", time.Since(start))
+		return result, nil
+	}
+	go func(launchedAt time.Time) {
+		if a.remoteSessions == nil {
+			a.ensureRemoteInfra()
+		}
+		hubClient := a.ensureHubClient()
+		if hubClient != nil {
+			a.emitEvent("ai-assistant-init-progress", "ready")
+		}
+		if hubClient != nil && !hubClient.IsConnected() {
+			if err := hubClient.Connect(); err != nil {
+				log.Printf("[onboarding] ActivateRemoteSMS background_connect_failed total=%s err=%v", time.Since(launchedAt), err)
+			} else {
+				a.emitRemoteStateChanged()
+				log.Printf("[onboarding] ActivateRemoteSMS background_connect_total=%s", time.Since(launchedAt))
+			}
+		}
+	}(time.Now())
+	log.Printf("[onboarding] ActivateRemoteSMS total=%s", time.Since(start))
+	return result, nil
+}
+
 func isHTTPTimeoutError(err error) bool {
 	if err == nil {
 		return false
@@ -340,10 +606,10 @@ func (a *App) GetRemoteActivationStatus() RemoteActivationStatus {
 }
 
 // VerifyRemoteActivation checks with the server whether the current activation
-// is still valid. If the server reports the user as not_found or blocked,
-// local machine credentials are cleared so the UI reflects the real state
-// and the user can re-register. Email and hub URL are preserved so the user
-// doesn't need to re-enter them.
+// is still valid. Only an explicit blocked status clears local machine
+// credentials. A not_found probe can be caused by Hub routing, tenant lookup,
+// or temporary server-side data drift, so keep credentials and let reconnect or
+// a later verification recover instead of silently deleting a usable binding.
 // Returns true if activation is still valid, false if it was invalidated.
 func (a *App) VerifyRemoteActivation() bool {
 	cfg, err := a.LoadConfig()
@@ -365,8 +631,13 @@ func (a *App) VerifyRemoteActivation() bool {
 		return true
 	}
 
-	if normalizeRemoteProbeStatusKind(probe.Status).ShouldClearActivation() {
-		// Server explicitly reports this user as not_found or blocked.
+	statusKind := normalizeRemoteProbeStatusKind(probe.Status)
+	if statusKind == remoteProbeStatusNotFound {
+		log.Printf("[verify-activation] server reports status=%q for %s - keeping local machine credentials (probe response: %+v)", probe.Status, email, probe)
+		return true
+	}
+	if statusKind.ShouldClearActivation() {
+		// Server explicitly reports this user as blocked.
 		// Log the full probe response for post-mortem diagnosis. This is an
 		// irreversible action - if it ever happens spuriously, the log entry
 		// will help identify the root cause.
@@ -492,9 +763,9 @@ func generateClientID() string {
 
 // acquireSkillMarketTokenAfterEnroll calls the HubCenter machine-login endpoint
 // to obtain a SkillMarket session token using the Hub enrollment credentials.
-// Runs in background - failure is non-fatal (user can still upload via email fallback).
-func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken string) {
-	if email == "" || viewerToken == "" {
+// Runs in background - failure is non-fatal.
+func (a *App) acquireSkillMarketTokenAfterEnroll(account, machineID, viewerToken string) {
+	if account == "" || viewerToken == "" {
 		return
 	}
 	if !a.shouldAttemptSkillMarketAutoLogin() {
@@ -515,9 +786,14 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken s
 		return
 	}
 
-	baseURL := cfg.SkillMarketBaseURL(defaultRemoteHubCenterURL)
+	baseURL := NewSkillMarketClient(a).baseURL()
+	if strings.TrimSpace(baseURL) == "" {
+		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
+		log.Printf("[skillmarket-auto-login] no dynamically confirmed HubCenter URL available")
+		return
+	}
 	client := remote.NewSkillMarketAuthClient()
-	result, err := client.MachineLogin(ctx, baseURL, email, machineID, viewerToken)
+	result, err := client.MachineLogin(ctx, baseURL, account, machineID, viewerToken)
 	if err != nil {
 		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
 		log.Printf("[skillmarket-auto-login] machine-login failed (non-fatal): %v", err)
@@ -537,7 +813,7 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken s
 		return
 	}
 	a.skillMarketAutoLoginNextAttempt.Store(time.Time{})
-	log.Printf("[skillmarket-auto-login] success email=%s", email)
+	log.Printf("[skillmarket-auto-login] success account=%s", account)
 }
 
 func (a *App) shouldAttemptSkillMarketAutoLogin() bool {

@@ -6,6 +6,7 @@ import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen } from "./useP
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
+import type { AssistantLightSchemeId } from "./assistantLightSchemes";
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -97,6 +98,7 @@ export interface AIAssistantPanelProps {
     groupDiscussion?: GroupDiscussionPanelControl;
     themeMode?: 'light' | 'dark';
     darkSchemeId?: AssistantDarkSchemeId;
+    lightSchemeId?: AssistantLightSchemeId;
     onThemeModeChange?: (mode: 'light' | 'dark') => void;
     audioInputDeviceId?: string;
     audioOutputDeviceId?: string;

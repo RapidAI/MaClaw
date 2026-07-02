@@ -124,7 +124,12 @@ func (p *guiHubCenterPersister) SaveHubCenterURLs(preferred string, discovered [
 		return nil
 	}
 	return p.app.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.RemoteHubCenterURL = preferred
+		// Defense-in-depth: never persist a loopback address as the primary
+		// HubCenter URL. The upstream RememberSelectionThrottled should already
+		// filter these, but guard here as well.
+		if preferred != "" && !remote.IsLoopbackURL(preferred) {
+			cfg.RemoteHubCenterURL = preferred
+		}
 		cfg.RemoteHubCenterURLs = discovered
 	})
 }

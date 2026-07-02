@@ -197,11 +197,13 @@ type App struct {
 	configMu                          sync.Mutex
 	configCache                       corelib.AppConfig
 	configCacheValid                  bool
+	effectiveBaseDir                  atomic.Value       // stores string
 	tokenUsageMu                      sync.Mutex         // guards AccumulateLLMTokenUsage
 	ssoPolling                        *ssoPollingSession // active embedded SSO polling session
 	ssoPollingMu                      sync.Mutex         // guards ssoPolling
 	interactionInfraOnce              sync.Once          // guards ensureInteractionInfra initialization
 	interactionInfraDone              atomic.Bool
+	hubClientEnsureMu                 sync.Mutex
 	aiAssistantReadyAt                atomic.Int64
 	aiAssistantFirstChatLogged        atomic.Bool
 	docGenerator                      *swarm.SwarmDocGenerator        // cached PDF doc generator
@@ -277,6 +279,9 @@ type App struct {
 
 	// Skill operation recorder: records tool calls and generates portable skills.
 	skillRecorder *SkillOperationRecorder
+
+	// Notification cache: in-memory LRU cache of up to 10 unread notifications.
+	notifCache *notificationCache
 }
 
 func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
@@ -343,6 +348,7 @@ func NewApp() *App {
 		hubUpdCache:       newHubUpdateCache(),
 		hubCenterCache:    remote.NewHubCenterSelectionCache(60 * time.Second),
 		toolVersionCache:  NewToolVersionCache(),
+		notifCache:        newNotificationCache(),
 	}
 }
 
@@ -396,9 +402,14 @@ func (a *App) initRemoteInfra() {
 func (a *App) initCoreInfra() {
 	coreStart := time.Now()
 
-	// Deploy bundled skills (pdf-word, doc-redact, etc.) to ~/.maclaw/data/skills/
+	// Deploy bundled skills (pdf-word, doc-redact, etc.) to the active data directory.
 	// on first run. Idempotent — skips if already deployed.
-	deployBuiltinSkills()
+	if strings.TrimSpace(a.testHomeDir) == "" {
+		_, _ = a.LoadConfig()
+		if primaryDir, err := a.primarySkillsDir(); err == nil {
+			deployBuiltinSkillsToDir(primaryDir)
+		}
+	}
 
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
@@ -416,10 +427,10 @@ func (a *App) initCoreInfra() {
 		a.cachedSkillScanner = &CachedSkillScanner{}
 		cfg, err := a.LoadConfig()
 		if err == nil {
-			roots := skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs)
+			roots := a.skillScanRootsWithExternal(cfg.ExternalSkillDirs)
 			a.cachedSkillScanner.Init(roots)
 		} else {
-			roots := skill.SkillScanRootsWithExternal(nil)
+			roots := a.skillScanRootsWithExternal(nil)
 			a.cachedSkillScanner.Init(roots)
 		}
 	}
@@ -1632,6 +1643,14 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 // subsystems. This is safe to call on the startup critical path because it only
 // does in-memory initialization and local file reads.
 func (a *App) prepareHubClientSync() {
+	a.hubClientEnsureMu.Lock()
+	defer a.hubClientEnsureMu.Unlock()
+	if a.remoteSessions != nil {
+		if existing := a.remoteSessions.GetHubClient(); existing != nil {
+			log.Printf("[prepareHubClientSync] hubClient already prepared; skipping")
+			return
+		}
+	}
 	cwStart := time.Now()
 	a.logMemorySnapshot("prepareHubClientSync:start")
 	a.ensureInteractionInfra()
@@ -1941,17 +1960,24 @@ func (a *App) startup(ctx context.Context) {
 			go a.asyncHubConnect()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
 			// No full credentials yet -mark ready immediately, auto-register in background.
+			hubPrepStart := time.Now()
+			a.prepareHubClientSync()
+			log.Printf("[startup] prepareHubClientSync (local/degraded) done in %v (since startup begin: %v)", time.Since(hubPrepStart), time.Since(startupBegin))
 			a.markAIAssistantReady()
 			a.emitEvent("ai-assistant-init-progress", "degraded")
 			go a.autoRegisterOnStartup(config)
 		} else {
 			// No Hub credentials at all -mark ready immediately without attempting connection.
 			// Frontend shows "degraded" (Hub offline) state, user can register from settings.
+			hubPrepStart := time.Now()
+			a.prepareHubClientSync()
+			log.Printf("[startup] prepareHubClientSync (local/degraded) done in %v (since startup begin: %v)", time.Since(hubPrepStart), time.Since(startupBegin))
 			a.markAIAssistantReady()
 			a.emitEvent("ai-assistant-init-progress", "degraded")
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
 		a.refreshWorkstationMode(config)
+		a.maybeCleanToolCacheOnStartup(config)
 		// Auto-start memory compression service if enabled in config.
 		if config.MemoryAutoCompress && a.memoryStore != nil {
 			_ = a.getOrCreateCompressor()
@@ -2152,6 +2178,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.screenDimCancel != nil {
 		a.screenDimCancel()
 	}
+	a.maybeCleanToolCacheOnExit()
 	// Clean up workstation mode (restore lock screen policy, etc.)
 	a.setWorkstationMode(false, 0)
 	a.stopIWorkerGoalWatch()
@@ -2848,6 +2875,14 @@ func (a *App) ResizeWindow(width, height int) {
 	runtime.WindowCenter(a.ctx)
 }
 
+// GetAdaptiveWindowSize returns the recommended window dimensions for the
+// current screen, matching the logic used at startup. Frontend can call this
+// instead of hardcoding resize dimensions.
+func (a *App) GetAdaptiveWindowSize() map[string]int {
+	w, h := adaptiveWindowSize()
+	return map[string]int{"width": w, "height": h}
+}
+
 // RestoreWindowGeometry is no longer used -kept as no-op for binding compatibility.
 func (a *App) RestoreWindowGeometry() {
 }
@@ -2994,7 +3029,7 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) 
 	if len(tabID) > 0 && strings.TrimSpace(tabID[0]) != "" {
 		a.sessionEventScopeIDs.Store(userID, strings.TrimSpace(tabID[0]))
 	}
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return
 	}
@@ -3081,8 +3116,16 @@ func (a *App) GetTempDir() string {
 }
 
 // getMaclawBaseDir returns the effective maclaw base directory for this App instance.
-// For tests it uses testHomeDir/.maclaw; otherwise delegates to corelib.MaclawBaseDir().
+// It tracks the data_dir config when present; testHomeDir is only the default fallback.
 func (a *App) getMaclawBaseDir() string {
+	if a != nil {
+		if base, ok := a.effectiveBaseDir.Load().(string); ok && strings.TrimSpace(base) != "" {
+			return base
+		}
+	}
+	if a == nil {
+		return corelib.MaclawBaseDir()
+	}
 	if a.testHomeDir != "" {
 		return filepath.Join(a.testHomeDir, ".maclaw")
 	}
@@ -3301,7 +3344,7 @@ func (a *App) toolNativeConfigPaths(tool string) (dir string, extras []string) {
 	}
 }
 
-// configBackupDir returns ~/.maclaw/data/config_backup/<tool>.
+// configBackupDir returns <active data dir>/config_backup/<tool>.
 func (a *App) configBackupDir(tool string) string {
 	return filepath.Join(a.GetDataDir(), "config_backup", strings.ToLower(tool))
 }
@@ -5198,9 +5241,97 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
 	a.configCache = config
 	a.configCacheValid = true
+	a.applyDataDirFromConfig(config)
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	return config, nil
+}
+
+func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
+	if a == nil {
+		return
+	}
+	oldBase := a.getMaclawBaseDir()
+	var newBase string
+	if strings.TrimSpace(a.testHomeDir) != "" && strings.TrimSpace(config.DataDir) == "" {
+		newBase = filepath.Join(a.testHomeDir, ".maclaw")
+		corelib.SetMaclawBaseDir(newBase)
+	} else {
+		corelib.SetMaclawBaseDirFromConfig(config.DataDir)
+		newBase = corelib.MaclawBaseDir()
+	}
+	a.effectiveBaseDir.Store(newBase)
+	if strings.TrimSpace(oldBase) != "" && filepath.Clean(oldBase) != filepath.Clean(newBase) {
+		a.resetPathBoundStateForDataDirChange()
+	}
+}
+
+func (a *App) resetPathBoundStateForDataDirChange() {
+	if a.aiConversationMemory != nil {
+		if err := a.aiConversationMemory.FlushNow(); err != nil {
+			log.Printf("[config] data_dir_change: conversation memory flush failed: %v", err)
+		}
+		a.aiConversationMemory.Stop()
+		a.aiConversationMemory = nil
+	}
+	if a.aiConfirmationStore != nil {
+		a.aiConfirmationStore.stop()
+		a.aiConfirmationStore = nil
+	}
+	if a.auditLog != nil {
+		_ = a.auditLog.Close()
+		a.auditLog = nil
+	}
+	if a.sessionSearchStore != nil {
+		_ = a.sessionSearchStore.Close()
+		a.sessionSearchStore = nil
+	}
+	a.sessionStoreMu = sync.Once{}
+	if a.imAuditStore != nil {
+		_ = a.imAuditStore.Close()
+		a.imAuditStore = nil
+	}
+	a.imAuditStoreMu = sync.Once{}
+	if a.codingKnowledgeStore != nil {
+		codingKnowledgeStoreMu.Lock()
+		_ = a.codingKnowledgeStore.Close()
+		a.codingKnowledgeStore = nil
+		codingKnowledgeStoreMu.Unlock()
+	}
+	if a.userModel != nil {
+		if err := a.userModel.Save(); err != nil {
+			log.Printf("[config] data_dir_change: user model save failed: %v", err)
+		}
+		a.userModel = nil
+	}
+	a.userModelMu = sync.Once{}
+	a.evidenceCollector = nil
+	a.evidenceCollectorMu = sync.Once{}
+	a.templateManager = nil
+	a.projectTabSessionPersist = nil
+	if a.memoryMaintenance != nil {
+		a.memoryMaintenance.Stop()
+		a.memoryMaintenance = nil
+	}
+	if a.memPipeline != nil {
+		a.memPipeline.Stop()
+		a.memPipeline = nil
+	}
+	a.stopMemoryPipelineSchedule("data_dir_change")
+	a.compressorMu.Lock()
+	if a.memoryCompressor != nil {
+		a.memoryCompressor.Stop()
+		a.memoryCompressor = nil
+	}
+	a.compressorMu.Unlock()
+	a.memoryStoreMu.Lock()
+	if a.memoryStore != nil {
+		a.memoryStore.Stop()
+		a.memoryStore = nil
+	}
+	a.memoryStoreMu.Unlock()
+	a.conversationArchiver = nil
+	a.sessionCheckpointer = nil
 }
 
 func normalizeConfigTimeouts(config *corelib.AppConfig) {
@@ -5561,6 +5692,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	log.Printf("[config] SaveConfig:save_to_path=%s", time.Since(writeStart))
 	a.configCache = config
 	a.configCacheValid = true
+	a.applyDataDirFromConfig(config)
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	// Sync workflow enabled/disabled state to the atomic flag so that
@@ -5681,6 +5813,17 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			return corelib.LLMPromptCacheConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
 		}
 		return cache.WithDefaults(), nil
+	}
+	toolCacheMaintenanceField := func(key string, value interface{}, base corelib.ToolCacheMaintenanceConfig) (corelib.ToolCacheMaintenanceConfig, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return corelib.ToolCacheMaintenanceConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		cfg := base.WithDefaults()
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return corelib.ToolCacheMaintenanceConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		return cfg.WithDefaults(), nil
 	}
 	projectsField := func(key string, value interface{}) ([]corelib.ProjectConfig, error) {
 		data, err := json.Marshal(value)
@@ -5857,7 +6000,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
-			cfg.RemoteHubCenterURL = strings.TrimSpace(v)
+			v = strings.TrimRight(strings.TrimSpace(v), "/")
+			if v != "" && remote.IsLoopbackURL(v) {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("remote_hubcenter_url must not be a loopback address")
+			}
+			cfg.RemoteHubCenterURL = v
 		case "remote_email":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -5990,6 +6138,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.IMProgressNudgeEnabled = &v
+		case "tool_cache_maintenance":
+			v, err := toolCacheMaintenanceField(key, value, cfg.ToolCacheMaintenance)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ToolCacheMaintenance = v
 		case "qqbot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -6753,6 +6908,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(cfg.MemoryRecallLogEnabled)
+	a.applyDataDirFromConfig(cfg)
 	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
 	a.refreshPowerOptimizationStateFromConfig(cfg)
 	a.refreshWorkstationMode(cfg)
@@ -6958,6 +7114,7 @@ func (a *App) patchConfigIfChanged(patchFn func(cfg *corelib.AppConfig) bool, al
 	}
 	a.configCache = cfg
 	a.configCacheValid = true
+	a.applyDataDirFromConfig(cfg)
 	a.configMu.Unlock()
 	log.Printf("[config] PatchConfig:done caller=%q", caller)
 	return true, nil
@@ -6992,6 +7149,7 @@ func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedS
 	}
 	a.configCache = cfg
 	a.configCacheValid = true
+	a.applyDataDirFromConfig(cfg)
 	a.configMu.Unlock()
 	log.Printf("[config] PatchConfig:done caller=%q", caller)
 	return nil

@@ -280,8 +280,8 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 				add(SkillSearchResult{Source: "github", Name: inferSkillNameFromGitHub(item), Description: item.Description, RepoFullName: item.RepoFullName, RepoURL: item.RepoURL, RawURL: item.RawURL, FilePath: item.FilePath, Branch: item.Branch, DefinitionType: item.DefinitionType, Downloads: item.Stars})
 			}
 		case "skillhub":
-			baseURL := strings.TrimRight(strings.TrimSpace(in.SkillHubURL), "/")
-			if baseURL == "" {
+			baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillHubURL)
+			if err != nil {
 				continue
 			}
 			found, err := searchSkillHub(ctx, baseURL, query, topN)
@@ -300,10 +300,9 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 				add(SkillSearchResult{Source: item.Source, ID: item.ID, Name: item.Name, Description: item.Description, Version: item.Version, Author: item.Author, TrustLevel: item.TrustLevel, Downloads: item.Downloads, AvgRating: item.AvgRating})
 			}
 		case "skillmarket":
-			baseURL := strings.TrimRight(strings.TrimSpace(in.SkillMarketURL), "/")
-			if baseURL == "" {
-				cfg, _ := s.getOrLoadUserConfig(p.TenantID, p.UserID)
-				baseURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+			baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+			if err != nil {
+				continue
 			}
 			found, err := searchSkillMarket(ctx, baseURL, query, topN)
 			if err != nil {
@@ -371,7 +370,11 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "skillhub":
-		entry, err := downloadSkillHubEntry(ctx, strings.TrimSpace(in.SkillHubURL), strings.TrimSpace(in.SkillID))
+		baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillHubURL)
+		if err != nil {
+			return nil, err
+		}
+		entry, err := downloadSkillHubEntry(ctx, baseURL, strings.TrimSpace(in.SkillID))
 		if err != nil {
 			return nil, err
 		}
@@ -388,9 +391,9 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		if err != nil {
 			return nil, err
 		}
-		baseURL := strings.TrimSpace(in.SkillMarketURL)
-		if baseURL == "" {
-			baseURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+		baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+		if err != nil {
+			return nil, err
 		}
 		email := firstNonEmpty(user.Email, cfg.AppConfig.RemoteEmail)
 		authToken := s.skillMarketAuthToken(ctx, p, cfg, baseURL, email)
@@ -426,6 +429,22 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 	_ = s.store.SaveUserConfig(cfg)
 	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
 	return cfg.AppConfig.SkillMarketSessionToken
+}
+
+func (s *Service) resolveUserHubCenterBaseURL(p Principal, explicit string) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(explicit), "/")
+	if baseURL != "" {
+		return baseURL, nil
+	}
+	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	if err != nil {
+		return "", err
+	}
+	baseURL = cfg.AppConfig.ConfiguredHubCenterBaseURL()
+	if baseURL == "" {
+		return "", fmt.Errorf("hubcenter URL is not configured; activate remote HubCenter first")
+	}
+	return baseURL, nil
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {
@@ -544,9 +563,9 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	if email == "" {
 		return nil, fmt.Errorf("email is required")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(in.SkillMarketURL), "/")
-	if baseURL == "" {
-		baseURL = strings.TrimRight(remote.DefaultRemoteHubCenterURL, "/")
+	baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+	if err != nil {
+		return nil, err
 	}
 	snapshot, err := zipDirectoryBytes(dir)
 	if err != nil {
@@ -616,9 +635,9 @@ func (s *Service) GetSkillUploadStatus(ctx context.Context, p Principal, submiss
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		baseURL = strings.TrimRight(remote.DefaultRemoteHubCenterURL, "/")
+	baseURL, err := s.resolveUserHubCenterBaseURL(p, baseURL)
+	if err != nil {
+		return nil, err
 	}
 	return fetchSkillSubmissionStatus(ctx, baseURL, strings.TrimSpace(submissionID))
 }
@@ -628,9 +647,9 @@ func (s *Service) GetSkillMarketAccount(ctx context.Context, p Principal, baseUR
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		baseURL = strings.TrimRight(remote.DefaultRemoteHubCenterURL, "/")
+	baseURL, err := s.resolveUserHubCenterBaseURL(p, baseURL)
+	if err != nil {
+		return nil, err
 	}
 	email = strings.TrimSpace(email)
 	if email == "" {

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ── managed browser process ──
@@ -107,22 +109,22 @@ func DiscoverCDPAddr() (string, error) {
 // Using a separate profile avoids conflicts with the user's running browser
 // (the root cause of "browser exits immediately" failures).
 func debugProfileDir() string {
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		home = os.TempDir()
+	base := corelib.MaclawBaseDir()
+	if base == "" {
+		return filepath.Join(os.TempDir(), "maclaw-chrome-debug-profile")
 	}
-	return filepath.Join(home, ".maclaw-chrome-debug-profile")
+	return filepath.Join(base, "browser-debug-profile")
 }
 
 // persistentProfileDir is the managed MaClaw browser profile. It keeps cookies
 // and login state across automation runs without using the user's daily Chrome
 // profile, which avoids profile locks and unstable CDP target reuse.
 func persistentProfileDir() string {
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		home = os.TempDir()
+	base := corelib.MaclawBaseDir()
+	if base == "" {
+		return filepath.Join(os.TempDir(), "maclaw", "browser-profile")
 	}
-	return filepath.Join(home, ".maclaw", "browser-profile")
+	return filepath.Join(base, "browser-profile")
 }
 
 func browserProfileKind(userDataDir string) string {

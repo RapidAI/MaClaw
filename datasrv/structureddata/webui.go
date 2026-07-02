@@ -304,7 +304,10 @@ const webConsoleHTML = `<!doctype html>
     table { width: 100%; border-collapse: collapse; background: #fff; min-width: 760px; }
     caption { caption-side: top; padding: 9px 10px; text-align: left; color: var(--muted); font-size: 12px; font-weight: 650; background: #fff; border-bottom: 1px solid var(--line-2); }
     th, td { border-bottom: 1px solid var(--line-2); padding: 9px 10px; text-align: left; vertical-align: top; }
-    th { background: #f4f7fa; font-size: 12px; color: #4c5a68; position: sticky; top: 0; z-index: 1; font-weight: 760; }
+    th { background: #f4f7fa; font-size: 12px; color: #4c5a68; position: sticky; top: 0; z-index: 1; font-weight: 760; cursor: pointer; user-select: none; }
+    th:hover { background: #eaeff4; }
+    th[data-sort-dir="asc"]::after { content: " ▲"; font-size: 10px; color: var(--brand); }
+    th[data-sort-dir="desc"]::after { content: " ▼"; font-size: 10px; color: var(--brand); }
     tbody tr:hover { background: #f9fbfc; }
     tr:last-child td { border-bottom: 0; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
@@ -382,6 +385,139 @@ const webConsoleHTML = `<!doctype html>
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
     }
+    /* Toast notification system */
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: grid; gap: 8px; max-width: 420px; pointer-events: none; }
+    .toast { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: start; gap: 0; padding: 0; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(15, 23, 42, .15); pointer-events: auto; overflow: hidden; animation: toast-in .28s ease-out; }
+    .toast-accent { width: 8px; height: 100%; border-radius: 8px 0 0 8px; }
+    .toast.ok .toast-accent { background: var(--ok); }
+    .toast.err .toast-accent { background: var(--danger); }
+    .toast.info .toast-accent { background: var(--accent); }
+    .toast.warn .toast-accent { background: var(--amber); }
+    .toast-body { padding: 12px 14px; min-width: 0; }
+    .toast-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+    .toast-message { color: var(--muted); font-size: 12px; word-break: break-word; max-height: 80px; overflow: hidden; text-overflow: ellipsis; }
+    .toast-close { padding: 10px 12px; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; border: 0; background: 0; font-weight: 700; }
+    .toast-close:hover { color: var(--text); }
+    @keyframes toast-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes toast-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+    .toast.removing { animation: toast-out .2s ease-in forwards; }
+    /* Confirm modal */
+    .modal-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(15, 23, 42, .45); display: grid; place-items: center; backdrop-filter: blur(2px); animation: modal-fade-in .18s ease-out; }
+    .modal-card { width: min(90vw, 440px); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 50px rgba(15, 23, 42, .22); overflow: hidden; animation: modal-scale-in .2s ease-out; }
+    .modal-header { padding: 18px 20px 14px; border-bottom: 1px solid var(--line-2); }
+    .modal-header h3 { margin: 0; font-size: 16px; }
+    .modal-header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; background: var(--panel-2); }
+    @keyframes modal-fade-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes modal-scale-in { from { transform: scale(.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    /* Dataset search */
+    .dataset-search { width: 100%; min-height: 34px; padding: 7px 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); font-size: 12px; }
+    .dataset-search:focus { outline: 2px solid var(--focus); outline-offset: 1px; background: var(--panel); }
+    /* Table row click */
+    table tbody tr.clickable { cursor: pointer; }
+    table tbody tr.clickable:hover { background: var(--brand-soft); }
+    table tbody tr.clickable.selected { background: var(--brand-soft); border-left: 3px solid var(--brand); }
+    /* Loading spinner for buttons */
+    button.is-busy { position: relative; color: transparent !important; }
+    button.is-busy::after { content: ""; position: absolute; inset: 0; margin: auto; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: btn-spin .6s linear infinite; }
+    button.is-busy.primary::after { border-color: rgba(255,255,255,.3); border-top-color: #fff; }
+    @keyframes btn-spin { to { transform: rotate(360deg); } }
+    /* Keyboard shortcut hint */
+    .kbd-hint { display: inline-block; margin-left: 8px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; vertical-align: middle; }
+    /* Inner sub-tabs for complex panels */
+    .sub-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--line-2); margin-bottom: 14px; overflow-x: auto; }
+    .sub-tab { min-height: 36px; padding: 8px 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: 0; color: var(--muted); font-weight: 650; font-size: 13px; margin-bottom: -2px; transition: color .15s, border-color .15s; }
+    .sub-tab:hover { color: var(--text); background: 0; border-color: transparent; }
+    .sub-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+    .sub-panel { display: none; }
+    .sub-panel.active { display: grid; gap: 12px; }
+    /* Collapsible sections */
+    .collapsible-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); cursor: pointer; user-select: none; margin: 8px 0; }
+    .collapsible-header:hover { background: var(--panel-3); }
+    .collapsible-header h3 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; }
+    .collapsible-chevron { transition: transform .2s ease; font-size: 12px; color: var(--muted); }
+    .collapsible-header.open .collapsible-chevron { transform: rotate(180deg); }
+    .collapsible-body { display: none; }
+    .collapsible-body.open { display: grid; gap: 12px; }
+    /* Dark mode */
+    .dark-mode {
+      --bg: #0f1219;
+      --panel: #1a2030;
+      --panel-2: #212b3d;
+      --panel-3: #1e2a36;
+      --line: #2d3a4e;
+      --line-2: #263042;
+      --text: #e2e8f0;
+      --muted: #8b9ab5;
+      --brand: #2dd4bf;
+      --brand-2: #14b8a6;
+      --brand-soft: rgba(45, 212, 191, .1);
+      --accent: #818cf8;
+      --accent-soft: rgba(129, 140, 248, .1);
+      --amber: #fbbf24;
+      --danger: #f87171;
+      --ok: #34d399;
+      --focus: #60a5fa;
+      --nav: #0c1017;
+      --nav-2: #151d2b;
+      --nav-muted: #8b9ab5;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+      --shadow-md: 0 18px 42px rgba(0, 0, 0, .4);
+    }
+    .dark-mode, .dark-mode body { background: linear-gradient(180deg, #111827 0%, var(--bg) 160px); }
+    .dark-mode header { background: rgba(26, 32, 48, .96); border-bottom-color: var(--line); }
+    .dark-mode input, .dark-mode textarea, .dark-mode select { background: var(--panel); color: var(--text); border-color: var(--line); }
+    .dark-mode button { background: var(--panel); color: var(--text); border-color: var(--line); }
+    .dark-mode button:hover { background: var(--panel-2); border-color: #4a5568; }
+    .dark-mode button.primary { background: var(--brand); border-color: var(--brand); color: #0f1219; }
+    .dark-mode button.primary:hover { background: var(--brand-2); }
+    .dark-mode button.danger { border-color: #7f1d1d; color: var(--danger); }
+    .dark-mode button.danger:hover { background: rgba(248, 113, 113, .1); }
+    .dark-mode .readonly { background: #151d2b; color: var(--muted); }
+    .dark-mode table th { background: #151d2b; color: var(--muted); }
+    .dark-mode tbody tr:hover { background: rgba(45, 212, 191, .04); }
+    .dark-mode .result { background: #0a0e14; }
+    .dark-mode .toast { background: var(--panel); border-color: var(--line); }
+    .dark-mode .modal-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .modal-footer { background: var(--panel-2); }
+    .dark-mode .auth-hero { background: #0a0e14; }
+    .dark-mode .auth-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .auth-card-head { background: var(--panel-2); border-bottom-color: var(--line); }
+    .dark-mode .pill { background: #263042; color: #c7d2e0; }
+    .dark-mode .notice { background: rgba(96, 165, 250, .1); border-color: #1e40af; color: #93c5fd; }
+    .dark-mode .empty { background: var(--panel); border-color: var(--line); }
+    .dark-mode .table-wrap { background: var(--panel); border-color: var(--line); }
+    .dark-mode .table-wrap:empty { background: var(--panel-2); }
+    .dark-mode table { background: var(--panel); }
+    .dark-mode .workspace-body { background: var(--bg); }
+    .dark-mode .summary-item { background: var(--panel); border-color: var(--line); box-shadow: inset 3px 0 0 var(--brand-soft); }
+    .dark-mode .dataset-item { background: var(--panel); border-color: var(--line); }
+    .dark-mode .dataset-item.active { background: var(--brand-soft); border-color: var(--brand); }
+    .dark-mode .action-item { background: var(--panel); border-color: var(--line); }
+    .dark-mode .action-item.active { background: var(--brand-soft); border-color: var(--brand); }
+    .dark-mode .overview-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .checklist { background: var(--panel); border-color: var(--line); }
+    .dark-mode .checklist-head { background: var(--panel-2); border-bottom-color: var(--line); }
+    .dark-mode .checklist-item { border-bottom-color: var(--line-2); }
+    .dark-mode th:hover { background: #1e293b; }
+    .dark-mode table tbody tr.clickable:hover { background: rgba(45, 212, 191, .08); }
+    .dark-mode .dataset-search { background: var(--panel); border-color: var(--line); color: var(--text); }
+    .dark-mode .health-item, .dark-mode .risk-item, .dark-mode .queue-item, .dark-mode .integration-item, .dark-mode .coverage-item, .dark-mode .readiness-item, .dark-mode .access-summary-item, .dark-mode .evidence-summary-item { background: var(--panel); border-color: var(--line); }
+    .dark-mode .domain-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .intent-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .admin-panel { background: var(--panel); border-color: var(--line); }
+    .dark-mode .filter-panel { background: var(--panel); border-color: var(--line); }
+    .dark-mode .toolbar-cluster { background: var(--panel-2); border-color: var(--line); }
+    .dark-mode .dataset-create-panel { background: var(--panel); border-color: var(--line); }
+    .dark-mode .access-playbook-card { background: var(--panel); border-color: var(--line); }
+    .dark-mode .sub-tabs { border-bottom-color: var(--line); }
+    .dark-mode .sub-tab { color: var(--muted); }
+    .dark-mode .sub-tab:hover { color: var(--text); }
+    .dark-mode .sub-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+    .dark-mode caption { background: var(--panel); border-bottom-color: var(--line); }
+    /* Dark mode toggle button */
+    .theme-toggle { min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer; }
+    .theme-toggle:hover { color: var(--text); border-color: #4a5568; }
   </style>
 </head>
 <body class="auth-mode">
@@ -464,6 +600,7 @@ const webConsoleHTML = `<!doctype html>
       </div>
     </div>
     <div class="topbar">
+      <button class="theme-toggle" id="themeToggle" data-testid="theme-toggle" aria-label="Toggle dark mode">&#9790; Dark</button>
       <label class="topbar-language">Language<select id="appLanguage" data-testid="app-language-switch"><option value="en">English</option><option value="zh">中文</option></select></label>
       <div class="status" id="appServiceStatus" role="status" aria-live="polite" data-testid="app-service-status">Not connected</div>
       <div class="context-chip" id="sessionTenant">Tenant: default</div>
@@ -595,6 +732,11 @@ const webConsoleHTML = `<!doctype html>
             <button id="refreshOverviewWorkQueue" data-testid="refresh-overview-work-queue">Refresh queue</button>
           </div>
         </section>
+        <div class="collapsible-header" id="overviewDetailsToggle" data-testid="overview-details-toggle">
+          <h3>Monitoring &amp; Governance Details</h3>
+          <span class="collapsible-chevron">&#9660;</span>
+        </div>
+        <div class="collapsible-body" id="overviewDetailsBody">
         <section class="overview-card">
           <h3>Integration Health</h3>
           <p>Connector status, recent failures, and open dead letters.</p>
@@ -633,6 +775,7 @@ const webConsoleHTML = `<!doctype html>
             <button id="refreshOverviewActivity" data-testid="refresh-overview-activity">Refresh activity</button>
           </div>
         </section>
+        </div>
         <div class="overview-grid">
           <section class="overview-card">
             <h3>Daily Operations</h3>
@@ -805,23 +948,43 @@ const webConsoleHTML = `<!doctype html>
         <label class="label">Subscribed actions<textarea id="connectorActions" data-testid="connector-actions" spellcheck="false">["sales.order_upsert"]</textarea></label>
         <label class="label">Config JSON<textarea id="connectorConfig" data-testid="connector-config" spellcheck="false">{}</textarea></label>
         <label class="check"><input id="connectorEnabled" data-testid="connector-enabled" type="checkbox" checked> Enabled</label>
-        <div class="row">
-          <button class="primary" id="saveConnector" data-testid="save-connector">Save connector</button>
-          <button id="testConnector" data-testid="test-connector">Test contract bindings</button>
-          <button id="validateConnectorConfig" data-testid="validate-connector-config">Validate config</button>
-          <button id="checkConnectorReadiness" data-testid="check-connector-readiness">Readiness</button>
-          <button id="checkConnectorHealth" data-testid="check-connector-health">Check health</button>
-          <button id="getConnectorSyncState" data-testid="get-connector-sync-state">Sync state</button>
-          <button id="listConnectorSyncRuns" data-testid="list-connector-sync-runs">Sync runs</button>
-          <button id="markConnectorSyncSuccess" data-testid="mark-connector-sync-success">Mark sync success</button>
-          <button id="planConnectorSync" data-testid="plan-connector-sync">Plan sync</button>
-          <button id="runConnectorSyncBatch" data-testid="run-connector-sync-batch">Run sync batch</button>
-          <button id="suggestConnectorMapping" data-testid="suggest-connector-mapping">Suggest mapping</button>
-          <button id="applySuggestedConnectorMapping" data-testid="apply-suggested-connector-mapping">Use suggestion</button>
-          <button id="saveSuggestedConnectorMapping" data-testid="save-suggested-connector-mapping">Save suggestion</button>
-          <button id="loadConnectorEventTemplate" data-testid="load-connector-event-template">Load event template</button>
-          <button id="previewConnectorEvent" data-testid="preview-connector-event">Preview mapped event</button>
-          <button id="formatConnectorConfig" data-testid="format-connector-config">Format JSON</button>
+        <div class="action-toolbar compact-groups">
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Lifecycle</div>
+            <div class="toolbar-cluster-actions">
+              <button class="primary" id="saveConnector" data-testid="save-connector">Save connector</button>
+              <button id="formatConnectorConfig" data-testid="format-connector-config">Format JSON</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Health</div>
+            <div class="toolbar-cluster-actions">
+              <button id="testConnector" data-testid="test-connector">Test bindings</button>
+              <button id="validateConnectorConfig" data-testid="validate-connector-config">Validate config</button>
+              <button id="checkConnectorReadiness" data-testid="check-connector-readiness">Readiness</button>
+              <button id="checkConnectorHealth" data-testid="check-connector-health">Check health</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Sync</div>
+            <div class="toolbar-cluster-actions">
+              <button id="getConnectorSyncState" data-testid="get-connector-sync-state">Sync state</button>
+              <button id="listConnectorSyncRuns" data-testid="list-connector-sync-runs">Sync runs</button>
+              <button id="markConnectorSyncSuccess" data-testid="mark-connector-sync-success">Mark success</button>
+              <button id="planConnectorSync" data-testid="plan-connector-sync">Plan sync</button>
+              <button id="runConnectorSyncBatch" data-testid="run-connector-sync-batch">Run batch</button>
+            </div>
+          </div>
+          <div class="toolbar-cluster">
+            <div class="toolbar-cluster-title">Mapping</div>
+            <div class="toolbar-cluster-actions">
+              <button id="suggestConnectorMapping" data-testid="suggest-connector-mapping">Suggest</button>
+              <button id="applySuggestedConnectorMapping" data-testid="apply-suggested-connector-mapping">Use suggestion</button>
+              <button id="saveSuggestedConnectorMapping" data-testid="save-suggested-connector-mapping">Save suggestion</button>
+              <button id="loadConnectorEventTemplate" data-testid="load-connector-event-template">Load template</button>
+              <button id="previewConnectorEvent" data-testid="preview-connector-event">Preview event</button>
+            </div>
+          </div>
         </div>
         <div id="connectorSyncRuns" class="table-wrap" data-testid="connector-sync-runs"></div>
       </div>
@@ -993,28 +1156,36 @@ const webConsoleHTML = `<!doctype html>
       </div>
 
       <div id="write" class="tab-panel stack hide">
-        <div class="grid-2">
-          <label class="label">Record ID<input id="recordId" data-testid="record-id" placeholder="Leave blank to create"></label>
-          <label class="label">Title<input id="recordTitle" data-testid="record-title"></label>
+        <div class="sub-tabs" id="writeSubTabs" role="tablist">
+          <button class="sub-tab active" data-subtab="write-record">Record</button>
+          <button class="sub-tab" data-subtab="write-approvals">Approvals</button>
+          <button class="sub-tab" data-subtab="write-bulk">Bulk Operations</button>
+          <button class="sub-tab" data-subtab="write-import">Import</button>
         </div>
-        <label class="label">Tags, comma separated<input id="recordTags" data-testid="record-tags" placeholder="q1, imported"></label>
-        <label class="label">Data JSON<textarea id="recordData" data-testid="record-data" spellcheck="false">{
+        <div class="sub-panel active" id="write-record">
+          <div class="grid-2">
+            <label class="label">Record ID<input id="recordId" data-testid="record-id" placeholder="Leave blank to create"></label>
+            <label class="label">Title<input id="recordTitle" data-testid="record-title"></label>
+          </div>
+          <label class="label">Tags, comma separated<input id="recordTags" data-testid="record-tags" placeholder="q1, imported"></label>
+          <label class="label">Data JSON<textarea id="recordData" data-testid="record-data" spellcheck="false">{
   "customer": "Acme",
   "amount": 8800
 }</textarea></label>
-        <div class="row">
-          <button id="validateRecord" data-testid="validate-record">Validate</button>
-          <button class="primary" id="saveRecord" data-testid="save-record">Save record</button>
-          <button id="newRecord" data-testid="new-record">New record</button>
-          <button id="loadRecordRevisions" data-testid="load-record-revisions">Load revisions</button>
-          <button id="loadRelatedRecords" data-testid="load-related-records">Load related</button>
-          <button id="loadRecordTimeline" data-testid="load-record-timeline">Load timeline</button>
-          <button id="restoreRecord" data-testid="restore-record">Restore deleted</button>
-          <button class="danger" id="deleteRecord" data-testid="delete-record">Delete record</button>
+          <div class="row">
+            <button id="validateRecord" data-testid="validate-record">Validate</button>
+            <button class="primary" id="saveRecord" data-testid="save-record">Save record</button>
+            <button id="newRecord" data-testid="new-record">New record</button>
+            <button id="loadRecordRevisions" data-testid="load-record-revisions">Load revisions</button>
+            <button id="loadRelatedRecords" data-testid="load-related-records">Load related</button>
+            <button id="loadRecordTimeline" data-testid="load-record-timeline">Load timeline</button>
+            <button id="restoreRecord" data-testid="restore-record">Restore deleted</button>
+            <button class="danger" id="deleteRecord" data-testid="delete-record">Delete record</button>
+          </div>
+          <div id="revisionTable" class="table-wrap" data-testid="revision-table"></div>
         </div>
-        <div id="revisionTable" class="table-wrap" data-testid="revision-table"></div>
-        <h3>Approvals</h3>
-        <label class="label">Approval JSON<textarea id="approvalJson" data-testid="approval-json" spellcheck="false">{
+        <div class="sub-panel" id="write-approvals">
+          <label class="label">Approval JSON<textarea id="approvalJson" data-testid="approval-json" spellcheck="false">{
   "kind": "general",
   "priority": "medium",
   "summary": "Approve this business record",
@@ -1022,40 +1193,44 @@ const webConsoleHTML = `<!doctype html>
   "due_at": "",
   "request": {}
 }</textarea></label>
-        <div class="row">
-          <button id="createApproval" data-testid="create-approval">Create approval</button>
-          <button id="refreshApprovals" data-testid="refresh-approvals">Refresh approvals</button>
-          <button id="formatApproval" data-testid="format-approval">Format approval</button>
+          <div class="row">
+            <button id="createApproval" data-testid="create-approval">Create approval</button>
+            <button id="refreshApprovals" data-testid="refresh-approvals">Refresh approvals</button>
+            <button id="formatApproval" data-testid="format-approval">Format approval</button>
+          </div>
+          <div id="approvalTable" class="table-wrap" data-testid="approval-table"></div>
         </div>
-        <div id="approvalTable" class="table-wrap" data-testid="approval-table"></div>
-        <h3>Bulk Update</h3>
-        <label class="label">Bulk update JSON<textarea id="bulkUpdateJson" data-testid="bulk-update-json" spellcheck="false">{
+        <div class="sub-panel" id="write-bulk">
+          <h3>Bulk Update</h3>
+          <label class="label">Bulk update JSON<textarea id="bulkUpdateJson" data-testid="bulk-update-json" spellcheck="false">{
   "query": {"filter":{"field":"stage","op":"eq","value":"draft"},"limit":100},
   "set": {"stage":"confirmed"},
   "unset": [],
   "dry_run": true,
   "reason": "controlled cleanup"
 }</textarea></label>
-        <div class="row">
-          <button id="dryRunBulkUpdate" data-testid="dry-run-bulk-update">Dry-run bulk update</button>
-          <button class="primary" id="runBulkUpdate" data-testid="run-bulk-update">Apply bulk update</button>
-          <button id="formatBulkUpdate" data-testid="format-bulk-update">Format bulk update</button>
-        </div>
-        <div id="bulkUpdateTable" class="table-wrap" data-testid="bulk-update-table"></div>
-        <h3>Bulk Delete</h3>
-        <label class="label">Bulk delete JSON<textarea id="bulkDeleteJson" data-testid="bulk-delete-json" spellcheck="false">{
+          <div class="row">
+            <button id="dryRunBulkUpdate" data-testid="dry-run-bulk-update">Dry-run bulk update</button>
+            <button class="primary" id="runBulkUpdate" data-testid="run-bulk-update">Apply bulk update</button>
+            <button id="formatBulkUpdate" data-testid="format-bulk-update">Format bulk update</button>
+          </div>
+          <div id="bulkUpdateTable" class="table-wrap" data-testid="bulk-update-table"></div>
+          <h3>Bulk Delete</h3>
+          <label class="label">Bulk delete JSON<textarea id="bulkDeleteJson" data-testid="bulk-delete-json" spellcheck="false">{
   "query": {"filter":{"field":"stage","op":"eq","value":"cancelled"},"limit":100},
   "dry_run": true,
   "reason": "controlled cleanup"
 }</textarea></label>
-        <div class="row">
-          <button id="dryRunBulkDelete" data-testid="dry-run-bulk-delete">Dry-run bulk delete</button>
-          <button class="danger" id="runBulkDelete" data-testid="run-bulk-delete">Apply bulk delete</button>
-          <button id="formatBulkDelete" data-testid="format-bulk-delete">Format bulk delete</button>
+          <div class="row">
+            <button id="dryRunBulkDelete" data-testid="dry-run-bulk-delete">Dry-run bulk delete</button>
+            <button class="danger" id="runBulkDelete" data-testid="run-bulk-delete">Apply bulk delete</button>
+            <button id="formatBulkDelete" data-testid="format-bulk-delete">Format bulk delete</button>
+          </div>
+          <div id="bulkDeleteTable" class="table-wrap" data-testid="bulk-delete-table"></div>
         </div>
-        <div id="bulkDeleteTable" class="table-wrap" data-testid="bulk-delete-table"></div>
-        <h3>Batch Import</h3>
-        <label class="label">Records JSON<textarea id="batchRecordsJson" data-testid="batch-records-json" spellcheck="false">[
+        <div class="sub-panel" id="write-import">
+          <h3>Batch Import (JSON)</h3>
+          <label class="label">Records JSON<textarea id="batchRecordsJson" data-testid="batch-records-json" spellcheck="false">[
   {
     "id": "SO-BATCH-1",
     "title": "Batch order",
@@ -1063,30 +1238,31 @@ const webConsoleHTML = `<!doctype html>
     "data": {"customer":"Acme", "amount": 8800}
   }
 ]</textarea></label>
-        <div class="row">
-          <button id="dryRunBatchImport" data-testid="dry-run-batch-import">Dry-run batch</button>
-          <button class="primary" id="runBatchImport" data-testid="run-batch-import">Import batch</button>
-          <button id="startBatchImportJob" data-testid="start-batch-import-job">Start batch job</button>
-          <button id="formatBatchRecords" data-testid="format-batch-records">Format batch</button>
-        </div>
-        <h3>CSV Import</h3>
-        <label class="label">CSV text<textarea id="csvImportText" data-testid="csv-import-text" spellcheck="false">id,order_no,customer,amount,stage
+          <div class="row">
+            <button id="dryRunBatchImport" data-testid="dry-run-batch-import">Dry-run batch</button>
+            <button class="primary" id="runBatchImport" data-testid="run-batch-import">Import batch</button>
+            <button id="startBatchImportJob" data-testid="start-batch-import-job">Start batch job</button>
+            <button id="formatBatchRecords" data-testid="format-batch-records">Format batch</button>
+          </div>
+          <h3>CSV Import</h3>
+          <label class="label">CSV text<textarea id="csvImportText" data-testid="csv-import-text" spellcheck="false">id,order_no,customer,amount,stage
 SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
-        <div class="row">
-          <button id="loadCsvTemplate" data-testid="load-csv-template">Load CSV template</button>
-          <button id="dryRunCsvImport" data-testid="dry-run-csv-import">Dry-run CSV</button>
-          <button class="primary" id="runCsvImport" data-testid="run-csv-import">Import CSV</button>
-          <button id="startCsvImportJob" data-testid="start-csv-import-job">Start CSV job</button>
+          <div class="row">
+            <button id="loadCsvTemplate" data-testid="load-csv-template">Load CSV template</button>
+            <button id="dryRunCsvImport" data-testid="dry-run-csv-import">Dry-run CSV</button>
+            <button class="primary" id="runCsvImport" data-testid="run-csv-import">Import CSV</button>
+            <button id="startCsvImportJob" data-testid="start-csv-import-job">Start CSV job</button>
+          </div>
+          <h3>JSONL Import</h3>
+          <label class="label">JSONL text<textarea id="jsonlImportText" data-testid="jsonl-import-text" spellcheck="false">{"id":"SO-JSONL-1","data":{"order_no":"SO-JSONL-1","customer":"Acme","amount":8800,"stage":"confirmed"}}</textarea></label>
+          <div class="row">
+            <button id="dryRunJsonlImport" data-testid="dry-run-jsonl-import">Dry-run JSONL</button>
+            <button class="primary" id="runJsonlImport" data-testid="run-jsonl-import">Import JSONL</button>
+            <button id="startJsonlImportJob" data-testid="start-jsonl-import-job">Start JSONL job</button>
+            <button id="refreshImportJobs" data-testid="refresh-import-jobs">Refresh jobs</button>
+          </div>
+          <div id="importJobTable" class="table-wrap" data-testid="import-job-table"></div>
         </div>
-        <h3>JSONL Import</h3>
-        <label class="label">JSONL text<textarea id="jsonlImportText" data-testid="jsonl-import-text" spellcheck="false">{"id":"SO-JSONL-1","data":{"order_no":"SO-JSONL-1","customer":"Acme","amount":8800,"stage":"confirmed"}}</textarea></label>
-        <div class="row">
-          <button id="dryRunJsonlImport" data-testid="dry-run-jsonl-import">Dry-run JSONL</button>
-          <button class="primary" id="runJsonlImport" data-testid="run-jsonl-import">Import JSONL</button>
-          <button id="startJsonlImportJob" data-testid="start-jsonl-import-job">Start JSONL job</button>
-          <button id="refreshImportJobs" data-testid="refresh-import-jobs">Refresh jobs</button>
-        </div>
-        <div id="importJobTable" class="table-wrap" data-testid="import-job-table"></div>
       </div>
 
       <div id="backups" class="tab-panel stack hide">
@@ -2248,6 +2424,25 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       ,"applied": "已应用"
       ,"open": "未处理"
       ,"resolved": "已解决"
+      ,"Success": "成功"
+      ,"Error": "错误"
+      ,"Warning": "警告"
+      ,"Info": "提示"
+      ,"Confirm": "确认"
+      ,"Filter datasets...": "筛选数据集..."
+      ,"This will permanently delete the dataset and all its records. This action cannot be undone.": "将永久删除该数据集及其所有记录，此操作不可撤销。"
+      ,"Current data will be replaced with the backup contents. This cannot be undone.": "当前数据将被备份内容替换，此操作不可撤销。"
+      ,"This will reclaim disk space but may take a moment. The database will be briefly locked.": "将回收磁盘空间，期间数据库将短暂锁定。"
+      ,"This will permanently delete all matched records. Run a dry-run first to verify.": "将永久删除所有匹配记录。建议先执行试运行确认。"
+      ,"This record will be permanently deleted.": "该记录将被永久删除。"
+      ,"This will restore the record from the deletion log.": "将从删除日志中恢复该记录。"
+      ,"This will execute the planned operation. Ensure you have reviewed the plan details.": "将执行计划操作，请确认已审查计划详情。"
+      ,"This will update the dataset schema. Existing records will not be modified.": "将更新数据集结构，已有记录不会被修改。"
+      ,"Active sessions for this account will be revoked immediately.": "该账号的活跃会话将立即被撤销。"
+      ,"You may need to sign in again after revoking your own session.": "撤销自己的会话后可能需要重新登录。"
+      ,"This will immediately terminate the administrator session.": "将立即终止该管理员会话。"
+      ,"The old secret will immediately stop working. Save the new secret before closing.": "旧密钥将立即失效。请在关闭前保存新密钥。"
+      ,"This key will no longer authenticate requests.": "该 Key 将无法再用于认证请求。"
     } };
     const chromeZh = {
       "Dataset: none selected": "数据集：未选择",
@@ -2663,13 +2858,16 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       const button = typeof buttonTarget === "string" ? $(buttonTarget) : buttonTarget;
       if (!button) return await work();
       const originalText = button.textContent;
+      const originalHTML = button.innerHTML;
       button.disabled = true;
+      button.classList.add("is-busy");
       button.textContent = translateText(busyText || originalText);
       try {
         return await work();
       } finally {
         button.disabled = false;
-        button.textContent = originalText;
+        button.classList.remove("is-busy");
+        button.innerHTML = originalHTML;
       }
     }
 
@@ -3227,10 +3425,100 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       state.statusHistory.unshift({ text, kind: kind || "info", time: new Date().toLocaleTimeString() });
       state.statusHistory = state.statusHistory.slice(0, 12);
       renderStatusHistory();
+      // Show toast for user-triggered operations (skip initial startup loads for success)
+      if (kind === "err" || (kind === "ok" && state._toastsEnabled)) {
+        toast(text, kind);
+      }
     }
 
     function setRaw(value) {
       $("rawOutput").textContent = JSON.stringify(value, null, 2);
+    }
+
+    // === Toast Notification System ===
+    let toastCounter = 0;
+    const TOAST_MAX_VISIBLE = 5;
+    function toast(message, kind, title) {
+      const container = $("toastContainer");
+      if (!container) return;
+      // Limit max visible toasts — remove oldest if overflow
+      while (container.children.length >= TOAST_MAX_VISIBLE) {
+        const oldest = container.firstElementChild;
+        if (oldest) oldest.remove();
+      }
+      const id = "toast-" + (++toastCounter);
+      const el = document.createElement("div");
+      el.className = "toast " + (kind || "info");
+      el.id = id;
+      el.setAttribute("role", "alert");
+      const displayTitle = title || (kind === "ok" ? "Success" : kind === "err" ? "Error" : kind === "warn" ? "Warning" : "Info");
+      el.innerHTML = "<div class='toast-accent'></div><div class='toast-body'><div class='toast-title'>" + translateText(displayTitle) + "</div><div class='toast-message'>" + escapeHTML(translateText(message)) + "</div></div><button class='toast-close' aria-label='Close'>&times;</button>";
+      el.querySelector(".toast-close").onclick = () => dismissToast(el);
+      container.appendChild(el);
+      setTimeout(() => { if (document.getElementById(id)) dismissToast(el); }, 5000);
+    }
+    function dismissToast(el) {
+      if (el.classList.contains("removing")) return;
+      el.classList.add("removing");
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+    }
+
+    // === Custom Confirm Modal ===
+    function confirmModal(title, description) {
+      return new Promise((resolve) => {
+        const root = $("modalRoot");
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        overlay.innerHTML = "<div class='modal-card' role='dialog' aria-modal='true'><div class='modal-header'><h3>" + escapeHTML(translateText(title)) + "</h3>" + (description ? "<p>" + escapeHTML(translateText(description)) + "</p>" : "") + "</div><div class='modal-footer'><button class='modal-cancel'>" + translateText("Cancel") + "</button><button class='primary modal-confirm'>" + translateText("Confirm") + "</button></div></div>";
+        const cancelBtn = overlay.querySelector(".modal-cancel");
+        const confirmBtn = overlay.querySelector(".modal-confirm");
+        let resolved = false;
+        const cleanup = (result) => { if (resolved) return; resolved = true; overlay.remove(); resolve(result); };
+        cancelBtn.onclick = () => cleanup(false);
+        confirmBtn.onclick = () => cleanup(true);
+        overlay.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") { e.preventDefault(); cleanup(false); }
+          if (e.key === "Enter") { e.preventDefault(); cleanup(true); }
+          // Focus trap: Tab cycles between cancel and confirm
+          if (e.key === "Tab") {
+            e.preventDefault();
+            const focused = document.activeElement;
+            if (focused === confirmBtn) cancelBtn.focus();
+            else confirmBtn.focus();
+          }
+        });
+        overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+        root.appendChild(overlay);
+        confirmBtn.focus();
+      });
+    }
+
+    // === Enhanced setStatus: also trigger toast ===
+
+    // === Dataset search filter ===
+    function initDatasetSearch() {
+      const sidebar = document.querySelector(".resource-sidebar");
+      if (!sidebar) return;
+      const listEl = $("datasetList");
+      if (!listEl) return;
+      let searchInput = $("datasetSearchInput");
+      if (!searchInput) {
+        searchInput = document.createElement("input");
+        searchInput.id = "datasetSearchInput";
+        searchInput.className = "dataset-search";
+        searchInput.placeholder = translateText("Filter datasets...");
+        searchInput.setAttribute("data-testid", "dataset-search-input");
+        listEl.parentNode.insertBefore(searchInput, listEl);
+        searchInput.addEventListener("input", () => filterDatasetList(searchInput.value));
+      }
+    }
+    function filterDatasetList(query) {
+      const q = query.toLowerCase().trim();
+      const items = document.querySelectorAll("#datasetList .dataset-item");
+      items.forEach(item => {
+        const text = (item.textContent || "").toLowerCase();
+        item.style.display = (!q || text.includes(q)) ? "" : "none";
+      });
     }
 
     function requireDataset() {
@@ -4839,6 +5127,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         });
         appendLoadMoreButton(root, state.datasetHasMore && state.datasetNextBeforeID, () => loadDatasets(true));
         updateModuleHeader(activeModuleName());
+        initDatasetSearch();
       }
 
     async function createFromTemplate() {
@@ -4920,7 +5209,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     async function deleteDataset() {
       try {
         const dataset = requireDataset();
-        if (!confirm(confirmText(["Delete dataset", dataset, "and all its records?"]))) return;
+        if (!await confirmModal("Delete dataset: " + dataset, "This will permanently delete the dataset and all its records. This action cannot be undone.")) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset), { method: "DELETE" });
         state.selectedDataset = "";
         state.records = [];
@@ -5110,6 +5399,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         actions.appendChild(edit);
         actions.appendChild(del);
         tr.ondblclick = () => loadRecordToEditor(item);
+        tr.classList.add("clickable");
+        tr.onclick = (e) => { if (e.target.tagName === "BUTTON") return; body.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected")); tr.classList.add("selected"); };
         body.appendChild(tr);
       });
       table.appendChild(head);
@@ -6238,7 +6529,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     async function setAdminAccountEnabled(username, tenantID, enabled, button) {
       if (!username) return;
-      if (!enabled && !confirm(confirmText(["Disable administrator", username + "?", "Active sessions for this account will be revoked."]))) return;
+      if (!enabled && !await confirmModal("Disable administrator: " + username, "Active sessions for this account will be revoked immediately.")) return;
       return await withButtonBusy(button, enabled ? "Enabling" : "Disabling", async () => { try {
         const tenantQuery = tenantID || ($("adminAccountTenant").value || ($("tenant").value.trim() || "default"));
         const out = await api("/api/v1/data/admin/accounts/" + encodeURIComponent(username) + "?tenant=" + encodeURIComponent(tenantQuery), {
@@ -6314,8 +6605,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     async function revokeAdminSession(sessionID, tenantID, current, button) {
       if (!sessionID) return;
-      const prompt = current ? translateText("Revoke your current administrator session? You may need to sign in again.") : confirmText(["Revoke administrator session", sessionID + "?"]);
-      if (!confirm(prompt)) return;
+      const title = current ? "Revoke current session" : "Revoke administrator session: " + sessionID;
+      const desc = current ? "You may need to sign in again after revoking your own session." : "This will immediately terminate the administrator session.";
+      if (!await confirmModal(title, desc)) return;
       return await withButtonBusy(button, "Revoking", async () => { try {
         const tenantQuery = tenantID || ($("tenant").value.trim() || "default");
         const out = await api("/api/v1/data/admin/sessions/" + encodeURIComponent(sessionID) + "?tenant=" + encodeURIComponent(tenantQuery), { method: "DELETE" });
@@ -6459,7 +6751,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function rotateManagedAccessKey(keyID) {
-      if (!keyID || !confirm(confirmText(["Rotate API key", keyID + "?", "The old secret will stop working."]))) return;
+      if (!keyID || !await confirmModal("Rotate API key: " + keyID, "The old secret will immediately stop working. Save the new secret before closing.")) return;
       try {
         const out = await api("/api/v1/data/access/api-keys/" + encodeURIComponent(keyID) + "/rotate", { method: "POST", body: "{}" });
         $("accessKeySecret").classList.remove("hide");
@@ -6876,7 +7168,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function disableManagedAccessKey(keyID) {
-      if (!keyID || !confirm(confirmText(["Disable API key", keyID + "?"]))) return;
+      if (!keyID || !await confirmModal("Disable API key: " + keyID, "This key will no longer authenticate requests.")) return;
       try {
         const out = await api("/api/v1/data/access/api-keys/" + encodeURIComponent(keyID), { method: "DELETE" });
         setRaw(out);
@@ -6889,10 +7181,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     function loadRecordToEditor(item) {
       switchTab("write");
+      // Ensure Record sub-tab is visible
+      activateWriteSubTab("write-record");
       $("recordId").value = item.id || "";
       $("recordTitle").value = item.title || "";
       $("recordTags").value = (item.tags || []).join(", ");
       $("recordData").value = JSON.stringify(item.data || {}, null, 2);
+    }
+
+    function activateWriteSubTab(panelId) {
+      const container = $("writeSubTabs");
+      if (!container) return;
+      container.querySelectorAll(".sub-tab").forEach(t => t.classList.toggle("active", t.dataset.subtab === panelId));
+      const writeTab = document.getElementById("write");
+      if (!writeTab) return;
+      writeTab.querySelectorAll(".sub-panel").forEach(p => p.classList.toggle("active", p.id === panelId));
     }
 
     function clearRecordEditor() {
@@ -6981,7 +7284,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const dataset = requireDataset();
         const body = parseJSONField("schemaProposalJson", { fields: [] });
         body.confirm = true;
-        if (!confirm(confirmText(["Apply schema proposal to", dataset + "?"]))) return;
+        if (!await confirmModal("Apply schema proposal to: " + dataset, "This will update the dataset schema. Existing records will not be modified.")) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/schema-proposals/apply", { method: "POST", body: JSON.stringify(body) });
         await loadFields();
         await loadSchemaProposals(false);
@@ -7051,7 +7354,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const body = parseJSONField("bulkDeleteJson", {});
         body.dry_run = !!dryRun;
         body.confirm = !dryRun;
-        if (!dryRun && !confirm(translateText("Apply bulk delete to matched records?"))) return;
+        if (!dryRun && !await confirmModal("Bulk delete records", "This will permanently delete all matched records. Run a dry-run first to verify.")) return;
         const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/bulk-delete", { method: "POST", body: JSON.stringify(body) });
         renderBulkDeleteResult(result || {});
         setStatus(dryRun ? "Bulk delete dry-run matched: " + (result.total || 0) : "Bulk delete applied: " + (result.deleted || 0), "ok");
@@ -7489,7 +7792,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       try {
         const dataset = requireDataset();
         if (!id) throw new Error("Record ID is required");
-        if (!confirm(confirmText(["Delete record", id + "?"]))) return;
+        if (!await confirmModal("Delete record: " + id, "This record will be permanently deleted.")) return;
         await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/" + encodeURIComponent(id), { method: "DELETE" });
         if ($("recordId").value.trim() === id) clearRecordEditor();
         setStatus("Record deleted", "ok");
@@ -7506,7 +7809,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         const dataset = requireDataset();
         const id = $("recordId").value.trim();
         if (!id) throw new Error("Record ID is required");
-        if (!confirm(confirmText(["Restore deleted record", id + "?"]))) return;
+        if (!await confirmModal("Restore deleted record: " + id, "This will restore the record from the deletion log.")) return;
         const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/" + encodeURIComponent(id) + "/restore", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console restore record" }) });
         loadRecordToEditor(result);
         setStatus("Record restored", "ok");
@@ -7862,7 +8165,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function applyOperationPlan(id) {
-      if (!confirm(confirmText(["Apply operation plan", id + "?"]))) return;
+      if (!await confirmModal("Apply operation plan: " + id, "This will execute the planned operation. Ensure you have reviewed the plan details.")) return;
       try {
         await api("/api/v1/data/operation-plans/" + encodeURIComponent(id) + "/apply", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console apply" }) });
         setStatus("Operation plan applied", "ok");
@@ -8045,7 +8348,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     async function restoreBackup(id) {
-      if (!confirm(confirmText(["Restore backup", id + "?", "Current data will be replaced."]))) return;
+      if (!await confirmModal("Restore backup: " + id, "Current data will be replaced with the backup contents. This cannot be undone.")) return;
       try {
         await api("/api/v1/data/backups/" + encodeURIComponent(id) + "/restore", { method: "POST", body: JSON.stringify({ confirm: true, reason: "web console restore" }) });
         setStatus("Backup restored", "ok");
@@ -8278,7 +8581,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     $("accessKeyLimit").onkeydown = (event) => { if (event.key === "Enter") loadManagedAccessKeys(true); };
     $("runIntegrityCheck").onclick = () => runMaintenance(["integrity_check"]);
     $("runOptimize").onclick = () => runMaintenance(["integrity_check", "optimize"]);
-    $("runVacuum").onclick = () => { if (confirm(translateText("Run VACUUM now?"))) runMaintenance(["integrity_check", "vacuum", "optimize"]); };
+    $("runVacuum").onclick = async () => { if (await confirmModal("Run VACUUM", "This will reclaim disk space but may take a moment. The database will be briefly locked.")) runMaintenance(["integrity_check", "vacuum", "optimize"]); };
     $("tabs").onclick = (event) => { if (event.target.dataset.tab) switchTab(event.target.dataset.tab); };
     $("tabs").onkeydown = handleTabKeydown;
     $("refreshOverview").onclick = async () => { await checkConnection(); await loadOverviewStats(false); await loadOverviewCapabilitiesData(false); await loadOverviewDomains(false); await loadOverviewAccessRisk(false); await loadOverviewWorkQueue(false); await loadOverviewIntegrationHealth(false); await loadOverviewActivity(false); switchTab("overview"); };
@@ -8311,8 +8614,128 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       updateModuleHeader("overview");
     }
     if ($("token").value.trim()) { loadOverviewStats(false); loadOverviewCapabilitiesData(false); loadOverviewDomains(false); loadOverviewAccessRisk(false); loadOverviewWorkQueue(false); loadOverviewIntegrationHealth(false); loadOverviewActivity(false); loadTemplates(); loadBusinessActions(); loadBusinessRules(); loadConnectors(); loadBusinessViews(); loadDashboards(); loadReports(); loadQualityChecks(); loadDatasets(); }
+    // Enable toasts after initial page load settles (suppress startup noise)
+    setTimeout(() => { state._toastsEnabled = true; }, 3000);
+
+    // === Global keyboard shortcuts ===
+    document.addEventListener("keydown", (e) => {
+      // Ctrl+Enter: execute primary action in current tab
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        // Don't trigger if focus is inside a textarea (user may want newline)
+        if (e.target && e.target.tagName === "TEXTAREA") return;
+        e.preventDefault();
+        const activeTab = activeModuleName();
+        const primaryMap = { records: "queryRecords", actions: "executeBusinessAction", write: "saveRecord", backups: "createBackup", quality: "runQualityCheck", events: "ingestEvent", views: "queryBusinessView", reports: "runReport", dashboards: "runDashboard", connectors: "saveConnector", rules: "evaluateRules", domains: "resolveIntent" };
+        const btnId = primaryMap[activeTab];
+        if (btnId && $(btnId) && !$(btnId).disabled) $(btnId).click();
+      }
+      // Escape: close modal (only if modal's own handler hasn't already handled it)
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        const modal = document.querySelector(".modal-overlay");
+        if (modal) { e.preventDefault(); /* Modal's own keydown handler takes care of cleanup */ }
+      }
+    });
+
+    // === Sub-tab navigation (Editor panel) ===
+    document.querySelectorAll(".sub-tabs").forEach(container => {
+      container.onclick = (e) => {
+        const tab = e.target.closest(".sub-tab");
+        if (!tab) return;
+        const targetId = tab.dataset.subtab;
+        if (!targetId) return;
+        container.querySelectorAll(".sub-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        const parent = container.parentElement;
+        parent.querySelectorAll(".sub-panel").forEach(p => p.classList.remove("active"));
+        const target = parent.querySelector("#" + targetId);
+        if (target) target.classList.add("active");
+      };
+    });
+
+    // === JSON textarea auto-validation on blur ===
+    document.querySelectorAll("textarea[spellcheck='false']").forEach(ta => {
+      // Skip non-JSON textareas (CSV, JSONL, plain text fields)
+      const id = ta.id || "";
+      if (id.includes("Csv") || id.includes("csv") || id.includes("Jsonl") || id.includes("jsonl") || id.includes("Handoff") || id.includes("handoff") || id.includes("Packet") || id.includes("packet")) return;
+      ta.addEventListener("blur", () => {
+        const raw = ta.value.trim();
+        if (!raw || raw === "{}" || raw === "[]") { ta.style.borderColor = ""; return; }
+        try {
+          const parsed = JSON.parse(raw);
+          ta.value = JSON.stringify(parsed, null, 2);
+          ta.style.borderColor = "";
+        } catch (e) {
+          ta.style.borderColor = "var(--danger)";
+        }
+      });
+      ta.addEventListener("focus", () => { ta.style.borderColor = ""; });
+    });
+
+    // === Collapsible sections ===
+    document.querySelectorAll(".collapsible-header").forEach(header => {
+      header.onclick = () => {
+        header.classList.toggle("open");
+        const body = header.nextElementSibling;
+        if (body && body.classList.contains("collapsible-body")) {
+          body.classList.toggle("open");
+        }
+      };
+    });
+
+    // === Dark mode toggle ===
+    function applyTheme(dark) {
+      document.documentElement.classList.toggle("dark-mode", dark);
+      const btn = $("themeToggle");
+      if (btn) btn.innerHTML = dark ? "&#9788; Light" : "&#9790; Dark";
+      try { localStorage.setItem("maclaw-data-theme", dark ? "dark" : "light"); } catch (e) {}
+    }
+    (function initTheme() {
+      let pref = null;
+      try { pref = localStorage.getItem("maclaw-data-theme"); } catch (e) {}
+      if (pref === "dark") applyTheme(true);
+      else if (!pref && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) applyTheme(true);
+    })();
+    $("themeToggle").onclick = () => {
+      applyTheme(!document.documentElement.classList.contains("dark-mode"));
+    };
+
+    // === Table column sorting ===
+    document.addEventListener("click", (e) => {
+      const th = e.target.closest("th");
+      if (!th) return;
+      // Skip action columns (contain buttons, not data)
+      const headerText = (th.textContent || "").trim().toLowerCase();
+      if (headerText === "actions" || headerText === "" || headerText === "动作") return;
+      const table = th.closest("table");
+      if (!table) return;
+      const thead = th.closest("thead");
+      if (!thead) return;
+      const colIdx = Array.from(th.parentElement.children).indexOf(th);
+      const tbody = table.querySelector("tbody");
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      if (rows.length < 2) return;
+      // Skip if column cells contain buttons (action column)
+      const sampleCell = rows[0].children[colIdx];
+      if (sampleCell && sampleCell.querySelector("button")) return;
+      const isAsc = th.dataset.sortDir !== "asc";
+      thead.querySelectorAll("th").forEach(h => { delete h.dataset.sortDir; });
+      th.dataset.sortDir = isAsc ? "asc" : "desc";
+      rows.sort((a, b) => {
+        const aText = (a.children[colIdx] && a.children[colIdx].textContent) || "";
+        const bText = (b.children[colIdx] && b.children[colIdx].textContent) || "";
+        const aNum = parseFloat(aText);
+        const bNum = parseFloat(bText);
+        if (!isNaN(aNum) && !isNaN(bNum)) return isAsc ? aNum - bNum : bNum - aNum;
+        return isAsc ? aText.localeCompare(bText) : bText.localeCompare(aText);
+      });
+      rows.forEach(row => tbody.appendChild(row));
+    });
+
     refreshSetupStatus();
     publicApi("/readyz").then(data => { state.ready = data || {}; updateAdminSummary(); setStatus("Service online: " + data.engine + " schema " + data.schema_version, "ok"); }).catch(() => setStatus("Service is not ready", "err"));
   </script>
+  <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="false"></div>
+  <div id="modalRoot"></div>
 </body>
 </html>`

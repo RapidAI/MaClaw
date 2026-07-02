@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -23,6 +23,7 @@ import type { HistoryDiscussionSummary } from './components/layout/SidebarHistor
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
+import { readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
@@ -410,6 +411,10 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
+    const openMISDataSettings = useCallback(() => {
+        setNavTabNow('settings');
+        setSettingsTab('misData');
+    }, [setNavTabNow]);
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
@@ -832,6 +837,13 @@ function App() {
     const handleAIDarkSchemeChange = useCallback((schemeId: AssistantDarkSchemeId) => {
         setAIDarkSchemeId(schemeId);
         writeStoredAssistantDarkSchemeId(schemeId);
+    }, []);
+    const [aiLightSchemeId, setAILightSchemeId] = useState<AssistantLightSchemeId>(() => {
+        return readStoredAssistantLightSchemeId();
+    });
+    const handleAILightSchemeChange = useCallback((schemeId: AssistantLightSchemeId) => {
+        setAILightSchemeId(schemeId);
+        writeStoredAssistantLightSchemeId(schemeId);
     }, []);
     // macOS / Windows 11: OS provides native rounded corners for the window.
     // When true, CSS border-radius/border/box-shadow on #App are removed.
@@ -1310,9 +1322,16 @@ function App() {
                 setShowLogs(true);
             }
         };
-        const doneHandler = () => {
+        const doneHandler = async () => {
             logStartupTrace('env-check-done-received');
-            void callBackend(() => ResizeWindow(1156, 739));
+            try {
+                const size: any = await callBackend(() => GetAdaptiveWindowSize());
+                const w = size?.width || 1360;
+                const h = size?.height || 850;
+                await callBackend(() => ResizeWindow(w, h));
+            } catch {
+                await callBackend(() => ResizeWindow(1360, 850));
+            }
             setIsLoading(false);
             setIsManualCheck(false);
         };
@@ -2823,7 +2842,8 @@ function App() {
     };
 
     const openRemoteActivationModal = (toolName: string) => {
-        const nextHubCenterURL = config?.remote_hubcenter_url || "";
+        const configuredHubCenterURL = config?.remote_hubcenter_url || "";
+        const nextHubCenterURL = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i.test(configuredHubCenterURL) ? "" : configuredHubCenterURL;
         const nextEmail = config?.remote_email || "";
         setPendingRemoteLaunchTool(toolName);
         setRemoteActivationDraft({
@@ -2881,12 +2901,13 @@ function App() {
         const hubURL = remoteActivationDraft.hub_url.trim();
         const hubID = remoteActivationDraft.hub_id.trim();
         const hubCenterURL = remoteActivationDraft.hubcenter_url.trim();
+        const safeHubCenterURL = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i.test(hubCenterURL) ? "" : hubCenterURL;
         const email = remoteActivationDraft.email.trim();
         const newConfig = new main.AppConfig({
             ...config,
             remote_hub_id: hubID,
             remote_hub_url: hubURL,
-            remote_hubcenter_url: hubCenterURL,
+            remote_hubcenter_url: safeHubCenterURL,
             remote_email: email,
             remote_enabled: true,
         });
@@ -2894,7 +2915,7 @@ function App() {
         const saved = await callBackend(() => PatchConfigFields({
             remote_hub_id: hubID,
             remote_hub_url: hubURL,
-            remote_hubcenter_url: hubCenterURL,
+            remote_hubcenter_url: safeHubCenterURL,
             remote_email: email,
             remote_enabled: true,
         }));
@@ -3040,7 +3061,7 @@ ${instruction}`;
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
-            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
+            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
                 <div className="app-loading-drag-zone" />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
@@ -3138,12 +3159,13 @@ ${instruction}`;
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
+                aiLightSchemeId={aiLightSchemeId}
                 brandInfo={brandInfo}
                 currentIcon={currentIcon}
                 brandSidebarName={brandSidebarName}
@@ -3218,7 +3240,7 @@ ${instruction}`;
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
             />
-            <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
+            <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
                 <Suspense fallback={null}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
@@ -3229,6 +3251,7 @@ ${instruction}`;
                             chatFontSize={chatFontSize}
                             themeMode={aiThemeMode}
                             darkSchemeId={aiDarkSchemeId}
+                            lightSchemeId={aiLightSchemeId}
                             onThemeModeChange={setAIThemeMode}
                             audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
                             audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
@@ -3351,7 +3374,7 @@ ${instruction}`;
                     {showAppEntryEnabled && (
                         <div style={{ display: navTab === 'apps' ? undefined : 'none', height: '100%', minHeight: 0 }} hidden={navTab !== 'apps'}>
                             <Suspense fallback={null}>
-                                <AppsPage lang={lang} />
+                                <AppsPage lang={lang} onOpenMISDataSettings={openMISDataSettings} />
                             </Suspense>
                         </div>
                     )}
@@ -3544,6 +3567,8 @@ ${instruction}`;
                                     setChatFontSize={setChatFontSize}
                                     darkSchemeId={aiDarkSchemeId}
                                     setDarkSchemeId={handleAIDarkSchemeChange}
+                                    lightSchemeId={aiLightSchemeId}
+                                    setLightSchemeId={handleAILightSchemeChange}
                                 />
                             </div>
 
@@ -3607,7 +3632,7 @@ ${instruction}`;
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
                         <div className="coding-launch-panel wails-no-drag">
                             <div className="coding-launch-meta-row">
                                 <div className="coding-launch-summary">

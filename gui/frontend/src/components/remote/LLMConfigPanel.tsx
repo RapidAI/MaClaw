@@ -26,6 +26,7 @@ import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent } from "./userAgent";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
 
 interface Props {
     lang?: string;
@@ -62,6 +63,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
     const [providerModelListOpen, setProviderModelListOpen] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [qrDialogOpen, setQrDialogOpen] = useState(false);
     const loadSeqRef = useRef(0);
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
@@ -523,12 +525,20 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         "选择大模型服务商（支持 OpenAI / Anthropic 协议）"
                     )}
                 </p>
-                <button className="llm-config-primary-action" onClick={openDialog} style={{
-                    fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                    background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4, flexShrink: 0, marginLeft: 12,
-                }}>
-                    {t("Configure", "配置")}
-                </button>
+                <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} style={{
+                        fontSize: "0.76rem", padding: "6px 14px", cursor: "pointer",
+                        background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
+                    }}>
+                        {t("Mobile QR", "移动端二维码")}
+                    </button>
+                    <button className="llm-config-primary-action" onClick={openDialog} style={{
+                        fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
+                        background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
+                    }}>
+                        {t("Configure", "配置")}
+                    </button>
+                </div>
             </div>
 
             {/* Current provider summary */}
@@ -1179,6 +1189,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     </div>
                 </div>
             )}
+
+            {/* Mobile QR Code Dialog */}
+            <MobileQRCodeDialog
+                open={qrDialogOpen}
+                onClose={() => setQrDialogOpen(false)}
+                providers={providers}
+                currentName={currentName}
+                lang={lang}
+            />
         </div>
     );
 }

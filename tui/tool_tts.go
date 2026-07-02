@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
@@ -84,12 +85,11 @@ func initTUITTSManager() *tts.Manager {
 }
 
 // embeddingModelsDir returns the directory for embedding/TTS models.
-// Shared with GUI: ~/.maclaw/models/
+// Shared with GUI: <MaclawBaseDir>/models/
 func embeddingModelsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	dir := embedding.DefaultModelsDir()
+	if dir == "" {
+		return "", fmt.Errorf("cannot determine models directory")
 	}
-	dir := filepath.Join(home, ".maclaw", "models")
 	return dir, os.MkdirAll(dir, 0o755)
 }

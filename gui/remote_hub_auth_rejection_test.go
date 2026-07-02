@@ -18,16 +18,6 @@ func TestIsDefinitiveAuthRejection(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "code not_found (exact)",
-			payload:  map[string]string{"code": "not_found"},
-			expected: true,
-		},
-		{
-			name:     "code forbidden (exact)",
-			payload:  map[string]string{"code": "forbidden"},
-			expected: true,
-		},
-		{
 			name:     "message machine not found",
 			payload:  map[string]string{"message": "machine not found"},
 			expected: true,
@@ -112,6 +102,16 @@ func TestIsDefinitiveAuthRejection(t *testing.T) {
 		{
 			name:     "unparseable payload",
 			payload:  "not a json object",
+			expected: false,
+		},
+		{
+			name:     "code not_found alone",
+			payload:  map[string]string{"code": "not_found"},
+			expected: false,
+		},
+		{
+			name:     "code forbidden alone",
+			payload:  map[string]string{"code": "forbidden"},
 			expected: false,
 		},
 		{

@@ -16,32 +16,28 @@ import (
 
 // MigrateSkillsDir is a no-op kept for backward compatibility.
 // The old ~/.maclaw/skills path is no longer supported.
-// Skills live exclusively in ~/.maclaw/data/skills.
+// Skills live exclusively in <MaclawBaseDir>/data/skills.
 func MigrateSkillsDir() {}
 
 // SkillScanRoots returns all directories that should be scanned for
 // file-based skills, in priority order (first wins on name conflict):
-//  1. ~/.maclaw/data/skills  (canonical location)
+//  1. <MaclawBaseDir>/data/skills  (canonical location)
 //  2. ~/.agents/skills
 func SkillScanRoots() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return []string{filepath.Join(corelib.MaclawBaseDir(), "data", "skills")}
 	}
 	return []string{
-		filepath.Join(home, ".maclaw", "data", "skills"),
+		filepath.Join(corelib.MaclawBaseDir(), "data", "skills"),
 		filepath.Join(home, ".agents", "skills"),
 	}
 }
 
-// PrimarySkillsDir returns the canonical skills directory (~/.maclaw/data/skills).
+// PrimarySkillsDir returns the canonical skills directory (<MaclawBaseDir>/data/skills).
 // Callers that need to write new skills should use this path.
 func PrimarySkillsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	return filepath.Join(home, ".maclaw", "data", "skills"), nil
+	return filepath.Join(corelib.MaclawBaseDir(), "data", "skills"), nil
 }
 
 // IsUnderSkillsRoot reports whether the given path is a subdirectory of any
@@ -197,6 +193,7 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
 	Name             string               `yaml:"name"`
+	Version          string               `yaml:"version,omitempty"`
 	Description      string               `yaml:"description"`
 	Triggers         []string             `yaml:"triggers"`
 	Steps            []SkillYAMLStep      `yaml:"steps"`
@@ -334,7 +331,7 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 	}
 	applySkillYAMLCompatibility(&sf, normalizedRaw)
 	knownKeys := map[string]bool{
-		"name": true, "description": true, "triggers": true, "steps": true,
+		"name": true, "version": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
 		"shell": true, "mode": true, "operations": true, "params": true,
@@ -1432,6 +1429,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Steps:                   steps,
 			Status:                  status,
 			Source:                  "file",
+			HubVersion:              strings.TrimSpace(sf.Version),
 			Platforms:               sf.Platforms,
 			RequiresGUI:             sf.RequiresGUI,
 			Mode:                    sf.Mode,
@@ -1771,6 +1769,10 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 
 	var result []corelib.NLSkillEntry
 	for _, entry := range entries {
+		// Skip .prev backup directories (created by CommitStaging during updates).
+		if strings.HasSuffix(entry.Name(), ".prev") {
+			continue
+		}
 		info, err := os.Stat(filepath.Join(root, entry.Name()))
 		if err != nil {
 			log.Printf("[skill-scanner] skip %s/%s: %v", root, entry.Name(), err)

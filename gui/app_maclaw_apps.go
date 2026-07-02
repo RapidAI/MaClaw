@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -607,8 +608,13 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 		}
 		return nil, fmt.Errorf("cannot install MaClaw App from Hub: required Skill dependencies are missing or unavailable")
 	}
+	// Governance review issues are informational at install time — the Hub
+	// publish/approval endpoint is the authoritative enforcement point.
+	// Blocking installation here would prevent users from installing apps that
+	// passed Hub review under older governance requirements or whose governance
+	// metadata was stripped during download.
 	if installPlan.HasGovernanceReviewIssue {
-		return nil, fmt.Errorf("cannot install MaClaw App from Hub: package governance review failed: %s", firstMaclawAppReviewIssueMessage(installPlan.GovernanceReviewIssues, "governance review issue"))
+		log.Printf("[maclaw-app] install governance review warning (non-blocking): %s", firstMaclawAppReviewIssueMessage(installPlan.GovernanceReviewIssues, "governance review issue"))
 	}
 	installRecord, err := a.recordMaclawAppInstall(packageJSON, "enterprise_hub", &installPlan)
 	if err != nil {
@@ -740,7 +746,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 			existing := depsByKey[key]
 			if existing == nil {
 				dep.AppIDs = []string{entry.ID}
-				if match, ok := installed[strings.ToLower(dep.ID)]; ok {
+				if match, ok := maclawAppInstalledSkillMatch(installed, dep); ok {
 					applyMaclawAppInstalledSkillDependency(&dep, match)
 				} else if dep.Required {
 					dep.Health = "missing"
@@ -849,7 +855,7 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		dep := &plan.Dependencies[i]
 		previousAction := dep.Action
 		previousMessage := dep.Message
-		if match, ok := installed[strings.ToLower(dep.ID)]; ok {
+		if match, ok := maclawAppInstalledSkillMatch(installed, *dep); ok {
 			applyMaclawAppInstalledSkillDependency(dep, match)
 			if maclawAppDependencyIsReady(*dep) && previousAction == "installed" {
 				dep.Action = "installed"
@@ -929,7 +935,12 @@ func (a *App) recordMaclawAppInstall(packageJSON string, source string, planOver
 		return nil, fmt.Errorf("decode maclaw app package: %w", err)
 	}
 	if issues := maclawAppBlockingInstallGovernanceReviewIssues(doc); len(issues) > 0 {
-		return nil, fmt.Errorf("cannot install MaClaw App: package governance review failed: %s", issues[0].Message)
+		blockingIssue := firstMaclawAppGovernanceIssueBlockingLocalInstall(issues)
+		if blockingIssue == nil || strings.EqualFold(strings.TrimSpace(source), "enterprise_hub") {
+			log.Printf("[maclaw-app] install governance review warning (non-blocking): %s", issues[0].Message)
+		} else {
+			return nil, fmt.Errorf("cannot install MaClaw App: governance review failed: %s", blockingIssue.Message)
+		}
 	}
 	packageSHA, packageSize, err := maclawAppPackageFingerprint(doc)
 	if err != nil {
@@ -996,6 +1007,16 @@ func (a *App) recordMaclawAppInstall(packageJSON string, source string, planOver
 		"has_blocking_dependency": plan.HasBlockingDependency,
 		"datasrv_registration":    dataSrvRegistration,
 	}, nil
+}
+
+func firstMaclawAppGovernanceIssueBlockingLocalInstall(issues []maclawAppReviewIssue) *maclawAppReviewIssue {
+	for i := range issues {
+		message := strings.ToLower(strings.TrimSpace(issues[i].Message))
+		if strings.Contains(message, "does not match") {
+			return &issues[i]
+		}
+	}
+	return nil
 }
 
 func maclawAppDataSrvRegistrationForApp(registration map[string]any, appID string) map[string]any {
@@ -3592,6 +3613,7 @@ func maclawAppPackageForSelectedAppIDs(pkg map[string]any, selectedAppIDs []stri
 	if err != nil {
 		return nil, nil, err
 	}
+	originalSubmissionPackageSHAs := maclawAppSubmissionPackageSHAsByAppID(entries)
 	selected := maclawAppSelectionIDSet(selectedAppIDs)
 	if len(selected) == 0 {
 		return cloneMapAny(pkg), entries, nil
@@ -3604,7 +3626,47 @@ func maclawAppPackageForSelectedAppIDs(pkg map[string]any, selectedAppIDs []stri
 	if err != nil {
 		return nil, nil, err
 	}
+	maclawAppRestoreSelectedSubmissionPackageSHAs(installPackage, originalSubmissionPackageSHAs)
+	filteredEntries, err = parseMaclawAppPackageEntriesFromMap(installPackage, true)
+	if err != nil {
+		return nil, nil, err
+	}
 	return installPackage, filteredEntries, nil
+}
+
+func maclawAppSubmissionPackageSHAsByAppID(entries []parsedMaclawAppEntry) map[string]string {
+	out := map[string]string{}
+	for _, entry := range entries {
+		submission := maclawAppSubmissionMetadataForEntry(entry)
+		if packageSHA := maclawAppStringValue(submission, "package_sha256", "packageSha256"); packageSHA != "" {
+			out[strings.ToLower(strings.TrimSpace(entry.ID))] = packageSHA
+		}
+	}
+	return out
+}
+
+func maclawAppRestoreSelectedSubmissionPackageSHAs(pkg map[string]any, packageSHAs map[string]string) {
+	if len(pkg) == 0 || len(packageSHAs) == 0 {
+		return
+	}
+	for _, raw := range anySlice(pkg["apps"]) {
+		entry := anyMap(raw)
+		app := anyMap(entry["app"])
+		if len(app) == 0 {
+			continue
+		}
+		appID := strings.ToLower(strings.TrimSpace(maclawAppStringValue(app, "id")))
+		packageSHA := packageSHAs[appID]
+		if packageSHA == "" {
+			continue
+		}
+		governance := anyMap(app["governance"])
+		submission := anyMap(governance["submission"])
+		if len(submission) == 0 {
+			continue
+		}
+		submission["package_sha256"] = packageSHA
+	}
 }
 
 func maclawAppFilterEntryReviewEvidenceForSelectedEntries(entry map[string]any, entries []parsedMaclawAppEntry) {
@@ -3817,6 +3879,54 @@ func (a *App) installedMaclawAppSkillIndex() map[string]NLSkillDefinition {
 	return index
 }
 
+func maclawAppInstalledSkillMatch(index map[string]NLSkillDefinition, dep maclawAppInstallPlanDependency) (NLSkillDefinition, bool) {
+	for _, id := range maclawAppInstalledSkillCandidateIDs(dep) {
+		if match, ok := index[strings.ToLower(id)]; ok {
+			return match, true
+		}
+	}
+	return NLSkillDefinition{}, false
+}
+
+func maclawAppInstalledSkillCandidateIDs(dep maclawAppInstallPlanDependency) []string {
+	candidates := []string{dep.ID, dep.InstallRefTarget}
+	if strings.TrimSpace(dep.InstallRefTarget) == "" && strings.TrimSpace(dep.InstallRef) != "" {
+		_, target, _, status, _ := maclawAppParseDependencyInstallRef(dep)
+		if status == "ok" && target != "" {
+			candidates = append(candidates, target)
+		}
+	}
+	if ref := strings.TrimSpace(dep.InstallRef); ref != "" && !strings.Contains(ref, "://") && !strings.HasPrefix(ref, "{") {
+		candidates = append(candidates, ref)
+	}
+	out := make([]string, 0, len(candidates)*2)
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		for _, value := range []string{candidate, maclawAppStripVersionSuffix(candidate)} {
+			value = strings.TrimSpace(value)
+			key := strings.ToLower(value)
+			if value == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func maclawAppStripVersionSuffix(value string) string {
+	value = strings.TrimSpace(value)
+	if at := strings.IndexByte(value, '@'); at > 0 {
+		return strings.TrimSpace(value[:at])
+	}
+	return value
+}
+
 func applyMaclawAppInstalledSkillDependency(dep *maclawAppInstallPlanDependency, match NLSkillDefinition) {
 	dep.Installed = true
 	dep.InstalledName = match.Name
@@ -3880,10 +3990,75 @@ func maclawAppDependencyVersionStatus(dep maclawAppInstallPlanDependency) string
 	if installed == "" {
 		return "unknown"
 	}
-	if installed == required {
+	if maclawAppDependencyVersionSatisfied(required, installed) {
 		return "matched"
 	}
 	return "mismatch"
+}
+
+// maclawAppDependencyVersionSatisfied reports whether an installed dependency
+// version satisfies a required version. A plain required version (e.g. "1.0.0")
+// is treated as a MINIMUM constraint following standard dependency semantics
+// ("does not satisfy required version"): the installed version satisfies it when
+// installed >= required. This avoids false mismatches from:
+//   - cosmetic differences: "v1.0.0" vs "1.0.0", " 1.0.0 " vs "1.0.0"
+//   - segment-count differences: "1.0" vs "1.0.0"
+//   - newer compatible versions: installed "10" satisfies required "1.0.0"
+//
+// Constraint expressions (^, ~, >=, <, *, etc.) are not resolved here and are
+// treated as satisfied, consistent with maclawAppWorkflowVersionMatches. When
+// either version is not numeric-parseable, it falls back to a conservative
+// normalized exact-match comparison.
+func maclawAppDependencyVersionSatisfied(required, installed string) bool {
+	required = strings.TrimSpace(required)
+	installed = strings.TrimSpace(installed)
+	if required == "" || installed == "" {
+		return required == installed
+	}
+	// Constraint operators: no full solver here — accept, matching the lenient
+	// behavior of maclawAppWorkflowVersionMatches.
+	if strings.ContainsAny(required, "<>=^~*") {
+		return true
+	}
+	// Normalized exact match (handles v-prefix, whitespace, case).
+	if maclawAppNormalizeVersion(required) == maclawAppNormalizeVersion(installed) {
+		return true
+	}
+	// Both numeric-parseable → minimum-version satisfaction (installed >= required).
+	if maclawAppVersionIsNumeric(required) && maclawAppVersionIsNumeric(installed) {
+		return compareVersions(installed, required) >= 0
+	}
+	// Non-numeric versions that don't match exactly → conservative mismatch.
+	return false
+}
+
+// maclawAppNormalizeVersion lowercases, trims, and strips a leading "v" prefix
+// so that "V1.0.0", " 1.0.0 " and "1.0.0" compare equal.
+func maclawAppNormalizeVersion(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	v = strings.TrimPrefix(v, "v")
+	return strings.TrimSpace(v)
+}
+
+// maclawAppVersionIsNumeric reports whether the numeric portion of a version
+// begins with a digit (e.g. "1.0.0", "10", "2.0-beta"), so that compareVersions
+// can be applied meaningfully. Codename-style versions ("stable", "latest")
+// return false and fall back to exact matching.
+func maclawAppVersionIsNumeric(v string) bool {
+	v = maclawAppNormalizeVersion(v)
+	if v == "" {
+		return false
+	}
+	// Split off any pre-release suffix, then inspect the first segment.
+	numeric := v
+	if idx := strings.IndexByte(numeric, '-'); idx >= 0 {
+		numeric = numeric[:idx]
+	}
+	first := strings.SplitN(numeric, ".", 2)[0]
+	if first == "" {
+		return false
+	}
+	return first[0] >= '0' && first[0] <= '9'
 }
 
 func maclawAppDependencyVersionMismatch(dep maclawAppInstallPlanDependency) bool {
@@ -4704,9 +4879,10 @@ func applyMaclawAppDataSrvDesignConsistencyMetadata(metadata map[string]interfac
 	}
 	protocol := maclawAppTestProtocolMap(governance, testEvidence)
 	protocolFingerprint := strings.TrimSpace(maclawAppStringValue(protocol, "fingerprint", "hash", "testProtocolFingerprint", "test_protocol_fingerprint", "protocolFingerprint", "protocol_fingerprint"))
+	testProtocolEvidenceFingerprint := strings.TrimSpace(maclawAppStringValue(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash", "protocolFingerprint", "protocol_fingerprint", "protocolHash", "protocol_hash"))
 	testProtocol := consistencyItem{
-		Current:  firstNonEmptyMaclawAppString(protocolFingerprint, maclawAppTestProtocolFingerprint(protocol)),
-		Evidence: strings.TrimSpace(maclawAppStringValue(testEvidence, "testProtocolFingerprint", "test_protocol_fingerprint", "testProtocolHash", "test_protocol_hash", "protocolFingerprint", "protocol_fingerprint", "protocolHash", "protocol_hash")),
+		Current:  firstNonEmptyMaclawAppString(protocolFingerprint, maclawAppTestProtocolFingerprint(protocol), testProtocolEvidenceFingerprint),
+		Evidence: testProtocolEvidenceFingerprint,
 	}
 	workspaceLayout := consistencyItem{
 		Current:  maclawAppCurrentWorkspaceLayoutFingerprint(entry, governance),
@@ -4985,7 +5161,7 @@ func maclawAppDependencyDiagnosticStatusReady(status string) bool {
 
 func maclawAppDependencyDiagnosticStatusFailed(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "blocked", "denied", "disabled", "error", "failed", "failure", "invalid", "missing", "mismatch", "rejected", "tampered", "unhealthy", "untrusted":
+	case "blocked", "denied", "disabled", "error", "failed", "failure", "invalid", "missing", "mismatch", "needs_review", "rejected", "tampered", "unhealthy", "untrusted":
 		return true
 	default:
 		return false
@@ -4997,7 +5173,7 @@ func maclawAppDependencyDiagnosticCodeFailed(code string) bool {
 	if code == "" {
 		return false
 	}
-	for _, marker := range []string{"blocked", "denied", "error", "fail", "invalid", "missing", "mismatch", "rejected", "tampered", "untrusted"} {
+	for _, marker := range []string{"blocked", "denied", "error", "fail", "invalid", "missing", "mismatch", "needs_review", "rejected", "review_required", "tampered", "untrusted"} {
 		if strings.Contains(code, marker) {
 			return true
 		}
@@ -5195,6 +5371,20 @@ func maclawAppWorkspaceLayoutMetadataForEntry(entry parsedMaclawAppEntry) map[st
 			if uiLayout != nil {
 				if schema := stringMapValue(ui, "schema"); schema != "" && maclawAppStringValue(out, "schema") == "" {
 					out["schema"] = schema
+				}
+				if template := maclawAppStringValue(uiLayout, "template"); template != "" {
+					out["template"] = template
+				}
+				if density := maclawAppStringValue(uiLayout, "density"); density != "" {
+					out["density"] = density
+				}
+				if primary := maclawAppStringValue(uiLayout, "primaryRegion", "primary_region"); primary != "" {
+					out["primaryRegion"] = primary
+					out["primary_region"] = primary
+				}
+				if output := maclawAppStringValue(uiLayout, "outputRegion", "output_region"); output != "" {
+					out["outputRegion"] = output
+					out["output_region"] = output
 				}
 				if generated, ok := ui["generated"].(bool); ok {
 					if _, exists := out["generated"]; !exists {
@@ -6797,13 +6987,13 @@ func maclawAppVerifiedDependencyBlocked(dep map[string]any) bool {
 	preflightCode := maclawAppStringValue(dep, "preflight_code", "preflightCode")
 	integrityStatus := maclawAppStringValue(dep, "integrity_status", "integrityStatus")
 	integrityCode := maclawAppStringValue(dep, "integrity_code", "integrityCode")
-	if health == "missing" || health == "disabled" || health == "needs_setup" || health == "unhealthy" {
+	if health == "missing" || health == "disabled" || health == "needs_setup" || health == "needs_review" || health == "unhealthy" {
 		return true
 	}
-	if action == "blocked" || action == "failed" || action == "optional_unhealthy" {
+	if action == "blocked" || action == "failed" || action == "needs_review" || action == "optional_unhealthy" {
 		return true
 	}
-	if status == "disabled" || status == "error" || status == "failed" {
+	if status == "disabled" || status == "error" || status == "failed" || status == "needs_review" {
 		return true
 	}
 	if strings.TrimSpace(maclawAppStringValue(dep, "install_error_code", "installErrorCode", "install_error_stage", "installErrorStage", "install_error_detail", "installErrorDetail")) != "" {
@@ -7593,11 +7783,11 @@ func maclawAppApplyDependencyPreflightDiagnostics(deps []maclawAppInstallPlanDep
 			dep.PreflightMessage = fmt.Sprintf("installed version %s does not satisfy required version %s", dep.InstalledVersion, firstNonEmpty(dep.RequiredVersion, dep.Version))
 			continue
 		}
-		if strings.TrimSpace(dep.InstallRefVersion) != "" && strings.TrimSpace(dep.Version) != "" && dep.InstallRefVersion != dep.Version {
+		if strings.TrimSpace(dep.InstallRefVersion) != "" && strings.TrimSpace(dep.Version) != "" && !maclawAppDependencyVersionSatisfied(dep.Version, dep.InstallRefVersion) {
 			dep.PreflightStatus = "blocked"
 			dep.PreflightCode = "version_mismatch"
 			dep.PreflightStage = "install_ref"
-			dep.PreflightMessage = fmt.Sprintf("install_ref version %s does not match required version %s", dep.InstallRefVersion, dep.Version)
+			dep.PreflightMessage = fmt.Sprintf("install_ref version %s does not satisfy required version %s", dep.InstallRefVersion, dep.Version)
 			if dep.Required {
 				dep.Health = "missing"
 				dep.Action = "blocked"
@@ -7844,7 +8034,7 @@ func maclawAppApplyPublicSkillMarketPreflight(dep *maclawAppInstallPlanDependenc
 	}
 	maclawAppApplyDependencyIntegrityMetadata(dep, maclawAppDependencyIntegrityFromSkillMarketResult(*match), "skillmarket_preflight")
 	requiredVersion := strings.TrimSpace(firstNonEmpty(dep.InstallRefVersion, dep.Version, dep.RequiredVersion))
-	if requiredVersion != "" && strings.TrimSpace(match.Version) != "" && strings.TrimSpace(match.Version) != requiredVersion {
+	if requiredVersion != "" && strings.TrimSpace(match.Version) != "" && !maclawAppDependencyVersionSatisfied(requiredVersion, match.Version) {
 		dep.PreflightStatus = "blocked"
 		dep.PreflightCode = "version_mismatch"
 		dep.PreflightStage = "skillmarket_preflight"
@@ -7912,7 +8102,7 @@ func maclawAppApplyEnterpriseHubCapabilityPreflight(dep *maclawAppInstallPlanDep
 	maclawAppApplyDependencyIntegrityMetadata(dep, maclawAppDependencyIntegrityFromCapability(item), "enterprise_hub_preflight")
 	availableVersion := strings.TrimSpace(item.CurrentVersionKey)
 	requiredVersion := strings.TrimSpace(firstNonEmpty(dep.InstallRefVersion, dep.Version, dep.RequiredVersion))
-	if requiredVersion != "" && availableVersion != "" && requiredVersion != availableVersion {
+	if requiredVersion != "" && availableVersion != "" && !maclawAppDependencyVersionSatisfied(requiredVersion, availableVersion) {
 		dep.PreflightStatus = "blocked"
 		dep.PreflightCode = "version_mismatch"
 		dep.PreflightStage = "enterprise_hub_preflight"

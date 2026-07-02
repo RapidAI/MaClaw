@@ -46,6 +46,8 @@ export interface Theme {
     /** Send button background color — use this for button backgrounds, not sendBtnColor.
      *  sendBtnColor is the button text/foreground color. */
     sendBtnBg: string;
+    /** Optional flag indicating dark mode — used by sub-components to adapt contrast. */
+    isDark?: boolean;
 }
 
 export const overlayTheme: Theme = {
@@ -144,7 +146,7 @@ export const darkTheme: Theme = {
     titleBarBorder: "#334155",
     titleText: "#f1f5f9",
     text: "#e2e8f0",
-    textMuted: "#94a3b8",
+    textMuted: "#a8b8c8",
     inputBarBg: "#0f172a",
     inputBarBorder: "#334155",
     inputText: "#e5e7eb",
@@ -163,14 +165,14 @@ export const darkTheme: Theme = {
     divider: "#1e293b",
     fieldBg: "#111827",
     fieldBorder: "#334155",
-    fieldLabel: "#94a3b8",
+    fieldLabel: "#a8b8c8",
     errorText: "#e07a72",
     errorBg: "rgba(196, 61, 52, 0.10)",
     errorBorder: "#b95b52",
-    emptyHint: "#64748b",
+    emptyHint: "#7a8a9b",
     boldColor: "#f8fafc",
     italicColor: "#e2e8f0",
-    bulletColor: "#64748b",
+    bulletColor: "#8a9ab0",
     quoteBorder: "#5b7898",
     quoteText: "#c7d7e8",
     actionBtnColor: "#cbd5e1",

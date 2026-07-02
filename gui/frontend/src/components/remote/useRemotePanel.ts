@@ -436,14 +436,19 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     };
 
     const activateRemoteWithEmail = async () => {
-        if (!config?.remote_email?.trim()) {
+        const remoteAccount = config?.remote_email?.trim() || "";
+        if (!remoteAccount) {
             showToastMessage(translate("remoteEmailRequired"), 3000);
+            return false;
+        }
+        if (remoteAccount.toLowerCase().startsWith("phone:")) {
+            showToastMessage(localizeText("Please re-register with phone verification.", "请使用手机号验证码重新注册绑定。", "請使用手機號驗證碼重新註冊綁定。"), 4000);
             return false;
         }
         setRemoteBusy("activate");
         setInvitationCodeError("");
         try {
-            await ActivateRemote(config.remote_email.trim(), invitationCode.trim(), (config as any).remote_mobile?.trim() || "");
+            await ActivateRemote(remoteAccount, invitationCode.trim(), (config as any).remote_mobile?.trim() || "");
             await refreshRemotePanel();
             showToastMessage(translate("remoteActivationCompleted"), 3000);
             return true;

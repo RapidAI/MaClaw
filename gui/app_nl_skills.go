@@ -70,6 +70,7 @@ type NLSkillDefinition struct {
 	SuccessRate         float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
 	LastUsedAt          *time.Time                  `json:"last_used_at,omitempty"`
 	LastError           string                      `json:"last_error,omitempty"`
+	ReviewReason        string                      `json:"review_reason,omitempty"`
 	IsMaclawApp         bool                        `json:"is_maclaw_app,omitempty"`
 	MaclawAppCount      int                         `json:"maclaw_app_count,omitempty"`
 	MaclawAppEntry      string                      `json:"maclaw_app_entry,omitempty"`
@@ -186,6 +187,12 @@ func NewSkillExecutor(app *App, mcpRegistry *MCPRegistry, manager *RemoteSession
 // Name matching for config entries without SkillDir (e.g., learned/crafted
 // skills that don't have a directory).
 func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
+	if e == nil {
+		return nil
+	}
+	if e.app == nil {
+		return skill.ScanAllSkillDirs()
+	}
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
 		return nil
@@ -338,6 +345,9 @@ func (e *SkillExecutor) scanFileSkills(externalDirs []string) ([]corelib.NLSkill
 		return nil, false
 	}
 	// Fallback for tests and minimal App wiring without CachedSkillScanner.
+	if e != nil && e.app != nil {
+		return scanSkillRoots(e.app.skillScanRootsWithExternal(externalDirs)), true
+	}
 	return skill.ScanAllSkillDirsWithExternal(externalDirs), true
 }
 
@@ -527,11 +537,14 @@ func shouldHydrateSkillFromFile(configSkill, fileSkill corelib.NLSkillEntry, _ s
 // directories (e.g. ~/.maclaw/data/skills, ~/.agents/skills) plus
 // user-configured external directories via corelib.
 func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
-	cfg, err := e.app.LoadConfig()
-	if err != nil {
+	if e == nil || e.app == nil {
 		return skill.ScanAllSkillDirs()
 	}
-	return skill.ScanAllSkillDirsWithExternal(cfg.ExternalSkillDirs)
+	cfg, err := e.app.LoadConfig()
+	if err != nil {
+		return scanSkillRoots(e.app.skillScanRootsWithExternal(nil))
+	}
+	return scanSkillRoots(e.app.skillScanRootsWithExternal(cfg.ExternalSkillDirs))
 }
 
 // saveSkills persists skill entries to config.
@@ -540,6 +553,9 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 // triggers, description, etc.) is always loaded from the YAML file at runtime
 // via loadSkills -> scanSkillYAMLFiles (directory-path identity matching).
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
+	if e == nil || e.app == nil {
+		return fmt.Errorf("skill executor app not initialized")
+	}
 	_, err := e.app.LoadConfig()
 	if err != nil {
 		return err
@@ -607,6 +623,9 @@ func fileSkillHasRuntimeOverlay(s corelib.NLSkillEntry) bool {
 
 // Register adds a new Skill definition.
 func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
+	if e == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -615,7 +634,11 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 		return fmt.Errorf("skill name is required")
 	}
 	skills := e.loadSkills()
-	primaryDir, primaryErr := skill.PrimarySkillsDir()
+	var app *App
+	if e != nil {
+		app = e.app
+	}
+	primaryDir, primaryErr := app.primarySkillsDir()
 	for _, s := range skills {
 		if s.Name != name {
 			continue
@@ -651,6 +674,63 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	return e.saveSkills(skills)
 }
 
+func (a *App) primarySkillsDir() (string, error) {
+	if a == nil {
+		return skill.PrimarySkillsDir()
+	}
+	return filepath.Join(a.GetDataDir(), "skills"), nil
+}
+
+func (a *App) skillStagingDir() (string, error) {
+	if a == nil {
+		return skill.StagingDir()
+	}
+	return filepath.Join(a.GetDataDir(), "skills_staging"), nil
+}
+
+func (a *App) skillScanRootsWithExternal(externalDirs []string) []string {
+	var roots []string
+	if primary, err := a.primarySkillsDir(); err == nil && strings.TrimSpace(primary) != "" {
+		roots = append(roots, primary)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, filepath.Join(home, ".agents", "skills"))
+	}
+	seen := make(map[string]bool, len(roots))
+	filtered := roots[:0]
+	for _, root := range roots {
+		cleaned := filepath.Clean(strings.TrimSpace(root))
+		if cleaned == "." || seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		filtered = append(filtered, cleaned)
+	}
+	for _, dir := range externalDirs {
+		cleaned := filepath.Clean(strings.TrimSpace(dir))
+		if cleaned == "." || seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		filtered = append(filtered, cleaned)
+	}
+	return filtered
+}
+
+func scanSkillRoots(roots []string) []corelib.NLSkillEntry {
+	seen := make(map[string]bool)
+	var result []corelib.NLSkillEntry
+	for _, root := range roots {
+		for _, s := range skill.ScanSkillDir(root) {
+			if !seen[s.Name] {
+				result = append(result, s)
+				seen[s.Name] = true
+			}
+		}
+	}
+	return result
+}
+
 // Update modifies an existing Skill definition.
 // Usage tracking fields (UsageCount, SuccessCount, LastUsedAt, LastError)
 // are preserved from the caller if non-zero, allowing the experience
@@ -684,6 +764,22 @@ func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 		}
 	}
 	return fmt.Errorf("skill %q not found", entry.Name)
+}
+
+// UpdateStatus changes only the status field of an existing skill.
+// Used by focused lifecycle actions such as setup gating or local review approval.
+func (e *SkillExecutor) UpdateStatus(name, status string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	skills := e.loadSkills()
+	for i, s := range skills {
+		if s.Name == name {
+			skills[i].Status = status
+			return e.saveSkills(skills)
+		}
+	}
+	return fmt.Errorf("skill %q not found", name)
 }
 
 // UpdateFromHub checks for a newer version of a Hub Skill and updates it locally.
@@ -767,9 +863,11 @@ func (e *SkillExecutor) Delete(name string) error {
 
 	skills := e.loadSkills()
 	found := false
+	var targetSkillDir string
 	for i, s := range skills {
 		if s.Name == name {
 			found = true
+			targetSkillDir = s.SkillDir // Record the precise directory before removal.
 			// Always remove from config regardless of source.
 			// Previously file-based skills were skipped here, leaving
 			// orphaned stats-only stubs in config.json when the on-disk
@@ -784,9 +882,16 @@ func (e *SkillExecutor) Delete(name string) error {
 	if !found {
 		return fmt.Errorf("skill %q not found", name)
 	}
-	// Always clean up on-disk skill directories so that loadSkills
-	// (which scans disk via scanSkillYAMLFiles) won't rediscover it.
-	e.removeSkillDirs(name)
+
+	// Prefer deleting the precise SkillDir recorded in the entry to avoid
+	// accidentally removing a same-named skill from a different root directory.
+	if targetSkillDir != "" {
+		_ = os.RemoveAll(targetSkillDir)
+	} else {
+		// Fallback: scan all roots by name (backward compatibility for
+		// old entries that have no SkillDir recorded).
+		e.removeSkillDirs(name)
+	}
 	return nil
 }
 
@@ -1007,6 +1112,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			SuccessCount:        s.SuccessCount,
 			FailureCount:        s.FailureCount,
 			LastError:           s.LastError,
+			ReviewReason:        skillReviewReason(s),
 		}
 		d.IsMaclawApp, d.MaclawAppCount, d.MaclawAppEntry = inspectMaclawAppSkillMetadata(s.SkillDir)
 		if s.UsageCount > 0 {
@@ -1023,6 +1129,27 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		defs = append(defs, d)
 	}
 	return defs
+}
+
+func skillReviewReason(s corelib.NLSkillEntry) string {
+	status := normalizeSkillEntryStatus(s.Status)
+	lastError := strings.TrimSpace(s.LastError)
+	if status == skillEntryStatusNeedsReview {
+		if lastError != "" {
+			return lastError
+		}
+		if s.RepairAttemptCount > 0 {
+			return fmt.Sprintf("self-repair attempted %d time(s); manual review is required before re-enabling", s.RepairAttemptCount)
+		}
+		return "skill was marked needs_review by local governance or safety checks"
+	}
+	if status == skillEntryStatusNeedsSetup {
+		if lastError != "" {
+			return lastError
+		}
+		return "skill needs configuration before use"
+	}
+	return ""
 }
 
 func inspectMaclawAppSkillMetadata(skillDir string) (bool, int, string) {
@@ -1136,7 +1263,11 @@ func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 	// extractFiles writes skill.md/SKILL.md during installation.
 	switch normalizeSkillEntrySource(entry.Source) {
 	case skillEntrySourceHub, skillEntrySourceAgent:
-		primaryDir, err := skill.PrimarySkillsDir()
+		var app *App
+		if e != nil {
+			app = e.app
+		}
+		primaryDir, err := app.primarySkillsDir()
 		if err != nil {
 			return ""
 		}
@@ -2385,7 +2516,7 @@ func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
 
 	outputPath := filepath.Join(dir, base+"."+outputFormat)
 	// Avoid overwriting input when formats match (e.g. pdf→pdf)
-	if strings.EqualFold(outputPath, inputPath) {
+	if strings.EqualFold(filepath.Clean(outputPath), filepath.Clean(inputPath)) {
 		outputPath = filepath.Join(dir, base+"_output."+outputFormat)
 	}
 	return outputPath
@@ -3593,6 +3724,30 @@ func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 	return nil
 }
 
+// SetNLSkillStatus changes only the status field of an existing NL Skill.
+// It is used for explicit local review decisions such as re-enabling a Skill
+// that was marked needs_review by self-repair or governance maintenance.
+func (a *App) SetNLSkillStatus(name, status string) error {
+	name = strings.TrimSpace(name)
+	status = strings.TrimSpace(status)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	switch normalizeSkillEntryStatus(status) {
+	case skillEntryStatusActive, skillEntryStatusDisabled, skillEntryStatusNeedsSetup, skillEntryStatusNeedsReview:
+	default:
+		return fmt.Errorf("unsupported skill status %q", status)
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "status", "name": name, "status": status}); err != nil {
+		return err
+	}
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	return a.skillExecutor.UpdateStatus(name, string(normalizeSkillEntryStatus(status)))
+}
+
 // DeleteNLSkill removes an NL Skill by name (Wails binding).
 func (a *App) DeleteNLSkill(name string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "delete", "name": name}); err != nil {
@@ -3708,7 +3863,7 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 		scanReports = append(scanReports, report)
 	}
 
-	primaryDir, err := skill.PrimarySkillsDir()
+	primaryDir, err := a.primarySkillsDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve primary skills directory: %w", err)
 	}

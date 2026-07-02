@@ -243,6 +243,7 @@ func (c *tuiSchedulerCallbacks) ExecuteTool(name, argsJSON string) string {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	args["_ctx"] = ctx
 	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 

@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -52,16 +53,12 @@ type Status struct {
 // ProgressFunc 安装进度回调。
 type ProgressFunc func(stage string, pct int, msg string)
 
-// baseDir 返回 ~/.maclaw/python/。
+// baseDir returns the private Python installation directory under the active base dir.
 func baseDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("无法获取用户主目录: %w", err)
-	}
-	return filepath.Join(home, ".maclaw", "python"), nil
+	return filepath.Join(corelib.MaclawBaseDir(), "python"), nil
 }
 
-// VenvDir 返回虚拟环境目录 ~/.maclaw/python/venv。
+// VenvDir returns the private Python virtual environment directory.
 func VenvDir() (string, error) {
 	base, err := baseDir()
 	if err != nil {

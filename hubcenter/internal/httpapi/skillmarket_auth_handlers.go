@@ -100,7 +100,7 @@ func (h *SkillMarketHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 // The machine proves its identity via viewer_token (issued during Hub enrollment).
 // This enables "Hub registration auto-grants SkillMarket access" flow.
 //
-// Security: rate-limited per email. The viewer_token is trusted as a proof of
+// Security: The viewer_token is trusted as a proof of
 // Hub enrollment — only legitimate clients receive one during the enroll flow.
 // For additional security in strict environments, switch upload auth mode to "token"
 // and require users to complete full SkillMarket registration.
@@ -113,9 +113,9 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
-	email := strings.TrimSpace(req.Email)
-	if email == "" {
-		smError(w, http.StatusBadRequest, "email is required")
+	account := strings.TrimSpace(req.Email)
+	if account == "" {
+		smError(w, http.StatusBadRequest, "account is required")
 		return
 	}
 	viewerToken := strings.TrimSpace(req.ViewerToken)
@@ -136,7 +136,7 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 	}
 
 	// EnsureAccount creates the SkillMarket account if it doesn't exist.
-	user, err := h.userSvc.EnsureAccount(r.Context(), email)
+	user, err := h.userSvc.EnsureAccount(r.Context(), account)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
 		return
@@ -146,7 +146,7 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 		_ = h.authSvc.AutoVerify(r.Context(), user.ID)
 	}
 	// Issue session token.
-	sess, err := h.authSvc.CreateSessionForUser(r.Context(), user.ID, email)
+	sess, err := h.authSvc.CreateSessionForUser(r.Context(), user.ID, account)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, "create session: "+err.Error())
 		return

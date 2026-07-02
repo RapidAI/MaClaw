@@ -64,8 +64,8 @@ type routeSnapshot struct {
 	emailRoutes          map[string][]snapshotCandidate
 	domainRoutes         map[string][]snapshotCandidate
 	publicHubs           []snapshotCandidate
-	activeHubsByID       map[string]*store.HubInstance    // all active hubs indexed by ID
-	invitationCodeRoutes map[string]invitationCodeTarget  // invitation_code → (hub_id, tenant_id)
+	activeHubsByID       map[string]*store.HubInstance   // all active hubs indexed by ID
+	invitationCodeRoutes map[string]invitationCodeTarget // invitation_code → (hub_id, tenant_id)
 }
 
 // invitationCodeTarget holds the routing target for an invitation code.
@@ -573,6 +573,10 @@ func isAdminUserLink(link *store.HubUserLink) bool {
 	return strings.HasPrefix(strings.TrimSpace(link.ID), "hul_admin_")
 }
 
+func isPhoneRouteIdentity(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(value)), "phone:")
+}
+
 func (s *routeSnapshot) stats() RouteSnapshotStats {
 	if s == nil {
 		return RouteSnapshotStats{}
@@ -660,6 +664,9 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 	}
 	if s.hasAdminUserRoute(email) {
 		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
+	}
+	if isPhoneRouteIdentity(email) {
+		return buildResolveResult(email, resultsByHub, "No phone route found"), nil
 	}
 	domainCandidates := s.domainRoutes[extractEmailDomain(email)]
 	for _, candidate := range domainCandidates {

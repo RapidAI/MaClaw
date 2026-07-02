@@ -57,7 +57,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			TenantID:               tenantID,
 			TenantName:             tenantName,
 			Status:                 "invalid_email",
-			Message:                "Email is required",
+			Message:                "Account is required",
 			InvitationCodeRequired: invCodeRequired,
 		}, nil
 	}
@@ -82,7 +82,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			TenantID:               tenantID,
 			TenantName:             tenantName,
 			Status:                 "blocked",
-			Message:                "Email is blocked",
+			Message:                "Account is blocked",
 			InvitationCodeRequired: invCodeRequired,
 		}, nil
 	}
@@ -116,7 +116,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			Bound:                  false,
 			CanLogin:               false,
 			EnrollmentMode:         enrollmentMode,
-			Message:                "Email is not bound to this hub",
+			Message:                "Account is not bound to this hub",
 			InvitationCodeRequired: invCodeRequired,
 		}, nil
 	}
@@ -130,7 +130,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			Bound:                  false,
 			CanLogin:               false,
 			EnrollmentMode:         enrollmentMode,
-			Message:                "Email exists but is not ready for login",
+			Message:                "Account exists but is not ready for login",
 			InvitationCodeRequired: invCodeRequired,
 		}, nil
 	}

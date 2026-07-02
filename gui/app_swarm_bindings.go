@@ -111,7 +111,7 @@ func (a *App) wireSwarmIMDelivery() {
 	if a.swarmOrchestrator == nil {
 		return
 	}
-	hc := a.hubClient()
+	hc := a.ensureHubClient()
 	if hc == nil {
 		return
 	}

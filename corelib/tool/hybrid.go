@@ -56,7 +56,7 @@ func CosineSimilarity(a, b []float32) float64 {
 
 // ToolEmbeddingCache caches embedding vectors for tool description texts.
 // Keyed by SHA-256 hash of the description text.
-// Supports disk persistence: embeddings are saved to ~/.maclaw/cache/tool_embeddings.gob
+// Supports disk persistence: embeddings are saved to <MaclawBaseDir>/cache/tool_embeddings.gob
 // and restored on next startup if the model file hasn't changed.
 type ToolEmbeddingCache struct {
 	mu       sync.RWMutex
@@ -79,13 +79,13 @@ type diskCacheEnvelope struct {
 	Entries map[string][]float32 // sha256(text) → embedding vector
 }
 
-// toolEmbeddingCachePath returns ~/.maclaw/cache/tool_embeddings.gob.
+// toolEmbeddingCachePath returns <MaclawBaseDir>/cache/tool_embeddings.gob.
 func toolEmbeddingCachePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	base := maclawBaseDirFallback()
+	if base == "" {
 		return ""
 	}
-	return filepath.Join(home, ".maclaw", "cache", "tool_embeddings.gob")
+	return filepath.Join(base, "cache", "tool_embeddings.gob")
 }
 
 // modelFingerprint returns a string combining the model file's modtime and size.

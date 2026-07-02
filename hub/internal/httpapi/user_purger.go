@@ -106,9 +106,9 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 	}
 
 	// 8. LLM service: user bindings, grants, redeemed cards.
-	if p.System != nil && email != "" {
+	if p.System != nil && (userID != "" || email != "") {
 		tenantSystem := ScopedSystemSettingsForTenant(tenantID, p.System)
-		err := llmservice.PurgeUserFromRegistry(ctx, tenantSystem, email)
+		err := llmservice.PurgeUserFromRegistryForUser(ctx, tenantSystem, userID, email)
 		logErr("llm_service_registry", err)
 	}
 

@@ -164,6 +164,10 @@ const getPortalDarkScheme = () => (
     document.getElementById('App')?.getAttribute('data-ai-dark-scheme') || undefined
 );
 
+const getPortalLightScheme = () => (
+    document.getElementById('App')?.getAttribute('data-ai-light-scheme') || undefined
+);
+
 const normalizeTaskCommandInput = (value?: string | null) => {
     // Preserve newlines (multi-line task commands), only collapse horizontal whitespace per line
     const lines = (value || '').split('\n').map(line => line.trim().replace(/[ \t]+/g, ' '));
@@ -347,6 +351,7 @@ export const SidebarTaskManagement = ({
                 className="modal-backdrop"
                 data-ai-theme={getPortalThemeMode(themeMode)}
                 data-ai-dark-scheme={getPortalDarkScheme()}
+                data-ai-light-scheme={getPortalLightScheme()}
                 style={{ zIndex: TASK_CREATE_DIALOG_Z_INDEX }}
                 onMouseDown={e => { createBackdropMouseDownRef.current = e.target === e.currentTarget; }}
                 onClick={e => { if (e.target === e.currentTarget && createBackdropMouseDownRef.current) closeCreateDialog(); createBackdropMouseDownRef.current = false; }}

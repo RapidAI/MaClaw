@@ -11,12 +11,15 @@ import 'mobile_bootstrap.dart';
 class ApiClient {
   final Dio _dio;
   final SecureVault _vault;
+  final String _hubUrl;
 
   ApiClient({
     SecureVault? vault,
     Dio? dio,
+    String hubUrl = maclawDefaultHubCenterUrl,
   })  : _vault = vault ?? const SecureVault(),
-        _dio = officialServiceDio(dio) {
+        _hubUrl = normalizeDiscoveredHubUrl(hubUrl),
+        _dio = discoveredHubDio(dio, hubUrl: hubUrl) {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
@@ -35,6 +38,19 @@ class ApiClient {
       '/api/mobile/bootstrap',
     );
     return MobileBootstrap.fromJson(response.data ?? const {});
+  }
+
+  Future<MobileBootstrap> authorizeThirdPartyLlmWithDesktopQr(
+    String qrPayload,
+  ) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/llm/desktop-qr-authorizations',
+      data: {'qr_payload': qrPayload.trim()},
+    );
+    final data = response.data ?? const {};
+    return MobileBootstrap.fromJson(
+      Map<String, dynamic>.from(data['bootstrap'] as Map? ?? data),
+    );
   }
 
   Future<SearchAnswer> search(String query) async {
@@ -135,7 +151,10 @@ class ApiClient {
     if (job.downloadUrl.isEmpty) {
       throw StateError('export job has no download URL');
     }
-    final downloadUrl = maclawOfficialAbsoluteUrl(job.downloadUrl);
+    final downloadUrl = maclawHubAbsoluteUrl(
+      hubUrl: _hubUrl,
+      pathOrUrl: job.downloadUrl,
+    );
     final response = await _dio.get<List<int>>(
       downloadUrl,
       options: Options(responseType: ResponseType.bytes),
@@ -144,7 +163,7 @@ class ApiClient {
   }
 
   String absoluteUrl(String path) {
-    return maclawOfficialAbsoluteUrl(path);
+    return maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: path);
   }
 
   Future<MobileDocumentUploadTask> uploadDocument(String path) async {
@@ -176,16 +195,24 @@ class ApiClient {
   Future<MobileDigitalEmployeeTask> createDigitalEmployeeTask({
     required String employeeId,
     required String prompt,
+    String taskType = 'general',
+    Map<String, String> context = const {},
   }) async {
     final encodedEmployeeId = Uri.encodeComponent(employeeId);
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/mobile/digital-employees/$encodedEmployeeId/tasks',
-      data: {'prompt': prompt},
+      data: {
+        'prompt': prompt,
+        'task_type': taskType,
+        if (context.isNotEmpty) 'context': context,
+      },
     );
     return MobileDigitalEmployeeTask.fromJson(response.data ?? const {});
   }
 
-  Future<MobileDigitalEmployeeTask> getDigitalEmployeeTask(String taskId) async {
+  Future<MobileDigitalEmployeeTask> getDigitalEmployeeTask(
+    String taskId,
+  ) async {
     final encodedTaskId = Uri.encodeComponent(taskId);
     final response = await _dio.get<Map<String, dynamic>>(
       '/api/mobile/digital-employees/tasks/$encodedTaskId',
@@ -287,16 +314,22 @@ class MobileDigitalEmployeeTask {
   final String taskId;
   final String employeeId;
   final String prompt;
+  final String taskType;
+  final Map<String, String> context;
   final String status;
   final String result;
+  final String message;
   final String claimedBy;
 
   const MobileDigitalEmployeeTask({
     required this.taskId,
     required this.employeeId,
     required this.prompt,
+    this.taskType = 'general',
+    this.context = const {},
     required this.status,
     required this.result,
+    this.message = '',
     required this.claimedBy,
   });
 
@@ -305,8 +338,16 @@ class MobileDigitalEmployeeTask {
       taskId: json['task_id'] as String? ?? '',
       employeeId: json['employee_id'] as String? ?? '',
       prompt: json['prompt'] as String? ?? '',
+      taskType: json['task_type'] as String? ?? 'general',
+      context: {
+        for (final entry
+            in Map<String, dynamic>.from(json['context'] as Map? ?? const {})
+                .entries)
+          entry.key: entry.value.toString(),
+      },
       status: json['status'] as String? ?? 'unknown',
       result: json['result'] as String? ?? '',
+      message: json['message'] as String? ?? json['error'] as String? ?? '',
       claimedBy: json['claimed_by'] as String? ?? '',
     );
   }

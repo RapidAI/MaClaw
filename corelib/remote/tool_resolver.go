@@ -4,18 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const toolsSubDir = ".maclaw/data/tools"
-
-// ToolsDir 返回私有工具安装目录 ~/.maclaw/data/tools。
-// 如果无法获取用户主目录，返回空字符串。
+// ToolsDir 返回私有工具安装目录 <MaclawBaseDir>/data/tools。
 func ToolsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	base := corelib.MaclawBaseDir()
+	if base == "" {
 		return ""
 	}
-	return filepath.Join(home, toolsSubDir)
+	return filepath.Join(base, "data", "tools")
 }
 
 // PackageName 返回工具对应的 npm 包名。
@@ -70,7 +69,7 @@ func BinaryNames(toolName string) []string {
 	}
 }
 
-// ResolveToolPath 在 ~/.maclaw/data/tools 私有目录下查找工具可执行文件。
+// ResolveToolPath 在 <MaclawBaseDir>/data/tools 私有目录下查找工具可执行文件。
 // 返回找到的完整路径和是否找到。
 func ResolveToolPath(toolName string) (string, bool) {
 	name := NormalizeRemoteToolName(toolName)

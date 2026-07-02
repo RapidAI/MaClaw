@@ -3,6 +3,7 @@ package httpapi
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,7 +14,98 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
+
+func TestMobileRealtimeHandlerRequiresViewerToken(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/realtime", nil)
+	rec := httptest.NewRecorder()
+
+	MobileRealtimeHandler(nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+type mobileRealtimeFakeWriter struct {
+	err      error
+	messages []map[string]any
+}
+
+func (w *mobileRealtimeFakeWriter) WriteJSON(v any) error {
+	if w.err != nil {
+		return w.err
+	}
+	msg, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	copied := make(map[string]any, len(msg))
+	for k, value := range msg {
+		copied[k] = value
+	}
+	w.messages = append(w.messages, copied)
+	return nil
+}
+
+func TestMobileRealtimeDocumentTaskEventShape(t *testing.T) {
+	event := mobileRealtimeDocumentTaskEvent("document_task", map[string]any{
+		"job_id":   "mobexp_1",
+		"status":   "ready",
+		"draft_id": "draft_1",
+	})
+
+	if event["type"] != "document_task" || event["job_id"] != "mobexp_1" || event["status"] != "ready" {
+		t.Fatalf("event = %#v, want document task fields", event)
+	}
+	if task, ok := event["task"].(map[string]any); !ok || task["draft_id"] != "draft_1" {
+		t.Fatalf("task payload = %#v, want nested task", event["task"])
+	}
+}
+
+func TestMobileRealtimeBroadcastTargetsUserAndCleansFailedWriters(t *testing.T) {
+	mobileRealtimeClients.Lock()
+	previous := mobileRealtimeClients.clients
+	mobileRealtimeClients.clients = make(map[string]map[*mobileRealtimeClient]struct{})
+	mobileRealtimeClients.Unlock()
+	t.Cleanup(func() {
+		mobileRealtimeClients.Lock()
+		mobileRealtimeClients.clients = previous
+		mobileRealtimeClients.Unlock()
+	})
+
+	target := &mobileRealtimeFakeWriter{}
+	other := &mobileRealtimeFakeWriter{}
+	broken := &mobileRealtimeFakeWriter{err: io.ErrClosedPipe}
+	_, cleanupTarget := mobileRealtimeRegister("tenant-1", "user-1", target)
+	_, cleanupOther := mobileRealtimeRegister("tenant-1", "user-2", other)
+	_, _ = mobileRealtimeRegister("tenant-1", "user-1", broken)
+	defer cleanupTarget()
+	defer cleanupOther()
+
+	mobileRealtimeBroadcast("tenant-1", "user-1", map[string]any{
+		"type":    "digital_employee_task",
+		"task_id": "mobve_1",
+		"status":  "done",
+	})
+
+	if len(target.messages) != 1 {
+		t.Fatalf("target messages = %d, want 1", len(target.messages))
+	}
+	if target.messages[0]["task_id"] != "mobve_1" || target.messages[0]["server_time"] == "" {
+		t.Fatalf("target message = %#v, want task id and server time", target.messages[0])
+	}
+	if len(other.messages) != 0 {
+		t.Fatalf("other messages = %#v, want none", other.messages)
+	}
+	mobileRealtimeClients.Lock()
+	remaining := len(mobileRealtimeClients.clients[mobileRealtimeKey("tenant-1", "user-1")])
+	mobileRealtimeClients.Unlock()
+	if remaining != 1 {
+		t.Fatalf("remaining target clients = %d, want failed writer removed", remaining)
+	}
+}
 
 func TestMobileBootstrapHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/bootstrap", nil)
@@ -26,6 +118,214 @@ func TestMobileBootstrapHandlerRequiresViewerToken(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "UNAUTHORIZED") {
 		t.Fatalf("body = %s, want UNAUTHORIZED", rec.Body.String())
+	}
+}
+
+func TestMobileBootstrapPayloadIncludesServiceStatuses(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	payload := mobileBootstrapPayload(&auth.ViewerPrincipal{
+		UserID:   "user-1",
+		Email:    "u1@example.com",
+		TenantID: "tenant-1",
+	})
+
+	user, ok := payload["user"].(map[string]any)
+	if !ok || user["user_id"] != "user-1" || user["tenant_id"] != "tenant-1" {
+		t.Fatalf("user payload = %#v, want viewer identity", payload["user"])
+	}
+	services, ok := payload["services"].(map[string]any)
+	if !ok {
+		t.Fatalf("services payload = %#v, want map", payload["services"])
+	}
+	for key, want := range map[string]string{
+		"hub_status":               "online",
+		"llm_status":               "available",
+		"search_status":            "available",
+		"documents_status":         "available",
+		"digital_employees_status": "available",
+		"realtime_path":            "/api/mobile/realtime",
+	} {
+		if services[key] != want {
+			t.Fatalf("services[%s] = %#v, want %q", key, services[key], want)
+		}
+	}
+	connection, ok := payload["connection"].(map[string]any)
+	if !ok {
+		t.Fatalf("connection payload = %#v, want map", payload["connection"])
+	}
+	candidates, ok := connection["hubcenter_candidates"].([]string)
+	if !ok || len(candidates) != 3 || candidates[0] != "https://hubs.mypapers.top" || candidates[1] != "https://hubs.maclaw.top" || candidates[2] != "https://hubs2.maclaw.top" {
+		t.Fatalf("hubcenter candidates = %#v, want three official presets", connection["hubcenter_candidates"])
+	}
+	if connection["selected_hubcenter_url"] != "https://hubs.maclaw.top" || connection["tenant_id"] != "tenant-1" {
+		t.Fatalf("connection = %#v, want selected official hubcenter and tenant", connection)
+	}
+	llmAccess, ok := payload["llm_access"].(map[string]any)
+	if !ok || llmAccess["mode"] != "maclaw_official" {
+		t.Fatalf("llm_access = %#v, want maclaw_official", payload["llm_access"])
+	}
+}
+
+func TestMobileLLMDesktopQRAuthorizationUpdatesBootstrap(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-llm@example.com")
+	createBody, _ := json.Marshal(map[string]any{
+		"name":     "OpenAI Compatible",
+		"url":      "https://llm.example.com/v1",
+		"key":      "sk-test",
+		"model":    "gpt-4.1-mini",
+		"models":   []string{"gpt-4.1-mini"},
+		"protocol": "openai",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", bytes.NewReader(createBody))
+	createReq.Host = "tenant-a.maclaw.top"
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+
+	MobileLLMDesktopQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s, want 201", createRec.Code, createRec.Body.String())
+	}
+	var createResponse map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResponse); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	qrPayload, _ := createResponse["qr_payload"].(string)
+	if qrPayload == "" || strings.Contains(qrPayload, "sk-test") {
+		t.Fatalf("qr_payload = %q, want non-empty payload without API key", qrPayload)
+	}
+	if !strings.Contains(qrPayload, "maclaw_mobile_llm_authorization") {
+		t.Fatalf("qr_payload = %q, want mobile authorization session payload", qrPayload)
+	}
+	if !strings.Contains(qrPayload, "tenant-a.maclaw.top") {
+		t.Fatalf("qr_payload = %q, want discovered Hub URL for mobile direct consumption", qrPayload)
+	}
+	body, _ := json.Marshal(map[string]string{"qr_payload": qrPayload})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-authorizations", bytes.NewReader(body))
+	req.Host = "tenant-a.maclaw.top"
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileLLMDesktopQRAuthorizationHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	bootstrap, ok := response["bootstrap"].(map[string]any)
+	if !ok {
+		t.Fatalf("bootstrap = %#v, want map", response["bootstrap"])
+	}
+	llmAccess, ok := bootstrap["llm_access"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm_access = %#v, want map", bootstrap["llm_access"])
+	}
+	if llmAccess["mode"] != "desktop_qr_third_party" || llmAccess["authorized_by"] != "maclaw-gui" {
+		t.Fatalf("llm_access = %#v, want desktop QR delegated mode", llmAccess)
+	}
+	if llmAccess["authorization_id"] == "" || llmAccess["provider_name"] != "OpenAI Compatible" || llmAccess["provider_url"] != "https://llm.example.com/v1" || llmAccess["model"] != "gpt-4.1-mini" {
+		t.Fatalf("llm_access = %#v, want provider metadata without API key", llmAccess)
+	}
+	if _, leaked := llmAccess["key"]; leaked {
+		t.Fatalf("llm_access leaked key: %#v", llmAccess)
+	}
+	connection, ok := bootstrap["connection"].(map[string]any)
+	if !ok || connection["hub_url"] != "https://tenant-a.maclaw.top" {
+		t.Fatalf("connection = %#v, want request hub URL", bootstrap["connection"])
+	}
+
+	reuseReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-authorizations", bytes.NewReader(body))
+	reuseReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	reuseRec := httptest.NewRecorder()
+	MobileLLMDesktopQRAuthorizationHandler(identity).ServeHTTP(reuseRec, reuseReq)
+	if reuseRec.Code != http.StatusBadRequest || !strings.Contains(reuseRec.Body.String(), "already been used") {
+		t.Fatalf("reuse status=%d body=%s, want used-session rejection", reuseRec.Code, reuseRec.Body.String())
+	}
+}
+
+func TestMobileLLMDesktopQRSessionConsumeIssuesMobileToken(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, _ := issueViewerToken(t, identity, "mobile-first-qr@example.com")
+	createBody, _ := json.Marshal(map[string]any{
+		"name":     "OpenAI Compatible",
+		"url":      "https://llm.example.com/v1",
+		"key":      "sk-test",
+		"model":    "gpt-4.1-mini",
+		"protocol": "openai",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", bytes.NewReader(createBody))
+	createReq.Host = "tenant-a.maclaw.top"
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+	MobileLLMDesktopQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
+	}
+	var createResponse map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResponse); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	qrPayload, _ := createResponse["qr_payload"].(string)
+	body, _ := json.Marshal(map[string]string{"qr_payload": qrPayload})
+	consumeReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
+	consumeReq.Host = "tenant-a.maclaw.top"
+	consumeRec := httptest.NewRecorder()
+
+	MobileLLMDesktopQRSessionConsumeHandler(identity).ServeHTTP(consumeRec, consumeReq)
+
+	if consumeRec.Code != http.StatusOK {
+		t.Fatalf("consume status=%d body=%s, want 200", consumeRec.Code, consumeRec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(consumeRec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode consume response: %v", err)
+	}
+	if response["access_token"] == "" || response["hub_url"] != "https://tenant-a.maclaw.top" {
+		t.Fatalf("response = %#v, want token and request hub url", response)
+	}
+	bootstrap, ok := response["bootstrap"].(map[string]any)
+	if !ok {
+		t.Fatalf("bootstrap = %#v, want map", response["bootstrap"])
+	}
+	llmAccess, ok := bootstrap["llm_access"].(map[string]any)
+	if !ok || llmAccess["mode"] != "desktop_qr_third_party" || llmAccess["provider_name"] != "OpenAI Compatible" {
+		t.Fatalf("llm_access = %#v, want desktop QR delegated provider", bootstrap["llm_access"])
+	}
+	if _, leaked := llmAccess["key"]; leaked {
+		t.Fatalf("llm_access leaked key: %#v", llmAccess)
+	}
+	principal, err := identity.AuthenticateViewer(auth.WithTenant(context.Background(), "tenant-1"), response["access_token"].(string))
+	if err != nil || principal == nil || principal.Email != "mobile-first-qr@example.com" {
+		t.Fatalf("AuthenticateViewer principal=%#v err=%v, want QR owner", principal, err)
+	}
+	reuseReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
+	reuseRec := httptest.NewRecorder()
+	MobileLLMDesktopQRSessionConsumeHandler(identity).ServeHTTP(reuseRec, reuseReq)
+	if reuseRec.Code != http.StatusBadRequest || !strings.Contains(reuseRec.Body.String(), "already been used") {
+		t.Fatalf("reuse status=%d body=%s, want used-session rejection", reuseRec.Code, reuseRec.Body.String())
+	}
+}
+
+func TestMobileLLMDesktopQRAuthorizationRejectsInvalidPayload(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-llm-invalid@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-authorizations", strings.NewReader(`{"qr_payload":"{\"v\":1,\"type\":\"maclaw_llm\",\"name\":\"OpenAI Compatible\",\"url\":\"https://llm.example.com/v1\",\"key\":\"sk-test\"}"}`))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileLLMDesktopQRAuthorizationHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_DESKTOP_QR") {
+		t.Fatalf("body = %s, want INVALID_DESKTOP_QR", rec.Body.String())
 	}
 }
 
@@ -78,12 +378,12 @@ func TestMobileSearchFormatsResultsWithCitations(t *testing.T) {
 }
 
 func TestMobileSearchKeepsSharedLinksAsCitations(t *testing.T) {
-	query := "总结这个链接 https://example.test/incident?from=mobile"
+	query := "\u603b\u7ed3\u8fd9\u4e2a\u94fe\u63a5 https://example.test/incident?from=mobile"
 	links := mobileExtractQueryLinks(query)
 	answer := mobileSearchAnswer(query, nil, links)
 	citations := mobileMergeLinkCitations(nil, links)
 
-	if !strings.Contains(answer, "已识别分享链接") {
+	if !strings.Contains(answer, "\u5df2\u8bc6\u522b\u5206\u4eab\u94fe\u63a5") {
 		t.Fatalf("answer = %q, want shared-link hint", answer)
 	}
 	if len(citations) != 1 {
@@ -177,6 +477,59 @@ func TestMobileDigitalEmployeesHandlerRequiresViewerToken(t *testing.T) {
 	}
 }
 
+func TestMobileDigitalEmployeesHandlerListsBoundRemoteMachine(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-machine-ve@example.com")
+	if err := identity.MachinesRepo().UpdateStatus(context.Background(), enroll.MachineID, "online"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if err := identity.MachinesRepo().UpdateAlias(context.Background(), enroll.MachineID, "Office Desktop"); err != nil {
+		t.Fatalf("UpdateAlias: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/digital-employees", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileDigitalEmployeesHandler(identity, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Employees []struct {
+			ID               string `json:"id"`
+			MachineID        string `json:"machine_id"`
+			Name             string `json:"name"`
+			EmployeeType     string `json:"employee_type"`
+			SkillDescription string `json:"skill_description"`
+			AccessPolicy     string `json:"access_policy"`
+			OnlineStatus     string `json:"online_status"`
+			Resident         bool   `json:"resident"`
+			RuntimeMissing   bool   `json:"runtime_missing"`
+		} `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Employees) != 1 {
+		t.Fatalf("employees = %+v, want one bound machine entry", body.Employees)
+	}
+	employee := body.Employees[0]
+	if employee.ID != "ve_"+enroll.MachineID || employee.MachineID != enroll.MachineID {
+		t.Fatalf("employee identity = %+v, want ve alias for bound machine", employee)
+	}
+	if employee.Name != "Office Desktop" || employee.EmployeeType != veEmployeeTypePhysical {
+		t.Fatalf("employee profile = %+v, want physical Office Desktop", employee)
+	}
+	if employee.OnlineStatus != veOnlineStatusOnline || !employee.Resident || employee.RuntimeMissing {
+		t.Fatalf("employee availability = %+v, want online resident runtime-ready entry", employee)
+	}
+	if employee.AccessPolicy != "public" || !strings.Contains(employee.SkillDescription, "远程电脑/服务器") {
+		t.Fatalf("employee capability = %+v, want mobile remote machine capability", employee)
+	}
+}
+
 func TestMobileDigitalEmployeeTaskHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ops/tasks", strings.NewReader(`{"prompt":"check disk"}`))
 	rec := httptest.NewRecorder()
@@ -227,8 +580,11 @@ func TestMobileDigitalEmployeeTaskPayloadIncludesRemoteWorkFields(t *testing.T) 
 		TaskID:     "mobve_1",
 		EmployeeID: "ops",
 		Prompt:     "check disk",
+		TaskType:   "server_maintenance",
+		Context:    map[string]string{"source": "maclaw_mobile"},
 		Status:     "done",
 		Result:     "disk ok",
+		Message:    "remote task completed",
 		ClaimedBy:  "machine_1",
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -237,11 +593,21 @@ func TestMobileDigitalEmployeeTaskPayloadIncludesRemoteWorkFields(t *testing.T) 
 	if payload["prompt"] != "check disk" {
 		t.Fatalf("prompt = %v, want check disk", payload["prompt"])
 	}
+	if payload["task_type"] != "server_maintenance" {
+		t.Fatalf("task_type = %v, want server_maintenance", payload["task_type"])
+	}
+	contextValue, ok := payload["context"].(map[string]string)
+	if !ok || contextValue["source"] != "maclaw_mobile" {
+		t.Fatalf("context = %#v, want mobile source", payload["context"])
+	}
 	if payload["claimed_by"] != "machine_1" {
 		t.Fatalf("claimed_by = %v, want machine_1", payload["claimed_by"])
 	}
 	if payload["status"] != "done" || payload["result"] != "disk ok" {
 		t.Fatalf("payload = %#v, want final task status and result", payload)
+	}
+	if payload["message"] != "remote task completed" {
+		t.Fatalf("message = %v, want remote task completed", payload["message"])
 	}
 }
 
@@ -250,7 +616,7 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	viewerToken, enroll := issueViewerToken(t, identity, "mobile-ve@example.com")
 	clearMobileDigitalEmployeeTasksForTest(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"check disk"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"check disk","task_type":"server_maintenance","context":{"source":"maclaw_mobile","machine_id":"desktop-1"}}`))
 	createReq.SetPathValue("employeeId", "ve_"+enroll.MachineID)
 	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
 	createRec := httptest.NewRecorder()
@@ -266,6 +632,9 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	if taskID == "" {
 		t.Fatalf("created response missing task_id: %#v", created)
 	}
+	if created["task_type"] != "server_maintenance" {
+		t.Fatalf("created task_type = %v, want server_maintenance", created["task_type"])
+	}
 
 	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/"+enroll.MachineID+"/tasks/claim", nil)
 	claimReq.SetPathValue("employeeId", enroll.MachineID)
@@ -279,9 +648,11 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	var claimed struct {
 		Status string `json:"status"`
 		Task   struct {
-			TaskID    string `json:"task_id"`
-			Status    string `json:"status"`
-			ClaimedBy string `json:"claimed_by"`
+			TaskID    string            `json:"task_id"`
+			TaskType  string            `json:"task_type"`
+			Context   map[string]string `json:"context"`
+			Status    string            `json:"status"`
+			ClaimedBy string            `json:"claimed_by"`
 		} `json:"task"`
 	}
 	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimed); err != nil {
@@ -290,8 +661,11 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	if claimed.Status != "claimed" || claimed.Task.TaskID != taskID || claimed.Task.Status != "in_progress" || claimed.Task.ClaimedBy != enroll.MachineID {
 		t.Fatalf("claimed response = %+v, want alias-matched in_progress task", claimed)
 	}
+	if claimed.Task.TaskType != "server_maintenance" || claimed.Task.Context["source"] != "maclaw_mobile" {
+		t.Fatalf("claimed mobile context = %+v", claimed.Task)
+	}
 
-	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"disk ok"}`))
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"disk ok","message":"checked on remote host"}`))
 	updateReq.SetPathValue("taskId", taskID)
 	updateReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
 	updateReq.Header.Set("X-Machine-ID", enroll.MachineID)
@@ -304,7 +678,7 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	if err := json.Unmarshal(updateRec.Body.Bytes(), &updated); err != nil {
 		t.Fatalf("decode update response: %v", err)
 	}
-	if updated["status"] != "done" || updated["result"] != "disk ok" || updated["claimed_by"] != enroll.MachineID {
+	if updated["status"] != "done" || updated["result"] != "disk ok" || updated["message"] != "checked on remote host" || updated["claimed_by"] != enroll.MachineID {
 		t.Fatalf("updated response = %#v", updated)
 	}
 }
@@ -320,9 +694,9 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	mobileDocuments.drafts["draft-1"] = mobileDocumentDraftRecord{
 		ID:        "draft-1",
 		OwnerID:   "user-1",
-		Title:     "应急报告",
+		Title:     "\u5e94\u6025\u62a5\u544a",
 		Template:  "report",
-		Markdown:  "# 应急报告\n\n内容",
+		Markdown:  "# \u5e94\u6025\u62a5\u544a\n\n\u5185\u5bb9",
 		UpdatedAt: now,
 	}
 	mobileDocuments.exports["export-1"] = mobileDocumentExportRecord{
@@ -339,7 +713,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 		Filename:   "incident.md",
 		Status:     "ready",
 		DraftID:    "draft-1",
-		Message:    "文件已解析为移动端文档草稿。",
+		Message:    "\u6587\u4ef6\u5df2\u89e3\u6790\u4e3a\u79fb\u52a8\u7aef\u6587\u6863\u8349\u7a3f\u3002",
 		UploadedAt: now,
 		UpdatedAt:  now,
 	}
@@ -349,9 +723,9 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 		TaskID:     "task-1",
 		EmployeeID: "ve-machine",
 		OwnerID:    "user-1",
-		Prompt:     "检查磁盘",
+		Prompt:     "\u68c0\u67e5\u78c1\u76d8",
 		Status:     "queued",
-		Result:     "任务已提交",
+		Result:     "\u4efb\u52a1\u5df2\u63d0\u4ea4",
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -378,16 +752,16 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	mobileDigitalEmployeeTasks.Lock()
 	task, hasTask := mobileDigitalEmployeeTasks.tasks["task-1"]
 	mobileDigitalEmployeeTasks.Unlock()
-	if !hasDraft || draft.Title != "应急报告" {
+	if !hasDraft || draft.Title != "\u5e94\u6025\u62a5\u544a" {
 		t.Fatalf("restored draft = %#v, present=%v", draft, hasDraft)
 	}
 	if !hasExport || exportJob.Status != "ready" {
 		t.Fatalf("restored export = %#v, present=%v", exportJob, hasExport)
 	}
-	if !hasUpload || upload.Message != "文件已解析为移动端文档草稿。" {
+	if !hasUpload || upload.Message != "\u6587\u4ef6\u5df2\u89e3\u6790\u4e3a\u79fb\u52a8\u7aef\u6587\u6863\u8349\u7a3f\u3002" {
 		t.Fatalf("restored upload = %#v, present=%v", upload, hasUpload)
 	}
-	if !hasTask || task.Prompt != "检查磁盘" {
+	if !hasTask || task.Prompt != "\u68c0\u67e5\u78c1\u76d8" {
 		t.Fatalf("restored task = %#v, present=%v", task, hasTask)
 	}
 }
@@ -405,6 +779,22 @@ func clearMobileDigitalEmployeeTasksForTest(t *testing.T) {
 	})
 }
 
+func clearMobileLLMAuthorizationsForTest(t *testing.T) {
+	t.Helper()
+	mobileLlmAuthorizations.Lock()
+	previous := mobileLlmAuthorizations.authorizations
+	previousQRSessions := mobileLlmAuthorizations.qrSessions
+	mobileLlmAuthorizations.authorizations = make(map[string]mobileLlmAuthorizationRecord)
+	mobileLlmAuthorizations.qrSessions = make(map[string]mobileLlmQRSessionRecord)
+	mobileLlmAuthorizations.Unlock()
+	t.Cleanup(func() {
+		mobileLlmAuthorizations.Lock()
+		mobileLlmAuthorizations.authorizations = previous
+		mobileLlmAuthorizations.qrSessions = previousQRSessions
+		mobileLlmAuthorizations.Unlock()
+	})
+}
+
 func clearMobileStateForTest(t *testing.T) {
 	t.Helper()
 	mobileDocuments.Lock()
@@ -419,6 +809,12 @@ func clearMobileStateForTest(t *testing.T) {
 	previousTasks := mobileDigitalEmployeeTasks.tasks
 	mobileDigitalEmployeeTasks.tasks = make(map[string]mobileDigitalEmployeeTaskRecord)
 	mobileDigitalEmployeeTasks.Unlock()
+	mobileLlmAuthorizations.Lock()
+	previousLLMAuthorizations := mobileLlmAuthorizations.authorizations
+	previousLLMQRSessions := mobileLlmAuthorizations.qrSessions
+	mobileLlmAuthorizations.authorizations = make(map[string]mobileLlmAuthorizationRecord)
+	mobileLlmAuthorizations.qrSessions = make(map[string]mobileLlmQRSessionRecord)
+	mobileLlmAuthorizations.Unlock()
 	t.Cleanup(func() {
 		mobileDocuments.Lock()
 		mobileDocuments.drafts = previousDrafts
@@ -428,6 +824,10 @@ func clearMobileStateForTest(t *testing.T) {
 		mobileDigitalEmployeeTasks.Lock()
 		mobileDigitalEmployeeTasks.tasks = previousTasks
 		mobileDigitalEmployeeTasks.Unlock()
+		mobileLlmAuthorizations.Lock()
+		mobileLlmAuthorizations.authorizations = previousLLMAuthorizations
+		mobileLlmAuthorizations.qrSessions = previousLLMQRSessions
+		mobileLlmAuthorizations.Unlock()
 		mobileResetStatePersistenceForTest()
 	})
 }
@@ -436,7 +836,7 @@ func TestMobileProcessDocumentMarkdown(t *testing.T) {
 	markdown := "# Incident\n\nService returned 502 for 10 minutes.\n\nNginx was restarted."
 
 	summary := mobileProcessDocumentMarkdown("summarize", markdown)
-	if !strings.Contains(summary, "# Incident 摘要") {
+	if !strings.Contains(summary, "# Incident \u6458\u8981") {
 		t.Fatalf("summary = %q, want summary title", summary)
 	}
 	if !strings.Contains(summary, "Service returned 502") {
@@ -483,7 +883,7 @@ func TestMobileDocumentUploadClaimHandlerClaimsPendingTask(t *testing.T) {
 		Filename:    "screenshot.png",
 		ContentType: "image/png",
 		Status:      "needs_ocr",
-		Message:     "图片已导入为移动端草稿，等待 OCR/视觉模型识别。",
+		Message:     "\u56fe\u7247\u5df2\u5bfc\u5165\u4e3a\u79fb\u52a8\u7aef\u8349\u7a3f\uff0c\u7b49\u5f85 OCR/\u89c6\u89c9\u6a21\u578b\u8bc6\u522b\u3002",
 		SourceBytes: []byte("png bytes"),
 		UploadedAt:  now,
 		UpdatedAt:   now,
@@ -649,13 +1049,13 @@ func TestMobileDocumentUploadResultHandlerCompletesQueuedTask(t *testing.T) {
 		OwnerID:    enroll.UserID,
 		Filename:   "incident.pdf",
 		Status:     "queued",
-		Message:    "已上传，等待文档解析管线处理。",
+		Message:    "\u5df2\u4e0a\u4f20\uff0c\u7b49\u5f85\u6587\u6863\u89e3\u6790\u7ba1\u7ebf\u5904\u7406\u3002",
 		UploadedAt: now,
 		UpdatedAt:  now,
 	}
 	mobileDocuments.Unlock()
 
-	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-queued/result", strings.NewReader(`{"status":"ready","markdown":"# Incident\n\nOCR text","message":"解析完成"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-queued/result", strings.NewReader(`{"status":"ready","markdown":"# Incident\n\nOCR text","message":"\u89e3\u6790\u5b8c\u6210"}`))
 	req.SetPathValue("taskId", "upload-queued")
 	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
 	req.Header.Set("X-Machine-ID", enroll.MachineID)
@@ -669,7 +1069,7 @@ func TestMobileDocumentUploadResultHandlerCompletesQueuedTask(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload["status"] != "ready" || payload["message"] != "解析完成" {
+	if payload["status"] != "ready" || payload["message"] != "\u89e3\u6790\u5b8c\u6210" {
 		t.Fatalf("payload = %#v, want ready parsed result", payload)
 	}
 	draft, ok := payload["draft"].(map[string]any)
@@ -758,7 +1158,7 @@ func TestMobileDocumentUploadResultHandlerFailsOCRTask(t *testing.T) {
 	}
 	mobileDocuments.Unlock()
 
-	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-ocr/result", strings.NewReader(`{"status":"failed","error":"OCR 服务暂不可用。"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-ocr/result", strings.NewReader(`{"status":"failed","error":"OCR \u670d\u52a1\u6682\u4e0d\u53ef\u7528\u3002"}`))
 	req.SetPathValue("taskId", "upload-ocr")
 	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
 	req.Header.Set("X-Machine-ID", enroll.MachineID)
@@ -772,7 +1172,7 @@ func TestMobileDocumentUploadResultHandlerFailsOCRTask(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload["status"] != "failed" || payload["message"] != "OCR 服务暂不可用。" {
+	if payload["status"] != "failed" || payload["message"] != "OCR \u670d\u52a1\u6682\u4e0d\u53ef\u7528\u3002" {
 		t.Fatalf("payload = %#v, want failed OCR result", payload)
 	}
 }
@@ -798,7 +1198,7 @@ func TestMobileSSHAnalysisPayloadDetectsDiskFull(t *testing.T) {
 	if payload["status"] != "ready" {
 		t.Fatalf("status = %v, want ready", payload["status"])
 	}
-	if !strings.Contains(payload["summary"].(string), "磁盘空间不足") {
+	if !strings.Contains(payload["summary"].(string), "\u78c1\u76d8\u7a7a\u95f4\u4e0d\u8db3") {
 		t.Fatalf("summary = %v, want disk full summary", payload["summary"])
 	}
 	if !strings.Contains(payload["command_draft"].(string), "df -h") {
@@ -824,14 +1224,14 @@ func TestMobileUploadedEmptyTextDraftMarkdownUsesChineseFallback(t *testing.T) {
 	if !ok {
 		t.Fatal("mobileDraftMarkdownFromUpload returned ok=false")
 	}
-	if !strings.Contains(markdown, "导入文件为空") {
+	if !strings.Contains(markdown, "\u5bfc\u5165\u6587\u4ef6\u4e3a\u7a7a") {
 		t.Fatalf("markdown = %q, want Chinese empty-file fallback", markdown)
 	}
 }
 
 func TestMobileUploadTitleUsesChineseFallback(t *testing.T) {
-	if title := mobileUploadTitle(".txt"); title != "导入文档" {
-		t.Fatalf("title = %q, want 导入文档", title)
+	if title := mobileUploadTitle(".txt"); title != "\u5bfc\u5165\u6587\u6863" {
+		t.Fatalf("title = %q, want \u5bfc\u5165\u6587\u6863", title)
 	}
 }
 
@@ -895,7 +1295,7 @@ func TestMobileUploadedImageDraftMarkdown(t *testing.T) {
 	if !strings.Contains(markdown, "# screenshot") {
 		t.Fatalf("markdown = %q, want title", markdown)
 	}
-	if !strings.Contains(markdown, "等待 OCR") {
+	if !strings.Contains(markdown, "\u7b49\u5f85 OCR") {
 		t.Fatalf("markdown = %q, want OCR pending text", markdown)
 	}
 	if !strings.Contains(markdown, "640 x 480") {
@@ -911,7 +1311,7 @@ func TestMobileApplyUploadPipelineResultCompletesOCRDraft(t *testing.T) {
 		OwnerID:   "user-ocr",
 		Title:     "screenshot",
 		Template:  "report",
-		Markdown:  "# screenshot\n\n等待 OCR",
+		Markdown:  "# screenshot\n\n\u7b49\u5f85 OCR",
 		UpdatedAt: now.Add(-time.Minute),
 	}
 	record := mobileDocumentUploadRecord{
@@ -920,9 +1320,9 @@ func TestMobileApplyUploadPipelineResultCompletesOCRDraft(t *testing.T) {
 		Filename:    "screenshot.png",
 		Status:      "needs_ocr",
 		DraftID:     draft.ID,
-		Message:     "图片已导入为移动端草稿，等待 OCR/视觉模型识别。",
-		OCRMarkdown: "# screenshot\n\n识别文本：服务报错 502。",
-		OCRMessage:  "OCR 已完成。",
+		Message:     "\u56fe\u7247\u5df2\u5bfc\u5165\u4e3a\u79fb\u52a8\u7aef\u8349\u7a3f\uff0c\u7b49\u5f85 OCR/\u89c6\u89c9\u6a21\u578b\u8bc6\u522b\u3002",
+		OCRMarkdown: "# screenshot\n\n\u8bc6\u522b\u6587\u672c\uff1a\u670d\u52a1\u62a5\u9519 502\u3002",
+		OCRMessage:  "OCR \u5df2\u5b8c\u6210\u3002",
 		UploadedAt:  now.Add(-time.Minute),
 		UpdatedAt:   now.Add(-time.Minute),
 	}
@@ -936,10 +1336,10 @@ func TestMobileApplyUploadPipelineResultCompletesOCRDraft(t *testing.T) {
 	if !changed {
 		t.Fatal("expected OCR result to change upload state")
 	}
-	if updated.Status != "ready" || updated.Message != "OCR 已完成。" {
+	if updated.Status != "ready" || updated.Message != "OCR \u5df2\u5b8c\u6210\u3002" {
 		t.Fatalf("updated upload = %#v, want ready OCR completion", updated)
 	}
-	if !strings.Contains(updatedDraft.Markdown, "服务报错 502") {
+	if !strings.Contains(updatedDraft.Markdown, "\u670d\u52a1\u62a5\u9519 502") {
 		t.Fatalf("updated draft markdown = %q, want OCR text", updatedDraft.Markdown)
 	}
 	if !updatedDraft.UpdatedAt.Equal(now) {
@@ -956,7 +1356,7 @@ func TestMobileApplyUploadPipelineResultFailsOCRDraft(t *testing.T) {
 		Filename:  "screenshot.png",
 		Status:    "needs_ocr",
 		DraftID:   "draft-ocr",
-		OCRError:  "OCR 服务暂不可用。",
+		OCRError:  "OCR \u670d\u52a1\u6682\u4e0d\u53ef\u7528\u3002",
 		UpdatedAt: now.Add(-time.Minute),
 	}
 
@@ -967,7 +1367,7 @@ func TestMobileApplyUploadPipelineResultFailsOCRDraft(t *testing.T) {
 	if !changed {
 		t.Fatal("expected OCR error to change upload state")
 	}
-	if updated.Status != "failed" || updated.Message != "OCR 服务暂不可用。" {
+	if updated.Status != "failed" || updated.Message != "OCR \u670d\u52a1\u6682\u4e0d\u53ef\u7528\u3002" {
 		t.Fatalf("updated upload = %#v, want failed OCR error", updated)
 	}
 	if !updated.UpdatedAt.Equal(now) {
@@ -1011,13 +1411,17 @@ func mobileTestPNG(width, height int) []byte {
 
 func TestMobileDocumentExportPayloadReadyForPDF(t *testing.T) {
 	payload := mobileDocumentExportPayload(mobileDocumentExportRecord{
-		JobID:  "mobexp_1",
-		Format: "pdf",
-		Status: "ready",
+		JobID:   "mobexp_1",
+		Format:  "pdf",
+		Status:  "ready",
+		Message: "导出文件已生成，可下载或分享。",
 	})
 
 	if payload["download_url"] != "/api/mobile/documents/export/mobexp_1/download" {
 		t.Fatalf("download_url = %v, want ready download URL", payload["download_url"])
+	}
+	if payload["message"] != "导出文件已生成，可下载或分享。" {
+		t.Fatalf("message = %v, want ready message", payload["message"])
 	}
 }
 

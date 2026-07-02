@@ -31,6 +31,14 @@ func deployBuiltinSkills() {
 	if err != nil {
 		return
 	}
+	deployBuiltinSkillsToDir(primaryDir)
+}
+
+func deployBuiltinSkillsToDir(primaryDir string) {
+	primaryDir = strings.TrimSpace(primaryDir)
+	if primaryDir == "" {
+		return
+	}
 	if err := os.MkdirAll(primaryDir, 0o755); err != nil {
 		return
 	}

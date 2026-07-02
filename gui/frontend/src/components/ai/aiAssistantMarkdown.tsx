@@ -451,7 +451,7 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
                         color: recoveryTone.includes('failed')
                             ? "#b42318"
                             : recoveryTone.includes('partial')
-                                ? "#64748b"
+                                ? (t.isDark ? "#8a9ab0" : "#64748b")
                                 : "#4f7f6f",
                     }
                     : { color: t.text };

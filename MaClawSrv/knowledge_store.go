@@ -423,7 +423,7 @@ func (m *knowledgeStoreManager) Close() {
 }
 
 // resolveEmbeddingModelPath determines the embedding model file path.
-// Priority: MACLAW_EMBEDDING_MODEL_PATH env > $MACLAW_DATA_ROOT/models/ > ~/.maclaw/models/
+// Priority: MACLAW_EMBEDDING_MODEL_PATH env > $MACLAW_DATA_ROOT/models/ > active data directory models.
 func resolveEmbeddingModelPath(dataRoot string) string {
 	if custom := strings.TrimSpace(os.Getenv("MACLAW_EMBEDDING_MODEL_PATH")); custom != "" {
 		return custom
@@ -433,7 +433,7 @@ func resolveEmbeddingModelPath(dataRoot string) string {
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}
-	// Fall back to default path (~/.maclaw/models/)
+	// Fall back to the active data directory model path.
 	return embedding.DefaultModelPath()
 }
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -243,8 +243,6 @@ func (pr *PluginRegistry) Get(name string) (*PluginInfo, bool) {
 // and starts each plugin, and registers their tools into the tool.Registry.
 // A single plugin failure does not affect the others.
 func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginManifest) error {
-	home, _ := os.UserHomeDir()
-
 	for _, manifest := range manifests {
 		// 1. Create adapter via factory.
 		p := CreateAdapter(manifest)
@@ -254,7 +252,7 @@ func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginMa
 		}
 
 		// 2. Build PluginConfig.
-		dataDir := filepath.Join(home, ".maclaw", "data", "plugins", manifest.Name)
+		dataDir := filepath.Join(corelib.MaclawBaseDir(), "data", "plugins", manifest.Name)
 		cfg := PluginConfig{
 			DataDir:  dataDir,
 			Settings: ResolveEnvVars(manifest.Settings),

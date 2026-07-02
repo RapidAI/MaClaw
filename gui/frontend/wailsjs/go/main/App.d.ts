@@ -50,7 +50,13 @@ export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<v
 
 export function ActivateRemote(arg1:string,arg2:string,arg3:string):Promise<any>;
 
+export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
+
+export function GetRemoteRegistrationAuth(arg1:string):Promise<any>;
+
 export function ProbeRemoteHub(arg1:string,arg2:string):Promise<any>;
+
+export function SendRemoteRegistrationSMS(arg1:string,arg2:string):Promise<any>;
 
 export function ClearRemoteActivation():Promise<void>;
 
@@ -271,6 +277,10 @@ export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string)
 
 export function LoadConfig():Promise<main.AppConfig>;
 
+export function GetToolCacheStatus():Promise<any>;
+
+export function CleanToolCacheNow():Promise<any>;
+
 export function PatchConfigFields(arg1:Record<string, any>):Promise<main.AppConfig>;
 
 export function MaximiseAndSaveGeometry():Promise<boolean>;
@@ -294,6 +304,8 @@ export function RunRemoteToolSmoke(arg1:string,arg2:string,arg3:boolean):Promise
 export function RecoverCC():Promise<void>;
 
 export function ResizeWindow(arg1:number,arg2:number):Promise<void>;
+
+export function GetAdaptiveWindowSize():Promise<{width: number, height: number}>;
 
 export function RestoreWindowGeometry():Promise<void>;
 
@@ -404,6 +416,8 @@ export function CreateNLSkill(arg1:any):Promise<void>;
 
 export function UpdateNLSkill(arg1:any):Promise<void>;
 
+export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteNLSkill(arg1:string):Promise<void>;
 
 export function RenameNLSkill(arg1:string,arg2:string):Promise<void>;
@@ -478,6 +492,8 @@ export function CancelCodeGenSSOPolling():Promise<void>;
 export function FetchCodeGenModels():Promise<Array<any>>;
 
 export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<any>>;
+
+export function CreateMobileLLMDesktopQRSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<main.MobileLLMQRCodeSession>;
 
 export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
 

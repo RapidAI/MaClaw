@@ -69,6 +69,41 @@ func TestAppConfigMarshalKeepsUserMemoryZeroValues(t *testing.T) {
 	}
 }
 
+func TestAppConfigConfiguredHubCenterBaseURLFiltersLoopback(t *testing.T) {
+	cfg := AppConfig{
+		RemoteHubCenterURL: "http://127.0.0.1:65140",
+		RemoteHubCenterURLs: []string{
+			"http://localhost:9388",
+			"https://hubs.example.com/",
+		},
+	}
+
+	if got, want := cfg.ConfiguredHubCenterBaseURL(), "https://hubs.example.com"; got != want {
+		t.Fatalf("ConfiguredHubCenterBaseURL() = %q, want %q", got, want)
+	}
+	if got, want := cfg.SkillMarketBaseURL("https://default.example.com"), "https://hubs.example.com"; got != want {
+		t.Fatalf("SkillMarketBaseURL() = %q, want %q", got, want)
+	}
+}
+
+func TestAppConfigSkillMarketBaseURLDoesNotReturnDefaultAsConfirmed(t *testing.T) {
+	cfg := AppConfig{}
+
+	if got := cfg.SkillMarketBaseURL("https://default.example.com"); got != "" {
+		t.Fatalf("SkillMarketBaseURL() = %q, want empty without confirmed config", got)
+	}
+}
+
+func TestAppConfigHubCenterBaseURLsKeepsDefaultsAsCandidates(t *testing.T) {
+	cfg := AppConfig{RemoteHubCenterURL: "http://127.0.0.1:65140"}
+
+	got := cfg.HubCenterBaseURLs("http://127.0.0.1:9999", []string{"https://default.example.com"})
+	want := []string{"http://127.0.0.1:9999", "https://default.example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("HubCenterBaseURLs() = %#v, want %#v", got, want)
+	}
+}
+
 // TestAppConfig_UnmarshalIgnoresCompletelyUnknownTopLevelKeys verifies that
 // truly unknown top-level JSON keys (not mapped to any struct field) are
 // silently ignored by Go's json.Unmarshal.

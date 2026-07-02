@@ -3,13 +3,15 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 )
 
 type EntryProbeRequest struct {
-	Email string `json:"email"`
+	Email       string `json:"email"`
+	PhoneNumber string `json:"phone_number"`
 }
 
 func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
@@ -20,13 +22,14 @@ func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
 			return
 		}
 
-		tenantID, err := tenantIDForEmailRequest(r, service, req.Email)
+		identity := entryProbeIdentity(req)
+		tenantID, err := tenantIDForEmailRequest(r, service, identity)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
 			return
 		}
 
-		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantID), req.Email)
+		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantID), identity)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ENTRY_PROBE_FAILED", err.Error())
 			return
@@ -34,4 +37,24 @@ func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func entryProbeIdentity(req EntryProbeRequest) string {
+	if email := strings.TrimSpace(req.Email); email != "" {
+		return email
+	}
+	phone := strings.TrimSpace(req.PhoneNumber)
+	if strings.HasPrefix(strings.ToLower(phone), "phone:") {
+		phone = strings.TrimPrefix(strings.ToLower(phone), "phone:")
+	}
+	var b strings.Builder
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "phone:" + b.String()
 }

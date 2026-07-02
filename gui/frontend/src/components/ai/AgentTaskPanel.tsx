@@ -1694,7 +1694,7 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
                     <div style={{ color: theme.text, fontSize: 12 }}>⏳ 正在解析简历并提取信息...</div>
                 )}
                 {status === "done" && (
-                    <div style={{ color: "#16a34a", fontSize: 12 }}>✅ 已从简历中提取 {filledCount} 个字段，请核对后提交</div>
+                    <div style={{ color: "var(--theme-success, #16a34a)", fontSize: 12 }}>✅ 已从简历中提取 {filledCount} 个字段，请核对后提交</div>
                 )}
                 {status === "error" && (
                     <div style={{ color: theme.errorText, fontSize: 12 }}>{errorMsg}</div>

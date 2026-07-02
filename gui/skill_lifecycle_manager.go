@@ -93,6 +93,8 @@ func (m *SkillLifecycleManager) StartBackgroundProcessing(ctx context.Context, i
 	m.workerMu.Unlock()
 	go func() {
 		defer close(done)
+		// Startup: clean stale staging dirs and .prev backups older than 24h.
+		skill.CleanupAllStale(24 * time.Hour)
 		m.processUploadQueueInBackground(workerCtx, "startup")
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -270,6 +272,17 @@ func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Contex
 		return "", fmt.Errorf("skill market client not initialized")
 	}
 
+	// Pre-package: auto-fix portability issues on the SOURCE directory so that
+	// fixes persist across uploads. Previously auto-fix only ran on the tmpDir
+	// copy (which was deleted after upload), causing the same issues to reappear
+	// on every upload attempt.
+	if target := m.findRegisteredSkill(skillName); target != nil && strings.TrimSpace(target.SkillDir) != "" {
+		if _, fixErr := skill.PrepareSkillForUpload(target.SkillDir); fixErr != nil {
+			log.Printf("[skill-lifecycle] pre-upload auto-fix on source dir %q failed (non-fatal): %v", target.SkillDir, fixErr)
+			// Non-fatal: continue with the original files; tmpDir preflight will catch remaining issues.
+		}
+	}
+
 	zipPath, tmpDir, err := m.app.packageSkillForMarketWithDirForOutbound(skillName)
 	if err != nil {
 		return "", fmt.Errorf("package skill: %w", err)
@@ -277,7 +290,8 @@ func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Contex
 	defer os.Remove(zipPath)
 	defer os.RemoveAll(tmpDir)
 
-	preflight, err := skill.PrepareSkillForUpload(tmpDir)
+	// Validate the packaged copy (auto-fix disabled since source was already fixed above).
+	preflight, err := skill.PrepareSkillForUploadWithOptions(tmpDir, skill.UploadPreflightOptions{AutoFix: false})
 	if err != nil {
 		return "", fmt.Errorf("upload preflight failed: %w", err)
 	}

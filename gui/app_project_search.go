@@ -520,7 +520,7 @@ func (a *App) saveCurrentConversationForTask(taskProjectPath, executionProjectPa
 		return
 	}
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return
 	}
@@ -540,7 +540,7 @@ func (a *App) saveCurrentConversationForTask(taskProjectPath, executionProjectPa
 // assistant conversation. The frontend lets the user edit this before saving.
 func (a *App) SuggestCurrentTaskName() string {
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return "Saved task"
 	}
@@ -1017,7 +1017,7 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
 	started := time.Now()
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=hub_client_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
 		return
@@ -1065,7 +1065,7 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		return []ProjectConversationHistoryItem{}
 	}
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return []ProjectConversationHistoryItem{}
 	}
@@ -1124,7 +1124,7 @@ func (a *App) cancelProjectTaskLoop(projectPath string) {
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopOwner(ownerID)
 	}
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		log.Printf("[project_search] cancel project task loop skipped project=%q reason=hub_client_unavailable", projectPath)
 		return
@@ -1166,7 +1166,7 @@ func (a *App) ForkConversationToProject(projectPath string) {
 		return
 	}
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return
 	}
@@ -1296,7 +1296,7 @@ func (a *App) ResumeProject(projectPath string) string {
 	//    We do this on the backend so the frontend's subsequent clearHistory()
 	//    is a no-op (idempotent Clear on already-empty memory).
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient != nil {
 		handler := hubClient.ensureIMHandler()
 		if handler != nil {

@@ -69,16 +69,18 @@ export const SidebarNavRail = ({
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
     const showRanking = config?.show_hub_ranking !== false; // default: show
-    const hasRegistered = !!(config?.remote_machine_id && config?.remote_machine_token);
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
     const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
+    const rankingRequestSeqRef = useRef(0);
 
     const fetchRanking = useCallback(() => {
-        if (!showRanking || !hasRegistered) { setMedal(null); return; }
+        const requestSeq = ++rankingRequestSeqRef.current;
+        if (!showRanking) { setMedal(null); return; }
         GetHubUserRanking()
             .then((result) => {
+                if (requestSeq !== rankingRequestSeqRef.current) return;
                 const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; rank_change?: number; error?: string } | null;
-                if (!r || r.error) return;
+                if (!r || r.error) { setMedal(null); return; }
                 const tRank = r.token_rank || 0;
                 const dRank = r.duration_rank || 0;
                 // Pick the best (lowest non-zero) rank — show regardless of position
@@ -88,17 +90,17 @@ export const SidebarNavRail = ({
                 if (bestRank === 0) { setMedal(null); return; }
                 setMedal({ rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0, rankChange: r.rank_change || 0, trophyThreshold });
             })
-            .catch(() => undefined);
-    }, [showRanking, hasRegistered, trophyThreshold]);
+            .catch(() => { if (requestSeq === rankingRequestSeqRef.current) setMedal(null); });
+    }, [showRanking, trophyThreshold]);
+    const fetchRankingRef = useRef(fetchRanking);
+    useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
 
     useEffect(() => {
         fetchRanking();
     }, [fetchRanking]);
-    const fetchRankingRef = useRef(fetchRanking);
-    useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
     // Refresh ranking when token usage changes — throttled to avoid flooding Hub API.
     useEffect(() => {
-        if (!showRanking || !hasRegistered) return;
+        if (!showRanking) return;
         let throttleTimer: number | undefined;
         let pending = false;
         const onTokenUsageChanged = () => {
@@ -123,7 +125,7 @@ export const SidebarNavRail = ({
             window.clearTimeout(throttleTimer);
             if (typeof unsubscribe === 'function') unsubscribe();
         };
-    }, [showRanking, hasRegistered]);
+    }, [showRanking]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';

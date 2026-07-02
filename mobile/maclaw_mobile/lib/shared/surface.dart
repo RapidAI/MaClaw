@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class ScreenScaffold extends StatelessWidget {
+import '../core/network/mobile_network_status.dart';
+
+class ScreenScaffold extends ConsumerWidget {
   final String title;
   final String subtitle;
   final List<Widget> children;
@@ -15,8 +18,9 @@ class ScreenScaffold extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
+    final network = ref.watch(mobileNetworkStatusProvider);
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
       children: [
@@ -42,8 +46,49 @@ class ScreenScaffold extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 20),
+        _NetworkStatusBanner(status: network),
+        if (network.valueOrNull?.offline == true) const SizedBox(height: 12),
         ...children,
       ],
+    );
+  }
+}
+
+class _NetworkStatusBanner extends StatelessWidget {
+  final AsyncValue<MobileNetworkSnapshot> status;
+
+  const _NetworkStatusBanner({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = status.valueOrNull;
+    if (snapshot == null || !snapshot.offline) {
+      return const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.wifi_off_outlined, color: scheme.onErrorContainer),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                snapshot.message,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onErrorContainer,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -86,8 +131,7 @@ class ActionTile extends StatelessWidget {
                   Text(
                     subtitle,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   ),
                   const SizedBox(height: 12),
@@ -107,4 +151,3 @@ class ActionTile extends StatelessWidget {
     );
   }
 }
-

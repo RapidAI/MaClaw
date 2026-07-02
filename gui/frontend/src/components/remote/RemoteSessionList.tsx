@@ -444,7 +444,7 @@ export function RemoteSessionList(props: Props) {
                                                 textAlign: "left",
                                             }}>
                                                 {previewLines.length === 0 ? (
-                                                    <span style={{ color: "#555" }}>$ _</span>
+                                                    <span style={{ color: "#7a7a7a" }}>$ _</span>
                                                 ) : (
                                                     previewLines.slice(-12).map((line, i) => (
                                                         <div key={i} style={{ minHeight: "1.2em" }}>

@@ -80,22 +80,24 @@ type GroupBinding struct {
 }
 
 type UserBinding struct {
+	UserID          string   `json:"user_id,omitempty"`
 	Email           string   `json:"email"`
 	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
 }
 
 type RechargeCard struct {
-	ID              string             `json:"id"`
-	CodeHash        string             `json:"code_hash,omitempty"`
-	EncryptedCode   string             `json:"encrypted_code,omitempty"`
-	Label           string             `json:"label,omitempty"`
-	ServiceGroupIDs []string           `json:"service_group_ids,omitempty"`
-	DurationDays    int                `json:"duration_days"`
-	Credits         float64            `json:"credits,omitempty"`
-	PeriodLimits    CreditPeriodLimits `json:"period_limits,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	RedeemedByEmail string             `json:"redeemed_by_email,omitempty"`
-	RedeemedAt      *time.Time         `json:"redeemed_at,omitempty"`
+	ID               string             `json:"id"`
+	CodeHash         string             `json:"code_hash,omitempty"`
+	EncryptedCode    string             `json:"encrypted_code,omitempty"`
+	Label            string             `json:"label,omitempty"`
+	ServiceGroupIDs  []string           `json:"service_group_ids,omitempty"`
+	DurationDays     int                `json:"duration_days"`
+	Credits          float64            `json:"credits,omitempty"`
+	PeriodLimits     CreditPeriodLimits `json:"period_limits,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	RedeemedByUserID string             `json:"redeemed_by_user_id,omitempty"`
+	RedeemedByEmail  string             `json:"redeemed_by_email,omitempty"`
+	RedeemedAt       *time.Time         `json:"redeemed_at,omitempty"`
 }
 
 type CreditPeriodLimits struct {
@@ -125,6 +127,7 @@ func (c RechargeCard) PlainCode() string {
 
 type Grant struct {
 	ID             string             `json:"id"`
+	UserID         string             `json:"user_id,omitempty"`
 	Email          string             `json:"email"`
 	ServiceGroupID string             `json:"service_group_id"`
 	Source         string             `json:"source"`
@@ -239,11 +242,100 @@ func SaveRegistry(ctx context.Context, system SystemSettingsRepository, reg *Reg
 	return system.Set(ctx, RegistryKey, string(data))
 }
 
+// BackfillRegistryUserIDs fills user_id on legacy LLM grants, bindings, and
+// redeemed cards by matching their legacy email/account values to users.
+func BackfillRegistryUserIDs(ctx context.Context, system SystemSettingsRepository, users store.UserRepository, tenantID string) (bool, error) {
+	if system == nil || users == nil {
+		return false, nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return false, err
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	cache := map[string]string{}
+	lookup := func(account string) (string, error) {
+		account = normalizeEmail(account)
+		if account == "" {
+			return "", nil
+		}
+		if cached, ok := cache[account]; ok {
+			return cached, nil
+		}
+		var user *store.User
+		var err error
+		if strings.HasPrefix(account, "phone:") {
+			user, err = users.GetByTenantIdentity(ctx, tenantID, "phone", strings.TrimPrefix(account, "phone:"))
+		} else {
+			user, err = users.GetByTenantEmail(ctx, tenantID, account)
+		}
+		if err != nil {
+			return "", err
+		}
+		userID := ""
+		if user != nil {
+			userID = normalizeUserID(user.ID)
+		}
+		cache[account] = userID
+		return userID, nil
+	}
+	changed := false
+	for i := range reg.UserBindings {
+		if normalizeUserID(reg.UserBindings[i].UserID) != "" {
+			continue
+		}
+		userID, err := lookup(reg.UserBindings[i].Email)
+		if err != nil {
+			return false, err
+		}
+		if userID != "" {
+			reg.UserBindings[i].UserID = userID
+			changed = true
+		}
+	}
+	for i := range reg.Grants {
+		if normalizeUserID(reg.Grants[i].UserID) != "" {
+			continue
+		}
+		userID, err := lookup(reg.Grants[i].Email)
+		if err != nil {
+			return false, err
+		}
+		if userID != "" {
+			reg.Grants[i].UserID = userID
+			changed = true
+		}
+	}
+	for i := range reg.Cards {
+		if normalizeUserID(reg.Cards[i].RedeemedByUserID) != "" {
+			continue
+		}
+		userID, err := lookup(reg.Cards[i].RedeemedByEmail)
+		if err != nil {
+			return false, err
+		}
+		if userID != "" {
+			reg.Cards[i].RedeemedByUserID = userID
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, SaveRegistry(ctx, system, reg)
+}
+
 // PurgeUserFromRegistry removes all user-specific data (bindings, grants, redeemed cards)
 // for the given email from the LLM service registry and persists the change.
 func PurgeUserFromRegistry(ctx context.Context, system SystemSettingsRepository, email string) error {
-	email = normalizeEmail(email)
-	if email == "" || system == nil {
+	return PurgeUserFromRegistryForUser(ctx, system, "", email)
+}
+
+// PurgeUserFromRegistryForUser removes all user-specific data for the canonical
+// user ID, while still matching legacy email/phone account values.
+func PurgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	owner := newUserAccountRef(userID, email)
+	if owner.empty() || system == nil {
 		return nil
 	}
 	reg, err := LoadRegistry(ctx, system)
@@ -255,10 +347,10 @@ func PurgeUserFromRegistry(ctx context.Context, system SystemSettingsRepository,
 	// Remove user bindings.
 	filtered := reg.UserBindings[:0]
 	for _, ub := range reg.UserBindings {
-		if normalizeEmail(ub.Email) != email {
-			filtered = append(filtered, ub)
-		} else {
+		if bindingMatchesUser(ub, owner) {
 			changed = true
+		} else {
+			filtered = append(filtered, ub)
 		}
 	}
 	reg.UserBindings = filtered
@@ -266,21 +358,21 @@ func PurgeUserFromRegistry(ctx context.Context, system SystemSettingsRepository,
 	// Remove grants.
 	filteredGrants := reg.Grants[:0]
 	for _, g := range reg.Grants {
-		if normalizeEmail(g.Email) != email {
-			filteredGrants = append(filteredGrants, g)
-		} else {
+		if grantMatchesUser(g, owner) {
 			changed = true
+		} else {
+			filteredGrants = append(filteredGrants, g)
 		}
 	}
 	reg.Grants = filteredGrants
 
-	// Remove redeemed cards (cards whose RedeemedByEmail matches email).
+	// Remove redeemed cards.
 	filteredCards := reg.Cards[:0]
 	for _, c := range reg.Cards {
-		if normalizeEmail(c.RedeemedByEmail) != email {
-			filteredCards = append(filteredCards, c)
-		} else {
+		if cardRedeemedByUser(c, owner) {
 			changed = true
+		} else {
+			filteredCards = append(filteredCards, c)
 		}
 	}
 	reg.Cards = filteredCards
@@ -318,6 +410,7 @@ func (r *Registry) Normalize() {
 	}
 	r.GroupBindings = mergeGroupBindings(r.GroupBindings)
 	for i := range r.UserBindings {
+		r.UserBindings[i].UserID = normalizeUserID(r.UserBindings[i].UserID)
 		r.UserBindings[i].Email = normalizeEmail(r.UserBindings[i].Email)
 		r.UserBindings[i].ServiceGroupIDs = normalizeStringSlice(r.UserBindings[i].ServiceGroupIDs)
 	}
@@ -328,6 +421,7 @@ func (r *Registry) Normalize() {
 		r.Cards[i].EncryptedCode = strings.TrimSpace(r.Cards[i].EncryptedCode)
 		r.Cards[i].Label = strings.TrimSpace(r.Cards[i].Label)
 		r.Cards[i].ServiceGroupIDs = normalizeStringSlice(r.Cards[i].ServiceGroupIDs)
+		r.Cards[i].RedeemedByUserID = normalizeUserID(r.Cards[i].RedeemedByUserID)
 		r.Cards[i].RedeemedByEmail = normalizeEmail(r.Cards[i].RedeemedByEmail)
 		if r.Cards[i].DurationDays < 0 {
 			r.Cards[i].DurationDays = 0
@@ -339,6 +433,7 @@ func (r *Registry) Normalize() {
 	}
 	for i := range r.Grants {
 		r.Grants[i].ID = strings.TrimSpace(r.Grants[i].ID)
+		r.Grants[i].UserID = normalizeUserID(r.Grants[i].UserID)
 		r.Grants[i].Email = normalizeEmail(r.Grants[i].Email)
 		r.Grants[i].ServiceGroupID = strings.TrimSpace(r.Grants[i].ServiceGroupID)
 		r.Grants[i].Source = strings.TrimSpace(r.Grants[i].Source)
@@ -392,23 +487,28 @@ func mergeGroupBindings(items []GroupBinding) []GroupBinding {
 }
 
 func mergeUserBindings(items []UserBinding) []UserBinding {
-	indexByEmail := map[string]int{}
+	indexByKey := map[string]int{}
 	out := make([]UserBinding, 0, len(items))
 	for _, item := range items {
+		userID := normalizeUserID(item.UserID)
 		email := normalizeEmail(item.Email)
-		if email == "" {
+		if userID == "" && email == "" {
 			continue
 		}
 		ids := normalizeStringSlice(item.ServiceGroupIDs)
 		if len(ids) == 0 {
 			continue
 		}
-		if idx, ok := indexByEmail[email]; ok {
+		key := userID
+		if key == "" {
+			key = "email:" + email
+		}
+		if idx, ok := indexByKey[key]; ok {
 			out[idx].ServiceGroupIDs = normalizeStringSlice(append(out[idx].ServiceGroupIDs, ids...))
 			continue
 		}
-		indexByEmail[email] = len(out)
-		out = append(out, UserBinding{Email: email, ServiceGroupIDs: ids})
+		indexByKey[key] = len(out)
+		out = append(out, UserBinding{UserID: userID, Email: email, ServiceGroupIDs: ids})
 	}
 	return out
 }
@@ -835,6 +935,10 @@ func normalizeStringSlice(items []string) []string {
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizeUserID(userID string) string {
+	return strings.TrimSpace(userID)
 }
 
 func HashCode(code string) string {

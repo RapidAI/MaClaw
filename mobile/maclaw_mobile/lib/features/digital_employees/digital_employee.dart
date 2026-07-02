@@ -20,6 +20,24 @@ class DigitalEmployee {
   });
 
   bool get online => onlineStatus.toLowerCase() == 'online';
+  bool get canSubmitTask => online && !runtimeMissing;
+
+  String get accessPolicyLabel {
+    return switch (accessPolicy.toLowerCase()) {
+      'public' => '公开可用',
+      'private' => '私有授权',
+      'per_request' => '按次授权',
+      'owner_confirm' => '需拥有者确认',
+      _ => '策略：$accessPolicy',
+    };
+  }
+
+  String get residencyLabel => resident ? '常驻远程端' : '按需唤起';
+
+  String get runtimeLabel {
+    if (runtimeMissing) return '远程运行时缺失';
+    return online ? '远程端在线' : '远程端离线';
+  }
 
   factory DigitalEmployee.fromJson(Map<String, dynamic> json) {
     return DigitalEmployee(
@@ -34,4 +52,3 @@ class DigitalEmployee {
     );
   }
 }
-

@@ -73,12 +73,24 @@ func (s *MDNSScanner) Stop() {
 	log.Println("[MDNSScanner] stopped")
 }
 
-// loop runs the periodic scan cycle.
+// loop runs the periodic scan cycle with exponential backoff when no services
+// are found — avoids wasting CPU/network on environments without MCP services.
 func (s *MDNSScanner) loop() {
-	// Run an initial scan immediately on start.
-	s.scan()
+	// Delay the first scan to avoid competing with other startup I/O.
+	// The 10-second grace period lets embedding model load, Hub connect, etc.
+	// complete first.
+	select {
+	case <-s.stopCh:
+		return
+	case <-time.After(10 * time.Second):
+	}
 
-	ticker := time.NewTicker(scanInterval)
+	found := s.scanAndReport()
+
+	currentInterval := scanInterval
+	const maxInterval = 5 * time.Minute
+
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -86,19 +98,34 @@ func (s *MDNSScanner) loop() {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			s.scan()
+			found = s.scanAndReport()
+			if found {
+				// Services found — reset to base interval.
+				if currentInterval != scanInterval {
+					currentInterval = scanInterval
+					ticker.Reset(currentInterval)
+				}
+			} else {
+				// No services — back off (30s → 60s → 120s → 5min cap).
+				newInterval := currentInterval * 2
+				if newInterval > maxInterval {
+					newInterval = maxInterval
+				}
+				if newInterval != currentInterval {
+					currentInterval = newInterval
+					ticker.Reset(currentInterval)
+				}
+			}
 		}
 	}
 }
 
-// scan sends an mDNS query for _mcp._tcp.local. and processes responses.
-func (s *MDNSScanner) scan() {
+// scanAndReport performs a scan and returns whether any services were found.
+func (s *MDNSScanner) scanAndReport() bool {
 	entries, err := s.queryMDNS()
 	if err != nil {
-		log.Printf("[MDNSScanner] scan error: %v", err)
-		return
+		return false
 	}
-
 	for _, entry := range entries {
 		serverEntry := corelib.MCPServerEntry{
 			ID:          fmt.Sprintf("mdns-%s-%d", entry.Host, entry.Port),
@@ -110,6 +137,7 @@ func (s *MDNSScanner) scan() {
 			log.Printf("[MDNSScanner] failed to register %s: %v", entry.Name, err)
 		}
 	}
+	return len(entries) > 0
 }
 
 // queryMDNS sends an mDNS PTR query for _mcp._tcp.local. over multicast UDP

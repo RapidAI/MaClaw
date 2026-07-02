@@ -158,6 +158,55 @@ const ROUTING_I18N = {
   }
 };
 const srx = (key, vars = {}) => ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const REGISTRATION_AUTH_I18N = {
+  en: {
+    title: 'Registration Verification',
+    desc: 'Choose the verification method used when users register.',
+    reload: 'Reload',
+    method: 'Verification Method',
+    email: 'Email Registration',
+    phone: 'Phone Registration',
+    emailHint: 'Default mode. Registration continues to use email verification.',
+    phoneHint: 'Phone registration uses Aliyun Dypnsapi SMS verification.',
+    accessKeyID: 'Aliyun AccessKey ID',
+    accessKeySecret: 'Aliyun AccessKey Secret',
+    signName: 'Aliyun SMS SignName',
+    ttlMinutes: 'Code TTL (minutes)',
+    codeLength: 'Code Length',
+    dailySMSLimit: 'Daily SMS limit per phone',
+    buyPackage: 'Buy SMS Verification Package',
+    save: 'Save Verification Settings',
+    saving: 'Saving...',
+    saved: 'Registration verification settings saved.',
+    loadFailed: 'Load registration verification settings failed: {error}',
+    saveFailed: 'Save registration verification settings failed: {error}',
+    required: 'Aliyun AccessKey ID, AccessKey Secret, SignName, valid TTL, code length, and daily SMS limit are required for phone registration.'
+  },
+  zh: {
+    title: '\u6ce8\u518c\u9a8c\u8bc1\u65b9\u5f0f',
+    desc: '\u9009\u62e9\u7528\u6237\u6ce8\u518c\u65f6\u4f7f\u7528\u7684\u9a8c\u8bc1\u65b9\u5f0f\u3002',
+    reload: '\u5237\u65b0',
+    method: '\u9a8c\u8bc1\u65b9\u5f0f',
+    email: '\u90ae\u7bb1\u6ce8\u518c',
+    phone: '\u624b\u673a\u53f7\u6ce8\u518c',
+    emailHint: '\u9ed8\u8ba4\u6a21\u5f0f\uff0c\u6ce8\u518c\u7ee7\u7eed\u4f7f\u7528\u90ae\u7bb1\u9a8c\u8bc1\u3002',
+    phoneHint: '\u624b\u673a\u53f7\u6ce8\u518c\u4f7f\u7528\u963f\u91cc\u4e91 Dypnsapi \u77ed\u4fe1\u9a8c\u8bc1\u3002',
+    accessKeyID: '\u963f\u91cc\u4e91 AccessKey ID',
+    accessKeySecret: '\u963f\u91cc\u4e91 AccessKey Secret',
+    signName: '\u963f\u91cc\u4e91\u77ed\u4fe1\u7b7e\u540d',
+    ttlMinutes: '\u9a8c\u8bc1\u7801\u6709\u6548\u671f\uff08\u5206\u949f\uff09',
+    codeLength: '\u9a8c\u8bc1\u7801\u4f4d\u6570',
+    dailySMSLimit: '\u540c\u4e00\u624b\u673a\u53f7\u6bcf\u65e5\u6700\u591a\u53d1\u9001\u6b21\u6570',
+    buyPackage: '\u77ed\u4fe1\u8ba4\u8bc1\u5305\u8d2d\u4e70',
+    save: '\u4fdd\u5b58\u9a8c\u8bc1\u8bbe\u7f6e',
+    saving: '\u4fdd\u5b58\u4e2d...',
+    saved: '\u6ce8\u518c\u9a8c\u8bc1\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002',
+    loadFailed: '\u52a0\u8f7d\u6ce8\u518c\u9a8c\u8bc1\u8bbe\u7f6e\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u6ce8\u518c\u9a8c\u8bc1\u8bbe\u7f6e\u5931\u8d25: {error}',
+    required: '\u624b\u673a\u53f7\u6ce8\u518c\u9700\u8981\u586b\u5199\u963f\u91cc\u4e91 AccessKey ID\u3001AccessKey Secret\u3001\u77ed\u4fe1\u7b7e\u540d\u3001\u6709\u6548\u5206\u949f\u6570\u3001\u9a8c\u8bc1\u7801\u4f4d\u6570\u548c\u6bcf\u65e5\u53d1\u9001\u4e0a\u9650\u3002'
+  }
+};
+const rax = (key, vars = {}) => ((REGISTRATION_AUTH_I18N[currentLang] || REGISTRATION_AUTH_I18N.en)[key] || REGISTRATION_AUTH_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_MAIL_SENDER_I18N = {
   en: {
     title: 'Mail Sender Name',
@@ -318,6 +367,98 @@ function applySystemRoutingI18n() {
   _s('systemCorporateEmailDomains', 'placeholder', srx('domainsPlaceholder'));
   updateSystemRoutingModeState();
 }
+function applyRegistrationAuthI18n() {
+  _s('registrationAuthTitle', 'textContent', rax('title'));
+  _s('registrationAuthDesc', 'textContent', rax('desc'));
+  _s('registrationAuthReloadBtn', 'textContent', rax('reload'));
+  _s('registrationAuthMethodLabel', 'textContent', rax('method'));
+  _s('registrationAuthMethodEmail', 'textContent', rax('email'));
+  _s('registrationAuthMethodPhone', 'textContent', rax('phone'));
+  _s('registrationAuthAliyunAccessKeyIDLabel', 'textContent', rax('accessKeyID'));
+  _s('registrationAuthAliyunAccessKeySecretLabel', 'textContent', rax('accessKeySecret'));
+  _s('registrationAuthAliyunSignNameLabel', 'textContent', rax('signName'));
+  _s('registrationAuthCodeTTLMinutesLabel', 'textContent', rax('ttlMinutes'));
+  _s('registrationAuthCodeLengthLabel', 'textContent', rax('codeLength'));
+  _s('registrationAuthDailySMSLimitLabel', 'textContent', rax('dailySMSLimit'));
+  _s('registrationAuthBuyLink', 'textContent', rax('buyPackage'));
+  _s('registrationAuthSaveBtn', 'textContent', rax('save'));
+  updateRegistrationAuthModeState();
+}
+function registrationAuthIsPhoneMode() {
+  const el = document.getElementById('registrationAuthMethod');
+  return el && el.value === 'phone';
+}
+function updateRegistrationAuthModeState() {
+  const phoneMode = registrationAuthIsPhoneMode();
+  const fields = document.getElementById('registrationAuthAliyunFields');
+  const buy = document.getElementById('registrationAuthBuyWrap');
+  if (fields) fields.classList.toggle('hidden', !phoneMode);
+  if (buy) buy.classList.toggle('hidden', !phoneMode);
+  _s('registrationAuthHint', 'textContent', rax(phoneMode ? 'phoneHint' : 'emailHint'));
+}
+function renderRegistrationAuthConfig(cfg = {}) {
+  const method = String(cfg.method || 'email').toLowerCase() === 'phone' ? 'phone' : 'email';
+  const methodEl = document.getElementById('registrationAuthMethod');
+  if (methodEl) methodEl.value = method;
+  _s('registrationAuthAliyunAccessKeyID', 'value', cfg.aliyun_access_key_id || '');
+  _s('registrationAuthAliyunAccessKeySecret', 'value', cfg.aliyun_access_key_secret || '');
+  _s('registrationAuthAliyunSignName', 'value', cfg.aliyun_sign_name || '速通互联验证平台');
+  _s('registrationAuthCodeTTLMinutes', 'value', String(cfg.code_ttl_minutes || 5));
+  _s('registrationAuthCodeLength', 'value', String(cfg.code_length || 4));
+  _s('registrationAuthDailySMSLimit', 'value', String(cfg.daily_sms_limit || 3));
+  const link = document.getElementById('registrationAuthBuyLink');
+  if (link) link.href = cfg.aliyun_sms_buy_url || 'https://common-buy.aliyun.com/?commodityCode=dypns_smsverify_public_cn#buy';
+  updateRegistrationAuthModeState();
+}
+async function loadRegistrationAuthConfig() {
+  applyRegistrationAuthI18n();
+  try {
+    const data = await api('/api/admin/settings/registration-auth');
+    renderRegistrationAuthConfig(data || {});
+    return data || {};
+  } catch (err) {
+    const msg = rax('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function saveRegistrationAuthConfig() {
+  const method = registrationAuthIsPhoneMode() ? 'phone' : 'email';
+  const payload = {
+    method,
+    aliyun_access_key_id: (document.getElementById('registrationAuthAliyunAccessKeyID') && document.getElementById('registrationAuthAliyunAccessKeyID').value || '').trim(),
+    aliyun_access_key_secret: (document.getElementById('registrationAuthAliyunAccessKeySecret') && document.getElementById('registrationAuthAliyunAccessKeySecret').value || '').trim(),
+    aliyun_sign_name: (document.getElementById('registrationAuthAliyunSignName') && document.getElementById('registrationAuthAliyunSignName').value || '').trim(),
+    aliyun_template_code: '100001',
+    code_ttl_minutes: Number((document.getElementById('registrationAuthCodeTTLMinutes') && document.getElementById('registrationAuthCodeTTLMinutes').value || '5').trim()),
+    code_length: Number((document.getElementById('registrationAuthCodeLength') && document.getElementById('registrationAuthCodeLength').value || '4').trim()),
+    daily_sms_limit: Number((document.getElementById('registrationAuthDailySMSLimit') && document.getElementById('registrationAuthDailySMSLimit').value || '3').trim())
+  };
+  if (method === 'phone' && (!payload.aliyun_access_key_id || !payload.aliyun_access_key_secret || !payload.aliyun_sign_name || !Number.isFinite(payload.code_ttl_minutes) || payload.code_ttl_minutes < 1 || payload.code_ttl_minutes > 30 || !Number.isFinite(payload.code_length) || payload.code_length < 4 || payload.code_length > 8 || !Number.isFinite(payload.daily_sms_limit) || payload.daily_sms_limit < 1 || payload.daily_sms_limit > 50)) {
+    const msg = rax('required');
+    setOutput(msg);
+    showToast(msg, 'error');
+    return;
+  }
+  const btn = document.getElementById('registrationAuthSaveBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = rax('saving'); }
+  try {
+    const data = await api('/api/admin/settings/registration-auth', { method: 'PUT', body: JSON.stringify(payload) });
+    renderRegistrationAuthConfig(data || payload);
+    const msg = rax('saved');
+    setOutput(msg);
+    showToast(msg, 'success');
+    return data || payload;
+  } catch (err) {
+    const msg = rax('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+    throw err;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = previousLabel || rax('save'); }
+  }
+}
 function systemRoutingIsEnterpriseMode() {
   const mode = document.getElementById('systemWorkMode');
   return !mode || mode.value !== 'public';
@@ -434,6 +575,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   window.AdminTabRegistry.onLanguageChange(function() {
     applyTLSI18n();
     applySystemRoutingI18n();
+    applyRegistrationAuthI18n();
     applyTenantMailSenderI18n();
     applyTenantMigrationSettingsI18n();
     applyTenantSystemLLMDefaultsI18n();
@@ -441,6 +583,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
 }
 applyTLSI18n();
 applySystemRoutingI18n();
+applyRegistrationAuthI18n();
 applyTenantMailSenderI18n();
 applyTenantMigrationSettingsI18n();
 applyTenantSystemLLMDefaultsI18n();

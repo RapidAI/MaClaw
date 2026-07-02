@@ -88,15 +88,15 @@
     const I18N = {
       zh: {
         title: 'MaClaw 商店', brandName: 'MaClaw 商店', brandSubtitle: '购买服务兑换卡', tenantLabel: '租户', tenantNotSet: '未指定', creditsCenter: '额度中心', reload: '刷新',
-        eyebrowStore: 'Service Card Store', heroTitle: '购买服务兑换卡', heroLead: '选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册邮箱后创建支付订单，支付完成后页面会显示服务兑换码并发送到邮箱。',
+        eyebrowStore: 'Service Card Store', heroTitle: '购买服务兑换卡', heroLead: '选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册账户后创建支付订单，支付完成后页面会显示服务兑换码；邮箱账户会收到邮件，手机账户可自动充值。',
         loading: '加载中...', storeEnabled: '商店已启用', storeDisabled: '商店未启用', loadFailed: '商品加载失败', priceConfigured: '所有价格由后台「在线商店」配置。',
         paymentTitle: '支付后续', paymentDesc: '支付通知验签成功后，系统自动生成服务兑换码。', recoveryTitleShort: '邮箱找回', recoveryDescShort: '忘记兑换码时可用购买邮箱重新发送。',
         catalogEyebrow: 'Catalog', catalogTitle: '可购买卡种', catalogDesc: '服务卡覆盖固定周期，点卡用于补充 credits。',
-        serviceCard: '服务兑换卡', creditsCard: '纯点卡', periodLimitLabel: '周期限制', noPeriodLimit: '无周期限制', usageScenarioLabel: '适用场景', buy: '购买', registeredEmail: '注册邮箱', secondaryEmail: '第二邮箱（可选）', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置邮箱', accountHint: '购买邮箱', changeEmail: '更换邮箱', emailDialogTitle: '确认购买邮箱', emailDialogDesc: '服务兑换码会发送到该邮箱；如果邮箱匹配已注册账户，支付后会自动充值。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
+        serviceCard: '服务兑换卡', creditsCard: '纯点卡', periodLimitLabel: '周期限制', noPeriodLimit: '无周期限制', usageScenarioLabel: '适用场景', buy: '购买', registeredEmail: '注册账户', secondaryEmail: '第二邮箱（可选）', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置账户', accountHint: '购买账户', changeEmail: '更换账户', emailDialogTitle: '确认购买账户', emailDialogDesc: '可填写注册邮箱或 phone:手机号。邮箱账户会收到兑换码邮件；手机账户支付后自动充值，兑换码会保留在页面。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
         recoveryEyebrow: 'Recovery', recoveryTitle: '找回服务兑换码', recoveryDesc: '输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。', recoverEmailLabel: '购买邮箱', recoverEmailPlaceholder: 'name@example.com', captchaLabel: '图形验证码', captchaPlaceholder: '输入结果', captchaRefresh: '换一题', captchaInvalid: '请填写正确的计算结果', recoverButton: '发送找回邮件',
-        enterEmail: '请填写注册邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒店主，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码', productLabel: '商品', payDone: '我已扫码支付完成', payDoneSending: '正在通知店主...', payDoneSent: '已通知店主', payDoneWarning: '重要：扫码付款后必须点击“支付完成”按钮，否则店主不会收到确认邮件，订单可能无法及时处理。', payDoneFirst: '请扫码付款后点击“支付完成”，店主才会收到确认邮件。',
-        serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册邮箱账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
-        resultSuccessTitle: '支付成功', resultPendingTitle: '正在确认支付结果...', resultSuccessLead: '订单已完成，服务兑换码已生成。', resultAutoRedeemedLead: '已自动充值到注册邮箱账户，兑换码作为备用凭证保留。', resultPendingLead: '正在读取订单状态，确认后会在这里显示兑换码。', resultBackupCode: '备用服务兑换码', copyCode: '复制兑换码', copied: '已复制', viewCredits: '查看 Credits', continueShopping: '继续购买', orderNumber: '订单号', paidAccount: '充值账号', productLabelShort: '商品', paymentAmount: '支付金额', mailState: '邮件状态', autoRedeemState: '自动充值', done: '已完成', notDone: '未完成', continueShoppingTitle: '继续购买其他卡种',
+        enterEmail: '请填写注册账户（邮箱或 phone:手机号）', enterRecoverEmail: '请填写有效的购买邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒店主，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码', productLabel: '商品', payDone: '我已扫码支付完成', payDoneSending: '正在通知店主...', payDoneSent: '已通知店主', payDoneWarning: '重要：扫码付款后必须点击“支付完成”按钮，否则店主不会收到确认邮件，订单可能无法及时处理。', payDoneFirst: '请扫码付款后点击“支付完成”，店主才会收到确认邮件。',
+        serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
+        resultSuccessTitle: '支付成功', resultPendingTitle: '正在确认支付结果...', resultSuccessLead: '订单已完成，服务兑换码已生成。', resultAutoRedeemedLead: '已自动充值到注册账户，兑换码作为备用凭证保留。', resultPendingLead: '正在读取订单状态，确认后会在这里显示兑换码。', resultBackupCode: '备用服务兑换码', copyCode: '复制兑换码', copied: '已复制', viewCredits: '查看 Credits', continueShopping: '继续购买', orderNumber: '订单号', paidAccount: '充值账号', productLabelShort: '商品', paymentAmount: '支付金额', mailState: '邮件状态', autoRedeemState: '自动充值', done: '已完成', notDone: '未完成', continueShoppingTitle: '继续购买其他卡种',
         recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', emptyProducts: '暂无可售商品',
         productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 1 credit' },
         productScenarios: { service_day: '适用于体验用户。', service_week: '适用于体验用户。', service_month: '适用于轻度使用用户。', service_quarter: '适用于轻度使用用户。', service_year: '适用于中度使用用户。', credits_10000: '适用于重度使用用户；用完即续，可持续使用。', credits_50000: '适用于重度使用用户；用完即续，可持续使用。' },
@@ -104,15 +104,15 @@
       },
       en: {
         title: 'MaClaw Store', brandName: 'MaClaw Store', brandSubtitle: 'Buy service exchange cards', tenantLabel: 'Tenant', tenantNotSet: 'Not set', creditsCenter: 'Credits Center', reload: 'Refresh',
-        eyebrowStore: 'Service Card Store', heroTitle: 'Buy service exchange cards', heroLead: 'Choose day, week, month, quarter, or year service cards, or buy 10k / 50k credits cards. Enter your registered email to create a payment order. After payment, the service code appears here and is sent by email.',
+        eyebrowStore: 'Service Card Store', heroTitle: 'Buy service exchange cards', heroLead: 'Choose day, week, month, quarter, or year service cards, or buy 10k / 50k credits cards. Enter your registered account to create a payment order. After payment, the service code appears here; email accounts receive email, and phone accounts can be credited automatically.',
         loading: 'Loading...', storeEnabled: 'Store enabled', storeDisabled: 'Store disabled', loadFailed: 'Products failed to load', priceConfigured: 'All prices are configured in Admin > Online Store.',
         paymentTitle: 'After payment', paymentDesc: 'After a verified payment notification, the system creates a service exchange code automatically.', recoveryTitleShort: 'Email recovery', recoveryDescShort: 'Use the purchase email to resend forgotten service codes.',
         catalogEyebrow: 'Catalog', catalogTitle: 'Available cards', catalogDesc: 'Service cards cover fixed periods. Credits cards add credits.',
-        serviceCard: 'Service card', creditsCard: 'Credits card', periodLimitLabel: 'Period limits', noPeriodLimit: 'No period limits', usageScenarioLabel: 'Best for', registeredEmail: 'Registered email', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Email not set', accountHint: 'Purchase email', changeEmail: 'Change email', emailDialogTitle: 'Confirm purchase email', emailDialogDesc: 'The service code will be sent to this email. If it matches a registered account, credits are added automatically after payment.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
+        serviceCard: 'Service card', creditsCard: 'Credits card', periodLimitLabel: 'Period limits', noPeriodLimit: 'No period limits', usageScenarioLabel: 'Best for', registeredEmail: 'Registered account', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Account not set', accountHint: 'Purchase account', changeEmail: 'Change account', emailDialogTitle: 'Confirm purchase account', emailDialogDesc: 'Use a registered email or phone:number. Email accounts receive the code by email; phone accounts are credited automatically after payment, with the code kept on this page.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
         recoveryEyebrow: 'Recovery', recoveryTitle: 'Recover service code', recoveryDesc: 'Enter the registered email or second email used for purchase. Paid order codes will be resent to that inbox.', recoverEmailLabel: 'Purchase email', recoverEmailPlaceholder: 'name@example.com', captchaLabel: 'Captcha', captchaPlaceholder: 'Answer', captchaRefresh: 'New', captchaInvalid: 'Enter the correct result', recoverButton: 'Send recovery email',
-        enterEmail: 'Enter registered email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Store owner has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR', productLabel: 'Product', payDone: 'I have paid', payDoneSending: 'Notifying store owner...', payDoneSent: 'Store owner notified', payDoneWarning: 'Important: after scanning and paying, click "I have paid". Otherwise the store owner will not receive the confirmation email and the order may not be handled in time.', payDoneFirst: 'Scan and pay, then click "I have paid" so the store owner receives the confirmation email.',
-        serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered email account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
-        resultSuccessTitle: 'Payment successful', resultPendingTitle: 'Confirming payment result...', resultSuccessLead: 'The order is complete and the service code has been issued.', resultAutoRedeemedLead: 'Credits were added to the registered email account. The service code remains as a backup receipt.', resultPendingLead: 'Reading order status. The service code will appear here after confirmation.', resultBackupCode: 'Backup service code', copyCode: 'Copy code', copied: 'Copied', viewCredits: 'View Credits', continueShopping: 'Continue shopping', orderNumber: 'Order', paidAccount: 'Account', productLabelShort: 'Product', paymentAmount: 'Amount', mailState: 'Email', autoRedeemState: 'Auto credit', done: 'Done', notDone: 'Not done', continueShoppingTitle: 'Continue shopping',
+        enterEmail: 'Enter a registered account (email or phone:number)', enterRecoverEmail: 'Enter a valid purchase email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Store owner has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR', productLabel: 'Product', payDone: 'I have paid', payDoneSending: 'Notifying store owner...', payDoneSent: 'Store owner notified', payDoneWarning: 'Important: after scanning and paying, click "I have paid". Otherwise the store owner will not receive the confirmation email and the order may not be handled in time.', payDoneFirst: 'Scan and pay, then click "I have paid" so the store owner receives the confirmation email.',
+        serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
+        resultSuccessTitle: 'Payment successful', resultPendingTitle: 'Confirming payment result...', resultSuccessLead: 'The order is complete and the service code has been issued.', resultAutoRedeemedLead: 'Credits were added to the registered account. The service code remains as a backup receipt.', resultPendingLead: 'Reading order status. The service code will appear here after confirmation.', resultBackupCode: 'Backup service code', copyCode: 'Copy code', copied: 'Copied', viewCredits: 'View Credits', continueShopping: 'Continue shopping', orderNumber: 'Order', paidAccount: 'Account', productLabelShort: 'Product', paymentAmount: 'Amount', mailState: 'Email', autoRedeemState: 'Auto credit', done: 'Done', notDone: 'Not done', continueShoppingTitle: 'Continue shopping',
         recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', emptyProducts: 'No products available',
         productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 1 credit' },
         productScenarios: { service_day: 'Best for trial users.', service_week: 'Best for trial users.', service_month: 'Best for light users.', service_quarter: 'Best for light users.', service_year: 'Best for moderate users.', credits_10000: 'Best for heavy users. Renew after use for continuous access.', credits_50000: 'Best for heavy users. Renew after use for continuous access.' },
@@ -130,7 +130,7 @@
     let checkoutResultPaid = false;
     let productAlignQueued = false;
     let tenantId = urlParams.get('tenant_id') || localStorage.getItem('card_store_tenant_id') || '';
-    let registeredEmail = normalizeEmail(urlParams.get('email') || localStorage.getItem('card_store_email') || '');
+    let registeredEmail = normalizeBuyerIdentity(urlParams.get('email') || localStorage.getItem('card_store_email') || '');
     let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
     let recoverCaptchaCode = '';
     if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
@@ -138,6 +138,17 @@
     function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
     function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
     function normalizeEmail(value) { return String(value || '').trim().toLowerCase(); }
+    function normalizeBuyerIdentity(value) {
+      const normalized = normalizeEmail(value);
+      if (normalized.indexOf('phone:') !== 0) return normalized;
+      const digits = normalized.slice(6).replace(/\D/g, '');
+      return digits ? 'phone:' + digits : '';
+    }
+    function isValidEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value)); }
+    function isValidBuyerIdentity(value) {
+      const normalized = normalizeBuyerIdentity(value);
+      return isValidEmail(normalized) || (normalized.indexOf('phone:') === 0 && normalized.slice(6).length >= 6);
+    }
     function money(v) { return '¥' + Number(v || 0).toFixed(2); }
     function label(product) { return (I18N[lang].productNames || {})[product.id] || product.label || product.id; }
     function productDescription(product) { return (I18N[lang].productDescriptions || {})[product.id] || product.description || ''; }
@@ -153,9 +164,9 @@
     function updateTenantScopedLinks() { document.querySelectorAll('[data-card-store-home-link]').forEach(link => { link.setAttribute('href', cardStoreURL()); }); document.querySelectorAll('[data-credits-center-link]').forEach(link => { link.setAttribute('href', creditsCenterURL()); }); }
     function updateTenantChip() { const chip = document.getElementById('tenantChip'); if (!chip) return; chip.hidden = false; const value = tenantId || t('tenantNotSet'); chip.textContent = t('tenantLabel') + ': ' + value; chip.title = chip.textContent; chip.classList.toggle('is-empty', !tenantId); }
     function updateAccountChip() { const btn = document.getElementById('accountBtn'); if (!btn) return; btn.hidden = false; btn.textContent = registeredEmail || t('accountNotSet'); btn.title = registeredEmail ? (t('accountHint') + ': ' + registeredEmail + ' · ' + t('changeEmail')) : t('accountNotSet'); btn.classList.toggle('is-empty', !registeredEmail); }
-    function setBuyerEmails(email, second) { registeredEmail = normalizeEmail(email); secondaryEmail = normalizeEmail(second); if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail); if (secondaryEmail) localStorage.setItem('card_store_secondary_email', secondaryEmail); else localStorage.removeItem('card_store_secondary_email'); updateAccountChip(); updateTenantScopedLinks(); }
+    function setBuyerEmails(email, second) { registeredEmail = normalizeBuyerIdentity(email); secondaryEmail = normalizeEmail(second); if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail); if (secondaryEmail) localStorage.setItem('card_store_secondary_email', secondaryEmail); else localStorage.removeItem('card_store_secondary_email'); updateAccountChip(); updateTenantScopedLinks(); }
     function setTenantId(value) { const next = String(value || '').trim(); if (!next) { tenantId = ''; localStorage.removeItem('card_store_tenant_id'); updateTenantScopedLinks(); updateTenantChip(); return; } tenantId = next; localStorage.setItem('card_store_tenant_id', tenantId); updateTenantScopedLinks(); updateTenantChip(); }
-    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; const email = normalizeEmail(qs.get('email') || registeredEmail); qs.delete('token'); if (current) qs.set('tenant_id', current); if (email) qs.set('email', email); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
+    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; const email = normalizeBuyerIdentity(qs.get('email') || registeredEmail); qs.delete('token'); if (current) qs.set('tenant_id', current); if (email) qs.set('email', email); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
     function formatDuration(product) {
       if (isTestProduct(product)) return Number(product.credits || 0).toLocaleString() + ' credit';
       const days = Number(product.duration_days || 0);
@@ -447,7 +458,7 @@
         closeBuyerEmailDialog();
         const modal = document.createElement('div');
         modal.className = 'buyer-email-modal';
-        modal.innerHTML = '<form class="buyer-email-modal__panel" role="dialog" aria-modal="true" aria-labelledby="buyerEmailTitle"><button type="button" class="buyer-email-modal__close" aria-label="Close" data-close-buyer-email>&times;</button><h3 id="buyerEmailTitle">' + esc(t('emailDialogTitle')) + '</h3><p>' + esc(t('emailDialogDesc')) + '</p><label>' + esc(t('registeredEmail')) + '<input type="email" name="email" value="' + esc(registeredEmail) + '" placeholder="name@example.com" autocomplete="email" required></label><label>' + esc(t('secondaryEmail')) + '<input type="email" name="secondary_email" value="' + esc(secondaryEmail) + '" placeholder="backup@example.com" autocomplete="email"></label><div class="buyer-email-modal__actions"><button type="button" class="buyer-email-modal__cancel" data-close-buyer-email>' + esc(t('cancel')) + '</button><button type="submit">' + esc(t('continueBuy')) + '</button></div><div class="buyer-email-modal__status msg" aria-live="polite"></div></form>';
+        modal.innerHTML = '<form class="buyer-email-modal__panel" role="dialog" aria-modal="true" aria-labelledby="buyerEmailTitle"><button type="button" class="buyer-email-modal__close" aria-label="Close" data-close-buyer-email>&times;</button><h3 id="buyerEmailTitle">' + esc(t('emailDialogTitle')) + '</h3><p>' + esc(t('emailDialogDesc')) + '</p><label>' + esc(t('registeredEmail')) + '<input type="text" name="email" value="' + esc(registeredEmail) + '" placeholder="name@example.com / phone:13800138000" autocomplete="username" required></label><label>' + esc(t('secondaryEmail')) + '<input type="email" name="secondary_email" value="' + esc(secondaryEmail) + '" placeholder="backup@example.com" autocomplete="email"></label><div class="buyer-email-modal__actions"><button type="button" class="buyer-email-modal__cancel" data-close-buyer-email>' + esc(t('cancel')) + '</button><button type="submit">' + esc(t('continueBuy')) + '</button></div><div class="buyer-email-modal__status msg" aria-live="polite"></div></form>';
         document.body.appendChild(modal);
         const form = modal.querySelector('form');
         const emailInput = modal.querySelector('input[name="email"]');
@@ -458,9 +469,9 @@
         modal.addEventListener('click', event => { if (event.target === modal) done(null); });
         form.addEventListener('submit', event => {
           event.preventDefault();
-          const email = normalizeEmail(emailInput.value);
+          const email = normalizeBuyerIdentity(emailInput.value);
           const second = normalizeEmail(secondInput.value);
-          if (!email || !emailInput.checkValidity()) { status.textContent = t('enterEmail'); emailInput.focus(); return; }
+          if (!email || !isValidBuyerIdentity(email)) { status.textContent = t('enterEmail'); emailInput.focus(); return; }
           if (second && !secondInput.checkValidity()) { status.textContent = t('invalidSecondEmail'); secondInput.focus(); return; }
           setBuyerEmails(email, second);
           done({ email, secondaryEmail: second });
@@ -470,7 +481,7 @@
     }
     function closeBuyerEmailDialog() { const modal = document.querySelector('.buyer-email-modal'); if (modal) modal.remove(); }
     async function ensureBuyerEmail() {
-      if (registeredEmail) return { email: registeredEmail, secondaryEmail };
+      if (registeredEmail && isValidBuyerIdentity(registeredEmail)) return { email: registeredEmail, secondaryEmail };
       return openBuyerEmailDialog();
     }
     function paidOrderMessage(body) {
@@ -637,7 +648,7 @@
     async function resumeReturnedOrder() {
       const orderNo = String(urlParams.get('order_no') || '').trim();
       if (!orderNo) return;
-      const email = registeredEmail || normalizeEmail(urlParams.get('email') || '');
+      const email = registeredEmail || normalizeBuyerIdentity(urlParams.get('email') || '');
       if (!email) return;
       showCheckoutResult({ order_no: orderNo, email, message: urlParams.get('payment_return') === 'alipay_verify_pending' ? t('alipayVerifyPending') : t('returnOrderLoading') }, false);
       const panel = ensureCheckoutResultPanel();
@@ -689,7 +700,7 @@
       const email = emailInput.value.trim().toLowerCase();
       const captchaInput = document.getElementById('recoverCaptchaInput');
       const captcha = String(captchaInput.value || '').trim();
-      if (!email || !emailInput.checkValidity()) { msg.textContent = t('enterEmail'); emailInput.focus(); return; }
+      if (!email || !emailInput.checkValidity()) { msg.textContent = t('enterRecoverEmail'); emailInput.focus(); return; }
       if (!captcha || captcha !== recoverCaptchaCode) { msg.textContent = t('captchaInvalid'); captchaInput.focus(); drawRecoverCaptcha(); captchaInput.value = ''; return; }
       msg.textContent = t('recoverSending');
       submitBtn.disabled = true;

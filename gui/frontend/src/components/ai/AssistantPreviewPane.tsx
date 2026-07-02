@@ -243,22 +243,22 @@ export function AssistantPreviewPane({
     }, [activeMode, showAgentView, showCodePreview, showWorkflowPreview]);
 
     const docPreviewTheme = useMemo(() => ({
-        bg: themeMode === "dark" ? theme.bg : "#ffffff",
-        text: themeMode === "dark" ? theme.text : "#1f2937",
-        textMuted: themeMode === "dark" ? theme.textMuted : "#6b7280",
-        border: themeMode === "dark" ? theme.divider : "#e5e7eb",
-        headerBg: themeMode === "dark" ? theme.titleBarBg : "#f7f8fa",
-        accentColor: themeMode === "dark" ? theme.btnColor : "#3f5872",
-        accentBg: themeMode === "dark" ? `color-mix(in srgb, ${theme.btnColor} 12%, ${theme.fieldBg})` : "#f5f7fa",
-        codeBg: themeMode === "dark" ? theme.codeBg : "#f1f4f7",
-        codeText: themeMode === "dark" ? theme.codeText : "#334155",
-        codeBlockBg: themeMode === "dark" ? theme.codeBlockBg : "#f8fafc",
-        codeBlockBorder: themeMode === "dark" ? theme.codeBlockBorder : "#e5e7eb",
-        headingColor: themeMode === "dark" ? theme.headingColor : "#1f2937",
-        linkColor: themeMode === "dark" ? theme.linkColor : "#2f5f98",
-        quoteBorder: themeMode === "dark" ? theme.quoteBorder : "#c7d1dc",
-        quoteText: themeMode === "dark" ? theme.quoteText : "#4b5563",
-        quoteBg: themeMode === "dark" ? `color-mix(in srgb, ${theme.quoteBorder} 14%, ${theme.fieldBg})` : "#f8fafc",
+        bg: theme.bg,
+        text: theme.text,
+        textMuted: theme.textMuted,
+        border: theme.divider,
+        headerBg: theme.titleBarBg,
+        accentColor: theme.btnColor,
+        accentBg: `color-mix(in srgb, ${theme.btnColor} ${themeMode === "dark" ? 12 : 8}%, ${theme.fieldBg})`,
+        codeBg: theme.codeBg,
+        codeText: theme.codeText,
+        codeBlockBg: theme.codeBlockBg,
+        codeBlockBorder: theme.codeBlockBorder,
+        headingColor: theme.headingColor,
+        linkColor: theme.linkColor,
+        quoteBorder: theme.quoteBorder,
+        quoteText: theme.quoteText,
+        quoteBg: `color-mix(in srgb, ${theme.quoteBorder} ${themeMode === "dark" ? 14 : 10}%, ${theme.fieldBg})`,
     }), [theme, themeMode]);
 
     const codeTheme = useMemo(

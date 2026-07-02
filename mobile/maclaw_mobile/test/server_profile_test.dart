@@ -44,6 +44,7 @@ void main() {
     expect(restored.port, profile.port);
     expect(restored.username, profile.username);
     expect(restored.authMode, profile.authMode);
+    expect(serverAuthModeLabel(restored.authMode), '密码');
     expect(profile.toJson().containsKey('password'), isFalse);
   });
 

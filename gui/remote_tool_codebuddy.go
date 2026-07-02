@@ -40,7 +40,7 @@ func (a *CodeBuddyAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		}
 	}
 
-	env := buildOpenAICompatibleCommandEnv(spec.Env, nil)
+	env := buildOpenAICompatibleCommandEnv(spec.Env, privateToolsDirForApp(a.app), nil)
 
 	args := make([]string, 0, 8)
 	// SDK mode: always include -p for CodeBuddy SDK mode and stream-json output

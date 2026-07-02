@@ -400,7 +400,14 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 	toolStartedAt := time.Now()
 	runArgs := buildRunSkillArgs(args)
 	log.Printf("[run_skill] start owner=%q explicit_runtime=%v skill=%q wait=%s args=%d", ownerID, explicitRuntime, name, waitDuration.Round(time.Millisecond), len(runArgs))
+	// Wire up dependency installation progress reporting: when PipFixer/NpmFixer
+	// installs packages during PrepareRunnerExecution, the progress callback
+	// surfaces real-time status to the user (e.g. "📦 正在安装 Python 包 pymupdf...").
+	if onProgress != nil {
+		runner.prepProgressByOwner.Store(ownerID, cskill.FixProgressCallback(func(msg string) { onProgress(msg) }))
+	}
 	runID, err := runner.StartRunForOwner(ownerID, name, runArgs)
+	runner.prepProgressByOwner.Delete(ownerID) // clear after call returns
 	if err != nil {
 		log.Printf("[run_skill] start failed owner=%q skill=%q elapsed=%s err=%v", ownerID, name, time.Since(toolStartedAt).Round(time.Millisecond), err)
 	} else {

@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -47,6 +48,11 @@ func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
 		}
 	}
 	for key, raw := range runArgs {
+		// Skip non-serializable internal values (e.g., context.Context injected
+		// via "_ctx" for cancellation propagation).
+		if _, isCtx := raw.(context.Context); isCtx {
+			continue
+		}
 		key = canonicalRunVarKey(key)
 		if isRunControlKey(key) {
 			continue
@@ -498,6 +504,10 @@ func BuildRunCheckContext(entry *corelib.NLSkillEntry, extraEnv map[string]strin
 	if entry != nil {
 		ctx.SkillDir = strings.TrimSpace(entry.SkillDir)
 	}
+	// Resolve the Python that will be used at runtime (same priority as
+	// findPythonExecutable / ensureBundledPythonInPATH). This ensures PipFixer
+	// installs into the same environment that bash steps will execute in.
+	ctx.PythonPath = findPythonExecutable()
 	for name := range CollectSkillProvidedEnv(entry) {
 		markProvidedEnvVar(ctx, name)
 	}
@@ -827,6 +837,20 @@ func explicitRunInputValue(vars map[string]string, runArgs map[string]interface{
 		}
 	}
 	if value, ok := lookupCanonicalVar(vars, "user_prompt"); ok {
+		value = strings.TrimSpace(value)
+		if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
+			return value
+		}
+	}
+	if raw, ok := lookupRunArg(runArgs, "input"); ok {
+		if value, ok := runVarString(raw); ok {
+			value = strings.TrimSpace(value)
+			if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
+				return value
+			}
+		}
+	}
+	if value, ok := lookupCanonicalVar(vars, "input"); ok {
 		value = strings.TrimSpace(value)
 		if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
 			return value

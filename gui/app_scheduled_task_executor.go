@@ -185,9 +185,10 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 // scheduler startup time. This handles the case where a catch-up task fires
 // before Hub infrastructure is fully initialized.
 func (a *App) ensureLocalIMHandler() *IMMessageHandler {
-	// ensureInteractionInfra guarantees the hubClient and its IMHandler exist.
+	// Ensure the local/degraded Hub client exists so scheduled tasks can run
+	// even when remote machine credentials are missing.
 	a.ensureInteractionInfra()
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return nil
 	}

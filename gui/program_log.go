@@ -11,7 +11,7 @@ import (
 )
 
 // ProgramLogger writes programming tool output (Claude Code, Codex, etc.)
-// to ~/.maclaw/logs/program.log, independent of the maclaw.log detail gate.
+// to <MaclawBaseDir>/logs/program.log, independent of the maclaw.log detail gate.
 // It is always gated by corelib.IsLogDetailEnabled().
 type ProgramLogger struct {
 	mu     sync.Mutex
@@ -20,7 +20,7 @@ type ProgramLogger struct {
 
 var programLogger = &ProgramLogger{}
 
-// Init creates or opens ~/.maclaw/logs/program.log for append.
+// Init creates or opens <MaclawBaseDir>/logs/program.log for append.
 // If the file exceeds 10 MB it is rotated to program.log.1.
 func (l *ProgramLogger) Init() {
 	l.mu.Lock()
@@ -30,11 +30,7 @@ func (l *ProgramLogger) Init() {
 		l.writer = nil
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	dir := filepath.Join(home, ".maclaw", "logs")
+	dir := corelib.MaclawLogsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}

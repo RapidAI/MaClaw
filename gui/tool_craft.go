@@ -70,8 +70,7 @@ var (
 
 // craftedToolsDir returns the directory for storing crafted tool scripts.
 func craftedToolsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".maclaw", "data", "crafted_tools")
+	return filepath.Join(corelib.MaclawBaseDir(), "data", "crafted_tools")
 }
 
 // toolCraftTool is the implementation of the "craft_tool" tool.
@@ -1239,7 +1238,7 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
 	} else {
-		// Default to user-configured dir or ~/.maclaw/workspace.
+		// Default to the user-configured workspace or the active built-in workspace.
 		cmd.Dir = corelib.EffectiveWorkspaceDir()
 	}
 	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), map[string]interface{}{"extra_env": extraEnv})

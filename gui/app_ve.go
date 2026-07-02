@@ -1614,7 +1614,7 @@ func (a *App) localParticipantCanAnswerInHubDiscussion(sessionID, localID string
 }
 
 func (a *App) registerLocalGroupDispatcher(sessionID string) {
-	hubClient := a.hubClient()
+	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return
 	}

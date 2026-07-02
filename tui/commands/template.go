@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -115,8 +116,7 @@ func templateDelete(mgr *remote.SessionTemplateManager, args []string) error {
 func ResolveDataDir() string {
 	dir := os.Getenv("MACLAW_DATA_DIR")
 	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".maclaw")
+		dir = corelib.MaclawBaseDir()
 	}
 	return dir
 }

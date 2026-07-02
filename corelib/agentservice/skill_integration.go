@@ -12,7 +12,6 @@ import (
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -120,7 +119,7 @@ func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args ma
 	}
 	if in.SkillMarketURL == "" {
 		if cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID); err == nil {
-			in.SkillMarketURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+			in.SkillMarketURL = cfg.AppConfig.ConfiguredHubCenterBaseURL()
 		}
 	}
 	return b.svc.InstallSkill(ctx, p, in)
@@ -205,7 +204,7 @@ func (b *SkillToolBridge) SearchSkills(ctx context.Context, p Principal, query s
 	}
 	return b.svc.SearchSkills(ctx, p, SkillSearchInput{
 		Query:       query,
-		SkillHubURL: cfg.AppConfig.RemoteHubURL,
+		SkillHubURL: cfg.AppConfig.ConfiguredHubCenterBaseURL(),
 		TopN:        10,
 	})
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ func (a *App) ensureHubClient() *RemoteHubClient {
 	if client := a.remoteSessions.GetHubClient(); client != nil {
 		return client
 	}
+	log.Printf("[AI assistant] hubClient missing; preparing local/degraded Hub client")
 	a.prepareHubClientSync()
 	return a.remoteSessions.GetHubClient()
 }

@@ -4,6 +4,7 @@ import type { ChatMessage } from "./useAIAssistant";
 interface CodingAgentProgressTheme {
     text: string;
     fieldLabel: string;
+    isDark?: boolean;
 }
 
 export const CODING_AGENT_KNOWN_PHASES = ["starting", "running", "completed", "failed", "retrying", "skipped", "result"] as const;
@@ -23,6 +24,12 @@ const neutralAttentionTone: CodingAgentStatusTone = {
     accent: "#64748b",
     bg: "rgba(100, 116, 139, 0.08)",
     border: "rgba(100, 116, 139, 0.20)",
+};
+
+const neutralAttentionToneDark: CodingAgentStatusTone = {
+    accent: "#8a9ab0",
+    bg: "rgba(138, 154, 176, 0.10)",
+    border: "rgba(138, 154, 176, 0.22)",
 };
 
 export interface CodingAgentProgress {
@@ -299,7 +306,12 @@ function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: stri
 export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgentProgressTheme, lang: string): React.ReactNode {
     const progress = parseCodingAgentProgress(msg.content);
     if (!progress) return null;
-    const tone = codingAgentProgressTone(progress);
+    let tone = codingAgentProgressTone(progress);
+    // In dark mode, the neutral accent #64748b has insufficient contrast on dark surfaces.
+    // Swap to the brighter dark-mode variant when rendering on dark backgrounds.
+    if (t.isDark && tone.accent === neutralAttentionTone.accent) {
+        tone = neutralAttentionToneDark;
+    }
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
     const displayText = codingAgentDisplayText(progress, lang);
     const statusText = codingAgentProgressStatusText(progress, lang);

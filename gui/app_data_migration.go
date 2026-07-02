@@ -282,7 +282,7 @@ func (a *App) SelectDataDir() string {
 
 // SetDataDir is a Wails binding called from the settings UI to update the
 // data_dir configuration. Returns an error message if the path is invalid.
-// The change takes effect after restart.
+// Path resolvers are refreshed immediately; migration still completes on restart.
 func (a *App) SetDataDir(newDir string) string {
 	newDir = strings.TrimSpace(newDir)
 

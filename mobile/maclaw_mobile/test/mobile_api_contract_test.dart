@@ -62,16 +62,22 @@ void main() {
       'task_id': 'mobve_1',
       'employee_id': 'ops',
       'prompt': 'check disk',
+      'task_type': 'server_maintenance',
+      'context': {'source': 'maclaw_mobile'},
       'status': 'queued',
       'result': 'waiting',
+      'message': 'remote worker accepted',
       'claimed_by': 'machine_1',
     });
 
     expect(task.taskId, 'mobve_1');
     expect(task.employeeId, 'ops');
     expect(task.prompt, 'check disk');
+    expect(task.taskType, 'server_maintenance');
+    expect(task.context['source'], 'maclaw_mobile');
     expect(task.status, 'queued');
     expect(task.result, 'waiting');
+    expect(task.message, 'remote worker accepted');
     expect(task.claimedBy, 'machine_1');
   });
 }

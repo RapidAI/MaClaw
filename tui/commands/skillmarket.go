@@ -55,13 +55,10 @@ func resolveHubCenterURL() string {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
-		return remote.DefaultRemoteHubCenterURL
+		return ""
 	}
 
 	hubURL := cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
-	if hubURL == "" {
-		return remote.DefaultRemoteHubCenterURL
-	}
 
 	// Use the shared failover logic from skill_search_api.go.
 	// This ensures all CLI commands use the same singleton cache and persister.

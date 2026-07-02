@@ -76,13 +76,13 @@ func resolveHubURL() (string, error) {
 		return "", fmt.Errorf("加载配置失败: %w", err)
 	}
 	hubURL := cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
-	if hubURL == "" {
-		return "", fmt.Errorf("HubCenter URL 未配置")
-	}
 
 	// Use the shared failover logic from skill_search_api.go.
 	// This ensures all CLI commands use the same singleton cache and persister.
 	resolved := ResolveHubCenterWithFailover(cfg, hubURL, nil, nil)
+	if resolved == "" {
+		return "", fmt.Errorf("HubCenter URL 未配置或不可达")
+	}
 	return resolved, nil
 }
 

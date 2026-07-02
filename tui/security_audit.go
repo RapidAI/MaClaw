@@ -8,7 +8,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/tui/commands"
@@ -80,7 +79,7 @@ func tuiSkillSearchPolicyArgsForSource(cfg corelib.AppConfig, query, source stri
 	case "clawhub":
 		args["url"] = skill.ClawHubMirrorURL
 	default:
-		args["hub_url"] = cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+		args["hub_url"] = cfg.ConfiguredHubCenterBaseURL()
 	}
 	return args
 }

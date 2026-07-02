@@ -3,6 +3,7 @@ import { SetChatFontSize, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { assistantDarkSchemes, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
+import { assistantLightSchemes, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 
 type UISettingsPanelProps = {
     config: main.AppConfig | null;
@@ -14,6 +15,8 @@ type UISettingsPanelProps = {
     setChatFontSize: Dispatch<SetStateAction<number>>;
     darkSchemeId: AssistantDarkSchemeId;
     setDarkSchemeId: (schemeId: AssistantDarkSchemeId) => void;
+    lightSchemeId: AssistantLightSchemeId;
+    setLightSchemeId: (schemeId: AssistantLightSchemeId) => void;
 };
 
 const textForLang = localizeText;
@@ -28,6 +31,8 @@ export const UISettingsPanel = ({
     setChatFontSize,
     darkSchemeId,
     setDarkSchemeId,
+    lightSchemeId,
+    setLightSchemeId,
 }: UISettingsPanelProps) => (
     <div className="settings-panel ui-settings-panel">
         <section className="ui-settings-card ui-settings-card--themes">
@@ -90,6 +95,69 @@ export const UISettingsPanel = ({
             </div>
             <p>
                 {textForLang(lang, 'When the AI assistant title-bar switch enters dark mode, it uses the selected palette for the app shell and assistant panel.', '\u5f53 AI \u52a9\u624b\u9876\u90e8\u6697\u9ed1/\u666e\u901a\u5207\u6362\u8fdb\u5165\u6697\u9ed1\u6a21\u5f0f\u65f6\uff0c\u5c06\u4f7f\u7528\u8fd9\u91cc\u9009\u4e2d\u7684\u914d\u8272\u65b9\u6848\u3002', '\u7576 AI \u52a9\u624b\u9802\u90e8\u6697\u9ed1/\u666e\u901a\u5207\u63db\u9032\u5165\u6697\u9ed1\u6a21\u5f0f\u6642\uff0c\u5c07\u4f7f\u7528\u9019\u88e1\u9078\u4e2d\u7684\u914d\u8272\u65b9\u6848\u3002')}
+            </p>
+        </section>
+
+        <section className="ui-settings-card ui-settings-card--themes">
+            <h4>
+                {textForLang(lang, 'Light Mode Palette', '\u666e\u901a\u6a21\u5f0f\u914d\u8272', '\u666e\u901a\u6a21\u5f0f\u914d\u8272')}
+            </h4>
+            <div className="ui-dark-scheme-grid" role="radiogroup" aria-label={textForLang(lang, 'Light Mode Palette', '\u666e\u901a\u6a21\u5f0f\u914d\u8272', '\u666e\u901a\u6a21\u5f0f\u914d\u8272')}>
+                {assistantLightSchemes.map((scheme) => {
+                    const selected = lightSchemeId === scheme.id;
+                    return (
+                        <label
+                            key={scheme.id}
+                            className="ui-dark-scheme-card"
+                            data-selected={selected ? 'true' : undefined}
+                            style={{
+                                ['--scheme-page-bg' as any]: scheme.cssVars.pageBg,
+                                ['--scheme-surface' as any]: scheme.cssVars.surface,
+                                ['--scheme-surface-muted' as any]: scheme.cssVars.surfaceMuted,
+                                ['--scheme-primary' as any]: scheme.cssVars.primary,
+                                ['--scheme-primary-strong' as any]: scheme.cssVars.primaryStrong,
+                                ['--scheme-text-primary' as any]: scheme.cssVars.textPrimary,
+                                ['--scheme-text-secondary' as any]: scheme.cssVars.textSecondary,
+                                ['--scheme-border' as any]: scheme.cssVars.border,
+                                ['--scheme-success' as any]: scheme.cssVars.success,
+                            }}
+                        >
+                            <input
+                                type="radio"
+                                name="ai-light-scheme"
+                                checked={selected}
+                                onChange={() => setLightSchemeId(scheme.id)}
+                            />
+                            <span className="ui-dark-scheme-copy">
+                                <span className="ui-dark-scheme-title">
+                                    {textForLang(lang, scheme.label.en, scheme.label.zhHans, scheme.label.zhHant)}
+                                </span>
+                                <span className="ui-dark-scheme-desc">
+                                    {textForLang(lang, scheme.description.en, scheme.description.zhHans, scheme.description.zhHant)}
+                                </span>
+                            </span>
+                            <span className="ui-dark-scheme-preview" aria-hidden="true">
+                                <span className="ui-dark-scheme-preview__rail">
+                                    <span />
+                                    <span />
+                                    <span />
+                                </span>
+                                <span className="ui-dark-scheme-preview__panel">
+                                    <span className="ui-dark-scheme-preview__topline" />
+                                    <span className="ui-dark-scheme-preview__row" />
+                                    <span className="ui-dark-scheme-preview__row ui-dark-scheme-preview__row--short" />
+                                    <span className="ui-dark-scheme-preview__chips">
+                                        <span />
+                                        <span />
+                                    </span>
+                                </span>
+                            </span>
+                        </label>
+                    );
+                })}
+            </div>
+            <p>
+                {textForLang(lang, 'When the AI assistant is in light mode, it uses the selected palette for the app shell and assistant panel.', '\u5f53 AI \u52a9\u624b\u5904\u4e8e\u666e\u901a\u6a21\u5f0f\u65f6\uff0c\u5c06\u4f7f\u7528\u8fd9\u91cc\u9009\u4e2d\u7684\u914d\u8272\u65b9\u6848\u3002', '\u7576 AI \u52a9\u624b\u8655\u65bc\u666e\u901a\u6a21\u5f0f\u6642\uff0c\u5c07\u4f7f\u7528\u9019\u88e1\u9078\u4e2d\u7684\u914d\u8272\u65b9\u6848\u3002')}
             </p>
         </section>
 

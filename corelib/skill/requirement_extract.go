@@ -30,6 +30,13 @@ type CheckContext struct {
 	// Requirement.Context["skill_dir"] for NpmFixer (local install).
 	// If empty, falls back to skill.SkillDir.
 	SkillDir string
+
+	// PythonPath is the resolved Python executable that will be used at
+	// runtime (via ensureBundledPythonInPATH / BuildCommandEnv). When set,
+	// PipFixer uses this exact Python for installation, ensuring packages
+	// land in the same environment the skill will execute in.
+	// If empty, PipFixer falls back to findPythonExecutable().
+	PythonPath string
 }
 
 // DefaultCheckContext returns an empty execution context. Runner-specific
@@ -67,7 +74,13 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 
 	for _, pkg := range skill.RequiresPython {
 		name, version := splitPkgVersion(pkg)
-		reqs = append(reqs, Requirement{Type: "pip", Name: name, Version: version, Source: "explicit"})
+		req := Requirement{Type: "pip", Name: name, Version: version, Source: "explicit"}
+		// Carry python_path so PipFixer and PipChecker use the same Python that
+		// BuildCommandEnv will inject at runtime (fixes environment mismatch).
+		if cc != nil && cc.PythonPath != "" {
+			req.Context = map[string]string{"python_path": cc.PythonPath}
+		}
+		reqs = append(reqs, req)
 	}
 
 	for _, pkg := range skill.RequiresNode {
@@ -372,6 +385,14 @@ func skipInferredCommand(command string) bool {
 	if strings.Contains(command, "/") || strings.Contains(command, `\`) {
 		return true
 	}
+	// Skip command substitution fragments that survive field splitting.
+	if strings.HasPrefix(command, "(") || strings.HasSuffix(command, ")") {
+		return true
+	}
+	// Skip Windows drive letter paths (C:\..., D:\...).
+	if len(command) >= 2 && command[1] == ':' && ((command[0] >= 'A' && command[0] <= 'Z') || (command[0] >= 'a' && command[0] <= 'z')) {
+		return true
+	}
 	return false
 }
 
@@ -459,14 +480,20 @@ type PipChecker struct{}
 
 func (c *PipChecker) Type() string { return "pip" }
 func (c *PipChecker) Check(req Requirement) *Violation {
-	python := findPythonExecutable()
+	python := ""
+	if req.Context != nil {
+		python = req.Context["python_path"]
+	}
+	if python == "" {
+		python = findPythonExecutable()
+	}
 	if python == "" {
 		return &Violation{Requirement: req, Message: "Python 未安装，无法检查 pip 包 " + req.Name, Severity: "error"}
 	}
-	if !checkPipInstalled(python, req.Name) {
-		return &Violation{Requirement: req, Message: "Python 包 " + req.Name + req.Version + " 未安装", Severity: "error"}
+	if checkPipInstalled(python, req.Name) {
+		return nil
 	}
-	return nil
+	return &Violation{Requirement: req, Message: "Python 包 " + req.Name + req.Version + " 未安装", Severity: "error"}
 }
 
 type NpmChecker struct{}
@@ -564,11 +591,21 @@ type PipFixer struct{}
 
 func (f *PipFixer) Type() string { return "pip" }
 func (f *PipFixer) Fix(req Requirement) error {
-	python := findPythonExecutable()
+	// Use the python_path from Context if available — this ensures the Fixer
+	// installs into the SAME Python environment that BuildCommandEnv will inject
+	// at runtime. Without this, Fixer might use system Python while runtime uses
+	// bundled Python (or vice versa), causing "package installed but not found".
+	python := ""
+	if req.Context != nil {
+		python = req.Context["python_path"]
+	}
+	if python == "" {
+		python = findPythonExecutable()
+	}
 	if python == "" {
 		return fmt.Errorf("python not found, cannot install %s", req.Name)
 	}
-	return installPipPkg(python, req.Name+req.Version)
+	return installPipPkgScoped(python, req.Name+req.Version)
 }
 
 // NpmFixer installs npm packages. It reads req.Context["skill_dir"] to

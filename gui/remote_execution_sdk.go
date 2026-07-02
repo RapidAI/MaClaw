@@ -18,15 +18,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// sdkDiagLog writes diagnostic messages to ~/.maclaw/logs/sdk_diag.log.
+// sdkDiagLog writes diagnostic messages to <MaclawBaseDir>/logs/sdk_diag.log.
 // Gated by corelib.IsLogDetailEnabled() — only writes when the user
 // enables "日志详情" in settings.
 var sdkDiagLog = func() *os.File {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	dir := filepath.Join(home, ".maclaw", "logs")
+	dir := corelib.MaclawLogsDir()
 	_ = os.MkdirAll(dir, 0o755)
 	f, err := os.OpenFile(filepath.Join(dir, "sdk_diag.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

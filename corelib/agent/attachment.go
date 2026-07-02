@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // VoiceConverter is a callback that converts raw voice data to WAV format.
@@ -170,14 +172,10 @@ func BuildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 	return blocks
 }
 
-// SaveAttachmentToLocal saves a MessageAttachment to ~/.maclaw/im_files/
+// SaveAttachmentToLocal saves a MessageAttachment under the active data directory
 // and returns the absolute path.
 func SaveAttachmentToLocal(att *MessageAttachment) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".maclaw", "im_files")
+	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "im_files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create im_files directory: %w", err)
 	}

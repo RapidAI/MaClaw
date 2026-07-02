@@ -426,8 +426,7 @@ func (a *App) detectMissingCoreTools() string {
 	// Node.js — needed for some skills and tools
 	if _, err := exec.LookPath("node"); err != nil {
 		// Check private install location
-		home := a.GetUserHomeDir()
-		privateNode := filepath.Join(home, ".maclaw", "data", "tools", "node.exe")
+		privateNode := filepath.Join(privateToolsDirForApp(a), "node.exe")
 		if _, statErr := os.Stat(privateNode); statErr != nil {
 			return "Node.js"
 		}
@@ -444,11 +443,10 @@ func (a *App) CheckEnvironment(force bool) {
 			a.log(a.tr("Init mode: Forcing environment check (ignoring configuration)."))
 		}
 
-		home := a.GetUserHomeDir()
-		ccDir := filepath.Join(home, ".maclaw", "data")
+		ccDir := a.GetDataDir()
 		if _, err := os.Stat(ccDir); os.IsNotExist(err) {
 			force = true
-			a.log(a.tr("Detected missing .maclaw/data directory. Forcing environment check..."))
+			a.log(a.tr("Detected missing data directory. Forcing environment check..."))
 		}
 
 		if force {
@@ -705,8 +703,7 @@ func (a *App) installToolsInBackground() {
 
 	tm := NewToolManager(a)
 	tools := []string{"kilo", "claude", "codex", "opencode", "codebuddy", "iflow"}
-	home, _ := os.UserHomeDir()
-	expectedPrefix := filepath.Join(home, ".maclaw", "data", "tools")
+	expectedPrefix := filepath.Clean(privateToolsDirForApp(a))
 
 	for _, tool := range tools {
 		// Try to acquire lock for this tool
@@ -729,7 +726,8 @@ func (a *App) installToolsInBackground() {
 			a.unlockTool(tool)
 			continue
 		} else {
-			if !strings.HasPrefix(status.Path, expectedPrefix) {
+			statusPath := filepath.Clean(status.Path)
+			if expectedPrefix == "" || (statusPath != expectedPrefix && !strings.HasPrefix(statusPath, expectedPrefix+string(os.PathSeparator))) {
 				a.log(a.tr("Background: WARNING: %s found at %s (not in private directory, skipping)", tool, status.Path))
 				a.unlockTool(tool)
 				continue
@@ -1009,10 +1007,10 @@ func (a *App) downloadFileCLI(filepath string, url string) error {
 }
 
 func (a *App) updatePathForNode() {
+	home, _ := os.UserHomeDir()
 	nodePath := `C:\Program Files\nodejs`
 	npmPath := filepath.Join(os.Getenv("AppData"), "npm")
-	home, _ := os.UserHomeDir()
-	localToolPath := filepath.Join(home, ".maclaw", "data", "tools")
+	localToolPath := privateToolsDirForApp(a)
 	oldToolPath := filepath.Join(home, ".cceasy", "node") // legacy path, keep for cleanup
 
 	currentPath := os.Getenv("PATH")
@@ -1736,8 +1734,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		batchContent += fmt.Sprintf("set %s=%s\r\n", k, v)
 	}
 
-	home, _ := os.UserHomeDir()
-	localToolPath := filepath.Join(home, ".maclaw", "data", "tools")
+	localToolPath := privateToolsDirForApp(a)
 	nodePath := `C:\Program Files\nodejs`
 	npmPath := filepath.Join(os.Getenv("AppData"), "npm")
 
@@ -1770,11 +1767,13 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	ext := strings.ToLower(filepath.Ext(binaryPath))
 
 	if ext == ".cmd" || ext == ".bat" {
-		if strings.Contains(binaryPath, filepath.Join(home, ".maclaw", "data", "tools")) {
+		localToolsDir := filepath.Clean(privateToolsDirForApp(a))
+		cleanBinaryPath := filepath.Clean(binaryPath)
+		if localToolsDir != "" && (cleanBinaryPath == localToolsDir || strings.HasPrefix(cleanBinaryPath, localToolsDir+string(os.PathSeparator))) {
 			var jsEntryPoint string
 			packageName := tm.GetPackageName(binaryName)
 			if packageName != "" {
-				pkgDir := filepath.Join(home, ".maclaw", "data", "tools", "node_modules", packageName)
+				pkgDir := filepath.Join(localToolsDir, "node_modules", packageName)
 
 				possibleEntries := []string{
 					filepath.Join(pkgDir, "index.js"),
@@ -2030,8 +2029,7 @@ func createCondaEnvListCmd(condaCmd string) *exec.Cmd {
 }
 
 func (a *App) ensureLocalNodeBinary() {
-	home, _ := os.UserHomeDir()
-	localNodeDir := filepath.Join(home, ".maclaw", "data", "tools")
+	localNodeDir := privateToolsDirForApp(a)
 
 	if err := os.MkdirAll(localNodeDir, 0755); err != nil {
 		a.log("Failed to create local tools dir: " + err.Error())

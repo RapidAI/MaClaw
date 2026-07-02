@@ -4,6 +4,31 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 final mobileNotificationServiceProvider =
     Provider<MobileNotificationService>((ref) => MobileNotificationService());
 
+class MobileNotificationPermissionResult {
+  final bool? androidGranted;
+  final bool? iosGranted;
+
+  const MobileNotificationPermissionResult({
+    this.androidGranted,
+    this.iosGranted,
+  });
+
+  bool get hasPlatformResult => androidGranted != null || iosGranted != null;
+
+  bool get granted =>
+      androidGranted == true || iosGranted == true || !hasPlatformResult;
+
+  String get message {
+    if (!hasPlatformResult) {
+      return '当前平台无需额外通知授权，任务提醒已准备就绪';
+    }
+    if (granted) {
+      return '通知权限已开启，长任务和 SSH 异常会提醒你';
+    }
+    return '系统未授予通知权限，请在系统设置中开启 MaClaw Mobile 通知';
+  }
+}
+
 class MobileNotificationService {
   final FlutterLocalNotificationsPlugin _plugin;
   bool _initialized = false;
@@ -21,8 +46,28 @@ class MobileNotificationService {
       requestSoundPermission: true,
     );
     const settings = InitializationSettings(android: android, iOS: darwin);
-    await _plugin.initialize(settings);
+    await _plugin.initialize(settings: settings);
+    await requestPermissions();
     _initialized = true;
+  }
+
+  Future<MobileNotificationPermissionResult> requestPermissions() async {
+    final androidGranted = await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+    final iosGranted = await _plugin
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+    return MobileNotificationPermissionResult(
+      androidGranted: androidGranted,
+      iosGranted: iosGranted,
+    );
   }
 
   Future<void> showTaskCompleted({
@@ -35,17 +80,18 @@ class MobileNotificationService {
       android: AndroidNotificationDetails(
         'maclaw_mobile_tasks',
         'MaClaw Mobile tasks',
-        channelDescription: 'Document, search, SSH, and digital employee updates',
+        channelDescription:
+            'Document, search, SSH, and digital employee updates',
         importance: Importance.high,
         priority: Priority.high,
       ),
       iOS: DarwinNotificationDetails(),
     );
     await _plugin.show(
-      DateTime.now().millisecondsSinceEpoch.remainder(100000),
-      title,
-      body,
-      details,
+      id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      title: title,
+      body: body,
+      notificationDetails: details,
       payload: payload,
     );
   }

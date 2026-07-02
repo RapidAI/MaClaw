@@ -228,7 +228,7 @@ export const SidebarSystemStatus = ({
         const hubEmail = remoteActivationStatus?.email;
         const hubURL = remoteActivationStatus?.hub_url;
         const hubTenant = remoteActivationStatus?.tenant_name;
-        if (hubEmail) hubTooltipLines.push(`${textForLang(lang, 'Email', '\u90ae\u7bb1', '\u90f5\u7bb1')}: ${hubEmail}`);
+        if (hubEmail) hubTooltipLines.push(`${textForLang(lang, 'Account', '\u8d26\u6237', '\u5e33\u6236')}: ${hubEmail}`);
         if (hubURL) hubTooltipLines.push(`${textForLang(lang, 'Server', '\u670d\u52a1\u5668', '\u4f3a\u670d\u5668')}: ${hubURL}`);
         if (hubTenant) hubTooltipLines.push(`${textForLang(lang, 'Tenant', '\u79df\u6237', '\u79df\u6236')}: ${hubTenant}`);
     }

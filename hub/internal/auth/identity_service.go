@@ -67,8 +67,10 @@ type UserRouteValidator interface {
 }
 
 const (
-	systemKeyEnrollmentMode = "identity_enrollment_mode"
-	systemKeyPublicBaseURL  = "server_public_base_url"
+	systemKeyEnrollmentMode      = "identity_enrollment_mode"
+	systemKeyPublicBaseURL       = "server_public_base_url"
+	systemKeyCenterRegistration  = "center_registration"
+	defaultMobileOfficialLLMMode = "maclaw_official"
 )
 
 type EnrollmentResult struct {
@@ -89,12 +91,17 @@ type EnrollmentResult struct {
 type EnrollOption func(*enrollOptions)
 
 type enrollOptions struct {
-	Language string
+	Language      string
+	PhoneVerified bool
 }
 
 // WithLanguage sets the UI language for registration emails.
 func WithLanguage(lang string) EnrollOption {
 	return func(o *enrollOptions) { o.Language = lang }
+}
+
+func WithPhoneVerifiedRegistration() EnrollOption {
+	return func(o *enrollOptions) { o.PhoneVerified = true }
 }
 
 func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string) string {
@@ -116,20 +123,48 @@ func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string
 }
 
 type EmailLoginRequestResult struct {
-	Status   string `json:"status"`
-	TenantID string `json:"tenant_id,omitempty"`
-	Message  string `json:"message,omitempty"`
-	PollID   string `json:"poll_id,omitempty"`
-	SentTo   string `json:"sent_to,omitempty"`
+	Status       string         `json:"status"`
+	TenantID     string         `json:"tenant_id,omitempty"`
+	Message      string         `json:"message,omitempty"`
+	PollID       string         `json:"poll_id,omitempty"`
+	SentTo       string         `json:"sent_to,omitempty"`
+	HubURL       string         `json:"hub_url,omitempty"`
+	HubID        string         `json:"hub_id,omitempty"`
+	HubCenterURL string         `json:"hubcenter_url,omitempty"`
+	Hub          *EmailLoginHub `json:"hub,omitempty"`
+	LLM          *EmailLoginLLM `json:"llm,omitempty"`
 }
 
 type EmailPollResult struct {
-	Status      string `json:"status"`
-	TenantID    string `json:"tenant_id,omitempty"`
-	AccessToken string `json:"access_token,omitempty"`
-	ExpiresIn   int    `json:"expires_in,omitempty"`
-	Email       string `json:"email,omitempty"`
-	SN          string `json:"sn,omitempty"`
+	Status       string          `json:"status"`
+	TenantID     string          `json:"tenant_id,omitempty"`
+	AccessToken  string          `json:"access_token,omitempty"`
+	ExpiresIn    int             `json:"expires_in,omitempty"`
+	Email        string          `json:"email,omitempty"`
+	SN           string          `json:"sn,omitempty"`
+	HubURL       string          `json:"hub_url,omitempty"`
+	HubID        string          `json:"hub_id,omitempty"`
+	HubCenterURL string          `json:"hubcenter_url,omitempty"`
+	Hub          *EmailLoginHub  `json:"hub,omitempty"`
+	User         *EmailLoginUser `json:"user,omitempty"`
+	LLM          *EmailLoginLLM  `json:"llm,omitempty"`
+}
+
+type EmailLoginHub struct {
+	ID      string `json:"id,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	URL     string `json:"url,omitempty"`
+}
+
+type EmailLoginUser struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	Email    string `json:"email,omitempty"`
+	SN       string `json:"sn,omitempty"`
+}
+
+type EmailLoginLLM struct {
+	Mode            string `json:"mode"`
+	AuthorizationID string `json:"authorization_id,omitempty"`
 }
 
 type SystemSettingsRepository interface {
@@ -308,6 +343,10 @@ func (s *IdentityService) ensureUserRouteAllowed(ctx context.Context, email stri
 	return ErrRoutedToAnotherHub
 }
 
+func (s *IdentityService) CanRegisterUserRoute(ctx context.Context, email string) error {
+	return s.ensureUserRouteAllowed(ctx, email)
+}
+
 func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
 	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(email) == "" {
 		return
@@ -346,7 +385,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 				if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, invitationCode, email); err != nil {
 					return nil, ErrInvalidInvitationCode
 				}
-				if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, email); err != nil {
+				if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, email); err != nil {
 					return nil, err
 				}
 				invitationRebind = true
@@ -432,8 +471,10 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			for _, opt := range opts {
 				opt(&eopts)
 			}
-			if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
-				_ = s.grantEmailConfirmedBenefitForUser(ctx, email)
+			if eopts.PhoneVerified {
+				_ = s.grantPhoneVerifiedBenefitForUser(ctx, user.ID, email)
+			} else if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
+				_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
 				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
 			}
 		}
@@ -499,12 +540,12 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			if err != nil {
 				return nil, err
 			}
-			return &EmailLoginRequestResult{
+			return s.withMobileLoginRequestContext(ctx, &EmailLoginRequestResult{
 				Status:   result.Status,
 				TenantID: tenantID,
 				Message:  result.Message,
 				PollID:   pollResult.PollID,
-			}, nil
+			}), nil
 		default:
 			if !s.allowSelfEnroll {
 				return &EmailLoginRequestResult{
@@ -533,12 +574,15 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			return nil, err // return original mailer error
 		}
 		s.consumePendingLoginToken(ctx, email)
-		return &EmailLoginRequestResult{
+		return s.withMobileLoginRequestContext(ctx, &EmailLoginRequestResult{
 			Status:   "pending_email_confirmation",
 			TenantID: tenantID,
 			Message:  "Email delivery failed, but your account is approved. Please wait a moment.",
 			PollID:   pollResult.PollID,
-		}, nil
+		}), nil
+	}
+	if result != nil {
+		result = s.withMobileLoginRequestContext(ctx, result)
 	}
 	return result, err
 }
@@ -608,25 +652,25 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 			return nil, emailErr
 		}
 		// No mailer and no IM channels - dev mode fallback
-		return &EmailLoginRequestResult{
+		return s.withMobileLoginRequestContext(ctx, &EmailLoginRequestResult{
 			Status:   "pending_email_confirmation",
 			TenantID: tenantID,
 			Message:  fmt.Sprintf("Use this confirm URL for development: %s", confirmURL),
 			PollID:   rawPollToken,
-		}, nil
+		}), nil
 	}
 
 	sentTo := channels[0]
 	for _, ch := range channels[1:] {
 		sentTo += " + " + ch
 	}
-	return &EmailLoginRequestResult{
+	return s.withMobileLoginRequestContext(ctx, &EmailLoginRequestResult{
 		Status:   "pending_email_confirmation",
 		TenantID: tenantID,
 		Message:  fmt.Sprintf("Verification link sent to: %s", sentTo),
 		PollID:   rawPollToken,
 		SentTo:   sentTo,
-	}, nil
+	}), nil
 }
 
 // sendRegistrationVerification creates a login token and sends a dedicated
@@ -717,11 +761,11 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 		}
 	}
 
-	return &EmailLoginRequestResult{
+	return s.withMobileLoginRequestContext(ctx, &EmailLoginRequestResult{
 		Status:   "pending_approval",
 		TenantID: tenantID,
 		PollID:   rawPollToken,
-	}, nil
+	}), nil
 }
 
 func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string) (string, *store.User, error) {
@@ -760,7 +804,7 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	if err := s.loginTok.Consume(ctx, loginToken.ID, now); err != nil {
 		return "", nil, err
 	}
-	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.Email); err != nil {
+	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, user.Email); err != nil {
 		return "", nil, err
 	}
 	// Mark user as email-verified in the user record.
@@ -815,18 +859,86 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 		return nil, err
 	}
 
-	return &EmailPollResult{
+	return s.withMobileLoginPollContext(ctx, user, &EmailPollResult{
 		Status:      "confirmed",
 		TenantID:    user.TenantID,
 		AccessToken: rawViewerToken,
 		ExpiresIn:   30 * 86400,
 		Email:       user.Email,
 		SN:          user.SN,
-	}, nil
+	}), nil
 }
 
 func (s *IdentityService) ManualBind(ctx context.Context, email string) (*store.User, error) {
 	return s.ManualBindForTenant(ctx, store.DefaultTenantID, email)
+}
+
+func (s *IdentityService) withMobileLoginRequestContext(ctx context.Context, result *EmailLoginRequestResult) *EmailLoginRequestResult {
+	if result == nil {
+		return nil
+	}
+	hub := s.currentLoginHubPayload()
+	result.Hub = hub
+	if hub != nil {
+		result.HubURL = hub.BaseURL
+		result.HubID = hub.ID
+	}
+	if result.LLM == nil {
+		result.LLM = &EmailLoginLLM{Mode: defaultMobileOfficialLLMMode}
+	}
+	return result
+}
+
+func (s *IdentityService) withMobileLoginPollContext(ctx context.Context, user *store.User, result *EmailPollResult) *EmailPollResult {
+	if result == nil {
+		return nil
+	}
+	hub := s.currentLoginHubPayload()
+	result.Hub = hub
+	if hub != nil {
+		result.HubURL = hub.BaseURL
+		result.HubID = hub.ID
+	}
+	if user != nil {
+		result.User = &EmailLoginUser{
+			TenantID: user.TenantID,
+			Email:    user.Email,
+			SN:       user.SN,
+		}
+	}
+	if result.LLM == nil {
+		result.LLM = &EmailLoginLLM{Mode: defaultMobileOfficialLLMMode}
+	}
+	return result
+}
+
+func (s *IdentityService) currentLoginHubPayload() *EmailLoginHub {
+	hubURL := strings.TrimRight(strings.TrimSpace(s.resolvePublicBaseURL()), "/")
+	if hubURL == "" {
+		hubURL = "http://127.0.0.1:9399"
+	}
+	return &EmailLoginHub{
+		ID:      s.currentHubID(),
+		BaseURL: hubURL,
+		URL:     hubURL,
+	}
+}
+
+func (s *IdentityService) currentHubID() string {
+	if s == nil || s.settings == nil {
+		return ""
+	}
+	raw, err := s.settings.Get(context.Background(), systemKeyCenterRegistration)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var payload struct {
+		HubID string `json:"hub_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.HubID)
 }
 
 func (s *IdentityService) tenantAllowsNewUserRegistration(ctx context.Context, tenantID string) (bool, error) {
@@ -888,6 +1000,70 @@ func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (
 		return nil, ErrInvalidEmail
 	}
 	return s.users.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
+}
+
+func (s *IdentityService) LookupUserByPhone(ctx context.Context, phoneNumber string) (*store.User, error) {
+	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
+	if phoneNumber == "" {
+		return nil, ErrInvalidEmail
+	}
+	if s == nil || s.users == nil {
+		return nil, nil
+	}
+	return s.users.GetByTenantIdentity(ctx, tenantIDFromContext(ctx), "phone", phoneNumber)
+}
+
+func (s *IdentityService) BindVerifiedPhoneToUser(ctx context.Context, user *store.User, phoneNumber string) error {
+	if s == nil || s.users == nil || user == nil {
+		return nil
+	}
+	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
+	if phoneNumber == "" || len(phoneNumber) > 20 {
+		return ErrInvalidEmail
+	}
+	now := time.Now().UTC()
+	if err := s.users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:         user.ID + "_phone",
+		TenantID:   user.TenantID,
+		UserID:     user.ID,
+		Type:       "phone",
+		Value:      phoneNumber,
+		Verified:   true,
+		VerifiedAt: &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		return err
+	}
+	phoneIdentity := "phone:" + phoneNumber
+	s.syncVerifiedPhoneRoute(WithTenant(ctx, user.TenantID), phoneIdentity)
+	if changed, err := llmservice.BackfillRegistryUserIDs(WithTenant(ctx, user.TenantID), s.settings, s.users, user.TenantID); err != nil {
+		log.Printf("[identity] backfill LLM registry user IDs after phone bind failed for %s (%s): %v", user.Email, user.ID, err)
+	} else if changed {
+		log.Printf("[identity] backfilled LLM registry user IDs after phone bind for %s (%s)", user.Email, user.ID)
+	}
+	return nil
+}
+
+func (s *IdentityService) syncVerifiedPhoneRoute(ctx context.Context, phoneIdentity string) {
+	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(phoneIdentity) == "" {
+		return
+	}
+	if err := s.userRouteSyncer.SyncUserRouteReplaceAll(ctx, phoneIdentity, tenantIDFromContext(ctx)); err != nil {
+		log.Printf("[identity] sync verified phone route failed for %s: %v", phoneIdentity, err)
+	}
+}
+
+func normalizePhoneIdentityValue(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "phone:")
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
@@ -1010,6 +1186,9 @@ func (s *IdentityService) LookupUserByMobile(ctx context.Context, mobile string)
 	mobile = strings.ReplaceAll(mobile, "-", "")
 	if mobile == "" {
 		return nil, fmt.Errorf("mobile is required")
+	}
+	if user, err := s.LookupUserByPhone(ctx, mobile); err != nil || user != nil {
+		return user, err
 	}
 
 	variants := []string{mobile}
@@ -1231,31 +1410,38 @@ func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenan
 		return nil, err
 	}
 	ctx = WithTenant(ctx, tenantID)
-	if err := s.ensureDefaultLLMServiceForUser(ctx, email); err != nil {
+	if err := s.ensureDefaultLLMServiceForUser(ctx, user.ID, email); err != nil {
 		return nil, err
 	}
-	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, email); err != nil {
+	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, email); err != nil {
 		return nil, err
 	}
 	s.syncUserRoute(ctx, email)
 	return user, nil
 }
 
-func (s *IdentityService) ensureDefaultLLMServiceForUser(ctx context.Context, email string) error {
+func (s *IdentityService) ensureDefaultLLMServiceForUser(ctx context.Context, userID, email string) error {
 	if s == nil || s.settings == nil {
 		return nil
 	}
-	return llmservice.GrantDefaultServiceForNewUser(ctx, s.settings, email)
+	return llmservice.GrantDefaultServiceForNewUserID(ctx, s.settings, userID, email)
 }
 
-func (s *IdentityService) grantEmailConfirmedBenefitForUser(ctx context.Context, email string) error {
+func (s *IdentityService) grantEmailConfirmedBenefitForUser(ctx context.Context, userID, email string) error {
 	if s == nil || s.settings == nil {
 		return nil
 	}
-	return llmservice.GrantEmailConfirmedBenefitForUser(ctx, s.settings, email)
+	return llmservice.GrantEmailConfirmedBenefitForUserID(ctx, s.settings, userID, email)
 }
 
-func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Context, tenantID, email string) error {
+func (s *IdentityService) grantPhoneVerifiedBenefitForUser(ctx context.Context, userID, email string) error {
+	if s == nil || s.settings == nil {
+		return nil
+	}
+	return llmservice.GrantPhoneVerifiedBenefitForUserID(ctx, s.settings, userID, email)
+}
+
+func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Context, tenantID, userID, email string) error {
 	if s == nil || s.settings == nil || s.invitationSvc == nil {
 		return nil
 	}
@@ -1267,7 +1453,7 @@ func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Conte
 	if err != nil || code == nil {
 		return err
 	}
-	return llmservice.GrantInvitationCodeBenefitForUser(ctx, s.settings, email, code.ID, code.LLMServiceGroupID, code.LLMGrantDurationDays, code.LLMGrantCredits)
+	return llmservice.GrantInvitationCodeBenefitForUserID(ctx, s.settings, userID, email, code.ID, code.LLMServiceGroupID, code.LLMGrantDurationDays, code.LLMGrantCredits)
 }
 
 // ListPendingEnrollments returns all enrollment requests with status "pending".
@@ -1313,10 +1499,10 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if existing != nil {
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
-		if err := s.ensureDefaultLLMServiceForUser(ctx, target.Email); err != nil {
+		if err := s.ensureDefaultLLMServiceForUser(ctx, existing.ID, target.Email); err != nil {
 			return nil, nil, err
 		}
-		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, target.Email); err != nil {
+		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, existing.ID, target.Email); err != nil {
 			return nil, nil, err
 		}
 		// Consume any pending login token so the PWA poll returns "confirmed".
@@ -1601,6 +1787,12 @@ func (s *IdentityService) buildVerifyEmailURL(rawToken string) string {
 // resolvePublicBaseURL reads the dynamic public base URL from settings,
 // falling back to the static config value passed at construction time.
 func (s *IdentityService) resolvePublicBaseURL() string {
+	if s == nil || s.settings == nil {
+		if s == nil {
+			return ""
+		}
+		return s.publicBaseURL
+	}
 	raw, err := s.settings.Get(context.Background(), systemKeyPublicBaseURL)
 	if err != nil || raw == "" {
 		return s.publicBaseURL

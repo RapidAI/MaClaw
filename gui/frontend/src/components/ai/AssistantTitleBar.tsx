@@ -10,6 +10,10 @@ import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
 import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
+import { NotificationBell } from "./NotificationBell";
+import { NotificationPanel } from "./NotificationPanel";
+import { useNotifications } from "./useNotifications";
+import type { AdminNotification } from "./useNotifications";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
 
@@ -79,7 +83,29 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 export function AssistantTitleBar({ clearHistory, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, onToggleWorkflow, previewPanelOpen, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable, workflowActive, workflowEnabled }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
+
+    // Notification system state
+    const {
+        notifications,
+        unreadCount,
+        panelOpen,
+        categoryFilter,
+        togglePanel,
+        setCategoryFilter,
+        markRead,
+        markAllRead,
+        urgentToast,
+        dismissUrgentToast,
+    } = useNotifications();
+
+    const handleSelectNotification = (notification: AdminNotification) => {
+        // Mark the notification as read when selected
+        if (!notification.is_read) {
+            markRead(notification.id);
+        }
+    };
     return (
+        <>
         <div data-testid="ai-title-bar" onDoubleClick={() => { if (inline) onToggleMaximize?.(); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px 0 10px", height: "38px", background: t.titleBarBg, borderBottom: `1px solid ${t.titleBarBorder}`, flexShrink: 0, minWidth: 0, boxSizing: "border-box", gap: "8px", position: "relative", zIndex: 30000, overflow: "visible", ...(inline ? { "--wails-draggable": "drag" } satisfies WailsDragStyle : {}) }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: 1 }}>
                 {!inline && <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}><span style={{ ...dotBase, background: t.closeBtnColor }} onClick={onClose} title={lang === "en" ? "Close" : "\u5173\u95ed"} /></div>}
@@ -93,6 +119,34 @@ export function AssistantTitleBar({ clearHistory, inline, lang, maximized, onClo
             <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { "--wails-draggable": "no-drag", position: "relative", zIndex: 30010 } satisfies WailsDragStyle : {}) }}>
                 <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: 0, paddingTop: 1 }}>
                     <AssistantUpdateNotice inline={inline} lang={lang} onDismissAppUpdate={onDismissAppUpdate} onOpenAppUpdate={onOpenAppUpdate} theme={t} themeMode={themeMode} updateAvailable={updateAvailable} />
+                    <div style={{ position: "relative" }}>
+                        <NotificationBell
+                            unreadCount={unreadCount}
+                            onClick={togglePanel}
+                            theme={t}
+                            inline={inline}
+                        />
+                        {panelOpen && (
+                            <NotificationPanel
+                                notifications={notifications}
+                                categoryFilter={categoryFilter as any}
+                                onCategoryChange={setCategoryFilter as any}
+                                onMarkAllRead={markAllRead}
+                                onSelectNotification={handleSelectNotification}
+                                onClose={togglePanel}
+                                lang={lang}
+                                theme={{
+                                    bg: t.titleBarBg,
+                                    text: t.titleText,
+                                    textMuted: t.promptColor,
+                                    headingColor: t.headingColor,
+                                    divider: t.titleBarBorder,
+                                    inputBarBg: t.fieldBg,
+                                    inputBarBorder: t.titleBarBorder,
+                                }}
+                            />
+                        )}
+                    </div>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><TitleBarToolIcon name="search" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
@@ -110,5 +164,45 @@ export function AssistantTitleBar({ clearHistory, inline, lang, maximized, onClo
                 </div>
             </div>
         </div>
+        {/* Urgent notification toast */}
+        {urgentToast && (
+            <div
+                data-testid="notification-urgent-toast"
+                style={{
+                    position: "fixed",
+                    top: "48px",
+                    right: "16px",
+                    width: "320px",
+                    padding: "12px 16px",
+                    background: t.titleBarBg,
+                    border: `1px solid #ef4444`,
+                    borderRadius: "8px",
+                    boxShadow: "0 4px 24px rgba(239, 68, 68, 0.2)",
+                    zIndex: 50000,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                    animation: "notification-toast-in 300ms ease-out",
+                }}
+            >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#ef4444" }}>
+                        🔴 {localizeText(lang, "Urgent Notification", "紧急通知", "緊急通知")}
+                    </span>
+                    <button
+                        onClick={dismissUrgentToast}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: t.promptColor, fontSize: "14px", padding: "0 2px", lineHeight: 1 }}
+                        aria-label={localizeText(lang, "Dismiss", "关闭", "關閉")}
+                    >
+                        ✕
+                    </button>
+                </div>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: t.titleText }}>{urgentToast.title}</span>
+                <span style={{ fontSize: "11px", color: t.promptColor, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {urgentToast.content.length > 80 ? urgentToast.content.slice(0, 80) + "..." : urgentToast.content}
+                </span>
+            </div>
+        )}
+        </>
     );
 }

@@ -333,7 +333,25 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	// Fill resolved metadata.
 	enrollResp.HubID = resolvedHubID
 	enrollResp.HubURL = hubURL
-	enrollResp.HubCenterURL = usedCenterURL
+	// Never report a loopback address as the HubCenterURL — it would be
+	// persisted to config and displayed in the "About" panel. Promote the
+	// first public URL from discovered list instead.
+	if usedCenterURL != "" && IsLoopbackURL(usedCenterURL) {
+		promoted := ""
+		for _, u := range discoveredURLs {
+			if !IsLoopbackURL(u) {
+				promoted = u
+				break
+			}
+		}
+		if promoted != "" {
+			enrollResp.HubCenterURL = promoted
+		} else {
+			enrollResp.HubCenterURL = usedCenterURL // all loopback — preserve as-is (edge case)
+		}
+	} else {
+		enrollResp.HubCenterURL = usedCenterURL
+	}
 	enrollResp.DiscoveredURLs = discoveredURLs
 	enrollResp.ClientID = clientID
 

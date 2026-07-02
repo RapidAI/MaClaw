@@ -30,16 +30,32 @@ func NewSkillMarketClient(app *App) *SkillMarketClient {
 }
 
 func (c *SkillMarketClient) baseURL() string {
+	if c == nil || c.app == nil {
+		return ""
+	}
+	if base := c.configuredPublicBaseURL(); base != "" {
+		return base
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if base, discovered, err := c.selectBaseURL(ctx); err == nil && strings.TrimSpace(base) != "" {
+		c.app.rememberHubCenterSelection(base, discovered)
+		return strings.TrimRight(strings.TrimSpace(base), "/")
+	}
+	return c.configuredPublicBaseURL()
+}
+
+func (c *SkillMarketClient) configuredPublicBaseURL() string {
+	if c == nil || c.app == nil {
+		return ""
+	}
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return ""
 	}
-	urls := cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
-	if len(urls) == 0 {
-		return ""
-	}
-	return urls[0]
+	return cfg.ConfiguredHubCenterBaseURL()
 }
+
 func (c *SkillMarketClient) selectBaseURL(ctx context.Context) (string, []string, error) {
 	base, discovered, err := c.app.resolveHubCenterBaseURLCached(ctx, c.client)
 	if err != nil {
@@ -498,8 +514,7 @@ func (c *SkillMarketClient) SubmitRating(ctx context.Context, skillID, email str
 }
 
 func (c *SkillMarketClient) GetPublicKey(ctx context.Context) ([]byte, error) {
-	home, _ := os.UserHomeDir()
-	cachePath := filepath.Join(home, ".maclaw", "skillmarket_pubkey.pem")
+	cachePath := filepath.Join(c.app.GetDataDir(), "skillmarket_pubkey.pem")
 	if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 		return data, nil
 	}

@@ -170,6 +170,7 @@ func (h *IMMessageHandler) handleLoopCommand(
 		onProgress: onProgress,
 		onToken:    onToken,
 		userID:     msg.UserID,
+		cancelCh:   make(chan struct{}),
 	}
 
 	// Wire cancellation: store the callbacks so /cancel can reach them.

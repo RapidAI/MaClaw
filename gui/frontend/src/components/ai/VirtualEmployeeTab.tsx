@@ -827,7 +827,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             {/* Status */}
                             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
-                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? "#4f7f6f" : "#9ca3af", fontWeight: 600 }}>
+                                <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? (theme.isDark ? "#7aa89a" : "#4f7f6f") : (theme.isDark ? "#a8b8c8" : "#9ca3af"), fontWeight: 600 }}>
                                     {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
                                 </span>
                             </div>

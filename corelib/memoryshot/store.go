@@ -9,12 +9,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // Store manages snapshot persistence to disk.
 type Store struct {
-	mu       sync.RWMutex
-	baseDir  string
+	mu         sync.RWMutex
+	baseDir    string
 	latestPath string
 	backupDir  string
 }
@@ -241,14 +243,10 @@ func (s *Store) LoadBackup(filename string) (*Snapshot, error) {
 
 // DefaultDataDir returns the default data directory path.
 func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".maclaw/data"
-	}
-	return filepath.Join(home, ".maclaw", "data")
+	return filepath.Join(corelib.MaclawBaseDir(), "data")
 }
 
-// DefaultStore creates a Store at the default location (~/.maclaw/data/memoryshot).
+// DefaultStore creates a Store under the active data directory.
 func DefaultStore() (*Store, error) {
 	dataDir := DefaultDataDir()
 	return NewStore(filepath.Join(dataDir, "memoryshot"))

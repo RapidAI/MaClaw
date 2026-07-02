@@ -22,6 +22,10 @@ func (a *App) resolveHubCenterBaseURL(ctx context.Context, client *http.Client) 
 	}
 	urls := cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
 	urls = remote.NormalizeHubCenterURLs(urls)
+	if len(urls) == 0 && strings.TrimSpace(a.testHomeDir) != "" {
+		testURLs := append([]string{cfg.RemoteHubCenterURL}, cfg.RemoteHubCenterURLs...)
+		urls = remote.NormalizeHubCenterURLs(testURLs)
+	}
 	if len(urls) == 0 {
 		return "", nil, fmt.Errorf("hubcenter URL not configured")
 	}

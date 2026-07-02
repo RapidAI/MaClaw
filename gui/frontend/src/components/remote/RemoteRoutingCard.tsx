@@ -79,7 +79,7 @@ export function RemoteRoutingCard(props: Props) {
                 </div>
                 <div>
                     <div style={remoteLabelStyle}>{translate("remoteHubCenterUrl")}</div>
-                    <input className="form-input" value={config?.remote_hubcenter_url || ""} onChange={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value })} onBlur={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value.trim() })} placeholder="http://127.0.0.1:9388" />
+                    <input className="form-input" value={config?.remote_hubcenter_url || ""} onChange={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value })} onBlur={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value.trim() })} placeholder="https://hubs.mypapers.top" />
                 </div>
                 <div style={{ gridColumn: "1 / -1" }}>
                     <div style={remoteLabelStyle}>{translate("remoteEmail")}</div>

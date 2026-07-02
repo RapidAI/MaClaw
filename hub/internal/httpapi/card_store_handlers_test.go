@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -707,6 +708,63 @@ func TestCreateCardStoreOrderAllowsUnregisteredEmailWhenTenantExplicit(t *testin
 	orders := loadCardStoreOrders(context.Background(), tenantSystem)
 	if len(orders.Orders) != 1 || orders.Orders[0].Email != "unknown@example.com" || orders.Orders[0].TenantID != "tenant_store" {
 		t.Fatalf("order not saved in explicit tenant: %#v", orders.Orders)
+	}
+}
+
+func TestCreateCardStoreOrderAcceptsPhoneIdentityWhenTenantExplicit(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	paySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "msg": "success", "code": 200, "data": map[string]any{"id": "pay-phone", "payUrl": "https://pay.example.com/phone"}})
+	}))
+	defer paySrv.Close()
+
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop"})
+	cfg.Products[0].Price = 10
+	data, _ := json.Marshal(cfg)
+	tenantSystem := scopedSystemSettingsForTenant("tenant_phone", system)
+	if err := tenantSystem.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"phone: 199-0000-1111","tenant_id":"tenant_phone"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["email"] != "phone:19900001111" {
+		t.Fatalf("response email = %#v", resp["email"])
+	}
+	orders := loadCardStoreOrders(context.Background(), tenantSystem)
+	if len(orders.Orders) != 1 || orders.Orders[0].Email != "phone:19900001111" || orders.Orders[0].TenantID != "tenant_phone" {
+		t.Fatalf("phone order not saved in explicit tenant: %#v", orders.Orders)
+	}
+}
+
+func TestCreateCardStoreOrderRejectsOverlongPhoneIdentity(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual})
+	data, _ := json.Marshal(cfg)
+	tenantSystem := scopedSystemSettingsForTenant("tenant_phone", system)
+	if err := tenantSystem.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"phone:123456789012345678901","tenant_id":"tenant_phone"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "CARD_STORE_EMAIL_INVALID") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), tenantSystem)
+	if len(orders.Orders) != 0 {
+		t.Fatalf("overlong phone order should not be saved: %#v", orders.Orders)
 	}
 }
 
@@ -2062,6 +2120,130 @@ func TestZhifuXPayNotifyAutoRedeemsWhenRegisteredEmailExists(t *testing.T) {
 	}
 	if mailer.count != 1 {
 		t.Fatalf("mailer count = %d", mailer.count)
+	}
+}
+
+func TestZhifuXPayNotifyAutoRedeemsWhenRegisteredPhoneExists(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	identity, cleanup := newBindHandlerIdentity(t)
+	defer cleanup()
+	phoneIdentity := "phone:19900001111"
+	seedBindUser(t, identity, "tenant_auto", phoneIdentity)
+	serviceReg := llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}
+	settings := scopedSystemSettingsForTenant("tenant_auto", system)
+	if err := llmservice.SaveRegistry(context.Background(), settings, &serviceReg); err != nil {
+		t.Fatal(err)
+	}
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "1234567890", AccessKey: "secret", PayType: "wxpaynative", ServiceGroupIDs: []string{"coding-basic"}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := settings.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "AI124", TenantID: "tenant_auto", ProductID: "service_day", ProductLabel: "Day Card", Email: phoneIdentity, Amount: 888, Status: "payment_started", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), settings, order); err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{}
+	values.Set("amount", "888")
+	values.Set("actualPayAmount", "888")
+	values.Set("payTime", "2026-04-02 11:50:24")
+	values.Set("platformOrderNo", "633718715472560129")
+	values.Set("channelOrderNo", "4200003058202604028462299363")
+	values.Set("type", "wxpaynative")
+	values.Set("orderNo", "AI124")
+	values.Set("merchantNum", "1234567890")
+	values.Set("state", "1")
+	values.Set("tenant_id", "tenant_auto")
+	values.Set("sign", zhifuXPayNotifySign("1", "1234567890", "AI124", "888", "secret"))
+	req := httptest.NewRequest(http.MethodGet, "/api/zhifuxpay/notify?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	mailer := &cardStoreTestMailer{}
+	CardStorePaymentNotifyHandler(system, mailer, identity).ServeHTTP(rec, req)
+	if strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("notify body = %q", rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), settings)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "paid" || orders.Orders[0].AutoRedeemedAt.IsZero() || orders.Orders[0].AutoRedeemError != "" {
+		t.Fatalf("phone order not auto redeemed: %#v", orders.Orders)
+	}
+	reg, err := llmservice.LoadRegistry(context.Background(), settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].Email != phoneIdentity || reg.Cards[0].RedeemedByEmail != phoneIdentity || reg.Cards[0].RedeemedAt == nil {
+		t.Fatalf("registry not redeemed to phone identity: grants=%#v cards=%#v", reg.Grants, reg.Cards)
+	}
+	if mailer.count != 0 {
+		t.Fatalf("phone-only order should not send code email, sent to=%#v count=%d", mailer.to, mailer.count)
+	}
+	lookupReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/AI124?tenant_id=tenant_auto&email=phone%3A19900001111", nil)
+	lookupReq.SetPathValue("orderNo", "AI124")
+	lookupRec := httptest.NewRecorder()
+	GetCardStoreOrderHandler(system).ServeHTTP(lookupRec, lookupReq)
+	var lookupBody map[string]any
+	if err := json.Unmarshal(lookupRec.Body.Bytes(), &lookupBody); err != nil {
+		t.Fatal(err)
+	}
+	if lookupBody["auto_redeemed"] != true || lookupBody["email"] != phoneIdentity {
+		t.Fatalf("phone lookup response missing auto redeem state: %#v", lookupBody)
+	}
+}
+
+func TestZhifuXPayNotifyAutoRedeemsLinkedPhoneToCanonicalEmail(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	identity, cleanup := newBindHandlerIdentity(t)
+	defer cleanup()
+	seedBindUser(t, identity, "tenant_auto", "buyer@example.com")
+	user, err := identity.UsersRepo().GetByTenantEmail(context.Background(), "tenant_auto", "buyer@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("load seeded user: user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), "tenant_auto"), user, "19900001112"); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	settings := scopedSystemSettingsForTenant("tenant_auto", system)
+	serviceReg := llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}
+	if err := llmservice.SaveRegistry(context.Background(), settings, &serviceReg); err != nil {
+		t.Fatal(err)
+	}
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "1234567890", AccessKey: "secret", PayType: "wxpaynative", ServiceGroupIDs: []string{"coding-basic"}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := settings.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "AI125", TenantID: "tenant_auto", ProductID: "service_day", ProductLabel: "Day Card", Email: "phone:19900001112", Amount: 888, Status: "payment_started", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), settings, order); err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{}
+	values.Set("amount", "888")
+	values.Set("actualPayAmount", "888")
+	values.Set("payTime", "2026-04-02 11:50:24")
+	values.Set("platformOrderNo", "633718715472560130")
+	values.Set("channelOrderNo", "4200003058202604028462299364")
+	values.Set("type", "wxpaynative")
+	values.Set("orderNo", "AI125")
+	values.Set("merchantNum", "1234567890")
+	values.Set("state", "1")
+	values.Set("tenant_id", "tenant_auto")
+	values.Set("sign", zhifuXPayNotifySign("1", "1234567890", "AI125", "888", "secret"))
+	req := httptest.NewRequest(http.MethodGet, "/api/zhifuxpay/notify?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	mailer := &cardStoreTestMailer{}
+	CardStorePaymentNotifyHandler(system, mailer, identity).ServeHTTP(rec, req)
+	if strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("notify body = %q", rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), settings)
+	if len(orders.Orders) != 1 || orders.Orders[0].AutoRedeemedAt.IsZero() || orders.Orders[0].AutoRedeemError != "" {
+		t.Fatalf("linked phone order not auto redeemed: %#v", orders.Orders)
+	}
+	reg, err := llmservice.LoadRegistry(context.Background(), settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].Email != "buyer@example.com" || reg.Cards[0].RedeemedByEmail != "buyer@example.com" || reg.Cards[0].RedeemedAt == nil {
+		t.Fatalf("registry not redeemed to canonical email: grants=%#v cards=%#v", reg.Grants, reg.Cards)
 	}
 }
 

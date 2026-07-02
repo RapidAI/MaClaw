@@ -45,7 +45,7 @@ export function AssistantGroupDiscussionMenu(props: AssistantGroupDiscussionMenu
     const [copiedHandoff, setCopiedHandoff] = useState(false);
     const title = lang === "en" ? `Group discussion (${GROUP_DISCUSSION_SHORT_LABEL}): ${props.groupDiscussionLabel}` : `\u7fa4\u7ec4\u8ba8\u8bba\uff1a${props.groupDiscussionLabel}`;
     const buttonColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#3f6f62" : t.textMuted) : t.actionBtnColor;
-    const statusColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#4f7f6f" : "#64748b") : "#94a3b8";
+    const statusColor = props.groupDiscussionEnabled ? (props.groupDiscussionDiscoverable ? "#4f7f6f" : "#7a8a9b") : t.textMuted;
     const primaryTraceFocus = getPrimaryDiscussionTraceFocus(groupDiscussionStatus);
     const safeHandoff = useMemo(() => buildGroupDiscussionStatusSafeHandoff(groupDiscussionStatus, primaryTraceFocus), [groupDiscussionStatus, primaryTraceFocus]);
     const copySafeHandoff = async () => {

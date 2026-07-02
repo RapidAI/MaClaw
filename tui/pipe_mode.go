@@ -105,8 +105,7 @@ func runPrompt(promptText string) {
 	sshMgr := remote.NewSSHSessionManager(nil)
 
 	// Initialize steering store.
-	home, _ := os.UserHomeDir()
-	steeringDir := filepath.Join(home, ".maclaw", "steering")
+	steeringDir := filepath.Join(corelib.MaclawBaseDir(), "steering")
 	steeringStore := steering.NewStore(steeringDir, "")
 	steeringStore.Load()
 
@@ -314,8 +313,9 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !c.quiet {
 		fmt.Fprintf(os.Stderr, "⚙ %s\n", name)
 	}
-	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	ctx, cancel := contextFromCancelCh(c.cancelCh)
 	defer cancel()
+	args["_ctx"] = ctx
 	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 

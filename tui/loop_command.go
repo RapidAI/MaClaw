@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,10 +30,11 @@ func (m *tuiModel) handleLoopCommand(text string) tea.Cmd {
 	lang := m.uiLang()
 
 	cb := &tuiLoopCommandCallbacks{
-		app:     app,
-		prog:    prog,
-		llmCfg:  app.llmConfig,
-		workDir: "",
+		app:      app,
+		prog:     prog,
+		llmCfg:   app.llmConfig,
+		workDir:  "",
+		cancelCh: make(chan struct{}),
 	}
 	m.activeCb = cb // enable Esc cancellation
 
@@ -165,11 +167,16 @@ type tuiLoopCommandCallbacks struct {
 	prog      *tea.Program
 	llmCfg    corelib.MaclawLLMConfig
 	workDir   string
-	cancelled bool
+	cancelCh  chan struct{}
+	closeOnce sync.Once
+	cancelled bool // fallback for nil cancelCh (test-only zero-value structs)
 }
 
 func (c *tuiLoopCommandCallbacks) Cancel() {
 	c.cancelled = true
+	if c.cancelCh != nil {
+		c.closeOnce.Do(func() { close(c.cancelCh) })
+	}
 }
 
 func (c *tuiLoopCommandCallbacks) RunModifyCycle(ctx context.Context, prompt string, iteration int) agent.LoopResult {
@@ -209,7 +216,20 @@ func (c *tuiLoopCommandCallbacks) OnVerifyDone(result agent.VerifyCommandResult,
 
 func (c *tuiLoopCommandCallbacks) OnSuccess(_ *agent.LoopCommandState) {}
 func (c *tuiLoopCommandCallbacks) OnFailure(_ *agent.LoopCommandState) {}
-func (c *tuiLoopCommandCallbacks) IsCancelled() bool                   { return c.cancelled }
+func (c *tuiLoopCommandCallbacks) IsCancelled() bool {
+	if c.cancelCh != nil {
+		select {
+		case <-c.cancelCh:
+			return true
+		default:
+			return false
+		}
+	}
+	return c.cancelled
+}
+
+// CancelCh implements agent.CancelChanneler for zero-CPU cancel propagation.
+func (c *tuiLoopCommandCallbacks) CancelCh() <-chan struct{} { return c.cancelCh }
 
 // ---------------------------------------------------------------------------
 // tuiLoopCycleCallbacks implements agent.LoopCallbacks for a single cycle.
@@ -295,8 +315,9 @@ func (c *tuiLoopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("Error: failed to parse tool arguments: %v", err)
 	}
-	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	ctx, cancel := contextFromCancelCh(c.parent.cancelCh)
 	defer cancel()
+	args["_ctx"] = ctx
 	return c.parent.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
@@ -331,4 +352,4 @@ func (c *tuiLoopCycleCallbacks) OnToolResult(name string) {
 		c.parent.prog.Send(views.ChatStreamMsg{Type: "tool_result", Tool: name})
 	}
 }
-func (c *tuiLoopCycleCallbacks) ShouldStop() bool { return c.parent.cancelled }
+func (c *tuiLoopCycleCallbacks) ShouldStop() bool { return c.parent.IsCancelled() }

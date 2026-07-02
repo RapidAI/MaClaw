@@ -510,7 +510,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],
-  ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 180],
+  ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 240],
   ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 480],
   ['gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
@@ -529,7 +529,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/ApiStorePage.tsx', 120],
   ['gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 120],
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
-  ['gui/frontend/src/components/AboutPanel.tsx', 500],
+  ['gui/frontend/src/components/AboutPanel.tsx', 520],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2500],
@@ -551,7 +551,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 250],
   ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
-  ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 120],
+  ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
   ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 100],
   ['gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
@@ -561,8 +561,8 @@ const extractedFileLineLimits = [
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
-  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2400],
-  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1450],
+  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2500],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1600],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1250],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],

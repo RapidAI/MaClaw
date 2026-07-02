@@ -9,11 +9,13 @@ import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
+import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     taskManagementPaneWidth: number;
     aiThemeMode: 'light' | 'dark';
     aiDarkSchemeId: AssistantDarkSchemeId;
+    aiLightSchemeId?: AssistantLightSchemeId;
     brandInfo: { id: string } | null;
     currentIcon: string;
     brandSidebarName: string;
@@ -89,6 +91,7 @@ export const AppSidebarShell = ({
     taskManagementPaneWidth,
     aiThemeMode,
     aiDarkSchemeId,
+    aiLightSchemeId,
     brandInfo,
     currentIcon,
     brandSidebarName,
@@ -175,7 +178,7 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}

@@ -10,8 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync/atomic"
-	"time"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -31,7 +30,9 @@ type guiLoopCommandCallbacks struct {
 	onProgress coretool.ProgressCallback
 	onToken    llm.TokenCallback
 	userID     string
-	cancelled  atomic.Bool
+	cancelCh   chan struct{}
+	cancelOnce sync.Once
+	cancelled  bool // fallback for nil cancelCh (test-only zero-value structs)
 }
 
 func (c *guiLoopCommandCallbacks) RunModifyCycle(ctx context.Context, prompt string, iteration int) agent.LoopResult {
@@ -87,13 +88,29 @@ func (c *guiLoopCommandCallbacks) OnFailure(state *agent.LoopCommandState) {
 }
 
 func (c *guiLoopCommandCallbacks) IsCancelled() bool {
-	return c.cancelled.Load()
+	if c.cancelCh != nil {
+		select {
+		case <-c.cancelCh:
+			return true
+		default:
+			return false
+		}
+	}
+	return c.cancelled
+}
+
+// CancelCh implements agent.CancelChanneler for zero-CPU cancel propagation.
+func (c *guiLoopCommandCallbacks) CancelCh() <-chan struct{} {
+	return c.cancelCh
 }
 
 // Cancel marks the loop as cancelled. Called from the main handler when
 // the user sends /cancel or clicks the stop button.
 func (c *guiLoopCommandCallbacks) Cancel() {
-	c.cancelled.Store(true)
+	c.cancelled = true
+	if c.cancelCh != nil {
+		c.cancelOnce.Do(func() { close(c.cancelCh) })
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -229,31 +246,18 @@ func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 
 func (c *loopCycleCallbacks) toolContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	if c == nil || c.parent == nil {
+	if c == nil || c.parent == nil || c.parent.cancelCh == nil {
 		return ctx, cancel
 	}
-	done := make(chan struct{})
+	// Zero-CPU cancel propagation via channel — no polling goroutine needed.
 	go func() {
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if c.parent.IsCancelled() {
-					cancel()
-					return
-				}
-			}
+		select {
+		case <-c.parent.cancelCh:
+			cancel()
+		case <-ctx.Done():
 		}
 	}()
-	return ctx, func() {
-		close(done)
-		cancel()
-	}
+	return ctx, cancel
 }
 
 func (c *loopCycleCallbacks) IsToolAllowed(name string) bool {

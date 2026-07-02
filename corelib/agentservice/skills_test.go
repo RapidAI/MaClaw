@@ -267,7 +267,7 @@ func TestInstallSkillFromSkillMarketMachineLoginAddsBearerToken(t *testing.T) {
 	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteEmail: user.Email, RemoteMachineID: "machine-1", RemoteViewerToken: "viewer-token-123456"}); err != nil {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
-	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillID: "demo"})
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: server.URL, SkillID: "demo"})
 	if err != nil {
 		t.Fatalf("InstallSkill(skillmarket): %v", err)
 	}

@@ -113,8 +113,7 @@ func (a *App) detectMissingCoreTools() string {
 		}
 	}
 	if _, err := exec.LookPath("node"); err != nil {
-		home, _ := os.UserHomeDir()
-		privateBin := filepath.Join(home, ".maclaw", "data", "tools", "bin", "node")
+		privateBin := filepath.Join(privateToolsDirForApp(a), "bin", "node")
 		if _, statErr := os.Stat(privateBin); statErr == nil {
 			return "" // Private node exists — PATH will be set up later
 		}
@@ -136,12 +135,11 @@ func (a *App) CheckEnvironment(force bool) {
 			a.log(a.tr("Init mode: Forcing environment check (ignoring configuration)."))
 		}
 
-		// If .maclaw/data directory doesn't exist, force environment check
-		home := a.GetUserHomeDir()
-		ccDir := filepath.Join(home, ".maclaw", "data")
+		// If the active data directory doesn't exist, force environment check.
+		ccDir := a.GetDataDir()
 		if _, err := os.Stat(ccDir); os.IsNotExist(err) {
 			force = true
-			a.log(a.tr("Detected missing .maclaw/data directory. Forcing environment check..."))
+			a.log(a.tr("Detected missing data directory. Forcing environment check..."))
 		}
 
 		if force {
@@ -164,8 +162,7 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.log(a.tr("Checking base environment..."))
 
-		home, _ = os.UserHomeDir()
-		localNodeDir := filepath.Join(home, ".maclaw", "data", "tools")
+		localNodeDir := privateToolsDirForApp(a)
 		localBinDir := filepath.Join(localNodeDir, "bin")
 
 		// 1. Setup PATH
@@ -329,10 +326,9 @@ func (a *App) CheckEnvironment(force bool) {
 func (a *App) installToolsInBackground() {
 	a.log(a.tr("Starting background tool check/update..."))
 
-	home, _ := os.UserHomeDir()
 	tm := NewToolManager(a)
 	tools := []string{"kilo", "claude", "codex", "opencode", "codebuddy", "iflow"}
-	expectedPrefix := filepath.Join(home, ".maclaw", "data", "tools")
+	expectedPrefix := filepath.Clean(privateToolsDirForApp(a))
 
 	for _, tool := range tools {
 		// Try to acquire lock for this tool
@@ -356,7 +352,8 @@ func (a *App) installToolsInBackground() {
 				a.emitEvent("tool-installed", tool)
 			}
 		} else {
-			if !strings.HasPrefix(status.Path, expectedPrefix) {
+			statusPath := filepath.Clean(status.Path)
+			if expectedPrefix == "" || (statusPath != expectedPrefix && !strings.HasPrefix(statusPath, expectedPrefix+string(os.PathSeparator))) {
 				a.log(a.tr("Background: WARNING: %s found at %s (not in private directory, skipping)", tool, status.Path))
 				a.unlockTool(tool)
 				continue
@@ -401,12 +398,7 @@ func (a *App) InstallToolOnDemand(toolName string) error {
 }
 
 func (a *App) updatePathForNode() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
-	localBinDir := filepath.Join(home, ".maclaw", "data", "tools", "bin")
+	localBinDir := filepath.Join(privateToolsDirForApp(a), "bin")
 	if _, err := os.Stat(localBinDir); err != nil {
 		return
 	}
@@ -612,8 +604,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	}
 
 	// Add local node to PATH
-	home, _ := os.UserHomeDir()
-	localBin := filepath.Join(home, ".maclaw", "data", "tools", "bin")
+	localBin := filepath.Join(privateToolsDirForApp(a), "bin")
 	scriptContent += fmt.Sprintf("export PATH=\"%s:$PATH\"\n", localBin)
 
 	scriptContent += fmt.Sprintf("\"%s\" %s\n", status.Path, strings.Join(cmdArgs, " "))

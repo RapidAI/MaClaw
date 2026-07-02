@@ -1042,6 +1042,27 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		t.Fatalf("tenant mail sender-name get status = %d body=%s", tenantSenderGet.Code, tenantSenderGet.Body.String())
 	}
 	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", mail.TenantSenderNameSettingKey, "Acme Mail")
+	globalRegistrationAuthGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/registration-auth", nil, globalToken)
+	if globalRegistrationAuthGet.Code != http.StatusOK || !bytes.Contains(globalRegistrationAuthGet.Body.Bytes(), []byte(`"method":"email"`)) {
+		t.Fatalf("global registration auth get status = %d body=%s", globalRegistrationAuthGet.Code, globalRegistrationAuthGet.Body.String())
+	}
+	tenantRegistrationAuthSave := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/settings/registration-auth", map[string]any{
+		"method":                   "phone",
+		"aliyun_access_key_id":     "tenant-ak",
+		"aliyun_access_key_secret": "tenant-secret",
+		"aliyun_sign_name":         "云洛科技验证平台",
+		"aliyun_template_code":     "100001",
+		"code_ttl_minutes":         5,
+		"code_length":              4,
+	}, loginPayload.AccessToken)
+	if tenantRegistrationAuthSave.Code != http.StatusOK {
+		t.Fatalf("tenant registration auth save status = %d body=%s", tenantRegistrationAuthSave.Code, tenantRegistrationAuthSave.Body.String())
+	}
+	tenantRegistrationAuthGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/registration-auth", nil, loginPayload.AccessToken)
+	if tenantRegistrationAuthGet.Code != http.StatusOK || !bytes.Contains(tenantRegistrationAuthGet.Body.Bytes(), []byte(`"method":"phone"`)) {
+		t.Fatalf("tenant registration auth get status = %d body=%s", tenantRegistrationAuthGet.Code, tenantRegistrationAuthGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", registrationAuthConfigKey, "tenant-ak")
 	globalGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, globalToken)
 	tenantGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, loginPayload.AccessToken)
 	if !bytes.Contains(globalGet.Body.Bytes(), []byte(`"enabled":true`)) {

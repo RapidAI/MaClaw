@@ -10,6 +10,13 @@ type AppMoveTarget = -1 | 1 | 'top' | 'bottom';
 type AppOperation = 'approval_status' | 'run_history' | 'market';
 type ApprovalLaneFilter = 'my_requests' | 'pending_my_approval' | 'handled' | 'attention' | 'all';
 
+type AppAboutInfo = {
+    author?: string;
+    copyright?: string;
+    website?: string;
+    email?: string;
+};
+
 type AppEntry = {
     id: string;
     name: string;
@@ -36,12 +43,14 @@ type AppEntry = {
     disabled?: boolean;
     disabledReason?: string;
     disabledSource?: 'local' | 'hub_governance';
+    aboutInfo?: AppAboutInfo;
 };
 
 type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot' | 'shop';
 
 type AppsPageProps = {
     lang?: string;
+    onOpenMISDataSettings?: () => void;
 };
 type AppSkillDependency = {
     id: string;
@@ -1114,6 +1123,10 @@ const labels = {
         moveDown: '\u4e0b\u79fb',
         moveTop: '\u79fb\u5230\u9876\u90e8',
         moveBottom: '\u79fb\u5230\u5e95\u90e8',
+        moveUpShort: '\u4e0a\u79fb',
+        moveDownShort: '\u4e0b\u79fb',
+        moveTopShort: '\u9876\u90e8',
+        moveBottomShort: '\u5e95\u90e8',
         clearFilterToSort: '\u6e05\u7a7a\u7b5b\u9009\u540e\u8c03\u6574\u987a\u5e8f',
         hidden: '\u9690\u85cf',
         remove: '\u79fb\u9664',
@@ -1136,7 +1149,7 @@ const labels = {
         skillAppsErrorMeta: '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898',
         manifestPreview: '\u5f53\u524d\u8349\u7a3f manifest',
         manifestPreviewHint: '\u7528\u4e8e\u5ba1\u6838\u548c\u590d\u5236\u7684\u5b9e\u65f6 JSON\uff0c\u5df2\u6839\u636e\u4e0a\u65b9\u914d\u7f6e\u540c\u6b65\u66f4\u65b0',
-        manifest: 'Manifest',
+        manifest: '\u6e05\u5355',
         exportPack: '\u590d\u5236\u5e94\u7528\u5305',
         copy: '\u590d\u5236',
         copied: '\u5df2\u590d\u5236',
@@ -1259,6 +1272,19 @@ const labels = {
         parseError: 'JSON \u89e3\u6790\u5931\u8d25',
         schemaError: '\u672a\u8bc6\u522b\u5e94\u7528\u5305\u683c\u5f0f',
         close: '\u5173\u95ed',
+        aboutInfoSection: '\u5173\u4e8e\u4fe1\u606f',
+        aboutInfoSectionDesc: '\u53d1\u5e03\u540e\u5728\u5e94\u7528\u8fd0\u884c\u65f6\u663e\u793a\u7ed9\u7528\u6237',
+        aboutAuthor: '\u4f5c\u8005',
+        aboutAuthorPlaceholder: '\u4f8b\u5982\uff1a\u5f20\u4e09',
+        aboutCopyright: '\u7248\u6743\u58f0\u660e',
+        aboutCopyrightPlaceholder: '\u4f8b\u5982\uff1aCopyright \u00a9 2026 MyCompany',
+        aboutWebsite: '\u5b98\u7f51',
+        aboutWebsitePlaceholder: '\u4f8b\u5982\uff1ahttps://example.com',
+        aboutEmail: '\u8054\u7cfb\u90ae\u7bb1',
+        aboutEmailPlaceholder: '\u4f8b\u5982\uff1asupport@example.com',
+        aboutDialogTitle: '\u5173\u4e8e',
+        aboutVersion: '\u7248\u672c',
+        aboutNoInfo: '\u5f00\u53d1\u8005\u672a\u63d0\u4f9b\u5173\u4e8e\u4fe1\u606f',
     },
     en: {
         search: 'Search apps',
@@ -1504,6 +1530,10 @@ const labels = {
         moveDown: 'Move down',
         moveTop: 'Move to top',
         moveBottom: 'Move to bottom',
+        moveUpShort: 'Up',
+        moveDownShort: 'Down',
+        moveTopShort: 'Top',
+        moveBottomShort: 'Bottom',
         clearFilterToSort: 'Clear filters before sorting',
         hidden: 'Hide',
         remove: 'Remove',
@@ -1649,6 +1679,19 @@ const labels = {
         parseError: 'JSON parse failed',
         schemaError: 'Unrecognized app package format',
         close: 'Close',
+        aboutInfoSection: 'About Info',
+        aboutInfoSectionDesc: 'Displayed to users at runtime after publishing',
+        aboutAuthor: 'Author',
+        aboutAuthorPlaceholder: 'e.g. John Smith',
+        aboutCopyright: 'Copyright',
+        aboutCopyrightPlaceholder: 'e.g. Copyright \u00a9 2026 MyCompany',
+        aboutWebsite: 'Website',
+        aboutWebsitePlaceholder: 'e.g. https://example.com',
+        aboutEmail: 'Contact Email',
+        aboutEmailPlaceholder: 'e.g. support@example.com',
+        aboutDialogTitle: 'About',
+        aboutVersion: 'Version',
+        aboutNoInfo: 'No about information provided by the developer',
     },
 };
 
@@ -3929,6 +3972,12 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
         source: 'skill',
         importedRunEvidence,
         workflowContract: governance?.workflowContract || governance?.workflow_contract,
+        aboutInfo: app?.aboutInfo && typeof app.aboutInfo === 'object' ? {
+            author: app.aboutInfo.author || undefined,
+            copyright: app.aboutInfo.copyright || undefined,
+            website: app.aboutInfo.website || undefined,
+            email: app.aboutInfo.email || undefined,
+        } : undefined,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: raw.installUnit === 'skill' || raw.installUnit === 'mcp' || raw.installUnit === 'builtin' || raw.installUnit === 'enterprise_app_pack' ? raw.installUnit : (isEnterpriseAppKind(kind) ? 'enterprise_app_pack' : 'skill'),
@@ -6860,7 +6909,7 @@ const AppIcon = ({ icon, customIconDataUrl }: { icon: AppIconName; customIconDat
 
 const isZh = (lang?: string) => !lang || lang.startsWith('zh');
 
-export const AppsPage = ({ lang }: AppsPageProps) => {
+export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
     const [query, setQuery] = useState('');
@@ -7306,6 +7355,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                             <span className="apps-studio-button__icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M12 8v8M8 12h8" /></svg>
                             </span>
+                            <span className="apps-studio-button__label">{isZh(lang) ? '工作室' : 'Studio'}</span>
                         </button>
                     </div>
                     <div className="apps-filter-row">
@@ -7406,6 +7456,7 @@ export const AppsPage = ({ lang }: AppsPageProps) => {
                         hiddenApps={hiddenApps}
                         datasrvDiscovery={datasrvDiscovery}
                         skillDiscovery={skillDiscovery}
+                        onOpenMISDataSettings={onOpenMISDataSettings}
                         onAddDiscoveredApp={addDiscoveredApp}
                         onCreateApp={addDiscoveredApp}
 	                        onInstallMarketApp={installMarketApp}
@@ -8234,6 +8285,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [runState, setRunState] = useState<'idle' | 'running' | 'done' | 'error' | 'cancelled'>('idle');
 	const [validationMessage, setValidationMessage] = useState('');
 	const [runID, setRunID] = useState('');
+	const [showAboutDialog, setShowAboutDialog] = useState(false);
 	const [skillRunStatus, setSkillRunStatus] = useState<SkillRunStatusView | null>(null);
 	const [businessResult, setBusinessResult] = useState<BusinessOperationResultView | null>(null);
 	const [runtimeBusinessError, setRuntimeBusinessError] = useState<StructuredBusinessErrorView | null>(null);
@@ -9509,7 +9561,25 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     {isApproval && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
                     {app.installEvidence && <InstallRecordEvidenceSnapshot record={app.installEvidence} text={text} />}
                 </div>
+                <div className="apps-detail__header-actions">
+                    <button
+                        className="apps-about-button"
+                        type="button"
+                        title={text.aboutDialogTitle}
+                        aria-label={`${text.aboutDialogTitle}: ${app.name}`}
+                        onClick={() => setShowAboutDialog(true)}
+                    >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                    </button>
+                </div>
             </div>
+            {showAboutDialog && (
+                <AppAboutDialog
+                    app={app}
+                    text={text}
+                    onClose={() => setShowAboutDialog(false)}
+                />
+            )}
             <div className="apps-detail__body elegant-scrollbar">
                 <div className={`apps-preview apps-preview--layout-${runtimeLayout.template}`}>
                     <div className="apps-preview__mock apps-runtime-layout" data-template={runtimeLayout.template} data-density={runtimeLayout.density} data-primary-region={runtimeLayout.primaryRegion} data-output-region={runtimeLayout.outputRegion} data-region-count={runtimeLayout.regions.length}>
@@ -10624,6 +10694,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
                 accent: app.accent,
                 customIconDataUrl: app.customIconDataUrl,
             },
+            aboutInfo: app.aboutInfo || undefined,
             governance: appGovernanceForManifest(app, submission, governanceOverrides),
         },
     };
@@ -10789,6 +10860,12 @@ function manifestToAppEntry(raw: any): AppEntry | null {
         source: 'market',
         importedRunEvidence,
         workflowContract: governance.workflowContract || governance.workflow_contract,
+        aboutInfo: app.aboutInfo && typeof app.aboutInfo === 'object' ? {
+            author: app.aboutInfo.author || undefined,
+            copyright: app.aboutInfo.copyright || undefined,
+            website: app.aboutInfo.website || undefined,
+            email: app.aboutInfo.email || undefined,
+        } : undefined,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: raw.installUnit === 'skill' || raw.installUnit === 'mcp' || raw.installUnit === 'builtin' ? raw.installUnit : 'enterprise_app_pack',
@@ -10979,11 +11056,16 @@ function backendDependencyUnavailableMessage(app: AppEntry, plan: BackendAppInst
     if (!dep?.id) return text.missingRequiredDependency;
     const zh = isZh(lang);
     const rawState = String(dep.installed_status || dep.health || dep.action || '').trim();
+    const normalizedState = rawState.toLowerCase();
     if (zh) {
-        const reason = dep.installed ? (rawState ? '\u672a\u5b89\u88c5\u6216\u5df2\u505c\u7528' : '\u4e0d\u53ef\u7528') : '\u672a\u5b89\u88c5';
+        const reason = normalizedState === 'needs_review'
+            ? '\u9700\u8981\u5728\u6280\u80fd\u7ba1\u7406\u4e2d\u5ba1\u6838\u901a\u8fc7\u540e\u624d\u80fd\u4f7f\u7528'
+            : dep.installed ? (rawState ? '\u672a\u5b89\u88c5\u6216\u5df2\u505c\u7528' : '\u4e0d\u53ef\u7528') : '\u672a\u5b89\u88c5';
         return app.name + '\u6682\u4e0d\u53ef\u7528\uff1a' + dep.id + ' ' + reason + '\u3002';
     }
-    const reason = dep.installed ? (rawState ? 'is missing or disabled' : 'is unavailable') : 'is not installed';
+    const reason = normalizedState === 'needs_review'
+        ? 'requires approval in Skill Management before use'
+        : dep.installed ? (rawState ? 'is missing or disabled' : 'is unavailable') : 'is not installed';
     return app.name + ' is unavailable: ' + dep.id + ' ' + reason + '.';
 }
 
@@ -11054,9 +11136,28 @@ type BackendDependencyTraceItem = {
 function dependencyTraceState(value: string, fallback: BackendDependencyTraceItem['state'] = 'unknown'): BackendDependencyTraceItem['state'] {
     const normalized = value.trim().toLowerCase();
     if (['ok', 'ready', 'matched', 'installed', 'skip', 'success', 'verified', 'passed'].includes(normalized)) return 'ready';
-    if (['blocked', 'failed', 'missing', 'disabled', 'mismatch', 'error', 'download_failed', 'integrity_failed'].includes(normalized)) return 'blocked';
+    if (['blocked', 'failed', 'missing', 'disabled', 'needs_review', 'mismatch', 'error', 'download_failed', 'integrity_failed'].includes(normalized)) return 'blocked';
     if (['install', 'installing', 'queued', 'pending', 'checking', 'running'].includes(normalized)) return 'running';
     return fallback;
+}
+
+function dependencyDiagnosticStatusFailed(status: string) {
+    const normalized = status.trim().toLowerCase();
+    return ['blocked', 'failed', 'missing', 'disabled', 'needs_review', 'mismatch', 'error'].includes(normalized);
+}
+
+function dependencyDiagnosticCodeFailed(code: string) {
+    const normalized = code.trim().toLowerCase();
+    return normalized.includes('failed')
+        || normalized.includes('mismatch')
+        || normalized.includes('missing')
+        || normalized.includes('needs_review')
+        || normalized.includes('review_required')
+        || normalized.includes('not_found')
+        || normalized.includes('denied')
+        || normalized.includes('rejected')
+        || normalized.includes('invalid')
+        || normalized.includes('untrusted');
 }
 
 function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typeof labels.zh): BackendDependencyTraceItem[] {
@@ -11164,6 +11265,55 @@ const InstallVersionSnapshot = ({ snapshot, text }: { snapshot?: BackendAppInsta
     );
 };
 
+/** App About Dialog — shows app name, version, author, copyright, etc. */
+const AppAboutDialog = ({ app, text, onClose }: { app: AppEntry; text: typeof labels.zh; onClose: () => void }) => {
+    const about = app.aboutInfo;
+    const version = app.version ?? 1;
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+    useEffect(() => {
+        const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
+    const sanitizedWebsite = useMemo(() => {
+        const url = about?.website;
+        if (!url) return '';
+        const trimmed = url.trim();
+        if (/^https?:\/\//i.test(trimmed)) return trimmed;
+        if (/^mailto:/i.test(trimmed)) return trimmed;
+        if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z]{2,})+/i.test(trimmed) && !trimmed.includes(' ')) return `https://${trimmed}`;
+        return '';
+    }, [about?.website]);
+    return (
+        <div className="apps-about-dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="apps-about-dialog" role="dialog" aria-modal="true" aria-label={`${text.aboutDialogTitle}: ${app.name}`}>
+                <div className="apps-about-dialog__header">
+                    <span className="apps-about-dialog__icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}>
+                        <AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} />
+                    </span>
+                    <div className="apps-about-dialog__title-group">
+                        <h3 className="apps-about-dialog__name">{app.name}</h3>
+                        <span className="apps-about-dialog__version">{text.aboutVersion} {version}</span>
+                    </div>
+                    <button className="apps-about-dialog__close" type="button" onClick={onClose} aria-label={text.close} autoFocus>&times;</button>
+                </div>
+                {app.description && <p className="apps-about-dialog__desc">{app.description}</p>}
+                <div className="apps-about-dialog__body">
+                    {about?.author && <div className="apps-about-dialog__row"><span className="apps-about-dialog__label">{text.aboutAuthor}</span><span>{about.author}</span></div>}
+                    {about?.copyright && <div className="apps-about-dialog__row"><span className="apps-about-dialog__label">{text.aboutCopyright}</span><span>{about.copyright}</span></div>}
+                    {sanitizedWebsite && <div className="apps-about-dialog__row"><span className="apps-about-dialog__label">{text.aboutWebsite}</span><a href={sanitizedWebsite} className="apps-about-dialog__link" onClick={(e) => { e.preventDefault(); BrowserOpenURL(sanitizedWebsite); }}>{about?.website}</a></div>}
+                    {about?.email && <div className="apps-about-dialog__row"><span className="apps-about-dialog__label">{text.aboutEmail}</span><a href={`mailto:${about.email}`} className="apps-about-dialog__link" onClick={(e) => { e.preventDefault(); BrowserOpenURL(`mailto:${about.email}`); }}>{about.email}</a></div>}
+                    {!about?.author && !about?.copyright && !sanitizedWebsite && !about?.email && <p className="apps-about-dialog__empty">{text.aboutNoInfo}</p>}
+                </div>
+                <div className="apps-about-dialog__footer">
+                    <span className="apps-about-dialog__category">{app.category}</span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 function installRecordString(value: unknown) {
     return String(value || '').trim();
 }
@@ -11206,11 +11356,15 @@ function installRecordDependencyDiagnostics(record: BackendAppInstallRecord): { 
     if (diagnosticRows.length === 0) return null;
     const hasFailure = dependencies.some((dep) => {
         const preflightStatus = String(dep.preflight_status || '').trim();
+        const preflightCode = String(dep.preflight_code || '').trim();
         const integrityStatus = String(dep.integrity_status || '').trim();
+        const integrityCode = String(dep.integrity_code || '').trim();
         return isBlockingBackendDependency(dep)
             || !!dep.install_error_code
-            || (!!preflightStatus && preflightStatus !== 'ready')
-            || (!!integrityStatus && integrityStatus !== 'ready');
+            || dependencyDiagnosticStatusFailed(preflightStatus)
+            || dependencyDiagnosticCodeFailed(preflightCode)
+            || dependencyDiagnosticStatusFailed(integrityStatus)
+            || dependencyDiagnosticCodeFailed(integrityCode);
     });
     const shown = diagnosticRows.slice(0, 2);
     if (diagnosticRows.length > shown.length) shown.push(`+${diagnosticRows.length - shown.length}`);
@@ -11843,7 +11997,7 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
 	apps: AppEntry[];
 	hiddenApps: AppEntry[];
 	lang?: string;
@@ -11861,6 +12015,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     onPendingEditConsumed: () => void;
     datasrvDiscovery: DataSrvDiscovery;
     skillDiscovery: SkillAppDiscovery;
+    onOpenMISDataSettings?: () => void;
 	onAddDiscoveredApp: (app: AppEntry) => void;
 	onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
 	onInstallMarketApp: (app: AppEntry) => void;
@@ -11924,7 +12079,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                     <p className="apps-detail__subtitle">{text.studioSubtitle}</p>
                 </div>
 	                <div className="apps-detail__actions">
-	                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} />
+	                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} onOpenMISDataSettings={onOpenMISDataSettings} />
 	                    <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
 	                </div>
             </div>
@@ -11979,7 +12134,7 @@ const dataSrvDiscoveryStatusLabel = (discovery: DataSrvDiscovery, text: typeof l
         discovery.status === 'disabled' ? text.datasrvDisabled :
             discovery.status === 'error' ? text.datasrvError : '-';
 
-const DataSrvDiscoverySummary = ({ discovery, lang }: { discovery: DataSrvDiscovery; lang?: string }) => {
+const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { discovery: DataSrvDiscovery; lang?: string; onOpenMISDataSettings?: () => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
     const statusLabel = dataSrvDiscoveryStatusLabel(discovery, text);
@@ -11991,22 +12146,25 @@ const DataSrvDiscoverySummary = ({ discovery, lang }: { discovery: DataSrvDiscov
         { label: zh ? '\u770b\u677f' : 'Dashboards', value: discovery.dashboards },
     ];
     const endpoint = discovery.endpoint || 'http://127.0.0.1:18180';
-    const meta = discovery.error ? `${endpoint} · ${discovery.error}` : endpoint;
+    const meta = discovery.error ? `${endpoint} \u00b7 ${discovery.error}` : endpoint;
+    const settingsLabel = zh ? '\u6253\u5f00 MIS \u6570\u636e\u8bbe\u7f6e' : 'Open MIS data settings';
+    const actionLabel = zh ? '\u8bbe\u7f6e' : 'Settings';
     return (
-        <div className="apps-datasrv-summary" data-status={discovery.status} aria-label={text.datasrvDiscovery}>
-            <div className="apps-datasrv-summary__main">
+        <button className="apps-datasrv-summary" type="button" data-status={discovery.status} aria-label={`${text.datasrvDiscovery} \u00b7 ${settingsLabel}`} title={settingsLabel} onClick={onOpenMISDataSettings}>
+            <span className="apps-datasrv-summary__main">
                 <span className="apps-datasrv-summary__title">{text.datasrvDiscovery}</span>
                 <span className="apps-datasrv-summary__status">{statusLabel}</span>
-            </div>
-            <div className="apps-datasrv-summary__metrics" aria-label={zh ? '\u80fd\u529b\u7edf\u8ba1' : 'Capability counts'}>
+                <span className="apps-datasrv-summary__action">{actionLabel}</span>
+            </span>
+            <span className="apps-datasrv-summary__metrics" aria-label={zh ? '\u80fd\u529b\u7edf\u8ba1' : 'Capability counts'}>
                 {metrics.map((metric) => (
                     <span key={metric.label}><strong>{metric.value}</strong>{metric.label}</span>
                 ))}
-            </div>
-            <div className="apps-datasrv-summary__meta" title={meta}>
+            </span>
+            <span className="apps-datasrv-summary__meta" title={meta}>
                 {meta}
-            </div>
-        </div>
+            </span>
+        </button>
     );
 };
 
@@ -12615,6 +12773,10 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [description, setDescription] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
     const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+    const [aboutAuthor, setAboutAuthor] = useState('');
+    const [aboutCopyright, setAboutCopyright] = useState('');
+    const [aboutWebsite, setAboutWebsite] = useState('');
+    const [aboutEmail, setAboutEmail] = useState('');
     const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
     const [selectedSkill, setSelectedSkill] = useState('');
     const [selectedSkillSource, setSelectedSkillSource] = useState<StudioSkillChoice['source']>('installed');
@@ -12831,6 +12993,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             version: 1,
             source: 'local',
             manifest: applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion, regions: layoutRegions }), kind, workflowMapping), kind, uiNavigation, uiColumns), kind, resultContractDraft), kind, testProtocolDraft),
+            aboutInfo: (aboutAuthor.trim() || aboutCopyright.trim() || aboutWebsite.trim() || aboutEmail.trim()) ? {
+                author: aboutAuthor.trim() || undefined,
+                copyright: aboutCopyright.trim() || undefined,
+                website: aboutWebsite.trim() || undefined,
+                email: aboutEmail.trim() || undefined,
+            } : undefined,
         };
     };
     const draftApp = buildDraftApp(
@@ -12894,6 +13062,10 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         onCreateApp(buildDraftApp(id, cleanName));
         setName('');
         setDescription('');
+        setAboutAuthor('');
+        setAboutCopyright('');
+        setAboutWebsite('');
+        setAboutEmail('');
         setSkillFields([]);
         setMultipleFiles(false);
         setResultContractDraft(undefined);
@@ -13257,6 +13429,26 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
                 </div>
+                <section className="apps-about-info-section" aria-label={text.aboutInfoSection}>
+                    <div className="apps-definition__title">{text.aboutInfoSection}</div>
+                    <p className="apps-about-info-section__desc">{text.aboutInfoSectionDesc}</p>
+                    <div className="apps-form-row">
+                        <label>{text.aboutAuthor}</label>
+                        <input value={aboutAuthor} onChange={(event) => setAboutAuthor(event.target.value)} placeholder={text.aboutAuthorPlaceholder} />
+                    </div>
+                    <div className="apps-form-row">
+                        <label>{text.aboutCopyright}</label>
+                        <input value={aboutCopyright} onChange={(event) => setAboutCopyright(event.target.value)} placeholder={text.aboutCopyrightPlaceholder} />
+                    </div>
+                    <div className="apps-form-row">
+                        <label>{text.aboutWebsite}</label>
+                        <input type="url" value={aboutWebsite} onChange={(event) => setAboutWebsite(event.target.value)} placeholder={text.aboutWebsitePlaceholder} />
+                    </div>
+                    <div className="apps-form-row">
+                        <label>{text.aboutEmail}</label>
+                        <input type="email" value={aboutEmail} onChange={(event) => setAboutEmail(event.target.value)} placeholder={text.aboutEmailPlaceholder} />
+                    </div>
+                </section>
                 <div className="apps-actions">
                     {kind === 'tool_app' && canWriteSkillDefinition ? (
                         <>
@@ -13742,6 +13934,11 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     </div>
                                 )}
                                 <div className="apps-publish-checks">
+                                    <div className="apps-publish-checks__summary">
+                                        {isZh(lang)
+                                            ? `检查项：${checks.filter(c => c.ok).length}/${checks.length} 通过`
+                                            : `Checks: ${checks.filter(c => c.ok).length}/${checks.length} passed`}
+                                    </div>
                                     {checks.map((check) => (
                                         <div className="apps-publish-check" data-ok={check.ok ? 'true' : 'false'} key={check.label}>
                                             <span aria-hidden="true">{check.ok ? "OK" : "!"}</span>
@@ -14455,10 +14652,10 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
 	                            <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']} · {isZh(lang) ? '已加入面板' : 'In panel'}</div>
                         </div>
                         <div className="apps-manage-actions">
-                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>Top</button>
-                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveUp} onClick={() => onMoveApp(app.id, -1)}>Up</button>
-                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveDown} onClick={() => onMoveApp(app.id, 1)}>Down</button>
-                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveBottom} onClick={() => onMoveApp(app.id, "bottom")}>Bottom</button>
+                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
+                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveUp} onClick={() => onMoveApp(app.id, -1)}>{text.moveUpShort}</button>
+                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveDown} onClick={() => onMoveApp(app.id, 1)}>{text.moveDownShort}</button>
+                            <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveBottom} onClick={() => onMoveApp(app.id, "bottom")}>{text.moveBottomShort}</button>
                             <button className="apps-secondary-button" type="button" title={text.edit} onClick={() => startEdit(app)}>{text.edit}</button>
                             <button className="apps-secondary-button" type="button" title={text.duplicate} onClick={() => onDuplicateApp(app.id)}>{text.copy}</button>
                             <button className="apps-secondary-button" type="button" title={text.manifest} onClick={() => setManifestAppId((current) => current === app.id ? '' : app.id)}>{text.manifest}</button>
@@ -14535,6 +14732,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                             </button>
                         </div>
                         <div className="apps-manage-edit">
+                            <div className="apps-manage-edit__section">
+                            <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u57fa\u672c\u4fe1\u606f' : 'Basic info'}</div>
                             <div className="apps-form-row">
                                 <label>{isZh(lang) ? '\u540d\u79f0' : 'Name'}</label>
                                 <input data-testid="edit-app-name" ref={editNameInputRef} value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
@@ -14604,6 +14803,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
                                 <textarea data-testid="edit-app-description" value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
+                            </div>
+                            <div className="apps-manage-edit__section">
                             <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u80fd\u529b\u7ed1\u5b9a' : 'Capability binding'}</div>
                             {editingApp.kind === 'tool_app' && (
                                 <>
@@ -14766,6 +14967,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                             <StudioLayoutDesigner kind={editingApp.kind} value={editDraft.layout} onChange={(layout) => setEditDraft((current) => ({ ...current, layout }))} lang={lang} testIdPrefix="edit" />
                             <ResultContractDesigner contract={normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes)} onChange={(resultContract) => setEditDraft((current) => ({ ...current, resultContract }))} lang={lang} testIdPrefix="edit" />
                             <TestProtocolDesigner protocol={normalizeAppTestProtocol(editDraft.testProtocol, editingApp.kind, editDraft.outputModes, normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes))} onChange={(testProtocol) => setEditDraft((current) => ({ ...current, testProtocol }))} lang={lang} testIdPrefix="edit" kind={editingApp.kind} />
+                            </div>
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>

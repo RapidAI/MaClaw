@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // EntryPointProvider is the interface for package-level plugin registration.
@@ -49,14 +51,11 @@ func (dm *DiscoveryManager) DiscoverAll(projectDir string) ([]PluginManifest, er
 	}
 
 	// Layer 2: User-level
-	home, err := os.UserHomeDir()
-	if err == nil {
-		userPluginDir := filepath.Join(home, ".maclaw", "plugins")
-		for _, m := range dm.scanDirectory(userPluginDir, ScopeUser) {
-			if !seen[m.Name] {
-				manifests = append(manifests, m)
-				seen[m.Name] = true
-			}
+	userPluginDir := filepath.Join(corelib.MaclawBaseDir(), "plugins")
+	for _, m := range dm.scanDirectory(userPluginDir, ScopeUser) {
+		if !seen[m.Name] {
+			manifests = append(manifests, m)
+			seen[m.Name] = true
 		}
 	}
 

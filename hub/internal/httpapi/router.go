@@ -21,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
+	"github.com/RapidAI/CodeClaw/hub/internal/notification"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
@@ -325,6 +326,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/mail/config", requireGlobalAdmin(UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/mail/sender-name", requireTenantAdmin(GetTenantMailSenderNameHandler(system)))
 	mux.HandleFunc("POST /api/admin/mail/sender-name", requireTenantAdmin(UpdateTenantMailSenderNameHandler(system)))
+	mux.HandleFunc("GET /api/admin/settings/registration-auth", requireAdmin(GetRegistrationAuthConfigHandler(system)))
+	mux.HandleFunc("PUT /api/admin/settings/registration-auth", requireAdmin(UpdateRegistrationAuthConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/center/register", requireGlobalAdmin(RegisterCenterHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/mail/test", requireGlobalAdmin(AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/feishu/config", requireTenantAdmin(GetFeishuConfigHandler(system)))
@@ -382,6 +385,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/service/account", GetLLMServiceAccountHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/mobile/bootstrap", MobileBootstrapHandler(identity))
+	mux.HandleFunc("GET /api/mobile/realtime", MobileRealtimeHandler(identity))
+	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileLLMDesktopQRSessionHandler(identity))
+	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions/consume", MobileLLMDesktopQRSessionConsumeHandler(identity))
+	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/drafts", MobileDocumentDraftHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))
@@ -524,6 +531,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
+	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system))
+	mux.HandleFunc("POST /api/enroll/sms/send-code", RegistrationSMSSendCodeHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/enroll/sms/verify-and-start", RegistrationSMSVerifyAndStartHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/center/user-exists", CenterUserExistsHandler(identity, centerSvc))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
@@ -817,6 +827,31 @@ func NewRouter(
 
 	// Public user ranking leaderboard (no auth, masked emails)
 	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc))
+
+	// ---------------------------------------------------------------------------
+	// Dynamic Notification System endpoints
+	// ---------------------------------------------------------------------------
+	if hubDB != nil {
+		notifStore := notification.NewStore(hubDB)
+		_ = notifStore.InitSchema(context.Background())
+		notifSvc := notification.NewService(notifStore, nil, nil)
+		notifHandler := NewNotificationHandler(notifSvc)
+
+		// Admin routes (requireAdmin)
+		mux.HandleFunc("POST /api/v1/admin/notifications", requireAdmin(notifHandler.HandleCreateNotification))
+		mux.HandleFunc("GET /api/v1/admin/notifications", requireAdmin(notifHandler.HandleListNotifications))
+		mux.HandleFunc("GET /api/v1/admin/notifications/{id}", requireAdmin(notifHandler.HandleGetNotification))
+		mux.HandleFunc("POST /api/v1/admin/notifications/{id}/revoke", requireAdmin(notifHandler.HandleRevokeNotification))
+
+		// Client routes (machine auth)
+		machineAuth := requireMachineAuth(identity)
+		mux.HandleFunc("GET /api/v1/notifications/unread", machineAuth(notifHandler.HandleUnread))
+		mux.HandleFunc("POST /api/v1/notifications/{id}/read", machineAuth(notifHandler.HandleMarkRead))
+		mux.HandleFunc("POST /api/v1/notifications/read-all", machineAuth(notifHandler.HandleMarkAllRead))
+
+		// Cascade route (requireGlobalAdmin — HubCenter uses global admin token)
+		mux.HandleFunc("POST /api/v1/notifications/cascade", requireGlobalAdmin(notifHandler.HandleCascade))
+	}
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerStaticRoutes(mux, "./web/knowledge_shares", "/hub/knowledge/shares/mine")

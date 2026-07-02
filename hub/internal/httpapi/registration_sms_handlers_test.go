@@ -1,0 +1,589 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+)
+
+type fakeRegistrationSMSProvider struct {
+	sendReq   aliyunSMSVerifyCodeSendRequest
+	checkReq  aliyunSMSVerifyCodeCheckRequest
+	checkPass bool
+	sendCount int
+	sendErr   error
+}
+
+func (p *fakeRegistrationSMSProvider) SendVerifyCode(ctx context.Context, req aliyunSMSVerifyCodeSendRequest) error {
+	_ = ctx
+	p.sendReq = req
+	p.sendCount++
+	return p.sendErr
+}
+
+func (p *fakeRegistrationSMSProvider) CheckVerifyCode(ctx context.Context, req aliyunSMSVerifyCodeCheckRequest) (bool, error) {
+	_ = ctx
+	p.checkReq = req
+	return p.checkPass, nil
+}
+
+type fakeRegistrationSMSRouteSyncer struct {
+	allowed     bool
+	targetHubID string
+	checked     bool
+}
+
+func (s *fakeRegistrationSMSRouteSyncer) SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error {
+	_, _, _ = ctx, email, tenantIDOpt
+	return nil
+}
+
+func (s *fakeRegistrationSMSRouteSyncer) SyncUserRouteReplaceAll(ctx context.Context, email string, tenantIDOpt ...string) error {
+	_, _, _ = ctx, email, tenantIDOpt
+	return nil
+}
+
+func (s *fakeRegistrationSMSRouteSyncer) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error) {
+	_, _, _ = ctx, email, tenantIDOpt
+	s.checked = true
+	return s.allowed, s.targetHubID, nil
+}
+
+var _ auth.UserRouteSyncer = (*fakeRegistrationSMSRouteSyncer)(nil)
+var _ auth.UserRouteValidator = (*fakeRegistrationSMSRouteSyncer)(nil)
+
+func TestRegistrationSMSSendCodeHandlerUsesTenantPhoneConfig(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	settings := &testSystemSettingsRepo{}
+	saveRegistrationAuthTestConfig(t, settings, "tenant_acme")
+	provider := &fakeRegistrationSMSProvider{}
+
+	body := bytes.NewBufferString(`{"tenant_id":"tenant_acme","phone_number":"19900001111"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, settings, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		if cfg.AliyunAccessKeyID != "ak" || cfg.AliyunAccessKeySecret != "secret" {
+			t.Fatalf("unexpected config passed to provider: %+v", cfg)
+		}
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "19900001111" || provider.sendReq.TemplateCode != "100001" || provider.sendReq.TemplateParam != `{"code":"##code##","min":"5"}` {
+		t.Fatalf("unexpected send request: %+v", provider.sendReq)
+	}
+	if !strings.Contains(rr.Body.String(), `"tenant_id":"tenant_acme"`) || !strings.Contains(rr.Body.String(), `"code_length":4`) {
+		t.Fatalf("unexpected response: %s", rr.Body.String())
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerRejectsExistingPhoneUserBeforeSending(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	if _, err := identity.ManualBindForTenant(context.Background(), "tenant_other", "phone:19900001111"); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "PHONE_ALREADY_REGISTERED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "" {
+		t.Fatalf("expected SMS provider not to be called, got %+v", provider.sendReq)
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerSendsVerifyBoundPhoneForExistingTenantIdentity(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	seedBindUser(t, identity, store.DefaultTenantID, "buyer@example.com")
+	user, err := identity.UsersRepo().GetByTenantEmail(context.Background(), store.DefaultTenantID, "buyer@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("load seeded user: user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), store.DefaultTenantID), user, "19900001111"); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.TemplateCode != registrationSMSTemplateByBusiness[registrationSMSBusinessVerifyBoundPhone] {
+		t.Fatalf("template = %q, want verify-bound-phone", provider.sendReq.TemplateCode)
+	}
+	if !strings.Contains(rr.Body.String(), `"purpose":"verify_bound_phone"`) {
+		t.Fatalf("response missing purpose: %s", rr.Body.String())
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerEnforcesDailyPhoneLimit(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfigWithLimit(t, st.System, store.DefaultTenantID, 3)
+	provider := &fakeRegistrationSMSProvider{}
+	handler := RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	})
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(`{"phone_number":"19900001111"}`))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("send %d status = %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"daily_sms_limit":3`) {
+			t.Fatalf("send %d response missing daily limit: %s", i+1, rr.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(`{"phone_number":"19900001111"}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), "SMS_DAILY_LIMIT_REACHED") {
+		t.Fatalf("fourth send status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendCount != 3 {
+		t.Fatalf("provider send count = %d, want 3", provider.sendCount)
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerReleasesDailyLimitWhenProviderFails(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfigWithLimit(t, st.System, store.DefaultTenantID, 1)
+	provider := &fakeRegistrationSMSProvider{sendErr: errors.New("sms down")}
+	handler := RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(`{"phone_number":"19900001111"}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "SMS_VERIFY_SEND_FAILED") {
+		t.Fatalf("failed send status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	provider.sendErr = nil
+	req = httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(`{"phone_number":"19900001111"}`))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second send should not be rate-limited after provider failure: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"daily_sms_remaining":0`) {
+		t.Fatalf("unexpected second send response: %s", rr.Body.String())
+	}
+}
+
+func TestReserveRegistrationSMSSendDefaultsLimitWithoutSystemStore(t *testing.T) {
+	remaining, err := reserveRegistrationSMSSend(context.Background(), nil, "19900001111", 0, time.Now())
+	if err != nil {
+		t.Fatalf("reserve without system store: %v", err)
+	}
+	if remaining != registrationAuthDefaultDailyLimit {
+		t.Fatalf("remaining = %d, want default limit %d", remaining, registrationAuthDefaultDailyLimit)
+	}
+}
+
+func TestReserveRegistrationSMSSendResetsOnNextDay(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	now := time.Date(2026, 7, 2, 23, 59, 0, 0, time.Local)
+	if remaining, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 1, now); err != nil || remaining != 0 {
+		t.Fatalf("first reserve remaining=%d err=%v", remaining, err)
+	}
+	if _, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 1, now); err == nil {
+		t.Fatal("expected same-day limit error")
+	}
+	nextDay := now.Add(2 * time.Minute)
+	if remaining, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 1, nextDay); err != nil || remaining != 0 {
+		t.Fatalf("next-day reserve remaining=%d err=%v", remaining, err)
+	}
+}
+
+func TestReserveRegistrationSMSSendStoresHashedPhoneKey(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.Local)
+	if _, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 3, now); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	raw := settings.values[registrationSMSDailyUsageKey]
+	if strings.Contains(raw, "19900001111") {
+		t.Fatalf("daily usage should not store phone number in plaintext: %s", raw)
+	}
+	var usage registrationSMSDailyUsage
+	if err := json.Unmarshal([]byte(raw), &usage); err != nil {
+		t.Fatalf("decode usage: %v", err)
+	}
+	if len(usage.Counts) != 1 {
+		t.Fatalf("counts = %#v", usage.Counts)
+	}
+	for key, count := range usage.Counts {
+		if len(key) != 64 || count != 1 {
+			t.Fatalf("unexpected hashed count key=%q count=%d", key, count)
+		}
+	}
+}
+
+func TestRegistrationSMSDailyUsagePhoneHashDoesNotTreatLongDigitsAsHash(t *testing.T) {
+	longDigits := "1234567890123456789012345678901234567890123456789012345678901234"
+	key := registrationSMSDailyUsagePhoneHash(longDigits)
+	if key == longDigits {
+		t.Fatal("long digit phone input should be hashed, not treated as an existing hash key")
+	}
+	if len(key) != 64 || !isHexString(key) {
+		t.Fatalf("unexpected key = %q", key)
+	}
+}
+
+func TestReserveRegistrationSMSSendHonorsLegacyPlaintextPhoneCount(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{
+		registrationSMSDailyUsageKey: `{"date":"2026-07-02","counts":{"19900001111":1}}`,
+	}}
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.Local)
+	if _, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 1, now); err == nil {
+		t.Fatal("expected legacy plaintext count to enforce daily limit")
+	}
+	raw := settings.values[registrationSMSDailyUsageKey]
+	if strings.Contains(raw, "19900001111") {
+		t.Fatalf("legacy plaintext phone should be cleaned after limit check: %s", raw)
+	}
+	if !strings.Contains(raw, registrationSMSDailyUsagePhoneHash("19900001111")) {
+		t.Fatalf("legacy count should be retained under hashed key: %s", raw)
+	}
+}
+
+func TestReserveRegistrationSMSSendDropsUnknownLegacyUsageKeys(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{
+		registrationSMSDailyUsageKey: `{"date":"2026-07-02","counts":{"not-a-phone":5,"19900001111":1}}`,
+	}}
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.Local)
+	if _, err := reserveRegistrationSMSSend(context.Background(), settings, "19900001111", 3, now); err != nil {
+		t.Fatalf("reserve with legacy keys: %v", err)
+	}
+	raw := settings.values[registrationSMSDailyUsageKey]
+	if strings.Contains(raw, "not-a-phone") || strings.Contains(raw, "19900001111") {
+		t.Fatalf("legacy plaintext keys should be cleaned: %s", raw)
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerRejectsInvalidPhoneBeforeSending(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{}
+
+	body := bytes.NewBufferString(`{"phone_number":"12-3"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "INVALID_PHONE_NUMBER") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "" {
+		t.Fatalf("expected SMS provider not to be called, got %+v", provider.sendReq)
+	}
+}
+
+func TestRegistrationSMSSendCodeHandlerRejectsOverlongPhoneBeforeSending(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{}
+
+	body := bytes.NewBufferString(`{"phone_number":"123456789012345678901"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "INVALID_PHONE_NUMBER") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "" {
+		t.Fatalf("expected SMS provider not to be called, got %+v", provider.sendReq)
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartRejectsExistingPhoneUser(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	if _, err := identity.ManualBindForTenant(context.Background(), "tenant_other", "phone:19900001111"); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "PHONE_ALREADY_REGISTERED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.checkReq.PhoneNumber != "" {
+		t.Fatalf("expected SMS provider not to be called, got %+v", provider.checkReq)
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartRebindsExistingPhoneIdentityToCanonicalUser(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	seedBindUser(t, identity, store.DefaultTenantID, "buyer@example.com")
+	user, err := identity.UsersRepo().GetByTenantEmail(context.Background(), store.DefaultTenantID, "buyer@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("load seeded user: user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), store.DefaultTenantID), user, "19900001111"); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Email               string `json:"email"`
+		PhoneNumber         string `json:"phone_number"`
+		ReboundExistingUser bool   `json:"rebound_existing_user"`
+		MachineID           string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Email != "buyer@example.com" || got.PhoneNumber != "19900001111" || !got.ReboundExistingUser || got.MachineID == "" {
+		t.Fatalf("unexpected response: %+v body=%s", got, rr.Body.String())
+	}
+	phoneUser, err := st.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("load phone account: %v", err)
+	}
+	if phoneUser != nil {
+		t.Fatalf("existing phone identity should not create phone account: %#v", phoneUser)
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartBackfillsTenantScopedPhoneGrant(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	const tenantID = "tenant_b"
+	saveRegistrationAuthTestConfig(t, st.System, tenantID)
+	seedBindUser(t, identity, tenantID, "buyer@example.com")
+	user, err := identity.UsersRepo().GetByTenantEmail(context.Background(), tenantID, "buyer@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("load seeded user: user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), tenantID), user, "19900001111"); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	tenantSystem := ScopedSystemSettingsForTenant(tenantID, st.System)
+	if err := llmservice.SaveRegistry(context.Background(), tenantSystem, &llmservice.Registry{
+		Grants: []llmservice.Grant{{ID: "grant-phone", Email: "phone:19900001111", ServiceGroupID: "coding-basic"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	reg, err := llmservice.LoadRegistry(context.Background(), tenantSystem)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].UserID != user.ID {
+		t.Fatalf("expected tenant-scoped phone grant backfilled to user ID, grants=%#v", reg.Grants)
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartContinuesWhenTenantBackfillFails(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	const tenantID = "tenant_b"
+	saveRegistrationAuthTestConfig(t, st.System, tenantID)
+	seedBindUser(t, identity, tenantID, "buyer@example.com")
+	user, err := identity.UsersRepo().GetByTenantEmail(context.Background(), tenantID, "buyer@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("load seeded user: user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), tenantID), user, "19900001111"); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	tenantSystem := ScopedSystemSettingsForTenant(tenantID, st.System)
+	if err := tenantSystem.Set(context.Background(), llmservice.RegistryKey, "{not-json"); err != nil {
+		t.Fatalf("seed broken registry: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartRejectsRoutedPhoneBeforeCheckingCode(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	routeSyncer := &fakeRegistrationSMSRouteSyncer{allowed: false, targetHubID: "hub_other"}
+	identity.SetUserRouteSyncer(routeSyncer)
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "PHONE_ALREADY_REGISTERED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !routeSyncer.checked {
+		t.Fatal("expected route check before SMS verification")
+	}
+	if provider.checkReq.PhoneNumber != "" {
+		t.Fatalf("expected SMS provider check not to be called, got %+v", provider.checkReq)
+	}
+}
+
+func TestRegistrationSMSEnrollmentRouteErrorUsesPhoneAlreadyRegisteredCode(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeEnrollmentStartError(rr, auth.ErrRoutedToAnotherHub, nil)
+
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "PHONE_ALREADY_REGISTERED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "EMAIL_ROUTED_TO_ANOTHER_HUB") {
+		t.Fatalf("phone SMS enrollment leaked email route code: %s", rr.Body.String())
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartCreatesPhoneIdentity(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "3032" {
+		t.Fatalf("unexpected check request: %+v", provider.checkReq)
+	}
+	var got struct {
+		Status      string `json:"status"`
+		Email       string `json:"email"`
+		PhoneNumber string `json:"phone_number"`
+		MachineID   string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Status != "approved" || got.Email != "phone:19900001111" || got.PhoneNumber != "19900001111" || got.MachineID == "" {
+		t.Fatalf("unexpected response: %+v body=%s", got, rr.Body.String())
+	}
+	user, err := st.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("load phone user: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected phone identity user to be created")
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartRejectsFailedCode(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{checkPass: false}
+
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "INVALID_SMS_VERIFY_CODE") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func saveRegistrationAuthTestConfig(t *testing.T, settings store.SystemSettingsRepository, tenantID string) {
+	t.Helper()
+	saveRegistrationAuthTestConfigWithLimit(t, settings, tenantID, registrationAuthDefaultDailyLimit)
+}
+
+func saveRegistrationAuthTestConfigWithLimit(t *testing.T, settings store.SystemSettingsRepository, tenantID string, dailyLimit int) {
+	t.Helper()
+	cfg := normalizeRegistrationAuthConfig(RegistrationAuthConfig{
+		Method:                registrationAuthMethodPhone,
+		AliyunAccessKeyID:     "ak",
+		AliyunAccessKeySecret: "secret",
+		AliyunSignName:        registrationAuthDefaultSignName,
+		AliyunTemplateCode:    registrationAuthDefaultTemplate,
+		CodeTTLMinutes:        5,
+		CodeLength:            4,
+		DailySMSLimit:         dailyLimit,
+	})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := ScopedSystemSettingsForTenant(tenantID, settings).Set(context.Background(), registrationAuthConfigKey, string(data)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+}

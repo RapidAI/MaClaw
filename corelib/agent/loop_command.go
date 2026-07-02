@@ -151,6 +151,14 @@ func NormalizeLoopConfig(cfg LoopCommandConfig) LoopCommandConfig {
 	return cfg
 }
 
+// CancelChanneler is an optional interface that LoopCommandCallbacks
+// implementations can satisfy to provide zero-CPU-overhead cancellation.
+// When implemented, the loop engine uses channel-based select instead of
+// polling IsCancelled() at intervals.
+type CancelChanneler interface {
+	CancelCh() <-chan struct{}
+}
+
 // LoopCommandCallbacks is the interface that the host must implement to
 // provide LLM and tool capabilities to the loop engine.
 type LoopCommandCallbacks interface {
@@ -178,33 +186,52 @@ type LoopCommandCallbacks interface {
 	IsCancelled() bool
 }
 
+// cancelChFromCallbacks extracts the cancel channel from a LoopCommandCallbacks
+// if it implements CancelChanneler. Returns nil otherwise.
+func cancelChFromCallbacks(cb LoopCommandCallbacks) <-chan struct{} {
+	if cc, ok := cb.(CancelChanneler); ok {
+		return cc.CancelCh() // may be nil if channel wasn't initialized
+	}
+	return nil
+}
+
 // RunLoopCommand executes the goal-driven verification loop.
 // This is the core engine — it does not know about GUI/TUI/IM specifics.
 func RunLoopCommand(ctx context.Context, cfg LoopCommandConfig, cb LoopCommandCallbacks) *LoopCommandState {
 	cfg = NormalizeLoopConfig(cfg)
 
-	// Derive a cancellable context from the IsCancelled() polling signal.
-	// This allows in-flight verify commands and LLM calls to be interrupted
-	// immediately when the user cancels, rather than waiting for the next
-	// iteration boundary.
+	// Derive a cancellable context from the cancel signal.
+	// If the callback provides a cancel channel (CancelChanneler interface),
+	// use zero-CPU select. Otherwise fall back to polling IsCancelled().
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	go func() {
-		// Poll IsCancelled at 200ms intervals and cancel the context when true.
-		ticker := time.NewTicker(200 * time.Millisecond)
-		defer ticker.Stop()
-		for {
+	// Try channel-based cancellation first (zero CPU). Fall back to polling.
+	cancelCh := cancelChFromCallbacks(cb)
+	if cancelCh != nil {
+		go func() {
 			select {
+			case <-cancelCh:
+				loopCancel()
 			case <-loopCtx.Done():
-				return
-			case <-ticker.C:
-				if cb.IsCancelled() {
-					loopCancel()
+			}
+		}()
+	} else {
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-loopCtx.Done():
 					return
+				case <-ticker.C:
+					if cb.IsCancelled() {
+						loopCancel()
+						return
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	state := &LoopCommandState{
 		Config:    cfg,

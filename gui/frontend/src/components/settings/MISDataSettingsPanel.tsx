@@ -37,6 +37,7 @@ const defaultConfig: MISDataConfig = {
 export function MISDataSettingsPanel({ lang }: Props) {
     const [config, setConfig] = useState<MISDataConfig>(defaultConfig);
     const [status, setStatus] = useState<ConnectionStatus | null>(null);
+    const [configDirty, setConfigDirty] = useState(false);
     const [busy, setBusy] = useState('');
     const [message, setMessage] = useState('');
     const [error, setError] = useState('');
@@ -47,15 +48,28 @@ export function MISDataSettingsPanel({ lang }: Props) {
         setBusy('load');
         GetMISDataConfig()
             .then((next: MISDataConfig) => {
-                if (mounted) setConfig({ ...defaultConfig, ...(next || {}) });
+                if (mounted) {
+                    setConfig({ ...defaultConfig, ...(next || {}) });
+                    setConfigDirty(false);
+                }
             })
             .catch((err: any) => mounted && setError(err?.message || String(err)))
             .finally(() => mounted && setBusy(''));
         return () => { mounted = false; };
     }, []);
 
+    const connectionVerified = !!config.enabled && !!status?.ok && !!status?.auth_ok;
+    const enabledSaved = connectionVerified && !configDirty;
+    const badgeState = enabledSaved ? 'enabled' : connectionVerified ? 'pending' : 'disabled';
+    const badgeLabel = badgeState === 'enabled'
+        ? t('Enabled', '\u5df2\u542f\u7528', '\u5df2\u555f\u7528')
+        : badgeState === 'pending'
+            ? t('Verified, save to enable', '\u5df2\u9a8c\u8bc1\uff0c\u4fdd\u5b58\u540e\u542f\u7528', '\u5df2\u9a57\u8b49\uff0c\u5132\u5b58\u5f8c\u555f\u7528')
+            : t('Disabled', '\u672a\u542f\u7528', '\u672a\u555f\u7528');
+
     const update = (patch: Partial<MISDataConfig>) => {
         setConfig(prev => ({ ...prev, ...patch }));
+        setConfigDirty(true);
         setMessage('');
         setError('');
         setStatus(null);
@@ -75,8 +89,17 @@ export function MISDataSettingsPanel({ lang }: Props) {
     };
 
     const save = () => run('save', async () => {
-        await SaveMISDataConfig(config as any);
-        setMessage(t('Saved', '\u5df2\u4fdd\u5b58', '\u5df2\u5132\u5b58'));
+        const nextConfig = config.enabled && !connectionVerified
+            ? { ...config, enabled: false }
+            : config;
+        await SaveMISDataConfig(nextConfig as any);
+        setConfig(nextConfig);
+        setConfigDirty(false);
+        setMessage(config.enabled && !connectionVerified
+            ? t('Saved. Test connection successfully before enabling MIS data tools.', '\u5df2\u4fdd\u5b58\u3002MIS \u6570\u636e\u5de5\u5177\u9700\u6d4b\u8bd5\u8fde\u63a5\u6210\u529f\u540e\u624d\u4f1a\u542f\u7528\u3002', '\u5df2\u5132\u5b58\u3002MIS \u8cc7\u6599\u5de5\u5177\u9700\u6e2c\u8a66\u9023\u7dda\u6210\u529f\u5f8c\u624d\u6703\u555f\u7528\u3002')
+            : connectionVerified && nextConfig.enabled
+                ? t('Enabled and saved', '\u5df2\u542f\u7528\u5e76\u4fdd\u5b58', '\u5df2\u555f\u7528\u4e26\u5132\u5b58')
+                : t('Saved', '\u5df2\u4fdd\u5b58', '\u5df2\u5132\u5b58'));
     });
 
     const test = () => run('test', async () => {
@@ -96,8 +119,8 @@ export function MISDataSettingsPanel({ lang }: Props) {
                     <h2>{t('MIS Data', 'MIS \u6570\u636e', 'MIS \u8cc7\u6599')}</h2>
                     <p>{t('Configure MaClawDataSrv for enterprise sales, HR, and finance data.', '\u914d\u7f6e MaClawDataSrv\uff0c\u7528\u4e8e\u516c\u53f8\u9500\u552e\u3001\u4eba\u529b\u3001\u8d22\u52a1\u7b49\u7ed3\u6784\u5316\u6570\u636e\u3002', '\u914d\u7f6e MaClawDataSrv\uff0c\u7528\u65bc\u516c\u53f8\u92b7\u552e\u3001\u4eba\u529b\u3001\u8ca1\u52d9\u7b49\u7d50\u69cb\u5316\u8cc7\u6599\u3002')}</p>
                 </div>
-                <span className="mis-data-settings-badge" data-enabled={config.enabled ? 'true' : 'false'}>
-                    {config.enabled ? t('Enabled', '\u5df2\u542f\u7528', '\u5df2\u555f\u7528') : t('Disabled', '\u672a\u542f\u7528', '\u672a\u555f\u7528')}
+                <span className="mis-data-settings-badge" data-state={badgeState} data-enabled={enabledSaved ? 'true' : 'false'}>
+                    {badgeLabel}
                 </span>
             </div>
 

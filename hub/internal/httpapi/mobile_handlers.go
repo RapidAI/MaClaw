@@ -4,6 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -23,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/gorilla/websocket"
 )
 
 var mobileWebSearch func(context.Context, string, int) ([]websearch.SearchResult, error) = websearch.SearchCtx
@@ -45,10 +49,25 @@ var mobileDigitalEmployeeTasks = struct {
 	tasks: make(map[string]mobileDigitalEmployeeTaskRecord),
 }
 
+var mobileLlmAuthorizations = struct {
+	sync.Mutex
+	authorizations map[string]mobileLlmAuthorizationRecord
+	qrSessions     map[string]mobileLlmQRSessionRecord
+}{
+	authorizations: make(map[string]mobileLlmAuthorizationRecord),
+	qrSessions:     make(map[string]mobileLlmQRSessionRecord),
+}
+
 var mobileStatePersistence = struct {
 	sync.Mutex
 	loaded bool
 }{}
+
+var mobileOfficialHubCenterCandidates = []string{
+	"https://hubs.mypapers.top",
+	"https://hubs.maclaw.top",
+	"https://hubs2.maclaw.top",
+}
 
 const mobileStatePathEnv = "MACLAW_MOBILE_STATE_PATH"
 
@@ -75,6 +94,7 @@ type mobileDocumentExportRecord struct {
 	OwnerID   string
 	Format    string
 	Status    string
+	Message   string
 	CreatedAt time.Time
 }
 
@@ -100,11 +120,55 @@ type mobileDigitalEmployeeTaskRecord struct {
 	EmployeeID string
 	OwnerID    string
 	Prompt     string
+	TaskType   string
+	Context    map[string]string
 	Status     string
 	Result     string
+	Message    string
 	ClaimedBy  string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type mobileLlmAuthorizationRecord struct {
+	AuthorizationID string
+	OwnerID         string
+	TenantID        string
+	ProviderName    string
+	ProviderURL     string
+	APIKey          string
+	Model           string
+	Protocol        string
+	AuthorizedAt    time.Time
+}
+
+type mobileLlmQRSessionRecord struct {
+	SessionID    string
+	OwnerID      string
+	TenantID     string
+	ProviderName string
+	ProviderURL  string
+	APIKey       string
+	Model        string
+	Protocol     string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	ConsumedAt   time.Time
+}
+
+type mobileDesktopLlmQRPayload struct {
+	Version       int      `json:"v"`
+	Type          string   `json:"type"`
+	SessionID     string   `json:"session_id"`
+	HubURL        string   `json:"hub_url"`
+	ExpiresAt     string   `json:"expires_at"`
+	Name          string   `json:"name"`
+	URL           string   `json:"url"`
+	Key           string   `json:"key"`
+	Model         string   `json:"model"`
+	Models        []string `json:"models"`
+	Protocol      string   `json:"protocol"`
+	ContextLength int      `json:"context_length"`
 }
 
 func mobileStatePath() string {
@@ -199,6 +263,170 @@ func mobileResetStatePersistenceForTest() {
 	mobileStatePersistence.Unlock()
 }
 
+var mobileRealtimeUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+type mobileRealtimeJSONWriter interface {
+	WriteJSON(v any) error
+}
+
+type mobileRealtimeClient struct {
+	key  string
+	conn mobileRealtimeJSONWriter
+	mu   sync.Mutex
+}
+
+var mobileRealtimeClients = struct {
+	sync.Mutex
+	clients map[string]map[*mobileRealtimeClient]struct{}
+}{
+	clients: make(map[string]map[*mobileRealtimeClient]struct{}),
+}
+
+func mobileRealtimeKey(tenantID, userID string) string {
+	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
+
+func mobileRealtimeRegister(tenantID, userID string, conn mobileRealtimeJSONWriter) (*mobileRealtimeClient, func()) {
+	client := &mobileRealtimeClient{
+		key:  mobileRealtimeKey(tenantID, userID),
+		conn: conn,
+	}
+	mobileRealtimeClients.Lock()
+	if mobileRealtimeClients.clients[client.key] == nil {
+		mobileRealtimeClients.clients[client.key] = make(map[*mobileRealtimeClient]struct{})
+	}
+	mobileRealtimeClients.clients[client.key][client] = struct{}{}
+	mobileRealtimeClients.Unlock()
+	return client, func() {
+		mobileRealtimeUnregister(client)
+	}
+}
+
+func mobileRealtimeUnregister(client *mobileRealtimeClient) {
+	if client == nil {
+		return
+	}
+	mobileRealtimeClients.Lock()
+	if bucket := mobileRealtimeClients.clients[client.key]; bucket != nil {
+		delete(bucket, client)
+		if len(bucket) == 0 {
+			delete(mobileRealtimeClients.clients, client.key)
+		}
+	}
+	mobileRealtimeClients.Unlock()
+}
+
+func mobileRealtimeBroadcast(tenantID, userID string, event map[string]any) {
+	key := mobileRealtimeKey(tenantID, userID)
+	mobileRealtimeClients.Lock()
+	clients := make([]*mobileRealtimeClient, 0, len(mobileRealtimeClients.clients[key]))
+	for client := range mobileRealtimeClients.clients[key] {
+		clients = append(clients, client)
+	}
+	mobileRealtimeClients.Unlock()
+	if len(clients) == 0 {
+		return
+	}
+	payload := make(map[string]any, len(event)+1)
+	for k, v := range event {
+		payload[k] = v
+	}
+	if _, ok := payload["server_time"]; !ok {
+		payload["server_time"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	for _, client := range clients {
+		client.mu.Lock()
+		err := client.conn.WriteJSON(payload)
+		client.mu.Unlock()
+		if err != nil {
+			mobileRealtimeUnregister(client)
+		}
+	}
+}
+
+func mobileRealtimeDocumentTaskEvent(kind string, payload map[string]any) map[string]any {
+	event := map[string]any{
+		"type": kind,
+		"task": payload,
+	}
+	if taskID, _ := payload["task_id"].(string); taskID != "" {
+		event["task_id"] = taskID
+	}
+	if jobID, _ := payload["job_id"].(string); jobID != "" {
+		event["job_id"] = jobID
+	}
+	if status, _ := payload["status"].(string); status != "" {
+		event["status"] = status
+	}
+	return event
+}
+
+func mobileRealtimeDigitalEmployeeTaskEvent(payload map[string]any) map[string]any {
+	event := map[string]any{
+		"type": "digital_employee_task",
+		"task": payload,
+	}
+	if taskID, _ := payload["task_id"].(string); taskID != "" {
+		event["task_id"] = taskID
+	}
+	if status, _ := payload["status"].(string); status != "" {
+		event["status"] = status
+	}
+	return event
+}
+
+// MobileRealtimeHandler upgrades authenticated mobile clients to a lightweight
+// realtime channel. Long-running document and digital employee flows can still
+// poll, but the mobile app now has an official Hub WebSocket endpoint for task
+// completion and connection-health signals.
+func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		conn, err := mobileRealtimeUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		client, unregister := mobileRealtimeRegister(principal.TenantID, principal.UserID, conn)
+		defer unregister()
+
+		client.mu.Lock()
+		err = client.conn.WriteJSON(map[string]any{
+			"type":        "ready",
+			"user_id":     principal.UserID,
+			"tenant_id":   principal.TenantID,
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		client.mu.Unlock()
+		if err != nil {
+			return
+		}
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msgType, _ := msg["type"].(string); msgType == "ping" {
+				client.mu.Lock()
+				err := client.conn.WriteJSON(map[string]any{
+					"type":        "pong",
+					"server_time": time.Now().UTC().Format(time.RFC3339),
+				})
+				client.mu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
 // MobileBootstrapHandler returns the small, cheap payload the mobile app needs
 // immediately after restoring a viewer token. Expensive service details stay on
 // their existing dedicated endpoints.
@@ -210,34 +438,405 @@ func MobileBootstrapHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
-			"user": map[string]any{
-				"user_id":   principal.UserID,
-				"email":     principal.Email,
-				"tenant_id": principal.TenantID,
-			},
-			"features": map[string]any{
-				"search":             true,
-				"documents":          true,
-				"local_ssh":          true,
-				"digital_employees":  true,
-				"push_notifications": false,
-			},
-			"services": map[string]any{
-				"hub_status":             "online",
-				"llm_status_path":        "/api/llm/service/status",
-				"models_path":            "/api/llm/v1/models",
-				"search_path":            "/api/mobile/search",
-				"documents_path":         "/api/mobile/documents",
-				"digital_employees_path": "/api/mobile/digital-employees",
-			},
-			"limits": map[string]any{
-				"max_upload_bytes": 25 * 1024 * 1024,
-				"max_export_jobs":  3,
-			},
-			"server_time": time.Now().UTC().Format(time.RFC3339),
+		writeJSON(w, http.StatusOK, mobileBootstrapPayloadForRequest(principal, r))
+	}
+}
+
+func mobileBootstrapPayload(principal *auth.ViewerPrincipal) map[string]any {
+	return mobileBootstrapPayloadForRequest(principal, nil)
+}
+
+func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.Request) map[string]any {
+	userID := ""
+	email := ""
+	tenantID := ""
+	if principal != nil {
+		userID = principal.UserID
+		email = principal.Email
+		tenantID = principal.TenantID
+	}
+	hubURL := mobileRequestBaseURL(r)
+	llmAccess := mobileLlmAccessPayload(principal)
+	return map[string]any{
+		"user": map[string]any{
+			"user_id":   userID,
+			"email":     email,
+			"tenant_id": tenantID,
+		},
+		"connection": map[string]any{
+			"hubcenter_candidates":   append([]string(nil), mobileOfficialHubCenterCandidates...),
+			"selected_hubcenter_url": mobileOfficialHubCenterCandidates[1],
+			"hub_url":                hubURL,
+			"hub_id":                 "",
+			"tenant_id":              tenantID,
+		},
+		"llm_access": llmAccess,
+		"features": map[string]any{
+			"search":             true,
+			"documents":          true,
+			"local_ssh":          true,
+			"digital_employees":  true,
+			"push_notifications": false,
+		},
+		"services": map[string]any{
+			"hub_status":               "online",
+			"llm_status":               "available",
+			"search_status":            "available",
+			"documents_status":         "available",
+			"digital_employees_status": "available",
+			"llm_status_path":          "/api/llm/service/status",
+			"models_path":              "/api/llm/v1/models",
+			"search_path":              "/api/mobile/search",
+			"documents_path":           "/api/mobile/documents",
+			"digital_employees_path":   "/api/mobile/digital-employees",
+			"realtime_path":            "/api/mobile/realtime",
+		},
+		"limits": map[string]any{
+			"max_upload_bytes": 25 * 1024 * 1024,
+			"max_export_jobs":  3,
+		},
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func mobileRequestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	scheme := "https"
+	if r.TLS != nil {
+		scheme = "https"
+	} else if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = strings.ToLower(strings.Split(forwarded, ",")[0])
+	} else if r.URL != nil && r.URL.Scheme != "" {
+		scheme = r.URL.Scheme
+	}
+	host := strings.TrimSpace(r.Host)
+	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = strings.Split(forwardedHost, ",")[0]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if scheme != "https" && scheme != "http" {
+		scheme = "https"
+	}
+	return scheme + "://" + host
+}
+
+func mobileLlmAccessPayload(principal *auth.ViewerPrincipal) map[string]any {
+	if principal != nil {
+		key := mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)
+		mobileLlmAuthorizations.Lock()
+		record, ok := mobileLlmAuthorizations.authorizations[key]
+		mobileLlmAuthorizations.Unlock()
+		if ok {
+			return map[string]any{
+				"mode":             "desktop_qr_third_party",
+				"status":           "available",
+				"authorization_id": record.AuthorizationID,
+				"authorized_by":    "maclaw-gui",
+				"authorized_at":    record.AuthorizedAt.Format(time.RFC3339),
+				"provider_name":    record.ProviderName,
+				"provider_url":     record.ProviderURL,
+				"model":            record.Model,
+				"protocol":         record.Protocol,
+			}
+		}
+	}
+	return map[string]any{
+		"mode":             "maclaw_official",
+		"status":           "available",
+		"authorization_id": "",
+		"authorized_by":    "maclaw-official",
+	}
+}
+
+func mobileLlmAuthorizationKey(tenantID, userID string) string {
+	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
+
+// MobileLLMDesktopQRSessionHandler creates an opaque, one-time QR payload for
+// MaClaw GUI. The provider API key stays on the Hub; the QR only carries a
+// random session id that a logged-in mobile viewer can redeem.
+func MobileLLMDesktopQRSessionHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		var req struct {
+			Name     string   `json:"name"`
+			URL      string   `json:"url"`
+			Key      string   `json:"key"`
+			Model    string   `json:"model"`
+			Models   []string `json:"models"`
+			Protocol string   `json:"protocol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_JSON", "invalid JSON")
+			return
+		}
+		payload, err := normalizeMobileDesktopLlmProviderPayload(mobileDesktopLlmQRPayload{
+			Type:     "maclaw_llm",
+			Name:     req.Name,
+			URL:      req.URL,
+			Key:      req.Key,
+			Model:    req.Model,
+			Models:   req.Models,
+			Protocol: req.Protocol,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_LLM_PROVIDER", err.Error())
+			return
+		}
+		sessionID, err := newMobileLlmQRSessionID()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to create QR session")
+			return
+		}
+		now := time.Now().UTC()
+		expiresAt := now.Add(5 * time.Minute)
+		record := mobileLlmQRSessionRecord{
+			SessionID:    sessionID,
+			OwnerID:      principal.UserID,
+			TenantID:     principal.TenantID,
+			ProviderName: payload.Name,
+			ProviderURL:  payload.URL,
+			APIKey:       payload.Key,
+			Model:        payload.Model,
+			Protocol:     payload.Protocol,
+			CreatedAt:    now,
+			ExpiresAt:    expiresAt,
+		}
+		mobileLlmAuthorizations.Lock()
+		mobileLlmAuthorizations.qrSessions[sessionID] = record
+		mobileLlmAuthorizations.Unlock()
+
+		qrPayloadBytes, _ := json.Marshal(mobileDesktopLlmQRPayload{
+			Version:   2,
+			Type:      "maclaw_mobile_llm_authorization",
+			SessionID: sessionID,
+			HubURL:    mobileRequestBaseURL(r),
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+			Name:      payload.Name,
+			URL:       payload.URL,
+			Model:     payload.Model,
+			Protocol:  payload.Protocol,
+		})
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"status":     "created",
+			"session_id": sessionID,
+			"expires_at": expiresAt.Format(time.RFC3339),
+			"qr_payload": string(qrPayloadBytes),
 		})
 	}
+}
+
+// MobileLLMDesktopQRAuthorizationHandler accepts the QR payload generated by
+// MaClaw desktop GUI and records that this mobile viewer may use that delegated
+// third-party LLM configuration through their discovered Hub.
+func MobileLLMDesktopQRAuthorizationHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		var req struct {
+			QRPayload string `json:"qr_payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_JSON", "invalid JSON")
+			return
+		}
+		payload, err := parseMobileDesktopLlmQRPayload(req.QRPayload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
+			return
+		}
+		record, err := mobileLlmAuthorizationFromQR(principal, payload, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
+			return
+		}
+		mobileLlmAuthorizations.Lock()
+		mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)] = record
+		mobileLlmAuthorizations.Unlock()
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "authorized",
+			"bootstrap": mobileBootstrapPayloadForRequest(principal, r),
+		})
+	}
+}
+
+// MobileLLMDesktopQRSessionConsumeHandler lets a fresh mobile install consume
+// the MaClaw GUI one-time QR session and receive a Hub-issued mobile viewer
+// token. This is the first-login counterpart to the authenticated
+// desktop-qr-authorizations endpoint.
+func MobileLLMDesktopQRSessionConsumeHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			QRPayload string `json:"qr_payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_JSON", "invalid JSON")
+			return
+		}
+		payload, err := parseMobileDesktopLlmQRPayload(req.QRPayload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
+			return
+		}
+		record, err := mobileLlmAuthorizationFromQRSession(nil, payload, time.Now().UTC(), true)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
+			return
+		}
+		token, err := identity.IssueViewerTokenForUser(auth.WithTenant(r.Context(), record.TenantID), record.OwnerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "TOKEN_ISSUE_FAILED", "failed to issue mobile viewer token")
+			return
+		}
+		email := ""
+		if repo := identity.UsersRepo(); repo != nil {
+			if user, err := repo.GetByID(auth.WithTenant(r.Context(), record.TenantID), record.OwnerID); err == nil && user != nil {
+				email = user.Email
+			}
+		}
+		principal := &auth.ViewerPrincipal{
+			TenantID: record.TenantID,
+			UserID:   record.OwnerID,
+			Email:    email,
+		}
+		mobileLlmAuthorizations.Lock()
+		mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(record.TenantID, record.OwnerID)] = record
+		mobileLlmAuthorizations.Unlock()
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "authorized",
+			"access_token": token,
+			"hub_url":      mobileRequestBaseURL(r),
+			"hub_id":       "",
+			"tenant_id":    record.TenantID,
+			"bootstrap":    mobileBootstrapPayloadForRequest(principal, r),
+		})
+	}
+}
+
+func parseMobileDesktopLlmQRPayload(raw string) (mobileDesktopLlmQRPayload, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload is required")
+	}
+	var payload mobileDesktopLlmQRPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload must be MaClaw desktop GUI JSON")
+	}
+	payload.Type = strings.TrimSpace(payload.Type)
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	payload.ExpiresAt = strings.TrimSpace(payload.ExpiresAt)
+	if payload.Type != "maclaw_mobile_llm_authorization" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload must be a MaClaw GUI mobile authorization session")
+	}
+	if payload.SessionID == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("session_id is required")
+	}
+	return payload, nil
+}
+
+func normalizeMobileDesktopLlmProviderPayload(payload mobileDesktopLlmQRPayload) (mobileDesktopLlmQRPayload, error) {
+	payload.Name = strings.TrimSpace(payload.Name)
+	payload.URL = strings.TrimSpace(payload.URL)
+	payload.Key = strings.TrimSpace(payload.Key)
+	payload.Model = strings.TrimSpace(payload.Model)
+	payload.Protocol = strings.TrimSpace(payload.Protocol)
+	if payload.Name == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("provider name is required")
+	}
+	if payload.Key == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("provider key is required")
+	}
+	parsedURL, err := url.Parse(payload.URL)
+	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("provider url must be http or https")
+	}
+	if payload.Model == "" && len(payload.Models) > 0 {
+		payload.Model = strings.TrimSpace(payload.Models[0])
+	}
+	if payload.Protocol == "" {
+		payload.Protocol = "openai"
+	}
+	return payload, nil
+}
+
+func mobileLlmAuthorizationFromQR(principal *auth.ViewerPrincipal, payload mobileDesktopLlmQRPayload, now time.Time) (mobileLlmAuthorizationRecord, error) {
+	return mobileLlmAuthorizationFromQRSession(principal, payload, now, false)
+}
+
+func mobileLlmAuthorizationFromQRSession(principal *auth.ViewerPrincipal, payload mobileDesktopLlmQRPayload, now time.Time, allowSessionAccount bool) (mobileLlmAuthorizationRecord, error) {
+	tenantID := ""
+	userID := ""
+	if principal != nil {
+		tenantID = principal.TenantID
+		userID = principal.UserID
+	}
+	mobileLlmAuthorizations.Lock()
+	session, ok := mobileLlmAuthorizations.qrSessions[payload.SessionID]
+	if !ok {
+		mobileLlmAuthorizations.Unlock()
+		return mobileLlmAuthorizationRecord{}, fmt.Errorf("desktop QR session was not found or has already been used")
+	}
+	if !session.ConsumedAt.IsZero() {
+		delete(mobileLlmAuthorizations.qrSessions, payload.SessionID)
+		mobileLlmAuthorizations.Unlock()
+		return mobileLlmAuthorizationRecord{}, fmt.Errorf("desktop QR session has already been used")
+	}
+	if now.After(session.ExpiresAt) {
+		delete(mobileLlmAuthorizations.qrSessions, payload.SessionID)
+		mobileLlmAuthorizations.Unlock()
+		return mobileLlmAuthorizationRecord{}, fmt.Errorf("desktop QR session has expired")
+	}
+	if allowSessionAccount {
+		tenantID = session.TenantID
+		userID = session.OwnerID
+	} else if session.TenantID != tenantID || session.OwnerID != userID {
+		mobileLlmAuthorizations.Unlock()
+		return mobileLlmAuthorizationRecord{}, fmt.Errorf("desktop QR session belongs to a different MaClaw account")
+	}
+	session.ConsumedAt = now
+	delete(mobileLlmAuthorizations.qrSessions, payload.SessionID)
+	mobileLlmAuthorizations.Unlock()
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		tenantID,
+		userID,
+		session.ProviderName,
+		session.ProviderURL,
+		session.Model,
+		now.Format(time.RFC3339Nano),
+	}, "\x00")))
+	return mobileLlmAuthorizationRecord{
+		AuthorizationID: "mllm_" + fmt.Sprintf("%x", sum[:8]),
+		OwnerID:         userID,
+		TenantID:        tenantID,
+		ProviderName:    session.ProviderName,
+		ProviderURL:     session.ProviderURL,
+		APIKey:          session.APIKey,
+		Model:           session.Model,
+		Protocol:        session.Protocol,
+		AuthorizedAt:    now,
+	}, nil
+}
+
+func newMobileLlmQRSessionID() (string, error) {
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "mlqr_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any {
@@ -262,6 +861,7 @@ func mobileDocumentExportPayload(record mobileDocumentExportRecord) map[string]a
 		"format":       record.Format,
 		"status":       record.Status,
 		"download_url": downloadURL,
+		"message":      strings.TrimSpace(record.Message),
 		"created_at":   record.CreatedAt.Format(time.RFC3339),
 	}
 }
@@ -497,12 +1097,16 @@ type mobileSSHAnalyzeRequest struct {
 }
 
 type mobileDigitalEmployeeTaskRequest struct {
-	Prompt string `json:"prompt"`
+	Prompt   string            `json:"prompt"`
+	TaskType string            `json:"task_type,omitempty"`
+	Context  map[string]string `json:"context,omitempty"`
 }
 
 type mobileDigitalEmployeeTaskUpdateRequest struct {
-	Status string `json:"status"`
-	Result string `json:"result"`
+	Status  string `json:"status"`
+	Result  string `json:"result"`
+	Message string `json:"message,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 func mobileDigitalEmployeeTaskPayload(record mobileDigitalEmployeeTaskRecord) map[string]any {
@@ -510,12 +1114,55 @@ func mobileDigitalEmployeeTaskPayload(record mobileDigitalEmployeeTaskRecord) ma
 		"task_id":     record.TaskID,
 		"employee_id": record.EmployeeID,
 		"prompt":      record.Prompt,
+		"task_type":   record.TaskType,
+		"context":     record.Context,
 		"status":      record.Status,
 		"result":      record.Result,
+		"message":     record.Message,
 		"claimed_by":  record.ClaimedBy,
 		"created_at":  record.CreatedAt.Format(time.RFC3339),
 		"updated_at":  record.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+func normalizeMobileDigitalEmployeeTaskType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "server_maintenance", "remote_server", "ssh":
+		return "server_maintenance"
+	case "desktop_assist", "remote_desktop", "desktop":
+		return "desktop_assist"
+	case "document_work", "document", "office":
+		return "document_work"
+	case "information_check", "info_check", "search":
+		return "information_check"
+	default:
+		return "general"
+	}
+}
+
+func sanitizeMobileDigitalEmployeeContext(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string)
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		if len(key) > 64 {
+			key = key[:64]
+		}
+		if len(value) > 512 {
+			value = value[:512]
+		}
+		out[key] = value
+		if len(out) >= 12 {
+			break
+		}
+	}
+	return out
 }
 
 type mobileDigitalEmployeeWorkerPrincipal struct {
@@ -935,15 +1582,18 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 			OwnerID:   principal.UserID,
 			Format:    format,
 			Status:    "queued",
+			Message:   "导出任务已提交，等待官方服务生成文件。",
 			CreatedAt: now,
 		}
 		if format == "markdown" || format == "pdf" || format == "word" {
 			job.Status = "ready"
+			job.Message = "导出文件已生成，可下载或分享。"
 		}
 		mobileDocuments.Lock()
 		mobileDocuments.exports[job.JobID] = job
 		mobileDocuments.Unlock()
 		mobilePersistState()
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", mobileDocumentExportPayload(job)))
 		writeJSON(w, http.StatusAccepted, mobileDocumentExportPayload(job))
 	}
 }
@@ -982,7 +1632,6 @@ func MobileDocumentExportDownloadHandler(identity *auth.IdentityService) http.Ha
 		jobID := strings.TrimSpace(r.PathValue("jobId"))
 		mobileDocuments.Lock()
 		job, ok := mobileDocuments.exports[jobID]
-		draft := mobileDocuments.drafts[job.DraftID]
 		mobileDocuments.Unlock()
 		if !ok || job.OwnerID != principal.UserID {
 			writeError(w, http.StatusNotFound, "EXPORT_NOT_FOUND", "export job not found")
@@ -990,6 +1639,13 @@ func MobileDocumentExportDownloadHandler(identity *auth.IdentityService) http.Ha
 		}
 		if job.Status != "ready" || (job.Format != "markdown" && job.Format != "pdf" && job.Format != "word") {
 			writeError(w, http.StatusConflict, "EXPORT_NOT_READY", "export job is not ready")
+			return
+		}
+		mobileDocuments.Lock()
+		draft, hasDraft := mobileDocuments.drafts[job.DraftID]
+		mobileDocuments.Unlock()
+		if !hasDraft || draft.OwnerID != principal.UserID {
+			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
 		if job.Format == "pdf" {
@@ -1832,6 +2488,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				payload := mobileDocumentUploadPayload(record)
 				mobileDocuments.Unlock()
 				mobilePersistState()
+				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 				writeJSON(w, http.StatusAccepted, payload)
 				return
 			}
@@ -1855,6 +2512,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			payload := mobileDocumentUploadPayload(record)
 			mobileDocuments.Unlock()
 			mobilePersistState()
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
 			return
 		}
@@ -1863,6 +2521,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
 		mobilePersistState()
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusAccepted, payload)
 	}
 }
@@ -1894,6 +2553,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		}
 		if changed {
 			mobilePersistState()
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		}
 		writeJSON(w, http.StatusOK, payload)
 	}
@@ -1993,6 +2653,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			return
 		}
 		mobilePersistState()
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "claimed",
 			"task":   payload,
@@ -2096,6 +2757,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 			return
 		}
 		mobilePersistState()
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusOK, payload)
 	}
 }
@@ -2196,14 +2858,19 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "prompt is required")
 			return
 		}
+		taskType := normalizeMobileDigitalEmployeeTaskType(req.TaskType)
+		taskContext := sanitizeMobileDigitalEmployeeContext(req.Context)
 		now := time.Now().UTC()
 		record := mobileDigitalEmployeeTaskRecord{
 			TaskID:     fmt.Sprintf("mobve_%d", now.UnixNano()),
 			EmployeeID: employeeID,
 			OwnerID:    principal.UserID,
 			Prompt:     prompt,
+			TaskType:   taskType,
+			Context:    taskContext,
 			Status:     "queued",
 			Result:     "任务已提交，等待远程数字员工或授权策略处理。",
+			Message:    "任务已提交，等待远程数字员工领取。",
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -2211,7 +2878,9 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 		mobileDigitalEmployeeTasks.tasks[record.TaskID] = record
 		mobileDigitalEmployeeTasks.Unlock()
 		mobilePersistState()
-		writeJSON(w, http.StatusAccepted, mobileDigitalEmployeeTaskPayload(record))
+		payload := mobileDigitalEmployeeTaskPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		writeJSON(w, http.StatusAccepted, payload)
 	}
 }
 
@@ -2249,6 +2918,7 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			}
 			record.Status = "in_progress"
 			record.Result = "远程数字员工已领取任务，正在处理。"
+			record.Message = "远程数字员工已领取任务，正在处理。"
 			record.ClaimedBy = claimedBy
 			record.UpdatedAt = now
 			mobileDigitalEmployeeTasks.tasks[taskID] = record
@@ -2264,8 +2934,10 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			return
 		}
 		mobilePersistState()
+		payload := mobileDigitalEmployeeTaskPayload(claimed)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"task":   mobileDigitalEmployeeTaskPayload(claimed),
+			"task":   payload,
 			"status": "claimed",
 		})
 	}
@@ -2303,8 +2975,12 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			return
 		}
 		result := strings.TrimSpace(req.Result)
-		if (status == "done" || status == "failed") && result == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "result is required for final status")
+		message := strings.TrimSpace(req.Message)
+		if message == "" {
+			message = strings.TrimSpace(req.Error)
+		}
+		if (status == "done" || status == "failed") && result == "" && message == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "result or message is required for final status")
 			return
 		}
 
@@ -2323,6 +2999,9 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 				if result != "" {
 					record.Result = result
 				}
+				if message != "" {
+					record.Message = message
+				}
 				record.ClaimedBy = workerID
 				record.UpdatedAt = now
 				mobileDigitalEmployeeTasks.tasks[taskID] = record
@@ -2334,7 +3013,9 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			return
 		}
 		mobilePersistState()
-		writeJSON(w, http.StatusOK, mobileDigitalEmployeeTaskPayload(record))
+		payload := mobileDigitalEmployeeTaskPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		writeJSON(w, http.StatusOK, payload)
 	}
 }
 
@@ -2373,9 +3054,10 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 
 		tenantSystem := scopedSystemSettingsForTenant(principal.TenantID, system)
 		authz := loadVEDigitalEmployeeAuthorization(r.Context(), tenantSystem)
+		machineEmployees := mobileMachineDigitalEmployeeEntries(r.Context(), identity, principal)
 		if !veAuthorizationActive(authz) {
 			writeJSON(w, http.StatusOK, map[string]any{
-				"employees":     []digitalEmployeeEntry{},
+				"employees":     machineEmployees,
 				"authorization": authz,
 			})
 			return
@@ -2402,6 +3084,7 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 			entry = applyVEDiscoverablePresence(r.Context(), entry, nil, runtimePresence)
 			employees = append(employees, entry)
 		}
+		employees = appendMobileMachineDigitalEmployees(employees, machineEmployees)
 		sort.SliceStable(employees, func(i, j int) bool {
 			if employees[i].OnlineStatus != employees[j].OnlineStatus {
 				return employees[i].OnlineStatus == veOnlineStatusOnline
@@ -2413,4 +3096,91 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 			"employees": employees,
 		})
 	}
+}
+
+func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal) []digitalEmployeeEntry {
+	if identity == nil || principal == nil {
+		return nil
+	}
+	repo := identity.MachinesRepo()
+	if repo == nil || strings.TrimSpace(principal.UserID) == "" {
+		return nil
+	}
+	machines, err := repo.ListByUserID(ctx, principal.UserID)
+	if err != nil {
+		return nil
+	}
+	out := make([]digitalEmployeeEntry, 0, len(machines))
+	for _, machine := range machines {
+		if machine == nil || strings.TrimSpace(machine.ID) == "" {
+			continue
+		}
+		if store.NormalizeTenantID(machine.TenantID) != store.NormalizeTenantID(principal.TenantID) {
+			continue
+		}
+		name := strings.TrimSpace(machine.Alias)
+		if name == "" {
+			name = strings.TrimSpace(machine.Name)
+		}
+		if name == "" {
+			name = strings.TrimSpace(machine.Hostname)
+		}
+		if name == "" {
+			name = "MaClaw Remote"
+		}
+		onlineStatus := veOnlineStatusOffline
+		if strings.EqualFold(strings.TrimSpace(machine.Status), veOnlineStatusOnline) {
+			onlineStatus = veOnlineStatusOnline
+		}
+		out = append(out, digitalEmployeeEntry{
+			ID:               "ve_" + strings.TrimSpace(machine.ID),
+			MachineID:        strings.TrimSpace(machine.ID),
+			EmployeeType:     veEmployeeTypePhysical,
+			OwnerUserID:      principal.UserID,
+			Name:             name,
+			SkillDescription: "通过已绑定的 MaClaw GUI 远程电脑/服务器处理手机端应急任务，可用于日志分析、服务器维护、文档处理和信息核查；高风险命令需要用户确认。",
+			AccessPolicy:     "public",
+			Resident:         true,
+			Status:           veStatusActive,
+			OnlineStatus:     onlineStatus,
+			RegisteredAt:     machine.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:        machine.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out
+}
+
+func appendMobileMachineDigitalEmployees(employees []digitalEmployeeEntry, machineEmployees []digitalEmployeeEntry) []digitalEmployeeEntry {
+	if len(machineEmployees) == 0 {
+		return employees
+	}
+	seen := make(map[string]struct{}, len(employees)*2)
+	for _, employee := range employees {
+		for _, value := range []string{employee.ID, employee.MachineID} {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == "" {
+				continue
+			}
+			seen[value] = struct{}{}
+			if !strings.HasPrefix(value, "ve_") {
+				seen["ve_"+value] = struct{}{}
+			}
+		}
+	}
+	for _, employee := range machineEmployees {
+		id := strings.ToLower(strings.TrimSpace(employee.ID))
+		machineID := strings.ToLower(strings.TrimSpace(employee.MachineID))
+		if id != "" {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+		}
+		if machineID != "" {
+			if _, ok := seen[machineID]; ok {
+				continue
+			}
+		}
+		employees = append(employees, employee)
+	}
+	return employees
 }

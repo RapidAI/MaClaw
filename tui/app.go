@@ -139,8 +139,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	sshMgr := remote.NewSSHSessionManager(nil)
 
 	// Initialize steering store (shared with GUI 鈥?same ~/.maclaw/steering/).
-	home, _ := os.UserHomeDir()
-	steeringDir := filepath.Join(home, ".maclaw", "steering")
+	steeringDir := filepath.Join(corelib.MaclawBaseDir(), "steering")
 	steeringStore := steering.NewStore(steeringDir, "")
 	steeringStore.Load()
 	steering.EnsureDefaults(steeringDir)
@@ -1602,6 +1601,9 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef string) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
+		if source != "clawhub" && source != "github" && hubURL == "" {
+			hubURL = commands.ResolveHubCenterWithFailover(m.app.appConfig, m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
+		}
 		if m != nil && m.app != nil {
 			guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": source, "hub_url": hubURL, "install_ref": installRef}
 			if ok, reason := enforceClientSecurityPolicy(m.app.appConfig, "manage_skill", guardArgs); !ok {
@@ -1642,9 +1644,6 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 			}
 			entry, err = client.DownloadGitHub(ctx, installRef)
 		default:
-			if hubURL == "" {
-				hubURL = m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
-			}
 			// Check if already installed.
 			for _, s := range m.app.appConfig.NLSkills {
 				if s.HubSkillID == skillID {
@@ -1869,7 +1868,7 @@ func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
 		if result.ClientID != "" && cfg.RemoteClientID == "" {
 			cfg.RemoteClientID = result.ClientID
 		}
-		if result.HubCenterURL != "" {
+		if result.HubCenterURL != "" && !remote.IsLoopbackURL(result.HubCenterURL) {
 			cfg.RemoteHubCenterURL = result.HubCenterURL
 		}
 		if len(result.DiscoveredURLs) > 0 {
@@ -2524,8 +2523,13 @@ func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
 		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
 	start := time.Now()
-	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	ctx, cancel := contextFromCancelCh(c.cancelCh)
 	defer cancel()
+	// Inject context into args so handlers that support cancellation (e.g.
+	// manage_skill's skillRunDetailed) can extract it via the "_ctx" key.
+	// This bridges the gap between the plain Handler signature (which doesn't
+	// accept context) and the agent loop's cancel signal.
+	args["_ctx"] = ctx
 	result := c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 	elapsed := time.Since(start)
 
@@ -2783,8 +2787,9 @@ func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 	}
 
 	// Delegate to the shared tool registry.
-	ctx, cancel := contextFromCancelPoll(c.ShouldStop)
+	ctx, cancel := contextFromCancelCh(c.cancelCh)
 	defer cancel()
+	args["_ctx"] = ctx
 	result := c.app.toolRegistry.ExecuteCtx(ctx, name, args)
 
 	if c.program != nil {

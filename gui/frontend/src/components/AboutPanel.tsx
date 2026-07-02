@@ -54,6 +54,8 @@ type AboutPanelProps = {
     onClearRegistration: () => void;
 };
 
+const localHubCenterPattern = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i;
+
 const MarkdownLink = ({ node, ...props }: any) => (
     <a
         {...props}
@@ -118,7 +120,22 @@ export function AboutPanel({
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
     const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
     const hubURL = String(config?.remote_hub_url || '').trim() || emptyValue;
-    const hubCenterURL = String(config?.remote_hubcenter_url || '').trim() || emptyValue;
+    // Display the first discovered public HubCenter URL (from the discovery list),
+    // falling back to the preferred URL. HubCenter is a public control-plane
+    // endpoint, so loopback addresses are ignored for this identity view.
+    const hubCenterURL = (() => {
+        const discoveredList = (config as any)?.remote_hubcenter_urls as string[] | undefined;
+        if (Array.isArray(discoveredList) && discoveredList.length > 0) {
+            const publicURL = discoveredList.find(u => {
+                const trimmed = u.trim();
+                return trimmed && !localHubCenterPattern.test(trimmed);
+            });
+            if (publicURL) return publicURL.trim();
+        }
+        const preferred = String(config?.remote_hubcenter_url || '').trim();
+        if (localHubCenterPattern.test(preferred)) return emptyValue;
+        return preferred || emptyValue;
+    })();
     const remoteEmail = String(config?.remote_email || '').trim() || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
 

@@ -48,7 +48,7 @@ func (a *KiloAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		return CommandSpec{}, fmt.Errorf("kilo is not installed")
 	}
 
-	env := buildOpenAICompatibleCommandEnv(spec.Env, map[string]string{
+	env := buildOpenAICompatibleCommandEnv(spec.Env, privateToolsDirForApp(a.app), map[string]string{
 		"KILO_MODEL": spec.ModelID,
 	})
 
@@ -68,14 +68,12 @@ func (a *KiloAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	}, nil
 }
 
-func buildOpenAICompatibleCommandEnv(base map[string]string, extra map[string]string) map[string]string {
+func buildOpenAICompatibleCommandEnv(base map[string]string, localToolPath string, extra map[string]string) map[string]string {
 	env := map[string]string{}
 	for k, v := range base {
 		env[k] = v
 	}
 
-	home, _ := os.UserHomeDir()
-	localToolPath := filepath.Join(home, ".maclaw", "data", "tools")
 	npmPath := filepath.Join(os.Getenv("AppData"), "npm")
 	nodePath := `C:\Program Files\nodejs`
 	gitCmdPath := `C:\Program Files\Git\cmd`

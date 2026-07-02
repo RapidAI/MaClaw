@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
 var logDetailEnabled atomic.Bool
@@ -20,7 +19,6 @@ func init() {
 func SetLogDetailEnabled(enabled bool) {
 	logDetailEnabled.Store(enabled)
 	tool.SetLogDetailEnabled(enabled)
-	weixin.SetLogDetailEnabled(enabled)
 }
 
 // IsLogDetailEnabled reports whether detailed logs may be written.

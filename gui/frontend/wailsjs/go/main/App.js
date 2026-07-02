@@ -98,8 +98,20 @@ export function ActivateRemote(arg1, arg2, arg3) {
   return window['go']['main']['App']['ActivateRemote'](arg1, arg2, arg3);
 }
 
+export function ActivateRemoteSMS(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4);
+}
+
+export function GetRemoteRegistrationAuth(arg1) {
+  return window['go']['main']['App']['GetRemoteRegistrationAuth'](arg1);
+}
+
 export function ProbeRemoteHub(arg1, arg2) {
   return window['go']['main']['App']['ProbeRemoteHub'](arg1, arg2);
+}
+
+export function SendRemoteRegistrationSMS(arg1, arg2) {
+  return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2);
 }
 
 export function ClearRemoteActivation() {
@@ -543,6 +555,14 @@ export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
 }
 
+export function GetToolCacheStatus() {
+  return window['go']['main']['App']['GetToolCacheStatus']();
+}
+
+export function CleanToolCacheNow() {
+  return window['go']['main']['App']['CleanToolCacheNow']();
+}
+
 export function PatchConfigFields(arg1) {
   return window['go']['main']['App']['PatchConfigFields'](arg1);
 }
@@ -589,6 +609,10 @@ export function RecoverCC() {
 
 export function ResizeWindow(arg1, arg2) {
   return window['go']['main']['App']['ResizeWindow'](arg1, arg2);
+}
+
+export function GetAdaptiveWindowSize() {
+  return window['go']['main']['App']['GetAdaptiveWindowSize']();
 }
 
 export function RestoreWindowGeometry() {
@@ -808,6 +832,10 @@ export function UpdateNLSkill(arg1) {
   return window['go']['main']['App']['UpdateNLSkill'](arg1);
 }
 
+export function SetNLSkillStatus(arg1, arg2) {
+  return window['go']['main']['App']['SetNLSkillStatus'](arg1, arg2);
+}
+
 export function DeleteNLSkill(arg1) {
   return window['go']['main']['App']['DeleteNLSkill'](arg1);
 }
@@ -953,6 +981,10 @@ export function FetchCodeGenModels() {
 
 export function FetchProviderModels(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateMobileLLMDesktopQRSession(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['CreateMobileLLMDesktopQRSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function SaveCodeGenModelChoice(arg1, arg2) {

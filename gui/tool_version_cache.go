@@ -25,7 +25,7 @@ type cachedVersion struct {
 // ToolVersionCache caches tool version information to avoid
 // synchronous external process execution during Send_Hello.
 // It uses sync.Map for concurrent-safe access and persists
-// data to ~/.maclaw/data/tool_version_cache.json.
+// data to the active data directory.
 type ToolVersionCache struct {
 	versions sync.Map // map[string]*cachedVersion
 }
@@ -63,7 +63,7 @@ func (c *ToolVersionCache) GetInstallStatus(name string) (installed bool, path s
 		return true, p
 	}
 
-	// Check the private tools directory (~/.maclaw/data/tools/).
+	// Check the private tools directory under the active data directory.
 	toolsDir := filepath.Join(corelib.MaclawBaseDir(), "data", "tools")
 	candidates := []string{binaryName}
 	if binaryName != name {

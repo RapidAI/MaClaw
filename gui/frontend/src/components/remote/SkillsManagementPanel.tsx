@@ -34,6 +34,7 @@ import {
     ListNLSkills,
     CreateNLSkill,
     UpdateNLSkill,
+    SetNLSkillStatus,
     DeleteNLSkill,
     RenameNLSkill,
     ImportNLSkillZip,
@@ -96,6 +97,7 @@ interface NLSkillDefinition {
     success_rate?: number;
     last_used_at?: string;
     last_error?: string;
+    review_reason?: string;
     is_maclaw_app?: boolean;
     maclaw_app_count?: number;
     maclaw_app_entry?: string;
@@ -399,6 +401,22 @@ export function getLearnedSkillDescriptionPreview(description: string, maxChars 
     const normalized = description.trim().replace(/\s+/g, " ");
     if (!normalized) return "-"; const chars = Array.from(normalized);
     return chars.length <= maxChars ? normalized : chars.slice(0, maxChars).join("") + "...";
+}
+
+function skillReviewReason(skill: NLSkillDefinition, localizeText: Props["localizeText"]): string {
+    const reason = String(skill.review_reason || skill.last_error || "").trim();
+    if (reason) return reason;
+    if (skill.status === "needs_setup") {
+        return localizeText("This skill needs configuration before use.", "\u8be5 Skill \u9700\u8981\u5b8c\u6210\u914d\u7f6e\u540e\u624d\u80fd\u4f7f\u7528\u3002", "\u8a72 Skill \u9700\u8981\u5b8c\u6210\u8a2d\u5b9a\u5f8c\u624d\u80fd\u4f7f\u7528\u3002");
+    }
+    if (skill.status === "needs_review") {
+        return localizeText("This skill was marked for local review by safety, repair, or governance checks.", "\u8be5 Skill \u88ab\u672c\u5730\u5b89\u5168\u3001\u4fee\u590d\u6216\u6cbb\u7406\u68c0\u67e5\u6807\u8bb0\u4e3a\u9700\u8981\u4eba\u5de5\u5ba1\u6838\u3002", "\u8a72 Skill \u88ab\u672c\u5730\u5b89\u5168\u3001\u4fee\u5fa9\u6216\u6cbb\u7406\u6aa2\u67e5\u6a19\u8a18\u70ba\u9700\u8981\u4eba\u5de5\u5be9\u6838\u3002");
+    }
+    return "";
+}
+
+function skillReviewReasonPreview(skill: NLSkillDefinition, localizeText: Props["localizeText"]): string {
+    return getLearnedSkillDescriptionPreview(skillReviewReason(skill, localizeText), 96);
 }
 
 export function SkillsManagementPanel({ localizeText }: Props) {
@@ -1018,6 +1036,39 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
 
+    const handleApproveSkillReview = async (skill: NLSkillDefinition) => {
+        const reason = skillReviewReason(skill, localizeText);
+        const confirmed = await showConfirm(
+            [
+                localizeText(
+                    `Approve and enable Skill "${skill.name}"?`,
+                    `\u786e\u8ba4\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528 Skill\u300c${skill.name}\u300d\uff1f`,
+                    `\u78ba\u8a8d\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528 Skill\u300c${skill.name}\u300d\uff1f`,
+                ),
+                reason ? localizeText(`Review reason: ${reason}`, `\u5ba1\u6838\u539f\u56e0\uff1a${reason}`, `\u5be9\u6838\u539f\u56e0\uff1a${reason}`) : "",
+            ].filter(Boolean).join("\n\n"),
+            localizeText("Approve Skill Review", "\u5ba1\u6838 Skill", "\u5be9\u6838 Skill"),
+            {
+                confirmText: localizeText("Approve and enable", "\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528", "\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528"),
+                cancelText: localizeText("Cancel", "\u53d6\u6d88", "\u53d6\u6d88"),
+            },
+        );
+        if (!confirmed) return;
+        setBusy(true);
+        try {
+            await SetNLSkillStatus(skill.name, "active");
+            if (detailSkill?.name === skill.name) {
+                setDetailSkill({ ...detailSkill, status: "active" });
+            }
+            await loadData();
+            showToast(localizeText("Skill enabled after review.", "Skill \u5df2\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528\u3002", "Skill \u5df2\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528\u3002"), "success");
+        } catch (err) {
+            setError(localizeHubError(String(err)));
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const handleLearnedDelete = async (name: string) => {
         const confirmed = await showConfirm(
             localizeText(
@@ -1328,7 +1379,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={skillNameLinkStyle} onClick={() => setDetailSkill(s)}>{s.name}</span>
                                                     {s.is_maclaw_app && <span style={appBadgeStyle}>📱 App</span>}
                                                     {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>🧠</span>}
-                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>{localizeSkillStatus(s.status)}</span>
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
                                                 <div style={{ fontSize: "0.74rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4 }}>{s.description || "—"}</div>
                                                 {(s.status === "needs_setup" || s.status === "needs_review") && (
@@ -1338,6 +1389,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                             : localizeText("Needs review before use", "需要审核后才能使用", "需要審核後才能使用")}
                                                     </div>
                                                 )}
+                                                {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
+                                                    <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px" }} title={skillReviewReason(s, localizeText)}>
+                                                        {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
+                                                    </div>
+                                                )}
                                                 <div style={{ display: "flex", gap: "8px", marginTop: "6px", fontSize: "0.7rem", color: colors.textMuted }}>
                                                     {s.execution_class && <span>{getExecutionClassLabel(s.execution_class)}</span>}
                                                     {displayHubVersion(s.hub_version) && <span>v{displayHubVersion(s.hub_version)}</span>}
@@ -1345,6 +1401,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </div>
                                             </div>
                                             <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                                                {s.status === "needs_review" && (
+                                                    <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{"\u2713"}</button>
+                                                )}
                                                 <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>▶</button>
                                                 <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{"\u270E"}</button>
                                                 <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
@@ -1379,7 +1438,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         <span style={{ cursor: "pointer", color: colors.primary }} onClick={() => setDetailSkill(s)}>{s.name}</span>
                                                     </div>
                                                 </td>
-                                                <td style={tdStyle}><div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div></td>
+                                                <td style={tdStyle}>
+                                                    <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                                    {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
+                                                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px", lineHeight: 1.35, overflowWrap: "anywhere" }} title={skillReviewReason(s, localizeText)}>
+                                                            {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
+                                                        </div>
+                                                    )}
+                                                </td>
                                                 <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
                                                     {s.execution_class ? (<span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>) : (<span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>)}
                                                 </td>
@@ -1387,10 +1453,13 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {(s.usage_count ?? 0) > 0 ? (<span style={localSkillsMetaTextStyle}>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>) : (<span style={{ ...localSkillsMetaTextStyle, color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>)}
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
-                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>{localizeSkillStatus(s.status)}</span>
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4 }}>
                                                     <div style={localSkillsRowActionsStyle}>
+                                                        {s.status === "needs_review" && (
+                                                            <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{"\u2713"}</button>
+                                                        )}
                                                         <button className="btn-primary" style={runBtnStyle} onClick={() => handleRunSkill(s.name)} disabled={busy || s.status !== "active"} title={localizeText("Run", "运行", "執行")} aria-label={localizeText("Run", "运行", "執行")}>▶</button>
                                                         <button className="btn-secondary" style={iconBtnStyle} onClick={() => openEditForm(s)} disabled={busy} title={localizeText("Edit", "编辑", "編輯")} aria-label={localizeText("Edit", "编辑", "編輯")}>{"\u270E"}</button>
                                                         <button className="btn-secondary" style={deleteIconBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>
@@ -2019,7 +2088,18 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <div><strong>{localizeText("Last Error", "最近错误", "最近錯誤")}</strong><div>{detailSkill.last_error || "—"}</div></div>
                             </div>
                         </div>
+                        {detailSkill.status === "needs_review" && (
+                            <div style={{ ...remoteInfoPanelStyle, fontSize: "0.78rem" }}>
+                                <strong>{localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}</strong>
+                                <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{skillReviewReason(detailSkill, localizeText)}</div>
+                            </div>
+                        )}
                         <div className="modal-footer">
+                            {detailSkill.status === "needs_review" && (
+                                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => handleApproveSkillReview(detailSkill)}>
+                                    {localizeText("Approve and Enable", "\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528", "\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528")}
+                                </button>
+                            )}
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { handleRunSkill(detailSkill.name); setDetailSkill(null); }} disabled={detailSkill.status !== "active"}>
                                 ▶ {localizeText("Run", "运行", "執行")}
                             </button>

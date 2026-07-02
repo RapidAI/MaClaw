@@ -70,19 +70,23 @@ func NewToolManager(app *App) *ToolManager {
 	return &ToolManager{app: app}
 }
 
+func privateToolsDirForApp(app *App) string {
+	if app != nil {
+		return filepath.Join(app.GetDataDir(), "tools")
+	}
+	return remote.ToolsDir()
+}
+
+func (tm *ToolManager) privateToolsDir() string {
+	return privateToolsDirForApp(tm.app)
+}
+
 func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	normalized := remote.NormalizeRemoteToolName(name)
-	toolsDir := remote.ToolsDir()
-	if tm.app != nil {
-		toolsDir = filepath.Join(tm.app.GetDataDir(), "tools")
-		if tm.app.testHomeDir == "" {
-			if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-				homeToolsDir := filepath.Join(home, ".maclaw", "data", "tools")
-				if filepath.Clean(homeToolsDir) != filepath.Clean(toolsDir) {
-					toolsDir = homeToolsDir
-				}
-			}
-		}
+	status := ToolStatus{Name: name}
+	toolsDir := tm.privateToolsDir()
+	if strings.TrimSpace(toolsDir) == "" {
+		return status
 	}
 	cacheKey := normalized + "\x00" + toolsDir
 
@@ -100,24 +104,9 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	}
 	toolStatusCacheMu.RUnlock()
 
-	status := ToolStatus{Name: name}
-
 	tm.app.log(fmt.Sprintf("GetToolStatus: Checking tool '%s'", name))
 
 	path, found := remote.ResolveToolPathInDir(name, toolsDir)
-	if !found {
-		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-			homeToolsDir := filepath.Join(home, ".maclaw", "data", "tools")
-			if filepath.Clean(homeToolsDir) != filepath.Clean(toolsDir) {
-				if fallbackPath, fallbackFound := remote.ResolveToolPathInDir(name, homeToolsDir); fallbackFound {
-					toolsDir = homeToolsDir
-					path = fallbackPath
-					found = true
-					cacheKey = normalized + "\x00" + toolsDir
-				}
-			}
-		}
-	}
 	if !found {
 		tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' NOT found", name))
 		toolStatusCacheMu.Lock()
@@ -255,8 +244,10 @@ func (tm *ToolManager) InstallTool(name string) error {
 		return fmt.Errorf("npm not found. Please ensure Node.js is installed.")
 	}
 
-	home, _ := os.UserHomeDir()
-	localNodeDir := filepath.Join(home, ".maclaw", "data", "tools")
+	localNodeDir := tm.privateToolsDir()
+	if strings.TrimSpace(localNodeDir) == "" {
+		return fmt.Errorf("cannot determine private tools directory")
+	}
 
 	// Ensure the local node directory exists for prefix usage
 	if err := os.MkdirAll(localNodeDir, 0755); err != nil {
@@ -513,9 +504,9 @@ func (tm *ToolManager) UpdateTool(name string) error {
 		return fmt.Errorf("tool %s is not installed", name)
 	}
 
-	home, _ := os.UserHomeDir()
-	expectedPrefix := filepath.Join(home, ".maclaw", "data", "tools")
-	if !strings.HasPrefix(status.Path, expectedPrefix) {
+	expectedPrefix := filepath.Clean(tm.privateToolsDir())
+	statusPath := filepath.Clean(status.Path)
+	if expectedPrefix == "" || (statusPath != expectedPrefix && !strings.HasPrefix(statusPath, expectedPrefix+string(os.PathSeparator))) {
 		return fmt.Errorf("tool %s is not installed in private directory (%s), cannot update. Only private installations can be updated.", name, status.Path)
 	}
 
@@ -542,7 +533,7 @@ func (tm *ToolManager) UpdateTool(name string) error {
 	}
 
 	// Set up npm prefix to private directory
-	localToolsDir := filepath.Join(home, ".maclaw", "data", "tools")
+	localToolsDir := expectedPrefix
 
 	// Use npm install with latest version to update
 	args := []string{"install", "-g", "--prefix", localToolsDir, packageName + "@latest", "--force"}
@@ -630,7 +621,10 @@ type ClaudeManifest struct {
 // installClaudeNative installs Claude Code using the native binary installer
 func (tm *ToolManager) installClaudeNative(target string) error {
 	home := tm.app.GetUserHomeDir()
-	installDir := filepath.Join(home, ".maclaw", "data", "tools")
+	installDir := tm.privateToolsDir()
+	if strings.TrimSpace(installDir) == "" {
+		return fmt.Errorf("cannot determine private tools directory")
+	}
 	downloadDir := filepath.Join(home, ".claude", "downloads")
 
 	// Determine platform
@@ -801,8 +795,9 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 
 	// Create wrapper scripts (Windows only)
 	if runtime.GOOS == "windows" {
-		cmdWrapper := fmt.Sprintf("@echo off\n\"%%USERPROFILE%%\\.maclaw\\data\\tools\\claude.exe\" %%*\n")
-		ps1Wrapper := `& "$env:USERPROFILE\.maclaw\data\tools\claude.exe" @args`
+		quotedTarget := targetPath
+		cmdWrapper := fmt.Sprintf("@echo off\n\"%s\" %%*\n", quotedTarget)
+		ps1Wrapper := fmt.Sprintf("& %q @args", quotedTarget)
 
 		os.WriteFile(filepath.Join(installDir, "claude.cmd"), []byte(cmdWrapper), 0755)
 		os.WriteFile(filepath.Join(installDir, "claude.ps1"), []byte(ps1Wrapper), 0755)
@@ -842,12 +837,12 @@ func (tm *ToolManager) GetPackageName(name string) string {
 
 func (tm *ToolManager) getNpmPath() string {
 	// 1. Check local node environment first
-	home, _ := os.UserHomeDir()
+	toolsDir := tm.privateToolsDir()
 	var localNpm string
 	if runtime.GOOS == "windows" {
-		localNpm = filepath.Join(home, ".maclaw", "data", "tools", "npm.cmd")
+		localNpm = filepath.Join(toolsDir, "npm.cmd")
 	} else {
-		localNpm = filepath.Join(home, ".maclaw", "data", "tools", "bin", "npm")
+		localNpm = filepath.Join(toolsDir, "bin", "npm")
 	}
 
 	if _, err := os.Stat(localNpm); err == nil {

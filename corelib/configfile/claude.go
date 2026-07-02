@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ClaudeSettingsPath returns ~/.claude/settings.json
@@ -18,8 +20,7 @@ func ClaudeSettingsPath() string {
 // 这是 TigerClaw SSO 专用的配置文件，与 Claude Code 的标准路径分开管理，
 // 避免覆盖用户在 ~/.claude/settings.json 中的手动配置。
 func CodeGenSettingsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".maclaw", "codegen", "settings.json")
+	return filepath.Join(corelib.MaclawBaseDir(), "codegen", "settings.json")
 }
 
 // internalOnlyFields are fields that cc-switch filters out before writing

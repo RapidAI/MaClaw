@@ -18,6 +18,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Timer? _pollTimer;
   String? _pollId;
   String? _message;
+  String? _selectedHubCenterUrl;
+  String? _discoveredHubUrl;
   bool _loading = false;
 
   @override
@@ -32,26 +34,37 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (email.isEmpty) return;
     setState(() {
       _loading = true;
-      _message = null;
+      _message = '正在连接 MaClaw 官方 HubCenter...';
+      _selectedHubCenterUrl = null;
+      _discoveredHubUrl = null;
     });
     try {
-      final result = await ref.read(sessionControllerProvider.notifier).requestEmailLogin(
-            email: email,
-          );
+      final result = await ref
+          .read(sessionControllerProvider.notifier)
+          .requestEmailLogin(email: email);
       if (result.pollId.isEmpty) {
         setState(() {
           _loading = false;
-          _message = result.message.isEmpty ? '登录请求未返回 poll_id。' : result.message;
+          _message =
+              result.message.isEmpty ? '登录请求未返回 poll_id。' : result.message;
         });
         return;
       }
       _pollId = result.pollId;
       setState(() {
         _loading = false;
-        _message = result.message.isEmpty ? '请在邮件或 IM 中确认登录。' : result.message;
+        _selectedHubCenterUrl = result.hubCenterUrl;
+        final confirmationMessage =
+            result.message.isEmpty ? '请在邮件或 IM 中确认登录。' : result.message;
+        _message = result.hubCenterUrl.isEmpty
+            ? confirmationMessage
+            : '$confirmationMessage\n已选中 HubCenter：${result.hubCenterUrl}';
       });
       _pollTimer?.cancel();
-      _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollLogin());
+      _pollTimer = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => _pollLogin(),
+      );
     } catch (error) {
       setState(() {
         _loading = false;
@@ -64,11 +77,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final pollId = _pollId;
     if (pollId == null || pollId.isEmpty) return;
     try {
-      final ok = await ref.read(sessionControllerProvider.notifier).pollEmailLogin(
-            pollId: pollId,
-          );
+      final controller = ref.read(sessionControllerProvider.notifier);
+      final ok = await controller.pollEmailLogin(pollId: pollId);
       if (ok) {
         _pollTimer?.cancel();
+        final hubUrl = controller.currentHubUrl;
+        if (mounted) {
+          setState(() {
+            _discoveredHubUrl = hubUrl;
+            _message = hubUrl.isEmpty
+                ? '登录已确认，正在进入 MaClaw Mobile。'
+                : '登录已确认，已接入 Hub：$hubUrl';
+          });
+        }
       }
     } catch (_) {
       // Keep polling; transient network failures should not force restart.
@@ -84,12 +105,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           padding: const EdgeInsets.all(24),
           children: [
             const SizedBox(height: 36),
-            Icon(Icons.emergency_share_outlined, size: 56, color: scheme.primary),
+            Icon(
+              Icons.emergency_share_outlined,
+              size: 56,
+              color: scheme.primary,
+            ),
             const SizedBox(height: 18),
-            Text('MaClaw Mobile', style: Theme.of(context).textTheme.headlineSmall),
+            Text(
+              'MaClaw Mobile',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
             const SizedBox(height: 8),
             Text(
-              '登录 MaClaw 官方服务后即可查信息、处理文档，并接入远程数字员工。',
+              '通过官方 HubCenter 发现你的 Hub 和租户后，即可查信息、处理文档，并接入远程数字员工。',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -100,11 +128,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 padding: const EdgeInsets.all(14),
                 child: Row(
                   children: [
-                    Icon(Icons.verified_outlined, color: scheme.primary),
+                    Icon(Icons.hub_outlined, color: scheme.primary),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        '官方服务：$maclawOfficialServiceUrl',
+                        'HubCenter 候选：${maclawOfficialHubCenterUrls.join(' / ')}',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
@@ -113,6 +141,41 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            if (_selectedHubCenterUrl != null ||
+                _discoveredHubUrl != null) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.verified_outlined, color: scheme.primary),
+                          const SizedBox(width: 10),
+                          Text(
+                            '官方接入状态',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      if (_selectedHubCenterUrl != null)
+                        _LoginInfoRow(
+                          label: 'HubCenter',
+                          value: _selectedHubCenterUrl!,
+                        ),
+                      if (_discoveredHubUrl != null)
+                        _LoginInfoRow(
+                          label: 'Hub',
+                          value: _discoveredHubUrl!,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
             TextField(
               controller: _emailController,
               keyboardType: TextInputType.emailAddress,
@@ -139,6 +202,44 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _LoginInfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _LoginInfoRow({
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 82,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        ],
       ),
     );
   }

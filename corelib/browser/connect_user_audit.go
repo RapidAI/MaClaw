@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // AuditLogger records operations performed in connect_user mode for security auditing.
@@ -21,11 +23,10 @@ type AuditLogger struct {
 // The log file is created at {logDir}/browser_connect_audit.log.
 func NewAuditLogger(logDir string) *AuditLogger {
 	if logDir == "" {
-		home, _ := os.UserHomeDir()
-		if home == "" {
+		logDir = corelib.MaclawLogsDir()
+		if logDir == "" {
 			return &AuditLogger{} // no-op logger
 		}
-		logDir = filepath.Join(home, ".maclaw", "logs")
 	}
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "browser_connect_audit.log")
@@ -102,12 +103,7 @@ var auditLoggerOnce sync.Once
 // GetAuditLogger returns the singleton audit logger.
 func GetAuditLogger() *AuditLogger {
 	auditLoggerOnce.Do(func() {
-		home, _ := os.UserHomeDir()
-		logDir := ""
-		if home != "" {
-			logDir = filepath.Join(home, ".maclaw", "logs")
-		}
-		globalAuditLogger = NewAuditLogger(logDir)
+		globalAuditLogger = NewAuditLogger(corelib.MaclawLogsDir())
 	})
 	return globalAuditLogger
 }

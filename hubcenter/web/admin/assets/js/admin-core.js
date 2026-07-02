@@ -394,6 +394,19 @@ Object.assign(I18N_ZH,{skillhubTitle:'能力目录',skillhubDesc:'管理能力�
     window.installOverlayDismiss=installOverlayDismiss;
     window.api=api;
     window.token=token;
+    window.showToast=showToast;
+    Object.assign(window,{
+      setupAdmin,
+      loginAdmin,
+      logoutAdmin,
+      showAuthStage,
+      openTab,
+      refreshAll,
+      loadAdminStatus,
+      listHubs,
+      listBlockedEmails,
+      listBlockedIPs
+    });
 
 // --- Compute Market + LLM Service i18n ---
 Object.assign(I18N_EN, {

@@ -129,12 +129,12 @@ func (c *SkillMarketAuthClient) ValidateToken(ctx context.Context, baseURL, toke
 	return resp.StatusCode == http.StatusOK, nil
 }
 
-// MachineLogin exchanges Hub enrollment credentials (email + machine_id + viewer_token)
+// MachineLogin exchanges Hub enrollment credentials (account + machine_id + viewer_token)
 // for a SkillMarket session token. This enables zero-friction SkillMarket access
 // after Hub registration — no separate login step required.
-func (c *SkillMarketAuthClient) MachineLogin(ctx context.Context, baseURL, email, machineID, viewerToken string) (*SkillMarketAuthResult, error) {
+func (c *SkillMarketAuthClient) MachineLogin(ctx context.Context, baseURL, account, machineID, viewerToken string) (*SkillMarketAuthResult, error) {
 	payload, _ := json.Marshal(map[string]string{
-		"email":        strings.TrimSpace(email),
+		"email":        strings.TrimSpace(account),
 		"machine_id":   strings.TrimSpace(machineID),
 		"viewer_token": strings.TrimSpace(viewerToken),
 	})

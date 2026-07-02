@@ -74,12 +74,13 @@ const (
 
 // SkillHubClient queries the hub's own SkillHub API for skill search, download, and recommendations.
 type SkillHubClient struct {
-	app      *App
-	mu       sync.RWMutex
-	cache    map[string]cachedSearchResult
-	cacheTTL time.Duration
-	recIndex []HubSkillMeta
-	client   *http.Client
+	app           *App
+	mu            sync.RWMutex
+	cache         map[string]cachedSearchResult
+	cacheTTL      time.Duration
+	recIndex      []HubSkillMeta
+	client        *http.Client // 10s timeout for search/metadata APIs
+	installClient *http.Client // 120s timeout for skill package downloads
 }
 
 // NewSkillHubClient creates a new SkillHubClient with default settings.
@@ -89,6 +90,9 @@ func NewSkillHubClient(app *App) *SkillHubClient {
 		cache:    make(map[string]cachedSearchResult),
 		cacheTTL: 5 * time.Minute,
 		client:   &http.Client{Timeout: 10 * time.Second},
+		// installClient uses a longer timeout for skill package downloads
+		// which may be several MB over slow networks.
+		installClient: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -734,14 +738,19 @@ func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL s
 
 func (c *SkillHubClient) getBytesFromExplicitHubURL(ctx context.Context, hubURL string, path string, limit int64) (string, []string, []byte, error) {
 	base := strings.TrimSpace(hubURL)
+	// Use installClient (120s timeout) for download operations.
+	downloadClient := c.installClient
+	if downloadClient == nil {
+		downloadClient = c.client
+	}
 	if base == "" {
-		return c.app.getHubCenterBytes(ctx, c.client, path, limit)
+		return c.app.getHubCenterBytes(ctx, downloadClient, path, limit)
 	}
 	if authHeader := c.enterpriseHubAuthHeaderForBase(base); authHeader != "" {
 		return c.getBytesFromExplicitHubURLWithAuth(ctx, base, path, limit, authHeader)
 	}
 	base = strings.TrimRight(base, "/")
-	return c.app.getHubCenterBytesFromCandidates(ctx, c.client, []string{base}, path, limit)
+	return c.app.getHubCenterBytesFromCandidates(ctx, downloadClient, []string{base}, path, limit)
 }
 
 func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context, base, path string, limit int64, authHeader string) (string, []string, []byte, error) {
@@ -752,7 +761,13 @@ func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context,
 	}
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("User-Agent", "MaClaw/1.0")
-	resp, err := c.client.Do(req)
+	// Use installClient (120s timeout) for download operations which may
+	// transfer large skill packages over slow networks.
+	httpClient := c.installClient
+	if httpClient == nil {
+		httpClient = c.client
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", nil, nil, err
 	}

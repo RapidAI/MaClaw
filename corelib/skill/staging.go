@@ -13,17 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // StagingDir returns the staging directory root.
-// Path: ~/.maclaw/data/skills_staging/
+// Path: <MaclawBaseDir>/data/skills_staging/
 func StagingDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	return filepath.Join(home, ".maclaw", "data", "skills_staging"), nil
+	return filepath.Join(corelib.MaclawBaseDir(), "data", "skills_staging"), nil
 }
 
 // StagedFile describes a single file in the staging directory.
@@ -42,7 +39,11 @@ func PrepareStagingDir(skillName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return PrepareStagingDirInRoot(root, skillName)
+}
 
+// PrepareStagingDirInRoot creates a clean staging directory under the given root.
+func PrepareStagingDirInRoot(root, skillName string) (string, error) {
 	safe := sanitizeDirName(skillName)
 	if safe == "" {
 		safe = "unnamed"
@@ -59,21 +60,43 @@ func PrepareStagingDir(skillName string) (string, error) {
 }
 
 // CommitStaging moves a staged skill from the staging directory to the
-// final install location (~/.maclaw/data/skills/<name>/).
+// final install location (<MaclawBaseDir>/data/skills/<name>/).
+// If a skill directory already exists at the target, it is preserved as a
+// .prev backup (cleaned up after 24h by CleanupAllStale) so users can
+// recover custom config files or scripts they added manually.
 // Returns the final directory path.
 func CommitStaging(stagingDir, skillName string) (string, error) {
 	finalRoot, err := PrimarySkillsDir()
 	if err != nil {
 		return "", err
 	}
+	return CommitStagingToDir(stagingDir, skillName, finalRoot)
+}
 
+// CommitStagingToDir moves a staged skill into the provided final root.
+func CommitStagingToDir(stagingDir, skillName, finalRoot string) (string, error) {
 	safe := sanitizeDirName(skillName)
 	if safe == "" {
 		safe = "unnamed"
 	}
 
 	finalDir := filepath.Join(finalRoot, safe)
-	_ = os.RemoveAll(finalDir)
+
+	// If target already exists, backup to .prev instead of deleting.
+	// This preserves user-added config files, API keys, custom scripts, etc.
+	if _, statErr := os.Stat(finalDir); statErr == nil {
+		backupDir := finalDir + ".prev"
+		_ = os.RemoveAll(backupDir) // Remove any previous backup
+		if renameErr := os.Rename(finalDir, backupDir); renameErr != nil {
+			// Rename failed (cross-device, permission, locked file, etc.) — fallback to delete.
+			if rmErr := os.RemoveAll(finalDir); rmErr != nil {
+				return "", fmt.Errorf("commit staging: cannot move existing %s to backup (%v) and cannot remove it (%v)", filepath.Base(finalDir), renameErr, rmErr)
+			}
+		}
+	} else {
+		// Target doesn't exist or stat error — ensure it's clean.
+		_ = os.RemoveAll(finalDir)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil {
 		return "", fmt.Errorf("create parent dir: %w", err)
@@ -98,6 +121,8 @@ func CleanupStaging(stagingDir string) {
 }
 
 // CleanupAllStale removes staging directories older than maxAge.
+// Also cleans up .prev backup directories (created by CommitStaging during
+// reinstall/update) that have exceeded maxAge.
 func CleanupAllStale(maxAge time.Duration) {
 	root, err := StagingDir()
 	if err != nil {
@@ -118,6 +143,28 @@ func CleanupAllStale(maxAge time.Duration) {
 		}
 		if info.ModTime().Before(cutoff) {
 			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		}
+	}
+
+	// Also clean .prev backups in the primary skills directory.
+	skillsRoot, err := PrimarySkillsDir()
+	if err != nil {
+		return
+	}
+	skillEntries, err := os.ReadDir(skillsRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range skillEntries {
+		if !e.IsDir() || !strings.HasSuffix(e.Name(), ".prev") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(skillsRoot, e.Name()))
 		}
 	}
 }

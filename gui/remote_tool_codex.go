@@ -59,7 +59,7 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 			extra["WIRE_API"] = "responses"
 		}
 	}
-	env := buildOpenAICompatibleCommandEnv(spec.Env, extra)
+	env := buildOpenAICompatibleCommandEnv(spec.Env, privateToolsDirForApp(a.app), extra)
 
 	// Validate project path exists.
 	if spec.ProjectPath != "" {

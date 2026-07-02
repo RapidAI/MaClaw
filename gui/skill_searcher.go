@@ -235,6 +235,9 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	}
 
 	s.enrichInstalledState(results)
+	if len(errs) > 0 {
+		log.Printf("[skill-search] partial failures query=%q errors=%s", query, strings.Join(errs, "; "))
+	}
 	if len(results) == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}

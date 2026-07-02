@@ -55,7 +55,7 @@ export const RemoteActivationDialog = ({
                             className="form-input"
                             value={draft.hubcenter_url}
                             onChange={(e) => setDraft((prev) => ({ ...prev, hubcenter_url: e.target.value }))}
-                            placeholder="http://127.0.0.1:9388"
+                            placeholder="https://hubs.mypapers.top"
                             spellCheck={false}
                         />
                     </div>

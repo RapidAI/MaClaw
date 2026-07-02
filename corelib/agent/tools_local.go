@@ -29,6 +29,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -1799,14 +1800,12 @@ func (d fileInfoDirEntry) Info() (os.FileInfo, error) { return d.info, nil }
 // ResolvePath resolves a path relative to the default workspace.
 func ResolvePath(p string) string {
 	if p == "" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".maclaw", "workspace")
+		return corelib.WorkspaceDir()
 	}
 	if filepath.IsAbs(p) {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".maclaw", "workspace", p)
+	return filepath.Join(corelib.WorkspaceDir(), p)
 }
 
 // ResolveFileToolPath resolves a file path for tool operations.

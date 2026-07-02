@@ -3,10 +3,12 @@
 package weixin
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,12 +40,7 @@ func SetLogDetailEnabled(_ bool) {
 // first call. Safe to call from any goroutine.
 func GetWxLog() *WxLog {
 	globalWxLogOnce.Do(func() {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Printf("[wxlog] cannot determine home dir: %v", err)
-			return
-		}
-		dir := filepath.Join(home, ".maclaw", "logs")
+		dir := maclawLogsDir()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Printf("[wxlog] cannot create log dir: %v", err)
 			return
@@ -63,6 +60,32 @@ func GetWxLog() *WxLog {
 		globalWxLog = &WxLog{file: f}
 	})
 	return globalWxLog
+}
+
+func maclawLogsDir() string {
+	return filepath.Join(maclawBaseDir(), "logs")
+}
+
+func maclawBaseDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".maclaw")
+	}
+	defaultDir := filepath.Join(home, ".maclaw")
+	data, err := os.ReadFile(filepath.Join(defaultDir, "config.json"))
+	if err != nil {
+		return defaultDir
+	}
+	var partial struct {
+		DataDir string `json:"data_dir"`
+	}
+	if json.Unmarshal(data, &partial) != nil {
+		return defaultDir
+	}
+	if dataDir := strings.TrimSpace(partial.DataDir); dataDir != "" {
+		return dataDir
+	}
+	return defaultDir
 }
 
 // Log writes a structured line: timestamp | stage | direction | uid | message

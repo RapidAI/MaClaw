@@ -172,7 +172,11 @@ func TestRemoteHubClientClaimMobileDigitalEmployeeTaskUsesMachineAuth(t *testing
 				"task_id":     "task-1",
 				"employee_id": "ve_machine-1",
 				"prompt":      "check server",
-				"status":      "in_progress",
+				"task_type":   "server_maintenance",
+				"context": map[string]string{
+					"source": "maclaw_mobile",
+				},
+				"status": "in_progress",
 			},
 		})
 	}))
@@ -190,6 +194,32 @@ func TestRemoteHubClientClaimMobileDigitalEmployeeTaskUsesMachineAuth(t *testing
 	}
 	if claim == nil || claim.Status != "claimed" || claim.Task == nil || claim.Task.TaskID != "task-1" || claim.Task.Prompt != "check server" {
 		t.Fatalf("claim response = %#v", claim)
+	}
+	if claim.Task.TaskType != "server_maintenance" || claim.Task.Context["source"] != "maclaw_mobile" {
+		t.Fatalf("claim task context = %#v", claim.Task)
+	}
+}
+
+func TestBuildMobileDigitalEmployeeExecutionPromptIncludesTypeAndContext(t *testing.T) {
+	prompt := buildMobileDigitalEmployeeExecutionPrompt(mobileDigitalEmployeeTask{
+		TaskID:   "task-1",
+		Prompt:   "check disk",
+		TaskType: "server_maintenance",
+		Context: map[string]string{
+			"source":     "maclaw_mobile",
+			"machine_id": "desktop-1",
+		},
+	})
+	for _, want := range []string{
+		"Task type: server_maintenance",
+		"source: maclaw_mobile",
+		"machine_id: desktop-1",
+		"check disk",
+		"manual confirmation",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
 	}
 }
 

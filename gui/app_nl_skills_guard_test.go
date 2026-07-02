@@ -8,6 +8,53 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func TestSetNLSkillStatusApprovesReviewedSkillAndExposesReason(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:       "reviewed-skill",
+		Status:     "needs_review",
+		LastError:  "auto-repair blocked by security scan: level=high summary=uses shell",
+		Source:     "manual",
+		CreatedAt:  "2026-01-01T00:00:00Z",
+		Triggers:   []string{"reviewed"},
+		Steps:      []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}, OnError: "stop"}},
+		UsageCount: 1,
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	defs := app.ListNLSkills()
+	reviewed := findNLSkillDefinitionForTest(defs, "reviewed-skill")
+	if reviewed == nil || reviewed.Status != "needs_review" || !strings.Contains(reviewed.ReviewReason, "security scan") {
+		t.Fatalf("expected review reason in skill list: %#v", defs)
+	}
+	if err := app.SetNLSkillStatus("reviewed-skill", "active"); err != nil {
+		t.Fatalf("SetNLSkillStatus() error = %v", err)
+	}
+	defs = app.ListNLSkills()
+	reviewed = findNLSkillDefinitionForTest(defs, "reviewed-skill")
+	if reviewed == nil || reviewed.Status != "active" {
+		t.Fatalf("expected approved skill to be active: %#v", defs)
+	}
+	if reviewed.LastError == "" {
+		t.Fatalf("expected last_error evidence to remain available after approval")
+	}
+}
+
+func findNLSkillDefinitionForTest(defs []NLSkillDefinition, name string) *NLSkillDefinition {
+	for i := range defs {
+		if defs[i].Name == name {
+			return &defs[i]
+		}
+	}
+	return nil
+}
+
 func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

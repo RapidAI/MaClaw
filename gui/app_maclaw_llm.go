@@ -1128,6 +1128,13 @@ type MaclawLLMStatus struct {
 	Error      string `json:"error,omitempty"`
 }
 
+type MobileLLMQRCodeSession struct {
+	Status    string `json:"status"`
+	SessionID string `json:"session_id"`
+	ExpiresAt string `json:"expires_at"`
+	QRPayload string `json:"qr_payload"`
+}
+
 // maclawLLMPingClient is a shared HTTP client for lightweight LLM pings.
 // Reusing the client enables TCP connection pooling across periodic pings.
 var maclawLLMPingClient = &http.Client{Timeout: 10 * time.Second}
@@ -1193,6 +1200,52 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 
 func normalizeOpenAIProbeBaseURL(baseURL, userAgent string) string {
 	return corelib.NormalizeGLMCodingPlanOpenAIBaseURL(baseURL, userAgent)
+}
+
+func (a *App) CreateMobileLLMDesktopQRSession(name, providerURL, key, model string, models []string, protocol string) (MobileLLMQRCodeSession, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return MobileLLMQRCodeSession{}, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("MaClaw Hub login is required before creating a mobile LLM QR code")
+	}
+	body, err := json.Marshal(map[string]any{
+		"name":     strings.TrimSpace(name),
+		"url":      strings.TrimSpace(providerURL),
+		"key":      strings.TrimSpace(key),
+		"model":    strings.TrimSpace(model),
+		"models":   models,
+		"protocol": strings.TrimSpace(protocol),
+	})
+	if err != nil {
+		return MobileLLMQRCodeSession{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/llm/desktop-qr-sessions", bytes.NewReader(body))
+	if err != nil {
+		return MobileLLMQRCodeSession{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := maclawLLMPingClient.Do(req)
+	if err != nil {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("create mobile LLM QR session failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("create mobile LLM QR session failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var session MobileLLMQRCodeSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("decode mobile LLM QR session: %w", err)
+	}
+	if strings.TrimSpace(session.QRPayload) == "" {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("Hub did not return a mobile LLM QR payload")
+	}
+	return session, nil
 }
 
 func openAIModelsEndpointCandidates(baseURL, protocol string) []string {

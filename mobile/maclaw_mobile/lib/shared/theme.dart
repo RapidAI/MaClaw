@@ -19,7 +19,7 @@ ThemeData buildMaClawTheme(Brightness brightness) {
     scaffoldBackgroundColor:
         dark ? const Color(0xFF0C1117) : const Color(0xFFF3F6F8),
     fontFamily: 'Roboto',
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),

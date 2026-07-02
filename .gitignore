@@ -50,6 +50,8 @@ mobile/dist/
 mobile/android/codeclaw-release.jks
 mobile/android/maclaw-release.jks
 mobile/android/signing.env.cmd
+mobile/maclaw_mobile/docs/qa-builds/*
+!mobile/maclaw_mobile/docs/qa-builds/README.md
 gui/LegacyTaskOutput.csv
 RapidSpeech.cpp/*.rar
 tmp-hub-admin-check.js

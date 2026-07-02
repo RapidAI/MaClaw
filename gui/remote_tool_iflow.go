@@ -49,7 +49,7 @@ func (a *IFlowAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	if spec.ModelID != "" {
 		extra["IFLOW_MODEL"] = spec.ModelID
 	}
-	env := buildOpenAICompatibleCommandEnv(spec.Env, extra)
+	env := buildOpenAICompatibleCommandEnv(spec.Env, privateToolsDirForApp(a.app), extra)
 
 	port, err := findFreePort()
 	if err != nil {

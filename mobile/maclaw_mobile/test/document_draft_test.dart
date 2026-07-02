@@ -4,7 +4,11 @@ import 'package:maclaw_mobile/features/documents/document_draft.dart';
 void main() {
   test('labels document templates in Chinese', () {
     expect(documentTemplateLabel(DocumentTemplate.notice), '通知');
+    expect(documentTemplateLabel(DocumentTemplate.report), '报告');
+    expect(documentTemplateLabel(DocumentTemplate.email), '邮件');
+    expect(documentTemplateLabel(DocumentTemplate.proposal), '方案');
     expect(documentTemplateLabel(DocumentTemplate.meetingMinutes), '会议纪要');
+    expect(documentTemplateLabel(DocumentTemplate.statement), '说明书');
   });
 
   test('parses document draft and export job wire values', () {
@@ -23,10 +27,12 @@ void main() {
       'draft_id': 'd1',
       'format': 'word',
       'status': 'queued',
+      'message': '等待官方服务生成文件',
       'created_at': '2026-07-01T00:00:00Z',
     });
     expect(job.format, DocumentExportFormat.word);
     expect(documentExportFormatWireValue(job.format), 'word');
+    expect(job.message, '等待官方服务生成文件');
   });
 
   test('copyWith preserves template and id', () {

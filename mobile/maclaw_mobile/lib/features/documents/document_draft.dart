@@ -99,6 +99,7 @@ class DocumentExportJob {
   final DocumentExportFormat format;
   final String status;
   final String downloadUrl;
+  final String message;
   final DateTime createdAt;
 
   const DocumentExportJob({
@@ -107,6 +108,7 @@ class DocumentExportJob {
     required this.format,
     required this.status,
     required this.downloadUrl,
+    this.message = '',
     required this.createdAt,
   });
 
@@ -117,6 +119,7 @@ class DocumentExportJob {
       format: documentExportFormatFromWire(json['format'] as String?),
       status: json['status'] as String? ?? 'unknown',
       downloadUrl: json['download_url'] as String? ?? '',
+      message: json['message'] as String? ?? '',
       createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
     );

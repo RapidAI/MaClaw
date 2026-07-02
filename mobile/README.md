@@ -9,8 +9,11 @@ things that make sense when a user is away from a desktop:
 - access digital employees on remote servers or desktops for delegated tasks;
 - check account, Hub, service, and credential status.
 
-The mobile app only connects to the official MaClaw service
-`https://hubs.mypapers.top`. It intentionally has no custom Hub URL setting.
+The mobile app connects only through the official MaClaw HubCenter candidates:
+`https://hubs.mypapers.top`, `https://hubs.maclaw.top`, and
+`https://hubs2.maclaw.top`. It probes those preset endpoints, discovers the
+user's Hub and tenant through the selected HubCenter, and intentionally has no
+custom Hub URL setting.
 
 The previous mobile programs were intentionally removed. The active project is
 `maclaw_mobile/`.
@@ -23,6 +26,7 @@ This repository snapshot does not vendor Flutter. Install Flutter 3.22+ and run:
 cd mobile/maclaw_mobile
 flutter pub get
 flutter test
+flutter build apk --debug
 flutter run
 ```
 

@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,24 @@ func TestNormalizeRunVarsPreservesArgsOverJSONInput(t *testing.T) {
 func TestNormalizeRunVarsNilSafe(t *testing.T) {
 	if got := NormalizeRunVars(nil); got != nil {
 		t.Fatalf("NormalizeRunVars(nil) = %#v, want nil", got)
+	}
+}
+
+func TestNormalizeRunVarsExcludesContextValue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := NormalizeRunVars(map[string]interface{}{
+		"input": "hello",
+		"_ctx":  ctx,
+	})
+	if got["input"] != "hello" {
+		t.Fatalf("NormalizeRunVars() = %#v, want input preserved", got)
+	}
+	// _ctx should not appear in any form (raw key "_ctx" or canonicalized "ctx").
+	for key, val := range got {
+		if strings.Contains(key, "ctx") || strings.Contains(val, "context") {
+			t.Fatalf("NormalizeRunVars() = %#v, context.Context value leaked as key=%q val=%q", got, key, val)
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ func normalizeRemoteProbeStatusKind(value string) remoteProbeStatusKind {
 
 func (kind remoteProbeStatusKind) ShouldClearActivation() bool {
 	switch kind {
-	case remoteProbeStatusNotFound, remoteProbeStatusBlocked:
+	case remoteProbeStatusBlocked:
 		return true
 	default:
 		return false

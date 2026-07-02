@@ -2,8 +2,8 @@
 package embedding
 
 import (
-	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // DefaultModelFilename is the standard filename for the Gemma embedding model.
@@ -13,14 +13,29 @@ const DefaultModelFilename = "embeddinggemma-300M-Q8_0.gguf"
 // Used by GUI and maclawsrv for background model preloading.
 const DefaultModelDownloadURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf"
 
-// DefaultModelPath returns the default model path: ~/.maclaw/models/embeddinggemma-300M-Q8_0.gguf.
+// BaseDirFunc optionally supplies the effective Maclaw base directory.
+// corelib wires this at init time without creating an import cycle.
+var BaseDirFunc atomic.Value // stores func() string
+
+// DefaultModelsDir returns the default local AI model directory.
+func DefaultModelsDir() string {
+	if fn, ok := BaseDirFunc.Load().(func() string); ok && fn != nil {
+		if base := fn(); base != "" {
+			return filepath.Join(base, "models")
+		}
+	}
+	return ""
+}
+
+// DefaultModelPath returns the default embedding model path under the effective
+// Maclaw base directory.
 // Returns an empty string if the home directory cannot be determined.
 func DefaultModelPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := DefaultModelsDir()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".maclaw", "models", DefaultModelFilename)
+	return filepath.Join(dir, DefaultModelFilename)
 }
 
 // Embedder produces dense vector representations of text.

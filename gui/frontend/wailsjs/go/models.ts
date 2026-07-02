@@ -453,6 +453,7 @@ export namespace main {
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
 	    llm_prompt_cache: LLMPromptCacheConfig;
+	    tool_cache_maintenance: any;
 	    web_search_providers: any[];
 	    web_search_current_provider: string;
 	    maclaw_agent_max_iterations: number;
@@ -625,6 +626,7 @@ export namespace main {
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	        this.llm_prompt_cache = this.convertValues(source["llm_prompt_cache"], LLMPromptCacheConfig);
+	        this.tool_cache_maintenance = source["tool_cache_maintenance"];
 	        this.web_search_providers = source["web_search_providers"];
 	        this.web_search_current_provider = source["web_search_current_provider"];
 	        this.maclaw_agent_max_iterations = source["maclaw_agent_max_iterations"];
@@ -752,6 +754,25 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message = source["message"];
 	        this.supports_vision = source["supports_vision"];
+	    }
+	}
+
+	export class MobileLLMQRCodeSession {
+	    status: string;
+	    session_id: string;
+	    expires_at: string;
+	    qr_payload: string;
+
+	    static createFrom(source: any = {}) {
+	        return new MobileLLMQRCodeSession(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.session_id = source["session_id"];
+	        this.expires_at = source["expires_at"];
+	        this.qr_payload = source["qr_payload"];
 	    }
 	}
 

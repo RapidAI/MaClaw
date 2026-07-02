@@ -13,7 +13,12 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/user"
 )
 
 func TestLoadConfigConcurrentFirstRun(t *testing.T) {
@@ -693,7 +698,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"tool_current_model":           map[string]interface{}{"tool": "codex", "model": "Original"},
 		"remote_enabled":               true,
 		"remote_hub_url":               " https://hub.example.com/ ",
-		"remote_hubcenter_url":         " http://127.0.0.1:9388 ",
+		"remote_hubcenter_url":         " https://hubs.example.com ",
 		"remote_email":                 " owner@example.com ",
 		"remote_mobile":                " 13800138000 ",
 		"onboarding_done":              true,
@@ -793,7 +798,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {
 		t.Fatalf("navigation/project/favorite fields not applied: %#v", patched)
 	}
-	if !patched.RemoteEnabled || patched.RemoteHubURL != "https://hub.example.com/" || patched.RemoteHubCenterURL != "http://127.0.0.1:9388" || patched.RemoteEmail != "owner@example.com" || patched.RemoteMobile != "13800138000" || !patched.OnboardingDone || patched.DefaultLaunchMode != "remote" || patched.Codex.CurrentModel != "Original" {
+	if !patched.RemoteEnabled || patched.RemoteHubURL != "https://hub.example.com/" || patched.RemoteHubCenterURL != "https://hubs.example.com" || patched.RemoteEmail != "owner@example.com" || patched.RemoteMobile != "13800138000" || !patched.OnboardingDone || patched.DefaultLaunchMode != "remote" || patched.Codex.CurrentModel != "Original" {
 		t.Fatalf("remote/provider fields not applied: %#v", patched)
 	}
 	if patched.SecurityPolicyMode != "strict" || patched.SandboxMode != "os" || patched.NetworkLevel != "allowlist" || len(patched.NetworkAllowlist) != 1 || patched.YoloModeAllowed || !patched.SmartRouteEnabled || !patched.GossipEnabled || patched.FileOutboundEnabled || patched.ImageOutboundEnabled || len(patched.SkillSourcesAllowed) != 1 {
@@ -831,6 +836,19 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	}
 	if !patched.LLMPromptCache.Enabled || patched.LLMPromptCache.TTLSeconds != 120 || patched.LLMPromptCache.MemoryMaxEntries == 0 {
 		t.Fatalf("LLM prompt cache field not applied with defaults: %#v", patched.LLMPromptCache)
+	}
+}
+
+func TestPatchConfigFieldsRejectsLoopbackHubCenterURL(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"remote_hubcenter_url": "http://127.0.0.1:65140",
+	}); err == nil {
+		t.Fatal("PatchConfigFields accepted loopback remote_hubcenter_url")
 	}
 }
 
@@ -1307,6 +1325,7 @@ func TestSetDataDirPatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(filepath.Join(tmpHome, ".maclaw")) })
 
 	app := &App{testHomeDir: tmpHome}
 	cfg, err := app.LoadConfig()
@@ -1333,6 +1352,72 @@ func TestSetDataDirPatchesWithoutStaleOverwrite(t *testing.T) {
 	}
 	if reloaded.RemoteEmail != "owner@example.com" || !reloaded.LogDetailEnabled {
 		t.Fatalf("unrelated fields overwritten by SetDataDir: %#v", reloaded)
+	}
+}
+
+func TestSetDataDirRefreshesSkillAndAIModelDirs(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(filepath.Join(tmpHome, ".maclaw")) })
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	dataDir := filepath.Join(tmpHome, "custom-data")
+	if msg := app.SetDataDir(dataDir); msg != "" {
+		t.Fatalf("SetDataDir() message = %q, want success", msg)
+	}
+
+	skillsDir, err := skill.PrimarySkillsDir()
+	if err != nil {
+		t.Fatalf("PrimarySkillsDir() error = %v", err)
+	}
+	if want := filepath.Join(dataDir, "data", "skills"); skillsDir != want {
+		t.Fatalf("PrimarySkillsDir() = %q, want %q", skillsDir, want)
+	}
+	if want := filepath.Join(dataDir, "models", embedding.DefaultModelFilename); embedding.DefaultModelPath() != want {
+		t.Fatalf("DefaultModelPath() = %q, want %q", embedding.DefaultModelPath(), want)
+	}
+	if want := filepath.Join(dataDir, "data", "tools"); privateToolsDirForApp(app) != want {
+		t.Fatalf("privateToolsDirForApp() = %q, want %q", privateToolsDirForApp(app), want)
+	}
+}
+
+func TestSetDataDirResetsPathBoundState(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(filepath.Join(tmpHome, ".maclaw")) })
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	app.aiConversationMemory = agent.NewConversationMemory()
+	app.aiConfirmationStore = newAIConfirmationStore(filepath.Join(app.GetDataDir(), "ai_assistant_confirmation.json"))
+	app.templateManager = &remote.SessionTemplateManager{}
+	app.projectTabSessionPersist = &ProjectTabSessionPersist{}
+	model, err := user.NewModel(filepath.Join(app.GetDataDir(), "user_model.json"))
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	app.userModel = model
+	app.evidenceCollector = user.NewCollector(model)
+
+	dataDir := filepath.Join(tmpHome, "custom-data")
+	if msg := app.SetDataDir(dataDir); msg != "" {
+		t.Fatalf("SetDataDir() message = %q, want success", msg)
+	}
+
+	if app.aiConversationMemory != nil || app.aiConfirmationStore != nil || app.templateManager != nil || app.projectTabSessionPersist != nil ||
+		app.userModel != nil || app.evidenceCollector != nil {
+		t.Fatalf("path-bound state was not reset after data dir change")
+	}
+	if want := filepath.Join(dataDir, "data"); app.GetDataDir() != want {
+		t.Fatalf("GetDataDir() = %q, want %q", app.GetDataDir(), want)
 	}
 }
 

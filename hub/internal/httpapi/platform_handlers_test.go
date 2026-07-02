@@ -1954,6 +1954,27 @@ func (f fakePlatformUserRepo) MarkEmailVerified(ctx context.Context, tenantID, e
 	return nil
 }
 
+func (f fakePlatformUserRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*store.User, error) {
+	_ = ctx
+	_ = tenantID
+	_ = identityType
+	_ = value
+	return nil, nil
+}
+
+func (f fakePlatformUserRepo) ListIdentitiesByUser(ctx context.Context, tenantID, userID string) ([]*store.UserIdentity, error) {
+	_ = ctx
+	_ = tenantID
+	_ = userID
+	return nil, nil
+}
+
+func (f fakePlatformUserRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdentity) error {
+	_ = ctx
+	_ = identity
+	return nil
+}
+
 type fakePlatformViewerTokenRepo struct {
 	items []*store.ViewerToken
 }

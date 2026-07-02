@@ -36,13 +36,13 @@ func NewEnrichmentStore(path string) (*EnrichmentStore, error) {
 	return s, nil
 }
 
-// DefaultEnrichmentStorePath returns ~/.maclaw/data/tool_enrichments.json.
+// DefaultEnrichmentStorePath returns <MaclawBaseDir>/data/tool_enrichments.json.
 func DefaultEnrichmentStorePath() string {
-	home, _ := os.UserHomeDir()
-	if home == "" {
+	base := maclawBaseDirFallback()
+	if base == "" {
 		return ""
 	}
-	return filepath.Join(home, ".maclaw", "data", "tool_enrichments.json")
+	return filepath.Join(base, "data", "tool_enrichments.json")
 }
 
 // GetSearchText returns enriched text for BM25/vector indexing.

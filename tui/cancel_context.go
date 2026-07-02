@@ -1,39 +1,25 @@
 package main
 
-import (
-	"context"
-	"sync"
-	"time"
-)
+import "context"
 
-func contextFromCancelPoll(isCancelled func() bool) (context.Context, context.CancelFunc) {
+// contextFromCancelCh returns a context that is cancelled when cancelCh is
+// closed. This is a zero-CPU-overhead mechanism for propagating cancellation
+// — no polling goroutine is spawned; the internal goroutine blocks on select
+// until either the cancel channel closes or the returned context is cancelled
+// by the caller (which terminates the goroutine).
+//
+// If cancelCh is nil, the returned context can only be cancelled by the caller
+// invoking the returned CancelFunc (no external cancel signal).
+func contextFromCancelCh(cancelCh <-chan struct{}) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	var closeOnce sync.Once
-
-	go func() {
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
+	if cancelCh != nil {
+		go func() {
 			select {
-			case <-done:
-				return
+			case <-cancelCh:
+				cancel()
 			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if isCancelled != nil && isCancelled() {
-					cancel()
-					return
-				}
 			}
-		}
-	}()
-
-	return ctx, func() {
-		closeOnce.Do(func() {
-			close(done)
-		})
-		cancel()
+		}()
 	}
+	return ctx, cancel
 }

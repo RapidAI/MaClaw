@@ -296,6 +296,7 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
+		setEmailLoginHubCenterURL(r, resp)
 		writeJSON(w, http.StatusOK, resp)
 	}
 }
@@ -353,14 +354,25 @@ func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
+		hubURL := mobileRequestBaseURL(r)
+		hubCenterURL := emailLoginHubCenterURL(r)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": token,
-			"expires_in":   30 * 86400,
-			"tenant_id":    user.TenantID,
+			"access_token":  token,
+			"expires_in":    30 * 86400,
+			"tenant_id":     user.TenantID,
+			"hub_url":       hubURL,
+			"hubcenter_url": hubCenterURL,
+			"hub": map[string]any{
+				"base_url": hubURL,
+				"url":      hubURL,
+			},
 			"user": map[string]any{
 				"tenant_id": user.TenantID,
 				"email":     user.Email,
 				"sn":        user.SN,
+			},
+			"llm": map[string]any{
+				"mode": "maclaw_official",
 			},
 		})
 	}
@@ -385,8 +397,39 @@ func EmailPollLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
+		setEmailPollHubCenterURL(r, result)
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func emailLoginHubCenterURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	for _, header := range []string{
+		"X-MaClaw-HubCenter-URL",
+		"X-HubCenter-URL",
+		"X-Forwarded-HubCenter-URL",
+	} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func setEmailLoginHubCenterURL(r *http.Request, result *auth.EmailLoginRequestResult) {
+	if result == nil || strings.TrimSpace(result.HubCenterURL) != "" {
+		return
+	}
+	result.HubCenterURL = emailLoginHubCenterURL(r)
+}
+
+func setEmailPollHubCenterURL(r *http.Request, result *auth.EmailPollResult) {
+	if result == nil || strings.TrimSpace(result.HubCenterURL) != "" {
+		return
+	}
+	result.HubCenterURL = emailLoginHubCenterURL(r)
 }
 
 func tenantIDFromClientHint(r *http.Request) string {

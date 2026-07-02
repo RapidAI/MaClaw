@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -128,13 +132,16 @@ func main() {
 	// macOS: both false — WebviewIsTransparent causes NSVisualEffectView /
 	// Liquid Glass crashes on macOS 15+ and 26+.
 	winWebviewTransparent, winWindowTranslucent := app.PlatformTransparencyFlags()
+	webviewUserDataPath := defaultWebviewUserDataPath()
+	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
 
 	// Create application with options
+	winWidth, winHeight := adaptiveWindowSize()
 	appOptions := &options.App{
 		Title:                    brand.Current().WindowTitle,
 		Frameless:                frameless,
-		Width:                    1361,
-		Height:                   740,
+		Width:                    winWidth,
+		Height:                   winHeight,
 		EnableDefaultContextMenu: true,
 		StartHidden:              app.IsAutoStart,
 		OnStartup:                app.startup,
@@ -172,7 +179,8 @@ func main() {
 			},
 		},
 		AssetServer: &assetserver.Options{
-			Assets: assets,
+			Assets:     assets,
+			Middleware: noStoreAssetMiddleware,
 		},
 		BackgroundColour: bgColour,
 		Bind: []interface{}{
@@ -182,6 +190,7 @@ func main() {
 			WebviewIsTransparent: winWebviewTransparent,
 			WindowIsTranslucent:  winWindowTranslucent,
 			BackdropType:         windows.None,
+			WebviewUserDataPath:  webviewUserDataPath,
 			// On Windows 10, disable DWM decorations to prevent the invisible
 			// border area from offsetting the webview.  On Windows 11, keep
 			// decorations enabled so DWM provides native rounded corners.
@@ -200,6 +209,84 @@ func main() {
 
 	if err != nil {
 		println("Error:", err.Error())
+	}
+}
+
+func defaultWebviewUserDataPath() string {
+	if goruntime.GOOS != "windows" {
+		return ""
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(configDir) == "" {
+		return ""
+	}
+	return filepath.Join(configDir, "MaClaw.exe")
+}
+
+func noStoreAssetMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		rw.Header().Set("Pragma", "no-cache")
+		rw.Header().Set("Expires", "0")
+		next.ServeHTTP(rw, req)
+	})
+}
+
+func clearWebviewAssetCacheIfNeeded(userDataPath string) {
+	clearWebviewAssetCacheForFingerprint(userDataPath, embeddedFrontendFingerprint)
+}
+
+func clearWebviewAssetCacheForFingerprint(userDataPath string, fingerprintFunc func() (string, error)) {
+	userDataPath = strings.TrimSpace(userDataPath)
+	if userDataPath == "" {
+		return
+	}
+	fingerprint, err := fingerprintFunc()
+	if err != nil {
+		log.Printf("[webview-cache] frontend fingerprint unavailable: %v", err)
+		return
+	}
+	markerPath := filepath.Join(userDataPath, ".maclaw-frontend-build.sha256")
+	if existing, err := os.ReadFile(markerPath); err == nil && strings.TrimSpace(string(existing)) == fingerprint {
+		return
+	}
+
+	for _, rel := range webviewAssetCacheDirs() {
+		target := filepath.Join(userDataPath, rel)
+		if err := os.RemoveAll(target); err != nil {
+			log.Printf("[webview-cache] failed to remove %s: %v", target, err)
+		}
+	}
+	if err := os.MkdirAll(userDataPath, 0o755); err != nil {
+		log.Printf("[webview-cache] failed to create %s: %v", userDataPath, err)
+		return
+	}
+	if err := os.WriteFile(markerPath, []byte(fingerprint), 0o644); err != nil {
+		log.Printf("[webview-cache] failed to write marker %s: %v", markerPath, err)
+	}
+}
+
+func embeddedFrontendFingerprint() (string, error) {
+	indexHTML, err := assets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(indexHTML)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func webviewAssetCacheDirs() []string {
+	return []string{
+		filepath.Join("EBWebView", "Default", "Cache"),
+		filepath.Join("EBWebView", "Default", "Code Cache"),
+		filepath.Join("EBWebView", "Default", "DawnGraphiteCache"),
+		filepath.Join("EBWebView", "Default", "DawnWebGPUCache"),
+		filepath.Join("EBWebView", "Default", "GPUCache"),
+		filepath.Join("EBWebView", "Default", "Service Worker", "CacheStorage"),
+		filepath.Join("EBWebView", "Default", "Service Worker", "ScriptCache"),
+		filepath.Join("EBWebView", "Default", "ShaderCache"),
+		filepath.Join("EBWebView", "GrShaderCache"),
+		filepath.Join("EBWebView", "ShaderCache"),
 	}
 }
 

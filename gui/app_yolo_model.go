@@ -18,7 +18,7 @@ const yoloModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download
 var yoloDownloadMu sync.Mutex
 
 // yoloModelPath returns the full path to the YOLO model file.
-// Uses the same ~/.maclaw/models directory as the embedding model.
+// Uses the same active models directory as the embedding model.
 func yoloModelPath() string {
 	dir, err := embeddingModelsDir() // reuse — same directory
 	if err != nil {

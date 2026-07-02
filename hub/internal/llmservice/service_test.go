@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestGenerateCardCodeFormat(t *testing.T) {
@@ -75,6 +77,214 @@ func (s *testSystemSettings) Set(_ context.Context, key, valueJSON string) error
 
 func (s *testSystemSettings) Get(_ context.Context, key string) (string, error) {
 	return s.data[key], nil
+}
+
+type testUserRepository struct {
+	byTenantEmail map[string]*store.User
+	byTenantPhone map[string]*store.User
+}
+
+func (r *testUserRepository) Create(context.Context, *store.User) error { return nil }
+func (r *testUserRepository) GetByID(context.Context, string) (*store.User, error) {
+	return nil, nil
+}
+func (r *testUserRepository) GetByEmail(context.Context, string) (*store.User, error) {
+	return nil, nil
+}
+func (r *testUserRepository) GetByTenantEmail(_ context.Context, tenantID, email string) (*store.User, error) {
+	return r.byTenantEmail[store.NormalizeTenantID(tenantID)+"|"+normalizeEmail(email)], nil
+}
+func (r *testUserRepository) GetByTenantIdentity(_ context.Context, tenantID, identityType, value string) (*store.User, error) {
+	if identityType != "phone" {
+		return nil, nil
+	}
+	return r.byTenantPhone[store.NormalizeTenantID(tenantID)+"|"+strings.TrimSpace(value)], nil
+}
+func (r *testUserRepository) ListIdentitiesByUser(context.Context, string, string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (r *testUserRepository) UpsertIdentity(context.Context, *store.UserIdentity) error { return nil }
+func (r *testUserRepository) List(context.Context) ([]*store.User, error)               { return nil, nil }
+func (r *testUserRepository) ListByTenant(context.Context, string) ([]*store.User, error) {
+	return nil, nil
+}
+func (r *testUserRepository) DeleteByEmail(context.Context, string) error { return nil }
+func (r *testUserRepository) DeleteByTenantEmail(context.Context, string, string) error {
+	return nil
+}
+func (r *testUserRepository) UpdateSmartRoute(context.Context, string, bool) error { return nil }
+func (r *testUserRepository) MarkEmailVerified(context.Context, string, string) error {
+	return nil
+}
+
+func TestBackfillRegistryUserIDsMigratesLegacyEmailAndPhoneRecords(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	redeemedAt := time.Now().UTC()
+	reg := &Registry{
+		UserBindings: []UserBinding{{Email: "buyer@example.com", ServiceGroupIDs: []string{"coding-basic"}}},
+		Grants: []Grant{
+			{ID: "grant-email", Email: "buyer@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: redeemedAt.Add(-time.Hour), ExpiresAt: redeemedAt.Add(time.Hour), CreatedAt: redeemedAt},
+			{ID: "grant-phone", Email: "phone:19900001112", ServiceGroupID: "coding-basic", Source: "card", StartsAt: redeemedAt.Add(-time.Hour), ExpiresAt: redeemedAt.Add(time.Hour), CreatedAt: redeemedAt},
+		},
+		Cards: []RechargeCard{{ID: "card-email", RedeemedByEmail: "buyer@example.com", RedeemedAt: &redeemedAt}, {ID: "card-phone", RedeemedByEmail: "phone:19900001112", RedeemedAt: &redeemedAt}},
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatalf("SaveRegistry() error = %v", err)
+	}
+	users := &testUserRepository{
+		byTenantEmail: map[string]*store.User{
+			store.DefaultTenantID + "|buyer@example.com": {ID: "user-email", TenantID: store.DefaultTenantID, Email: "buyer@example.com"},
+		},
+		byTenantPhone: map[string]*store.User{
+			store.DefaultTenantID + "|19900001112": {ID: "user-phone", TenantID: store.DefaultTenantID, Email: "legacy@example.com"},
+		},
+	}
+	changed, err := BackfillRegistryUserIDs(ctx, system, users, store.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("BackfillRegistryUserIDs() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("expected registry to change")
+	}
+	got, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry() error = %v", err)
+	}
+	if got.UserBindings[0].UserID != "user-email" || got.Grants[0].UserID != "user-email" || got.Cards[0].RedeemedByUserID != "user-email" {
+		t.Fatalf("email records not backfilled: %#v", got)
+	}
+	if got.Grants[1].UserID != "user-phone" || got.Cards[1].RedeemedByUserID != "user-phone" {
+		t.Fatalf("phone records not backfilled: %#v", got)
+	}
+}
+
+func TestPurgeUserFromRegistryForUserRemovesCanonicalAndLegacyRecords(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	redeemedAt := time.Now().UTC()
+	if err := SaveRegistry(ctx, system, &Registry{
+		UserBindings: []UserBinding{
+			{UserID: "user-123", Email: "old@example.com", ServiceGroupIDs: []string{"coding-basic"}},
+			{Email: "phone:19900001112", ServiceGroupIDs: []string{"coding-basic"}},
+			{UserID: "other-user", Email: "other@example.com", ServiceGroupIDs: []string{"coding-basic"}},
+		},
+		Grants: []Grant{
+			{ID: "grant-user-id", UserID: "user-123", Email: "old@example.com", ServiceGroupID: "coding-basic"},
+			{ID: "grant-phone", Email: "phone:19900001112", ServiceGroupID: "coding-basic"},
+			{ID: "grant-other", UserID: "other-user", Email: "other@example.com", ServiceGroupID: "coding-basic"},
+		},
+		Cards: []RechargeCard{
+			{ID: "card-user-id", RedeemedByUserID: "user-123", RedeemedByEmail: "old@example.com", RedeemedAt: &redeemedAt},
+			{ID: "card-phone", RedeemedByEmail: "phone:19900001112", RedeemedAt: &redeemedAt},
+			{ID: "card-other", RedeemedByUserID: "other-user", RedeemedByEmail: "other@example.com", RedeemedAt: &redeemedAt},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry() error = %v", err)
+	}
+
+	if err := PurgeUserFromRegistryForUser(ctx, system, "user-123", "phone:19900001112"); err != nil {
+		t.Fatalf("PurgeUserFromRegistryForUser() error = %v", err)
+	}
+	got, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry() error = %v", err)
+	}
+	if len(got.UserBindings) != 1 || got.UserBindings[0].UserID != "other-user" {
+		t.Fatalf("unexpected user bindings after purge: %#v", got.UserBindings)
+	}
+	if len(got.Grants) != 1 || got.Grants[0].UserID != "other-user" {
+		t.Fatalf("unexpected grants after purge: %#v", got.Grants)
+	}
+	if len(got.Cards) != 1 || got.Cards[0].RedeemedByUserID != "other-user" {
+		t.Fatalf("unexpected cards after purge: %#v", got.Cards)
+	}
+}
+
+func TestRedeemCardForUserIDPersistsCanonicalUserID(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	code := strings.Repeat("A", CardCodeLength)
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding", AccessPolicy: AccessPolicyGrantRequired}},
+		Cards: []RechargeCard{{
+			ID:              "card-user-id",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    30,
+			Credits:         10,
+			CreatedAt:       time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry() error = %v", err)
+	}
+	if _, err := RedeemCardForUserID(ctx, system, nil, "user-123", "phone:19900001112", code, "http://hub.test/api/llm/v1"); err != nil {
+		t.Fatalf("RedeemCardForUserID() error = %v", err)
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry() error = %v", err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].UserID != "user-123" || reg.Grants[0].Email != "phone:19900001112" {
+		t.Fatalf("grant user identity not persisted: %#v", reg.Grants)
+	}
+	if len(reg.Cards) != 1 || reg.Cards[0].RedeemedByUserID != "user-123" || reg.Cards[0].RedeemedByEmail != "phone:19900001112" {
+		t.Fatalf("card redeemed user identity not persisted: %#v", reg.Cards)
+	}
+}
+
+func TestRedeemCardForUserIDPreservesLegacyAccountWhenPassedAsUserID(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	code := strings.Repeat("B", CardCodeLength)
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding", AccessPolicy: AccessPolicyGrantRequired}},
+		Cards: []RechargeCard{{
+			ID:              "card-legacy-phone",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    30,
+			Credits:         10,
+			CreatedAt:       time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry() error = %v", err)
+	}
+	if _, err := RedeemCardForUserID(ctx, system, nil, "phone:19900001112", "", code, "http://hub.test/api/llm/v1"); err != nil {
+		t.Fatalf("RedeemCardForUserID() error = %v", err)
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry() error = %v", err)
+	}
+	if len(reg.Grants) != 1 || reg.Grants[0].UserID != "" || reg.Grants[0].Email != "phone:19900001112" {
+		t.Fatalf("legacy phone account not persisted on grant: %#v", reg.Grants)
+	}
+	if len(reg.Cards) != 1 || reg.Cards[0].RedeemedByUserID != "" || reg.Cards[0].RedeemedByEmail != "phone:19900001112" {
+		t.Fatalf("legacy phone account not persisted on card: %#v", reg.Cards)
+	}
+}
+
+func TestApplyCreditUsageToRegistryForUserIDIgnoresStaleEmail(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID:             "grant-user-id",
+		UserID:         "user-123",
+		Email:          "old@example.com",
+		ServiceGroupID: "coding-basic",
+		Source:         "card",
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		CreatedAt:      now.Add(-time.Hour),
+		CreditsTotal:   10,
+	}}}
+	used := ApplyCreditUsageToRegistryForUserID(reg, "user-123", "new@example.com", []string{"coding-basic"}, 3, now)
+	if used != 3 {
+		t.Fatalf("used = %.3f, want 3", used)
+	}
+	if reg.Grants[0].CreditsUsed != 3 {
+		t.Fatalf("CreditsUsed = %.3f, want 3", reg.Grants[0].CreditsUsed)
+	}
 }
 
 func TestGrantDefaultServiceForNewUser(t *testing.T) {
@@ -164,6 +374,31 @@ func TestGrantInvitationCodeBenefitForUser(t *testing.T) {
 	}
 }
 
+func TestGrantInvitationCodeBenefitForUserIDPersistsCanonicalUserID(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "invite-pro", Name: "Invite Pro"}},
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+
+	if err := GrantInvitationCodeBenefitForUserID(ctx, system, "user-123", "phone:19900001112", "ic_invite_1", "invite-pro", 7, 500); err != nil {
+		t.Fatalf("GrantInvitationCodeBenefitForUserID: %v", err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(saved.Grants) != 1 {
+		t.Fatalf("len(Grants) = %d, want 1", len(saved.Grants))
+	}
+	grant := saved.Grants[0]
+	if grant.UserID != "user-123" || grant.Email != "phone:19900001112" || grant.Source != "invitation_code" {
+		t.Fatalf("unexpected invitation grant identity: %#v", grant)
+	}
+}
+
 func TestGrantInvitationCodeBenefitForUserRequiresCompleteGrant(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -235,6 +470,50 @@ func TestGrantEmailConfirmedBenefitUsesRegistrationWindow(t *testing.T) {
 	}
 	if !confirmed.StartsAt.Equal(initial.StartsAt) || !confirmed.ExpiresAt.Equal(initial.ExpiresAt) {
 		t.Fatalf("confirmed grant should use registration window: initial=%s..%s confirmed=%s..%s", initial.StartsAt, initial.ExpiresAt, confirmed.StartsAt, confirmed.ExpiresAt)
+	}
+}
+
+func TestGrantPhoneVerifiedBenefitForUserIDCompletesNewUserCredits(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:   "coding-basic",
+			Name: "Coding Basic",
+			Models: []ModelServiceModel{{
+				Name:        "gpt-5",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+		DefaultNewUserDurationDays:  7,
+		DefaultNewUserCredits:       1000,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUserID(ctx, system, "user-123", "phone:19900001112"); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantPhoneVerifiedBenefitForUserID(ctx, system, "user-123", "phone:19900001112"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %d", len(saved.Grants))
+	}
+	total := 0.0
+	for _, grant := range saved.Grants {
+		if grant.UserID != "user-123" || grant.Email != "phone:19900001112" {
+			t.Fatalf("grant should persist canonical and phone identities: %#v", saved.Grants)
+		}
+		total += grant.CreditsTotal
+	}
+	if total != 1000 {
+		t.Fatalf("expected phone registration credits to total 1000, got %v", total)
 	}
 }
 

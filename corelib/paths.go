@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -20,14 +21,15 @@ var (
 	// call, and updated at runtime via SetWorkspaceDir().
 	customWorkspaceMu  sync.RWMutex
 	customWorkspaceDir string
-	customWorkspaceSet bool         // true after SetWorkspaceDir or lazy init
-	lazyLoadOnce       sync.Once    // ensures config file is read at most once
+	customWorkspaceSet bool      // true after SetWorkspaceDir or lazy init
+	lazyLoadOnce       sync.Once // ensures config file is read at most once
 )
 
 func init() {
 	// Wire up BaseDirFunc so corelib/tool can resolve log paths through
 	// MaclawBaseDir() without importing the parent corelib package.
 	tool.BaseDirFunc.Store(func() string { return MaclawBaseDir() })
+	embedding.BaseDirFunc.Store(func() string { return MaclawBaseDir() })
 }
 
 // WorkspaceDir returns <MaclawBaseDir>/workspace — the built-in default working
@@ -166,19 +168,7 @@ func MaclawDefaultBaseDir() string {
 // function as the single source of truth. Do NOT hardcode ~/.maclaw paths.
 func MaclawBaseDir() string {
 	dataDirOnce.Do(func() {
-		dir := loadDataDirFromConfig()
-		if dir != "" {
-			// Verify the configured path is accessible.
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				// Path not accessible — fall back to default.
-				// This handles removable disks, network paths, permission issues.
-				fmt.Fprintf(os.Stderr, "[MaclawBaseDir] WARNING: configured data_dir %q not accessible (%v), falling back to default\n", dir, err)
-				dir = ""
-			}
-		}
-		if dir == "" {
-			dir = MaclawDefaultBaseDir()
-		}
+		dir := resolveMaclawBaseDir(loadDataDirFromConfig())
 		dataDirMu.Lock()
 		dataDirPath = dir
 		dataDirMu.Unlock()
@@ -188,12 +178,43 @@ func MaclawBaseDir() string {
 	return dataDirPath
 }
 
+func resolveMaclawBaseDir(configuredDir string) string {
+	dir := strings.TrimSpace(configuredDir)
+	if dir != "" {
+		// Verify the configured path is accessible.
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			// Path not accessible — fall back to default.
+			// This handles removable disks, network paths, permission issues.
+			fmt.Fprintf(os.Stderr, "[MaclawBaseDir] WARNING: configured data_dir %q not accessible (%v), falling back to default\n", dir, err)
+			dir = ""
+		}
+	}
+	if dir == "" {
+		dir = MaclawDefaultBaseDir()
+	}
+	return dir
+}
+
+// SetMaclawBaseDirFromConfig refreshes the effective maclaw base directory from
+// a data_dir config value. config.json itself remains under ~/.maclaw.
+func SetMaclawBaseDirFromConfig(configuredDir string) {
+	SetMaclawBaseDir(resolveMaclawBaseDir(configuredDir))
+}
+
 // SetMaclawBaseDir overrides the cached base dir at runtime (for tests).
 func SetMaclawBaseDir(dir string) {
 	dataDirOnce.Do(func() {}) // mark as done
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = MaclawDefaultBaseDir()
+	}
 	dataDirMu.Lock()
 	dataDirPath = dir
 	dataDirMu.Unlock()
+	if customWorkspaceDir == "" {
+		workspaceDirPath = filepath.Join(dir, "workspace")
+		_ = os.MkdirAll(workspaceDirPath, 0o755)
+	}
 }
 
 // MaclawLogsDir returns the logs directory under the effective base dir.

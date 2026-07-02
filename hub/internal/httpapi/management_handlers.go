@@ -510,7 +510,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			var serviceStatus *llmservice.ServiceStatus
 			if system != nil {
 				tenantSystem := ScopedSystemSettingsForTenant(tenantID, system)
-				serviceStatus, _ = llmservice.ResolveServiceStatus(r.Context(), tenantSystem, securitySvc, user.Email, externalLLMBaseURL(r))
+				serviceStatus, _ = llmservice.ResolveServiceStatusForUserID(r.Context(), tenantSystem, securitySvc, user.ID, user.Email, externalLLMBaseURL(r))
 			}
 			out = append(out, BoundUserView{
 				ID:                user.ID,

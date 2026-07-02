@@ -20,13 +20,15 @@ dependencies:
   receive_sharing_intent: 1.8.1
   file_picker: ^8.1.2
   image_picker: ^1.1.2
-  speech_to_text: ^6.6.2
+  speech_to_text: ^7.4.0
   drift: ^2.20.3
   drift_flutter: ^0.2.1
+  sqlite3_flutter_libs: ^0.5.24
   path_provider: ^2.1.4
   web_socket_channel: ^3.0.1
   xterm: ^4.0.0
   dartssh2: ^2.9.0
+  mobile_scanner: ^7.2.0
 
 dev_dependencies:
   flutter_test:
@@ -35,3 +37,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/maclaw_logo.png

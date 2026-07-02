@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
 )
 
@@ -18,16 +19,15 @@ type GUIRecorder struct {
 	recording    bool
 	steps        []GUIRecordedStep
 	startTime    time.Time
-	flowDir      string // ~/.maclaw/gui_flows/
+	flowDir      string // <MaclawBaseDir>/gui_flows/
 }
 
 // NewGUIRecorder creates a GUIRecorder.
 func NewGUIRecorder(bridge accessibility.Bridge, screenshotFn func() (string, error)) *GUIRecorder {
-	home, _ := os.UserHomeDir()
 	return &GUIRecorder{
 		bridge:       bridge,
 		screenshotFn: screenshotFn,
-		flowDir:      filepath.Join(home, ".maclaw", "gui_flows"),
+		flowDir:      filepath.Join(corelib.MaclawBaseDir(), "gui_flows"),
 	}
 }
 

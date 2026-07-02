@@ -702,16 +702,27 @@ func TestEmailConfirmAndPollResponsesIncludeTenantID(t *testing.T) {
 		t.Fatalf("confirm status=%d body=%s", confirmRec.Code, confirmRec.Body.String())
 	}
 	var confirmResp struct {
-		TenantID string `json:"tenant_id"`
-		User     struct {
+		TenantID     string `json:"tenant_id"`
+		HubURL       string `json:"hub_url"`
+		HubCenterURL string `json:"hubcenter_url"`
+		Hub          struct {
+			BaseURL string `json:"base_url"`
+		} `json:"hub"`
+		User struct {
 			TenantID string `json:"tenant_id"`
 		} `json:"user"`
+		LLM struct {
+			Mode string `json:"mode"`
+		} `json:"llm"`
 	}
 	if err := json.Unmarshal(confirmRec.Body.Bytes(), &confirmResp); err != nil {
 		t.Fatalf("decode confirm response: %v", err)
 	}
 	if confirmResp.TenantID != "tenant_acme" || confirmResp.User.TenantID != "tenant_acme" {
 		t.Fatalf("expected confirm response tenant_id, got %s", confirmRec.Body.String())
+	}
+	if confirmResp.HubURL == "" || confirmResp.Hub.BaseURL == "" || confirmResp.LLM.Mode != "maclaw_official" {
+		t.Fatalf("expected confirm response mobile context, got %s", confirmRec.Body.String())
 	}
 
 	reqLogin, err = identity.RequestEmailLogin(auth.WithTenant(ctx, "tenant_acme"), "confirm@example.com")
@@ -724,20 +735,38 @@ func TestEmailConfirmAndPollResponsesIncludeTenantID(t *testing.T) {
 	}
 	pollReq := httptest.NewRequest(http.MethodPost, "/api/email/poll-login", strings.NewReader(`{"poll_id":"`+reqLogin.PollID+`"}`))
 	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("X-MaClaw-HubCenter-URL", "https://hubs.maclaw.top")
 	pollRec := httptest.NewRecorder()
 	EmailPollLoginHandler(identity).ServeHTTP(pollRec, pollReq)
 	if pollRec.Code != http.StatusOK {
 		t.Fatalf("poll status=%d body=%s", pollRec.Code, pollRec.Body.String())
 	}
 	var pollResp struct {
-		Status   string `json:"status"`
-		TenantID string `json:"tenant_id"`
+		Status       string `json:"status"`
+		TenantID     string `json:"tenant_id"`
+		HubURL       string `json:"hub_url"`
+		HubCenterURL string `json:"hubcenter_url"`
+		Hub          struct {
+			BaseURL string `json:"base_url"`
+		} `json:"hub"`
+		User struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"user"`
+		LLM struct {
+			Mode string `json:"mode"`
+		} `json:"llm"`
 	}
 	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollResp); err != nil {
 		t.Fatalf("decode poll response: %v", err)
 	}
 	if pollResp.Status != "confirmed" || pollResp.TenantID != "tenant_acme" {
 		t.Fatalf("expected poll response tenant_id, got %s", pollRec.Body.String())
+	}
+	if pollResp.HubURL == "" || pollResp.Hub.BaseURL == "" || pollResp.User.TenantID != "tenant_acme" || pollResp.LLM.Mode != "maclaw_official" {
+		t.Fatalf("expected poll response mobile context, got %s", pollRec.Body.String())
+	}
+	if pollResp.HubCenterURL != "https://hubs.maclaw.top" {
+		t.Fatalf("expected poll hubcenter_url header propagation, got %s", pollRec.Body.String())
 	}
 }
 

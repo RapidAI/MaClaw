@@ -63,9 +63,9 @@ type invitationCodeRepo struct {
 	batch      *writeBatcher
 }
 type sessionRepo struct {
-	db, readDB *sql.DB
-	batch      *writeBatcher
-	coalesce   *WriteCoalescer
+	db, readDB              *sql.DB
+	batch                   *writeBatcher
+	coalesce                *WriteCoalescer
 	heartbeatCleanupCounter atomic.Int32
 }
 type emailInviteRepo struct {
@@ -406,7 +406,27 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 		user.CreatedAt.Format(time.RFC3339),
 		user.UpdatedAt.Format(time.RFC3339),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	identityType, identityValue := normalizeUserIdentityFromAccount(user.Email)
+	if identityType == "" || identityValue == "" {
+		return nil
+	}
+	now := user.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return r.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        user.ID + "_" + identityType,
+		TenantID:  normalizeTenantID(user.TenantID),
+		UserID:    user.ID,
+		Type:      identityType,
+		Value:     identityValue,
+		Verified:  user.EmailVerified || identityType == "phone",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 }
 
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
@@ -477,6 +497,213 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, e
 
 func (r *userRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
 	return r.getByEmail(ctx, normalizeTenantID(tenantID), email)
+}
+
+func (r *userRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*store.User, error) {
+	identityType, value = normalizeUserIdentity(identityType, value)
+	if identityType == "" || value == "" {
+		return nil, nil
+	}
+	row := r.readDB.QueryRowContext(
+		ctx,
+		`SELECT u.id, u.tenant_id, u.email, u.sn, u.status, u.enrollment_status, u.smart_route, u.email_verified, u.email_verified_at, u.created_at, u.updated_at
+		 FROM user_identities ui
+		 JOIN users u ON u.id = ui.user_id AND u.tenant_id = ui.tenant_id
+		 WHERE ui.tenant_id = ? AND ui.type = ? AND lower(ui.value) = lower(?)`,
+		normalizeTenantID(tenantID), identityType, value,
+	)
+	user, err := scanUser(row)
+	if err == nil || !errors.Is(err, sql.ErrNoRows) {
+		return user, err
+	}
+	if identityType == "email" {
+		return r.GetByTenantEmail(ctx, tenantID, value)
+	}
+	if identityType == "phone" {
+		return r.GetByTenantEmail(ctx, tenantID, "phone:"+value)
+	}
+	return nil, nil
+}
+
+func (r *userRepo) ListIdentitiesByUser(ctx context.Context, tenantID, userID string) ([]*store.UserIdentity, error) {
+	rows, err := r.readDB.QueryContext(
+		ctx,
+		`SELECT id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at
+		 FROM user_identities WHERE tenant_id = ? AND user_id = ? ORDER BY type, value`,
+		normalizeTenantID(tenantID), strings.TrimSpace(userID),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*store.UserIdentity
+	for rows.Next() {
+		item, err := scanUserIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdentity) error {
+	if identity == nil {
+		return nil
+	}
+	identityType, value := normalizeUserIdentity(identity.Type, identity.Value)
+	if identityType == "" || value == "" || strings.TrimSpace(identity.UserID) == "" {
+		return nil
+	}
+	now := identity.UpdatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	createdAt := identity.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	verifiedAt := ""
+	if identity.VerifiedAt != nil {
+		verifiedAt = identity.VerifiedAt.UTC().Format(time.RFC3339)
+	} else if identity.Verified {
+		t := now.UTC()
+		verifiedAt = t.Format(time.RFC3339)
+	}
+	verified := 0
+	if identity.Verified {
+		verified = 1
+	}
+	id := strings.TrimSpace(identity.ID)
+	if id == "" {
+		id = strings.TrimSpace(identity.UserID) + "_" + identityType
+	}
+	result, err := r.db.ExecContext(ctx,
+		`INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, type, value) DO UPDATE SET
+		   verified = excluded.verified,
+		   verified_at = excluded.verified_at,
+		   updated_at = excluded.updated_at
+		 WHERE user_identities.user_id = excluded.user_id`,
+		id,
+		normalizeTenantID(identity.TenantID),
+		strings.TrimSpace(identity.UserID),
+		identityType,
+		value,
+		verified,
+		verifiedAt,
+		createdAt.UTC().Format(time.RFC3339),
+		now.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return fmt.Errorf("user identity %s:%s already belongs to another user", identityType, value)
+	}
+	return nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUser(row rowScanner) (*store.User, error) {
+	var (
+		user                      store.User
+		smartRoute, emailVerified int
+		emailVerifiedAt           string
+		createdAt, updatedAt      string
+	)
+	if err := row.Scan(
+		&user.ID,
+		&user.TenantID,
+		&user.Email,
+		&user.SN,
+		&user.Status,
+		&user.EnrollmentStatus,
+		&smartRoute,
+		&emailVerified,
+		&emailVerifiedAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	user.SmartRoute = smartRoute != 0
+	user.EmailVerified = emailVerified != 0
+	if emailVerifiedAt != "" {
+		t := mustParseTime(emailVerifiedAt)
+		user.EmailVerifiedAt = &t
+	}
+	user.CreatedAt = mustParseTime(createdAt)
+	user.UpdatedAt = mustParseTime(updatedAt)
+	return &user, nil
+}
+
+func scanUserIdentity(row rowScanner) (*store.UserIdentity, error) {
+	var (
+		item                 store.UserIdentity
+		verified             int
+		verifiedAt           string
+		createdAt, updatedAt string
+	)
+	if err := row.Scan(
+		&item.ID,
+		&item.TenantID,
+		&item.UserID,
+		&item.Type,
+		&item.Value,
+		&verified,
+		&verifiedAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	item.Verified = verified != 0
+	if verifiedAt != "" {
+		t := mustParseTime(verifiedAt)
+		item.VerifiedAt = &t
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	return &item, nil
+}
+
+func normalizeUserIdentityFromAccount(account string) (string, string) {
+	account = strings.TrimSpace(strings.ToLower(account))
+	if strings.HasPrefix(account, "phone:") {
+		return normalizeUserIdentity("phone", strings.TrimPrefix(account, "phone:"))
+	}
+	return normalizeUserIdentity("email", account)
+}
+
+func normalizeUserIdentity(identityType, value string) (string, string) {
+	identityType = strings.ToLower(strings.TrimSpace(identityType))
+	value = strings.TrimSpace(strings.ToLower(value))
+	if strings.HasPrefix(value, "phone:") {
+		identityType = "phone"
+		value = strings.TrimPrefix(value, "phone:")
+	}
+	switch identityType {
+	case "email":
+		return "email", value
+	case "phone":
+		var b strings.Builder
+		for _, r := range value {
+			if r >= '0' && r <= '9' {
+				b.WriteRune(r)
+			}
+		}
+		if b.Len() == 0 {
+			return "", ""
+		}
+		return "phone", b.String()
+	default:
+		return "", ""
+	}
 }
 
 func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*store.User, error) {

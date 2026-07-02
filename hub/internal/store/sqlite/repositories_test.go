@@ -87,6 +87,33 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUserRepositoryIdentityCannotMoveToAnotherUser(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, user := range []*store.User{
+		{ID: "user_email", TenantID: "tenant_a", Email: "buyer@example.com", SN: "SN-user-email", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "user_other", TenantID: "tenant_a", Email: "other@example.com", SN: "SN-user-other", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{TenantID: "tenant_a", UserID: "user_email", Type: "phone", Value: "19900001111", Verified: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("bind phone: %v", err)
+	}
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{TenantID: "tenant_a", UserID: "user_other", Type: "phone", Value: "19900001111", Verified: true, CreatedAt: now, UpdatedAt: now}); err == nil {
+		t.Fatal("expected identity conflict when binding same phone to another user")
+	}
+	got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "phone", "19900001111")
+	if err != nil {
+		t.Fatalf("lookup phone identity: %v", err)
+	}
+	if got == nil || got.Email != "buyer@example.com" {
+		t.Fatalf("phone identity moved unexpectedly: %#v", got)
+	}
+}
+
 func TestInvitationCodeMarkUsedOnlyConsumesUnusedCode(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

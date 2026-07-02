@@ -175,6 +175,13 @@ type SkillRunner struct {
 	// Key: skill name, Value: repair explanation.
 	// Entries are consumed (deleted) after being injected into the prompt.
 	recentRepairs sync.Map
+
+	// prepProgressByOwner stores per-owner progress callbacks for reporting
+	// dependency installation during PrepareRunnerExecution. Set by toolRunSkill
+	// before calling StartRunForOwner, cleared after. Using sync.Map (keyed by
+	// policyOwnerID) ensures concurrent runs from different owners don't
+	// interfere with each other's progress callbacks.
+	prepProgressByOwner sync.Map // map[string]cskill.FixProgressCallback
 }
 
 func (r *SkillRunner) beginRunExecution(run *skillRun, kind string) (time.Time, func(string)) {
@@ -509,7 +516,11 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	// Shared runner preparation handles step selection, parameter completion,
 	// requirements, implicit placeholders, and local file diagnostics.
 	prepStart := time.Now()
-	prep, err := cskill.PrepareRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
+	var prepProgress cskill.FixProgressCallback
+	if cb, ok := r.prepProgressByOwner.Load(policyOwnerID); ok {
+		prepProgress, _ = cb.(cskill.FixProgressCallback)
+	}
+	prep, err := cskill.PrepareRunnerExecutionWithProgress(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI, prepProgress)
 	if err != nil {
 		log.Printf("[skill-runner] start_run prepare_failed owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(prepStart).Round(time.Millisecond), err)
 		// Detailed diagnostic dump for AI debugging tools
@@ -1631,6 +1642,19 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 	if status == skillRunStatusFailed {
 		logSkillRunnerFailure(statusSnapshot.RunID, statusSnapshot.OwnerID, statusSnapshot.Skill, "execution", skillRunFailureReason(statusSnapshot))
 	}
+
+	// Materialize stdout output to ExpectedOutput file when:
+	// 1. Run succeeded
+	// 2. ExpectedOutput path is set (synthesized by App panel from output_mode)
+	// 3. The file does NOT already exist (skill didn't write it itself)
+	// 4. Steps have non-empty stdout output to save
+	//
+	// This handles skills that only output to stdout (e.g. RapidOCR) but the
+	// App panel expects a file artifact at the synthesized path.
+	if status == skillRunStatusSuccess {
+		r.materializeStdoutToExpectedOutput(run)
+	}
+
 	if r.executor == nil || r.executor.app == nil {
 		return
 	}
@@ -1639,6 +1663,182 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 		run.status.Warnings = append(run.status.Warnings, err.Error())
 		r.mu.Unlock()
 	}
+}
+
+// materializeStdoutToExpectedOutput saves step stdout to the ExpectedOutput
+// file path when the skill didn't create the file itself. This bridges the gap
+// between stdout-only skills and the App panel's file-based artifact display.
+func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
+	if run == nil {
+		return
+	}
+	r.mu.RLock()
+	expectedOutput := strings.TrimSpace(run.status.ExpectedOutput)
+	steps := run.status.Steps
+	r.mu.RUnlock()
+
+	if expectedOutput == "" {
+		return
+	}
+	// If the file already exists, the skill wrote it — nothing to do.
+	if artifactExists(expectedOutput) {
+		return
+	}
+
+	// Collect stdout from the last successful step. For multi-step skills,
+	// intermediate steps typically output progress/setup info, while only the
+	// final step produces the actual result content.
+	var content string
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if step.LifecycleStatus() != skillStepStatusSuccess {
+			continue
+		}
+		output := strings.TrimSpace(step.Output)
+		if output == "" {
+			continue
+		}
+		cleaned := stripSkillRunnerMetadataFromOutput(output)
+		if cleaned != "" {
+			content = cleaned
+			break
+		}
+	}
+	if content == "" {
+		return
+	}
+
+	// If the expected output format is plain text (.txt) but the content looks
+	// like a JSON response with a "text" field, extract the text value.
+	// This handles OCR-type skills that output structured JSON to stdout while
+	// the user selected "TXT" output format expecting readable text.
+	if strings.ToLower(filepath.Ext(expectedOutput)) == ".txt" {
+		if extracted := extractTextFieldFromJSON(content); extracted != "" {
+			content = extracted
+		}
+	}
+
+	// Ensure parent directory exists.
+	dir := filepath.Dir(expectedOutput)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[skill-runner] materialize stdout: mkdir failed path=%q err=%v", dir, err)
+		return
+	}
+
+	if err := os.WriteFile(expectedOutput, []byte(content), 0o644); err != nil {
+		log.Printf("[skill-runner] materialize stdout: write failed path=%q err=%v", expectedOutput, err)
+		return
+	}
+	log.Printf("[skill-runner] materialized stdout to expected output: %s (%d bytes)", expectedOutput, len(content))
+}
+
+// stripSkillRunnerMetadataFromOutput removes the runner-injected metadata
+// header block from step output, leaving only the skill's actual content.
+// The metadata header is a contiguous block at the top of the output:
+//
+//	shell: cmd.exe
+//	elapsed: 5.857s
+//	📂 /path/to/workspace
+//	command: cmd.exe /c ...
+//	───────────────
+//	{actual content starts here}
+//
+// Only leading metadata lines are stripped. Once actual content begins,
+// all subsequent lines are preserved verbatim (even if they happen to
+// start with "command: " etc — that's the skill's output, not metadata).
+func stripSkillRunnerMetadataFromOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	// Find where actual content starts (first non-metadata line after header).
+	contentStart := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			// Blank lines within the header block are part of metadata
+			continue
+		}
+		if isSkillRunnerMetadataLine(trimmed) {
+			contentStart = i + 1
+			continue
+		}
+		// First non-metadata, non-blank line — content starts here
+		contentStart = i
+		break
+	}
+	if contentStart >= len(lines) {
+		return ""
+	}
+	// Also strip trailing [stderr] and [error] blocks that the runner appends.
+	contentEnd := len(lines)
+	for i := len(lines) - 1; i >= contentStart; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			contentEnd = i
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[stderr] ") || strings.HasPrefix(trimmed, "[error] ") {
+			contentEnd = i
+			continue
+		}
+		break
+	}
+	if contentEnd <= contentStart {
+		return ""
+	}
+	result := strings.Join(lines[contentStart:contentEnd], "\n")
+	return strings.TrimSpace(result)
+}
+
+// extractTextFieldFromJSON attempts to extract the "text" field from a JSON
+// string. Returns the extracted text or empty string if the content is not
+// JSON or doesn't have a usable "text" field.
+func extractTextFieldFromJSON(content string) string {
+	content = strings.TrimSpace(content)
+	if len(content) < 2 || content[0] != '{' {
+		return ""
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &obj); err != nil {
+		return ""
+	}
+	text, ok := obj["text"].(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func isSkillRunnerMetadataLine(line string) bool {
+	if strings.HasPrefix(line, "shell: ") {
+		return true
+	}
+	if strings.HasPrefix(line, "elapsed: ") {
+		return true
+	}
+	if strings.HasPrefix(line, "📂 ") {
+		return true
+	}
+	if strings.HasPrefix(line, "command: ") {
+		return true
+	}
+	if strings.HasPrefix(line, "exit code: ") {
+		return true
+	}
+	if strings.HasPrefix(line, "Exit code: ") {
+		return true
+	}
+	// Separator line between metadata header and actual output
+	if strings.TrimSpace(line) == "───────────────" {
+		return true
+	}
+	// stderr marker (runner-injected, not skill output)
+	if strings.HasPrefix(line, "[stderr] ") {
+		return true
+	}
+	// error marker (runner-injected on failure)
+	if strings.HasPrefix(line, "[error] ") {
+		return true
+	}
+	return false
 }
 
 func logSkillRunnerFailure(runID, ownerID, skillName, stage, reason string) {
@@ -3960,7 +4160,7 @@ var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
 		return cceasyPaths{}
 	}
 	oldDir := filepath.Join(home, ".cceasy")
-	newDir := filepath.Join(home, ".maclaw")
+	newDir := corelib.MaclawBaseDir()
 	if _, err := os.Stat(oldDir); err == nil {
 		return cceasyPaths{} // old dir still exists, no migration needed
 	}

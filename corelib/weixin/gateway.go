@@ -1798,11 +1798,33 @@ func weixinVoiceDebugDir() (string, error) {
 	if weixinVoiceDebugDirForTest != "" {
 		return weixinVoiceDebugDirForTest, nil
 	}
+	return filepath.Join(weixinMaclawBaseDir(), "temp", "weixin_voice_debug"), nil
+}
+
+func weixinMaclawBaseDir() string {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("home dir: %w", err)
+	if err != nil {
+		return filepath.Join(".", ".maclaw")
 	}
-	return filepath.Join(home, ".maclaw", "temp", "weixin_voice_debug"), nil
+	defaultDir := filepath.Join(home, ".maclaw")
+	data, err := os.ReadFile(filepath.Join(defaultDir, "config.json"))
+	if err != nil {
+		return defaultDir
+	}
+	var partial struct {
+		DataDir string `json:"data_dir"`
+	}
+	if json.Unmarshal(data, &partial) != nil {
+		return defaultDir
+	}
+	dir := strings.TrimSpace(partial.DataDir)
+	if dir == "" {
+		return defaultDir
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return defaultDir
+	}
+	return dir
 }
 
 func cleanupDebugWeixinVoicePayloads(dir string) {

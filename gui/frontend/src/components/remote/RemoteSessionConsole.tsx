@@ -74,7 +74,7 @@ const dotBase: React.CSSProperties = {
 };
 
 const titleTextStyle: React.CSSProperties = {
-    color: "#999",
+    color: "#b0b0b0",
     fontSize: "11px",
     fontFamily: "Consolas, 'SF Mono', monospace",
     overflow: "hidden",
@@ -159,7 +159,7 @@ const inputStyle: React.CSSProperties = {
 const actionBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "none",
-    color: "#94a3b8",
+    color: "#b0bec5",
     fontSize: "11px",
     fontFamily: "Consolas, monospace",
     cursor: "pointer",
@@ -687,7 +687,7 @@ export function RemoteSessionConsole(props: Props) {
     }, [session.id, refreshSessionsOnly, showSendInfo]);
 
     const statusColor = status === "running" || status === "busy" ? "var(--theme-success, #4f7f6f)"
-        : status === "waiting_input" ? "var(--theme-primary, #2f5f98)" : "#94a3b8";
+        : status === "waiting_input" ? "var(--theme-primary, #2f5f98)" : "#a8b8c8";
 
     // ── Build output elements ──
     const outputElements = useMemo((): React.ReactNode[] => {
@@ -944,7 +944,7 @@ export function RemoteSessionConsole(props: Props) {
                         CLEAR
                     </button>
                     <button onClick={handleToggleFullscreen}
-                        style={{ ...actionBtnStyle, color: isFullscreen ? "var(--theme-success)" : "#94a3b8" }}
+                        style={{ ...actionBtnStyle, color: isFullscreen ? "var(--theme-success)" : "#b0bec5" }}
                         title={localizeText(currentLang, "Toggle fullscreen", "切换全屏", "切換全螢幕")}>
                         {isFullscreen ? "WIN" : "FULL"}
                     </button>
@@ -1112,7 +1112,7 @@ export function RemoteSessionConsole(props: Props) {
             )}
             {readOnly && (
                 <div style={{ ...inputBarStyle, justifyContent: "center" }}>
-                    <span style={{ color: "#94a3b8", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
+                    <span style={{ color: "#b0bec5", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
                         {localizeText(currentLang, "AI process monitor mode - view only", "AI 进程监控模式 - 仅查看", "AI 進程監控模式 - 僅查看")}
                     </span>
                 </div>

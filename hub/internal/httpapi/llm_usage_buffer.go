@@ -21,6 +21,7 @@ type pendingSystemUsage struct {
 }
 
 type pendingCreditCharge struct {
+	userID          string
 	email           string
 	serviceGroupIDs []string
 	credits         float64
@@ -41,6 +42,10 @@ var globalLLMUsageAccumulator = &llmUsageAccumulator{
 var llmCreditChargeMu sync.Mutex
 
 func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
+	enqueueLLMUsageForUserID(system, providerID, usage, "", email, serviceGroupIDs, userGroupIDs, credits)
+}
+
+func enqueueLLMUsageForUserID(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
 	if system == nil {
 		return
 	}
@@ -49,7 +54,7 @@ func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, u
 		return
 	}
 	globalLLMUsageAccumulator.start()
-	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, email, serviceGroupIDs, userGroupIDs, credits)
+	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits)
 	if charge == nil {
 		return
 	}
@@ -71,7 +76,7 @@ func (a *llmUsageAccumulator) start() {
 	})
 }
 
-func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) *pendingCreditCharge {
+func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) *pendingCreditCharge {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	buf := a.pending[system]
@@ -95,10 +100,11 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 		buf.providerUsage[providerID] = curr
 	}
 	serviceGroupIDs = normalizeUsageStringSlice(serviceGroupIDs)
+	userID = strings.TrimSpace(userID)
 	email = strings.ToLower(strings.TrimSpace(email))
 	var charge *pendingCreditCharge
-	if email != "" && len(serviceGroupIDs) > 0 && credits > 0 {
-		charge = &pendingCreditCharge{email: email, serviceGroupIDs: append([]string(nil), serviceGroupIDs...), credits: credits}
+	if (userID != "" || email != "") && len(serviceGroupIDs) > 0 && credits > 0 {
+		charge = &pendingCreditCharge{userID: userID, email: email, serviceGroupIDs: append([]string(nil), serviceGroupIDs...), credits: credits}
 	}
 	if buf.reports == nil {
 		buf.reports = &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
@@ -163,7 +169,7 @@ func (a *llmUsageAccumulator) requeue(system store.SystemSettingsRepository, buf
 		}
 		curr := current.creditCharges[key]
 		if curr == nil {
-			current.creditCharges[key] = &pendingCreditCharge{email: charge.email, serviceGroupIDs: append([]string(nil), charge.serviceGroupIDs...), credits: charge.credits}
+			current.creditCharges[key] = &pendingCreditCharge{userID: charge.userID, email: charge.email, serviceGroupIDs: append([]string(nil), charge.serviceGroupIDs...), credits: charge.credits}
 			continue
 		}
 		curr.credits += charge.credits
@@ -240,7 +246,7 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 		if charge == nil || charge.credits <= 0 {
 			continue
 		}
-		llmservice.ApplyCreditUsageToRegistry(reg, charge.email, charge.serviceGroupIDs, charge.credits, now)
+		llmservice.ApplyCreditUsageToRegistryForUserID(reg, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, now)
 	}
 	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
 		return err

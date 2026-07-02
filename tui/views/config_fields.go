@@ -758,11 +758,7 @@ func configDataDir() string {
 	if dir := strings.TrimSpace(os.Getenv("MACLAW_DATA_DIR")); dir != "" {
 		return dir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".maclaw")
+	return corelib.MaclawBaseDir()
 }
 
 var allConfigFields = []ConfigFieldDef{

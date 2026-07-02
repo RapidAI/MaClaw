@@ -31,7 +31,7 @@ export const ToolConfiguration = ({
     handleModelSwitch, t, lang
 }: ToolConfigurationProps) => {
     if (!toolCfg || !toolCfg.models) {
-        return <div style={{ padding: '15px', color: '#6b7280' }}>{t("loadingConfig")}</div>;
+        return <div style={{ padding: '15px', color: 'var(--theme-text-muted, #6b7280)' }}>{t("loadingConfig")}</div>;
     }
 
     const getBadge = (model: any): { bg: string; label: string } | null => {

@@ -1106,11 +1106,9 @@ func (h *IMMessageHandler) runUploadPortabilityGate(name string) string {
 	}
 
 	if !result.Portable() {
-		if len(result.AutoFixed) > 0 {
-			if restoreErr := restoreSkillDirFromSnapshot(skillDir, snapshotDir); restoreErr != nil {
-				return fmt.Sprintf("%s; rollback failed: %v", cskill.FormatUploadPreflight(result), restoreErr)
-			}
-		}
+		// Do NOT rollback auto-fixed changes — they are correct and should persist.
+		// Only report the remaining BlockingPaths/MissingFiles for the agent to fix.
+		// (Rollback only happens above when the security scan rejects the auto-fix.)
 		return cskill.FormatUploadPreflight(result)
 	}
 	return ""
@@ -1305,15 +1303,6 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 			)
 		}
 		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
-	}
-	if h != nil && h.app != nil && report.NeedsUserReview() {
-		h.app.logSkillInstallSecurityEvent(
-			security.AuditActionHubSkillUpdate,
-			"manage_skill_autofix",
-			report.FinalLevel,
-			security.PolicyAudit,
-			fmt.Sprintf("skill autofix writeback allowed for %s by current policy: %s", entry.Name, report.Summary),
-		)
 	}
 	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
 		return fmt.Errorf("write skill scan cache: %w", err)

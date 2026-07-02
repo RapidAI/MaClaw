@@ -498,6 +498,9 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 			source = "clawhub"
 		}
 	}
+	if hubURL == "" {
+		hubURL = commands.ResolveHubCenterWithFailover(app.appConfig, app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
+	}
 
 	// Determine effective source for permission check.
 	effectiveSource := source
@@ -520,10 +523,6 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	}
 
 	recordTUIDeveloperSkillRisk(app.appConfig, effectiveSource, "install", guardArgs)
-
-	if hubURL == "" {
-		hubURL = app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
-	}
 
 	// Check if already installed.
 	for _, s := range app.appConfig.NLSkills {
@@ -709,6 +708,15 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 			entry.SkillDir = resolved
 		}
 	}
+	inferenceArgs := args
+	if input := strings.TrimSpace(templateVars["input"]); input != "" {
+		inferenceArgs = cloneTUIRunArgs(args)
+		if strings.TrimSpace(fmt.Sprintf("%v", inferenceArgs["user_prompt"])) == "" {
+			inferenceArgs["user_prompt"] = input
+		}
+		inferenceArgs["_skill_infer_natural_prompt"] = true
+	}
+	applyTUIRunInputInference(entry, templateVars, inferenceArgs)
 
 	prep, prepErr := skill.PrepareRunnerExecution(entry, templateVars, args, extraEnv, skill.RunnerBackendTUI)
 	if prepErr != nil {
@@ -736,13 +744,27 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 		results = append(results, warningOutput)
 	}
 	ok := true
-	execCtx := context.Background()
+	// Extract caller-provided context from args (allows agent handler to pass
+	// a cancellable context). Defaults to context.Background() for CLI/test callers.
+	baseCtx := context.Background()
+	if ctxVal, hasCtx := args["_ctx"]; hasCtx {
+		if typed, ok := ctxVal.(context.Context); ok && typed != nil {
+			baseCtx = typed
+		}
+	}
+	execCtx := baseCtx
 	execCancel := func() {}
 	if entry.GlobalTimeout > 0 {
-		execCtx, execCancel = context.WithTimeout(context.Background(), time.Duration(entry.GlobalTimeout)*time.Second)
+		execCtx, execCancel = context.WithTimeout(baseCtx, time.Duration(entry.GlobalTimeout)*time.Second)
 	}
 	defer execCancel()
 	for i, step := range entry.Steps {
+		// Early exit if context was cancelled between steps.
+		if execCtx.Err() != nil {
+			results = append(results, fmt.Sprintf("[Step %d/%d] ⏹ cancelled", i+1, len(entry.Steps)))
+			ok = false
+			break
+		}
 		if len(selectedSteps) > 0 {
 			if step.Label == "" || !skill.StepLabelSelected(step.Label, selectedSteps) {
 				results = append(results, fmt.Sprintf("[Step %d/%d] ⏭ skipped (not selected)", i+1, len(entry.Steps)))
@@ -931,6 +953,7 @@ func (e tuiSkillPipelineExecutor) RunSubSkill(ctx context.Context, skillName str
 	}
 	args := skill.BuildPipelineSubSkillRunArgs(e.baseArgs, params)
 	args["name"] = skillName
+	args["_ctx"] = ctx // Propagate parent context for cancellation support.
 	result := skillRunDetailed(e.app, args)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, result.Output, ctxErr
@@ -952,6 +975,17 @@ func (e tuiSkillPipelineExecutor) RunSubSkill(ctx context.Context, skillName str
 
 func normalizeTUIRunSkillVars(args map[string]interface{}) map[string]string {
 	return skill.NormalizeRunVars(args)
+}
+
+func cloneTUIRunArgs(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return map[string]interface{}{}
+	}
+	clone := make(map[string]interface{}, len(args)+2)
+	for key, value := range args {
+		clone[key] = value
+	}
+	return clone
 }
 
 func extractTUIRunExtraEnv(args map[string]interface{}) map[string]string {
@@ -1249,6 +1283,15 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 		if !result.Portable() {
 			return skill.FormatUploadPreflight(result)
 		}
+
+		// Quality gate: consistent with GUI's toolUploadSkill checks.
+		// Require at least 2 uses and at least 1 success before allowing upload.
+		if entry.UsageCount < 2 {
+			return fmt.Sprintf("Skill「%s」尚未经过充分测试（使用 %d 次）。建议先执行几次确认可用后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+		}
+		if entry.SuccessCount == 0 {
+			return fmt.Sprintf("Skill「%s」从未成功执行过（使用 %d 次，成功 0 次）。建议先修复后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+		}
 	}
 
 	// Resolve email.
@@ -1268,7 +1311,10 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 	defer os.Remove(zipPath)
 
 	// Upload via HTTP multipart POST (same API as smSubmit).
-	hubURL := app.appConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+	hubURL := commands.ResolveHubCenterWithFailover(app.appConfig, app.appConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
+	if strings.TrimSpace(hubURL) == "" {
+		return "上传失败: 未找到可用的公网 HubCenter 地址。请先运行 remote activate 或 remote set-hubcenter 后重试。"
+	}
 	submissionID, err := submitSkillZip(hubURL, zipPath, email, authToken)
 	if err != nil {
 		// If 401 and no token, provide login guidance

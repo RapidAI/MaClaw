@@ -74,6 +74,8 @@ func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 	mailer := &httpTestMailer{}
 	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	hubService.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	entryService.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
 
 	return &hubCenterHTTPTestServices{
 		store:   st,
@@ -361,6 +363,177 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	}
 	if resolveResult.DefaultHubID != registerResult["hub_id"] {
 		t.Fatalf("expected default hub %v, got %+v", registerResult["hub_id"], resolveResult)
+	}
+}
+
+func TestEntryResolveHandlerRoutesPhoneNumber(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "Phone Hub",
+		"base_url":        "https://phonehub.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+	linkResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"email":      "phone:19900001111",
+		"is_default": true,
+	}, "")
+	if linkResp.Code != http.StatusOK {
+		t.Fatalf("sync phone link status = %d body=%s", linkResp.Code, linkResp.Body.String())
+	}
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"phone_number": "199 0000 1111",
+	}, "")
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve phone status = %d body = %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolveResult entry.ResolveResult
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolveResult); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "phone:19900001111" {
+		t.Fatalf("unexpected phone resolve result: %+v", resolveResult)
+	}
+}
+
+func TestEntryResolveHandlerDoesNotPublicFallbackUnknownPhoneNumber(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":          "owner@example.com",
+		"name":                 "Public Hub",
+		"base_url":             "https://public.example.com",
+		"visibility":           "shared",
+		"enrollment_mode":      "approval",
+		"accept_public_signup": true,
+	})
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"phone_number": "19900002222",
+	}, "")
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve phone status = %d body = %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolveResult entry.ResolveResult
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolveResult); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if resolveResult.Mode != "none" || resolveResult.DefaultHubID != "" || resolveResult.Email != "phone:19900002222" {
+		t.Fatalf("expected unknown phone to avoid public fallback, got %+v", resolveResult)
+	}
+}
+
+func TestEntryResolveHandlerIgnoresInvalidPhoneNumberWhenEmailProvided(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "Email Hub",
+		"base_url":        "https://emailhub.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+	linkResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"email":      "buyer@example.com",
+		"is_default": true,
+	}, "")
+	if linkResp.Code != http.StatusOK {
+		t.Fatalf("sync email link status = %d body=%s", linkResp.Code, linkResp.Body.String())
+	}
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"phone_number": "12-3",
+		"email":        "buyer@example.com",
+	}, "")
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve email status = %d body = %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolveResult entry.ResolveResult
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolveResult); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "buyer@example.com" {
+		t.Fatalf("expected invalid phone to fall back to email, got %+v", resolveResult)
+	}
+}
+
+func TestMobileServiceRedemptionResolvesHubWithoutIssuingToken(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "Mobile Tenant Hub",
+		"base_url":        "https://tenant-a.maclaw.top",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+
+	syncResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/invitation-codes/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"codes":      []string{" mobile-code-1 "},
+		"tenant_id":  "tenant-a",
+	}, "")
+	if syncResp.Code != http.StatusOK {
+		t.Fatalf("sync invitation status = %d body=%s", syncResp.Code, syncResp.Body.String())
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/service-redemptions", map[string]any{
+		"code": " mobile-code-1 ",
+	}, "")
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("redemption status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode redemption response: %v", err)
+	}
+	if payload["status"] != "requires_email_login" || payload["next_action"] != "email_login" {
+		t.Fatalf("expected pending email login response, got %+v", payload)
+	}
+	if payload["access_token"] != nil {
+		t.Fatalf("HubCenter must not issue Hub viewer tokens, got %+v", payload)
+	}
+	if payload["hub_url"] != "https://tenant-a.maclaw.top" || payload["hub_id"] != hubID || payload["tenant_id"] != "tenant-a" {
+		t.Fatalf("unexpected hub routing payload: %+v", payload)
+	}
+}
+
+func TestMobileServiceRedemptionRejectsUnknownCode(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/service-redemptions", map[string]any{
+		"code": "missing-code",
+	}, "")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := responseErrorCode(t, resp); got != "SERVICE_REDEMPTION_NOT_FOUND" {
+		t.Fatalf("error code = %s", got)
+	}
+}
+
+func TestMobileDesktopQRSessionRejectsProviderOnlyPayload(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", map[string]any{
+		"qr_payload": `{"v":1,"type":"maclaw_llm","name":"OpenAI Compatible","url":"https://llm.example.com/v1","key":"sk-test"}`,
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := responseErrorCode(t, resp); got != "DESKTOP_QR_SESSION_REQUIRES_SIGNED_GUI_PAYLOAD" {
+		t.Fatalf("error code = %s", got)
 	}
 }
 
