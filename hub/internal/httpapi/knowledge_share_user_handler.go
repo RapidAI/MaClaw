@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"html"
 	"math"
 	"net/http"
@@ -57,6 +58,8 @@ type knowledgeShareMutationRequest struct {
 	Package         json.RawMessage `json:"package"`
 }
 
+const knowledgeShareRequestMaxBytes = 52 << 20
+
 func ListMyKnowledgeSharesHandler(repo store.KnowledgeShareRepository, identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := requireKnowledgeShareViewer(w, r, identity)
@@ -109,8 +112,8 @@ func CreateKnowledgeShareHandler(repo store.KnowledgeShareRepository, identity *
 			return
 		}
 		var req knowledgeShareMutationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		if err := decodeKnowledgeShareMutationRequest(w, r, &req); err != nil {
+			writeKnowledgeShareDecodeError(w, err)
 			return
 		}
 		item, ok := knowledgeShareFromMutationRequest(w, r, principal, req, "")
@@ -149,8 +152,8 @@ func UpdateMyKnowledgeShareHandler(repo store.KnowledgeShareRepository, identity
 			return
 		}
 		var req knowledgeShareMutationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		if err := decodeKnowledgeShareMutationRequest(w, r, &req); err != nil {
+			writeKnowledgeShareDecodeError(w, err)
 			return
 		}
 		if strings.TrimSpace(req.Title) == "" {
@@ -204,6 +207,19 @@ func UpdateMyKnowledgeShareHandler(repo store.KnowledgeShareRepository, identity
 		}
 		writeJSON(w, http.StatusOK, knowledgeShareUserView(r, item, true))
 	}
+}
+
+func decodeKnowledgeShareMutationRequest(w http.ResponseWriter, r *http.Request, req *knowledgeShareMutationRequest) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, knowledgeShareRequestMaxBytes)).Decode(req)
+}
+
+func writeKnowledgeShareDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "Knowledge share request body is too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 }
 
 func DeleteMyKnowledgeShareHandler(repo store.KnowledgeShareRepository, identity *auth.IdentityService) http.HandlerFunc {

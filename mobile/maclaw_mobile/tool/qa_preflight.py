@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import plistlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import build_android_release
+import plan_ios_release
 import validate_qa_build_records_dir
 import verify_android_release_signing
 import verify_ios_wrapper
@@ -39,7 +41,12 @@ def _blocker(name: str, details: list[str]) -> PreflightCheck:
     return PreflightCheck(name=name, status="blocker", details=details)
 
 
-def validate_ios_export_options(root: Path) -> list[str]:
+def validate_ios_export_options(
+    root: Path,
+    *,
+    team_id: str | None = None,
+    export_method: str | None = None,
+) -> list[str]:
     export_options = root / "ios" / "ExportOptions.plist"
     if not export_options.exists():
         return [
@@ -48,15 +55,42 @@ def validate_ios_export_options(root: Path) -> list[str]:
         ]
     if not export_options.is_file():
         return [f"iOS export options path must be a file: {export_options}"]
-    return []
+    try:
+        with export_options.open("rb") as handle:
+            payload = plistlib.load(handle)
+    except (plistlib.InvalidFileException, OSError, ValueError) as exc:
+        return [f"iOS export options plist is not readable: {export_options}: {exc}"]
+
+    errors: list[str] = []
+    actual_team_id = payload.get("teamID")
+    if not isinstance(actual_team_id, str) or plan_ios_release.APPLE_TEAM_ID_RE.fullmatch(actual_team_id) is None:
+        errors.append("iOS export options teamID must be a 10-character Apple team identifier.")
+    actual_method = payload.get("method")
+    if actual_method not in plan_ios_release.VALID_EXPORT_METHODS:
+        errors.append(
+            "iOS export options method must be one of: "
+            + ", ".join(plan_ios_release.VALID_EXPORT_METHODS),
+        )
+    if team_id and actual_team_id != team_id:
+        errors.append(
+            f"iOS export options teamID must match {team_id}: found {actual_team_id!r}",
+        )
+    if export_method and actual_method != export_method:
+        errors.append(
+            f"iOS export options method must match {export_method}: found {actual_method!r}",
+        )
+    return errors
 
 
 def run_preflight(
     root: Path,
+    *,
+    ios_team_id: str | None = None,
+    ios_export_method: str | None = None,
     android_config_validator: Callable[[Path], list[str]] = verify_android_release_signing.verify_android_release_signing,
     android_key_validator: Callable[[Path], tuple[dict[str, str], list[str]]] = build_android_release.validate_key_properties,
     ios_wrapper_validator: Callable[[Path], list[str]] = verify_ios_wrapper.verify_ios_wrapper,
-    ios_export_options_validator: Callable[[Path], list[str]] = validate_ios_export_options,
+    ios_export_options_validator: Callable[..., list[str]] = validate_ios_export_options,
     records_dir_validator: Callable[
         [Path],
         list[validate_qa_build_records_dir.RecordValidationResult],
@@ -86,11 +120,15 @@ def run_preflight(
         else _ok("iOS wrapper and Share Extension", "Runner, Share Extension, URL schemes, and app group wiring are present")
     )
 
-    ios_export_errors = ios_export_options_validator(root)
+    ios_export_errors = ios_export_options_validator(
+        root,
+        team_id=ios_team_id,
+        export_method=ios_export_method,
+    )
     checks.append(
         _blocker("iOS export options", ios_export_errors)
         if ios_export_errors
-        else _ok("iOS export options", "ios/ExportOptions.plist is present for Xcode export")
+        else _ok("iOS export options", "ios/ExportOptions.plist is readable and has a valid Team ID/export method")
     )
 
     records_dir = root / "docs" / "qa-builds"
@@ -110,7 +148,12 @@ def run_preflight(
         elif results:
             checks.append(_ok("Existing QA build records", f"{len(results)} completed record(s) already validate"))
         else:
-            checks.append(_info("Existing QA build records", "no completed signed-build QA records yet; create one with tool/create_qa_build_record.py"))
+            checks.append(
+                _info(
+                    "Existing QA build records",
+                    "no completed signed-build QA records yet; run tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method <export-method> --output docs/qa-builds/handoff-<version+build>.md and follow its prefilled create_qa_build_record.py command after capturing verify_runtime_boundary.py --log and run_release_gates.py --log evidence",
+                ),
+            )
 
     checks.append(
         _info(
@@ -145,9 +188,23 @@ def main(argv: list[str] | None = None) -> int:
         default=mobile_root(),
         help="Path to mobile/maclaw_mobile. Defaults to this script project root.",
     )
+    parser.add_argument(
+        "--team-id",
+        type=plan_ios_release.validate_team_id,
+        help="Optional Apple Team ID to verify against ios/ExportOptions.plist.",
+    )
+    parser.add_argument(
+        "--export-method",
+        choices=plan_ios_release.VALID_EXPORT_METHODS,
+        help="Optional Xcode export method to verify against ios/ExportOptions.plist.",
+    )
     args = parser.parse_args(argv)
 
-    checks = run_preflight(args.root)
+    checks = run_preflight(
+        args.root,
+        ios_team_id=args.team_id,
+        ios_export_method=args.export_method,
+    )
     output = format_preflight(checks)
     if any(check.is_blocker for check in checks):
         print(output, end="", file=sys.stderr)

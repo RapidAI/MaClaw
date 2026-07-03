@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -151,6 +152,46 @@ class RunReleaseGatesTest(unittest.TestCase):
         self.assertTrue(
             lines[-1].startswith(f"[{gate_count:02d}/{gate_count}] Android debug APK:")
         )
+
+    def test_dry_run_can_write_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "release-gates.log"
+            output = StringIO()
+
+            with redirect_stdout(output):
+                self.assertEqual(0, run_release_gates.main(["--dry-run", "--log", str(log_path)]))
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("[01/", text)
+            self.assertIn("Go mobile API", text)
+            self.assertIn("Android debug APK", text)
+
+    def test_run_can_write_log_file_with_command_output(self) -> None:
+        gate = run_release_gates.ReleaseGate(
+            "Stub gate",
+            Path.cwd(),
+            ["stub-command"],
+        )
+        completed = run_release_gates.subprocess.CompletedProcess(
+            args=["stub-command"],
+            returncode=0,
+            stdout="stub stdout\n",
+            stderr="stub stderr\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "nested" / "release-gates.log"
+            output = StringIO()
+            error = StringIO()
+            with patch("run_release_gates.release_gates", return_value=[gate]):
+                with patch("run_release_gates.subprocess.run", return_value=completed):
+                    with redirect_stdout(output), redirect_stderr(error):
+                        self.assertEqual(0, run_release_gates.main(["--log", str(log_path)]))
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("==> [01/1] Stub gate:", text)
+            self.assertIn("stub stdout", text)
+            self.assertIn("stub stderr", text)
+            self.assertIn("All MaClaw Mobile automated release gates passed.", text)
 
     def test_executable_command_resolves_windows_batch_shims(self) -> None:
         with patch("run_release_gates.shutil.which", return_value=r"D:\flutter\bin\flutter.BAT"):

@@ -63,6 +63,7 @@ func (a *App) resolveHubCenterCandidates(ctx context.Context, client *http.Clien
 		return nil, err
 	}
 	bases := append([]string{base}, discovered...)
+	bases = append(bases, remote.DefaultRemoteHubCenterURLs...)
 	bases = remote.NormalizeHubCenterURLs(bases)
 	if len(bases) == 0 {
 		return nil, fmt.Errorf("hubcenter URL not configured")

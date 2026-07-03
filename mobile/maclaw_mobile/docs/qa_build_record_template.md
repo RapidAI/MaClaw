@@ -44,8 +44,9 @@ No custom Hub URL setting found:
 
 If the artifact path is available on the validation machine, the QA validator
 checks that the recorded SHA256 matches the local `.apk` or `.aab` file.
-Use `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds`
-to generate paste-ready `Artifact path`, `SHA256`, and byte-size evidence.
+Use `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
+to generate paste-ready `Artifact path`, `SHA256`, byte-size, version/build,
+signing identity, and installer channel evidence.
 
 ## Android Share-To-App Evidence
 
@@ -88,6 +89,9 @@ URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER):
 `Archive/TestFlight build` must identify an `.xcarchive` or TestFlight build.
 `Team ID` must be the 10-character Apple team identifier. `Provisioning
 profiles` must mention both Runner and Share Extension profiles.
+Use `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+to generate paste-ready archive/build, Team ID, and provisioning-profile
+evidence.
 
 ## iOS Share-To-App Evidence
 
@@ -185,6 +189,12 @@ Credential deletion confirmation:
 ## Final Release Decision
 
 ```text
+# Paste the handoff output path, attachment ID, or command transcript reference.
+Release handoff result:
+# Paste `python3 tool/verify_runtime_boundary.py` output or log attachment ID.
+Runtime boundary verification result:
+# Paste `python3 tool/run_release_gates.py` result, gate count, and log attachment ID.
+Automated release gates result:
 Automated gates passed: passed / waived with reason
 Android manual gates passed: passed / waived with reason
 iOS manual gates passed: passed / waived with reason

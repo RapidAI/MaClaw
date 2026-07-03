@@ -32,14 +32,15 @@ func deriveImportBatchStatus(imported, skipped, failed, total int) string {
 // This is the canonical import-side representation — both GUI and MaClawSrv
 // map their package structs to this before calling ImportPackageSources.
 type PackageSource struct {
-	ID           string
-	Kind         string
-	URI          string
-	CanonicalURI string
-	Title        string
-	TopicHint    string
-	Labels       []string
-	Content      string // Inline content (text extracted at export time).
+	ID               string
+	Kind             string
+	URI              string
+	CanonicalURI     string
+	Title            string
+	TopicHint        string
+	Labels           []string
+	Content          string // Inline content (text extracted at export time).
+	ContentTruncated bool   // True when the exported inline content was already cut down.
 }
 
 // PackageImportOptions configures the import behavior.
@@ -173,12 +174,26 @@ func ImportPackageSources(ctx context.Context, store PackageImportStore, sources
 		content := strings.TrimSpace(item.Content)
 		isHTTP := strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://")
 		label := firstNonEmpty(item.ID, item.Title, uri)
+		if label == "" {
+			label = "unknown source"
+		}
+		if item.ContentTruncated {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", label))
+		}
 
 		switch {
 		case isHTTP:
 			if opts.DryRun {
 				// In dry-run, URL sources are counted as importable (via re-fetch or content fallback).
 				result.Imported++
+				continue
+			}
+			if store == nil {
+				errMsg := "knowledge store is unavailable"
+				result.Warnings = append(result.Warnings, fmt.Sprintf("url source %s skipped: %s", uri, errMsg))
+				result.Skipped++
+				failed++
+				linkBatchItem(ctx, batchCreator, batchID, "", uri, "url", "failed", errMsg, 0, &result.Warnings)
 				continue
 			}
 			// URL source — try re-fetch for freshness, fall back to inline content.
@@ -229,6 +244,14 @@ func ImportPackageSources(ctx context.Context, store PackageImportStore, sources
 				result.Imported++
 				continue
 			}
+			if store == nil {
+				errMsg := "knowledge store is unavailable"
+				result.Warnings = append(result.Warnings, fmt.Sprintf("text source %s skipped: %s", label, errMsg))
+				result.Skipped++
+				failed++
+				linkBatchItem(ctx, batchCreator, batchID, "", label, "text", "failed", errMsg, int64(len(content)), &result.Warnings)
+				continue
+			}
 			// Text source with inline content — import directly.
 			savedSource, err := store.SaveText(ctx, TextSaveRequest{
 				Text:      content,
@@ -253,6 +276,9 @@ func ImportPackageSources(ctx context.Context, store PackageImportStore, sources
 		default:
 			// Metadata-only — no fetchable URI, no content.
 			itemKind := strings.ToLower(strings.TrimSpace(item.Kind))
+			if itemKind == "" {
+				itemKind = "metadata"
+			}
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s source %s is metadata-only", itemKind, label))
 			result.Skipped++
 			linkBatchItem(ctx, batchCreator, batchID, "", label, itemKind, "skipped", "metadata-only, no content", 0, &result.Warnings)

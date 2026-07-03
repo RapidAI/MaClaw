@@ -175,9 +175,11 @@ type guiKnowledgePackage struct {
 }
 
 const (
-	maxGUIKnowledgePackageSourceContentBytes = 8 << 20
-	maxGUIKnowledgePackageTotalContentBytes  = 32 << 20
-	maxGUIKnowledgePackageSourceNodes        = 1000
+	maxGUIKnowledgePackageSourceContentBytes = 16 << 20
+	maxGUIKnowledgePackageTotalContentBytes  = 40 << 20
+	maxGUIKnowledgePackageSourceNodes        = 5000
+	maxGUIKnowledgeHubPackageJSONBytes       = 50 << 20
+	maxGUIKnowledgeHubShareRequestBytes      = 52 << 20
 )
 
 var knowledgeImportJobs sync.Map
@@ -589,36 +591,19 @@ func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubSha
 	if err != nil {
 		return KnowledgeHubShareResult{}, err
 	}
-	rawPackage, err := json.Marshal(pkg)
-	if err != nil {
-		return KnowledgeHubShareResult{}, err
-	}
-	sourceSummary := map[string]any{
-		"source_count":     len(sources),
-		"source_ids":       exportedSourceIDs,
-		"redact_sensitive": req.RedactSensitive,
-		"include_disabled": req.IncludeDisabled,
-		"package_format":   pkg.Manifest.Format,
-		"package_id":       pkg.Manifest.PackageID,
-		"generated_by":     "maclaw-gui",
-		"generated_at":     pkg.Manifest.CreatedAt,
-		"editable":         true,
-		"content_sources":  countGUIKnowledgePackageContentSources(pkg),
-		"warnings":         packageWarnings,
-	}
-	payload := map[string]any{
-		"title":            strings.TrimSpace(req.Title),
-		"description":      description,
-		"visibility_scope": strings.TrimSpace(req.VisibilityScope),
-		"visibility_users": compactKnowledgeShareStrings(req.VisibilityUsers),
-		"ttl":              ttl,
-		"package_json":     json.RawMessage(rawPackage),
-		"source_summary":   sourceSummary,
-	}
-	if payload["visibility_scope"] == "" {
-		payload["visibility_scope"] = "hub"
-	}
-	body, err := json.Marshal(payload)
+	body, sourceSummary, err := buildGUIKnowledgeSharePayloadWithinLimits(&pkg, packageWarnings, knowledgeSharePayloadOptions{
+		SourceCount:       len(sources),
+		SourceIDs:         exportedSourceIDs,
+		RedactSensitive:   req.RedactSensitive,
+		IncludeDisabled:   req.IncludeDisabled,
+		Title:             strings.TrimSpace(req.Title),
+		Description:       description,
+		VisibilityScope:   strings.TrimSpace(req.VisibilityScope),
+		VisibilityUsers:   compactKnowledgeShareStrings(req.VisibilityUsers),
+		TTL:               ttl,
+		PackageLimit:      maxGUIKnowledgeHubPackageJSONBytes,
+		ShareRequestLimit: maxGUIKnowledgeHubShareRequestBytes,
+	})
 	if err != nil {
 		return KnowledgeHubShareResult{}, err
 	}
@@ -673,6 +658,206 @@ func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubSha
 	return result, nil
 }
 
+func validateGUIKnowledgePackageJSONSize(rawPackage []byte) error {
+	if len(rawPackage) <= maxGUIKnowledgeHubPackageJSONBytes {
+		return nil
+	}
+	return fmt.Errorf("knowledge package JSON is %.1fMB; hub accepts at most %.0fMB, reduce selected sources or use knowledge sync for large transfers", float64(len(rawPackage))/(1024*1024), float64(maxGUIKnowledgeHubPackageJSONBytes)/(1024*1024))
+}
+
+func validateGUIKnowledgeShareRequestSize(body []byte) error {
+	if len(body) <= maxGUIKnowledgeHubShareRequestBytes {
+		return nil
+	}
+	return fmt.Errorf("knowledge share request is %.1fMB; reduce selected sources or use knowledge sync for large transfers", float64(len(body))/(1024*1024))
+}
+
+type knowledgeSharePayloadOptions struct {
+	SourceCount       int
+	SourceIDs         []string
+	RedactSensitive   bool
+	IncludeDisabled   bool
+	Title             string
+	Description       string
+	VisibilityScope   string
+	VisibilityUsers   []string
+	TTL               string
+	PackageLimit      int
+	ShareRequestLimit int
+}
+
+func buildGUIKnowledgeSharePayloadWithinLimits(pkg *guiKnowledgePackage, baseWarnings []string, opts knowledgeSharePayloadOptions) ([]byte, map[string]any, error) {
+	if pkg == nil {
+		return nil, nil, fmt.Errorf("knowledge package is nil")
+	}
+	if opts.PackageLimit <= 0 {
+		opts.PackageLimit = maxGUIKnowledgeHubPackageJSONBytes
+	}
+	if opts.ShareRequestLimit <= 0 {
+		opts.ShareRequestLimit = maxGUIKnowledgeHubShareRequestBytes
+	}
+	warnings := append([]string(nil), baseWarnings...)
+	packageFitWarningsAppended := false
+	for attempts := 0; attempts < len(pkg.Sources)*4+16; attempts++ {
+		rawPackage, fitWarnings, err := marshalGUIKnowledgePackageWithinLimit(pkg, opts.PackageLimit)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !packageFitWarningsAppended {
+			warnings = append(warnings, fitWarnings...)
+			packageFitWarningsAppended = true
+		}
+		sourceSummary := guiKnowledgeShareSourceSummary(pkg, warnings, opts)
+		payload := map[string]any{
+			"title":            opts.Title,
+			"description":      opts.Description,
+			"visibility_scope": opts.VisibilityScope,
+			"visibility_users": opts.VisibilityUsers,
+			"ttl":              opts.TTL,
+			"package_json":     json.RawMessage(rawPackage),
+			"source_summary":   sourceSummary,
+		}
+		if payload["visibility_scope"] == "" {
+			payload["visibility_scope"] = "hub"
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(body) <= opts.ShareRequestLimit {
+			return body, sourceSummary, nil
+		}
+		idx := largestGUIKnowledgePackageContentSource(pkg.Sources)
+		if idx < 0 {
+			return nil, nil, validateGUIKnowledgeShareRequestSize(body)
+		}
+		currentBytes := len([]byte(pkg.Sources[idx].Content))
+		if currentBytes == 0 {
+			return nil, nil, validateGUIKnowledgeShareRequestSize(body)
+		}
+		excess := len(body) - opts.ShareRequestLimit
+		warning := truncateGUIKnowledgePackageSourceContentForFit(pkg, idx, excess+(256<<10), "hub share request size limit")
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
+	rawPackage, _, err := marshalGUIKnowledgePackageWithinLimit(pkg, opts.PackageLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	sourceSummary := guiKnowledgeShareSourceSummary(pkg, warnings, opts)
+	body, err := json.Marshal(map[string]any{
+		"title":            opts.Title,
+		"description":      opts.Description,
+		"visibility_scope": firstNonEmptyKnowledgeValue(opts.VisibilityScope, "hub"),
+		"visibility_users": opts.VisibilityUsers,
+		"ttl":              opts.TTL,
+		"package_json":     json.RawMessage(rawPackage),
+		"source_summary":   sourceSummary,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(body) > opts.ShareRequestLimit {
+		return nil, nil, validateGUIKnowledgeShareRequestSize(body)
+	}
+	return body, sourceSummary, nil
+}
+
+func guiKnowledgeShareSourceSummary(pkg *guiKnowledgePackage, warnings []string, opts knowledgeSharePayloadOptions) map[string]any {
+	return map[string]any{
+		"source_count":     opts.SourceCount,
+		"source_ids":       opts.SourceIDs,
+		"redact_sensitive": opts.RedactSensitive,
+		"include_disabled": opts.IncludeDisabled,
+		"package_format":   pkg.Manifest.Format,
+		"package_id":       pkg.Manifest.PackageID,
+		"generated_by":     "maclaw-gui",
+		"generated_at":     pkg.Manifest.CreatedAt,
+		"editable":         true,
+		"content_sources":  countGUIKnowledgePackageContentSources(*pkg),
+		"warnings":         warnings,
+	}
+}
+
+func marshalGUIKnowledgePackageWithinLimit(pkg *guiKnowledgePackage, limitBytes int) ([]byte, []string, error) {
+	if pkg == nil {
+		return nil, nil, fmt.Errorf("knowledge package is nil")
+	}
+	warnings := []string{}
+	for attempts := 0; attempts < len(pkg.Sources)*4+16; attempts++ {
+		raw, err := json.Marshal(pkg)
+		if err != nil {
+			return nil, warnings, err
+		}
+		if len(raw) <= limitBytes {
+			return raw, warnings, nil
+		}
+		idx := largestGUIKnowledgePackageContentSource(pkg.Sources)
+		if idx < 0 {
+			return nil, warnings, validateGUIKnowledgePackageJSONSize(raw)
+		}
+		currentBytes := len([]byte(pkg.Sources[idx].Content))
+		if currentBytes == 0 {
+			return nil, warnings, validateGUIKnowledgePackageJSONSize(raw)
+		}
+		warning := truncateGUIKnowledgePackageSourceContentForFit(pkg, idx, len(raw)-limitBytes+(1<<20), "hub package size limit")
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
+	raw, err := json.Marshal(pkg)
+	if err != nil {
+		return nil, warnings, err
+	}
+	if len(raw) > limitBytes {
+		return nil, warnings, validateGUIKnowledgePackageJSONSize(raw)
+	}
+	return raw, warnings, nil
+}
+
+func truncateGUIKnowledgePackageSourceContentForFit(pkg *guiKnowledgePackage, idx int, cutBytes int, reason string) string {
+	if pkg == nil || idx < 0 || idx >= len(pkg.Sources) {
+		return ""
+	}
+	currentBytes := len([]byte(pkg.Sources[idx].Content))
+	if currentBytes == 0 {
+		return ""
+	}
+	minCut := currentBytes / 10
+	if minCut < 64<<10 {
+		minCut = 64 << 10
+	}
+	if cutBytes < minCut {
+		cutBytes = minCut
+	}
+	nextBytes := currentBytes - cutBytes
+	if nextBytes < 0 {
+		nextBytes = 0
+	}
+	sourceLabel := firstNonEmptyKnowledgeValue(pkg.Sources[idx].ID, pkg.Sources[idx].Title, pkg.Sources[idx].URI)
+	if sourceLabel == "" {
+		sourceLabel = "unknown source"
+	}
+	pkg.Sources[idx].Content = truncateStringToUTF8Bytes(pkg.Sources[idx].Content, nextBytes)
+	pkg.Sources[idx].ContentBytes = len([]byte(pkg.Sources[idx].Content))
+	pkg.Sources[idx].Truncated = true
+	return fmt.Sprintf("source %s content truncated further to fit %s", sourceLabel, reason)
+}
+
+func largestGUIKnowledgePackageContentSource(sources []guiKnowledgePackageSource) int {
+	idx := -1
+	maxBytes := 0
+	for i, source := range sources {
+		contentBytes := len([]byte(source.Content))
+		if contentBytes > maxBytes {
+			idx = i
+			maxBytes = contentBytes
+		}
+	}
+	return idx
+}
+
 func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (KnowledgeHubShareImportResult, error) {
 	cfg, _ := a.LoadConfig()
 	hubURL := strings.TrimRight(strings.TrimSpace(req.HubURL), "/")
@@ -722,14 +907,15 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 	sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
 	for _, item := range pkg.Sources {
 		sources = append(sources, knowledge.PackageSource{
-			ID:           item.ID,
-			Kind:         item.Kind,
-			URI:          item.URI,
-			CanonicalURI: item.CanonicalURI,
-			Title:        item.Title,
-			TopicHint:    item.TopicHint,
-			Labels:       item.Labels,
-			Content:      item.Content,
+			ID:               item.ID,
+			Kind:             item.Kind,
+			URI:              item.URI,
+			CanonicalURI:     item.CanonicalURI,
+			Title:            item.Title,
+			TopicHint:        item.TopicHint,
+			Labels:           item.Labels,
+			Content:          item.Content,
+			ContentTruncated: item.Truncated,
 		})
 	}
 	if req.DryRun {
@@ -742,12 +928,6 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 		result.Imported = importResult.Imported
 		result.Skipped = importResult.Skipped
 		result.Warnings = append(result.Warnings, importResult.Warnings...)
-		// Append truncation warnings (dry-run specific — alerts user before commit).
-		for _, item := range pkg.Sources {
-			if item.Truncated {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("source %s content is truncated", firstNonEmptyKnowledgeValue(item.ID, item.Title, item.URI)))
-			}
-		}
 		return result, nil
 	}
 	store, err := a.openKnowledgeStore()
@@ -909,14 +1089,15 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 	sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
 	for _, item := range pkg.Sources {
 		sources = append(sources, knowledge.PackageSource{
-			ID:           item.ID,
-			Kind:         item.Kind,
-			URI:          item.URI,
-			CanonicalURI: item.CanonicalURI,
-			Title:        item.Title,
-			TopicHint:    item.TopicHint,
-			Labels:       item.Labels,
-			Content:      item.Content,
+			ID:               item.ID,
+			Kind:             item.Kind,
+			URI:              item.URI,
+			CanonicalURI:     item.CanonicalURI,
+			Title:            item.Title,
+			TopicHint:        item.TopicHint,
+			Labels:           item.Labels,
+			Content:          item.Content,
+			ContentTruncated: item.Truncated,
 		})
 	}
 	store, err := a.openKnowledgeStore()
@@ -1864,9 +2045,12 @@ func fetchGUIKnowledgePackage(ctx context.Context, packageURL, authorization str
 		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGUIKnowledgeHubPackageJSONBytes+1))
 	if err != nil {
 		return pkg, err
+	}
+	if len(body) > maxGUIKnowledgeHubPackageJSONBytes {
+		return pkg, fmt.Errorf("knowledge package is too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return pkg, fmt.Errorf("knowledge package returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

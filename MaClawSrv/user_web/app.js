@@ -1287,7 +1287,6 @@ async function renderSettings() {
   } catch (e) { if (!handleAPIError(e)) renderError(e); }
   finally { setBusy(false); }
 }
-function skillMarketURL() { return String(state.config?.remote_hubcenter_url || items(state.config?.remote_hubcenter_urls)[0] || "").trim(); }
 const SKILL_PAGE_SIZE = 20;
 function skillName(s) { return s.name || s.Name || t("unknown"); }
 function skillDescription(s) { return s.description || s.Description || ""; }
@@ -1337,7 +1336,7 @@ async function searchSkills(e) {
   if (!state.skillQuery) return;
   try {
     setBusy(true);
-    const out = await api("/api/v1/skills/search", { method: "POST", body: JSON.stringify({ query: state.skillQuery, sources: ["skillmarket"], skill_market_url: skillMarketURL(), include_installed: true }) });
+    const out = await api("/api/v1/skills/search", { method: "POST", body: JSON.stringify({ query: state.skillQuery, sources: ["skillmarket"], include_installed: true }) });
     state.skillResults = items(out);
     renderConfigFields();
   } catch (e2) { if (!handleAPIError(e2)) toast(e2.message); }
@@ -1347,7 +1346,7 @@ async function installSkill(skillID, source) {
   if (!skillID) return;
   try {
     setBusy(true);
-    await api("/api/v1/skills/install", { method: "POST", body: JSON.stringify({ source: source || "skillmarket", skill_market_url: skillMarketURL(), skill_id: skillID, overwrite: true }) });
+    await api("/api/v1/skills/install", { method: "POST", body: JSON.stringify({ source: source || "skillmarket", skill_id: skillID, overwrite: true }) });
     state.skills = items(await api("/api/v1/skills"));
     state.skillResults = state.skillResults.map((x) => x.id === skillID ? { ...x, installed: true } : x);
     renderConfigFields();

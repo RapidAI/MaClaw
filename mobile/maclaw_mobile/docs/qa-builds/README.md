@@ -13,8 +13,25 @@ to run local QA preflight and scaffold a validator-named record before QA starts
 
 ```bash
 python3 tool/release_status_report.py
+python3 tool/release_handoff.py --version 1.0.0+42 --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md
+python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-1.0.0+42.log
+python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.log
 python3 tool/qa_preflight.py
-python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42
+python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
+  --release-handoff-result "docs/qa-builds/handoff-1.0.0+42.md" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
+  --automated-gates-result "run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
+```
+
+If the handoff, runtime-boundary, and release-gate outputs use different saved
+paths or attachment IDs, replace the three Final Release Decision references
+while creating the record:
+
+```bash
+python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
+  --release-handoff-result "docs/qa-builds/handoff-1.0.0+42.md" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: boundary-1.0.0+42.log" \
+  --automated-gates-result "run_release_gates.py: 36 gates passed; log: release-gates-1.0.0+42.log"
 ```
 
 Use `--scope android` or `--scope ios` when Android and iOS evidence are captured
@@ -35,6 +52,14 @@ mobile project root:
 ```bash
 python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md
 ```
+
+Completed records must include these Final Release Decision fields:
+- `Release handoff result`
+- `Runtime boundary verification result`
+- `Automated release gates result`
+
+Each field must use traceable output paths, command transcripts, or log
+attachment IDs.
 
 If validation fails while QA is still filling evidence, print a grouped gap
 report:

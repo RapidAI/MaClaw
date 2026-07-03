@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import plistlib
 import sys
 import tempfile
 import unittest
@@ -29,12 +30,23 @@ def empty_records(_: Path) -> list[validate_qa_build_records_dir.RecordValidatio
     return []
 
 
+def write_export_options(
+    root: Path,
+    *,
+    team_id: str = "ABCD123456",
+    method: str = "development",
+) -> None:
+    ios = root / "ios"
+    ios.mkdir(exist_ok=True)
+    with (ios / "ExportOptions.plist").open("wb") as handle:
+        plistlib.dump({"teamID": team_id, "method": method}, handle)
+
+
 class QaPreflightTest(unittest.TestCase):
     def make_root(self) -> Path:
         root = Path(self.tmp.name)
         (root / "docs" / "qa-builds").mkdir(parents=True, exist_ok=True)
-        (root / "ios").mkdir(exist_ok=True)
-        (root / "ios" / "ExportOptions.plist").write_text("plist", encoding="utf-8")
+        write_export_options(root)
         return root
 
     def setUp(self) -> None:
@@ -49,7 +61,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=ok_android_key,
             ios_wrapper_validator=ok_ios,
-            ios_export_options_validator=lambda _: [],
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
         )
         output = qa_preflight.format_preflight(checks)
@@ -57,6 +69,15 @@ class QaPreflightTest(unittest.TestCase):
         self.assertFalse(any(check.is_blocker for check in checks))
         self.assertIn("[OK] Android local signing inputs", output)
         self.assertIn("[INFO] Existing QA build records", output)
+        self.assertIn("release_handoff.py", output)
+        self.assertIn("--version <version+build>", output)
+        self.assertIn("--team-id <APPLE_TEAM_ID>", output)
+        self.assertIn("--export-method <export-method>", output)
+        self.assertIn("--output docs/qa-builds/handoff-<version+build>.md", output)
+        self.assertIn("verify_runtime_boundary.py", output)
+        self.assertIn("run_release_gates.py", output)
+        self.assertIn("--log", output)
+        self.assertIn("prefilled create_qa_build_record.py", output)
         self.assertIn("Result: READY", output)
 
     def test_blockers_include_android_key_and_ios_wrapper_errors(self) -> None:
@@ -65,7 +86,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=lambda _: ({}, ["Missing Android signing file"]),
             ios_wrapper_validator=lambda _: ["Missing iOS wrapper file"],
-            ios_export_options_validator=lambda _: [],
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
         )
         output = qa_preflight.format_preflight(checks)
@@ -87,7 +108,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=ok_android_key,
             ios_wrapper_validator=ok_ios,
-            ios_export_options_validator=lambda _: [],
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=lambda _: [bad_result],
         )
         output = qa_preflight.format_preflight(checks)
@@ -103,7 +124,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=ok_android_key,
             ios_wrapper_validator=ok_ios,
-            ios_export_options_validator=lambda _: [],
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
         )
 
@@ -125,6 +146,28 @@ class QaPreflightTest(unittest.TestCase):
         self.assertTrue(any(check.name == "iOS export options" and check.is_blocker for check in checks))
         self.assertIn("setup_ios_export_options.py", output)
 
+    def test_invalid_ios_export_options_fields_are_blockers(self) -> None:
+        root = self.make_root()
+        write_export_options(root, team_id="bad", method="invalid")
+
+        errors = qa_preflight.validate_ios_export_options(root)
+
+        self.assertTrue(any("teamID" in error for error in errors))
+        self.assertTrue(any("method must be one of" in error for error in errors))
+
+    def test_expected_ios_export_options_mismatch_is_blocker(self) -> None:
+        root = self.make_root()
+        write_export_options(root, team_id="ABCD123456", method="development")
+
+        errors = qa_preflight.validate_ios_export_options(
+            root,
+            team_id="ZZZZ123456",
+            export_method="ad-hoc",
+        )
+
+        self.assertTrue(any("teamID must match ZZZZ123456" in error for error in errors))
+        self.assertTrue(any("method must match ad-hoc" in error for error in errors))
+
     def test_main_prints_blocked_to_stderr_for_current_missing_local_inputs(self) -> None:
         stderr = StringIO()
 
@@ -134,13 +177,32 @@ class QaPreflightTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("MaClaw Mobile QA preflight:", stderr.getvalue())
 
+    def test_main_checks_expected_ios_export_options(self) -> None:
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = qa_preflight.main(
+                [
+                    "--root",
+                    str(self.make_root()),
+                    "--team-id",
+                    "ZZZZ123456",
+                    "--export-method",
+                    "ad-hoc",
+                ],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("teamID must match ZZZZ123456", stderr.getvalue())
+        self.assertIn("method must match ad-hoc", stderr.getvalue())
+
     def test_main_prints_ready_to_stdout_with_stubbed_checks(self) -> None:
         root = self.make_root()
         stdout = StringIO()
 
         original_run_preflight = qa_preflight.run_preflight
         try:
-            qa_preflight.run_preflight = lambda _: [
+            qa_preflight.run_preflight = lambda *_args, **_kwargs: [
                 qa_preflight.PreflightCheck("Stub", "ok", ["ready"]),
             ]
             with redirect_stdout(stdout):

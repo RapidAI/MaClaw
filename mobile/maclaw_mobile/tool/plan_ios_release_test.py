@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import plistlib
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,18 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import plan_ios_release
+
+
+def write_export_options(
+    root: Path,
+    *,
+    team_id: str = "ABCD123456",
+    method: str = "development",
+) -> None:
+    ios = root / "ios"
+    ios.mkdir(parents=True, exist_ok=True)
+    with (ios / "ExportOptions.plist").open("wb") as handle:
+        plistlib.dump({"teamID": team_id, "method": method}, handle)
 
 
 class PlanIOSReleaseTest(unittest.TestCase):
@@ -53,11 +66,24 @@ class PlanIOSReleaseTest(unittest.TestCase):
                     export_options_path=Path("ios/ExportOptions.plist"),
                 )
 
+    def test_validate_export_options_requires_matching_team_and_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_export_options(root, team_id="ZZZZ123456", method="app-store")
+
+            errors = plan_ios_release.validate_export_options(
+                root / "ios" / "ExportOptions.plist",
+                team_id="ABCD123456",
+                export_method="development",
+            )
+
+        self.assertTrue(any("teamID must match ABCD123456" in error for error in errors))
+        self.assertTrue(any("method must match development" in error for error in errors))
+
     def test_main_prints_qA_fields_when_wrapper_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "ios").mkdir()
-            (root / "ios" / "ExportOptions.plist").write_text("plist", encoding="utf-8")
+            write_export_options(root, method="ad-hoc")
             output = StringIO()
             with patch("verify_ios_wrapper.verify_ios_wrapper", return_value=[]), redirect_stdout(output):
                 exit_code = plan_ios_release.main(
@@ -107,6 +133,28 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("iOS export options are not ready", error.getvalue())
         self.assertIn("setup_ios_export_options.py", error.getvalue())
+
+    def test_main_reports_mismatched_export_options_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_export_options(root, team_id="ZZZZ123456", method="app-store")
+            error = StringIO()
+            with patch("verify_ios_wrapper.verify_ios_wrapper", return_value=[]), redirect_stderr(error):
+                exit_code = plan_ios_release.main(
+                    [
+                        "--root",
+                        tmp,
+                        "--team-id",
+                        "ABCD123456",
+                        "--export-method",
+                        "development",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("teamID must match ABCD123456", error.getvalue())
+        self.assertIn("method must match development", error.getvalue())
+        self.assertNotIn("Traceback", error.getvalue())
 
 
 if __name__ == "__main__":

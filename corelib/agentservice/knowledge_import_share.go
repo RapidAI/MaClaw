@@ -28,6 +28,8 @@ var shareImportHTTPClient = &http.Client{
 	},
 }
 
+const maxSharePackageJSONBytes int64 = 50 << 20
+
 // executeKnowledgeImportShare handles the knowledge_import_share tool call
 // by resolving the share link, fetching the package, and importing it.
 // This is the in-process equivalent of MaClawSrv's handleKnowledgeImportShare HTTP handler.
@@ -134,6 +136,12 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 			if label == "" {
 				label = item.ID
 			}
+			if label == "" {
+				label = item.URI
+			}
+			if label == "" {
+				label = "unknown source"
+			}
 			truncatedSources = append(truncatedSources, label)
 		}
 	}
@@ -145,16 +153,16 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		resolvedKnowledgeID, importResult.Imported, importResult.Skipped, importResult.Total, len(truncatedSources), len(importResult.Warnings))
 
 	resultJSON, _ := json.Marshal(map[string]interface{}{
-		"status":             "imported",
-		"knowledge_id":       resolvedKnowledgeID,
-		"package_id":         pkg.Manifest.PackageID,
-		"title":              pkg.Manifest.Title,
-		"imported":           importResult.Imported,
-		"skipped":            importResult.Skipped,
-		"total":              importResult.Total,
-		"warnings":           importResult.Warnings,
-		"content_truncated":  len(truncatedSources) > 0,
-		"truncated_sources":  truncatedSources,
+		"status":            "imported",
+		"knowledge_id":      resolvedKnowledgeID,
+		"package_id":        pkg.Manifest.PackageID,
+		"title":             pkg.Manifest.Title,
+		"imported":          importResult.Imported,
+		"skipped":           importResult.Skipped,
+		"total":             importResult.Total,
+		"warnings":          importResult.Warnings,
+		"content_truncated": len(truncatedSources) > 0,
+		"truncated_sources": truncatedSources,
 	})
 	return string(resultJSON)
 }
@@ -248,14 +256,15 @@ func convertPkgSources(items []sharePackageSource) []knowledge.PackageSource {
 	out := make([]knowledge.PackageSource, 0, len(items))
 	for _, item := range items {
 		out = append(out, knowledge.PackageSource{
-			ID:           item.ID,
-			Kind:         item.Kind,
-			URI:          item.URI,
-			CanonicalURI: item.CanonicalURI,
-			Title:        item.Title,
-			TopicHint:    item.TopicHint,
-			Labels:       item.Labels,
-			Content:      item.Content,
+			ID:               item.ID,
+			Kind:             item.Kind,
+			URI:              item.URI,
+			CanonicalURI:     item.CanonicalURI,
+			Title:            item.Title,
+			TopicHint:        item.TopicHint,
+			Labels:           item.Labels,
+			Content:          item.Content,
+			ContentTruncated: item.ContentTruncated,
 		})
 	}
 	return out
@@ -403,9 +412,12 @@ func downloadSharePackage(ctx context.Context, packageURL, authorization string)
 		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSharePackageJSONBytes+1))
 	if err != nil {
 		return pkg, err
+	}
+	if int64(len(body)) > maxSharePackageJSONBytes {
+		return pkg, fmt.Errorf("knowledge package is too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return pkg, fmt.Errorf("package download returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

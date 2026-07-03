@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +13,24 @@ import (
 	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
+
+type oversizedGUIKnowledgePackageBody struct {
+	remaining int64
+}
+
+func (r *oversizedGUIKnowledgePackageBody) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:int(r.remaining)]
+	}
+	for i := range p {
+		p[i] = ' '
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
+}
 
 func TestKnowledgeShareToHubPostsPackageAndTTL(t *testing.T) {
 	t.Parallel()
@@ -140,6 +159,129 @@ func assertKnowledgeShareStrings(t *testing.T, got, want []string) {
 		}
 	}
 }
+
+func TestValidateGUIKnowledgePackageJSONSize(t *testing.T) {
+	t.Parallel()
+
+	if err := validateGUIKnowledgePackageJSONSize(make([]byte, maxGUIKnowledgeHubPackageJSONBytes)); err != nil {
+		t.Fatalf("exact limit should be accepted: %v", err)
+	}
+	if err := validateGUIKnowledgePackageJSONSize(make([]byte, maxGUIKnowledgeHubPackageJSONBytes+1)); err == nil || !strings.Contains(err.Error(), "hub accepts at most") {
+		t.Fatalf("expected oversized package error, got %v", err)
+	}
+}
+
+func TestMarshalGUIKnowledgePackageWithinLimitTruncatesContent(t *testing.T) {
+	t.Parallel()
+
+	pkg := guiKnowledgePackage{
+		Manifest: guiKnowledgePackageManifest{
+			Format:      "maclaw.knowledge.package",
+			Version:     1,
+			PackageID:   "kxp_fit",
+			Description: "fit package",
+			SourceCount: 1,
+			Editable:    true,
+		},
+		Sources: []guiKnowledgePackageSource{{
+			ID:           "ksrc_fit",
+			Kind:         "text",
+			Title:        "Fit Source",
+			Content:      strings.Repeat("\"", 4096),
+			ContentBytes: 4096,
+		}},
+	}
+
+	raw, warnings, err := marshalGUIKnowledgePackageWithinLimit(&pkg, 1024)
+	if err != nil {
+		t.Fatalf("marshal within limit: %v", err)
+	}
+	if len(raw) > 1024 {
+		t.Fatalf("raw package len=%d, want <= 1024", len(raw))
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "fit hub package size limit") {
+		t.Fatalf("expected fit warning, got %#v", warnings)
+	}
+	if !pkg.Sources[0].Truncated || pkg.Sources[0].ContentBytes >= 4096 {
+		t.Fatalf("source should be truncated: %#v", pkg.Sources[0])
+	}
+}
+
+func TestBuildGUIKnowledgeSharePayloadWithinLimitsTruncatesForRequestLimit(t *testing.T) {
+	t.Parallel()
+
+	pkg := guiKnowledgePackage{
+		Manifest: guiKnowledgePackageManifest{
+			Format:      "maclaw.knowledge.package",
+			Version:     1,
+			PackageID:   "kxp_request_fit",
+			Description: "fit request package",
+			SourceCount: 1,
+			Editable:    true,
+		},
+		Sources: []guiKnowledgePackageSource{{
+			ID:           "ksrc_request_fit",
+			Kind:         "text",
+			Title:        "Request Fit Source",
+			Content:      strings.Repeat("portable knowledge ", 2048),
+			ContentBytes: len([]byte(strings.Repeat("portable knowledge ", 2048))),
+		}},
+	}
+
+	body, summary, err := buildGUIKnowledgeSharePayloadWithinLimits(&pkg, nil, knowledgeSharePayloadOptions{
+		SourceCount:       1,
+		SourceIDs:         []string{"ksrc_request_fit"},
+		Description:       "fit request",
+		TTL:               "7d",
+		PackageLimit:      128 << 10,
+		ShareRequestLimit: 12 << 10,
+	})
+	if err != nil {
+		t.Fatalf("build payload within limits: %v", err)
+	}
+	if len(body) > 12<<10 {
+		t.Fatalf("payload len=%d, want <= %d", len(body), 12<<10)
+	}
+	if !pkg.Sources[0].Truncated {
+		t.Fatalf("source should be truncated for request fit")
+	}
+	warnings := knowledgeShareStringSliceFromAny(summary["warnings"])
+	if len(warnings) == 0 || !strings.Contains(strings.Join(warnings, "\n"), "hub share request size limit") {
+		t.Fatalf("expected request fit warning, got %#v", summary["warnings"])
+	}
+	seen := map[string]bool{}
+	for _, warning := range warnings {
+		if seen[warning] {
+			t.Fatalf("duplicate warning %q in %#v", warning, warnings)
+		}
+		seen[warning] = true
+	}
+}
+
+func TestValidateGUIKnowledgeShareRequestSize(t *testing.T) {
+	t.Parallel()
+
+	if err := validateGUIKnowledgeShareRequestSize(make([]byte, maxGUIKnowledgeHubShareRequestBytes)); err != nil {
+		t.Fatalf("exact request limit should be accepted: %v", err)
+	}
+	if err := validateGUIKnowledgeShareRequestSize(make([]byte, maxGUIKnowledgeHubShareRequestBytes+1)); err == nil || !strings.Contains(err.Error(), "knowledge share request") {
+		t.Fatalf("expected oversized request error, got %v", err)
+	}
+}
+
+func TestFetchGUIKnowledgePackageRejectsOversizedPackage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.Copy(w, &oversizedGUIKnowledgePackageBody{remaining: int64(maxGUIKnowledgeHubPackageJSONBytes) + 1})
+	}))
+	defer server.Close()
+
+	_, err := fetchGUIKnowledgePackage(context.Background(), server.URL, "")
+	if err == nil || !strings.Contains(err.Error(), "knowledge package is too large") {
+		t.Fatalf("expected oversized package error, got %v", err)
+	}
+}
+
 func TestResolveGUIKnowledgeShareAPIURLAcceptsHumanAgentAndPackageLinks(t *testing.T) {
 	t.Parallel()
 
@@ -211,6 +353,9 @@ func TestKnowledgeImportHubShareImportsTextPackage(t *testing.T) {
 	}
 	if result.Imported != 1 || result.PackageID != "kxp_import" {
 		t.Fatalf("unexpected import result: %#v", result)
+	}
+	if !knowledgeShareWarningsContain(result.Warnings, "content is truncated") {
+		t.Fatalf("expected real import truncation warning, got %#v", result.Warnings)
 	}
 	for _, header := range authHeaders {
 		if header != "Bearer viewer-token" {

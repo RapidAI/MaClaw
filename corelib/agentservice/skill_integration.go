@@ -117,11 +117,6 @@ func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args ma
 	if in.Source == "" {
 		in.Source = inferSkillInstallSource(args)
 	}
-	if in.SkillMarketURL == "" {
-		if cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID); err == nil {
-			in.SkillMarketURL = cfg.AppConfig.ConfiguredHubCenterBaseURL()
-		}
-	}
 	return b.svc.InstallSkill(ctx, p, in)
 }
 
@@ -198,14 +193,9 @@ func (b *SkillToolBridge) runSkillTimeoutSec(p Principal, entry *corelib.NLSkill
 
 // SearchSkills searches for skills across configured sources.
 func (b *SkillToolBridge) SearchSkills(ctx context.Context, p Principal, query string) ([]SkillSearchResult, error) {
-	cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID)
-	if err != nil {
-		return nil, err
-	}
 	return b.svc.SearchSkills(ctx, p, SkillSearchInput{
-		Query:       query,
-		SkillHubURL: cfg.AppConfig.ConfiguredHubCenterBaseURL(),
-		TopN:        10,
+		Query: query,
+		TopN:  10,
 	})
 }
 

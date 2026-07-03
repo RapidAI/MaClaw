@@ -155,6 +155,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListMCPTools(args) })
 
+	reg("import_mcp_servers", "通过 JSON 配置导入 MCP Server。支持标准 {\"mcpServers\": {\"name\": {...}}}，也兼容 mcpServers/mcp_servers/mcpservers 缺外层大括号的片段；本地 stdio 使用 command/args/env，远程 HTTP 使用 url 或 endpoint_url/headers。",
+		ToolCategoryBuiltin, []string{"mcp", "import", "json", "server"},
+		map[string]interface{}{
+			"json_config": map[string]string{"type": "string", "description": "MCP JSON 配置文本，例如 {\"mcpServers\":{\"playwright\":{\"command\":\"npx\",\"args\":[\"-y\",\"@playwright/mcp\"]}}}；也可传 mcpServers: {...} 这类缺外层大括号片段。"},
+			"target":      map[string]string{"type": "string", "description": "导入目标: auto/local/remote。默认 auto，含 url/endpoint_url 且无 command 时作为远程 MCP，否则作为本地 stdio MCP。"},
+		}, []string{"json_config"},
+		func(args map[string]interface{}) string { return h.toolImportMCPServers(args) })
+
 	reg("call_mcp_tool", "Call an external tool on a registered MCP server.",
 		ToolCategoryBuiltin, []string{"mcp", "call", "execute"},
 		map[string]interface{}{

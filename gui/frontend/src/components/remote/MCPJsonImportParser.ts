@@ -16,6 +16,22 @@ function preCleanJsonText(raw: string): string {
         .replace(/\uff3d/g, "]");
 }
 
+function looksLikeObjectPropertyFragment(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.startsWith("{") || trimmed.startsWith("[")) return false;
+    return /^(?:"[^"]+"|'[^']+'|[A-Za-z_$][\w$-]*)\s*:/.test(trimmed);
+}
+
 export function parseRelaxedJson(raw: string): any {
-    return JSON5.parse(preCleanJsonText(raw));
+    const cleaned = preCleanJsonText(raw);
+    try {
+        return JSON5.parse(cleaned);
+    } catch (err) {
+        if (!looksLikeObjectPropertyFragment(cleaned)) throw err;
+        try {
+            return JSON5.parse(`{${cleaned}}`);
+        } catch {
+            throw err;
+        }
+    }
 }

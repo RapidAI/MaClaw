@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
@@ -230,6 +231,168 @@ func TestInstallSkillFromSkillMarketDoesNotFallbackToSkillHubDownload(t *testing
 	_, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: server.URL, SkillID: "paid"})
 	if err == nil {
 		t.Fatal("expected skillmarket install to fail without market download endpoint")
+	}
+}
+
+func TestInstallSkillFromSkillMarketFailsOverConfiguredMarket(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	busyHits := 0
+	busyMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		busyHits++
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer busyMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		if r.URL.Path != "/api/v1/skillmarket/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "demo", "name": "demo-skill", "agent_skill_md": md})
+	}))
+	defer okMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURL:  busyMarket.URL,
+		RemoteHubCenterURLs: []string{busyMarket.URL, okMarket.URL},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillID: "demo"})
+	if err != nil {
+		t.Fatalf("InstallSkill(skillmarket): %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "demo-skill" {
+		t.Fatalf("unexpected installed skill items: %#v", items)
+	}
+	if busyHits == 0 {
+		t.Fatal("preferred market was not tried")
+	}
+	if okHits == 0 {
+		t.Fatal("fallback market was not tried")
+	}
+}
+
+func TestInstallSkillFromSkillMarketFailsOverWhenPrimaryEndpointBusy(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	busyHits := 0
+	busyMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skillmarket/demo/download" {
+			busyHits++
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer busyMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		if r.URL.Path != "/api/v1/skillmarket/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "demo", "name": "demo-skill", "agent_skill_md": md})
+	}))
+	defer okMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURL:  busyMarket.URL,
+		RemoteHubCenterURLs: []string{busyMarket.URL, okMarket.URL},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillID: "demo"})
+	if err != nil {
+		t.Fatalf("InstallSkill(skillmarket): %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "demo-skill" {
+		t.Fatalf("unexpected installed skill items: %#v", items)
+	}
+	if busyHits != 1 {
+		t.Fatalf("busy market primary endpoint hits = %d, want 1", busyHits)
+	}
+	if okHits == 0 {
+		t.Fatal("fallback market was not tried")
+	}
+}
+
+func TestInstallSkillFromSkillMarketDoesNotFailOverExplicitMarketURL(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	busyHits := 0
+	busyMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		busyHits++
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer busyMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "demo", "name": "demo-skill", "agent_skill_md": md})
+	}))
+	defer okMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURLs: []string{okMarket.URL},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	_, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: busyMarket.URL, SkillID: "demo"})
+	if err == nil {
+		t.Fatal("InstallSkill() error = nil, want explicit market failure")
+	}
+	if busyHits == 0 {
+		t.Fatal("explicit market was not tried")
+	}
+	if okHits != 0 {
+		t.Fatalf("fallback market hits = %d, want 0 for explicit URL", okHits)
+	}
+}
+
+func TestInstallSkillFromSkillMarketExplicitSuccessDoesNotPromoteConfig(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	configuredMarket := "https://hubs2.maclaw.top"
+	explicitMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skillmarket/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "demo", "name": "demo-skill", "agent_skill_md": md})
+	}))
+	defer explicitMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURL:  configuredMarket,
+		RemoteHubCenterURLs: []string{configuredMarket},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: explicitMarket.URL, SkillID: "demo"})
+	if err != nil {
+		t.Fatalf("InstallSkill(skillmarket): %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "demo-skill" {
+		t.Fatalf("unexpected installed skill items: %#v", items)
+	}
+	cfg, err := svc.store.GetUserConfig(tenant.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserConfig: %v", err)
+	}
+	if cfg.AppConfig.RemoteHubCenterURL != configuredMarket {
+		t.Fatalf("RemoteHubCenterURL = %q, want explicit URL not persisted over %q", cfg.AppConfig.RemoteHubCenterURL, configuredMarket)
 	}
 }
 
@@ -474,6 +637,169 @@ func TestUploadSkillBlocksCriticalRiskBeforeSubmit(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Metadata["phase"] != "upload" {
 		t.Fatalf("skill.rejected upload audit = %#v, want one upload event", events)
+	}
+}
+
+func TestUploadSkillFailsOverWhenPreferredMarketBusy(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot() error = %v", err)
+	}
+	skillDir := filepath.Join(root, "portable-upload")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "name: portable-upload\ndescription: demo\nsteps:\n  - action: prompt\n    prompt: say hello\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	busyHits := 0
+	busyMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		busyHits++
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer busyMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		if r.URL.Path != "/api/v1/skills/submit" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm() error = %v", err)
+		}
+		if got := r.FormValue("email"); got != "user@example.com" {
+			t.Fatalf("email = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub_ok"})
+	}))
+	defer okMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURL:  busyMarket.URL,
+		RemoteHubCenterURLs: []string{busyMarket.URL, okMarket.URL},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig() error = %v", err)
+	}
+
+	result, err := svc.UploadSkill(context.Background(), principal, "portable-upload", SkillUploadInput{
+		Email: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("UploadSkill() error = %v", err)
+	}
+	if result.SubmissionID != "sub_ok" {
+		t.Fatalf("submission_id = %q", result.SubmissionID)
+	}
+	if busyHits != 1 {
+		t.Fatalf("busy market hits = %d, want 1", busyHits)
+	}
+	if okHits != 1 {
+		t.Fatalf("fallback market hits = %d, want 1", okHits)
+	}
+}
+
+func TestUploadSkillDoesNotFailOverExplicitMarketURL(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot() error = %v", err)
+	}
+	skillDir := filepath.Join(root, "explicit-market-upload")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "name: explicit-market-upload\ndescription: demo\nsteps:\n  - action: prompt\n    prompt: say hello\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	busyHits := 0
+	busyMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		busyHits++
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer busyMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub_ok"})
+	}))
+	defer okMarket.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURLs: []string{okMarket.URL},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig() error = %v", err)
+	}
+
+	_, err = svc.UploadSkill(context.Background(), principal, "explicit-market-upload", SkillUploadInput{
+		Email:          "user@example.com",
+		SkillMarketURL: busyMarket.URL,
+	})
+	if err == nil {
+		t.Fatal("UploadSkill() error = nil, want explicit market failure")
+	}
+	if busyHits != 1 {
+		t.Fatalf("busy market hits = %d, want 1", busyHits)
+	}
+	if okHits != 0 {
+		t.Fatalf("fallback market hits = %d, want 0 for explicit URL", okHits)
+	}
+}
+
+func TestSearchSkillMarketCandidatesDoesNotRetryAuthorizationErrors(t *testing.T) {
+	authHits := 0
+	authMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHits++
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer authMarket.Close()
+	okHits := 0
+	okMarket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okHits++
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{map[string]any{"id": "demo", "name": "demo"}}})
+	}))
+	defer okMarket.Close()
+
+	_, err := searchSkillMarketCandidates(context.Background(), []string{authMarket.URL, okMarket.URL}, "demo", 10)
+	if err == nil {
+		t.Fatal("searchSkillMarketCandidates() error = nil, want 403 failure")
+	}
+	if authHits != 1 {
+		t.Fatalf("auth market hits = %d, want 1", authHits)
+	}
+	if okHits != 0 {
+		t.Fatalf("fallback market hits = %d, want 0 for authorization error", okHits)
+	}
+}
+
+func TestRememberUserHubCenterSelectionPromotesPublicFallback(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{
+		RemoteHubCenterURL:  "https://hubs2.maclaw.top",
+		RemoteHubCenterURLs: []string{"https://hubs2.maclaw.top"},
+	}); err != nil {
+		t.Fatalf("UpdateUserConfig() error = %v", err)
+	}
+
+	svc.rememberUserHubCenterSelection(principal, "https://hubs.maclaw.top", []string{"https://hubs2.maclaw.top"})
+	cfg, err := svc.store.GetUserConfig(tenant.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserConfig() error = %v", err)
+	}
+	if cfg.AppConfig.RemoteHubCenterURL != "https://hubs.maclaw.top" {
+		t.Fatalf("RemoteHubCenterURL = %q, want promoted fallback", cfg.AppConfig.RemoteHubCenterURL)
+	}
+	want := []string{"https://hubs.maclaw.top", "https://hubs2.maclaw.top", "https://hubs.mypapers.top"}
+	if !remote.StringSliceEqual(cfg.AppConfig.RemoteHubCenterURLs, want) {
+		t.Fatalf("RemoteHubCenterURLs = %#v, want %#v", cfg.AppConfig.RemoteHubCenterURLs, want)
 	}
 }
 

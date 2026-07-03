@@ -13,10 +13,12 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ReadErrorLog: vi.fn().mockResolvedValue([]),
     ProbeRemoteHub: vi.fn().mockResolvedValue({}),
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
+    SendRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 }),
+    VerifyRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { GetHubUserRanking, ProbeRemoteHub } from '../../../wailsjs/go/main/App';
+import { GetHubUserRanking, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -45,6 +47,22 @@ const baseProps = {
         aboutHubUrl: 'Hub URL',
         aboutHubCenterUrl: 'Hub Center URL',
         aboutAccountEmail: 'Account',
+        aboutRegisterPhone: 'Registered Phone',
+        aboutRegisterEmail: 'Registered Email',
+        aboutSetContactBtn: 'Set',
+        aboutSetRegisterPhone: 'Set Registered Phone',
+        aboutSetRegisterEmail: 'Set Registered Email',
+        aboutContactDialogDesc: 'Complete and verify this registration detail through Hub.',
+        aboutRegisterPhonePlaceholder: 'Enter phone number',
+        aboutRegisterEmailPlaceholder: 'name@example.com',
+        aboutVerifyCode: 'Verification Code',
+        aboutVerifyCodePlaceholder: 'Enter code',
+        aboutSendCodeBtn: 'Send Code',
+        aboutVerifyAndSaveBtn: 'Verify and Save',
+        aboutContactCodeSent: '{length}-digit code sent. It expires in {minutes} minutes.',
+        aboutContactCodeFailed: 'Failed to send verification code.',
+        aboutContactVerified: 'Verified and saved.',
+        aboutContactVerifyFailed: 'Verification failed.',
         aboutMachineId: 'Machine ID',
         remoteActivation: 'Registration',
         remoteActivated: 'Registered',
@@ -64,6 +82,7 @@ const baseProps = {
         errorLogTitle: 'Error Log',
         errorLogEmpty: 'No errors found in the log.',
         loading: 'Loading',
+        cancel: 'Cancel',
         bugReport: 'Problem Feedback',
         codeRepository: 'Code Repository',
         thanks: 'Thanks',
@@ -148,6 +167,40 @@ describe('AboutPanel', () => {
         expect(screen.getByText('Acme Team')).toBeTruthy();
         expect(screen.getByText('Build Desk')).toBeTruthy();
         expect(screen.getByText('https://hub.example')).toBeTruthy();
+    });
+
+    it('shows setup actions for missing registration contact details and verifies email', async () => {
+        const onRegistrationContactUpdated = vi.fn();
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} onRegistrationContactUpdated={onRegistrationContactUpdated} />);
+
+        const setButtons = screen.getAllByText('Set');
+        expect(setButtons.length).toBeGreaterThanOrEqual(2);
+
+        fireEvent.click(setButtons[1]);
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'dev@example.com' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        await waitFor(() => expect(SendRemoteRegistrationContactCode).toHaveBeenCalledWith('email', 'dev@example.com'));
+
+        fireEvent.change(screen.getByPlaceholderText('Enter code'), { target: { value: '123456' } });
+        fireEvent.click(screen.getByText('Verify and Save'));
+
+        await waitFor(() => expect(VerifyRemoteRegistrationContactCode).toHaveBeenCalledWith('email', 'dev@example.com', '123456'));
+        expect(onRegistrationContactUpdated).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats phone account identity as registered phone, not registered email', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'phone:19900001111', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(screen.getByText('19900001111')).toBeTruthy();
+        expect(screen.queryByText('phone:19900001111')).toBeNull();
+        expect(screen.getAllByText('Set').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('probes tenant metadata with a phone account identity', async () => {
+        render(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub.example', remote_email: 'phone:19900001111', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        await waitFor(() => expect(ProbeRemoteHub).toHaveBeenCalledWith('https://hub.example', 'phone:19900001111'));
     });
 
     it('shows monthly ranking rows for a newly registered user with zero usage', async () => {

@@ -13,13 +13,12 @@ import (
 // toolDiscoverTool searches for matching tools and unlocks deferred tools that
 // are explicitly selected through discovery.
 func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string {
+	if h == nil {
+		return "Tool registry not available."
+	}
 	need, _ := args["need"].(string)
 	if need == "" {
 		return "Missing 'need' parameter. Describe what capability you need."
-	}
-
-	if h.registry == nil && h.toolDefGen == nil {
-		return "Tool registry not available."
 	}
 
 	var allTools []RegisteredTool
@@ -61,6 +60,30 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		}
 	}
 
+	mcpMatches := h.discoverableMCPToolDocs()
+	for id, item := range mcpMatches {
+		text := strings.Join([]string{
+			"mcp",
+			"remote",
+			"external",
+			"tool",
+			"search",
+			"query",
+			"lookup",
+			"retrieve",
+			"查找",
+			"搜索",
+			"查询",
+			"检索",
+			"内容",
+			item.serverID,
+			item.serverName,
+			item.toolName,
+			item.description,
+		}, " ")
+		docs = append(docs, bm25.Doc{ID: id, Text: text})
+	}
+
 	if len(docs) == 0 {
 		return "No additional tools found beyond the core set."
 	}
@@ -68,14 +91,10 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	idx.RebuildIfChanged(docs)
 	scores := idx.Score(need)
 
-	type scored struct {
-		name  string
-		score float64
-	}
-	var ranked []scored
+	var ranked []discoveredToolScore
 	for name, score := range scores {
 		if score > 0 {
-			ranked = append(ranked, scored{name: name, score: score})
+			ranked = append(ranked, discoveredToolScore{name: name, score: score})
 		}
 	}
 	sort.Slice(ranked, func(i, j int) bool {
@@ -140,6 +159,14 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
 	for i, item := range ranked {
+		if mcp, ok := mcpMatches[item.name]; ok {
+			desc := mcp.description
+			if runes := []rune(desc); len(runes) > 120 {
+				desc = string(runes[:120]) + "..."
+			}
+			b.WriteString(fmt.Sprintf("%d. **call_mcp_tool** (MCP: %s/%s) - %s\n", i+1, mcp.serverID, mcp.toolName, desc))
+			continue
+		}
 		t := toolMap[item.name]
 		desc := t.Description
 		if runes := []rune(desc); len(runes) > 120 {
@@ -153,12 +180,70 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	} else {
 		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
 	}
+	if containsMCPDiscoveryMatch(ranked, mcpMatches) {
+		b.WriteString("\nFor MCP matches, call call_mcp_tool with the shown server_id and tool_name.")
+	}
 	return b.String()
 }
 
 func shouldHideToolFromDiscovery(name string) bool {
 	name = strings.TrimSpace(name)
 	return name != MergedBrowserToolName && strings.HasPrefix(name, "browser_")
+}
+
+type discoverableMCPTool struct {
+	serverID    string
+	serverName  string
+	toolName    string
+	description string
+}
+
+type discoveredToolScore struct {
+	name  string
+	score float64
+}
+
+func (h *IMMessageHandler) discoverableMCPToolDocs() map[string]discoverableMCPTool {
+	out := make(map[string]discoverableMCPTool)
+	if h == nil {
+		return out
+	}
+	if mgr := h.getLocalMCPManager(); mgr != nil {
+		for _, ts := range mgr.GetAllTools() {
+			for _, t := range ts.Tools {
+				id := "mcp:local:" + ts.ServerID + ":" + t.Name
+				out[id] = discoverableMCPTool{
+					serverID:    ts.ServerID,
+					serverName:  ts.ServerName,
+					toolName:    t.Name,
+					description: t.Description,
+				}
+			}
+		}
+	}
+	if registry := h.getMCPRegistry(); registry != nil {
+		for _, s := range registry.ListServers() {
+			for _, t := range s.Tools {
+				id := "mcp:remote:" + s.ID + ":" + t.Name
+				out[id] = discoverableMCPTool{
+					serverID:    s.ID,
+					serverName:  s.Name,
+					toolName:    t.Name,
+					description: t.Description,
+				}
+			}
+		}
+	}
+	return out
+}
+
+func containsMCPDiscoveryMatch(ranked []discoveredToolScore, mcpMatches map[string]discoverableMCPTool) bool {
+	for _, item := range ranked {
+		if _, ok := mcpMatches[item.name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func discoverToolStatusLine(index int, name, desc string, coreTool, activated bool) string {

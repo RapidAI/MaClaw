@@ -35,7 +35,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
 
         status = release_status_report.build_status(
             root,
-            preflight=lambda _: [
+            preflight=lambda *_args, **_kwargs: [
                 qa_preflight.PreflightCheck("Android local signing inputs", "blocker", ["missing key.properties"]),
             ],
             validate_records=lambda _: [bad_record],
@@ -48,6 +48,13 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("QA build records: 0 valid, 1 invalid", output)
         self.assertIn("Branch", output)
         self.assertIn("Result: NOT READY.", output)
+        self.assertIn("release_handoff.py with --version <version+build>", output)
+        self.assertIn("--team-id <APPLE_TEAM_ID>", output)
+        self.assertIn("--export-method <export-method>", output)
+        self.assertIn("--output docs/qa-builds/handoff-<version+build>.md", output)
+        self.assertIn("verify_runtime_boundary.py --log", output)
+        self.assertIn("run_release_gates.py --log", output)
+        self.assertIn("prefilled create_qa_build_record.py", output)
 
     def test_ready_report_when_everything_passes(self) -> None:
         root = self.make_root()
@@ -58,7 +65,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
 
         status = release_status_report.build_status(
             root,
-            preflight=lambda _: [
+            preflight=lambda *_args, **_kwargs: [
                 qa_preflight.PreflightCheck("Android local signing inputs", "ok", ["ready"]),
             ],
             validate_records=lambda _: [valid_record],
@@ -96,7 +103,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         stdout = StringIO()
         original_build_status = release_status_report.build_status
         try:
-            release_status_report.build_status = lambda _: ready
+            release_status_report.build_status = lambda *_args, **_kwargs: ready
             with redirect_stdout(stdout):
                 exit_code = release_status_report.main(["--root", str(root)])
         finally:
@@ -104,6 +111,43 @@ class ReleaseStatusReportTest(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("Result: READY", stdout.getvalue())
+
+    def test_main_passes_ios_expected_values_to_status_builder(self) -> None:
+        root = self.make_root()
+        ready = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[],
+            final_errors=[],
+        )
+        seen: dict[str, object] = {}
+        stdout = StringIO()
+        original_build_status = release_status_report.build_status
+        try:
+            def fake_build_status(*args: object, **kwargs: object) -> release_status_report.ReleaseStatus:
+                seen["args"] = args
+                seen["kwargs"] = kwargs
+                return ready
+
+            release_status_report.build_status = fake_build_status
+            with redirect_stdout(stdout):
+                exit_code = release_status_report.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--team-id",
+                        "abcde12345",
+                        "--export-method",
+                        "ad-hoc",
+                    ],
+                )
+        finally:
+            release_status_report.build_status = original_build_status
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual((root,), seen["args"])
+        self.assertEqual("ABCDE12345", seen["kwargs"]["ios_team_id"])
+        self.assertEqual("ad-hoc", seen["kwargs"]["ios_export_method"])
 
 
 if __name__ == "__main__":

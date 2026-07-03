@@ -29,6 +29,7 @@ const defaultMaxFileSize int64 = 50 << 20 // 50MB
 const maxReadableKnowledgeSourcesPerScope = 5000
 const maxKnowledgeArchiveFiles = 2000
 const maxKnowledgeUploadFiles = 20
+const maxKnowledgePackageJSONBodyBytes int64 = 50 << 20
 
 // knowledgeShareClient is a shared HTTP client for Hub knowledge share operations.
 // Uses TLS-skip transport because Hub servers commonly use self-signed certificates.
@@ -681,26 +682,26 @@ type knowledgePackageManifest struct {
 }
 
 type knowledgePackageSource struct {
-	ID              string   `json:"id,omitempty"`
-	Kind            string   `json:"kind,omitempty"`
-	URI             string   `json:"uri,omitempty"`
-	CanonicalURI    string   `json:"canonical_uri,omitempty"`
-	Title           string   `json:"title,omitempty"`
-	Author          string   `json:"author,omitempty"`
-	SiteName        string   `json:"site_name,omitempty"`
-	TopicHint       string   `json:"topic_hint,omitempty"`
-	Labels          []string `json:"labels,omitempty"`
-	Status          string   `json:"status,omitempty"`
-	RelativePath    string   `json:"relative_path,omitempty"`
-	BatchID         string   `json:"batch_id,omitempty"`
-	ContentHash     string   `json:"content_hash,omitempty"`
-	NodeCount       int      `json:"node_count,omitempty"`
-	CardCount       int      `json:"card_count,omitempty"`
-	FactCount       int      `json:"fact_count,omitempty"`
-	CreatedAt       string   `json:"created_at,omitempty"`
-	UpdatedAt       string   `json:"updated_at,omitempty"`
-	Content         string   `json:"content,omitempty"`
-	ContentTruncated bool   `json:"content_truncated,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	URI              string   `json:"uri,omitempty"`
+	CanonicalURI     string   `json:"canonical_uri,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	Author           string   `json:"author,omitempty"`
+	SiteName         string   `json:"site_name,omitempty"`
+	TopicHint        string   `json:"topic_hint,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
+	Status           string   `json:"status,omitempty"`
+	RelativePath     string   `json:"relative_path,omitempty"`
+	BatchID          string   `json:"batch_id,omitempty"`
+	ContentHash      string   `json:"content_hash,omitempty"`
+	NodeCount        int      `json:"node_count,omitempty"`
+	CardCount        int      `json:"card_count,omitempty"`
+	FactCount        int      `json:"fact_count,omitempty"`
+	CreatedAt        string   `json:"created_at,omitempty"`
+	UpdatedAt        string   `json:"updated_at,omitempty"`
+	Content          string   `json:"content,omitempty"`
+	ContentTruncated bool     `json:"content_truncated,omitempty"`
 }
 
 type knowledgePackage struct {
@@ -754,7 +755,7 @@ func (s *HTTPServer) handleKnowledgeImportPackage(w http.ResponseWriter, r *http
 		return
 	}
 	var pkg knowledgePackage
-	if err := readJSONBody(r, &pkg); err != nil {
+	if err := readJSONBodyWithLimit(r, &pkg, maxKnowledgePackageJSONBodyBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
@@ -843,14 +844,15 @@ func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.
 		sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
 		for _, item := range pkg.Sources {
 			sources = append(sources, knowledge.PackageSource{
-				ID:           item.ID,
-				Kind:         item.Kind,
-				URI:          item.URI,
-				CanonicalURI: item.CanonicalURI,
-				Title:        item.Title,
-				TopicHint:    item.TopicHint,
-				Labels:       item.Labels,
-				Content:      item.Content,
+				ID:               item.ID,
+				Kind:             item.Kind,
+				URI:              item.URI,
+				CanonicalURI:     item.CanonicalURI,
+				Title:            item.Title,
+				TopicHint:        item.TopicHint,
+				Labels:           item.Labels,
+				Content:          item.Content,
+				ContentTruncated: item.ContentTruncated,
 			})
 		}
 		importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
@@ -982,9 +984,12 @@ func fetchKnowledgePackage(ctx context.Context, packageURL, authorization string
 		return pkg, fmt.Errorf("fetch knowledge package: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxKnowledgePackageJSONBodyBytes+1))
 	if err != nil {
 		return pkg, err
+	}
+	if int64(len(body)) > maxKnowledgePackageJSONBodyBytes {
+		return pkg, fmt.Errorf("knowledge package is too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return pkg, fmt.Errorf("knowledge package download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -997,9 +1002,11 @@ func fetchKnowledgePackage(ctx context.Context, packageURL, authorization string
 
 // maxExportPackageContentBytes caps total inline content in an export package to prevent
 // excessively large JSON payloads. Individual sources are capped at maxExportSourceContentBytes.
-const maxExportPackageContentBytes = 20 * 1024 * 1024 // 20 MB total
-const maxExportSourceContentBytes = 512 * 1024        // 512 KB per source
-const maxExportSourceNodes = 500
+// Keep these aligned with the GUI knowledge package limits so server exports are not much
+// less complete than desktop shares.
+const maxExportPackageContentBytes = 40 * 1024 * 1024 // 40 MB total
+const maxExportSourceContentBytes = 16 * 1024 * 1024  // 16 MB per source
+const maxExportSourceNodes = 5000
 
 func buildKnowledgeExportPackageWithStore(ctx context.Context, store *knowledge.SQLiteStore, dataRoot string, p agentservice.Principal, title, description string, sources []knowledge.Source) knowledgePackage {
 	now := time.Now().UTC()
@@ -1042,7 +1049,7 @@ func buildKnowledgeExportPackageWithStore(ctx context.Context, store *knowledge.
 		}
 		items = append(items, item)
 	}
-	return knowledgePackage{
+	pkg := knowledgePackage{
 		Manifest: knowledgePackageManifest{
 			Format:      "maclaw.knowledge.package",
 			Version:     1,
@@ -1058,6 +1065,59 @@ func buildKnowledgeExportPackageWithStore(ctx context.Context, store *knowledge.
 		},
 		Sources: items,
 	}
+	fitKnowledgeExportPackageJSON(&pkg, maxKnowledgePackageJSONBodyBytes)
+	return pkg
+}
+
+func fitKnowledgeExportPackageJSON(pkg *knowledgePackage, limitBytes int64) {
+	if pkg == nil || limitBytes <= 0 {
+		return
+	}
+	for attempts := 0; attempts < len(pkg.Sources)*4+16; attempts++ {
+		raw, err := json.Marshal(pkg)
+		if err != nil || int64(len(raw)) <= limitBytes {
+			return
+		}
+		idx := largestKnowledgePackageContentSource(pkg.Sources)
+		if idx < 0 {
+			return
+		}
+		currentBytes := len([]byte(pkg.Sources[idx].Content))
+		if currentBytes == 0 {
+			return
+		}
+		excess := int64(len(raw)) - limitBytes
+		cutBytes := int(excess) + (1 << 20)
+		minCut := currentBytes / 10
+		if minCut < 64<<10 {
+			minCut = 64 << 10
+		}
+		if cutBytes < minCut {
+			cutBytes = minCut
+		}
+		nextBytes := currentBytes - cutBytes
+		if nextBytes < 0 {
+			nextBytes = 0
+		}
+		pkg.Sources[idx].Content = truncateUTF8ToBytes(pkg.Sources[idx].Content, nextBytes)
+		pkg.Sources[idx].ContentTruncated = true
+		if nextBytes == 0 {
+			return
+		}
+	}
+}
+
+func largestKnowledgePackageContentSource(sources []knowledgePackageSource) int {
+	idx := -1
+	maxBytes := 0
+	for i, source := range sources {
+		contentBytes := len([]byte(source.Content))
+		if contentBytes > maxBytes {
+			idx = i
+			maxBytes = contentBytes
+		}
+	}
+	return idx
 }
 
 // exportPackageSourceContent reads document nodes for a source and returns concatenated
@@ -2409,9 +2469,16 @@ func splitLabels(s string) []string {
 }
 
 func readJSONBody(r *http.Request, v interface{}) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes))
+	return readJSONBodyWithLimit(r, v, maxJSONBodyBytes)
+}
+
+func readJSONBodyWithLimit(r *http.Request, v interface{}, limit int64) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return fmt.Errorf("request body too large")
 	}
 	if len(body) == 0 {
 		return fmt.Errorf("empty request body")

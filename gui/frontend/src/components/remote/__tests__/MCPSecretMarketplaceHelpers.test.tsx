@@ -100,4 +100,28 @@ describe("MCP secret marketplace helpers", () => {
             headers: { Authorization: "Bearer x" },
         });
     });
+
+    it("parses pasted MCP JSON object properties without outer braces", () => {
+        const parsed = parseRelaxedJson(`
+            "mcpServers": {
+                "jira-qax": {
+                    "url": "https://mcp.example.com/jira",
+                    "headers": {},
+                    "transport": "http"
+                },
+                "wiki-qax": {
+                    "url": "https://mcp.example.com/wiki",
+                    "headers": {},
+                    "transport": "http",
+                },
+            }
+        `);
+
+        expect(parsed.mcpServers["jira-qax"]).toEqual({
+            url: "https://mcp.example.com/jira",
+            headers: {},
+            transport: "http",
+        });
+        expect(parsed.mcpServers["wiki-qax"].url).toBe("https://mcp.example.com/wiki");
+    });
 });

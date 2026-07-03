@@ -8,6 +8,23 @@ from pathlib import Path
 import validate_qa_build_record
 
 
+EVIDENCE_FIELD_HINTS = {
+    "Release handoff result": (
+        "Attach the `python3 tool/release_handoff.py --version <version+build> "
+        "--team-id <APPLE_TEAM_ID> --export-method <export-method> "
+        "--output <path>` output path, handoff transcript, or attachment ID."
+    ),
+    "Runtime boundary verification result": (
+        "Paste `MaClaw Mobile runtime boundary verified.` from "
+        "`python3 tool/verify_runtime_boundary.py --log <path>` or reference its log attachment."
+    ),
+    "Automated release gates result": (
+        "Paste the `python3 tool/run_release_gates.py` result, gate count, "
+        "and log attachment ID."
+    ),
+}
+
+
 @dataclass(frozen=True)
 class RequiredEvidenceProgress:
     filled: int
@@ -112,6 +129,14 @@ def _format_section(title: str, errors: list[str]) -> list[str]:
     return lines
 
 
+def _evidence_hints(errors: list[str]) -> list[str]:
+    hints = []
+    for field, hint in EVIDENCE_FIELD_HINTS.items():
+        if any(error == field or error.startswith(f"{field} ") for error in errors):
+            hints.append(f"- {field}: {hint}")
+    return hints
+
+
 def format_report(report: QaBuildRecordReport) -> str:
     lines = [
         f"QA build record report: {report.path}",
@@ -133,6 +158,11 @@ def format_report(report: QaBuildRecordReport) -> str:
     )
     if sections:
         lines.extend(sections)
+        hints = _evidence_hints(report.evidence_errors)
+        if hints:
+            lines.append("")
+            lines.append("How to fill release decision evidence:")
+            lines.extend(hints)
     else:
         lines.append("No gaps found by the QA build record validator.")
     return "\n".join(lines).rstrip() + "\n"

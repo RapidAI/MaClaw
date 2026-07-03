@@ -30,7 +30,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
 
             self.assertTrue(report.passed)
             self.assertIn("Status: PASS", output)
-            self.assertIn("Required evidence: 100/100 occurrences filled", output)
+            self.assertIn("Required evidence: 103/103 occurrences filled", output)
             self.assertIn("No gaps found", output)
 
     def test_report_groups_missing_and_invalid_evidence(self) -> None:
@@ -48,11 +48,48 @@ class QaBuildRecordReportTest(unittest.TestCase):
 
             self.assertFalse(report.passed)
             self.assertIn("Status: FAIL", output)
-            self.assertIn("Required evidence: 99/100 occurrences filled", output)
+            self.assertIn("Required evidence: 102/103 occurrences filled", output)
             self.assertIn("Evidence fields and values:", output)
             self.assertIn("- Branch", output)
             self.assertIn(
                 "- Selected HubCenter URL must be one of the preset official HubCenters",
+                output,
+            )
+
+    def test_report_calls_out_automated_gate_evidence_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = complete_record()
+            for field in (
+                "Release handoff result",
+                "Runtime boundary verification result",
+                "Automated release gates result",
+            ):
+                text = text.replace(
+                    f"{field}: QA evidence captured for {field} with screenshot/log reference\n",
+                    "",
+                )
+            record = self.write_record(Path(tmp), text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("Required evidence: 100/103 occurrences filled", output)
+            self.assertIn("Evidence fields and values:", output)
+            self.assertIn("- Release handoff result", output)
+            self.assertIn("- Runtime boundary verification result", output)
+            self.assertIn("- Automated release gates result", output)
+            self.assertIn("How to fill release decision evidence:", output)
+            self.assertIn(
+                "- Release handoff result: Attach the `python3 tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method <export-method> --output <path>` output path",
+                output,
+            )
+            self.assertIn(
+                "- Runtime boundary verification result: Paste `MaClaw Mobile runtime boundary verified.` from `python3 tool/verify_runtime_boundary.py --log <path>`",
+                output,
+            )
+            self.assertIn(
+                "- Automated release gates result: Paste the `python3 tool/run_release_gates.py` result",
                 output,
             )
 

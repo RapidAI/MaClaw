@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,53 @@ func doKnowledgeSharePathRequest(t *testing.T, handler http.HandlerFunc, method,
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 	return rec
+}
+
+type oversizedKnowledgeShareBody struct {
+	remaining int64
+}
+
+func (r *oversizedKnowledgeShareBody) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:int(r.remaining)]
+	}
+	for i := range p {
+		p[i] = ' '
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
+}
+
+func TestDecodeKnowledgeShareMutationRequestRejectsOversizedBody(t *testing.T) {
+	body := &oversizedKnowledgeShareBody{remaining: knowledgeShareRequestMaxBytes + 1}
+	req := httptest.NewRequest(http.MethodPost, "/api/knowledge/shares", body)
+	rec := httptest.NewRecorder()
+
+	var mutation knowledgeShareMutationRequest
+	err := decodeKnowledgeShareMutationRequest(rec, req, &mutation)
+	if err == nil || !strings.Contains(err.Error(), "request body too large") {
+		t.Fatalf("expected oversized body error, got %v", err)
+	}
+}
+
+func TestCreateKnowledgeShareHandlerRejectsOversizedBodyWith413(t *testing.T) {
+	st, identity, packageDir := newKnowledgeShareHandlerTestDeps(t)
+	viewerToken, _ := issueViewerToken(t, identity, "oversized-share@example.com")
+	body := &oversizedKnowledgeShareBody{remaining: knowledgeShareRequestMaxBytes + 1}
+	req := httptest.NewRequest(http.MethodPost, "/api/knowledge/shares", body)
+	req.Host = "hub.example.test"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	CreateKnowledgeShareHandler(st.KnowledgeShares, identity, packageDir)(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "REQUEST_TOO_LARGE") {
+		t.Fatalf("oversized create status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestKnowledgeShareUserPackageFlow(t *testing.T) {

@@ -117,6 +117,25 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     return violations
 
 
+def format_result(violations: list[BoundaryViolation]) -> str:
+    if not violations:
+        return "MaClaw Mobile runtime boundary verified.\n"
+
+    lines = ["MaClaw Mobile runtime boundary violations found:"]
+    for violation in violations:
+        lines.append(
+            f"- {violation.path}:{violation.line}: {violation.rule.name}: "
+            f"{violation.text}",
+        )
+        lines.append(f"  {violation.rule.reason}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_log(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify that MaClaw Mobile does not embed or bridge Go corelib.",
@@ -127,22 +146,23 @@ def main(argv: list[str] | None = None) -> int:
         default=mobile_root(),
         help="Path to mobile/maclaw_mobile. Defaults to this script's project root.",
     )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        help="Optional path to write the runtime-boundary verification result for QA evidence.",
+    )
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
     violations = find_violations(root)
+    output = format_result(violations)
+    if args.log:
+        write_log(args.log, output)
     if not violations:
-        print("MaClaw Mobile runtime boundary verified.")
+        print(output, end="")
         return 0
 
-    print("MaClaw Mobile runtime boundary violations found:", file=sys.stderr)
-    for violation in violations:
-        print(
-            f"- {violation.path}:{violation.line}: {violation.rule.name}: "
-            f"{violation.text}",
-            file=sys.stderr,
-        )
-        print(f"  {violation.rule.reason}", file=sys.stderr)
+    print(output, end="", file=sys.stderr)
     return 1
 
 

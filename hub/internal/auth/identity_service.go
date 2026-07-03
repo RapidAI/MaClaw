@@ -1045,6 +1045,31 @@ func (s *IdentityService) BindVerifiedPhoneToUser(ctx context.Context, user *sto
 	return nil
 }
 
+func (s *IdentityService) BindVerifiedEmailToUser(ctx context.Context, user *store.User, email string) error {
+	if s == nil || s.users == nil || user == nil {
+		return nil
+	}
+	email = normalizeEmail(email)
+	if email == "" {
+		return ErrInvalidEmail
+	}
+	now := time.Now().UTC()
+	if err := s.users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:         user.ID + "_email",
+		TenantID:   user.TenantID,
+		UserID:     user.ID,
+		Type:       "email",
+		Value:      email,
+		Verified:   true,
+		VerifiedAt: &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *IdentityService) syncVerifiedPhoneRoute(ctx context.Context, phoneIdentity string) {
 	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(phoneIdentity) == "" {
 		return

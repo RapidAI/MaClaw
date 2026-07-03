@@ -673,7 +673,7 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 		t.Fatalf("expected import progress snapshots")
 	}
 	lastProgress := progressSnapshots[len(progressSnapshots)-1]
-	if lastProgress.ProcessedFiles != 1 || lastProgress.ImportedFiles != 1 || lastProgress.CurrentFile == "" {
+	if lastProgress.Status != ImportStatusCompleted || lastProgress.ProcessedFiles != 1 || lastProgress.ImportedFiles != 1 || lastProgress.CurrentFile != "" || lastProgress.CurrentStep != "" {
 		t.Fatalf("unexpected final progress snapshot: %#v", lastProgress)
 	}
 

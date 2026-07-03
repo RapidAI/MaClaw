@@ -52,11 +52,12 @@ For a single local readiness summary, run:
 - Confirm `flutter build apk --release` or `flutter build appbundle --release`
   uses the configured release signing key and does not fall back to the debug
   signing key.
-- Run `python3 tool/build_android_release.py --artifact apk --dry-run` to
-  validate local signing inputs without producing an artifact, then run the
+- Run `python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --dry-run`
+  to validate local signing inputs without producing an artifact, then run the
   same command without `--dry-run` or use `--artifact appbundle` for Play
-  internal testing. Record the printed artifact path, SHA256, version/build
-  number, signing identity, and installer channel in the QA build record.
+  internal testing. The app version and build number must match the
+  `<version+build>` used in the QA build record. Record the printed artifact
+  path, SHA256, version/build number, signing identity, and installer channel.
 - After the signed artifact exists, run
   `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
   to generate paste-ready `Artifact path`, `SHA256`, byte-size, and build
@@ -92,6 +93,10 @@ For a single local readiness summary, run:
   TestFlight build number, Team ID, Runner and Share Extension provisioning
   profiles, bundle IDs, app group, and URL scheme evidence in the QA build
   record.
+- After the signed archive/TestFlight build exists, run
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+  to generate paste-ready archive/build, Team ID, and provisioning-profile
+  evidence for the QA build record.
 
 ## User Workflows
 
@@ -198,3 +203,11 @@ Before approving a release candidate with completed signed-build QA records, run
 This final verifier requires validated Android and iOS signed-build records and
 checks that `docs/release_evidence.md` links every validated QA record by
 filename.
+Each completed record must include these Final Release Decision fields before
+approval:
+- `Release handoff result`
+- `Runtime boundary verification result`
+- `Automated release gates result`
+
+Each field must use traceable output paths, command transcripts, or log
+attachment IDs.

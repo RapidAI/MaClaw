@@ -34,7 +34,10 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             records_dir = Path(tmp)
             record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
             record.write_text("record", encoding="utf-8")
-            evidence = self._release_evidence(records_dir, f"Linked: {record.name}\n")
+            evidence = self._release_evidence(
+                records_dir,
+                f"- [{record.name}](docs/qa-builds/{record.name})\n",
+            )
 
             with patch(
                 "validate_qa_build_records_dir.validate_directory",
@@ -62,7 +65,12 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             ios.write_text("ios", encoding="utf-8")
             evidence = self._release_evidence(
                 records_dir,
-                f"Android: {android.name}\niOS: {ios.name}\n",
+                "\n".join(
+                    [
+                        f"- [{android.name}](docs/qa-builds/{android.name})",
+                        f"- [{ios.name}](docs/qa-builds/{ios.name})",
+                    ],
+                ),
             )
 
             with patch(
@@ -138,7 +146,34 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
                 )
 
         self.assertIn(
-            "Release evidence document must link every validated QA build record: "
+            "Release evidence document must include Markdown links for every validated QA build record: "
+            "2026-07-02-android-ios-1.0.0+42.md",
+            errors,
+        )
+
+    def test_record_filename_mention_without_markdown_link_is_not_enough(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text("record", encoding="utf-8")
+            evidence = self._release_evidence(
+                records_dir,
+                f"QA record filename only: {record.name}\n",
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ):
+                errors = verify_final_release_evidence.verify_final_release_evidence(
+                    records_dir,
+                    evidence,
+                )
+
+        self.assertIn(
+            "Release evidence document must include Markdown links for every validated QA build record: "
             "2026-07-02-android-ios-1.0.0+42.md",
             errors,
         )

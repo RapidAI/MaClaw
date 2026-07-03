@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 func TestGetHubCenterJSONReturnsExplicitLimitErrorInsteadOfUnexpectedEOF(t *testing.T) {
@@ -95,5 +98,31 @@ func TestGetHubCenterBytesReturnsExactLimitedBody(t *testing.T) {
 	}
 	if string(data) != body {
 		t.Fatalf("data = %q, want %q", string(data), body)
+	}
+}
+
+func TestResolveHubCenterCandidatesKeepsDefaultFailoverWithCachedSingleNode(t *testing.T) {
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{"https://hubs2.maclaw.top"})
+
+	got, err := app.resolveHubCenterCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveHubCenterCandidates: %v", err)
+	}
+	want := []string{
+		"https://hubs2.maclaw.top",
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+	}
+	if !remote.StringSliceEqual(got, want) {
+		t.Fatalf("candidates = %#v, want %#v", got, want)
 	}
 }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type React from 'react';
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -13,10 +13,19 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { SidebarNavRail } from '../SidebarNavRail';
-import { BrowserOpenURL } from '../../../../wailsjs/runtime';
+import { GetHubUserRanking } from '../../../../wailsjs/go/main/App';
+import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
 
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
+    vi.mocked(EventsOn).mockClear();
+    vi.mocked(EventsOn).mockReturnValue(() => {});
+    vi.mocked(GetHubUserRanking).mockReset();
+    vi.mocked(GetHubUserRanking).mockResolvedValue({ error: 'hub not configured' });
+});
+
+afterEach(() => {
+    vi.useRealTimers();
 });
 
 function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRail>> = {}) {
@@ -84,6 +93,196 @@ describe('SidebarNavRail favorite employees', () => {
         expect(() => fireEvent.click(screen.getByTitle('Monthly ranking pending'))).not.toThrow();
 
         expect(BrowserOpenURL).not.toHaveBeenCalledWith(expect.stringContaining('/user-ranking'));
+    });
+
+    it('shows returned monthly ranking data even when both ranks are not positive yet', async () => {
+        vi.mocked(GetHubUserRanking).mockResolvedValueOnce({
+            total_tokens: 0,
+            duration_seconds: 0,
+            token_rank: 0,
+            duration_rank: 0,
+            total_users: 1,
+            period: 'monthly',
+        });
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await waitFor(() => expect(screen.getByTitle('This month: Token #-/1, Online #-/1')).toBeTruthy());
+
+        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
+        expect(screen.getByText('Rank')).toBeTruthy();
+    });
+
+    it('retries startup ranking fetch with exponential backoff until it gets valid data', async () => {
+        vi.useFakeTimers();
+        vi.mocked(GetHubUserRanking)
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({
+                total_tokens: 120,
+                duration_seconds: 0,
+                token_rank: 4,
+                duration_rank: 0,
+                total_users: 9,
+                period: 'monthly',
+            });
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(1);
+        expect(screen.getByTitle('Monthly ranking pending')).toBeTruthy();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000);
+            await Promise.resolve();
+        });
+
+        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
+        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(2 * 60_000);
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops the startup retry chain when another refresh gets valid data first', async () => {
+        vi.useFakeTimers();
+        vi.mocked(GetHubUserRanking)
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({
+                total_tokens: 120,
+                duration_seconds: 0,
+                token_rank: 4,
+                duration_rank: 0,
+                total_users: 9,
+                period: 'monthly',
+            });
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const tokenUsageHandler = vi.mocked(EventsOn).mock.calls.find(([eventName]) => eventName === 'llm-token-usage-changed')?.[1] as (() => void) | undefined;
+        expect(tokenUsageHandler).toBeTruthy();
+        tokenUsageHandler?.();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+            await Promise.resolve();
+        });
+
+        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(25_000);
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
+    });
+
+    it('continues startup retries when a stale startup response was superseded by a failed refresh', async () => {
+        vi.useFakeTimers();
+        let resolveStartup: (value: unknown) => void = () => {};
+        const startupResponse = new Promise((resolve) => { resolveStartup = resolve; });
+        vi.mocked(GetHubUserRanking)
+            .mockReturnValueOnce(startupResponse)
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({
+                total_tokens: 120,
+                duration_seconds: 0,
+                token_rank: 4,
+                duration_rank: 0,
+                total_users: 9,
+                period: 'monthly',
+            });
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const tokenUsageHandler = vi.mocked(EventsOn).mock.calls.find(([eventName]) => eventName === 'llm-token-usage-changed')?.[1] as (() => void) | undefined;
+        tokenUsageHandler?.();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+            resolveStartup({ error: 'ranking pending' });
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000);
+            await Promise.resolve();
+        });
+
+        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(3);
+    });
+
+    it('falls back to the 30 minute periodic refresh after startup retries are exhausted', async () => {
+        vi.useFakeTimers();
+        vi.mocked(GetHubUserRanking)
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce({
+                total_tokens: 120,
+                duration_seconds: 0,
+                token_rank: 4,
+                duration_rank: 0,
+                total_users: 9,
+                period: 'monthly',
+            });
+
+        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000 + 2 * 60_000 + 8 * 60_000);
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(4);
+        expect(screen.getByTitle('Monthly ranking pending')).toBeTruthy();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(30 * 60_000 - (30_000 + 2 * 60_000 + 8 * 60_000) - 1);
+            await Promise.resolve();
+        });
+
+        expect(GetHubUserRanking).toHaveBeenCalledTimes(4);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1);
+            await Promise.resolve();
+        });
+
+        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
+        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
     });
 
     it('switches to AI before opening a favorite digital employee conversation', () => {

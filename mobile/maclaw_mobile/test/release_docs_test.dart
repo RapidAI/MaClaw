@@ -46,6 +46,19 @@ void main() {
     return file.existsSync() || Directory(file.path).existsSync();
   }
 
+  void expectHandoffCommandsWriteEvidence(String docText) {
+    final commands = RegExp(r'^python3 tool/release_handoff\.py --version .*$',
+            multiLine: true)
+        .allMatches(docText)
+        .map((match) => match.group(0)!)
+        .toList();
+    expect(commands, isNotEmpty);
+    for (final command in commands) {
+      expect(command, contains('--output docs/qa-builds/handoff-'));
+      expect(command, contains('.md'));
+    }
+  }
+
   const lookupTab = '\u67e5\u4fe1\u606f';
   const documentsTab = '\u6587\u6863';
   const remoteTab = '\u8fdc\u7a0b';
@@ -81,6 +94,19 @@ void main() {
     expect(qa, contains('tool/qa_release_evidence_links.py'));
     expect(qa, contains('tool/qa_preflight.py'));
     expect(qa, contains('tool/release_status_report.py'));
+    expect(qa, contains('tool/release_handoff.py'));
+    expect(qa, contains('tool/verify_runtime_boundary.py'));
+    expect(qa, contains('tool/run_release_gates.py'));
+    expect(qa, contains('Release handoff result'));
+    expect(qa, contains('Runtime boundary verification result'));
+    expect(qa, contains('Automated release gates result'));
+    expect(
+      qa,
+      contains(
+        'python3 tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md',
+      ),
+    );
+    expectHandoffCommandsWriteEvidence(qa);
     expect(releaseDocCorpus(), contains('tool/create_qa_build_record.py'));
     expect(qa, contains('tool/validate_qa_build_records_dir.py'));
     expect(qa, contains('tool/verify_final_release_evidence.py'));
@@ -171,6 +197,9 @@ void main() {
       'Team ID',
       'Provisioning profiles: Runner and Share Extension profile UUID/file/name',
       'ios/ExportOptions.plist.example',
+      'python3 tool/signed_artifact_evidence.py ios',
+      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--provisioning-profiles "<Runner profile; Share Extension profile>"',
       'android/key.properties.example',
       'MACLAW_ANDROID_STORE_FILE',
       'MACLAW_ANDROID_STORE_PASSWORD',
@@ -226,6 +255,9 @@ void main() {
       'keyAlias',
       'does not fall back to the debug',
       'Install a signed development/TestFlight build',
+      'python3 tool/signed_artifact_evidence.py ios',
+      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--provisioning-profiles "<Runner profile; Share Extension profile>"',
       'text, URLs, images, PDFs, Word, Excel, and CSV files',
       'Ask one assistant question by voice',
       'photo/image/screenshot question',
@@ -422,6 +454,9 @@ void main() {
       'SHA256',
       'Version/build number: app version + build number, such as 1.0.0+42',
       'Signing identity: release alias, SHA fingerprint, upload key, or certificate ID',
+      'python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build>',
+      '--signing-identity "<alias or certificate fingerprint>"',
+      '--installer-channel "<internal test channel>"',
       'Runner bundle id: top.mypapers.maclaw.mobile',
       'Android signed install result',
       'Account screen shows selected Hub and tenant',
@@ -442,6 +477,9 @@ void main() {
       'Share Extension bundle id: top.mypapers.maclaw.mobile.ShareExtension',
       'Team ID',
       'Provisioning profiles',
+      'python3 tool/signed_artifact_evidence.py ios',
+      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--provisioning-profiles "<Runner profile; Share Extension profile>"',
       'App group: group.top.mypapers.maclaw.mobile',
       'iOS signed install result',
       'Speech recognition permission',
@@ -489,6 +527,13 @@ void main() {
       'manual/not-auto-executed',
       'pasted/copied output',
       'Credential deletion confirmation',
+      'Release handoff result',
+      'handoff output path, attachment ID, or command transcript reference',
+      'Runtime boundary verification result',
+      'python3 tool/verify_runtime_boundary.py',
+      'Automated release gates result',
+      'python3 tool/run_release_gates.py',
+      'gate count, and log attachment ID',
       'Hub discovery smoke passed: passed / waived with reason',
       'Approval date: YYYY-MM-DD',
       'Approver must be different from Tester',
@@ -571,12 +616,15 @@ void main() {
     expect(checklist, contains('python3 tool/run_release_gates.py --dry-run'));
     expect(checklist, contains('tool/run_release_gates_test.py'));
     expect(checklist, contains('tool/verify_runtime_boundary.py'));
+    expect(checklist, contains('Release handoff result'));
+    expect(checklist, contains('Runtime boundary verification result'));
+    expect(checklist, contains('Automated release gates result'));
     expect(checklist, contains('python3 tool/verify_debug_apk_evidence.py'));
     expect(checklist, contains('tool/verify_manual_release_gates_test.py'));
     expect(checklist, contains('tool/verify_final_release_evidence_test.py'));
     expect(checklist, contains('tool/verify_android_release_signing_test.py'));
     expect(checklist, contains('tool/build_android_release_test.py'));
-    expect(checklist, contains('python3 tool/build_android_release.py --artifact apk --dry-run'));
+    expect(checklist, contains('python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --dry-run'));
     expect(checklist, contains('--artifact appbundle'));
     expect(checklist, contains('tool/verify_ios_wrapper_test.py'));
     expect(checklist, contains('tool/plan_ios_release_test.py'));
@@ -763,6 +811,7 @@ void main() {
     final qaBuildRecordTemplate = readDoc('docs/qa_build_record_template.md');
     final qaBuildsReadmeText = qaBuildsReadme.replaceAll(RegExp(r'\s+'), ' ');
     final rootGitignore = File('../../.gitignore').readAsStringSync();
+    expectHandoffCommandsWriteEvidence(qaBuildsReadme);
 
     for (final expected in [
       'one completed QA build record per signed Android/iOS release candidate',
@@ -774,6 +823,12 @@ void main() {
       'python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42',
       'python3 tool/qa_preflight.py',
       'python3 tool/release_status_report.py',
+      'python3 tool/release_handoff.py --version 1.0.0+42 --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md',
+      'python3 tool/verify_runtime_boundary.py',
+      'python3 tool/run_release_gates.py',
+      'Release handoff result',
+      'Runtime boundary verification result',
+      'Automated release gates result',
       'Use `--scope android` or `--scope ios`',
       'refuses to overwrite an existing',
       'python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md',

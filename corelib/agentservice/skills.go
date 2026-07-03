@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -280,11 +281,11 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 				add(SkillSearchResult{Source: "github", Name: inferSkillNameFromGitHub(item), Description: item.Description, RepoFullName: item.RepoFullName, RepoURL: item.RepoURL, RawURL: item.RawURL, FilePath: item.FilePath, Branch: item.Branch, DefinitionType: item.DefinitionType, Downloads: item.Stars})
 			}
 		case "skillhub":
-			baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillHubURL)
+			baseURLs, err := s.resolveUserHubCenterBaseURLs(p, in.SkillHubURL)
 			if err != nil {
 				continue
 			}
-			found, err := searchSkillHub(ctx, baseURL, query, topN)
+			found, err := searchSkillHubCandidates(ctx, baseURLs, query, topN)
 			if err != nil {
 				continue
 			}
@@ -300,11 +301,11 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 				add(SkillSearchResult{Source: item.Source, ID: item.ID, Name: item.Name, Description: item.Description, Version: item.Version, Author: item.Author, TrustLevel: item.TrustLevel, Downloads: item.Downloads, AvgRating: item.AvgRating})
 			}
 		case "skillmarket":
-			baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+			baseURLs, err := s.resolveUserHubCenterBaseURLs(p, in.SkillMarketURL)
 			if err != nil {
 				continue
 			}
-			found, err := searchSkillMarket(ctx, baseURL, query, topN)
+			found, err := searchSkillMarketCandidates(ctx, baseURLs, query, topN)
 			if err != nil {
 				continue
 			}
@@ -370,13 +371,16 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "skillhub":
-		baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillHubURL)
+		baseURLs, err := s.resolveUserHubCenterBaseURLs(p, in.SkillHubURL)
 		if err != nil {
 			return nil, err
 		}
-		entry, err := downloadSkillHubEntry(ctx, baseURL, strings.TrimSpace(in.SkillID))
+		entry, usedBaseURL, err := downloadSkillHubEntryCandidates(ctx, baseURLs, strings.TrimSpace(in.SkillID))
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(in.SkillHubURL) == "" {
+			s.rememberUserHubCenterSelection(p, usedBaseURL, baseURLs)
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "clawhub":
@@ -391,15 +395,17 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		if err != nil {
 			return nil, err
 		}
-		baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+		baseURLs, err := s.resolveUserHubCenterBaseURLs(p, in.SkillMarketURL)
 		if err != nil {
 			return nil, err
 		}
 		email := firstNonEmpty(user.Email, cfg.AppConfig.RemoteEmail)
-		authToken := s.skillMarketAuthToken(ctx, p, cfg, baseURL, email)
-		entry, err := downloadSkillMarketEntry(ctx, baseURL, strings.TrimSpace(in.SkillID), email, authToken)
+		entry, usedBaseURL, err := s.downloadSkillMarketEntryCandidates(ctx, p, cfg, baseURLs, strings.TrimSpace(in.SkillID), email)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(in.SkillMarketURL) == "" {
+			s.rememberUserHubCenterSelection(p, usedBaseURL, baseURLs)
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	default:
@@ -432,19 +438,65 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 }
 
 func (s *Service) resolveUserHubCenterBaseURL(p Principal, explicit string) (string, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(explicit), "/")
-	if baseURL != "" {
-		return baseURL, nil
-	}
-	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	baseURLs, err := s.resolveUserHubCenterBaseURLs(p, explicit)
 	if err != nil {
 		return "", err
 	}
-	baseURL = cfg.AppConfig.ConfiguredHubCenterBaseURL()
-	if baseURL == "" {
-		return "", fmt.Errorf("hubcenter URL is not configured; activate remote HubCenter first")
+	return baseURLs[0], nil
+}
+
+func (s *Service) resolveUserHubCenterBaseURLs(p Principal, explicit string) ([]string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		baseURLs := remote.NormalizeHubCenterURLs([]string{explicit})
+		if len(baseURLs) == 0 {
+			return nil, fmt.Errorf("hubcenter URL is not configured; activate remote HubCenter first")
+		}
+		return baseURLs, nil
 	}
-	return baseURL, nil
+	candidates := make([]string, 0, len(remote.DefaultRemoteHubCenterURLs)+2)
+	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	if err == nil {
+		candidates = append(candidates, cfg.AppConfig.RemoteHubCenterURL)
+		candidates = append(candidates, cfg.AppConfig.RemoteHubCenterURLs...)
+	} else {
+		return nil, err
+	}
+	candidates = append(candidates, remote.DefaultRemoteHubCenterURLs...)
+	baseURLs := remote.NormalizeHubCenterURLs(candidates)
+	if len(baseURLs) == 0 {
+		return nil, fmt.Errorf("hubcenter URL is not configured; activate remote HubCenter first")
+	}
+	return baseURLs, nil
+}
+
+func (s *Service) rememberUserHubCenterSelection(p Principal, selected string, candidates []string) {
+	selected = remote.NormalizeHubCenterURL(selected)
+	if selected == "" || remote.IsLoopbackURL(selected) {
+		return
+	}
+	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+	if err != nil {
+		return
+	}
+	next := append([]string{selected}, candidates...)
+	next = append(next, remote.DefaultRemoteHubCenterURLs...)
+	next = remote.NormalizeHubCenterURLs(next)
+	public := make([]string, 0, len(next))
+	for _, value := range next {
+		if value == "" || remote.IsLoopbackURL(value) {
+			continue
+		}
+		public = append(public, value)
+	}
+	if len(public) == 0 {
+		return
+	}
+	cfg.AppConfig.RemoteHubCenterURL = selected
+	cfg.AppConfig.RemoteHubCenterURLs = public
+	cfg.UpdatedAt = s.now()
+	_ = s.store.SaveUserConfig(cfg)
+	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {
@@ -563,7 +615,7 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	if email == "" {
 		return nil, fmt.Errorf("email is required")
 	}
-	baseURL, err := s.resolveUserHubCenterBaseURL(p, in.SkillMarketURL)
+	baseURLs, err := s.resolveUserHubCenterBaseURLs(p, in.SkillMarketURL)
 	if err != nil {
 		return nil, err
 	}
@@ -619,9 +671,12 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	if fileName == "" {
 		fileName = "skill"
 	}
-	submissionID, err := submitSkillArchive(ctx, baseURL, email, fileName+".zip", archive, strings.TrimSpace(in.AuthToken))
+	submissionID, usedBaseURL, err := submitSkillArchiveCandidates(ctx, baseURLs, email, fileName+".zip", archive, strings.TrimSpace(in.AuthToken))
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(in.SkillMarketURL) == "" {
+		s.rememberUserHubCenterSelection(p, usedBaseURL, baseURLs)
 	}
 	statusPath := filepath.Join(dir, "upload_status.json")
 	statusBody, _ := json.MarshalIndent(map[string]string{"submission_id": submissionID, "uploaded_at": s.now().Format(time.RFC3339)}, "", "  ")
@@ -635,11 +690,11 @@ func (s *Service) GetSkillUploadStatus(ctx context.Context, p Principal, submiss
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	baseURL, err := s.resolveUserHubCenterBaseURL(p, baseURL)
+	baseURLs, err := s.resolveUserHubCenterBaseURLs(p, baseURL)
 	if err != nil {
 		return nil, err
 	}
-	return fetchSkillSubmissionStatus(ctx, baseURL, strings.TrimSpace(submissionID))
+	return fetchSkillSubmissionStatusCandidates(ctx, baseURLs, strings.TrimSpace(submissionID))
 }
 
 func (s *Service) GetSkillMarketAccount(ctx context.Context, p Principal, baseURL, email string) (*SkillMarketAccount, error) {
@@ -647,7 +702,7 @@ func (s *Service) GetSkillMarketAccount(ctx context.Context, p Principal, baseUR
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
-	baseURL, err := s.resolveUserHubCenterBaseURL(p, baseURL)
+	baseURLs, err := s.resolveUserHubCenterBaseURLs(p, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +710,7 @@ func (s *Service) GetSkillMarketAccount(ctx context.Context, p Principal, baseUR
 	if email == "" {
 		return nil, fmt.Errorf("email is required")
 	}
-	return fetchSkillMarketAccount(ctx, baseURL, email)
+	return fetchSkillMarketAccountCandidates(ctx, baseURLs, email)
 }
 
 func (s *Service) ensureUserSkillsRoot(p Principal) (string, error) {
@@ -933,6 +988,24 @@ func searchSkillHub(ctx context.Context, baseURL, query string, topN int) ([]Ski
 	return results, nil
 }
 
+func searchSkillHubCandidates(ctx context.Context, baseURLs []string, query string, topN int) ([]SkillSearchResult, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		results, err := searchSkillHub(ctx, baseURL, query, topN)
+		if err == nil {
+			return results, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("skill hub url is required")
+}
+
 func searchSkillMarket(ctx context.Context, baseURL, query string, topN int) ([]SkillSearchResult, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("skill market url is required")
@@ -956,6 +1029,24 @@ func searchSkillMarket(ctx context.Context, baseURL, query string, topN int) ([]
 	return results, nil
 }
 
+func searchSkillMarketCandidates(ctx context.Context, baseURLs []string, query string, topN int) ([]SkillSearchResult, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		results, err := searchSkillMarket(ctx, baseURL, query, topN)
+		if err == nil {
+			return results, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("skill market url is required")
+}
+
 func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corelib.NLSkillEntry, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	skillID = strings.TrimSpace(skillID)
@@ -972,6 +1063,24 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 		return nil, err
 	}
 	return skillEntryFromHubDownloadPayload(payload, baseURL, "skillhub")
+}
+
+func downloadSkillHubEntryCandidates(ctx context.Context, baseURLs []string, skillID string) (*corelib.NLSkillEntry, string, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		entry, err := downloadSkillHubEntry(ctx, baseURL, skillID)
+		if err == nil {
+			return entry, baseURL, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, "", err
+		}
+	}
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return nil, "", fmt.Errorf("skill hub url is required")
 }
 
 func downloadSkillMarketEntry(ctx context.Context, baseURL, skillID, email, authToken string) (*corelib.NLSkillEntry, error) {
@@ -991,11 +1100,15 @@ func downloadSkillMarketEntry(ctx context.Context, baseURL, skillID, email, auth
 		fmt.Sprintf("%s/api/capability-market/capabilities/%s/download?email=%s&format=agent_skill", baseURL, url.PathEscape(skillID), url.QueryEscape(email)),
 	}
 	var lastErr error
+	var retryableErr error
 	var encryptedResponse bool
 	for _, endpoint := range endpoints {
 		body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, headers, skillHubJSONMaxBytes)
 		if err != nil {
 			lastErr = err
+			if retryableErr == nil && isRetryableHubCenterError(err) {
+				retryableErr = err
+			}
 			continue
 		}
 		var encrypted struct {
@@ -1020,7 +1133,29 @@ func downloadSkillMarketEntry(ctx context.Context, baseURL, skillID, email, auth
 	if encryptedResponse {
 		return nil, fmt.Errorf("skill market download endpoint does not expose format=agent_skill")
 	}
+	if retryableErr != nil {
+		return nil, retryableErr
+	}
 	return nil, lastErr
+}
+
+func (s *Service) downloadSkillMarketEntryCandidates(ctx context.Context, p Principal, cfg UserConfig, baseURLs []string, skillID, email string) (*corelib.NLSkillEntry, string, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		authToken := s.skillMarketAuthToken(ctx, p, cfg, baseURL, email)
+		entry, err := downloadSkillMarketEntry(ctx, baseURL, skillID, email, authToken)
+		if err == nil {
+			return entry, baseURL, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, "", err
+		}
+	}
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return nil, "", fmt.Errorf("skill market url is required")
 }
 
 func skillEntryFromHubDownloadPayload(payload skillHubDownloadEnvelope, sourceProject, defaultSource string) (*corelib.NLSkillEntry, error) {
@@ -1074,6 +1209,24 @@ func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, ar
 	return payload.SubmissionID, nil
 }
 
+func submitSkillArchiveCandidates(ctx context.Context, baseURLs []string, email, fileName string, archive []byte, authToken string) (string, string, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		submissionID, err := submitSkillArchive(ctx, baseURL, email, fileName, archive, authToken)
+		if err == nil {
+			return submissionID, baseURL, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return "", "", err
+		}
+	}
+	if lastErr != nil {
+		return "", "", lastErr
+	}
+	return "", "", fmt.Errorf("skill market url is required")
+}
+
 func fetchSkillSubmissionStatus(ctx context.Context, baseURL, submissionID string) (*SkillSubmissionStatus, error) {
 	if submissionID == "" {
 		return nil, fmt.Errorf("submission_id is required")
@@ -1090,6 +1243,24 @@ func fetchSkillSubmissionStatus(ctx context.Context, baseURL, submissionID strin
 	return &payload, nil
 }
 
+func fetchSkillSubmissionStatusCandidates(ctx context.Context, baseURLs []string, submissionID string) (*SkillSubmissionStatus, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		status, err := fetchSkillSubmissionStatus(ctx, baseURL, submissionID)
+		if err == nil {
+			return status, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("skill market url is required")
+}
+
 func fetchSkillMarketAccount(ctx context.Context, baseURL, email string) (*SkillMarketAccount, error) {
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/account/" + url.PathEscape(email)
 	body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, nil, 1<<20)
@@ -1101,6 +1272,49 @@ func fetchSkillMarketAccount(ctx context.Context, baseURL, email string) (*Skill
 		return nil, err
 	}
 	return &payload, nil
+}
+
+func fetchSkillMarketAccountCandidates(ctx context.Context, baseURLs []string, email string) (*SkillMarketAccount, error) {
+	var lastErr error
+	for _, baseURL := range remote.NormalizeHubCenterURLs(baseURLs) {
+		account, err := fetchSkillMarketAccount(ctx, baseURL, email)
+		if err == nil {
+			return account, nil
+		}
+		lastErr = err
+		if !isRetryableHubCenterError(err) {
+			return nil, err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("skill market url is required")
+}
+
+type hubCenterStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e hubCenterStatusError) Error() string {
+	if strings.TrimSpace(e.Message) != "" {
+		return fmt.Sprintf("request failed (%d): %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("request failed (%d)", e.StatusCode)
+}
+
+func isRetryableHubCenterError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr hubCenterStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode == http.StatusRequestTimeout ||
+			statusErr.StatusCode == http.StatusTooManyRequests ||
+			(statusErr.StatusCode >= 500 && statusErr.StatusCode <= 599)
+	}
+	return true
 }
 
 func doJSONRequest(ctx context.Context, method, endpoint string, body io.Reader, headers map[string]string, maxBytes int64) ([]byte, error) {
@@ -1130,7 +1344,7 @@ func doJSONRequest(ctx context.Context, method, endpoint string, body io.Reader,
 		if trimmed == "" {
 			trimmed = resp.Status
 		}
-		return nil, fmt.Errorf("request failed: %s", trimmed)
+		return nil, hubCenterStatusError{StatusCode: resp.StatusCode, Message: trimmed}
 	}
 	return data, nil
 }

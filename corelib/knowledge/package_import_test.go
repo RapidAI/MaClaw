@@ -4,8 +4,18 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func containsWarning(warnings []string, needle string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, needle) {
+			return true
+		}
+	}
+	return false
+}
 
 // ---------------------------------------------------------------------------
 // 6.1: Test import with 0 sources creates a batch with "completed" status
@@ -85,6 +95,56 @@ func TestImportPackageSources_URLFailsWithInlineContent_BatchImported(t *testing
 	// Final status should be "completed" since all imported
 	if store.batches[0].Status != "completed" {
 		t.Fatalf("batch status=%q, want 'completed'", store.batches[0].Status)
+	}
+}
+
+func TestImportPackageSources_ContentTruncatedWarning(t *testing.T) {
+	store := &mockBatchCreatorStore{}
+	sources := []PackageSource{
+		{
+			ID:               "text1",
+			Kind:             "text",
+			Title:            "Large Export",
+			Content:          "partial content",
+			ContentTruncated: true,
+		},
+	}
+
+	result := ImportPackageSources(context.Background(), store, sources, PackageImportOptions{})
+
+	if result.Imported != 1 {
+		t.Fatalf("Imported=%d, want 1", result.Imported)
+	}
+	if !containsWarning(result.Warnings, "content is truncated") {
+		t.Fatalf("expected truncation warning, got %#v", result.Warnings)
+	}
+}
+
+func TestImportPackageSources_ContentTruncatedWarningUsesFallbackLabel(t *testing.T) {
+	store := &mockBatchCreatorStore{}
+	result := ImportPackageSources(context.Background(), store, []PackageSource{
+		{Content: "partial content", ContentTruncated: true},
+	}, PackageImportOptions{})
+
+	if result.Imported != 1 {
+		t.Fatalf("Imported=%d, want 1", result.Imported)
+	}
+	if !containsWarning(result.Warnings, "source unknown source content is truncated") {
+		t.Fatalf("expected fallback truncation warning, got %#v", result.Warnings)
+	}
+}
+
+func TestImportPackageSources_NilStoreSkipsImportableSourcesWithoutPanic(t *testing.T) {
+	result := ImportPackageSources(context.Background(), nil, []PackageSource{
+		{URI: "https://example.com/a", Content: "url fallback"},
+		{Title: "Inline", Content: "inline text"},
+	}, PackageImportOptions{})
+
+	if result.Imported != 0 || result.Skipped != 2 || result.Failed != 2 {
+		t.Fatalf("unexpected nil-store result: %#v", result)
+	}
+	if !containsWarning(result.Warnings, "knowledge store is unavailable") {
+		t.Fatalf("expected nil-store warning, got %#v", result.Warnings)
 	}
 }
 

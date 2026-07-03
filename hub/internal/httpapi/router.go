@@ -537,6 +537,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system))
 	mux.HandleFunc("POST /api/enroll/sms/send-code", RegistrationSMSSendCodeHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/sms/verify-and-start", RegistrationSMSVerifyAndStartHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/enroll/profile/send-code", RegistrationContactSendCodeHandler(identity, system, mailer, nil))
+	mux.HandleFunc("POST /api/enroll/profile/verify", RegistrationContactVerifyHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/center/user-exists", CenterUserExistsHandler(identity, centerSvc))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))

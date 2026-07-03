@@ -9,6 +9,11 @@ from pathlib import Path
 
 VALID_SCOPES = ("android", "ios", "android-ios")
 VERSION_BUILD_RE = re.compile(r"^\d+(?:\.\d+){1,3}\+\d+$")
+FINAL_DECISION_PREFILL_FIELDS = {
+    "release_handoff_result": "Release handoff result",
+    "runtime_boundary_result": "Runtime boundary verification result",
+    "automated_gates_result": "Automated release gates result",
+}
 
 
 def mobile_root() -> Path:
@@ -51,8 +56,13 @@ def record_filename(record_date: str, scope: str, version_build: str) -> str:
     return f"{record_date}-{scope}-{version_build}.md"
 
 
-def render_record(template: str, record_date: str, version_build: str) -> str:
-    return (
+def render_record(
+    template: str,
+    record_date: str,
+    version_build: str,
+    final_decision_prefills: dict[str, str] | None = None,
+) -> str:
+    rendered = (
         template.replace("Date: YYYY-MM-DD", f"Date: {record_date}", 1)
         .replace(
             "Version/build number: app version + build number, such as 1.0.0+42",
@@ -60,6 +70,11 @@ def render_record(template: str, record_date: str, version_build: str) -> str:
             1,
         )
     )
+    for field, value in (final_decision_prefills or {}).items():
+        if not value.strip():
+            continue
+        rendered = rendered.replace(f"{field}:", f"{field}: {value.strip()}", 1)
+    return rendered
 
 
 def create_record(
@@ -69,6 +84,7 @@ def create_record(
     record_date: str,
     scope: str,
     version_build: str,
+    final_decision_prefills: dict[str, str] | None = None,
     force: bool = False,
 ) -> Path:
     if scope not in VALID_SCOPES:
@@ -83,6 +99,7 @@ def create_record(
         template_path.read_text(encoding="utf-8"),
         record_date,
         version_build,
+        final_decision_prefills,
     )
     target.write_text(rendered, encoding="utf-8")
     return target
@@ -127,15 +144,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite an existing generated record with the same name.",
     )
+    parser.add_argument(
+        "--release-handoff-result",
+        help="Optional handoff output path, transcript reference, or attachment ID to prefill.",
+    )
+    parser.add_argument(
+        "--runtime-boundary-result",
+        help="Optional runtime-boundary verifier output/log reference to prefill.",
+    )
+    parser.add_argument(
+        "--automated-gates-result",
+        help="Optional release-gates output/log reference to prefill.",
+    )
     args = parser.parse_args(argv)
 
     try:
+        final_decision_prefills = {
+            field: value
+            for arg_name, field in FINAL_DECISION_PREFILL_FIELDS.items()
+            for value in [getattr(args, arg_name)]
+            if value
+        }
         target = create_record(
             template_path=args.template,
             records_dir=args.records_dir,
             record_date=args.date,
             scope=args.scope,
             version_build=args.version,
+            final_decision_prefills=final_decision_prefills,
             force=args.force,
         )
     except (FileExistsError, FileNotFoundError, ValueError) as exc:

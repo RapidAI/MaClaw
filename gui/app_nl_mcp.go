@@ -240,11 +240,16 @@ func sanitizeMCPID(name string) string {
 
 // Register adds a new MCP Server.
 func (r *MCPRegistry) Register(entry corelib.MCPServerEntry) error {
+	_, err := r.register(entry, true)
+	return err
+}
+
+func (r *MCPRegistry) register(entry corelib.MCPServerEntry, asyncHealthCheck bool) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if entry.Name == "" || entry.EndpointURL == "" {
-		return fmt.Errorf("name and endpoint_url are required")
+		return "", fmt.Errorf("name and endpoint_url are required")
 	}
 	// Auto-generate ID from name if not provided
 	if entry.ID == "" {
@@ -253,7 +258,7 @@ func (r *MCPRegistry) Register(entry corelib.MCPServerEntry) error {
 	servers := r.loadServers()
 	for _, s := range servers {
 		if s.ID == entry.ID {
-			return fmt.Errorf("MCP server with id %q already exists", entry.ID)
+			return "", fmt.Errorf("MCP server with id %q already exists", entry.ID)
 		}
 	}
 	if entry.CreatedAt == "" {
@@ -264,15 +269,17 @@ func (r *MCPRegistry) Register(entry corelib.MCPServerEntry) error {
 	}
 	servers = append(servers, entry)
 	if err := r.saveServers(servers); err != nil {
-		return err
+		return "", err
 	}
-	// Trigger async health check for the newly registered server.
-	go func() {
-		if err := r.HealthCheck(entry.ID); err != nil {
-			log.Printf("[MCPRegistry] initial health check for %s failed: %v", entry.ID, err)
-		}
-	}()
-	return nil
+	if asyncHealthCheck {
+		// Trigger async health check for the newly registered server.
+		go func() {
+			if err := r.HealthCheck(entry.ID); err != nil {
+				log.Printf("[MCPRegistry] initial health check for %s failed: %v", entry.ID, err)
+			}
+		}()
+	}
+	return entry.ID, nil
 }
 
 // Update modifies an existing MCP Server.
@@ -910,6 +917,54 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 	return views
 }
 
+func (r *MCPRegistry) warmServerTools(serverID string, wait time.Duration, onDone func(error)) error {
+	done := make(chan error, 1)
+	go func() {
+		err := r.HealthCheck(serverID)
+		if onDone != nil {
+			onDone(err)
+		}
+		done <- err
+	}()
+	if wait <= 0 {
+		return <-done
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(wait):
+		return errMCPToolSyncPending{wait: wait}
+	}
+}
+
+func (r *MCPRegistry) warmServerToolsAsync(serverID string, onDone func(error)) {
+	go func() {
+		err := r.HealthCheck(serverID)
+		if onDone != nil {
+			onDone(err)
+		}
+	}()
+}
+
+type errMCPToolSyncPending struct {
+	wait time.Duration
+}
+
+func (e errMCPToolSyncPending) Error() string {
+	return fmt.Sprintf("tool sync still running after %s", e.wait)
+}
+
+func logMCPToolSyncResult(action, serverID string, err error) {
+	if err == nil {
+		return
+	}
+	if _, pending := err.(errMCPToolSyncPending); pending {
+		log.Printf("[MCPRegistry] %s for %s pending: %v", action, serverID, err)
+		return
+	}
+	log.Printf("[MCPRegistry] %s for %s failed: %v", action, serverID, err)
+}
+
 // --- Wails binding functions ---
 
 // ListMCPServers returns all registered MCP Servers (Wails binding).
@@ -931,7 +986,12 @@ func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
 	if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": server.EndpointURL}); !ok {
 		return fmt.Errorf("%s", reason)
 	}
-	return a.mcpRegistry.Register(server)
+	serverID, err := a.mcpRegistry.register(server, false)
+	if err != nil {
+		return err
+	}
+	a.warmMCPServerToolsAndRefresh(serverID, "immediate tool sync")
+	return nil
 }
 
 // UpdateMCPServer updates an existing MCP Server (Wails binding).
@@ -949,6 +1009,7 @@ func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
 		return err
 	}
 	a.recordMarketplaceMCPSecretBinding(server)
+	a.warmMCPServerToolsAndRefresh(server.ID, "immediate tool sync after update")
 	return nil
 }
 
@@ -966,7 +1027,43 @@ func (a *App) UnregisterMCPServer(serverID string) error {
 			return fmt.Errorf("此 MCP 为企业强制下发，不可删除")
 		}
 	}
-	return a.mcpRegistry.Unregister(serverID)
+	if err := a.mcpRegistry.Unregister(serverID); err != nil {
+		return err
+	}
+	a.invalidateIMToolCaches()
+	return nil
+}
+
+func (a *App) warmMCPServerToolsAndRefresh(serverID, action string) {
+	a.invalidateIMToolCaches()
+	if a == nil || a.mcpRegistry == nil || strings.TrimSpace(serverID) == "" {
+		return
+	}
+	if err := a.mcpRegistry.warmServerTools(serverID, 3*time.Second, func(error) { a.invalidateIMToolCaches() }); err != nil {
+		logMCPToolSyncResult(action, serverID, err)
+	}
+}
+
+func (a *App) invalidateIMToolCaches() {
+	if a == nil {
+		return
+	}
+	clearHandler := func(h *IMMessageHandler) {
+		if h == nil {
+			return
+		}
+		h.toolsMu.Lock()
+		h.cachedTools = nil
+		h.cachedToolDefGen = nil
+		h.toolsCacheTime = time.Time{}
+		h.toolsMu.Unlock()
+	}
+	clearHandler(a.imHandler)
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		a.remoteSessions.hubClient.imHandlerMu.Lock()
+		clearHandler(a.remoteSessions.hubClient.imHandler)
+		a.remoteSessions.hubClient.imHandlerMu.Unlock()
+	}
 }
 
 // GetMCPServerTools returns the tool list for a specific MCP Server (Wails binding).

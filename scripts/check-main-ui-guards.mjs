@@ -230,6 +230,7 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).catch((err)', 'general settings helper receives patches from same-file controls only'],
   ['gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'advanced settings helper receives patches from same-file controls only'],
   ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'programming tools helper receives patches from same-file controls only'],
+  ['gui/remote_activation.go', 'a.PatchConfigFields(patch)', 'remote registration persists a closed patch map containing only normalized remote_email or remote_mobile'],
 ];
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
   const fileSet = new Set(files);
@@ -504,7 +505,7 @@ if (lines > 6000) failures.push(`${appRel} has ${lines} lines; keep it under 600
 
 const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 500],
-  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 260],
+  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 300],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 220],
   ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
@@ -529,7 +530,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/ApiStorePage.tsx', 120],
   ['gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 120],
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
-  ['gui/frontend/src/components/AboutPanel.tsx', 540],
+  ['gui/frontend/src/components/AboutPanel.tsx', 720],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2500],

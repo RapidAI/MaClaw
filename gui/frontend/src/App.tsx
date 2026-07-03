@@ -3627,6 +3627,9 @@ ${instruction}`;
                                     console.error("Failed to clear onboarding_done:", e);
                                 }
                             }}
+                            onRegistrationContactUpdated={() => {
+                                void callBackend(() => LoadConfig()).then((freshConfig) => setConfig(new main.AppConfig(freshConfig))).catch((err) => console.error("Failed to refresh registration contact:", err));
+                            }}
                         />
                     )}
                 </div>

@@ -69,6 +69,10 @@ For local release preparation, `python3 tool/run_release_gates.py` runs the same
 automated gate sequence end to end; run
 `python3 tool/run_release_gates.py --dry-run` first to review the numbered gate
 order and total count without starting Go, Flutter, or Android build commands.
+For signed-build QA, run `python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log`
+so the completed QA record can reference the saved automated-gate transcript.
+Run `python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log`
+for the matching runtime-boundary evidence file.
 The latest local `python tool\run_release_gates.py` run passed all 36 automated
 release gates, including Flutter analysis, the full Flutter test suite, runtime
 boundary verification, native wrapper regeneration/configuration, Go mobile API
@@ -105,7 +109,7 @@ validated QA record by filename.
 | Official HubCenter discovery only | `test/official_service_test.dart`, `test/official_service_surface_test.dart`, `test/auth_service_test.dart`, `test/mobile_realtime_client_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)"` |
 | Mobile API contracts | `test/mobile_api_contract_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*"` |
 | Native Android/iOS wrapper settings | `tool/configure_platforms_test.py`, `test/platform_permissions_test.dart` |
-| Runtime boundary: no embedded Go `corelib`, FFI, gomobile, or native corelib bridge | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart` |
+| Runtime boundary: no embedded Go `corelib`, FFI, gomobile, or native corelib bridge | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart`; signed-build QA can save `--log` output as evidence |
 | Signed-build QA record completeness | `tool/validate_qa_build_record.py`, `tool/validate_qa_build_record_test.py`, `docs/qa_build_record_template.md` |
 | Signed-build QA preflight, release status, release handoff, record scaffold, gap report, release evidence link helper, and directory validation | `tool/release_status_report.py`, `tool/release_status_report_test.py`, `tool/release_handoff.py`, `tool/release_handoff_test.py`, `tool/qa_preflight.py`, `tool/qa_preflight_test.py`, `tool/create_qa_build_record.py`, `tool/create_qa_build_record_test.py`, `tool/qa_build_record_report.py`, `tool/qa_build_record_report_test.py`, `tool/qa_release_evidence_links.py`, `tool/qa_release_evidence_links_test.py`, `tool/validate_qa_build_records_dir.py`, `tool/validate_qa_build_records_dir_test.py`, `docs/qa-builds/README.md` |
 | Automated gate sequence integrity | `tool/run_release_gates.py`, `tool/run_release_gates_test.py` |
@@ -213,6 +217,15 @@ validated QA record by filename.
   - Rejects extra filled entries for required fields, so a signed-build record
     cannot contain conflicting duplicate values for fields that must be single
     or exactly one per platform.
+  - Requires completed records to include auditable release handoff, runtime
+    boundary verification, and automated release gate results before final
+    manual gate decisions.
+  - QA record template now explains that those fields should reference handoff
+    output, runtime-boundary command output, full gate count, and log or
+    attachment IDs.
+  - QA checklist, QA build records README, and release checklist now also state
+    that completed records must fill those three final-decision evidence fields
+    before approval.
   - Rejects invalid duplicate entries for formatted fields instead of allowing
     one valid value to mask a bad repeated value.
   - Validates fixed evidence formats and identities: Android SHA256 must be a
@@ -348,8 +361,12 @@ validated QA record by filename.
 - `tool/qa_preflight.py`
   - Added a local preflight summary before signed-build QA.
   - Checks Android release signing guardrails, local Android signing inputs,
-    iOS wrapper/Share Extension wiring, local iOS export options, existing QA
-    build record validity, and the final release-evidence link step.
+    iOS wrapper/Share Extension wiring, readable local iOS export options with
+    a valid Team ID/export method, existing QA build record validity, and the
+    final release-evidence link step.
+  - Supports optional `--team-id` and `--export-method` arguments to verify
+    local `ios/ExportOptions.plist` exactly matches the intended iOS signed
+    build before archive planning.
   - The helper is intentionally documented as a local QA command, while CI runs
     its unit tests instead of requiring private signing keys.
 - `tool/setup_android_signing.py`
@@ -368,10 +385,26 @@ validated QA record by filename.
     directory validation, and final release evidence verification.
   - Reports current blockers and next actions without redefining the underlying
     release gates.
+  - Supports optional iOS Team ID/export method inputs and passes them through
+    to preflight so release status can catch mismatched `ios/ExportOptions.plist`
+    before handoff or archive planning.
 - `tool/release_handoff.py`
   - Added a signed-build operator handoff generator that turns the current
     readiness state into concrete setup, build, QA record, and evidence-link
     commands without inventing QA evidence.
+  - Passes its required Team ID and export method into release status preflight,
+    so handoff output reflects mismatched local iOS export options immediately.
+  - The generated command sequence also runs `release_status_report.py` with
+    the same Team ID/export method before setup/build steps, keeping copied
+    operator commands aligned with the target signed build.
+  - QA device checklist and `docs/qa-builds/README.md` now start signed-build
+    QA with the handoff generator before preflight and record scaffolding.
+  - Those QA entry points also require runtime-boundary verification and the
+    full automated release gate runner before signed-build QA evidence is
+    recorded.
+  - Handoff evidence output now explicitly maps handoff transcript,
+    runtime-boundary verifier output, and release-gate results to the QA record
+    final decision fields.
 - `tool/update_debug_apk_evidence.py`
   - Added a local helper to refresh the debug APK artifact path, byte size, and
     SHA256 fields in this evidence file before re-running
@@ -380,13 +413,23 @@ validated QA record by filename.
   - Added a paste-ready signed-build evidence generator for Android APK/AAB
     `Artifact path`, `SHA256`, byte size, version/build, signing identity, and
     installer channel fields, plus iOS archive/TestFlight metadata snippets.
+  - Release checklist and QA record template now include the matching iOS
+    signed artifact evidence command for archive/TestFlight build, Team ID, and
+    Runner/Share Extension provisioning-profile fields.
+  - QA device checklist also includes the iOS signed artifact evidence command
+    so real-device testers paste the same archive/TestFlight and provisioning
+    fields into completed QA records.
 - `tool/run_release_gates.py`
   - Added a local release-gate runner that executes the documented automated
     mobile gate sequence from the correct repository/mobile working
     directories.
+  - Added `--log <path>` so dry-run and full gate runs can save the gate
+    sequence, command output, and final pass message as QA evidence.
   - Runs `tool/verify_runtime_boundary.py` after native wrapper configuration
     to reject accidental Go `corelib`, FFI, gomobile, or native corelib bridge
     additions in the mobile runtime.
+  - Runtime-boundary verification also supports `--log <path>` so signed-build
+    QA can attach the pass/fail transcript to completed records.
   - Includes the release-gate runner tests in the local sequence, so the
     end-to-end runner also verifies its own gate definition before native
     wrapper generation and Flutter gates.
@@ -478,7 +521,7 @@ validated QA record by filename.
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 104 QA record validator tests.
+  - Passed: 105 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
     tenant Hub versus HubCenter URL separation,
@@ -518,10 +561,11 @@ validated QA record by filename.
     placeholders, CLI validation failure output, and raw-secret CLI failure
     messaging.
 - `python -m unittest tool\create_qa_build_record_test.py`
-  - Passed: 6 QA build record scaffold tests.
+  - Passed: 8 QA build record scaffold tests.
   - Covers validator-compatible record filenames, date/version prefilling,
-    overwrite protection, forced regeneration, invalid version/build rejection,
-    and the printed validation hint.
+    optional Final Release Decision evidence prefilling, overwrite protection,
+    forced regeneration, invalid version/build rejection, and the printed
+    validation hint.
 - `python -m unittest tool\validate_qa_build_records_dir_test.py`
   - Passed: 6 QA build records directory validator tests.
   - Covers scanning completed Markdown records under `docs/qa-builds/`,
@@ -529,40 +573,59 @@ validated QA record by filename.
     directories before signed QA records exist, missing/non-directory path
     rejection, and per-record failure summaries.
 - `python -m unittest tool\qa_build_record_report_test.py`
-  - Passed: 6 QA build record report tests.
+  - Passed: 7 QA build record report tests.
   - Covers passing completed records, missing evidence summaries, invalid
-    HubCenter values, filename errors, local artifact SHA256 mismatches, and
-    CLI stdout/stderr behavior.
+    HubCenter values, filename errors, missing handoff/runtime-boundary/release
+    gate evidence, local artifact SHA256 mismatches, and CLI stdout/stderr
+    behavior.
+  - Covers release handoff evidence hints that include the required
+    `--version <version+build>`, `--team-id <APPLE_TEAM_ID>`, and
+    `--export-method <export-method>` inputs.
 - `python -m unittest tool\qa_release_evidence_links_test.py`
   - Passed: 5 QA release evidence link helper tests.
   - Covers empty QA record directories, valid record Markdown link output,
     invalid record exclusion, invalid-record CLI failure behavior, and valid
     record CLI output.
 - `python -m unittest tool\qa_preflight_test.py`
-  - Passed: 7 QA preflight helper tests.
+  - Passed: 10 QA preflight helper tests.
   - Covers ready summaries, Android signing input blockers, iOS wrapper
-    blockers, iOS export options blockers, invalid existing QA records, missing
-    QA record directories, and CLI stdout/stderr behavior.
+    blockers, missing or invalid iOS export options blockers, invalid existing
+    QA records, missing QA record directories, and CLI stdout/stderr behavior.
+  - Covers optional iOS Team ID/export method mismatch reporting through both
+    the validator and CLI preflight entry point.
+  - Covers the preflight hint for the required release handoff `--version`,
+    `--team-id`, `--output`, runtime-boundary log, and release-gates log flow.
 - `python -m unittest tool\setup_android_signing_test.py`
   - Passed: 6 Android signing setup helper tests.
   - Covers environment-variable validation, debug-keystore rejection, local
     `android/key.properties` writing, overwrite protection, successful CLI
     setup, and missing-environment CLI errors.
 - `python -m unittest tool\release_status_report_test.py`
-  - Passed: 4 release status report helper tests.
+  - Passed: 5 release status report helper tests.
   - Covers grouped not-ready output, ready output, current empty-fixture CLI
     failure, and ready CLI stdout behavior.
+  - Covers not-ready next actions that include the required release handoff
+    `--version`, `--team-id`, `--export-method`, and `--output` arguments.
+  - Covers optional iOS Team ID/export method CLI argument forwarding to the
+    status builder.
 - `python -m unittest tool\release_handoff_test.py`
-  - Passed: 4 release handoff helper tests.
+  - Passed: 6 release handoff helper tests.
   - Covers blocker summaries, ready output, operator command generation, output
     file writing, and blocked/ready CLI exit codes.
+  - Covers real release version/build, Apple Team ID, and iOS export method CLI
+    validation before generating copyable signed-build evidence commands.
+  - Covers forwarding the handoff Team ID/export method into release status
+    preflight and printing the matching release status command in the handoff
+    sequence.
 - `python3 tool/validate_qa_build_records_dir.py docs/qa-builds`
   - Passed: 0 completed signed-build QA record(s) currently present in the
     ignored local records directory.
 - `python -m unittest tool\run_release_gates_test.py`
-  - Passed: 10 release gate runner tests.
+  - Passed: 12 release gate runner tests.
   - Covers gate order, working directories, critical command coverage, and
     numbered dry-run output.
+  - Covers dry-run and full-run `--log` output so signed-build QA can attach
+    automated-gate transcripts to completed records.
   - Covers Windows batch-command executable resolution for tools such as
     `flutter.BAT` while keeping documented commands readable as `flutter ...`.
   - Covers CI workflow, release checklist, and release evidence parity for
@@ -578,10 +641,13 @@ validated QA record by filename.
     lines, missing artifact failures, missing section failures, and CLI update
     behavior.
 - `python -m unittest tool\signed_artifact_evidence_test.py`
-  - Passed: 7 signed artifact evidence helper tests.
+  - Passed: 14 signed artifact evidence helper tests.
   - Covers Android signed APK hash/size snippets, record-relative paths, debug
-    artifact rejection, untrackable names, missing artifacts, iOS archive
-    metadata snippets, CLI output, and CLI error reporting.
+    artifact rejection, untrackable names, missing artifacts, Android
+    version/build format validation, required Android version/build, signing
+    identity, and installer channel evidence at both function and CLI layers,
+    iOS archive metadata snippets, explicit TestFlight build snippets, iOS Team
+    ID/profile validation, CLI output, and CLI error reporting.
 - `python -m unittest tool\verify_manual_release_gates_test.py`
   - Passed: 6 manual release gate parity tests.
   - Covers the canonical manual release gate list, release audit remaining
@@ -589,12 +655,12 @@ validated QA record by filename.
     decision fields so signed-build, real-device, Hub discovery, and SSH manual
     gates stay aligned across release documentation.
 - `python -m unittest tool\verify_final_release_evidence_test.py`
-  - Passed: 8 final release evidence verifier tests.
+  - Passed: 9 final release evidence verifier tests.
   - Covers the final release evidence package rule that completed signed-build
     QA records must validate successfully and cover both Android and iOS before
     approval, and that this release evidence document links every validated QA
-    record by filename, while ordinary development gates may still pass with an
-    empty `docs/qa-builds/` directory.
+    record with a `docs/qa-builds/...` Markdown link, while ordinary development
+    gates may still pass with an empty `docs/qa-builds/` directory.
 - `python -m unittest tool\verify_android_release_signing_test.py`
   - Passed: 7 Android release signing verifier tests.
   - Covers the Gradle release signing guard, rejection of debug-key fallback,
@@ -602,11 +668,12 @@ validated QA record by filename.
     `android/key.properties.example` placeholder coverage, and `.gitignore`
     rules for local keystore material.
 - `python -m unittest tool\build_android_release_test.py`
-  - Passed: 6 Android release build helper tests.
+  - Passed: 9 Android release build helper tests.
   - Covers local `android/key.properties` validation, missing signing input
     errors, debug-keystore rejection, APK/AAB release command construction,
-    build-name/build-number forwarding, dry-run behavior, and artifact path
-    selection for signed QA packages.
+    build-name/build-number forwarding, required paired version/build
+    traceability, dry-run behavior, and Flutter build failure reporting without
+    traceback, plus artifact path selection for signed QA packages.
 - `python -m unittest tool\verify_ios_wrapper_test.py`
   - Passed: 6 iOS wrapper verifier tests.
   - Covers readable iOS permission usage descriptions, Runner and Share
@@ -614,16 +681,18 @@ validated QA record by filename.
     text, URLs, files, and images, receive_sharing_intent controller wiring,
     and the generated-project marker.
 - `python -m unittest tool\plan_ios_release_test.py`
-  - Passed: 7 iOS release plan helper tests.
+  - Passed: 9 iOS release plan helper tests.
   - Covers Apple Team ID validation, Xcode archive/export command planning,
-    export method validation, local export-options readiness failures, wrapper
-    readiness failures, and the QA record evidence fields needed for
-    `.xcarchive` or TestFlight signed builds.
+    export method validation, local export-options readiness failures,
+    export-options Team ID/method mismatch reporting, wrapper readiness
+    failures, and the QA record evidence fields needed for `.xcarchive` or
+    TestFlight signed builds.
 - `python -m unittest tool\setup_ios_export_options_test.py`
   - Passed: 6 iOS export options setup helper tests.
   - Covers Team ID normalization, export method validation, local
-    `ios/ExportOptions.plist` generation, overwrite protection, CLI output, and
-    invalid Team ID CLI failures.
+    `ios/ExportOptions.plist` generation, overwrite protection, CLI output,
+    next-step archive planning hints that preserve the chosen export method,
+    and invalid Team ID CLI failures.
 - `python tool\configure_platforms.py`
   - Passed.
 - `python tool\verify_android_release_signing.py`
@@ -633,12 +702,12 @@ validated QA record by filename.
     config when present, keeps key material ignored by git, and keeps a
     redacted `android/key.properties.example` template available for local QA
     setup.
-- `python tool\build_android_release.py --artifact apk --dry-run`
+- `python tool\build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --dry-run`
   - Manual signed-build preparation command.
   - Validates local signing inputs and prints the exact release build command
     without requiring CI to hold keystore material. The same command without
-    `--dry-run` builds the signed QA APK and prints artifact path, size, and
-    SHA256 for the QA build record.
+    `--dry-run` builds the signed QA APK with a trackable version/build and
+    prints artifact path, size, and SHA256 for the QA build record.
 - `python tool\verify_ios_wrapper.py`
   - Passed.
   - Confirms the current generated iOS wrapper exposes readable privacy
@@ -665,16 +734,17 @@ validated QA record by filename.
 - `python -m unittest tool\configure_platforms_test.py`
   - Passed: 14 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 104 QA build record validator tests.
+  - Passed: 105 QA build record validator tests.
 - `python -m unittest tool\create_qa_build_record_test.py`
-  - Passed: 6 QA build record scaffold tests.
+  - Passed: 8 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
-  - Passed: 3 runtime boundary verifier tests.
+  - Passed: 5 runtime boundary verifier tests.
   - Covers the current mobile runtime source tree and negative fixtures for
     Dart FFI, dynamic-library loading, and Go `corelib` references while
     ignoring docs/tests-only mentions.
+  - Covers success and violation `--log` output for signed-build QA evidence.
 - `python -m unittest tool\run_release_gates_test.py`
-  - Passed: 10 release gate runner tests.
+  - Passed: 12 release gate runner tests.
 - `python tool\verify_runtime_boundary.py`
   - Passed.
   - Confirms current mobile runtime source under `lib`, `android`, `ios`, and

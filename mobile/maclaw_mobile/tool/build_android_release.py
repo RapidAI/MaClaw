@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,8 @@ import verify_android_release_signing
 
 
 REQUIRED_KEY_PROPERTIES = ("storeFile", "storePassword", "keyAlias", "keyPassword")
+BUILD_NAME_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
+BUILD_NUMBER_RE = re.compile(r"^\d+$")
 
 
 @dataclass(frozen=True)
@@ -74,11 +77,20 @@ def build_plan(
     key_values, errors = validate_key_properties(root)
     if errors:
         raise ValueError("; ".join(errors))
+    if not build_name or not build_number:
+        raise ValueError(
+            "Android signed QA builds require both --build-name and --build-number "
+            "so artifacts can be matched to QA records",
+        )
+    if build_name is not None and BUILD_NAME_RE.fullmatch(build_name.strip()) is None:
+        raise ValueError("Android --build-name must be a numeric app version such as 1.0.0")
+    if build_number is not None and BUILD_NUMBER_RE.fullmatch(build_number.strip()) is None:
+        raise ValueError("Android --build-number must be a numeric build number such as 42")
     command = ["flutter", "build", "apk" if artifact == "apk" else "appbundle", "--release"]
     if build_name:
-        command.extend(["--build-name", build_name])
+        command.extend(["--build-name", build_name.strip()])
     if build_number:
-        command.extend(["--build-number", build_number])
+        command.extend(["--build-number", build_number.strip()])
     artifact_path = (
         root / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
         if artifact == "apk"
@@ -119,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         default="apk",
         help="Signed Android artifact type to build.",
     )
-    parser.add_argument("--build-name", help="Optional Flutter build name/version.")
-    parser.add_argument("--build-number", help="Optional Flutter build number.")
+    parser.add_argument("--build-name", help="Required Flutter build name/version for QA traceability.")
+    parser.add_argument("--build-number", help="Required Flutter build number for QA traceability.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -154,7 +166,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Dry run only; no Android artifact was built.")
         return 0
 
-    subprocess.run(_executable_command(plan.command), cwd=root, check=True)
+    try:
+        subprocess.run(_executable_command(plan.command), cwd=root, check=True)
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"Android release build failed with exit code {exc.returncode}: {' '.join(plan.command)}",
+            file=sys.stderr,
+        )
+        return 1
     if not plan.artifact_path.exists():
         print(f"Expected Android release artifact was not created: {plan.artifact_path}", file=sys.stderr)
         return 1

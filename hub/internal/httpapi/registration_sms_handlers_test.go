@@ -112,6 +112,81 @@ func TestRegistrationSMSSendCodeHandlerRejectsExistingPhoneUserBeforeSending(t *
 	}
 }
 
+func TestRegistrationContactPhoneVerifyBindsCurrentMachineUser(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	sendBody := bytes.NewBufferString(`{"kind":"phone","phone_number":"19900001111","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", sendBody)
+	sendRR := httptest.NewRecorder()
+	RegistrationContactSendCodeHandler(identity, st.System, nil, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(sendRR, sendReq)
+	if sendRR.Code != http.StatusOK {
+		t.Fatalf("send status = %d body=%s", sendRR.Code, sendRR.Body.String())
+	}
+	if provider.sendReq.TemplateCode != registrationSMSTemplateByBusiness[registrationSMSBusinessBindNewPhone] {
+		t.Fatalf("template = %q, want bind-new-phone", provider.sendReq.TemplateCode)
+	}
+
+	verifyBody := bytes.NewBufferString(`{"kind":"phone","phone_number":"19900001111","verify_code":"123456","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	verifyReq := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/verify", verifyBody)
+	verifyRR := httptest.NewRecorder()
+	RegistrationContactVerifyHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(verifyRR, verifyReq)
+	if verifyRR.Code != http.StatusOK {
+		t.Fatalf("verify status = %d body=%s", verifyRR.Code, verifyRR.Body.String())
+	}
+	user, err := identity.LookupUserByPhone(auth.WithTenant(context.Background(), store.DefaultTenantID), "19900001111")
+	if err != nil || user == nil || user.ID != enrolled.UserID {
+		t.Fatalf("bound phone user = %#v err=%v, want user %s", user, err, enrolled.UserID)
+	}
+}
+
+func TestRegistrationContactEmailSendRejectsExistingTenantUser(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	if _, err := identity.ManualBindForTenant(context.Background(), store.DefaultTenantID, "taken@example.com"); err != nil {
+		t.Fatalf("create existing email user: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"kind":"email","email":"taken@example.com","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationContactSendCodeHandler(identity, st.System, nil, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "EMAIL_ALREADY_REGISTERED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegistrationContactEmailSendWithoutMailerDoesNotReserveCode(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	handler := RegistrationContactSendCodeHandler(identity, st.System, nil, nil)
+
+	for i := 0; i < 2; i++ {
+		body := bytes.NewBufferString(`{"kind":"email","email":"new-contact@example.com","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
+			t.Fatalf("attempt %d status = %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestRegistrationSMSSendCodeHandlerSendsVerifyBoundPhoneForExistingTenantIdentity(t *testing.T) {
 	identity, st, _ := newPreservationTestIdentity(t)
 	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)

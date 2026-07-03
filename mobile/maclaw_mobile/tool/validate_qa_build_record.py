@@ -147,6 +147,9 @@ REQUIRED_FIELDS = [
     "AI analysis confirmation and sensitive-data warning",
     "AI explanation / command draft result",
     "Credential deletion confirmation",
+    "Release handoff result",
+    "Runtime boundary verification result",
+    "Automated release gates result",
     "Automated gates passed",
     "Android manual gates passed",
     "iOS manual gates passed",
@@ -467,6 +470,9 @@ MANUAL_EVIDENCE_FIELDS = {
     "AI analysis confirmation and sensitive-data warning",
     "AI explanation / command draft result",
     "Credential deletion confirmation",
+    "Release handoff result",
+    "Runtime boundary verification result",
+    "Automated release gates result",
 }
 
 LLM_ACCESS_MODES = {

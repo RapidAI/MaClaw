@@ -259,9 +259,49 @@ def executable_command(command: list[str]) -> list[str]:
     return [executable, *command[1:]]
 
 
-def run_gate(gate: ReleaseGate, index: int | None = None, total: int | None = None) -> None:
-    print(f"==> {format_gate(gate, index=index, total=total)}", flush=True)
-    subprocess.run(executable_command(gate.command), cwd=gate.cwd, check=True)
+def _append_output(log_lines: list[str], output: str) -> None:
+    if output:
+        log_lines.append(output.rstrip())
+
+
+def _print_and_log(line: str, log_lines: list[str]) -> None:
+    print(line, flush=True)
+    log_lines.append(line)
+
+
+def _write_log(path: Path, log_lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(log_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def run_gate(
+    gate: ReleaseGate,
+    index: int | None = None,
+    total: int | None = None,
+    log_lines: list[str] | None = None,
+) -> None:
+    log_lines = log_lines if log_lines is not None else []
+    _print_and_log(f"==> {format_gate(gate, index=index, total=total)}", log_lines)
+    completed = subprocess.run(
+        executable_command(gate.command),
+        cwd=gate.cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.stdout:
+        print(completed.stdout, end="")
+        _append_output(log_lines, completed.stdout)
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
+        _append_output(log_lines, completed.stderr)
+    if completed.returncode != 0:
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            completed.args,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -273,17 +313,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the gate sequence without running commands.",
     )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        help="Optional path to write gate sequence and command output for QA evidence.",
+    )
     args = parser.parse_args(argv)
 
     gates = release_gates()
+    log_lines: list[str] = []
     if args.dry_run:
         for index, gate in enumerate(gates, start=1):
-            print(format_gate(gate, index=index, total=len(gates)))
+            _print_and_log(format_gate(gate, index=index, total=len(gates)), log_lines)
+        if args.log:
+            _write_log(args.log, log_lines)
         return 0
 
-    for index, gate in enumerate(gates, start=1):
-        run_gate(gate, index=index, total=len(gates))
-    print("All MaClaw Mobile automated release gates passed.")
+    try:
+        for index, gate in enumerate(gates, start=1):
+            run_gate(gate, index=index, total=len(gates), log_lines=log_lines)
+        _print_and_log("All MaClaw Mobile automated release gates passed.", log_lines)
+    finally:
+        if args.log:
+            _write_log(args.log, log_lines)
     return 0
 
 

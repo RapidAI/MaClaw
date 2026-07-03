@@ -118,6 +118,14 @@ export function SendRemoteRegistrationSMS(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2, arg3);
 }
 
+export function SendRemoteRegistrationContactCode(arg1, arg2) {
+  return window['go']['main']['App']['SendRemoteRegistrationContactCode'](arg1, arg2);
+}
+
+export function VerifyRemoteRegistrationContactCode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['VerifyRemoteRegistrationContactCode'](arg1, arg2, arg3);
+}
+
 export function ClearRemoteActivation() {
   return window['go']['main']['App']['ClearRemoteActivation']();
 }

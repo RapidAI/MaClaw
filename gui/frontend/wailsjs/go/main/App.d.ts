@@ -60,6 +60,10 @@ export function ProbeRemoteHub(arg1:string,arg2:string):Promise<any>;
 
 export function SendRemoteRegistrationSMS(arg1:string,arg2:string,arg3:string):Promise<any>;
 
+export function SendRemoteRegistrationContactCode(arg1:string,arg2:string):Promise<any>;
+
+export function VerifyRemoteRegistrationContactCode(arg1:string,arg2:string,arg3:string):Promise<any>;
+
 export function ClearRemoteActivation():Promise<void>;
 
 export function VerifyRemoteActivation():Promise<boolean>;

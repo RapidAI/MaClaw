@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,13 +75,72 @@ class BuildAndroidReleaseTest(unittest.TestCase):
             root = Path(tmp)
             write_key_properties(root)
 
-            plan = build_android_release.build_plan(root, artifact="appbundle")
+            plan = build_android_release.build_plan(
+                root,
+                artifact="appbundle",
+                build_name="1.2.3",
+                build_number="45",
+            )
 
-        self.assertEqual(["flutter", "build", "appbundle", "--release"], plan.command)
+        self.assertEqual(
+            [
+                "flutter",
+                "build",
+                "appbundle",
+                "--release",
+                "--build-name",
+                "1.2.3",
+                "--build-number",
+                "45",
+            ],
+            plan.command,
+        )
         self.assertEqual(
             root / "build" / "app" / "outputs" / "bundle" / "release" / "app-release.aab",
             plan.artifact_path,
         )
+
+    def test_build_plan_requires_trackable_version_and_build_number(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+
+            with self.assertRaisesRegex(ValueError, "both --build-name and --build-number"):
+                build_android_release.build_plan(
+                    root,
+                    artifact="apk",
+                    build_name=None,
+                    build_number="42",
+                )
+
+            with self.assertRaisesRegex(ValueError, "both --build-name and --build-number"):
+                build_android_release.build_plan(
+                    root,
+                    artifact="apk",
+                    build_name="1.0.0",
+                    build_number=None,
+                )
+
+    def test_build_plan_rejects_untrackable_version_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+
+            with self.assertRaisesRegex(ValueError, "--build-name"):
+                build_android_release.build_plan(
+                    root,
+                    artifact="apk",
+                    build_name="release-candidate",
+                    build_number="42",
+                )
+
+            with self.assertRaisesRegex(ValueError, "--build-number"):
+                build_android_release.build_plan(
+                    root,
+                    artifact="apk",
+                    build_name="1.0.0",
+                    build_number="rc42",
+                )
 
     def test_main_dry_run_does_not_execute_flutter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,6 +184,38 @@ class BuildAndroidReleaseTest(unittest.TestCase):
 
         self.assertEqual(1, exit_code)
         self.assertIn("Android release build cannot start", error.getvalue())
+
+    def test_main_reports_flutter_build_failure_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            output = StringIO()
+            error = StringIO()
+
+            with patch(
+                "verify_android_release_signing.verify_android_release_signing",
+                return_value=[],
+            ), patch(
+                "build_android_release.subprocess.run",
+                side_effect=subprocess.CalledProcessError(7, ["flutter", "build", "apk"]),
+            ), redirect_stdout(output), redirect_stderr(error):
+                exit_code = build_android_release.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--artifact",
+                        "apk",
+                        "--build-name",
+                        "1.0.0",
+                        "--build-number",
+                        "42",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Android release signing inputs verified", output.getvalue())
+        self.assertIn("Android release build failed with exit code 7", error.getvalue())
+        self.assertNotIn("Traceback", error.getvalue())
 
 
 if __name__ == "__main__":

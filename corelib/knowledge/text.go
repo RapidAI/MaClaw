@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const maxSavedTextRunes = 1_000_000
+const maxSavedTextRunes = 20_000_000
 
 func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source, error) {
 	source, nodes, err := buildTextSourceAndNodes(req, Source{})

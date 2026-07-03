@@ -104,6 +104,12 @@ func storeVerifyCode(tenantID, email, code string) bool {
 	return true
 }
 
+func deleteVerifyCode(tenantID, email string) {
+	verifyMu.Lock()
+	defer verifyMu.Unlock()
+	delete(verifyCodes, verifyCodeKey(tenantID, email))
+}
+
 func consumeVerifyCode(tenantID, email, code string) (ok bool, locked bool) {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()

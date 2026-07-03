@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import qa_preflight
+import plan_ios_release
 import validate_qa_build_records_dir
 import verify_final_release_evidence
 
@@ -34,7 +35,9 @@ def mobile_root() -> Path:
 def build_status(
     root: Path,
     *,
-    preflight: Callable[[Path], list[qa_preflight.PreflightCheck]] = qa_preflight.run_preflight,
+    ios_team_id: str | None = None,
+    ios_export_method: str | None = None,
+    preflight: Callable[..., list[qa_preflight.PreflightCheck]] = qa_preflight.run_preflight,
     validate_records: Callable[
         [Path],
         list[validate_qa_build_records_dir.RecordValidationResult],
@@ -45,7 +48,11 @@ def build_status(
     records_dir = root / "docs" / "qa-builds"
     return ReleaseStatus(
         root=root,
-        preflight_checks=preflight(root),
+        preflight_checks=preflight(
+            root,
+            ios_team_id=ios_team_id,
+            ios_export_method=ios_export_method,
+        ),
         record_results=validate_records(records_dir),
         final_errors=verify_final(records_dir),
     )
@@ -101,6 +108,9 @@ def format_status(status: ReleaseStatus) -> str:
             lines.append("- Clear preflight blockers, then build signed Android/iOS QA packages.")
         if not valid_records:
             lines.append("- Create and validate signed-build QA records under docs/qa-builds/.")
+            lines.append(
+                "- Run release_handoff.py with --version <version+build> --team-id <APPLE_TEAM_ID> --export-method <export-method> --output docs/qa-builds/handoff-<version+build>.md, then follow its generated verify_runtime_boundary.py --log, run_release_gates.py --log, and prefilled create_qa_build_record.py command.",
+            )
         if valid_records and status.final_errors:
             lines.append("- Link validated QA records in docs/release_evidence.md and rerun final verification.")
         elif status.final_errors:
@@ -118,9 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         default=mobile_root(),
         help="Path to mobile/maclaw_mobile. Defaults to this script project root.",
     )
+    parser.add_argument(
+        "--team-id",
+        type=plan_ios_release.validate_team_id,
+        help="Optional Apple Team ID to verify against ios/ExportOptions.plist.",
+    )
+    parser.add_argument(
+        "--export-method",
+        choices=plan_ios_release.VALID_EXPORT_METHODS,
+        help="Optional Xcode export method to verify against ios/ExportOptions.plist.",
+    )
     args = parser.parse_args(argv)
 
-    status = build_status(args.root)
+    status = build_status(
+        args.root,
+        ios_team_id=args.team_id,
+        ios_export_method=args.export_method,
+    )
     output = format_status(status)
     if status.ready:
         print(output, end="")

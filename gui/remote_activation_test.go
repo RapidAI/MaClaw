@@ -87,6 +87,40 @@ func TestGetRemoteRegistrationAuthDefaultsMissingCodeLengthToSix(t *testing.T) {
 	}
 }
 
+func TestProbeRemoteHubSendsPhoneIdentityAsPhoneNumber(t *testing.T) {
+	var seen []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/probe" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		seen = append(seen, payload)
+		if payload["phone_number"] != "19900001111" || payload["email"] != "" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","tenant_id":"tenant-phone","tenant_name":"Phone Tenant"}`))
+	}))
+	defer server.Close()
+
+	got, err := (&App{}).ProbeRemoteHub(server.URL, "phone:199-0000 1111")
+	if err != nil {
+		t.Fatalf("ProbeRemoteHub() error = %v", err)
+	}
+	if got.TenantID != "tenant-phone" || got.TenantName != "Phone Tenant" {
+		t.Fatalf("probe result = %#v", got)
+	}
+	if _, err := (&App{}).ProbeRemoteHub(server.URL, "199-0000 1111"); err != nil {
+		t.Fatalf("ProbeRemoteHub() plain phone error = %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("seen payloads = %#v, want two probes", seen)
+	}
+}
+
 func TestResolveRemoteRegistrationTargetUsesHubCenterPhoneRoute(t *testing.T) {
 	remote.InvalidateCenterCache()
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +261,49 @@ func TestSendRemoteRegistrationSMSPreservesErrorCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PHONE_ALREADY_REGISTERED") {
 		t.Fatalf("error = %v, want PHONE_ALREADY_REGISTERED", err)
+	}
+}
+
+func TestVerifyRemoteRegistrationContactCodeStoresNormalizedHubResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/profile/verify" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["kind"] != "email" || payload["email"] != "USER@Example.COM" || payload["tenant_id"] != "tenant-acme" || payload["machine_id"] != "machine-1" || payload["machine_token"] != "token-1" || payload["verify_code"] != "123456" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"kind":"email","email":"user@example.com"}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteTenantID:     "tenant-acme",
+		RemoteEmail:        "phone:19900001111",
+		RemoteMobile:       "19900001111",
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if _, err := app.VerifyRemoteRegistrationContactCode("email", "USER@Example.COM", "123456"); err != nil {
+		t.Fatalf("VerifyRemoteRegistrationContactCode() error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.RemoteEmail != "user@example.com" {
+		t.Fatalf("RemoteEmail = %q, want normalized hub response", cfg.RemoteEmail)
+	}
+	if cfg.RemoteMobile != "19900001111" {
+		t.Fatalf("RemoteMobile = %q, want existing phone preserved", cfg.RemoteMobile)
 	}
 }
 
@@ -832,18 +909,49 @@ func TestSanitizeHubCenterRegistrationURLsDropsLoopback(t *testing.T) {
 	if preferred != "https://hubs.mypapers.top" {
 		t.Fatalf("preferred = %q, want public URL", preferred)
 	}
-	if len(discovered) != 2 || discovered[0] != "https://hubs.mypapers.top" || discovered[1] != "https://hubs.maclaw.top" {
-		t.Fatalf("discovered = %#v", discovered)
+	want := []string{"https://hubs.mypapers.top", "https://hubs.maclaw.top", "https://hubs2.maclaw.top"}
+	if !remote.StringSliceEqual(discovered, want) {
+		t.Fatalf("discovered = %#v, want %#v", discovered, want)
 	}
 }
 
 func TestSanitizeHubCenterRegistrationURLsAllLoopback(t *testing.T) {
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
 	preferred, discovered := sanitizeHubCenterRegistrationURLs(
 		"http://127.0.0.1:65140",
 		[]string{"http://localhost:9388"},
 	)
 	if preferred != "" || discovered != nil {
 		t.Fatalf("preferred=%q discovered=%#v, want no unconfirmed HubCenter", preferred, discovered)
+	}
+}
+
+func TestSanitizeHubCenterRegistrationURLsKeepsDefaultFailover(t *testing.T) {
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	preferred, discovered := sanitizeHubCenterRegistrationURLs(
+		"https://hubs2.maclaw.top",
+		[]string{"https://hubs2.maclaw.top"},
+	)
+	if preferred != "https://hubs2.maclaw.top" {
+		t.Fatalf("preferred = %q, want selected HubCenter first", preferred)
+	}
+	want := []string{
+		"https://hubs2.maclaw.top",
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+	}
+	if !remote.StringSliceEqual(discovered, want) {
+		t.Fatalf("discovered = %#v, want %#v", discovered, want)
 	}
 }
 

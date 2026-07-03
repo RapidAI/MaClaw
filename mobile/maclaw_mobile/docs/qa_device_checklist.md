@@ -7,9 +7,21 @@ device logs, task IDs, and artifact hashes to the QA build record in
 
 ```bash
 python3 tool/release_status_report.py
+python3 tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
+python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log
+python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
 python3 tool/qa_preflight.py
-python3 tool/create_qa_build_record.py --scope android-ios --version <version+build>
+python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
+  --release-handoff-result "docs/qa-builds/handoff-<version+build>.md" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log" \
+  --automated-gates-result "run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
 ```
+
+When the handoff, runtime-boundary, and release-gate command outputs have
+already been saved, pass their traceable references to
+`create_qa_build_record.py` with `--release-handoff-result`,
+`--runtime-boundary-result`, and `--automated-gates-result` so the Final Release
+Decision section starts with those evidence links already filled.
 
 Use `--scope android` or `--scope ios` when Android and iOS evidence are captured
 separately. The command starts from `qa_build_record_template.md` and saves the
@@ -30,6 +42,13 @@ Attach the passing record to `release_evidence.md` after both the individual
 record check and directory check pass. Before release approval, the final
 evidence verifier must also pass with validated Android and iOS signed-build
 records present.
+The completed record's Final Release Decision must include:
+- `Release handoff result`
+- `Runtime boundary verification result`
+- `Automated release gates result`
+
+Each field must use traceable output paths, command transcripts, or log
+attachment IDs.
 
 Manual evidence fields must include a concise auditable note, traceable evidence
 filename or attachment ID, device log, or task/result identifier. Placeholder
@@ -80,12 +99,12 @@ iOS:
 - Confirm a release build without `android/key.properties` fails instead of
   using the debug signing key.
 - Validate signing inputs without building:
-  `python3 tool/build_android_release.py --artifact apk --dry-run`.
+  `python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --dry-run`.
 - Build the signed QA artifact with
-  `python3 tool/build_android_release.py --artifact apk` or
-  `python3 tool/build_android_release.py --artifact appbundle`; record the
-  printed artifact path, size, SHA256, version/build number, signing identity,
-  and installer channel in the QA build record.
+  `python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number>`
+  or `python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number>`;
+  record the printed artifact path, size, SHA256, version/build number, signing
+  identity, and installer channel in the QA build record.
 - Generate paste-ready QA artifact fields with
   `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`.
   Paste the generated `Artifact path`, `SHA256`, byte size, and optional build
@@ -148,6 +167,10 @@ it.
   printed bundle IDs, app group, Team ID, archive/export command context,
   `.xcarchive` path or TestFlight build number, and Runner/Share Extension
   provisioning profile evidence.
+- After the signed archive/TestFlight build exists, run
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+  and paste the generated archive/build, Team ID, and provisioning-profile
+  fields into the QA build record.
 - Install via development signing or TestFlight, launch/open the app, and
   record the build number plus screenshot or recording evidence.
 

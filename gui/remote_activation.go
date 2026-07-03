@@ -61,6 +61,18 @@ type RemoteSMSSendResult struct {
 	Message    string `json:"message,omitempty"`
 }
 
+type RemoteRegistrationContactResult struct {
+	OK                bool   `json:"ok"`
+	Kind              string `json:"kind,omitempty"`
+	Email             string `json:"email,omitempty"`
+	PhoneNumber       string `json:"phone_number,omitempty"`
+	ExpiresMin        int    `json:"expires_min,omitempty"`
+	CodeLength        int    `json:"code_length,omitempty"`
+	DailySMSRemaining int    `json:"daily_sms_remaining,omitempty"`
+	Code              string `json:"code,omitempty"`
+	Message           string `json:"message,omitempty"`
+}
+
 type RemoteProbeResult struct {
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
 	TenantID               string `json:"tenant_id,omitempty"`
@@ -110,6 +122,7 @@ const (
 
 func sanitizeHubCenterRegistrationURLs(preferred string, discovered []string) (string, []string) {
 	candidates := append([]string{preferred}, discovered...)
+	candidates = append(candidates, remote.DefaultRemoteHubCenterURLs...)
 	normalized := remote.NormalizeHubCenterURLs(candidates)
 	public := make([]string, 0, len(normalized))
 	for _, value := range normalized {
@@ -133,17 +146,17 @@ func hasPublicHubCenterURL(values []string) bool {
 	return false
 }
 
-func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
+func (a *App) ProbeRemoteHub(hubURL string, identity string) (RemoteProbeResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
 		return RemoteProbeResult{}, fmt.Errorf("hub URL is required")
 	}
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return RemoteProbeResult{}, fmt.Errorf("email is required")
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return RemoteProbeResult{}, fmt.Errorf("user identity is required")
 	}
 
-	payload := map[string]string{"email": email}
+	payload := remoteProbeIdentityPayload(identity)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return RemoteProbeResult{}, err
@@ -167,6 +180,21 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 	}
 
 	return result, nil
+}
+
+func remoteProbeIdentityPayload(identity string) map[string]string {
+	identity = strings.TrimSpace(identity)
+	if strings.HasPrefix(strings.ToLower(identity), "phone:") {
+		if phone := normalizeRemoteRegistrationPhoneNumber(identity); phone != "" {
+			return map[string]string{"phone_number": phone}
+		}
+	}
+	if !strings.Contains(identity, "@") {
+		if phone := normalizeRemoteRegistrationPhoneNumber(identity); len(phone) >= 6 {
+			return map[string]string{"phone_number": phone}
+		}
+	}
+	return map[string]string{"email": identity}
 }
 
 func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteRegistrationAuthResult, error) {
@@ -282,6 +310,149 @@ func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string, tenan
 		return RemoteSMSSendResult{}, fmt.Errorf("send SMS failed: %s", resp.Status)
 	}
 	return result, nil
+}
+
+func (a *App) SendRemoteRegistrationContactCode(kind string, value string) (RemoteRegistrationContactResult, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	kind = normalizeRemoteRegistrationContactKind(kind)
+	if kind == "" {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("contact kind must be email or phone")
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if hubURL == "" {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("hub URL is required")
+	}
+	payload, err := remoteRegistrationContactPayload(cfg, kind, value, "")
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/profile/send-code", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteRegistrationContactResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration contact code"); err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send contact code failed: "+resp.Status)
+	}
+	return result, nil
+}
+
+func (a *App) VerifyRemoteRegistrationContactCode(kind string, value string, verifyCode string) (RemoteRegistrationContactResult, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	kind = normalizeRemoteRegistrationContactKind(kind)
+	if kind == "" {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("contact kind must be email or phone")
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if hubURL == "" {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("hub URL is required")
+	}
+	payload, err := remoteRegistrationContactPayload(cfg, kind, value, verifyCode)
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/profile/verify", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteRegistrationContactResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "verify registration contact code"); err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "verify contact code failed: "+resp.Status)
+	}
+	patch := map[string]interface{}{}
+	if kind == "email" {
+		email := strings.TrimSpace(result.Email)
+		if email == "" {
+			email = strings.TrimSpace(value)
+		}
+		patch["remote_email"] = email
+	} else {
+		phone := normalizeRemoteRegistrationPhoneNumber(result.PhoneNumber)
+		if phone == "" {
+			phone = normalizeRemoteRegistrationPhoneNumber(value)
+		}
+		patch["remote_mobile"] = phone
+	}
+	if _, err := a.PatchConfigFields(patch); err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	a.emitRemoteStateChanged()
+	return result, nil
+}
+
+func normalizeRemoteRegistrationContactKind(kind string) string {
+	switch strings.TrimSpace(strings.ToLower(kind)) {
+	case "email", "mail":
+		return "email"
+	case "phone", "mobile", "phone_number":
+		return "phone"
+	default:
+		return ""
+	}
+}
+
+func remoteRegistrationContactPayload(cfg corelib.AppConfig, kind string, value string, verifyCode string) (map[string]string, error) {
+	if strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
+		return nil, fmt.Errorf("registered machine credentials are required")
+	}
+	payload := map[string]string{
+		"kind":          kind,
+		"tenant_id":     strings.TrimSpace(cfg.RemoteTenantID),
+		"machine_id":    strings.TrimSpace(cfg.RemoteMachineID),
+		"machine_token": strings.TrimSpace(cfg.RemoteMachineToken),
+	}
+	if verifyCode = strings.TrimSpace(verifyCode); verifyCode != "" {
+		payload["verify_code"] = verifyCode
+	}
+	if kind == "email" {
+		email := strings.TrimSpace(value)
+		if email == "" || !strings.Contains(email, "@") {
+			return nil, fmt.Errorf("valid email is required")
+		}
+		payload["email"] = email
+		return payload, nil
+	}
+	phone := normalizeRemoteRegistrationPhoneNumber(value)
+	if len(phone) < 6 {
+		return nil, fmt.Errorf("valid phone number is required")
+	}
+	payload["phone_number"] = phone
+	return payload, nil
+}
+
+func remoteRegistrationContactError(result RemoteRegistrationContactResult, fallback string) error {
+	if result.Code != "" && result.Message != "" {
+		return fmt.Errorf("%s: %s", result.Code, result.Message)
+	}
+	if result.Code != "" {
+		return fmt.Errorf("%s", result.Code)
+	}
+	if result.Message != "" {
+		return fmt.Errorf("%s", result.Message)
+	}
+	return fmt.Errorf("%s", fallback)
 }
 
 // autoRegisterOnStartup is called during startup when email and hub URL are present

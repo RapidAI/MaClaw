@@ -1089,8 +1089,8 @@ func (s *SQLiteStore) ListNodesBySource(ctx context.Context, sourceID string, li
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > 10000 {
+		limit = 10000
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, COALESCE(parent_id, ''), type, COALESCE(title, ''), COALESCE(text, ''),
 		level, page, COALESCE(sheet_name, ''), COALESCE(row_range, ''), COALESCE(col_range, ''), COALESCE(xpath, ''),
@@ -3998,6 +3998,16 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		for _, sourceID := range importedSourceIDs {
 			_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
 		}
+	}
+	if s.importProgress != nil {
+		finalSnapshot := result
+		finalSnapshot.CurrentFile = ""
+		finalSnapshot.CurrentStep = ""
+		finalSnapshot.StepProgress = 0
+		finalSnapshot.TotalSteps = 0
+		finalSnapshot.CurrentStepNum = 0
+		finalSnapshot.Items = nil
+		s.importProgress(finalSnapshot)
 	}
 	result.Items = items
 	return result, nil

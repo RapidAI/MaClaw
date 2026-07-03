@@ -72,7 +72,7 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
         ? <span role="img" aria-label="bronze medal">🥉</span>
         : <span role="img" aria-label="medal">🏅</span>;
 
-    const rankText = lang === 'en' ? `#${rank}` : `第${rank}名`;
+    const rankText = rank > 0 ? (lang === 'en' ? `#${rank}` : `第${rank}名`) : (lang === 'en' ? 'Rank' : '排行');
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
@@ -92,8 +92,11 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                 className="sidebar-medal-badge"
                 title={(() => {
                     const parts: string[] = [];
-                    if (medal.tokenRank > 0) parts.push(lang === 'en' ? `Token #${medal.tokenRank}/${medal.totalUsers}` : `Token 第${medal.tokenRank}/${medal.totalUsers}名`);
-                    if (medal.durationRank > 0) parts.push(lang === 'en' ? `Online #${medal.durationRank}/${medal.totalUsers}` : `在线 第${medal.durationRank}/${medal.totalUsers}名`);
+                    const totalText = medal.totalUsers > 0 ? String(medal.totalUsers) : '-';
+                    const tokenRankText = medal.tokenRank > 0 ? String(medal.tokenRank) : '-';
+                    const durationRankText = medal.durationRank > 0 ? String(medal.durationRank) : '-';
+                    parts.push(lang === 'en' ? `Token #${tokenRankText}/${totalText}` : `Token 第${tokenRankText}/${totalText}名`);
+                    parts.push(lang === 'en' ? `Online #${durationRankText}/${totalText}` : `在线 第${durationRankText}/${totalText}名`);
                     const prefix = lang === 'en' ? 'This month: ' : '本月排名: ';
                     return prefix + parts.join(', ');
                 })()}
@@ -181,5 +184,4 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
         </div>
     </>
 );
-
 

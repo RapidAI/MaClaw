@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import plistlib
 import re
 import sys
 from dataclasses import dataclass
@@ -80,6 +81,31 @@ def release_plan(
     )
 
 
+def validate_export_options(
+    path: Path,
+    *,
+    team_id: str,
+    export_method: str,
+) -> list[str]:
+    if not path.exists():
+        return [f"Missing export options plist: {path}"]
+    try:
+        with path.open("rb") as handle:
+            payload = plistlib.load(handle)
+    except (plistlib.InvalidFileException, OSError, ValueError) as exc:
+        return [f"Export options plist is not readable: {path}: {exc}"]
+    errors: list[str] = []
+    if payload.get("teamID") != team_id:
+        errors.append(
+            f"Export options teamID must match {team_id}: found {payload.get('teamID')!r}",
+        )
+    if payload.get("method") != export_method:
+        errors.append(
+            f"Export options method must match {export_method}: found {payload.get('method')!r}",
+        )
+    return errors
+
+
 def _format_command(command: list[str]) -> str:
     return " ".join(f'"{arg}"' if " " in arg else arg for arg in command)
 
@@ -132,9 +158,15 @@ def main(argv: list[str] | None = None) -> int:
         if export_options_path.is_absolute()
         else root / export_options_path
     )
-    if not export_options_check_path.exists():
+    export_options_errors = validate_export_options(
+        export_options_check_path,
+        team_id=args.team_id,
+        export_method=args.export_method,
+    )
+    if export_options_errors:
         print("iOS export options are not ready for signed archive planning:", file=sys.stderr)
-        print(f"- Missing export options plist: {export_options_check_path}", file=sys.stderr)
+        for error in export_options_errors:
+            print(f"- {error}", file=sys.stderr)
         print(
             "- Run `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method "
             f"{args.export_method}` first.",

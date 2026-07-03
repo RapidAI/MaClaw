@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
@@ -52,9 +52,36 @@ type AboutPanelProps = {
     onOpenGithub: () => void;
     onRegister: () => void;
     onClearRegistration: () => void;
+    onRegistrationContactUpdated?: () => void;
 };
 
 const localHubCenterPattern = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i;
+const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
+const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
+
+const phoneAccountPrefix = 'phone:';
+
+function registrationEmailFromConfig(value: unknown): string {
+    const email = String(value || '').trim();
+    return email.toLowerCase().startsWith(phoneAccountPrefix) ? '' : email;
+}
+
+function registrationPhoneFromConfig(remoteMobile: unknown, remoteEmail: unknown): string {
+    const mobile = String(remoteMobile || '').trim();
+    if (mobile) return mobile;
+    const account = String(remoteEmail || '').trim();
+    if (account.toLowerCase().startsWith(phoneAccountPrefix)) {
+        return account.slice(phoneAccountPrefix.length).trim();
+    }
+    return '';
+}
+
+function registrationProbeIdentityFromConfig(remoteEmail: unknown, remoteMobile: unknown): string {
+    const account = String(remoteEmail || '').trim();
+    if (account) return account;
+    const mobile = String(remoteMobile || '').trim();
+    return mobile ? `${phoneAccountPrefix}${mobile}` : '';
+}
 
 const MarkdownLink = ({ node, ...props }: any) => (
     <a
@@ -82,6 +109,7 @@ export function AboutPanel({
     onOpenGithub,
     onRegister,
     onClearRegistration,
+    onRegistrationContactUpdated,
 }: AboutPanelProps) {
     const slogan = brandInfo?.slogan || t("slogan");
     const author = brandInfo?.author || 'Dr. Daniel';
@@ -100,12 +128,12 @@ export function AboutPanel({
         });
     }, [config?.remote_hub_url, config?.remote_email, config?.remote_tenant_id, config?.remote_tenant_name]);
 
+    const probeIdentity = registrationProbeIdentityFromConfig(config?.remote_email, (config as any)?.remote_mobile);
     useEffect(() => {
         const hubURL = String(config?.remote_hub_url || '').trim();
-        const email = String(config?.remote_email || '').trim();
-        if (!hubURL || !email || remoteTenant.id || remoteTenant.name) return;
+        if (!hubURL || !probeIdentity || remoteTenant.id || remoteTenant.name) return;
         let cancelled = false;
-        ProbeRemoteHub(hubURL, email)
+        ProbeRemoteHub(hubURL, probeIdentity)
             .then((result: RemoteProbeIdentity) => {
                 if (cancelled) return;
                 const id = String(result?.tenant_id || '').trim();
@@ -114,7 +142,7 @@ export function AboutPanel({
             })
             .catch(() => undefined);
         return () => { cancelled = true; };
-    }, [config?.remote_hub_url, config?.remote_email, remoteTenant.id, remoteTenant.name]);
+    }, [config?.remote_hub_url, probeIdentity, remoteTenant.id, remoteTenant.name]);
 
     const hasRegisteredMachine = String(config?.remote_machine_id || '').trim() !== '' && String(config?.remote_machine_token || '').trim() !== '';
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
@@ -136,8 +164,65 @@ export function AboutPanel({
         if (localHubCenterPattern.test(preferred)) return emptyValue;
         return preferred || emptyValue;
     })();
-    const remoteEmail = String(config?.remote_email || '').trim() || emptyValue;
+    const remoteEmailRaw = registrationEmailFromConfig(config?.remote_email);
+    const remoteMobileRaw = registrationPhoneFromConfig((config as any)?.remote_mobile, config?.remote_email);
+    const remoteEmail = remoteEmailRaw || emptyValue;
+    const remoteMobile = remoteMobileRaw || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
+    const [contactDialog, setContactDialog] = useState<null | { kind: 'email' | 'phone' }>(null);
+    const [contactValue, setContactValue] = useState('');
+    const [contactCode, setContactCode] = useState('');
+    const [contactMessage, setContactMessage] = useState('');
+    const [contactBusy, setContactBusy] = useState(false);
+    const [contactBusyAction, setContactBusyAction] = useState<'' | 'send' | 'verify'>('');
+    const [contactCodeSent, setContactCodeSent] = useState(false);
+    const contactDialogTitle = contactDialog?.kind === 'phone' ? t("aboutSetRegisterPhone") : t("aboutSetRegisterEmail");
+    const contactValueLabel = contactDialog?.kind === 'phone' ? t("aboutRegisterPhone") : t("aboutRegisterEmail");
+    const contactInputType = contactDialog?.kind === 'phone' ? 'tel' : 'email';
+    const openContactDialog = (kind: 'email' | 'phone') => {
+        setContactDialog({ kind });
+        setContactValue(kind === 'phone' ? remoteMobileRaw : remoteEmailRaw);
+        setContactCode('');
+        setContactMessage('');
+        setContactCodeSent(false);
+    };
+    const sendContactCode = async () => {
+        if (!contactDialog) return;
+        setContactBusy(true);
+        setContactBusyAction('send');
+        setContactMessage('');
+        setContactCode('');
+        setContactCodeSent(false);
+        try {
+            const result = await SendRemoteRegistrationContactCode(contactDialog.kind, contactValue.trim()) as any;
+            const length = Number(result?.code_length || 6);
+            const expires = Number(result?.expires_min || 5);
+            setContactCodeSent(true);
+            setContactMessage(t("aboutContactCodeSent").replace("{length}", String(length)).replace("{minutes}", String(expires)));
+        } catch (err: any) {
+            setContactMessage(String(err?.message || err || t("aboutContactCodeFailed")));
+        } finally {
+            setContactBusy(false);
+            setContactBusyAction('');
+        }
+    };
+    const verifyContactCode = async () => {
+        if (!contactDialog) return;
+        setContactBusy(true);
+        setContactBusyAction('verify');
+        setContactMessage('');
+        try {
+            await VerifyRemoteRegistrationContactCode(contactDialog.kind, contactValue.trim(), contactCode.trim());
+            setContactMessage(t("aboutContactVerified"));
+            onRegistrationContactUpdated?.();
+            window.setTimeout(() => setContactDialog(null), 350);
+        } catch (err: any) {
+            setContactMessage(String(err?.message || err || t("aboutContactVerifyFailed")));
+        } finally {
+            setContactBusy(false);
+            setContactBusyAction('');
+        }
+    };
 
     const productName = (() => {
         if (!brandInfo?.id || brandInfo.id === 'maclaw') {
@@ -185,19 +270,22 @@ export function AboutPanel({
 
     // Hub user ranking stats
     const [ranking, setRanking] = useState<{ totalTokens: number; durationSeconds: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
+    const rankingLoadedRef = useRef(false);
 
-    const fetchRanking = useCallback(() => {
+    const fetchRanking = useCallback((): Promise<boolean> => {
         if (!hasRegisteredMachine) {
+            rankingLoadedRef.current = false;
             setRanking(null);
-            return;
+            return Promise.resolve(false);
         }
-        GetHubUserRanking()
+        return GetHubUserRanking()
             .then((result) => {
                 const r = result as { total_tokens?: number; duration_seconds?: number; token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
                 if (!r || r.error) {
                     setRanking(null);
-                    return;
+                    return false;
                 }
+                rankingLoadedRef.current = true;
                 setRanking({
                     totalTokens: r.total_tokens || 0,
                     durationSeconds: r.duration_seconds || 0,
@@ -205,17 +293,48 @@ export function AboutPanel({
                     durationRank: r.duration_rank || 0,
                     totalUsers: r.total_users || 0,
                 });
+                return true;
             })
-            .catch(() => setRanking(null));
+            .catch(() => {
+                setRanking(null);
+                return false;
+            });
     }, [hasRegisteredMachine]);
 
     useEffect(() => {
-        fetchRanking();
-    }, [fetchRanking]);
+        if (!hasRegisteredMachine) {
+            rankingLoadedRef.current = false;
+            setRanking(null);
+            return;
+        }
+        let cancelled = false;
+        const retryTimers: number[] = [];
+        const attempt = (retryIndex: number) => {
+            if (rankingLoadedRef.current) return;
+            fetchRanking().then((loaded) => {
+                if (cancelled || loaded || rankingLoadedRef.current || retryIndex >= HUB_RANKING_STARTUP_RETRY_DELAYS_MS.length) return;
+                const timer = window.setTimeout(() => attempt(retryIndex + 1), HUB_RANKING_STARTUP_RETRY_DELAYS_MS[retryIndex]);
+                retryTimers.push(timer);
+            });
+        };
+        attempt(0);
+        return () => {
+            cancelled = true;
+            retryTimers.forEach(timer => window.clearTimeout(timer));
+        };
+    }, [fetchRanking, hasRegisteredMachine]);
 
     // Stable ref to latest fetchRanking — avoids re-subscribing event listener on identity change.
     const fetchRankingRef = useRef(fetchRanking);
     useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
+
+    useEffect(() => {
+        if (!hasRegisteredMachine) return;
+        const interval = window.setInterval(() => {
+            fetchRankingRef.current();
+        }, HUB_RANKING_REFRESH_INTERVAL_MS);
+        return () => window.clearInterval(interval);
+    }, [hasRegisteredMachine]);
 
     // Refresh ranking when token usage changes — throttled (60s min interval)
     useEffect(() => {
@@ -362,12 +481,22 @@ export function AboutPanel({
                         </div>
                         <div className="about-identity-row">
                             <div className="about-identity-item">
-                                <dt className="about-kv-label">{t("aboutAccountEmail")}</dt>
-                                <dd className="about-identity-value about-identity-value--muted">{remoteEmail}</dd>
+                                <dt className="about-kv-label">{t("aboutRegisterPhone")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted about-contact-value">
+                                    <span>{remoteMobile}</span>
+                                    {hasRegisteredMachine && !remoteMobileRaw && (
+                                        <button type="button" className="about-inline-action" onClick={() => openContactDialog('phone')}>{t("aboutSetContactBtn")}</button>
+                                    )}
+                                </dd>
                             </div>
                             <div className="about-identity-item">
-                                <dt className="about-kv-label">{t("aboutMachineId")}</dt>
-                                <dd className="about-identity-value about-identity-value--mono">{machineID}</dd>
+                                <dt className="about-kv-label">{t("aboutRegisterEmail")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted about-contact-value">
+                                    <span>{remoteEmail}</span>
+                                    {hasRegisteredMachine && !remoteEmailRaw && (
+                                        <button type="button" className="about-inline-action" onClick={() => openContactDialog('email')}>{t("aboutSetContactBtn")}</button>
+                                    )}
+                                </dd>
                             </div>
                         </div>
                         <div className="about-identity-row">
@@ -375,7 +504,10 @@ export function AboutPanel({
                                 <dt className="about-kv-label">{t("remoteActivation")}</dt>
                                 <dd className="about-identity-value about-identity-value--muted">{hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}</dd>
                             </div>
-                            <div className="about-identity-item" />
+                            <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("aboutMachineId")}</dt>
+                                <dd className="about-identity-value about-identity-value--mono">{machineID}</dd>
+                            </div>
                         </div>
                         {hasRegisteredMachine && (
                             <div className="about-identity-row">
@@ -455,6 +587,44 @@ export function AboutPanel({
                 onClose={() => setShowSecurityEvents(false)}
                 t={t}
             />
+            {contactDialog && (
+                <div className="modal-overlay">
+                    <div className="modal-content about-contact-dialog">
+                        <div className="about-contact-dialog__header">
+                            <h3>{contactDialogTitle}</h3>
+                            <button className="modal-close" onClick={() => setContactDialog(null)}>&times;</button>
+                        </div>
+                        <p className="about-contact-dialog__desc">{t("aboutContactDialogDesc")}</p>
+                        <label className="form-label">{contactValueLabel}</label>
+                        <input
+                            className="form-input"
+                            type={contactInputType}
+                            value={contactValue}
+                            onChange={e => { setContactValue(e.target.value); setContactCodeSent(false); setContactMessage(''); }}
+                            placeholder={contactDialog.kind === 'phone' ? t("aboutRegisterPhonePlaceholder") : t("aboutRegisterEmailPlaceholder")}
+                        />
+                        <label className="form-label">{t("aboutVerifyCode")}</label>
+                        <div className="about-contact-dialog__code-row">
+                            <input
+                                className="form-input"
+                                value={contactCode}
+                                onChange={e => setContactCode(e.target.value)}
+                                placeholder={t("aboutVerifyCodePlaceholder")}
+                            />
+                            <button className="btn-link about-action-button" disabled={contactBusy || !contactValue.trim()} onClick={sendContactCode}>
+                                {contactBusyAction === 'send' ? t("loading") : t("aboutSendCodeBtn")}
+                            </button>
+                        </div>
+                        {contactMessage && <div className="about-contact-dialog__message">{contactMessage}</div>}
+                        <div className="modal-actions">
+                            <button className="btn-hide" onClick={() => setContactDialog(null)}>{t("cancel")}</button>
+                            <button className="btn-primary" disabled={contactBusy || !contactCode.trim() || !contactCodeSent} onClick={verifyContactCode}>
+                                {contactBusyAction === 'verify' ? t("loading") : t("aboutVerifyAndSaveBtn")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {showErrorLog && (
                 <div className="modal-overlay" {...errorLogBackdropProps}>
                     <div

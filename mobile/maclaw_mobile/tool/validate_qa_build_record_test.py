@@ -1804,6 +1804,23 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_automated_gate_evidence_fields_are_required(self) -> None:
+        record = complete_record()
+        for field in (
+            "Release handoff result",
+            "Runtime boundary verification result",
+            "Automated release gates result",
+        ):
+            record = re.sub(rf"^{re.escape(field)}: .*$", "", record, flags=re.MULTILINE)
+
+        missing = validate_qa_build_record.missing_required_fields(
+            validate_qa_build_record.parse_record(record),
+        )
+
+        self.assertIn("Release handoff result", missing)
+        self.assertIn("Runtime boundary verification result", missing)
+        self.assertIn("Automated release gates result", missing)
+
     def test_final_decision_yes_is_not_specific_enough(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(

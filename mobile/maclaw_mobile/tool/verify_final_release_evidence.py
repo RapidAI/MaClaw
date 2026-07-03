@@ -31,11 +31,15 @@ def _record_link_errors(valid_records: list[Path], release_evidence_path: Path) 
     if release_evidence_path.is_dir():
         return [f"Release evidence path must be a markdown file: {release_evidence_path}"]
     text = release_evidence_path.read_text(encoding="utf-8")
-    missing = [path.name for path in valid_records if path.name not in text]
+    missing = [
+        path.name
+        for path in valid_records
+        if f"](docs/qa-builds/{path.name})" not in text
+    ]
     if not missing:
         return []
     return [
-        "Release evidence document must link every validated QA build record: "
+        "Release evidence document must include Markdown links for every validated QA build record: "
         + ", ".join(missing),
     ]
 
