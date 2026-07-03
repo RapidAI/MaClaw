@@ -33,6 +33,9 @@ type publicUserRankingResponse struct {
 // "ab@x.com" -> "a***b@x.com"
 // "a@x.com" -> "a***@x.com"
 func maskEmail(email string) string {
+	if isUserRankingPhone(email) {
+		return maskPhoneAccount(email)
+	}
 	at := strings.LastIndex(email, "@")
 	if at <= 0 {
 		return "***"
@@ -47,6 +50,18 @@ func maskEmail(email string) string {
 		return string(runes[0]) + "***" + string(runes[1]) + domain
 	}
 	return string(runes[0]) + "***" + string(runes[len(runes)-1]) + domain
+}
+
+func maskPhoneAccount(account string) string {
+	digits := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(account)), "phone:")
+	runes := []rune(digits)
+	if len(runes) <= 4 {
+		return "phone:***"
+	}
+	if len(runes) <= 7 {
+		return "phone:" + string(runes[0]) + "***" + string(runes[len(runes)-1])
+	}
+	return "phone:" + string(runes[:3]) + "****" + string(runes[len(runes)-4:])
 }
 
 // GetPublicUserRankingsHandler returns a public (no auth) leaderboard with masked emails.
@@ -115,30 +130,30 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 		}
 
 		// Merge (reuse existing logic pattern)
-		byEmail := map[string]*userRankingRow{}
+		byAccount := map[string]*userRankingRow{}
 		for _, t := range tokenRows {
-			email := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			byEmail[email] = &userRankingRow{UserEmail: email, TotalTokens: t.Usage.TotalTokens()}
+			byAccount[account] = &userRankingRow{UserEmail: account, TotalTokens: t.Usage.TotalTokens()}
 		}
 		for _, d := range durationRows {
-			email := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			row := byEmail[email]
+			row := byAccount[account]
 			if row == nil {
-				row = &userRankingRow{UserEmail: email}
-				byEmail[email] = row
+				row = &userRankingRow{UserEmail: account}
+				byAccount[account] = row
 			}
 			row.DurationSeconds += d.DurationSeconds
 			row.OnlineSeconds += d.OnlineSeconds
 		}
 
-		merged := make([]userRankingRow, 0, len(byEmail))
-		for _, row := range byEmail {
+		merged := make([]userRankingRow, 0, len(byAccount))
+		for _, row := range byAccount {
 			merged = append(merged, *row)
 		}
 		assignUserRankingRanks(merged)

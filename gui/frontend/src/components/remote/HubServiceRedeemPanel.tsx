@@ -544,8 +544,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     const openHubCardStorePage = useCallback(async () => {
         try {
-            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_id?: string; remote_hub_url?: string; remote_hubcenter_url?: string; remote_tenant_id?: string; remote_tenant_name?: string; remote_email?: string; remote_viewer_token?: string } | null;
-            const url = buildHubCardStoreURL(cfg?.remote_hub_url, cfg?.remote_tenant_id, cfg?.remote_email, cfg?.remote_viewer_token, cfg?.remote_hubcenter_url, cfg?.remote_hub_id, undefined, cfg?.remote_tenant_name);
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_id?: string; remote_hub_url?: string; remote_hubcenter_url?: string; remote_tenant_id?: string; remote_tenant_name?: string; remote_email?: string; remote_mobile?: string; remote_user_id?: string; remote_viewer_token?: string } | null;
+            const url = buildHubCardStoreURL(cfg?.remote_hub_url, cfg?.remote_tenant_id, cfg?.remote_email, cfg?.remote_viewer_token, cfg?.remote_hubcenter_url, cfg?.remote_hub_id, undefined, cfg?.remote_tenant_name, cfg?.remote_user_id, cfg?.remote_mobile);
             if (!url) {
                 await showAlert(t("Card store is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u3002"));
                 return;
@@ -558,8 +558,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     const openHubCreditsPage = useCallback(async () => {
         try {
-            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string; remote_email?: string } | null;
-            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id, cfg?.remote_email);
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string; remote_email?: string; remote_mobile?: string; remote_user_id?: string } | null;
+            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id, cfg?.remote_email, cfg?.remote_user_id, cfg?.remote_mobile);
             if (!url) {
                 await showAlert(t("Credits page is unavailable because Hub URL is missing.", "Hub 地址缺失，暂时无法打开额度页面。", "Hub 位址缺失，暫時無法開啟額度頁面。"));
                 return;

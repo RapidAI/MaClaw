@@ -39,20 +39,21 @@ type EnrollConfig struct {
 
 // EnrollResult holds the output of a successful enrollment.
 type EnrollResult struct {
-	Status       string `json:"status"`
-	TenantID     string `json:"tenant_id,omitempty"`
-	TenantName   string `json:"tenant_name,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Code         string `json:"code,omitempty"`
-	UserID       string `json:"user_id,omitempty"`
-	Email        string `json:"email,omitempty"`
-	SN           string `json:"sn,omitempty"`
-	MachineID    string `json:"machine_id,omitempty"`
-	MachineToken string `json:"machine_token,omitempty"`
-	ViewerToken  string `json:"viewer_token,omitempty"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	VIPFlag      bool   `json:"vip_flag,omitempty"`
-	VEQuota      int    `json:"ve_quota,omitempty"` // Digital employee quota approved by HubCenter (0-10000)
+	Status              string `json:"status"`
+	TenantID            string `json:"tenant_id,omitempty"`
+	TenantName          string `json:"tenant_name,omitempty"`
+	Message             string `json:"message,omitempty"`
+	Code                string `json:"code,omitempty"`
+	UserID              string `json:"user_id,omitempty"`
+	Email               string `json:"email,omitempty"`
+	SN                  string `json:"sn,omitempty"`
+	MachineID           string `json:"machine_id,omitempty"`
+	MachineToken        string `json:"machine_token,omitempty"`
+	ViewerToken         string `json:"viewer_token,omitempty"`
+	ExpiresAt           string `json:"expires_at,omitempty"`
+	VIPFlag             bool   `json:"vip_flag,omitempty"`
+	ReboundExistingUser bool   `json:"rebound_existing_user,omitempty"`
+	VEQuota             int    `json:"ve_quota,omitempty"` // Digital employee quota approved by HubCenter (0-10000)
 
 	// Resolved metadata — not from the enroll response, filled by the client.
 	HubID          string   // the hub_id selected by HubCenter resolve, when known
@@ -135,6 +136,9 @@ func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, invita
 	}
 
 	payload := map[string]string{"email": email}
+	if phone := normalizeResolvePhoneNumber(email); phone != "" {
+		payload["phone_number"] = phone
+	}
 	if strings.TrimSpace(invitationCode) != "" {
 		payload["invitation_code"] = strings.TrimSpace(invitationCode)
 	}
@@ -175,6 +179,28 @@ func (c *EnrollmentClient) ResolveHubs(ctx context.Context, email string, invita
 		return nil, "", nil, fmt.Errorf("all hub centers failed: %w", lastErr)
 	}
 	return nil, "", nil, fmt.Errorf("no reachable hub center")
+}
+
+func normalizeResolvePhoneNumber(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "@") || strings.HasPrefix(strings.ToLower(value), "phone:") {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '+' || r == '-' || r == '.' || r == '(' || r == ')' || r == ' ' || r == '\t':
+			continue
+		default:
+			return ""
+		}
+	}
+	if b.Len() < 6 {
+		return ""
+	}
+	return b.String()
 }
 
 // Enroll performs the full registration flow:

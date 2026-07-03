@@ -4369,6 +4369,42 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.agentView).toBeNull();
     });
 
+    it('clears workflow forms after cancel succeeds even without confirmation text', async () => {
+        (DismissAgentView as any).mockImplementationOnce(async () => ({ text: '', error: '' }));
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+
+        await act(async () => {
+            await result.current.dismissAgentView('workflow:form:requirements', {
+                __cancel_workflow: true,
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+    });
+
     it('clearHistory dismisses workflow form agentView that normally survives dismiss', async () => {
         const { result } = renderAssistantHook();
         // Simulate a workflow form being opened

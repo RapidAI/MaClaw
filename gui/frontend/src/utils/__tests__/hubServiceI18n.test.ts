@@ -3,6 +3,8 @@ import { localizeByLang, localizeHubServiceReason, localizeHubServiceRedeemError
 
 describe('hubServiceI18n', () => {
     it('selects localized text by UI language', () => {
+        expect(localizeByLang('zh-CN', 'English', 'Hans', 'Hant')).toBe('Hans');
+        expect(localizeByLang('zh-TW', 'English', 'Hans', 'Hant')).toBe('Hant');
         expect(localizeByLang('en', 'English', '简体', '繁體')).toBe('English');
         expect(localizeByLang('zh-Hans', 'English', '简体', '繁體')).toBe('简体');
         expect(localizeByLang('zh-Hant', 'English', '简体', '繁體')).toBe('繁體');

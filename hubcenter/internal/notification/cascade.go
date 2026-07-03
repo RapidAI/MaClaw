@@ -129,7 +129,7 @@ func (c *CascadeService) pushToHub(ctx context.Context, hub HubEndpoint, notif *
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+hub.GlobalAdminToken)
+	req.Header.Set("Authorization", "Bearer "+hub.CascadeAuthToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -165,7 +165,7 @@ func (c *CascadeService) pushRevokeToHub(ctx context.Context, hub HubEndpoint, n
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+hub.GlobalAdminToken)
+	req.Header.Set("Authorization", "Bearer "+hub.CascadeAuthToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)

@@ -1,0 +1,8 @@
+# Copy this file to android/key.properties on the local release machine.
+# Do not commit android/key.properties or keystore files.
+#
+# storeFile may be absolute, or relative to mobile/maclaw_mobile/android.
+storeFile=release-signing-key.jks
+storePassword=<release-keystore-password>
+keyAlias=<release-key-alias>
+keyPassword=<release-key-password>

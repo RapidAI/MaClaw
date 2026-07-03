@@ -4,9 +4,10 @@
 .packages
 build/
 android/.gradle/
+android/.kotlin/
 android/local.properties
 ios/Flutter/ephemeral/
 ios/Pods/
 ios/.symlinks/
+ios/ExportOptions.plist
 *.iml
-

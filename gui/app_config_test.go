@@ -78,6 +78,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if !cfg.IsIMProgressNudgeEnabled() {
 		t.Fatal("IMProgressNudgeEnabled = false, want true for first-run default config")
 	}
+	if cfg.WorkflowEnabled == nil || cfg.IsWorkflowEnabled() {
+		t.Fatal("WorkflowEnabled = true/nil, want false for first-run default config")
+	}
 	if cfg.ShowAppEntry {
 		t.Fatal("ShowAppEntry = true, want false for first-run default config")
 	}

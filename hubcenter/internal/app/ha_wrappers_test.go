@@ -11,6 +11,7 @@ import (
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -27,6 +28,7 @@ type fakeSeedSync struct {
 	systemSettingVals  map[string]string
 	gossipSeeds        int
 	newsSeeds          int
+	notificationSeeds  int
 	skillHubSeeds      int
 	skillMarketSeeds   int
 	refreshCalls       int
@@ -68,6 +70,10 @@ func (f *fakeSeedSync) AppendGossipSnapshot(_ context.Context, _ *ha.GossipSnaps
 
 func (f *fakeSeedSync) AppendNewsArticle(_ context.Context, _ *store.NewsArticle) {
 	f.newsSeeds++
+}
+
+func (f *fakeSeedSync) AppendNotification(_ context.Context, _ *notification.Notification) {
+	f.notificationSeeds++
 }
 
 func (f *fakeSeedSync) AppendSkillHubSnapshot(_ context.Context, _ *skill.Snapshot) {
@@ -459,10 +465,19 @@ func (f *fakeSeedSkillMarketStore) DumpSnapshot(context.Context) (*skillmarket.S
 	return &skillmarket.Snapshot{Users: []skillmarket.SnapshotUser{{ID: "user-1"}}}, nil
 }
 
+type fakeSeedNotificationStore struct{}
+
+func (f *fakeSeedNotificationStore) List(_ context.Context, filter notification.ListFilter) ([]*notification.Notification, int, error) {
+	if filter.Offset > 0 {
+		return nil, 1, nil
+	}
+	return []*notification.Notification{{ID: "notif-1", Title: "Notice"}}, 1, nil
+}
+
 func TestSeedInitialHASnapshotsSeedsMissingCategories(t *testing.T) {
 	sync := &fakeSeedSync{has: map[string]bool{}}
 	refresher := &fakeSeedRefresher{}
-	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
+	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedNotificationStore{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
 	if sync.routingHubs != 2 || sync.routingLinks != 1 || sync.routingRoutes != 1 {
 		t.Fatalf("routing seeds = hubs:%d links:%d routes:%d, want 2/1/1", sync.routingHubs, sync.routingLinks, sync.routingRoutes)
 	}
@@ -474,6 +489,9 @@ func TestSeedInitialHASnapshotsSeedsMissingCategories(t *testing.T) {
 	}
 	if sync.newsSeeds != 2 {
 		t.Fatalf("news seeds = %d, want 2", sync.newsSeeds)
+	}
+	if sync.notificationSeeds != 1 {
+		t.Fatalf("notification seeds = %d, want 1", sync.notificationSeeds)
 	}
 	if sync.skillHubSeeds != 1 {
 		t.Fatalf("skill hub seeds = %d, want 1", sync.skillHubSeeds)
@@ -505,9 +523,9 @@ func TestHASystemSettingsRecordsTenantDigitalEmployeeAuthorization(t *testing.T)
 }
 
 func TestSeedInitialHASnapshotsSkipsSeededSnapshotCategoriesButChecksNews(t *testing.T) {
-	sync := &fakeSeedSync{has: map[string]bool{ha.EntityHubInstance: true, ha.EntityHubUserLink: true, ha.EntityHubDomainRoute: true, ha.EntitySystemSetting: true, ha.EntityGossipSnapshot: true, ha.EntityNewsArticle: true, ha.EntitySkillHubSnapshot: true, ha.EntitySkillMarketSnapshot: true}}
+	sync := &fakeSeedSync{has: map[string]bool{ha.EntityHubInstance: true, ha.EntityHubUserLink: true, ha.EntityHubDomainRoute: true, ha.EntitySystemSetting: true, ha.EntityGossipSnapshot: true, ha.EntityNewsArticle: true, ha.EntityNotification: true, ha.EntitySkillHubSnapshot: true, ha.EntitySkillMarketSnapshot: true}}
 	refresher := &fakeSeedRefresher{}
-	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
+	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, nil, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
 	if sync.routingHubs != 0 || sync.routingLinks != 0 || sync.routingRoutes != 0 || sync.systemSettingSeeds != 0 || sync.gossipSeeds != 0 || sync.skillHubSeeds != 0 || sync.skillMarketSeeds != 0 {
 		t.Fatalf("unexpected seeds: routing=%d/%d/%d settings=%d gossip=%d news=%d skillhub=%d skillmarket=%d", sync.routingHubs, sync.routingLinks, sync.routingRoutes, sync.systemSettingSeeds, sync.gossipSeeds, sync.newsSeeds, sync.skillHubSeeds, sync.skillMarketSeeds)
 	}
@@ -522,7 +540,7 @@ func TestSeedInitialHASnapshotsSkipsSeededSnapshotCategoriesButChecksNews(t *tes
 func TestSeedInitialHASnapshotsAlwaysChecksNewsForMissingOrStaleOps(t *testing.T) {
 	sync := &fakeSeedSync{has: map[string]bool{ha.EntityNewsArticle: true}}
 	refresher := &fakeSeedRefresher{}
-	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
+	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, nil, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
 	if sync.newsSeeds != 2 {
 		t.Fatalf("news seeds = %d, want 2", sync.newsSeeds)
 	}
@@ -654,7 +672,7 @@ func TestSeedInitialHASnapshotsUsesPagedRoutingStores(t *testing.T) {
 		routes.items[i] = &store.HubDomainRoute{ID: "route-" + strconv.Itoa(i), HubID: "hub-0", Domain: "rapidai.tech"}
 	}
 	sync := &fakeSeedSync{has: map[string]bool{ha.EntitySystemSetting: true, ha.EntityGossipSnapshot: true, ha.EntityNewsArticle: true, ha.EntitySkillHubSnapshot: true, ha.EntitySkillMarketSnapshot: true}}
-	seedInitialHASnapshots(context.Background(), sync, nil, hubs, links, routes, nil, nil, nil, nil, nil)
+	seedInitialHASnapshots(context.Background(), sync, nil, hubs, links, routes, nil, nil, nil, nil, nil, nil)
 
 	want := haSeedPageSize + 1
 	if sync.routingHubs != want || sync.routingLinks != want || sync.routingRoutes != want {

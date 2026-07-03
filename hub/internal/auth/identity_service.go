@@ -1338,9 +1338,12 @@ func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID st
 	if err != nil {
 		return "", err
 	}
-	tenantID := store.DefaultTenantID
+	tenantID := strings.TrimSpace(tenantIDFromContext(ctx))
 	if user != nil && strings.TrimSpace(user.TenantID) != "" {
-		tenantID = user.TenantID
+		tenantID = strings.TrimSpace(user.TenantID)
+	}
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
 	}
 	raw, err := randomToken(32)
 	if err != nil {
@@ -1387,7 +1390,14 @@ func (s *IdentityService) AuthenticateViewer(ctx context.Context, rawToken strin
 		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
 	}
 
-	return &ViewerPrincipal{TenantID: user.TenantID, UserID: user.ID, Email: user.Email}, nil
+	tenantID := strings.TrimSpace(user.TenantID)
+	if tenantID == "" {
+		tenantID = strings.TrimSpace(viewerToken.TenantID)
+	}
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	return &ViewerPrincipal{TenantID: tenantID, UserID: user.ID, Email: user.Email}, nil
 }
 
 func (s *IdentityService) createApprovedUser(ctx context.Context, email string) (*store.User, error) {

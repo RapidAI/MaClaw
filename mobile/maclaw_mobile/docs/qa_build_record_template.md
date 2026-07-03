@@ -44,6 +44,8 @@ No custom Hub URL setting found:
 
 If the artifact path is available on the validation machine, the QA validator
 checks that the recorded SHA256 matches the local `.apk` or `.aab` file.
+Use `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds`
+to generate paste-ready `Artifact path`, `SHA256`, and byte-size evidence.
 
 ## Android Share-To-App Evidence
 

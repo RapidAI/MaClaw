@@ -25,9 +25,9 @@ const STEP_LABELS: Record<OnboardingStepId, { en: string; zhHans: string; zhHant
         zhHant: '\u904b\u884c\u6a21\u5f0f',
     },
     register: {
-        en: 'Register',
-        zhHans: '\u90ae\u7bb1\u6ce8\u518c',
-        zhHant: '\u90f5\u7bb1\u8a3b\u518a',
+        en: 'Account',
+        zhHans: '\u8d26\u53f7\u6ce8\u518c',
+        zhHant: '\u5e33\u865f\u8a3b\u518a',
     },
     sso: {
         en: 'SSO Auth',

@@ -251,6 +251,82 @@ func issueTenantAdminToken(t *testing.T, handler http.Handler, globalToken, tena
 	return token
 }
 
+func TestNotificationCascadeAcceptsInstallationIDToken(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	installationID := "hub_test_installation_id"
+	if err := ctx.store.System.Set(context.Background(), cascadeInstallationIDSettingKey, `{"value":"`+installationID+`"}`); err != nil {
+		t.Fatalf("set installation id: %v", err)
+	}
+
+	body := map[string]any{
+		"notification": map[string]any{
+			"id":            "center-notification-1",
+			"title":         "Cascade smoke",
+			"content":       "sent from hubcenter",
+			"category":      "system_announcement",
+			"priority":      "normal",
+			"audience_type": "all",
+			"audience_ids":  []string{},
+			"status":        "published",
+			"created_by":    "hubcenter",
+		},
+	}
+
+	rr := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/v1/notifications/cascade", body, installationID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cascade with installation id status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationCascadeStillAcceptsGlobalAdminToken(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+
+	body := map[string]any{
+		"notification": map[string]any{
+			"id":            "center-notification-admin-token",
+			"title":         "Cascade admin token",
+			"content":       "sent from hubcenter with global admin fallback",
+			"category":      "system_announcement",
+			"priority":      "normal",
+			"audience_type": "all",
+			"audience_ids":  []string{},
+			"status":        "published",
+			"created_by":    "hubcenter",
+		},
+	}
+
+	rr := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/v1/notifications/cascade", body, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cascade with global admin token status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationCascadeRejectsInvalidInstallationIDToken(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	if err := ctx.store.System.Set(context.Background(), cascadeInstallationIDSettingKey, `{"value":"hub_test_installation_id"}`); err != nil {
+		t.Fatalf("set installation id: %v", err)
+	}
+
+	rr := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/v1/notifications/cascade", map[string]any{}, "wrong-token")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("cascade with wrong installation id status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationCascadeRejectsTenantQueryWithInstallationIDToken(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	installationID := "hub_test_installation_id"
+	if err := ctx.store.System.Set(context.Background(), cascadeInstallationIDSettingKey, `{"value":"`+installationID+`"}`); err != nil {
+		t.Fatalf("set installation id: %v", err)
+	}
+
+	rr := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/v1/notifications/cascade?tenant_id=default", map[string]any{}, installationID)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("cascade with tenant_id status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestLegacyHubLLMConfigAdminRoutesRemoved(t *testing.T) {
 	ctx := newAdminRouterTestContext(t)
 	token := issueHubAdminToken(t, ctx.handler)
@@ -1053,7 +1129,7 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		"aliyun_sign_name":         "云洛科技验证平台",
 		"aliyun_template_code":     "100001",
 		"code_ttl_minutes":         5,
-		"code_length":              4,
+		"code_length":              6,
 	}, loginPayload.AccessToken)
 	if tenantRegistrationAuthSave.Code != http.StatusOK {
 		t.Fatalf("tenant registration auth save status = %d body=%s", tenantRegistrationAuthSave.Code, tenantRegistrationAuthSave.Body.String())

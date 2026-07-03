@@ -50,13 +50,15 @@ export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<v
 
 export function ActivateRemote(arg1:string,arg2:string,arg3:string):Promise<any>;
 
-export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
+export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
 
-export function GetRemoteRegistrationAuth(arg1:string):Promise<any>;
+export function GetRemoteRegistrationAuth(arg1:string,arg2:string):Promise<any>;
+
+export function ResolveRemoteRegistrationTarget(arg1:string):Promise<any>;
 
 export function ProbeRemoteHub(arg1:string,arg2:string):Promise<any>;
 
-export function SendRemoteRegistrationSMS(arg1:string,arg2:string):Promise<any>;
+export function SendRemoteRegistrationSMS(arg1:string,arg2:string,arg3:string):Promise<any>;
 
 export function ClearRemoteActivation():Promise<void>;
 

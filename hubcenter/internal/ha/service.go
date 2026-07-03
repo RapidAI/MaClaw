@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -39,6 +41,7 @@ const (
 	EntityLLMCardType         = "llm_card_type"
 	EntityLLMTenantAuth       = "llm_tenant_authorization"
 	EntityLLMCardOrder        = "llm_card_order"
+	EntityNotification        = "notification"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
@@ -88,6 +91,7 @@ type Service struct {
 	cardTypes                cardstore.CardTypeRepository
 	cardOrders               cardstore.PurchaseOrderRepository
 	llmAuthorizations        llmservice.TenantAuthorizationRepository
+	notifications            notification.Store
 	heartbeatSync            store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval time.Duration
 
@@ -256,6 +260,13 @@ func (s *Service) AttachCardOrders(repo cardstore.PurchaseOrderRepository) {
 		return
 	}
 	s.cardOrders = repo
+}
+
+func (s *Service) AttachNotificationStore(repo notification.Store) {
+	if s == nil {
+		return
+	}
+	s.notifications = repo
 }
 
 func (s *Service) AttachLLMAuthorizations(repo llmservice.TenantAuthorizationRepository) {
@@ -562,6 +573,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
+		{Key: "notifications", Label: "Notifications", EntityTypes: map[string]struct{}{EntityNotification: {}}},
 	}
 }
 
@@ -663,6 +675,11 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 	if s.news != nil {
 		if _, total, err := s.news.List(ctx, 0, 1); err == nil {
 			counts["news"] += int64(total)
+		}
+	}
+	if s.notifications != nil {
+		if _, total, err := s.notifications.List(ctx, notification.ListFilter{Limit: 1}); err == nil {
+			counts["notifications"] += int64(total)
 		}
 	}
 	return counts
@@ -1425,7 +1442,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityNotification:
 		return true
 	default:
 		return false
@@ -1437,7 +1454,7 @@ func isSupportedEntityOpType(entityType, opType string) bool {
 		return true
 	}
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMCardOrder:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMCardOrder, EntityNotification:
 		return opType == OpDelete
 	default:
 		return false
@@ -1526,7 +1543,7 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMTenantAuth:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMTenantAuth, EntityNotification:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1573,7 +1590,7 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityNotification:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1649,6 +1666,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyLLMTenantAuthOp(ctx, op)
 	case EntityLLMCardOrder:
 		return s.applyLLMCardOrderOp(ctx, op)
+	case EntityNotification:
+		return s.applyNotificationOp(ctx, op)
 	default:
 		return fmt.Errorf("unsupported entity type: %s", op.EntityType)
 	}
@@ -2015,6 +2034,33 @@ func (s *Service) applyLLMCardOrderOp(ctx context.Context, op *store.HASyncOp) e
 	}
 }
 
+func (s *Service) applyNotificationOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.notifications == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item notification.Notification
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		return s.notifications.Upsert(ctx, &item)
+	case OpDelete:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		if err := s.notifications.Delete(ctx, payload.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported notification op: %s", op.OpType)
+	}
+}
+
 func (s *Service) markApplied(ctx context.Context, op *store.HASyncOp) error {
 	return s.ops.MarkApplied(ctx, &store.HAAppliedOp{OpID: op.OpID, SourceNodeID: op.SourceNodeID, EntityType: op.EntityType, EntityID: op.EntityID, AppliedAt: time.Now().UTC()})
 }
@@ -2132,6 +2178,23 @@ func (s *Service) DeleteLLMCardType(ctx context.Context, id string) {
 	if err := s.AppendDelete(ctx, EntityLLMCardType, id, map[string]string{"id": id}, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] delete llm card type: %v", err)
 		s.recordFailure(ctx, "ha_sync", "delete_llm_card_type_failed", err.Error(), id, nil)
+	}
+}
+
+func (s *Service) AppendNotification(ctx context.Context, item *notification.Notification) {
+	if item == nil {
+		return
+	}
+	if err := s.AppendUpsert(ctx, EntityNotification, item.ID, item, item.UpdatedAt); err != nil {
+		log.Printf("[hubcenter][ha] append notification: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_notification_failed", err.Error(), item.ID, nil)
+	}
+}
+
+func (s *Service) DeleteNotification(ctx context.Context, id string) {
+	if err := s.AppendDelete(ctx, EntityNotification, id, map[string]string{"id": id}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] delete notification: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_notification_failed", err.Error(), id, nil)
 	}
 }
 

@@ -613,6 +613,20 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 	return out
 }
 
+func (s *Service) ListOnlineMachineIDs() []string {
+	s.runtime.mu.RLock()
+	defer s.runtime.mu.RUnlock()
+
+	ids := make([]string, 0, len(s.runtime.desktopsByMachine))
+	for machineID, conn := range s.runtime.desktopsByMachine {
+		if conn == nil || conn.Conn == nil {
+			continue
+		}
+		ids = append(ids, machineID)
+	}
+	return ids
+}
+
 func (s *Service) ExportMachinesByUser(ctx context.Context, userID string) ([]*store.Machine, error) {
 	if s == nil || s.repo == nil || strings.TrimSpace(userID) == "" {
 		return nil, nil

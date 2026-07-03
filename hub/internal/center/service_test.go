@@ -165,7 +165,7 @@ func TestUserUsageSyncStartDayUsesLimitedBackfill(t *testing.T) {
 	}
 }
 
-func TestSyncUserUsageFiltersNonEmailPayloadRows(t *testing.T) {
+func TestSyncUserUsageAllowsEmailAndPhonePayloadRows(t *testing.T) {
 	var got syncUserUsageRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/hubs/hub_sync/user-usage/sync" {
@@ -185,10 +185,12 @@ func TestSyncUserUsageFiltersNonEmailPayloadRows(t *testing.T) {
 		tokenRows: []store.UserTokenSummary{
 			{UserEmail: "u_1774182684297100200", Usage: store.UserTokenUsage{InputTokens: 99}},
 			{UserEmail: "User@Example.com", Usage: store.UserTokenUsage{InputTokens: 10, OutputTokens: 5}},
+			{UserEmail: "phone:19900001111", Usage: store.UserTokenUsage{InputTokens: 20}},
 		},
 		durationRows: []store.UserDurationSummary{
 			{UserEmail: "u_1774182684297100200", DurationSeconds: 999},
 			{UserEmail: "User@Example.com", DurationSeconds: 120},
+			{UserEmail: "phone:19900001111", DurationSeconds: 240},
 		},
 	})
 
@@ -202,15 +204,29 @@ func TestSyncUserUsageFiltersNonEmailPayloadRows(t *testing.T) {
 		t.Fatalf("unexpected sync window or tenants: start=%q end=%q tenants=%#v", got.SyncStartDay, got.SyncEndDay, got.TenantIDs)
 	}
 	if len(got.Items) == 0 {
-		t.Fatal("expected email usage items")
+		t.Fatal("expected usage items")
 	}
+	seen := map[string]bool{}
 	for _, item := range got.Items {
-		if item.UserEmail != "user@example.com" {
-			t.Fatalf("payload user_email = %q, want only user@example.com", item.UserEmail)
+		switch item.UserEmail {
+		case "user@example.com":
+			if item.InputTokens != 10 || item.OutputTokens != 5 || item.DurationSeconds != 120 {
+				t.Fatalf("unexpected email usage item: %#v", item)
+			}
+			seen[item.UserEmail] = true
+		case "phone:19900001111":
+			if item.InputTokens != 20 || item.DurationSeconds != 240 {
+				t.Fatalf("unexpected phone usage item: %#v", item)
+			}
+			seen[item.UserEmail] = true
+		case "u_1774182684297100200":
+			t.Fatalf("uid account should be filtered: %#v", got.Items)
+		default:
+			t.Fatalf("unexpected account in payload: %#v", item)
 		}
-		if item.InputTokens != 10 || item.OutputTokens != 5 || item.DurationSeconds != 120 {
-			t.Fatalf("unexpected usage item: %#v", item)
-		}
+	}
+	if !seen["user@example.com"] || !seen["phone:19900001111"] {
+		t.Fatalf("expected email and phone accounts, saw %#v", seen)
 	}
 }
 

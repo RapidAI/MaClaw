@@ -2291,6 +2291,32 @@ func TestDismissAgentViewCancelWorkflowPrefersPayloadUserID(t *testing.T) {
 	}
 }
 
+func TestDismissAgentViewCancelWorkflowSeedsPayloadEventScope(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/right-project"
+	state, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	_, err = handler.app.DismissAgentView(AgentViewDismissPayload{
+		ViewID: "workflow:form:" + v2.PhaseCodingRequirements,
+		Data: map[string]interface{}{
+			"__cancel_workflow":         true,
+			workflowFormUserIDField:     userID,
+			workflowFormWorkflowIDField: state.ID,
+			workflowFormEventScopeField: "proj-scope-from-dismiss",
+		},
+	})
+	if err != nil {
+		t.Fatalf("DismissAgentView failed: %v", err)
+	}
+	if got := handler.app.getEventScopeID(userID); got != "proj-scope-from-dismiss" {
+		t.Fatalf("event scope after dismiss = %q, want payload scope", got)
+	}
+}
+
 func TestDismissAgentViewCancelWorkflowRejectsStalePayload(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine

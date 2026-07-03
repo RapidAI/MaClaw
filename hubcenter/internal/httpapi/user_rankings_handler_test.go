@@ -11,12 +11,13 @@ func TestBuildCenterRankingRowsFiltersUIDAndClampsDuration(t *testing.T) {
 	rows := buildCenterRankingRows([]*store.HubUserUsageDaily{
 		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "u_1774182684297100200", DurationSeconds: 999999},
 		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "slow@example.com", DurationSeconds: 999999},
+		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "phone:19900001111", InputTokens: 20, DurationSeconds: 120},
 		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "fast@example.com", InputTokens: 10, OutputTokens: 5, DurationSeconds: 60},
 		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "bad@example.com", InputTokens: -10, OutputTokens: -5, DurationSeconds: -60},
 	}, "duration", 10, int64(2*time.Hour/time.Second))
 
-	if len(rows) != 3 {
-		t.Fatalf("rows = %d, want 3: %#v", len(rows), rows)
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d, want 4: %#v", len(rows), rows)
 	}
 	if rows[0].UserEmail != "slow@example.com" {
 		t.Fatalf("first email = %q, want slow@example.com", rows[0].UserEmail)
@@ -24,11 +25,14 @@ func TestBuildCenterRankingRowsFiltersUIDAndClampsDuration(t *testing.T) {
 	if rows[0].DurationSeconds != int64(2*time.Hour/time.Second) {
 		t.Fatalf("clamped duration = %d, want %d", rows[0].DurationSeconds, int64(2*time.Hour/time.Second))
 	}
-	if rows[1].UserEmail != "fast@example.com" || rows[1].DurationRank != 2 || rows[1].TokenRank != 1 {
+	if rows[1].UserEmail != "phone:19900001111" || rows[1].DurationRank != 2 || rows[1].TokenRank != 1 {
 		t.Fatalf("unexpected second row: %#v", rows[1])
 	}
-	if rows[2].UserEmail != "bad@example.com" || rows[2].DurationSeconds != 0 || rows[2].TotalTokens != 0 {
-		t.Fatalf("unexpected sanitized row: %#v", rows[2])
+	if rows[2].UserEmail != "fast@example.com" || rows[2].DurationRank != 3 || rows[2].TokenRank != 2 {
+		t.Fatalf("unexpected third row: %#v", rows[2])
+	}
+	if rows[3].UserEmail != "bad@example.com" || rows[3].DurationSeconds != 0 || rows[3].TotalTokens != 0 {
+		t.Fatalf("unexpected sanitized row: %#v", rows[3])
 	}
 }
 
@@ -48,6 +52,25 @@ func TestCenterRankingEmailFilterRejectsMalformedEmails(t *testing.T) {
 	} {
 		if got := isCenterRankingEmail(tc.email); got != tc.want {
 			t.Fatalf("isCenterRankingEmail(%q) = %v, want %v", tc.email, got, tc.want)
+		}
+	}
+}
+
+func TestCenterRankingAccountFilterAllowsPhoneAccounts(t *testing.T) {
+	for _, tc := range []struct {
+		account string
+		want    bool
+	}{
+		{account: "user@example.com", want: true},
+		{account: "phone:19900001111", want: true},
+		{account: " PHONE:19900001111 ", want: true},
+		{account: "phone:12345", want: false},
+		{account: "phone:19900 001111", want: false},
+		{account: "u_1774182684297100200", want: false},
+		{account: "", want: false},
+	} {
+		if got := isCenterRankingAccount(tc.account); got != tc.want {
+			t.Fatalf("isCenterRankingAccount(%q) = %v, want %v", tc.account, got, tc.want)
 		}
 	}
 }

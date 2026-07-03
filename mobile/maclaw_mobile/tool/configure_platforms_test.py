@@ -83,6 +83,13 @@ class ConfigurePlatformsTest(unittest.TestCase):
                 '        targetCompatibility = JavaVersion.VERSION_17\n'
                 '    }\n'
                 '    defaultConfig { applicationId = "com.example.maclaw_mobile" }\n'
+                '    buildTypes {\n'
+                '        release {\n'
+                '            // TODO: Add your own signing config for the release build.\n'
+                '            // Signing with the debug keys for now, so `flutter run --release` works.\n'
+                '            signingConfig = signingConfigs.getByName("debug")\n'
+                '        }\n'
+                '    }\n'
                 '}\n',
                 encoding="utf-8",
             )
@@ -101,7 +108,62 @@ class ConfigurePlatformsTest(unittest.TestCase):
                 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")',
                 text,
             )
+            self.assertIn("val maclawKeystorePropertiesFile", text)
+            self.assertIn('rootProject.file("key.properties")', text)
+            self.assertIn('create("release")', text)
+            self.assertIn("maclawReleaseSigningConfigured", text)
+            self.assertIn("assembleRelease", text)
+            self.assertIn("bundleRelease", text)
+            self.assertNotIn('signingConfigs.getByName("debug")', text)
             self.assertNotIn("com.example.maclaw_mobile", text)
+
+    def test_android_release_signing_template_is_idempotent(self) -> None:
+        source = (
+            "import java.util.Properties\n\n"
+            "val maclawKeystorePropertiesFile = rootProject.file(\"key.properties\")\n"
+            "val maclawKeystoreProperties = Properties()\n"
+            "val maclawReleaseSigningConfigured = maclawKeystorePropertiesFile.exists()\n"
+            "if (maclawReleaseSigningConfigured) {\n"
+            "    maclawKeystorePropertiesFile.inputStream().use { maclawKeystoreProperties.load(it) }\n"
+            "}\n\n"
+            "gradle.taskGraph.whenReady {\n"
+            "    val releaseTaskRequested = allTasks.any { task ->\n"
+            "        task.path.endsWith(\":app:assembleRelease\") || task.path.endsWith(\":app:bundleRelease\")\n"
+            "    }\n"
+            "    if (releaseTaskRequested && !maclawReleaseSigningConfigured) {\n"
+            "        throw GradleException(\n"
+            "            \"MaClaw Mobile release signing requires android/key.properties with storeFile, storePassword, keyAlias, and keyPassword.\"\n"
+            "        )\n"
+            "    }\n"
+            "}\n\n"
+            "plugins { id(\"com.android.application\") }\n\n"
+            "android {\n"
+            "    namespace = \"top.mypapers.maclaw.mobile\"\n"
+            "    signingConfigs {\n"
+            "        if (maclawReleaseSigningConfigured) {\n"
+            "            create(\"release\") {\n"
+            "                keyAlias = maclawKeystoreProperties[\"keyAlias\"] as String\n"
+            "                keyPassword = maclawKeystoreProperties[\"keyPassword\"] as String\n"
+            "                storeFile = file(maclawKeystoreProperties[\"storeFile\"] as String)\n"
+            "                storePassword = maclawKeystoreProperties[\"storePassword\"] as String\n"
+            "            }\n"
+            "        }\n"
+            "    }\n\n"
+            "    buildTypes {\n"
+            "        release {\n"
+            "            if (maclawReleaseSigningConfigured) {\n"
+            "                signingConfig = signingConfigs.getByName(\"release\")\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+
+        configured = configure_platforms.configure_android_release_signing(source)
+
+        self.assertEqual(1, configured.count("val maclawKeystorePropertiesFile"))
+        self.assertEqual(1, configured.count("signingConfigs {"))
+        self.assertEqual(1, configured.count("buildTypes {"))
 
     def test_android_root_gradle_sets_plugin_jvm_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

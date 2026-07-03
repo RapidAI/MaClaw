@@ -140,7 +140,7 @@ type HubEndpoint struct {
 	ID               string `json:"id"`   // Hub instance ID
 	Name             string `json:"name"` // Hub display name
 	URL              string `json:"url"`  // Hub base URL
-	GlobalAdminToken string `json:"-"`    // Token for global admin auth (excluded from JSON to prevent leaks)
+	CascadeAuthToken string `json:"-"`    // Bearer token for cascade auth (excluded from JSON to prevent leaks)
 }
 
 // NotificationWithCascade combines a notification with its cascade results.
@@ -152,9 +152,11 @@ type NotificationWithCascade struct {
 // Store defines the persistence interface for HubCenter notifications.
 type Store interface {
 	Create(ctx context.Context, n *Notification) error
+	Upsert(ctx context.Context, n *Notification) error
 	GetByID(ctx context.Context, id string) (*Notification, error)
 	List(ctx context.Context, filter ListFilter) ([]*Notification, int, error)
 	UpdateStatus(ctx context.Context, id string, status Status, updatedAt time.Time) error
+	Delete(ctx context.Context, id string) error
 	RecordCascadeResult(ctx context.Context, result *CascadeResult) error
 	GetCascadeResults(ctx context.Context, notificationID string) ([]*CascadeResult, error)
 }

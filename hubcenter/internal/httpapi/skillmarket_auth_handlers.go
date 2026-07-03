@@ -106,6 +106,8 @@ func (h *SkillMarketHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 // and require users to complete full SkillMarket registration.
 func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Account     string `json:"account"`
+		UserID      string `json:"user_id"`
 		Email       string `json:"email"`
 		MachineID   string `json:"machine_id"`
 		ViewerToken string `json:"viewer_token"`
@@ -113,7 +115,13 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
-	account := strings.TrimSpace(req.Email)
+	account := strings.TrimSpace(req.Account)
+	if account == "" {
+		account = strings.TrimSpace(req.UserID)
+	}
+	if account == "" {
+		account = strings.TrimSpace(req.Email)
+	}
 	if account == "" {
 		smError(w, http.StatusBadRequest, "account is required")
 		return

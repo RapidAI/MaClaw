@@ -269,6 +269,27 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
         self.assertEqual(set(), unknown)
 
+    def test_template_contains_every_required_field_occurrence(self) -> None:
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "docs"
+            / "qa_build_record_template.md"
+        ).read_text(encoding="utf-8")
+        template_fields = [
+            match.group(1).strip()
+            for match in re.finditer(r"(?m)^([^#`\n][^:\n]+):", template)
+        ]
+
+        missing = []
+        for field, required_count in sorted(
+            validate_qa_build_record.REQUIRED_FIELD_COUNTS.items()
+        ):
+            actual_count = template_fields.count(field)
+            if actual_count < required_count:
+                missing.append(f"{field}: expected {required_count}, found {actual_count}")
+
+        self.assertEqual([], missing)
+
     def test_template_is_not_accepted_as_completed_evidence(self) -> None:
         template = (
             Path(__file__).resolve().parent.parent

@@ -34,6 +34,10 @@
       notifRevokeConfirm: 'Confirm revoke this notification?',
       notifRevokeSuccess: 'Notification revoked.',
       notifRevokeFailed: 'Revoke failed: {error}',
+      notifDelete: 'Delete',
+      notifDeleteConfirm: 'Permanently delete this notification?',
+      notifDeleteSuccess: 'Notification deleted.',
+      notifDeleteFailed: 'Delete failed: {error}',
       notifCreateTitle: 'Create Notification',
       notifFormTitle: 'Title',
       notifFormTitlePlaceholder: 'Notification title (max 100 chars)',
@@ -99,6 +103,10 @@
       notifRevokeConfirm: '\u786e\u8ba4\u64a4\u56de\u6b64\u901a\u77e5\uff1f',
       notifRevokeSuccess: '\u901a\u77e5\u5df2\u64a4\u56de\u3002',
       notifRevokeFailed: '\u64a4\u56de\u5931\u8d25\uff1a{error}',
+      notifDelete: '\u5220\u9664',
+      notifDeleteConfirm: '\u786e\u8ba4\u6c38\u4e45\u5220\u9664\u6b64\u901a\u77e5\uff1f',
+      notifDeleteSuccess: '\u901a\u77e5\u5df2\u5220\u9664\u3002',
+      notifDeleteFailed: '\u5220\u9664\u5931\u8d25\uff1a{error}',
       notifCreateTitle: '\u521b\u5efa\u901a\u77e5',
       notifFormTitle: '\u6807\u9898',
       notifFormTitlePlaceholder: '\u901a\u77e5\u6807\u9898\uff08\u6700\u591a100\u5b57\u7b26\uff09',
@@ -194,6 +202,30 @@
     return rate + '% (' + stats.read_count + '/' + stats.total_pushed + ')';
   }
 
+  function notificationItemsFromResponse(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.items)) return data.items;
+    if (data && Array.isArray(data.notifications)) return data.notifications;
+    return [];
+  }
+
+  function notificationDetailFromResponse(data) {
+    if (!data) return null;
+    if (data.notification) {
+      data.notification.stats = data.stats || data.notification.stats || null;
+      return data.notification;
+    }
+    return data;
+  }
+
+  function notifJsArg(value) {
+    return escapeHtml(JSON.stringify(String(value || '')));
+  }
+
+  function canDeleteNotification(item) {
+    return !!item && (item.status === 'revoked' || item.status === 'draft' || item.status === 'expired');
+  }
+
   // --- Tab Panel Container ---
   function getPanel() {
     return document.getElementById('tab-notifications');
@@ -259,8 +291,8 @@
       const qs = params.toString();
       const url = '/api/v1/admin/notifications' + (qs ? '?' + qs : '');
       const data = await api(url);
-      notifState.items = Array.isArray(data.notifications) ? data.notifications : (Array.isArray(data) ? data : []);
-      notifState.total = notifState.items.length;
+      notifState.items = notificationItemsFromResponse(data);
+      notifState.total = Number(data && data.total || notifState.items.length);
       renderNotificationList();
     } catch (err) {
       const msg = tr('notifLoadFailed', { error: err.message });
@@ -281,8 +313,13 @@
       const stats = item.stats || {};
       const rate = deliveryRateText(stats);
       const canRevoke = item.status === 'published';
+      const canDelete = canDeleteNotification(item);
+      const idArg = notifJsArg(item.id);
       const revokeBtn = canRevoke
-        ? '<button class="btn-danger" style="height:30px;padding:0 10px;font-size:11px" onclick="notifRevokeItem(\'' + escapeHtml(item.id) + '\')">' + escapeHtml(tr('notifRevoke')) + '</button>'
+        ? '<button class="btn-danger" style="height:30px;padding:0 10px;font-size:11px" onclick="notifRevokeItem(' + idArg + ')">' + escapeHtml(tr('notifRevoke')) + '</button>'
+        : '';
+      const deleteBtn = canDelete
+        ? '<button class="btn-danger" style="height:30px;padding:0 10px;font-size:11px" onclick="notifDeleteItem(' + idArg + ')">' + escapeHtml(tr('notifDelete')) + '</button>'
         : '';
       return '<div class="item" style="padding:12px 14px">'
         + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">'
@@ -298,8 +335,9 @@
         + ' &nbsp;|&nbsp; ' + escapeHtml(tr('notifDeliveryRate')) + ': ' + escapeHtml(rate) + '</div>'
         + '</div>'
         + '<div style="display:flex;gap:6px;flex-shrink:0">'
-        + '<button class="btn-ghost" style="height:30px;padding:0 10px;font-size:11px" onclick="notifShowDetail(\'' + escapeHtml(item.id) + '\')">' + escapeHtml(tr('notifView')) + '</button>'
+        + '<button class="btn-ghost" style="height:30px;padding:0 10px;font-size:11px" onclick="notifShowDetail(' + idArg + ')">' + escapeHtml(tr('notifView')) + '</button>'
         + revokeBtn
+        + deleteBtn
         + '</div></div></div>';
     }).join('');
     root.innerHTML = cards;
@@ -383,6 +421,7 @@
     const readCount = stats.read_count || 0;
     const readRate = totalPushed > 0 ? Math.round((readCount / totalPushed) * 100) + '%' : '-';
     const canRevoke = data.status === 'published' && !isExpired(data.expire_at);
+    const canDelete = canDeleteNotification(data);
     // Simple Markdown to HTML (basic: bold, italic, code, headings, line breaks)
     const contentHtml = simpleMarkdownRender(data.content || '');
 
@@ -413,8 +452,11 @@
       + '<div class="metric"><label>' + escapeHtml(tr('notifStatRead')) + '</label><strong>' + readCount + '</strong></div>'
       + '<div class="metric"><label>' + escapeHtml(tr('notifStatRate')) + '</label><strong>' + readRate + '</strong></div>'
       + '</div></div>'
-      // Revoke action
-      + (canRevoke ? '<div class="actions"><button class="btn-danger" type="button" onclick="notifRevokeItem(\'' + escapeHtml(data.id) + '\')">' + escapeHtml(tr('notifRevoke')) + '</button></div>' : '')
+      // Lifecycle actions
+      + (canRevoke || canDelete ? '<div class="actions">'
+        + (canRevoke ? '<button class="btn-danger" type="button" onclick="notifRevokeItem(' + notifJsArg(data.id) + ')">' + escapeHtml(tr('notifRevoke')) + '</button>' : '')
+        + (canDelete ? '<button class="btn-danger" type="button" onclick="notifDeleteItem(' + notifJsArg(data.id) + ')">' + escapeHtml(tr('notifDelete')) + '</button>' : '')
+        + '</div>' : '')
       + '</div>';
     panel.innerHTML = html;
   }
@@ -456,8 +498,10 @@
   global.notifShowDetail = async function(id) {
     try {
       const data = await api('/api/v1/admin/notifications/' + encodeURIComponent(id));
+      const detail = notificationDetailFromResponse(data);
+      if (!detail || !detail.id) throw new Error('Notification not found');
       notifState.currentView = 'detail';
-      renderDetailView(data);
+      renderDetailView(detail);
     } catch (err) {
       showToast(err.message, 'error');
     }
@@ -483,6 +527,22 @@
       }
     } catch (err) {
       showToast(tr('notifRevokeFailed', { error: err.message }), 'error');
+    }
+  };
+
+  global.notifDeleteItem = async function(id) {
+    if (!confirm(tr('notifDeleteConfirm'))) return;
+    try {
+      await api('/api/v1/admin/notifications/' + encodeURIComponent(id), { method: 'DELETE' });
+      showToast(tr('notifDeleteSuccess'), 'info');
+      if (notifState.currentView === 'detail') {
+        notifState.currentView = 'list';
+        renderListView();
+      } else {
+        loadNotifications();
+      }
+    } catch (err) {
+      showToast(tr('notifDeleteFailed', { error: err.message }), 'error');
     }
   };
 
@@ -579,6 +639,8 @@
       });
       showToast(tr('notifCreateSuccess'), 'info');
       notifState.currentView = 'list';
+      notifState.statusFilter = '';
+      notifState.categoryFilter = '';
       renderListView();
     } catch (err) {
       showToast(tr('notifCreateFailed', { error: err.message }), 'error');

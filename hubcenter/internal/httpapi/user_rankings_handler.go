@@ -82,15 +82,15 @@ func HubUserUsageSyncHandler(hubService *hubs.Service, repo centerUserUsageRepo)
 		items := make([]*store.HubUserUsageDaily, 0, len(req.Items))
 		now := time.Now().UTC()
 		for _, raw := range req.Items {
-			email := strings.ToLower(strings.TrimSpace(raw.UserEmail))
+			account := strings.ToLower(strings.TrimSpace(raw.UserEmail))
 			day := strings.TrimSpace(raw.Day)
-			if !isCenterRankingEmail(email) || day == "" {
+			if !isCenterRankingAccount(account) || day == "" {
 				continue
 			}
 			items = append(items, &store.HubUserUsageDaily{
 				HubID:             hubID,
 				TenantID:          normalizeHubSyncTenantID(raw.TenantID),
-				UserEmail:         email,
+				UserEmail:         account,
 				Day:               day,
 				InputTokens:       nonNegativeCenterUsageValue(raw.InputTokens),
 				OutputTokens:      nonNegativeCenterUsageValue(raw.OutputTokens),
@@ -157,7 +157,7 @@ func CenterUserRankingsHandler(repo centerUserUsageRepo) http.HandlerFunc {
 func buildCenterRankingRows(items []*store.HubUserUsageDaily, dimension string, limit int, maxDurationSeconds int64) []centerUserRankingRow {
 	rows := make([]centerUserRankingRow, 0, len(items))
 	for _, item := range items {
-		if item == nil || !isCenterRankingEmail(item.UserEmail) {
+		if item == nil || !isCenterRankingAccount(item.UserEmail) {
 			continue
 		}
 		durationSeconds := item.DurationSeconds
@@ -243,6 +243,27 @@ func sortCenterRankingRows(rows []centerUserRankingRow, dimension string) {
 func isCenterRankingEmail(email string) bool {
 	email = strings.TrimSpace(email)
 	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
+}
+
+func isCenterRankingAccount(account string) bool {
+	account = strings.TrimSpace(account)
+	if isCenterRankingEmail(account) {
+		return true
+	}
+	account = strings.ToLower(account)
+	if !strings.HasPrefix(account, "phone:") || strings.ContainsAny(account, " \t\r\n") {
+		return false
+	}
+	digits := strings.TrimPrefix(account, "phone:")
+	if len(digits) < 6 || len(digits) > 20 {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func centerRankingMaxDurationSeconds(start, end, now time.Time) int64 {

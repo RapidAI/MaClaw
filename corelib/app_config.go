@@ -298,7 +298,7 @@ type AppConfig struct {
 	// WorkflowEnabled controls whether the workflow engine (multi-phase
 	// guided workflows like coding, PPT design, etc.) is active. When false,
 	// all messages bypass workflow interception and go directly to the normal
-	// agent loop. Default: true (enabled).
+	// agent loop. Default: false (disabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
 
 	// Coding knowledge base settings (experience accumulation by CodingSubAgent)
@@ -828,6 +828,7 @@ func AppConfigDefaults() AppConfig {
 		TTSEnabled:             true,
 		ScreenParsingEnabled:   boolPtrValue(true),
 		IMProgressNudgeEnabled: boolPtrValue(true),
+		WorkflowEnabled:        boolPtrValue(false),
 		GroupDiscussion:        defaultGroupDiscussionConfig(),
 		LLMPromptCache:         DefaultLLMPromptCacheConfig(),
 		ToolCacheMaintenance:   DefaultToolCacheMaintenanceConfig(),
@@ -1095,10 +1096,10 @@ func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
 }
 
 // IsWorkflowEnabled returns the effective workflow enabled setting.
-// Default is true (enabled) when the field has never been explicitly set (nil).
+// Default is false (disabled) when the field has never been explicitly set (nil).
 func (c *AppConfig) IsWorkflowEnabled() bool {
 	if c.WorkflowEnabled == nil {
-		return true
+		return false
 	}
 	return *c.WorkflowEnabled
 }

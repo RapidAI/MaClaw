@@ -26,6 +26,13 @@ type Service struct {
 	store    Store
 	cascade  *CascadeService
 	resolver HubResolver
+	sync     SyncRecorder
+}
+
+// SyncRecorder records notification state changes for HubCenter HA.
+type SyncRecorder interface {
+	AppendNotification(ctx context.Context, item *Notification)
+	DeleteNotification(ctx context.Context, id string)
 }
 
 // NewService creates a new HubCenter notification service.
@@ -35,6 +42,13 @@ func NewService(store Store, cascade *CascadeService, resolver HubResolver) *Ser
 		cascade:  cascade,
 		resolver: resolver,
 	}
+}
+
+func (s *Service) SetSyncRecorder(recorder SyncRecorder) {
+	if s == nil {
+		return
+	}
+	s.sync = recorder
 }
 
 // Validation errors.
@@ -50,6 +64,7 @@ var (
 	ErrAudienceIDsRequired = errors.New("audience_ids required for hub/hub_tenant audience")
 	ErrNotFound            = errors.New("notification not found")
 	ErrCannotRevoke        = errors.New("only published notifications can be revoked")
+	ErrCannotDelete        = errors.New("published notifications must be revoked before delete")
 )
 
 // CreateNotification validates the request, persists the notification, and triggers
@@ -93,6 +108,9 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 
 	if err := s.store.Create(ctx, notif); err != nil {
 		return nil, fmt.Errorf("persist notification: %w", err)
+	}
+	if s.sync != nil {
+		s.sync.AppendNotification(ctx, notif)
 	}
 
 	// If published immediately, trigger cascade dispatch asynchronously.
@@ -157,10 +175,42 @@ func (s *Service) RevokeNotification(ctx context.Context, id string) error {
 	if err := s.store.UpdateStatus(ctx, id, StatusRevoked, now); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
+	notif.Status = StatusRevoked
+	notif.UpdatedAt = now
+	if s.sync != nil {
+		s.sync.AppendNotification(ctx, notif)
+	}
 
 	// Cascade revoke to all Hubs that received this notification (async).
 	go s.dispatchRevoke(notif)
 
+	return nil
+}
+
+// DeleteNotification permanently removes a notification that is no longer
+// active. Published notifications must be revoked first so every target Hub
+// receives the cascade revoke before HubCenter cleans up the history entry.
+func (s *Service) DeleteNotification(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrNotFound
+	}
+	notif, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get notification: %w", err)
+	}
+	if notif == nil {
+		return ErrNotFound
+	}
+	if notif.Status == StatusPublished {
+		return ErrCannotDelete
+	}
+	if err := s.store.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete notification: %w", err)
+	}
+	if s.sync != nil {
+		s.sync.DeleteNotification(ctx, id)
+	}
 	return nil
 }
 

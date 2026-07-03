@@ -52,12 +52,24 @@ Object.assign(I18N_EN, {
   notifFormContentPlaceholder: 'Notification content in Markdown (max 2000 chars)',
   notifFormSelectHubs: 'Select Hub instances...',
   notifFormSelectTenant: 'Select Hub and Tenant...',
+  notifFormHub: 'Hub',
+  notifFormTenant: 'Tenant',
+  notifFormAddTenant: 'Add Target',
+  notifFormSelectedTenants: 'Selected targets',
+  notifFormNoHubs: 'No hubs available',
+  notifFormNoTenants: 'No tenants available',
+  notifFormTenantAlreadyAdded: 'This Hub + Tenant target is already selected.',
+  notifFormRemoveTenant: 'Remove',
   notifFormImmediate: 'Immediate',
   notifFormScheduled: 'Scheduled',
   notifRevoke: 'Revoke',
   notifRevokeConfirm: 'Revoke this notification? It will be removed from all clients.',
   notifRevoked: 'Notification revoked successfully.',
   notifRevokeFailed: 'Revoke failed: {error}',
+  notifDelete: 'Delete',
+  notifDeleteConfirm: 'Permanently delete this notification? Published notifications must be revoked first.',
+  notifDeleted: 'Notification deleted successfully.',
+  notifDeleteFailed: 'Delete failed: {error}',
   notifCreated: 'Notification created successfully.',
   notifCreateFailed: 'Create notification failed: {error}',
   notifCascadeTitle: 'Cascade Push Status',
@@ -121,12 +133,24 @@ Object.assign(I18N_ZH, {
   notifFormContentPlaceholder: '通知内容，Markdown 格式（最多 2000 字符）',
   notifFormSelectHubs: '选择 Hub 实例...',
   notifFormSelectTenant: '选择 Hub 和租户...',
+  notifFormHub: 'Hub',
+  notifFormTenant: '租户',
+  notifFormAddTenant: '添加目标',
+  notifFormSelectedTenants: '已选目标',
+  notifFormNoHubs: '暂无可选 Hub',
+  notifFormNoTenants: '暂无可选租户',
+  notifFormTenantAlreadyAdded: '该 Hub + 租户已选择。',
+  notifFormRemoveTenant: '移除',
   notifFormImmediate: '立即',
   notifFormScheduled: '定时',
   notifRevoke: '撤回',
   notifRevokeConfirm: '确认撤回此通知？撤回后将从所有客户端移除。',
   notifRevoked: '通知已成功撤回。',
   notifRevokeFailed: '撤回失败：{error}',
+  notifDelete: '删除',
+  notifDeleteConfirm: '确认永久删除此通知？已发布通知需要先撤回。',
+  notifDeleted: '通知已删除。',
+  notifDeleteFailed: '删除失败：{error}',
   notifCreated: '通知创建成功。',
   notifCreateFailed: '创建通知失败：{error}',
   notifCascadeTitle: '级联推送状态',
@@ -156,6 +180,7 @@ var notifStatusFilter = '';
 var notifViewMode = 'list'; // 'list' | 'create' | 'detail'
 var notifCurrentId = null;
 var notifHubListCache = null;
+var notifTenantTargets = [];
 
 // --- API helpers ---
 function notifApiGet(path) {
@@ -163,6 +188,9 @@ function notifApiGet(path) {
 }
 function notifApiPost(path, body) {
   return api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+}
+function notifApiDelete(path) {
+  return api(path, { method: 'DELETE' });
 }
 
 function notifToast(message, type) {
@@ -174,6 +202,10 @@ function notifJsArg(value) {
   return escapeHtml(JSON.stringify(String(value || '')));
 }
 
+function notifCanDelete(n) {
+  return !!n && (n.status === 'revoked' || n.status === 'draft' || n.status === 'expired');
+}
+
 function notifUnwrapItem(item) {
   if (!item) return null;
   if (item.notification) {
@@ -182,6 +214,11 @@ function notifUnwrapItem(item) {
     return n;
   }
   return item;
+}
+
+function notifUnwrapList(data) {
+  var raw = Array.isArray(data) ? data : (data && (data.items || data.notifications) || []);
+  return raw.map(notifUnwrapItem).filter(Boolean);
 }
 
 function notifUnwrapDetail(data) {
@@ -200,6 +237,34 @@ function notifLoadHubList() {
     notifHubListCache = Array.isArray(data) ? data : (data.hubs || []);
     return notifHubListCache;
   }).catch(function() { return []; });
+}
+
+function notifHubID(hub) {
+  return String(hub && (hub.id || hub.hub_id) || '');
+}
+
+function notifHubName(hub) {
+  var id = notifHubID(hub);
+  return String(hub && (hub.name || hub.hub_name) || id || 'Hub');
+}
+
+function notifTenantID(tenant) {
+  return String(tenant && tenant.tenant_id || '');
+}
+
+function notifTenantName(tenant) {
+  var id = notifTenantID(tenant);
+  if (id === 'tenant_default') return String(tenant && tenant.tenant_name || tr('defaultTenant'));
+  return String(tenant && tenant.tenant_name || id || tr('notifFormTenant'));
+}
+
+function notifTenantsForHub(hub) {
+  var items = Array.isArray(hub && hub.tenants) ? hub.tenants.slice() : [];
+  var hasDefault = items.some(function(t) { return notifTenantID(t) === 'tenant_default'; });
+  if (!hasDefault && hub) {
+    items.unshift({ tenant_id: 'tenant_default', tenant_name: tr('defaultTenant') });
+  }
+  return items;
 }
 
 // --- Render tab section (injected into DOM on load) ---
@@ -261,8 +326,13 @@ function loadNotifList() {
   var url = '/api/v1/admin/notifications?limit=' + limit + '&offset=' + offset;
   if (notifStatusFilter) url += '&status=' + encodeURIComponent(notifStatusFilter);
   notifApiGet(url).then(function(data) {
-    var items = (Array.isArray(data) ? data : (data.notifications || [])).map(notifUnwrapItem).filter(Boolean);
+    var items = notifUnwrapList(data);
     var total = Number(data && data.total || items.length || 0);
+    if (items.length === 0 && total > 0 && notifPage > 1) {
+      notifPage -= 1;
+      loadNotifList();
+      return;
+    }
     if (items.length === 0) {
       listEl.innerHTML = '<div class="hint">' + tr('notifEmpty') + '</div>';
       notifRenderPager(0, 0, limit);
@@ -308,10 +378,16 @@ function notifCardHtml(n) {
   var time = n.created_at ? new Date(n.created_at).toLocaleString() : '';
   var cascadeCount = (n.cascade_results || []).length;
   var cascadeHint = cascadeCount > 0 ? ' <span class="item-meta">(' + cascadeCount + ' Hubs)</span>' : '';
+  var deleteBtn = notifCanDelete(n)
+    ? '<button class="btn-danger" type="button" onclick="event.stopPropagation();notifDelete(' + notifJsArg(n.id) + ')">' + escapeHtml(tr('notifDelete')) + '</button>'
+    : '';
   return '<div class="item news-card" onclick="renderNotifDetail(' + notifJsArg(n.id) + ')" style="cursor:pointer">'
-    + '<div class="news-title">' + escapeHtml(n.title || '') + '</div>'
+    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">'
+    + '<div style="min-width:0;flex:1"><div class="news-title">' + escapeHtml(n.title || '') + '</div>'
     + '<div class="news-meta">' + catLabel + ' ' + statusBadge + ' ' + prioLabel + cascadeHint + '</div>'
-    + '<div class="item-meta">' + escapeHtml(time) + '</div>'
+    + '<div class="item-meta">' + escapeHtml(time) + '</div></div>'
+    + (deleteBtn ? '<div class="actions" style="flex-shrink:0">' + deleteBtn + '</div>' : '')
+    + '</div>'
     + '</div>';
 }
 
@@ -340,14 +416,15 @@ function renderNotifDetail(id) {
     var statusBadge = notifStatusBadge(n.status);
     var catLabel = notifCategoryLabel(n.category);
     var canRevoke = n.status === 'published';
-    var revokeBtn = canRevoke ? '<button class="btn-danger" onclick="notifRevoke(\'' + escapeHtml(n.id) + '\')">' + tr('notifRevoke') + '</button>' : '';
+    var revokeBtn = canRevoke ? '<button class="btn-danger" onclick="notifRevoke(' + notifJsArg(n.id) + ')">' + tr('notifRevoke') + '</button>' : '';
+    var deleteBtn = notifCanDelete(n) ? '<button class="btn-danger" onclick="notifDelete(' + notifJsArg(n.id) + ')">' + tr('notifDelete') + '</button>' : '';
     var statsHtml = '<div class="grid3 section-gap"><div class="item"><div class="item-title">' + tr('notifDetailTotal') + '</div><strong>' + (n.total_pushed || 0) + '</strong></div>'
       + '<div class="item"><div class="item-title">' + tr('notifDetailRead') + '</div><strong>' + (n.read_count || 0) + '</strong></div>'
       + '<div class="item"><div class="item-title">' + tr('notifDetailReadRate') + '</div><strong>' + (n.read_rate || '0%') + '</strong></div></div>';
     var cascadeHtml = notifCascadeTableHtml(n.cascade_results || []);
     var contentHtml = '<div class="item section-gap"><div class="item-title">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div></div>';
     root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + '</div></div>'
-      + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + '</div></div>'
+      + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + deleteBtn + '</div></div>'
       + contentHtml
       + '<div class="item section-gap"><div class="item-title">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
       + cascadeHtml;
@@ -416,14 +493,20 @@ function renderNotifCreate() {
     + '<div id="notifAudienceHubsRow" class="hidden"><label>' + tr('notifFormSelectHubs') + '</label>'
     + '<div id="notifHubCheckboxes" class="notif-hub-checkboxes"></div></div>'
     + '<div id="notifAudienceTenantRow" class="hidden"><label>' + tr('notifFormSelectTenant') + '</label>'
-    + '<input id="notifTenantInput" placeholder="hub_id:tenant_id"></div>'
+    + '<div class="notif-tenant-picker">'
+    + '<div><label for="notifTenantHubSelect">' + tr('notifFormHub') + '</label><select id="notifTenantHubSelect" onchange="notifSyncTenantSelect()"></select></div>'
+    + '<div><label for="notifTenantSelect">' + tr('notifFormTenant') + '</label><select id="notifTenantSelect"></select></div>'
+    + '<div class="notif-tenant-add"><button class="btn-secondary" type="button" onclick="notifAddTenantTarget()">' + tr('notifFormAddTenant') + '</button></div>'
+    + '</div><div class="item-meta section-gap-sm">' + tr('notifFormSelectedTenants') + '</div><div id="notifTenantTargets" class="notif-tenant-targets"></div></div>'
     + '<div id="notifImPushRow" class="hidden inline-check"><label for="notifImPush" class="inline-label">' + tr('notifFormImPush') + '</label>'
     + '<input type="checkbox" id="notifImPush" class="auto-check"></div>'
     + '<div class="actions section-gap">'
     + '<button class="btn-primary" onclick="notifSubmit(\'published\')">' + tr('notifFormPublishNow') + '</button>'
     + '<button class="btn-secondary" onclick="notifSubmit(\'draft\')">' + tr('notifFormSaveDraft') + '</button>'
     + '</div></div>';
+  notifTenantTargets = [];
   notifLoadHubCheckboxes();
+  notifLoadTenantSelector();
   notifTogglePriorityIM();
   document.getElementById('notifPrioritySelect').addEventListener('change', notifTogglePriorityIM);
 }
@@ -452,13 +535,85 @@ function notifLoadHubCheckboxes() {
   var container = document.getElementById('notifHubCheckboxes');
   if (!container) return;
   notifLoadHubList().then(function(hubs) {
-    if (hubs.length === 0) { container.innerHTML = '<div class="hint">No hubs available</div>'; return; }
+    if (hubs.length === 0) { container.innerHTML = '<div class="hint">' + tr('notifFormNoHubs') + '</div>'; return; }
     container.innerHTML = hubs.map(function(h) {
       var name = h.name || h.hub_name || h.id || h.hub_id || 'Hub';
       var id = h.id || h.hub_id || '';
       return '<label class="notif-hub-check"><input type="checkbox" value="' + escapeHtml(id) + '"> ' + escapeHtml(name) + '</label>';
     }).join('');
   });
+}
+
+function notifLoadTenantSelector() {
+  notifLoadHubList().then(function(hubs) {
+    var hubSelect = document.getElementById('notifTenantHubSelect');
+    if (!hubSelect) return;
+    if (!hubs.length) {
+      hubSelect.innerHTML = '<option value="">' + escapeHtml(tr('notifFormNoHubs')) + '</option>';
+      hubSelect.disabled = true;
+      notifSyncTenantSelect();
+      notifRenderTenantTargets();
+      return;
+    }
+    hubSelect.disabled = false;
+    hubSelect.innerHTML = hubs.map(function(h) {
+      var id = notifHubID(h);
+      return '<option value="' + escapeHtml(id) + '">' + escapeHtml(notifHubName(h) + ' (' + id + ')') + '</option>';
+    }).join('');
+    notifSyncTenantSelect();
+    notifRenderTenantTargets();
+  });
+}
+
+function notifSyncTenantSelect() {
+  var hubSelect = document.getElementById('notifTenantHubSelect');
+  var tenantSelect = document.getElementById('notifTenantSelect');
+  if (!tenantSelect) return;
+  var hubID = String(hubSelect && hubSelect.value || '');
+  var hub = (notifHubListCache || []).find(function(h) { return notifHubID(h) === hubID; });
+  var tenants = notifTenantsForHub(hub);
+  if (!hubID || !tenants.length) {
+    tenantSelect.innerHTML = '<option value="">' + escapeHtml(tr('notifFormNoTenants')) + '</option>';
+    tenantSelect.disabled = true;
+    return;
+  }
+  tenantSelect.disabled = false;
+  tenantSelect.innerHTML = tenants.map(function(t) {
+    var id = notifTenantID(t);
+    return '<option value="' + escapeHtml(id) + '">' + escapeHtml(notifTenantName(t) + ' (' + id + ')') + '</option>';
+  }).join('');
+}
+
+function notifAddTenantTarget() {
+  var hubID = String((document.getElementById('notifTenantHubSelect') || {}).value || '');
+  var tenantID = String((document.getElementById('notifTenantSelect') || {}).value || '');
+  if (!hubID || !tenantID) { notifToast(tr('notifValidationAudience'), 'warn'); return; }
+  var value = hubID + ':' + tenantID;
+  if (notifTenantTargets.some(function(t) { return t.value === value; })) {
+    notifToast(tr('notifFormTenantAlreadyAdded'), 'warn');
+    return;
+  }
+  var hub = (notifHubListCache || []).find(function(h) { return notifHubID(h) === hubID; });
+  var tenant = notifTenantsForHub(hub).find(function(t) { return notifTenantID(t) === tenantID; });
+  notifTenantTargets.push({ value: value, hub_id: hubID, tenant_id: tenantID, label: notifHubName(hub) + ' / ' + notifTenantName(tenant) });
+  notifRenderTenantTargets();
+}
+
+function notifRemoveTenantTarget(value) {
+  notifTenantTargets = notifTenantTargets.filter(function(t) { return t.value !== value; });
+  notifRenderTenantTargets();
+}
+
+function notifRenderTenantTargets() {
+  var root = document.getElementById('notifTenantTargets');
+  if (!root) return;
+  if (!notifTenantTargets.length) {
+    root.innerHTML = '<div class="hint">' + escapeHtml(tr('notifValidationAudience')) + '</div>';
+    return;
+  }
+  root.innerHTML = notifTenantTargets.map(function(t) {
+    return '<span class="notif-tenant-chip"><span>' + escapeHtml(t.label) + '</span><small class="mono">' + escapeHtml(t.value) + '</small><button type="button" class="btn-ghost tiny-btn" onclick="notifRemoveTenantTarget(' + notifJsArg(t.value) + ')">' + escapeHtml(tr('notifFormRemoveTenant')) + '</button></span>';
+  }).join('');
 }
 
 // --- Submit notification ---
@@ -484,9 +639,8 @@ function notifSubmit(status) {
     checks.forEach(function(c) { audienceIds.push(c.value); });
     if (audienceIds.length === 0) { notifToast(tr('notifValidationAudience'), 'warn'); return; }
   } else if (audienceType === 'hub_tenant') {
-    var tenantVal = (document.getElementById('notifTenantInput') || {}).value || '';
-    if (!tenantVal.trim()) { notifToast(tr('notifValidationAudience'), 'warn'); return; }
-    audienceIds = tenantVal.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    audienceIds = notifTenantTargets.map(function(t) { return t.value; }).filter(Boolean);
+    if (audienceIds.length === 0) { notifToast(tr('notifValidationAudience'), 'warn'); return; }
   }
 
   var body = {
@@ -522,6 +676,16 @@ function notifRevoke(id) {
   });
 }
 
+function notifDelete(id) {
+  if (!confirm(tr('notifDeleteConfirm'))) return;
+  notifApiDelete('/api/v1/admin/notifications/' + encodeURIComponent(id)).then(function() {
+    notifToast(tr('notifDeleted'), 'ok');
+    renderNotifList();
+  }).catch(function(err) {
+    notifToast(tr('notifDeleteFailed', { error: err.message }), 'danger');
+  });
+}
+
 Object.assign(window, {
   renderNotifList: renderNotifList,
   notifSetFilter: notifSetFilter,
@@ -530,9 +694,13 @@ Object.assign(window, {
   renderNotifCreate: renderNotifCreate,
   notifToggleSchedule: notifToggleSchedule,
   notifToggleAudience: notifToggleAudience,
+  notifSyncTenantSelect: notifSyncTenantSelect,
+  notifAddTenantTarget: notifAddTenantTarget,
+  notifRemoveTenantTarget: notifRemoveTenantTarget,
   notifChangePage: notifChangePage,
   notifSubmit: notifSubmit,
-  notifRevoke: notifRevoke
+  notifRevoke: notifRevoke,
+  notifDelete: notifDelete
 });
 
 // --- Initialize on app ready ---

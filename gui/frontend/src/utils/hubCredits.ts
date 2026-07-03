@@ -48,11 +48,26 @@ export function grantCanContributeExpiry(grant: HubCreditGrantLike): boolean {
     return remaining > 0 || available > 0 || (!hasRemaining && !hasAvailable);
 }
 
-export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenantID?: string, email?: string) {
+function accountFromIdentity(email?: string, userID?: string, mobile?: string) {
+    const id = String(userID || '').trim();
+    if (id) return id;
+    const mail = String(email || '').trim();
+    if (mail) return mail;
+    const phone = String(mobile || '').trim();
+    return phone ? `phone:${phone}` : '';
+}
+
+export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenantID?: string, email?: string, userID?: string, mobile?: string) {
     const base = String(hubURL || '').trim().replace(/\/+$/, '');
     const token = String(viewerToken || '').trim();
     if (!base) return '';
-    const creditsURL = appendQuery(`${base}/get-credits`, { tenant_id: tenantID, email });
+    const creditsURL = appendQuery(`${base}/get-credits`, {
+        tenant_id: tenantID,
+        account: accountFromIdentity(email, userID, mobile),
+        user_id: userID,
+        email,
+        mobile,
+    });
     return token ? `${creditsURL}#token=${encodeURIComponent(token)}` : creditsURL;
 }
 
@@ -62,21 +77,27 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
  * Priority: Hub's own `/card_store` page (tenant-scoped purchase).
  * Fallback: HubCenter `/compute-store` (only when Hub URL is unavailable).
  */
-export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string, hubCenterURL?: string, hubID?: string, hubName?: string, tenantName?: string) {
+export function buildHubCardStoreURL(hubURL?: string, tenantID?: string, email?: string, viewerToken?: string, hubCenterURL?: string, hubID?: string, hubName?: string, tenantName?: string, userID?: string, mobile?: string) {
     const base = String(hubURL || '').trim().replace(/\/+$/, '');
     const hubCenterBase = String(hubCenterURL || '').trim().replace(/\/+$/, '');
     const resolvedHubID = String(hubID || '').trim();
     const token = String(viewerToken || '').trim();
+    const identityParams = {
+        account: accountFromIdentity(email, userID, mobile),
+        user_id: userID,
+        email,
+        mobile,
+    };
     // Always prefer the Hub's own card_store — the user buys credits scoped to
     // the Hub they are logged into, not from the HubCenter compute marketplace.
     if (base) {
-        const storeURL = appendQuery(`${base}/card_store`, { tenant_id: tenantID, email });
+        const storeURL = appendQuery(`${base}/card_store`, { tenant_id: tenantID, ...identityParams });
         return token ? `${storeURL}#token=${encodeURIComponent(token)}` : storeURL;
     }
     // Fallback: if Hub URL is unavailable but HubCenter context exists, link to
     // the HubCenter compute-store (legacy path, should rarely trigger).
     if (hubCenterBase && resolvedHubID) {
-        return appendQuery(`${hubCenterBase}/compute-store`, { hub_id: resolvedHubID, tenant_id: tenantID, hub_name: hubName, tenant_name: tenantName, email });
+        return appendQuery(`${hubCenterBase}/compute-store`, { hub_id: resolvedHubID, tenant_id: tenantID, hub_name: hubName, tenant_name: tenantName, ...identityParams });
     }
     return '';
 }

@@ -54,3 +54,26 @@ func TestSkillMarketMachineLoginAcceptsPhoneAccount(t *testing.T) {
 		t.Fatalf("user verification = %s/%s, want verified/machine_login", user.Status, user.VerifyMethod)
 	}
 }
+
+func TestSkillMarketMachineLoginPrefersAccountOverLegacyEmail(t *testing.T) {
+	handlers, store := newSkillMarketAuthTestHandlers(t)
+	account := "usr_sms_123"
+	body := `{"account":"` + account + `","user_id":"usr_ignored","email":"legacy@example.com","machine_id":"machine-userid","viewer_token":"` + strings.Repeat("b", 32) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/machine-login", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handlers.MachineLogin(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("machine-login status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"email":"`+account+`"`) {
+		t.Fatalf("machine-login should use account field, body=%s", rec.Body.String())
+	}
+	if _, err := store.GetUserByEmail(req.Context(), account); err != nil {
+		t.Fatalf("GetUserByEmail(account) error = %v", err)
+	}
+	if _, err := store.GetUserByEmail(req.Context(), "legacy@example.com"); err == nil {
+		t.Fatal("legacy email should not be used when account is present")
+	}
+}

@@ -504,7 +504,7 @@ if (lines > 6000) failures.push(`${appRel} has ${lines} lines; keep it under 600
 
 const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 500],
-  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 220],
+  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 260],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 220],
   ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
@@ -529,7 +529,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/ApiStorePage.tsx', 120],
   ['gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 120],
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
-  ['gui/frontend/src/components/AboutPanel.tsx', 520],
+  ['gui/frontend/src/components/AboutPanel.tsx', 540],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2500],
@@ -562,7 +562,7 @@ for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2500],
-  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1600],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1880],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1250],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],

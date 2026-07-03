@@ -16,7 +16,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { ProbeRemoteHub } from '../../../wailsjs/go/main/App';
+import { GetHubUserRanking, ProbeRemoteHub } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -148,6 +148,24 @@ describe('AboutPanel', () => {
         expect(screen.getByText('Acme Team')).toBeTruthy();
         expect(screen.getByText('Build Desk')).toBeTruthy();
         expect(screen.getByText('https://hub.example')).toBeTruthy();
+    });
+
+    it('shows monthly ranking rows for a newly registered user with zero usage', async () => {
+        vi.mocked(GetHubUserRanking).mockResolvedValueOnce({
+            total_tokens: 0,
+            duration_seconds: 0,
+            token_rank: 0,
+            duration_rank: 0,
+            total_users: 0,
+        });
+
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        await waitFor(() => {
+            expect(GetHubUserRanking).toHaveBeenCalled();
+        });
+        expect(screen.getByText((_, element) => element?.tagName === 'DT' && element.textContent?.includes('Online Time') === true)).toBeTruthy();
+        expect(screen.getByText((_, element) => element?.tagName === 'DT' && element.textContent?.includes('Token Usage') === true)).toBeTruthy();
     });
 
     it('uses saved machine name when hub nickname is not available', () => {

@@ -60,6 +60,27 @@ SHARE_MIME_TYPES = [
     "text/csv",
 ]
 
+ANDROID_RELEASE_SIGNING_BLOCK = """
+    signingConfigs {
+        if (maclawReleaseSigningConfigured) {
+            create("release") {
+                keyAlias = maclawKeystoreProperties["keyAlias"] as String
+                keyPassword = maclawKeystoreProperties["keyPassword"] as String
+                storeFile = file(maclawKeystoreProperties["storeFile"] as String)
+                storePassword = maclawKeystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (maclawReleaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+""".rstrip()
+
 FLUTTER_TEMPLATE_WIDGET_TEST_MARKERS = [
     "Counter increments smoke test",
     "await tester.pumpWidget(const MyApp())",
@@ -238,7 +259,69 @@ def configure_android_gradle() -> None:
             "    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.1.5\")\n"
             "}\n"
         )
+    text = configure_android_release_signing(text)
     gradle_path.write_text(text, encoding="utf-8")
+
+
+def configure_android_release_signing(text: str) -> str:
+    if "import java.util.Properties" not in text:
+        text = "import java.util.Properties\n\n" + text
+    signing_setup = """
+val maclawKeystorePropertiesFile = rootProject.file("key.properties")
+val maclawKeystoreProperties = Properties()
+val maclawReleaseSigningConfigured = maclawKeystorePropertiesFile.exists()
+if (maclawReleaseSigningConfigured) {
+    maclawKeystorePropertiesFile.inputStream().use { maclawKeystoreProperties.load(it) }
+}
+
+gradle.taskGraph.whenReady {
+    val releaseTaskRequested = allTasks.any { task ->
+        task.path.endsWith(":app:assembleRelease") || task.path.endsWith(":app:bundleRelease")
+    }
+    if (releaseTaskRequested && !maclawReleaseSigningConfigured) {
+        throw GradleException(
+            "MaClaw Mobile release signing requires android/key.properties with storeFile, storePassword, keyAlias, and keyPassword."
+        )
+    }
+}
+
+""".lstrip()
+    text = re.sub(
+        r"(?ms)^val maclawKeystorePropertiesFile = rootProject\.file\(\"key\.properties\"\).*?^}\n\nplugins \{",
+        "plugins {",
+        text,
+        count=1,
+    )
+    if "val maclawKeystorePropertiesFile = rootProject.file(\"key.properties\")" not in text:
+        text = re.sub(
+            r"(?ms)^(plugins \{.*?^}\n)",
+            r"\1\n" + signing_setup,
+            text,
+            count=1,
+        )
+    if "val maclawKeystorePropertiesFile = rootProject.file(\"key.properties\")" not in text:
+        text = text.replace("\nandroid {\n", "\n" + signing_setup + "android {\n", 1)
+    if "signingConfigs {" not in text:
+        text = re.sub(
+            r"(?ms)^    buildTypes \{.*?^    \}\n",
+            ANDROID_RELEASE_SIGNING_BLOCK + "\n",
+            text,
+            count=1,
+        )
+    else:
+        text = re.sub(
+            r"(?ms)^    signingConfigs \{.*?^    buildTypes \{.*?^    \}\n",
+            ANDROID_RELEASE_SIGNING_BLOCK + "\n",
+            text,
+            count=1,
+        )
+    text = text.replace(
+        "            // TODO: Add your own signing config for the release build.\n"
+        "            // Signing with the debug keys for now, so `flutter run --release` works.\n"
+        "            signingConfig = signingConfigs.getByName(\"debug\")\n",
+        "",
+    )
+    return text
 
 
 

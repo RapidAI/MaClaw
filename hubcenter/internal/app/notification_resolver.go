@@ -83,17 +83,14 @@ func toHubEndpoint(hub *store.HubInstance) (notification.HubEndpoint, bool) {
 	if url == "" {
 		return notification.HubEndpoint{}, false
 	}
-	// The GlobalAdminToken for cascade push is derived from the hub's
-	// installation ID. On the Hub side, requireGlobalAdmin verifies this
-	// token against the configured global admin credentials. In production,
-	// this would be a pre-shared secret configured per-hub during registration.
-	// For now, we use the hub's installation ID as the cascade token — the Hub's
-	// cascade endpoint should be configured to accept this.
+	// Hub cascade auth uses the registration installation ID as a pre-shared
+	// bearer token. The Hub's cascade endpoint accepts this token in addition
+	// to a global admin token for backward-compatible manual testing.
 	token := hub.InstallationID
 	return notification.HubEndpoint{
 		ID:               hub.ID,
 		Name:             hub.Name,
 		URL:              url,
-		GlobalAdminToken: token,
+		CascadeAuthToken: token,
 	}, true
 }

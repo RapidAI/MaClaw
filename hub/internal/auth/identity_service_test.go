@@ -178,6 +178,107 @@ func TestIdentityServiceBindVerifiedPhoneSyncsRouteAndBackfillsLLMRegistry(t *te
 	}
 }
 
+func TestAuthenticateViewerFallsBackToViewerTokenTenant(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               "user_legacy_blank_tenant",
+		TenantID:         store.DefaultTenantID,
+		Email:            "legacy@example.com",
+		SN:               "SN-legacy-tenant",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := deps.provider.Write.Exec(`UPDATE users SET tenant_id = '' WHERE id = ?`, user.ID); err != nil {
+		t.Fatalf("clear legacy user tenant: %v", err)
+	}
+	const rawViewerToken = "viewer-token-legacy-tenant"
+	if err := deps.store.ViewerTokens.Create(context.Background(), &store.ViewerToken{
+		ID:        "vt_legacy_tenant",
+		TenantID:  "tenant-acme",
+		UserID:    user.ID,
+		TokenHash: hashToken(rawViewerToken),
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create viewer token: %v", err)
+	}
+
+	principal, err := svc.AuthenticateViewer(context.Background(), rawViewerToken)
+	if err != nil {
+		t.Fatalf("AuthenticateViewer: %v", err)
+	}
+	if principal == nil || principal.TenantID != "tenant-acme" || principal.UserID != user.ID {
+		t.Fatalf("unexpected principal: %#v", principal)
+	}
+}
+
+func TestIssueViewerTokenForUserFallsBackToContextTenant(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	now := time.Now().UTC()
+	user := &store.User{
+		ID:               "user_issue_viewer_context_tenant",
+		TenantID:         store.DefaultTenantID,
+		Email:            "context-tenant@example.com",
+		SN:               "SN-context-tenant",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := deps.provider.Write.Exec(`UPDATE users SET tenant_id = '' WHERE id = ?`, user.ID); err != nil {
+		t.Fatalf("clear legacy user tenant: %v", err)
+	}
+
+	rawViewerToken, err := svc.IssueViewerTokenForUser(WithTenant(context.Background(), "tenant-acme"), user.ID)
+	if err != nil {
+		t.Fatalf("IssueViewerTokenForUser: %v", err)
+	}
+	principal, err := svc.AuthenticateViewer(context.Background(), rawViewerToken)
+	if err != nil {
+		t.Fatalf("AuthenticateViewer: %v", err)
+	}
+	if principal == nil || principal.TenantID != "tenant-acme" || principal.UserID != user.ID {
+		t.Fatalf("unexpected principal: %#v", principal)
+	}
+}
+
 func (v *testInvitationCodeValidator) CheckExpiry(context.Context, string) (bool, *time.Time, error) {
 	return false, nil, nil
 }

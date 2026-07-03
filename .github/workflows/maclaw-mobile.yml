@@ -44,15 +44,57 @@ jobs:
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/validate_qa_build_record_test.py
       - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/create_qa_build_record_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/validate_qa_build_records_dir_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/qa_build_record_report_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/qa_release_evidence_links_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/qa_preflight_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/setup_android_signing_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/release_status_report_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/release_handoff_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 tool/validate_qa_build_records_dir.py docs/qa-builds
+      - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/verify_runtime_boundary_test.py
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/run_release_gates_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/verify_debug_apk_evidence_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/update_debug_apk_evidence_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/signed_artifact_evidence_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/verify_manual_release_gates_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/verify_final_release_evidence_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/verify_android_release_signing_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/build_android_release_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/verify_ios_wrapper_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/plan_ios_release_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/setup_ios_export_options_test.py
       - working-directory: mobile/maclaw_mobile
         run: flutter test test/release_docs_test.dart --concurrency=1 --reporter compact
       - working-directory: mobile/maclaw_mobile
         run: flutter create --platforms android,ios .
       - working-directory: mobile/maclaw_mobile
         run: python3 tool/configure_platforms.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 tool/verify_android_release_signing.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 tool/verify_ios_wrapper.py
       - working-directory: mobile/maclaw_mobile
         run: python3 tool/verify_runtime_boundary.py
       - working-directory: mobile/maclaw_mobile

@@ -73,6 +73,14 @@ function isWorkflowPhaseTerminalStatus(status: unknown): boolean {
     return normalized === "completed" || normalized === "skipped" || normalized === "cancelled" || normalized === "canceled";
 }
 
+function agentViewHiddenFieldValue(view: unknown, fieldName: string): string {
+    const fields = (view as any)?.fields;
+    if (!Array.isArray(fields)) return "";
+    const field = fields.find((item: any) => item && item.name === fieldName);
+    const value = field?.value;
+    return typeof value === "string" ? value.trim() : "";
+}
+
 function WorkflowReviewInlinePrompt({
     lang,
     onAbort,
@@ -1376,6 +1384,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const workflowReviewPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
     const workflowFormPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
     const workflowCurrentPhaseID = workflowState.currentPhaseID || "";
+    const lastWorkflowFormRouteRef = useRef<{ viewID: string; phaseID: string; workflowID: string; userID: string; eventScopeID: string } | null>(null);
+    useEffect(() => {
+        if (!workflowState.active) {
+            lastWorkflowFormRouteRef.current = null;
+            return;
+        }
+        const cachedWorkflowID = lastWorkflowFormRouteRef.current?.workflowID;
+        if (cachedWorkflowID && workflowState.workflowID && cachedWorkflowID !== workflowState.workflowID) {
+            lastWorkflowFormRouteRef.current = null;
+        }
+        if (!workflowFormActive || !agentView?.id?.startsWith("workflow:form:")) return;
+        const phaseID = agentViewHiddenFieldValue(agentView, "_workflow_phase") || workflowCurrentPhaseID;
+        lastWorkflowFormRouteRef.current = {
+            viewID: agentView.id,
+            phaseID,
+            workflowID: agentViewHiddenFieldValue(agentView, "_workflow_id") || workflowState.workflowID,
+            userID: agentViewHiddenFieldValue(agentView, "_workflow_user_id") || activeSessionKey,
+            eventScopeID: agentViewHiddenFieldValue(agentView, "_workflow_event_scope_id"),
+        };
+    }, [activeSessionKey, agentView, workflowCurrentPhaseID, workflowFormActive, workflowState.active, workflowState.workflowID]);
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
     const codePreviewStateRef = useRef(codePreviewState);
     codePreviewStateRef.current = codePreviewState;
@@ -2037,13 +2065,41 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setEditingEntryId(null);
     }, [updateEntry]);
     const handleCancel = useCallback(async () => {
-        if (!cancelSession || cancelPending) return;
+        if (cancelPending) return;
         // If workflow is awaiting form input (no active agent loop), dismiss the
         // workflow form and cancel the workflow instead of calling cancelSession.
-        if (workflowAwaitingForm && agentView?.id?.startsWith("workflow:form:")) {
-            dismissAgentView(agentView.id, { __cancel_workflow: true });
-            return;
+        if (workflowAwaitingForm) {
+            const liveWorkflowFormRoute = agentView?.id?.startsWith("workflow:form:")
+                ? {
+                    viewID: agentView.id,
+                    phaseID: agentViewHiddenFieldValue(agentView, "_workflow_phase") || workflowCurrentPhaseID,
+                    workflowID: agentViewHiddenFieldValue(agentView, "_workflow_id") || workflowState.workflowID,
+                    userID: agentViewHiddenFieldValue(agentView, "_workflow_user_id") || activeSessionKey,
+                    eventScopeID: agentViewHiddenFieldValue(agentView, "_workflow_event_scope_id"),
+                }
+                : null;
+            const cachedWorkflowFormRoute = lastWorkflowFormRouteRef.current;
+            const canUseCachedWorkflowFormRoute = !!cachedWorkflowFormRoute
+                && (!workflowState.workflowID || !cachedWorkflowFormRoute.workflowID || cachedWorkflowFormRoute.workflowID === workflowState.workflowID)
+                && (!workflowCurrentPhaseID || !cachedWorkflowFormRoute.phaseID || cachedWorkflowFormRoute.phaseID === workflowCurrentPhaseID);
+            const workflowFormRoute = liveWorkflowFormRoute || (canUseCachedWorkflowFormRoute ? cachedWorkflowFormRoute : null);
+            const workflowFormViewID = workflowFormRoute
+                ? workflowFormRoute.viewID
+                : workflowCurrentPhaseID
+                    ? `workflow:form:${workflowCurrentPhaseID}`
+                    : "";
+            if (workflowFormViewID) {
+                void dismissAgentView(workflowFormViewID, {
+                    __cancel_workflow: true,
+                    _workflow_phase: workflowFormRoute ? workflowFormRoute.phaseID : workflowCurrentPhaseID,
+                    _workflow_id: workflowFormRoute ? workflowFormRoute.workflowID : workflowState.workflowID,
+                    _workflow_user_id: workflowFormRoute ? workflowFormRoute.userID : activeSessionKey,
+                    _workflow_event_scope_id: workflowFormRoute ? workflowFormRoute.eventScopeID : "",
+                });
+                return;
+            }
         }
+        if (!cancelSession) return;
         const restoreSeq = ++cancelRestoreSeqRef.current;
         const previousInputValue = inputValue;
         setCancelPending(true);
@@ -2061,7 +2117,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             setCancelPending(false);
         }
-    }, [agentView, cancelPending, cancelSession, draftInputValue, dismissAgentView, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue, workflowAwaitingForm]);
+    }, [activeSessionKey, agentView, cancelPending, cancelSession, draftInputValue, dismissAgentView, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue, workflowAwaitingForm, workflowCurrentPhaseID, workflowState.workflowID]);
     const panelSubmitAgentView = useCallback((viewId: string | undefined, data: Record<string, unknown>) => {
         if (typeof viewId === "string" && viewId.startsWith("workflow:form:")) {
             const submittedPhaseID = typeof data?._workflow_phase === "string" && data._workflow_phase.trim()

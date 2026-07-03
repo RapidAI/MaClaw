@@ -18,6 +18,13 @@ var notifHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
+var emitNotificationFrontendEvent = func(a *App, name string, data ...interface{}) {
+	if a == nil {
+		return
+	}
+	a.emitEvent(name, data...)
+}
+
 // ClientNotification is the view returned to GUI clients for display.
 // Mirrors hub/internal/notification.ClientNotification but defined locally
 // because Go's internal package rule prevents cross-module import.
@@ -286,8 +293,16 @@ func (a *App) PullUnreadNotifications() error {
 		return err
 	}
 
-	a.notifCache.Replace(result)
+	a.replaceUnreadNotifications(result)
 	return nil
+}
+
+func (a *App) replaceUnreadNotifications(items []ClientNotification) {
+	if a == nil || a.notifCache == nil {
+		return
+	}
+	a.notifCache.Replace(items)
+	emitNotificationFrontendEvent(a, "notification:sync", items)
 }
 
 // ---------------------------------------------------------------------------

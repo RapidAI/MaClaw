@@ -905,6 +905,15 @@ func (r *hubRepo) Count(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+func (r *hubRepo) UpdateName(ctx context.Context, hubID string, name string, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE hub_instances
+		SET name = ?, updated_at = ?
+		WHERE id = ?
+	`, name, updatedAt.Format(time.RFC3339), hubID)
+	return err
+}
+
 func (r *hubRepo) UpdateVisibility(ctx context.Context, hubID string, visibility string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE hub_instances

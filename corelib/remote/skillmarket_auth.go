@@ -133,8 +133,11 @@ func (c *SkillMarketAuthClient) ValidateToken(ctx context.Context, baseURL, toke
 // for a SkillMarket session token. This enables zero-friction SkillMarket access
 // after Hub registration — no separate login step required.
 func (c *SkillMarketAuthClient) MachineLogin(ctx context.Context, baseURL, account, machineID, viewerToken string) (*SkillMarketAuthResult, error) {
+	trimmedAccount := strings.TrimSpace(account)
 	payload, _ := json.Marshal(map[string]string{
-		"email":        strings.TrimSpace(account),
+		"account":      trimmedAccount,
+		"user_id":      trimmedAccount,
+		"email":        trimmedAccount,
 		"machine_id":   strings.TrimSpace(machineID),
 		"viewer_token": strings.TrimSpace(viewerToken),
 	})

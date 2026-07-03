@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -479,6 +480,10 @@ type haSeedNewsRepo interface {
 	List(ctx context.Context, offset, limit int) ([]*store.NewsArticle, int, error)
 }
 
+type haSeedNotificationStore interface {
+	List(ctx context.Context, filter notification.ListFilter) ([]*notification.Notification, int, error)
+}
+
 type haSeedSkillStore interface {
 	DumpSnapshot() (*skill.Snapshot, error)
 }
@@ -523,6 +528,7 @@ type haSeedSyncChecker interface {
 	AppendSystemSetting(ctx context.Context, key, valueJSON string)
 	AppendGossipSnapshot(ctx context.Context, snap *ha.GossipSnapshot)
 	AppendNewsArticle(ctx context.Context, item *store.NewsArticle)
+	AppendNotification(ctx context.Context, item *notification.Notification)
 	AppendSkillHubSnapshot(ctx context.Context, snap *skill.Snapshot)
 	AppendSkillMarketSnapshot(ctx context.Context, snap *skillmarket.Snapshot)
 }
@@ -531,7 +537,7 @@ type haSeedRouteSnapshotRefresher interface {
 	Rebuild(ctx context.Context) error
 }
 
-func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresher haSeedRouteSnapshotRefresher, hubs haSeedHubStore, links haSeedLinkStore, routes haSeedRouteStore, settings haSeedSystemSettingsStore, gossip store.GossipRepository, news haSeedNewsRepo, skills haSeedSkillStore, sm haSeedSkillMarketStore) {
+func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresher haSeedRouteSnapshotRefresher, hubs haSeedHubStore, links haSeedLinkStore, routes haSeedRouteStore, settings haSeedSystemSettingsStore, gossip store.GossipRepository, news haSeedNewsRepo, notifications haSeedNotificationStore, skills haSeedSkillStore, sm haSeedSkillMarketStore) {
 
 	if sync == nil {
 		return
@@ -628,6 +634,17 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 		} else if checkedCount > 0 {
 			log.Printf("[hubcenter][ha] checked news HA seed candidates: articles=%d", checkedCount)
 		}
+	}
+
+	if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityNotification); err == nil && !seeded && notifications != nil {
+		checkedCount, listErr := seedNotificationsPaged(ctx, sync, notifications)
+		if listErr != nil {
+			log.Printf("[hubcenter][ha] seed notifications failed: %v", listErr)
+		} else if checkedCount > 0 {
+			log.Printf("[hubcenter][ha] seeded notifications: count=%d", checkedCount)
+		}
+	} else if err != nil {
+		log.Printf("[hubcenter][ha] inspect notification seed state failed: %v", err)
 	}
 
 	if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntitySkillHubSnapshot); err == nil && !seeded && skills != nil {
@@ -763,6 +780,26 @@ func seedNewsArticlesPaged(ctx context.Context, sync haSeedSyncChecker, news haS
 				continue
 			}
 			sync.AppendNewsArticle(ctx, item)
+			checkedCount++
+		}
+		if len(items) == 0 || offset+len(items) >= total || len(items) < haSeedPageSize {
+			return checkedCount, nil
+		}
+	}
+}
+
+func seedNotificationsPaged(ctx context.Context, sync haSeedSyncChecker, notifications haSeedNotificationStore) (int, error) {
+	checkedCount := 0
+	for offset := 0; ; offset += haSeedPageSize {
+		items, total, err := notifications.List(ctx, notification.ListFilter{Offset: offset, Limit: haSeedPageSize})
+		if err != nil {
+			return checkedCount, err
+		}
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			sync.AppendNotification(ctx, item)
 			checkedCount++
 		}
 		if len(items) == 0 || offset+len(items) >= total || len(items) < haSeedPageSize {

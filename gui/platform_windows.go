@@ -21,6 +21,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -411,6 +412,9 @@ func (a *App) RunEnvironmentCheckCLI() {
 // This runs on every startup regardless of PauseEnvCheck — detection is free,
 // only installation is expensive.
 func (a *App) detectMissingCoreTools() string {
+	if !a.isVCRedistInstalledQuiet() {
+		return "Visual C++ Redistributable"
+	}
 	// Python — the most commonly lost dependency (PATH changes, uninstall, Store stub)
 	pySt := pyenv.Detect()
 	if !pySt.Available {
@@ -443,12 +447,6 @@ func (a *App) CheckEnvironment(force bool) {
 			a.log(a.tr("Init mode: Forcing environment check (ignoring configuration)."))
 		}
 
-		ccDir := a.GetDataDir()
-		if _, err := os.Stat(ccDir); os.IsNotExist(err) {
-			force = true
-			a.log(a.tr("Detected missing data directory. Forcing environment check..."))
-		}
-
 		if force {
 			a.log(a.tr("Forced environment check triggered (ignoring configuration)."))
 			a.log(a.tr("Checking base environment..."))
@@ -466,6 +464,17 @@ func (a *App) CheckEnvironment(force bool) {
 					}
 					a.log(a.tr("Core tool missing: %s. Re-running environment setup...", coreMissing))
 				}
+			} else {
+				coreMissing := a.detectMissingCoreTools()
+				if coreMissing == "" {
+					a.log(a.tr("Config/data directory not initialized, but core tools are verified. Skipping system package installation."))
+					a.ensureLocalNodeBinary()
+					log.Printf("[startup-trace] emitting env-check-done (config-missing skip path)")
+					a.emitEvent("env-check-done")
+					go a.installToolsInBackground()
+					return
+				}
+				a.log(a.tr("Config not loaded yet, but core tool missing: %s. Running environment setup...", coreMissing))
 			}
 		}
 
@@ -1180,50 +1189,115 @@ func (a *App) updatePathForGit() {
 }
 
 func (a *App) isVCRedistInstalled() bool {
-	arch := os.Getenv("PROCESSOR_ARCHITECTURE")
-	var regPath string
+	return a.isVCRedistInstalledVerbose(true)
+}
 
-	if arch == "ARM64" || os.Getenv("PROCESSOR_ARCHITEW6432") == "ARM64" {
-		regPath = `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\ARM64`
-	} else {
-		regPath = `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64`
+func (a *App) isVCRedistInstalledQuiet() bool {
+	return a.isVCRedistInstalledVerbose(false)
+}
+
+func (a *App) isVCRedistInstalledVerbose(verbose bool) bool {
+	regPath := vcRedistRegistryPath()
+
+	if verbose {
+		a.log(fmt.Sprintf("VC Redist check: Checking registry path: HKLM\\%s", regPath))
 	}
 
-	a.log(fmt.Sprintf("VC Redist check: Checking registry path: HKLM\\%s", regPath))
+	if installed, err := isVCRedistInstalledViaRegistry(regPath); err == nil {
+		if installed {
+			if verbose {
+				a.log("VC Redist check: Found installed via registry API")
+			}
+			return true
+		}
+		if verbose {
+			a.log("VC Redist check: Registry API value not installed")
+		}
+		return false
+	} else {
+		if verbose {
+			a.log(fmt.Sprintf("VC Redist check: Registry API failed: %v", err))
+		}
+	}
 
-	cmd := exec.Command("reg", "query", fmt.Sprintf("HKLM\\%s", regPath), "/v", "Installed")
+	regExe := filepath.Join(windowsDir(), "System32", "reg.exe")
+	if _, err := os.Stat(regExe); err != nil {
+		regExe = "reg"
+	}
+	cmd := exec.Command(regExe, "query", fmt.Sprintf("HKLM\\%s", regPath), "/v", "Installed")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	output, err := cmd.Output()
 
 	if err != nil {
-		a.log(fmt.Sprintf("VC Redist check: Registry key not found or error: %v", err))
+		if verbose {
+			a.log(fmt.Sprintf("VC Redist check: Registry key not found or error: %v", err))
+		}
 		return false
 	}
 
 	outputStr := string(output)
-	a.log(fmt.Sprintf("VC Redist check: Registry output: %s", outputStr))
+	if verbose {
+		a.log(fmt.Sprintf("VC Redist check: Registry output: %s", outputStr))
+	}
 
 	if strings.Contains(outputStr, "0x1") {
-		a.log("VC Redist check: Found installed (0x1)")
+		if verbose {
+			a.log("VC Redist check: Found installed (0x1)")
+		}
 		return true
 	}
 
-	a.log("VC Redist check: Not installed or value not 0x1")
+	if verbose {
+		a.log("VC Redist check: Not installed or value not 0x1")
+	}
 	return false
 }
 
-func (a *App) installVCRedist() error {
-	arch := os.Getenv("PROCESSOR_ARCHITECTURE")
-	var downloadURL string
-	var fileName string
-
-	if arch == "ARM64" || os.Getenv("PROCESSOR_ARCHITEW6432") == "ARM64" {
-		downloadURL = "https://aka.ms/vc14/vc_redist.arm64.exe"
-		fileName = "vc_redist.arm64.exe"
-	} else {
-		downloadURL = "https://aka.ms/vc14/vc_redist.x64.exe"
-		fileName = "vc_redist.x64.exe"
+func vcRedistRegistryPath() string {
+	if isWindowsARM64() {
+		return `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\ARM64`
 	}
+	return `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64`
+}
+
+func isWindowsARM64() bool {
+	return strings.EqualFold(os.Getenv("PROCESSOR_ARCHITECTURE"), "ARM64") ||
+		strings.EqualFold(os.Getenv("PROCESSOR_ARCHITEW6432"), "ARM64")
+}
+
+func windowsDir() string {
+	if dir := strings.TrimSpace(os.Getenv("SystemRoot")); dir != "" {
+		return dir
+	}
+	if dir := strings.TrimSpace(os.Getenv("windir")); dir != "" {
+		return dir
+	}
+	return `C:\Windows`
+}
+
+func isVCRedistInstalledViaRegistry(regPath string) (bool, error) {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, regPath, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	if err != nil {
+		return false, err
+	}
+	defer key.Close()
+
+	installed, _, err := key.GetIntegerValue("Installed")
+	if err != nil {
+		return false, err
+	}
+	return installed == 1, nil
+}
+
+func vcRedistInstaller() (downloadURL, fileName string) {
+	if isWindowsARM64() {
+		return "https://aka.ms/vc14/vc_redist.arm64.exe", "vc_redist.arm64.exe"
+	}
+	return "https://aka.ms/vc14/vc_redist.x64.exe", "vc_redist.x64.exe"
+}
+
+func (a *App) installVCRedist() error {
+	downloadURL, fileName := vcRedistInstaller()
 
 	fmt.Printf("  -Downloading from: %s\n", downloadURL)
 	a.log(a.tr("Downloading Visual C++ Redistributable..."))

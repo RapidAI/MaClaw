@@ -80,6 +80,9 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 			if userID == "" {
 				userID = a.workflowOwnerIDForCurrentProject()
 			}
+			if scopeID := workflowFormStringField(payload.Data, workflowFormEventScopeField); scopeID != "" && userID != "" {
+				a.sessionEventScopeIDs.Store(userID, scopeID)
+			}
 			if workflowID != "" {
 				matchesActive := true
 				switch {
@@ -97,7 +100,7 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 					return resp, nil
 				}
 			}
-			a.clearAgentView(payload.ViewID)
+			a.clearAgentViewWithPayload(payload.ViewID, workflowFormLifecyclePayloadFor(workflowID, phaseID, userID, payload.Data))
 			if h := a.ensureLocalIMHandler(); h != nil {
 				h.cancelWorkflowForUser(userID)
 				if _, err := h.CancelSessionForUser(userID); err != nil {

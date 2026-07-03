@@ -47,6 +47,23 @@ type commandFileReference struct {
 	BaseDir string
 }
 
+type shellParseOptions struct {
+	allowBacktickQuote          bool
+	allowBackslashEscape        bool
+	allowBacktickEscape         bool
+	allowPowerShellContinuation bool
+}
+
+func shellParseOptionsForShell(shell string) shellParseOptions {
+	isPowerShell := isPowerShellRunnerShell(shell)
+	return shellParseOptions{
+		allowBacktickQuote:          !isPowerShell,
+		allowBackslashEscape:        !isPowerShell,
+		allowBacktickEscape:         isPowerShell,
+		allowPowerShellContinuation: isPowerShell,
+	}
+}
+
 func FormatStepFileDiagnostics(diagnostics []StepFileDiagnostic) []string {
 	if len(diagnostics) == 0 {
 		return nil
@@ -246,7 +263,7 @@ func commandFileReferencesForPrecheck(skillName string, stepIndex int, command, 
 			if segment == "" {
 				continue
 			}
-			nextBaseDir, changed, err := resolveCommandDirectoryChange(skillName, stepIndex, segment, currentBaseDir, &dirStack)
+			nextBaseDir, changed, err := resolveCommandDirectoryChange(skillName, stepIndex, segment, currentBaseDir, shell, &dirStack)
 			if err != nil {
 				return refs, err
 			}
@@ -254,7 +271,7 @@ func commandFileReferencesForPrecheck(skillName string, stepIndex int, command, 
 				currentBaseDir = nextBaseDir
 				continue
 			}
-			for _, ref := range ExtractCommandFileReferences(segment) {
+			for _, ref := range extractCommandFileReferencesFromSegmentForShell(segment, shell) {
 				refs = append(refs, commandFileReference{Path: ref, BaseDir: currentBaseDir})
 			}
 		}
@@ -262,8 +279,8 @@ func commandFileReferencesForPrecheck(skillName string, stepIndex int, command, 
 	return refs, nil
 }
 
-func resolveCommandDirectoryChange(skillName string, stepIndex int, segment, baseDir string, dirStack *[]string) (string, bool, error) {
-	fields := splitCommandFields(segment)
+func resolveCommandDirectoryChange(skillName string, stepIndex int, segment, baseDir, shell string, dirStack *[]string) (string, bool, error) {
+	fields := splitCommandFieldsForShell(segment, shell)
 	commandIndex := firstShellCommandFieldIndex(fields)
 	if commandIndex < 0 {
 		return baseDir, false, nil
@@ -420,11 +437,15 @@ func looksLikeMojibakeText(text string) bool {
 // requirement inference, while absolute paths, ./ and ../ paths, and script
 // extension files are checked as local references.
 func ExtractCommandFileReferences(command string) []string {
+	return extractCommandFileReferencesForShell(command, "")
+}
+
+func extractCommandFileReferencesForShell(command, shell string) []string {
 	seen := map[string]bool{}
 	var refs []string
-	for _, line := range commandPrecheckLines(command) {
+	for _, line := range commandPrecheckLinesForShell(command, shell) {
 		for _, segment := range splitCommandSegments(line) {
-			for _, candidate := range extractCommandFileReferencesFromSegment(segment) {
+			for _, candidate := range extractCommandFileReferencesFromSegmentForShell(segment, shell) {
 				if candidate == "" || seen[candidate] {
 					continue
 				}
@@ -444,7 +465,9 @@ func commandPrecheckLinesForShell(command, shell string) []string {
 	var lines []string
 	var heredocEnd string
 	var continued strings.Builder
-	allowPowerShellContinuation := isPowerShellRunnerShell(shell)
+	var quoted strings.Builder
+	var multilineQuote rune
+	parseOptions := shellParseOptionsForShell(shell)
 	for _, line := range strings.Split(command, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if heredocEnd != "" {
@@ -457,16 +480,41 @@ func commandPrecheckLinesForShell(command, shell string) []string {
 		if continued.Len() > 0 {
 			logicalLine = continued.String() + strings.TrimLeft(line, " \t")
 		}
-		if prefix, ok := trimShellLineContinuation(logicalLine, allowPowerShellContinuation); ok {
-			continued.Reset()
-			continued.WriteString(prefix)
-			continued.WriteByte(' ')
-			continue
+		if quoted.Len() > 0 {
+			logicalLine = strings.TrimLeft(logicalLine, " \t")
 		}
-		if continued.Len() > 0 {
-			continued.Reset()
+		commentStrippedLine := logicalLine
+		lineQuoteState := rune(0)
+		if quoted.Len() == 0 {
+			commentStrippedLine = stripShellLineCommentWithOptions(logicalLine, parseOptions)
+			lineQuoteState = shellLineQuoteStateWithOptions(commentStrippedLine, 0, parseOptions)
+			if prefix, ok := trimShellLineContinuation(logicalLine, parseOptions.allowPowerShellContinuation); ok && lineQuoteState == 0 {
+				continued.Reset()
+				continued.WriteString(prefix)
+				continued.WriteByte(' ')
+				continue
+			}
+			if continued.Len() > 0 {
+				continued.Reset()
+			}
 		}
-		logicalLine = stripShellLineComment(logicalLine)
+		if quoted.Len() > 0 {
+			quoted.WriteByte('\n')
+			quoted.WriteString(logicalLine)
+			multilineQuote = shellLineQuoteStateWithOptions(logicalLine, multilineQuote, parseOptions)
+			if multilineQuote != 0 {
+				continue
+			}
+			logicalLine = quoted.String()
+			quoted.Reset()
+		} else {
+			logicalLine = commentStrippedLine
+			multilineQuote = lineQuoteState
+			if multilineQuote != 0 {
+				quoted.WriteString(logicalLine)
+				continue
+			}
+		}
 		if strings.TrimSpace(logicalLine) == "" {
 			continue
 		}
@@ -478,7 +526,43 @@ func commandPrecheckLinesForShell(command, shell string) []string {
 	if continued.Len() > 0 {
 		lines = append(lines, strings.TrimSpace(continued.String()))
 	}
+	if quoted.Len() > 0 {
+		lines = append(lines, strings.TrimSpace(quoted.String()))
+	}
 	return lines
+}
+
+func shellLineQuoteStateWithOptions(line string, quote rune, options shellParseOptions) rune {
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if quote != 0 {
+			if quote != '\'' && options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
+				i++
+				continue
+			}
+			if quote != '\'' && options.allowBackslashEscape && r == '\\' && i+1 < len(runes) {
+				i++
+				continue
+			}
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if options.allowBackslashEscape && r == '\\' && i+1 < len(runes) {
+			i++
+			continue
+		}
+		if options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
+			i++
+			continue
+		}
+		if r == '\'' || r == '"' || (options.allowBacktickQuote && r == '`') {
+			quote = r
+		}
+	}
+	return quote
 }
 
 func trimShellLineContinuation(line string, allowPowerShellContinuation bool) (string, bool) {
@@ -495,6 +579,7 @@ func trimShellLineContinuation(line string, allowPowerShellContinuation bool) (s
 		if backticks%2 == 1 {
 			return string(runes[:len(runes)-1]), true
 		}
+		return line, false
 	}
 	backslashes := 0
 	for i := len(runes) - 1; i >= 0 && runes[i] == '\\'; i-- {
@@ -524,13 +609,17 @@ func isPowerShellRunnerShell(shell string) bool {
 	}
 }
 
-func stripShellLineComment(line string) string {
+func stripShellLineCommentWithOptions(line string, options shellParseOptions) string {
 	var quote rune
 	runes := []rune(line)
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if quote != 0 {
-			if quote != '\'' && r == '\\' && i+1 < len(runes) {
+			if quote != '\'' && options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
+				i++
+				continue
+			}
+			if quote != '\'' && options.allowBackslashEscape && r == '\\' && i+1 < len(runes) {
 				i++
 				continue
 			}
@@ -539,11 +628,15 @@ func stripShellLineComment(line string) string {
 			}
 			continue
 		}
-		if r == '\\' && i+1 < len(runes) {
+		if options.allowBackslashEscape && r == '\\' && i+1 < len(runes) {
 			i++
 			continue
 		}
-		if r == '\'' || r == '"' || r == '`' {
+		if options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
+			i++
+			continue
+		}
+		if r == '\'' || r == '"' || (options.allowBacktickQuote && r == '`') {
 			quote = r
 			continue
 		}
@@ -625,8 +718,12 @@ func shellHeredocEndMarker(line string) (string, bool) {
 }
 
 func extractCommandFileReferencesFromSegment(segment string) []string {
+	return extractCommandFileReferencesFromSegmentForShell(segment, "")
+}
+
+func extractCommandFileReferencesFromSegmentForShell(segment, shell string) []string {
 	var refs []string
-	fields := splitCommandFields(segment)
+	fields := splitCommandFieldsForShell(segment, shell)
 	for i := 0; i < len(fields); i++ {
 		token := fields[i]
 		if isInlineCodeFlagAt(fields, i) {
@@ -799,10 +896,18 @@ func commandFileReferenceCandidates(token string) []string {
 	if isSlashStyleShellOption(token) {
 		return nil
 	}
+	if multilineQuotedNarrativeToken(token) {
+		return nil
+	}
 	if !isCommandFileReference(token) {
 		return nil
 	}
 	return []string{token}
+}
+
+func multilineQuotedNarrativeToken(token string) bool {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	return strings.ContainsAny(token, "\r\n")
 }
 
 func isSlashStyleShellOption(token string) bool {
@@ -896,6 +1001,14 @@ func isGoPackageEllipsisPattern(token string) bool {
 }
 
 func splitCommandFields(command string) []string {
+	return splitCommandFieldsWithOptions(command, shellParseOptionsForShell(""))
+}
+
+func splitCommandFieldsForShell(command, shell string) []string {
+	return splitCommandFieldsWithOptions(command, shellParseOptionsForShell(shell))
+}
+
+func splitCommandFieldsWithOptions(command string, options shellParseOptions) []string {
 	var fields []string
 	var b strings.Builder
 	var quote rune
@@ -916,13 +1029,18 @@ func splitCommandFields(command string) []string {
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if quote != 0 {
-			if quote != '\'' && r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
+			if quote != '\'' && options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
+				b.WriteRune(runes[i+1])
+				i++
+				continue
+			}
+			if quote != '\'' && options.allowBackslashEscape && r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
 				b.WriteRune(r)
 				b.WriteRune(runes[i+1])
 				i++
 				continue
 			}
-			if quote != '\'' && r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
+			if quote != '\'' && options.allowBackslashEscape && r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
 				b.WriteRune(runes[i+1])
 				i++
 				continue
@@ -934,19 +1052,24 @@ func splitCommandFields(command string) []string {
 			b.WriteRune(r)
 			continue
 		}
-		if r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
+		if options.allowBackslashEscape && r == '\\' && i+1 < len(runes) && runes[i+1] == '\\' {
 			b.WriteRune(r)
 			b.WriteRune(runes[i+1])
 			i++
 			continue
 		}
-		if r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
+		if options.allowBackslashEscape && r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
+			b.WriteRune(runes[i+1])
+			i++
+			continue
+		}
+		if options.allowBacktickEscape && r == '`' && i+1 < len(runes) {
 			b.WriteRune(runes[i+1])
 			i++
 			continue
 		}
 		switch {
-		case r == '\'' || r == '"' || r == '`':
+		case r == '\'' || r == '"' || (options.allowBacktickQuote && r == '`'):
 			quote = r
 		case r == '>':
 			flush()

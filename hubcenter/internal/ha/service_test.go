@@ -3,6 +3,7 @@ package ha
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -42,6 +44,65 @@ func TestNewServiceSkipsSelfPeer(t *testing.T) {
 	if peers[0].NodeID != "hc-2" {
 		t.Fatalf("peer NodeID = %q, want hc-2", peers[0].NodeID)
 	}
+}
+
+type fakeNotificationStore struct {
+	items map[string]*notification.Notification
+}
+
+func (s *fakeNotificationStore) Create(ctx context.Context, n *notification.Notification) error {
+	return s.Upsert(ctx, n)
+}
+
+func (s *fakeNotificationStore) Upsert(_ context.Context, n *notification.Notification) error {
+	if s.items == nil {
+		s.items = map[string]*notification.Notification{}
+	}
+	cp := *n
+	s.items[n.ID] = &cp
+	return nil
+}
+
+func (s *fakeNotificationStore) GetByID(_ context.Context, id string) (*notification.Notification, error) {
+	if item := s.items[id]; item != nil {
+		cp := *item
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeNotificationStore) List(context.Context, notification.ListFilter) ([]*notification.Notification, int, error) {
+	items := make([]*notification.Notification, 0, len(s.items))
+	for _, item := range s.items {
+		cp := *item
+		items = append(items, &cp)
+	}
+	return items, len(items), nil
+}
+
+func (s *fakeNotificationStore) UpdateStatus(_ context.Context, id string, status notification.Status, updatedAt time.Time) error {
+	if item := s.items[id]; item != nil {
+		item.Status = status
+		item.UpdatedAt = updatedAt
+		return nil
+	}
+	return sql.ErrNoRows
+}
+
+func (s *fakeNotificationStore) Delete(_ context.Context, id string) error {
+	if _, ok := s.items[id]; !ok {
+		return sql.ErrNoRows
+	}
+	delete(s.items, id)
+	return nil
+}
+
+func (s *fakeNotificationStore) RecordCascadeResult(context.Context, *notification.CascadeResult) error {
+	return nil
+}
+
+func (s *fakeNotificationStore) GetCascadeResults(context.Context, string) ([]*notification.CascadeResult, error) {
+	return nil, nil
 }
 
 func (r *fakeHASyncOpRepo) Append(_ context.Context, op *store.HASyncOp) error {
@@ -77,6 +138,50 @@ func (r *fakeHASyncOpRepo) ListStats() (int, []int) {
 }
 
 func (r *fakeHASyncOpRepo) GetMaxSeq(_ context.Context) (int64, error) { return 0, nil }
+
+func TestApplyNotificationOpUpsertsAndDeletesIdempotently(t *testing.T) {
+	ctx := context.Background()
+	notifications := &fakeNotificationStore{}
+	svc := &Service{notifications: notifications}
+	now := time.Date(2026, 7, 3, 9, 30, 0, 0, time.UTC)
+	notif := &notification.Notification{
+		ID:           "notif-1",
+		Title:        "HA notice",
+		Content:      "Replicate me.",
+		Category:     notification.CategorySystemAnnouncement,
+		Priority:     notification.PriorityNormal,
+		AudienceType: notification.AudienceAll,
+		Status:       notification.StatusPublished,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	payloadJSON, payloadHash, err := marshalPayload(notif)
+	if err != nil {
+		t.Fatalf("marshalPayload notification: %v", err)
+	}
+
+	if err := svc.applyNotificationOp(ctx, &store.HASyncOp{OpType: OpUpsert, PayloadJSON: payloadJSON, PayloadHash: payloadHash}); err != nil {
+		t.Fatalf("apply upsert: %v", err)
+	}
+	if got, _ := notifications.GetByID(ctx, notif.ID); got == nil || got.Title != notif.Title {
+		t.Fatalf("notification after upsert = %#v", got)
+	}
+
+	deleteJSON, deleteHash, err := marshalPayload(map[string]string{"id": notif.ID})
+	if err != nil {
+		t.Fatalf("marshalPayload delete: %v", err)
+	}
+	deleteOp := &store.HASyncOp{OpType: OpDelete, PayloadJSON: deleteJSON, PayloadHash: deleteHash}
+	if err := svc.applyNotificationOp(ctx, deleteOp); err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+	if got, _ := notifications.GetByID(ctx, notif.ID); got != nil {
+		t.Fatalf("notification after delete = %#v, want nil", got)
+	}
+	if err := svc.applyNotificationOp(ctx, deleteOp); err != nil {
+		t.Fatalf("apply missing delete: %v", err)
+	}
+}
 
 func (r *fakeHASyncOpRepo) HasApplied(_ context.Context, opID string) (bool, error) {
 	r.mu.Lock()
@@ -1364,14 +1469,18 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 			"hc-2": {NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: "https://hubs.maclaw.top", Reachable: true, QualityScore: 95, ServiceStatus: "healthy", ClusterStatus: "healthy", LastSuccessAt: &now},
 			"hc-3": {NodeID: "hc-3", NodeName: "HubCenter 3", BaseURL: "https://hubs2.maclaw.top", Reachable: true, QualityScore: 90, ServiceStatus: "healthy", ClusterStatus: "healthy", LastSuccessAt: &now},
 		},
+		notifications: &fakeNotificationStore{items: map[string]*notification.Notification{
+			"notif-1": {ID: "notif-1", Title: "Notice 1"},
+			"notif-2": {ID: "notif-2", Title: "Notice 2"},
+		}},
 	}
 
 	status, err := svc.GetAdminStatus(context.Background())
 	if err != nil {
 		t.Fatalf("GetAdminStatus() error = %v", err)
 	}
-	if len(status.Sync.Details) != 7 {
-		t.Fatalf("sync details len = %d, want 7", len(status.Sync.Details))
+	if len(status.Sync.Details) != 8 {
+		t.Fatalf("sync details len = %d, want 8", len(status.Sync.Details))
 	}
 	if status.Sync.PushDebounceSeconds != 180 {
 		t.Fatalf("push debounce seconds = %d, want 180", status.Sync.PushDebounceSeconds)
@@ -1409,6 +1518,10 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	system := find("system")
 	if system == nil || system.Status != "idle" {
 		t.Fatalf("system detail = %#v", system)
+	}
+	notifications := find("notifications")
+	if notifications == nil || notifications.Status != "needs_seed" || notifications.LocalRecords != 2 {
+		t.Fatalf("notifications detail = %#v", notifications)
 	}
 }
 

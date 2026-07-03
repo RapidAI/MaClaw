@@ -45,6 +45,7 @@ const hubConfirmationPrefix = "hub_registration_confirm:"
 const (
 	systemKeyPublicBaseURL                       = "server_public_base_url"
 	systemKeyTenantDigitalEmployeeAuthorizations = "tenant_digital_employee_authorizations"
+	systemKeyHubAdminDisplayNames                = "hub_admin_display_names"
 )
 const adminDomainRoutePrefix = "hdr_admin_"
 const adminUserLinkPrefix = "hul_admin_"
@@ -653,7 +654,13 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 		existing.InstallationID = installationID
 	}
 	existing.OwnerEmail = ownerEmail
-	existing.Name = strings.TrimSpace(req.Name)
+	if displayName, ok, err := s.hubAdminDisplayName(ctx, existing.ID); err != nil {
+		return nil, err
+	} else if ok {
+		existing.Name = displayName
+	} else {
+		existing.Name = strings.TrimSpace(req.Name)
+	}
 	existing.Description = strings.TrimSpace(req.Description)
 	existing.BaseURL = normalizeHubBaseURL(req.BaseURL)
 	existing.Host = normalizeHubHost(req.Host)
@@ -2686,6 +2693,119 @@ func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string
 	return nil
 }
 
+func (s *Service) UpdateName(ctx context.Context, hubID, name string) (*store.HubInstance, error) {
+	hubID = strings.TrimSpace(hubID)
+	name = strings.TrimSpace(name)
+	if hubID == "" {
+		return nil, errors.New("hub id is required")
+	}
+	if name == "" {
+		return nil, errors.New("hub name is required")
+	}
+	if len([]rune(name)) > 80 {
+		return nil, errors.New("hub name must be at most 80 characters")
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return nil, err
+	}
+	if hub == nil {
+		return nil, ErrHubNotFound
+	}
+	now := time.Now()
+	if err := s.hubs.UpdateName(ctx, hubID, name, now); err != nil {
+		return nil, err
+	}
+	if err := s.saveHubAdminDisplayName(ctx, hubID, name); err != nil {
+		return nil, err
+	}
+	hub.Name = name
+	hub.UpdatedAt = now
+	s.recordHubInstance(ctx, hub)
+	return hub, nil
+}
+
+func (s *Service) hubAdminDisplayName(ctx context.Context, hubID string) (string, bool, error) {
+	items, err := s.loadHubAdminDisplayNames(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	name, ok := items[strings.TrimSpace(hubID)]
+	name = strings.TrimSpace(name)
+	return name, ok && name != "", nil
+}
+
+func (s *Service) loadHubAdminDisplayNames(ctx context.Context) (map[string]string, error) {
+	items := map[string]string{}
+	if s == nil || s.settings == nil {
+		return items, nil
+	}
+	raw, err := s.settings.Get(ctx, systemKeyHubAdminDisplayNames)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return items, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, err
+	}
+	clean := map[string]string{}
+	for hubID, name := range items {
+		hubID = strings.TrimSpace(hubID)
+		name = strings.TrimSpace(name)
+		if hubID == "" || name == "" {
+			continue
+		}
+		clean[hubID] = name
+	}
+	return clean, nil
+}
+
+func (s *Service) saveHubAdminDisplayName(ctx context.Context, hubID, name string) error {
+	if s == nil || s.settings == nil {
+		return nil
+	}
+	items, err := s.loadHubAdminDisplayNames(ctx)
+	if err != nil {
+		return err
+	}
+	hubID = strings.TrimSpace(hubID)
+	name = strings.TrimSpace(name)
+	if hubID == "" || name == "" {
+		return nil
+	}
+	items[hubID] = name
+	data, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return s.settings.Set(ctx, systemKeyHubAdminDisplayNames, string(data))
+}
+
+func (s *Service) deleteHubAdminDisplayName(ctx context.Context, hubID string) error {
+	if s == nil || s.settings == nil {
+		return nil
+	}
+	items, err := s.loadHubAdminDisplayNames(ctx)
+	if err != nil {
+		return err
+	}
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" {
+		return nil
+	}
+	if _, ok := items[hubID]; !ok {
+		return nil
+	}
+	delete(items, hubID)
+	data, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return s.settings.Set(ctx, systemKeyHubAdminDisplayNames, string(data))
+}
+
 func (s *Service) DisableHub(ctx context.Context, hubID, reason string) error {
 	if err := s.hubs.SetDisabled(ctx, hubID, true, strings.TrimSpace(reason), time.Now()); err != nil {
 		return err
@@ -2746,6 +2866,9 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 		_ = s.invitationCodeRoutes.DeleteByHubID(ctx, hubID)
 	}
 	if err := s.deleteHubRegistrationPolicy(ctx, hubID); err != nil {
+		return err
+	}
+	if err := s.deleteHubAdminDisplayName(ctx, hubID); err != nil {
 		return err
 	}
 	// Clean up per-hub in-memory caches.
@@ -4416,7 +4539,7 @@ func (s *Service) probeHubUserExists(ctx context.Context, hub *store.HubInstance
 
 // AdminRouteVerificationResult is the response from AdminVerifyEmailRoute.
 type AdminRouteVerificationResult struct {
-	Email         string                       `json:"email"`
+	Email         string                        `json:"email"`
 	Routes        []AdminRouteVerificationEntry `json:"routes"`
 	CleanedRoutes []AdminRouteVerificationEntry `json:"cleaned_routes,omitempty"`
 	Message       string                        `json:"message"`

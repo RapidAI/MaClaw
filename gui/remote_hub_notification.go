@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // handleNotificationPush processes a notification.push envelope received from
@@ -29,10 +27,10 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		// Add to local unread cache (LRU, max 10).
 		a.notifCache.Add(push.Notification)
 		// Notify frontend of the new notification.
-		runtime.EventsEmit(a.ctx, "notification:new", push.Notification)
+		emitNotificationFrontendEvent(a, "notification:new", push.Notification)
 		// Urgent notifications get an additional toast event.
 		if push.Notification.Priority == "urgent" {
-			runtime.EventsEmit(a.ctx, "notification:urgent-toast", push.Notification)
+			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)
 		}
 
 	case "revoke":
@@ -40,6 +38,6 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 			return
 		}
 		a.notifCache.Remove(push.NotifID)
-		runtime.EventsEmit(a.ctx, "notification:revoke", push.NotifID)
+		emitNotificationFrontendEvent(a, "notification:revoke", push.NotifID)
 	}
 }

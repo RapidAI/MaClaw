@@ -50,6 +50,9 @@ mobile/dist/
 mobile/android/codeclaw-release.jks
 mobile/android/maclaw-release.jks
 mobile/android/signing.env.cmd
+mobile/maclaw_mobile/android/key.properties
+mobile/maclaw_mobile/android/*.jks
+mobile/maclaw_mobile/android/*.keystore
 mobile/maclaw_mobile/docs/qa-builds/*
 !mobile/maclaw_mobile/docs/qa-builds/README.md
 gui/LegacyTaskOutput.csv

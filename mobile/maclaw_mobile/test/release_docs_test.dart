@@ -19,8 +19,11 @@ void main() {
     var cursor = -1;
     for (final part in expectedParts) {
       final index = text.indexOf(part, cursor + 1);
-      expect(index, isNonNegative,
-          reason: '$part should appear after index $cursor');
+      expect(
+        index,
+        isNonNegative,
+        reason: '$part should appear after index $cursor',
+      );
       cursor = index;
     }
   }
@@ -74,6 +77,13 @@ void main() {
     expect(qa, contains('qa_build_record_template.md'));
     expect(qa, contains('docs/qa-builds/README.md'));
     expect(qa, contains('tool/validate_qa_build_record.py'));
+    expect(qa, contains('tool/qa_build_record_report.py'));
+    expect(qa, contains('tool/qa_release_evidence_links.py'));
+    expect(qa, contains('tool/qa_preflight.py'));
+    expect(qa, contains('tool/release_status_report.py'));
+    expect(releaseDocCorpus(), contains('tool/create_qa_build_record.py'));
+    expect(qa, contains('tool/validate_qa_build_records_dir.py'));
+    expect(qa, contains('tool/verify_final_release_evidence.py'));
   });
 
   test('user guide preserves mobile product decisions', () {
@@ -160,9 +170,17 @@ void main() {
       'group.top.mypapers.maclaw.mobile',
       'Team ID',
       'Provisioning profiles: Runner and Share Extension profile UUID/file/name',
+      'ios/ExportOptions.plist.example',
+      'android/key.properties.example',
+      'MACLAW_ANDROID_STORE_FILE',
+      'MACLAW_ANDROID_STORE_PASSWORD',
+      'MACLAW_ANDROID_KEY_ALIAS',
+      'MACLAW_ANDROID_KEY_PASSWORD',
       'Artifact path',
       'SHA256',
       'Firebase App Distribution',
+      'release build without `android/key.properties` fails',
+      'using the debug signing key',
     ]) {
       expect(qa, contains(expected));
     }
@@ -202,6 +220,11 @@ void main() {
 
     for (final expected in [
       'Build a signed internal test package',
+      'android/key.properties.example',
+      'android/key.properties',
+      'storeFile',
+      'keyAlias',
+      'does not fall back to the debug',
       'Install a signed development/TestFlight build',
       'text, URLs, images, PDFs, Word, Excel, and CSV files',
       'Ask one assistant question by voice',
@@ -486,8 +509,26 @@ void main() {
       '".github/workflows/maclaw-mobile.yml"',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
+      'python3 -m unittest tool/create_qa_build_record_test.py',
+      'python3 -m unittest tool/validate_qa_build_records_dir_test.py',
+      'python3 -m unittest tool/qa_build_record_report_test.py',
+      'python3 -m unittest tool/qa_release_evidence_links_test.py',
+      'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/setup_android_signing_test.py',
+      'python3 -m unittest tool/release_status_report_test.py',
+      'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
+      'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 -m unittest tool/verify_final_release_evidence_test.py',
+      'python3 -m unittest tool/verify_android_release_signing_test.py',
+      'python3 -m unittest tool/build_android_release_test.py',
+      'python3 -m unittest tool/verify_ios_wrapper_test.py',
+      'python3 -m unittest tool/plan_ios_release_test.py',
+      'python3 -m unittest tool/setup_ios_export_options_test.py',
+      'python3 tool/verify_android_release_signing.py',
+      'python3 tool/verify_ios_wrapper.py',
       'python3 tool/verify_runtime_boundary.py',
       'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
       'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
@@ -506,6 +547,19 @@ void main() {
       contains('python3 -m unittest tool/configure_platforms_test.py'),
     );
     expect(checklist, contains('tool/validate_qa_build_record_test.py'));
+    expect(checklist, contains('tool/create_qa_build_record_test.py'));
+    expect(checklist, contains('tool/qa_build_record_report_test.py'));
+    expect(checklist, contains('tool/qa_release_evidence_links_test.py'));
+    expect(checklist, contains('tool/qa_preflight_test.py'));
+    expect(checklist, contains('tool/setup_android_signing_test.py'));
+    expect(checklist, contains('tool/setup_android_signing.py'));
+    expect(checklist, contains('tool/release_status_report_test.py'));
+    expect(checklist, contains('python3 tool/release_status_report.py'));
+    expect(checklist, contains('python3 tool/qa_preflight.py'));
+    expect(
+      checklist,
+      contains('python3 tool/validate_qa_build_records_dir.py docs/qa-builds'),
+    );
     expect(checklist, contains('tool/verify_runtime_boundary_test.py'));
     expect(
       checklist,
@@ -517,6 +571,25 @@ void main() {
     expect(checklist, contains('python3 tool/run_release_gates.py --dry-run'));
     expect(checklist, contains('tool/run_release_gates_test.py'));
     expect(checklist, contains('tool/verify_runtime_boundary.py'));
+    expect(checklist, contains('python3 tool/verify_debug_apk_evidence.py'));
+    expect(checklist, contains('tool/verify_manual_release_gates_test.py'));
+    expect(checklist, contains('tool/verify_final_release_evidence_test.py'));
+    expect(checklist, contains('tool/verify_android_release_signing_test.py'));
+    expect(checklist, contains('tool/build_android_release_test.py'));
+    expect(checklist, contains('python3 tool/build_android_release.py --artifact apk --dry-run'));
+    expect(checklist, contains('--artifact appbundle'));
+    expect(checklist, contains('tool/verify_ios_wrapper_test.py'));
+    expect(checklist, contains('tool/plan_ios_release_test.py'));
+    expect(checklist, contains('tool/setup_ios_export_options_test.py'));
+    expect(checklist, contains('tool/setup_ios_export_options.py'));
+    expect(checklist, contains('python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development'));
+    expect(checklist, contains('--export-method app-store'));
+    expect(checklist, contains('python3 tool/verify_android_release_signing.py'));
+    expect(checklist, contains('python3 tool/verify_ios_wrapper.py'));
+    expect(
+      checklist,
+      contains('python3 tool/verify_final_release_evidence.py docs/qa-builds'),
+    );
     expect(
       checklist,
       contains(
@@ -524,9 +597,41 @@ void main() {
       ),
     );
     expect(evidence, contains('tool/validate_qa_build_record.py'));
+    expect(evidence, contains('tool/create_qa_build_record.py'));
+    expect(evidence, contains('tool/create_qa_build_record_test.py'));
+    expect(evidence, contains('tool/qa_build_record_report.py'));
+    expect(evidence, contains('tool/qa_build_record_report_test.py'));
+    expect(evidence, contains('tool/qa_release_evidence_links.py'));
+    expect(evidence, contains('tool/qa_release_evidence_links_test.py'));
+    expect(evidence, contains('tool/qa_preflight.py'));
+    expect(evidence, contains('tool/qa_preflight_test.py'));
+    expect(evidence, contains('tool/setup_android_signing.py'));
+    expect(evidence, contains('tool/setup_android_signing_test.py'));
+    expect(evidence, contains('tool/release_status_report.py'));
+    expect(evidence, contains('tool/release_status_report_test.py'));
+    expect(evidence, contains('tool/validate_qa_build_records_dir.py'));
+    expect(evidence, contains('tool/validate_qa_build_records_dir_test.py'));
     expect(evidence, contains('tool/verify_runtime_boundary.py'));
     expect(evidence, contains('tool/run_release_gates.py'));
     expect(evidence, contains('tool/run_release_gates_test.py'));
+    expect(evidence, contains('tool/verify_debug_apk_evidence.py'));
+    expect(evidence, contains('tool/verify_manual_release_gates.py'));
+    expect(evidence, contains('tool/verify_manual_release_gates_test.py'));
+    expect(evidence, contains('tool/verify_final_release_evidence.py'));
+    expect(evidence, contains('tool/verify_final_release_evidence_test.py'));
+    expect(evidence, contains('tool/verify_android_release_signing.py'));
+    expect(evidence, contains('tool/verify_android_release_signing_test.py'));
+    expect(evidence, contains('android/key.properties.example'));
+    expect(evidence, contains('tool/build_android_release.py'));
+    expect(evidence, contains('tool/build_android_release_test.py'));
+    expect(evidence, contains('tool/verify_ios_wrapper.py'));
+    expect(evidence, contains('tool/verify_ios_wrapper_test.py'));
+    expect(evidence, contains('tool/plan_ios_release.py'));
+    expect(evidence, contains('tool/plan_ios_release_test.py'));
+    expect(evidence, contains('tool/setup_ios_export_options.py'));
+    expect(evidence, contains('tool/setup_ios_export_options_test.py'));
+    expect(evidence, contains('ios/ExportOptions.plist.example'));
+    expect(evidence, contains('artifact path, byte size, and SHA256'));
     expect(
       evidence,
       contains(
@@ -545,11 +650,29 @@ void main() {
       'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
+      'python3 -m unittest tool/create_qa_build_record_test.py',
+      'python3 -m unittest tool/validate_qa_build_records_dir_test.py',
+      'python3 -m unittest tool/qa_build_record_report_test.py',
+      'python3 -m unittest tool/qa_release_evidence_links_test.py',
+      'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/setup_android_signing_test.py',
+      'python3 -m unittest tool/release_status_report_test.py',
+      'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
+      'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 -m unittest tool/verify_final_release_evidence_test.py',
+      'python3 -m unittest tool/verify_android_release_signing_test.py',
+      'python3 -m unittest tool/build_android_release_test.py',
+      'python3 -m unittest tool/verify_ios_wrapper_test.py',
+      'python3 -m unittest tool/plan_ios_release_test.py',
+      'python3 -m unittest tool/setup_ios_export_options_test.py',
       'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
       'flutter create --platforms android,ios .',
       'python3 tool/configure_platforms.py',
+      'python3 tool/verify_android_release_signing.py',
+      'python3 tool/verify_ios_wrapper.py',
       'python3 tool/verify_runtime_boundary.py',
       'flutter pub get',
       'flutter analyze',
@@ -569,11 +692,29 @@ void main() {
       'cd mobile/maclaw_mobile',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
+      'python3 -m unittest tool/create_qa_build_record_test.py',
+      'python3 -m unittest tool/validate_qa_build_records_dir_test.py',
+      'python3 -m unittest tool/qa_build_record_report_test.py',
+      'python3 -m unittest tool/qa_release_evidence_links_test.py',
+      'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/setup_android_signing_test.py',
+      'python3 -m unittest tool/release_status_report_test.py',
+      'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
+      'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 -m unittest tool/verify_final_release_evidence_test.py',
+      'python3 -m unittest tool/verify_android_release_signing_test.py',
+      'python3 -m unittest tool/build_android_release_test.py',
+      'python3 -m unittest tool/verify_ios_wrapper_test.py',
+      'python3 -m unittest tool/plan_ios_release_test.py',
+      'python3 -m unittest tool/setup_ios_export_options_test.py',
       'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
       'flutter create --platforms android,ios .',
       'python3 tool/configure_platforms.py',
+      'python3 tool/verify_android_release_signing.py',
+      'python3 tool/verify_ios_wrapper.py',
       'python3 tool/verify_runtime_boundary.py',
       'flutter pub get',
       'flutter analyze',
@@ -595,7 +736,7 @@ void main() {
 
     final referencedPaths = <String>{};
     final fileRefPattern = RegExp(
-      r'(?<![A-Za-z0-9_./-])((?:\.\.\/\.\.\/)?(?:\.github\/workflows\/maclaw-mobile\.yml|\.gitignore|README\.md|pubspec\.yaml|android\/app\/src\/main\/AndroidManifest\.xml|ios\/ShareExtension\/?|docs\/[A-Za-z0-9_./-]+\.(?:md)|test\/[A-Za-z0-9_./-]+\.(?:dart)|tool\/[A-Za-z0-9_./-]+\.(?:py)))',
+      r'(?<![A-Za-z0-9_./-])((?:\.\.\/\.\.\/)?(?:\.github\/workflows\/maclaw-mobile\.yml|\.gitignore|README\.md|pubspec\.yaml|android\/key\.properties\.example|android\/app\/src\/main\/AndroidManifest\.xml|ios\/ExportOptions\.plist\.example|ios\/ShareExtension\/?|docs\/[A-Za-z0-9_./-]+\.(?:md)|test\/[A-Za-z0-9_./-]+\.(?:dart)|tool\/[A-Za-z0-9_./-]+\.(?:py)))',
     );
 
     for (final match in fileRefPattern.allMatches(docs)) {
@@ -630,7 +771,17 @@ void main() {
       'Keep this',
       'docs/qa_build_record_template.md',
       'build date, platform scope, and build number',
+      'python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42',
+      'python3 tool/qa_preflight.py',
+      'python3 tool/release_status_report.py',
+      'Use `--scope android` or `--scope ios`',
+      'refuses to overwrite an existing',
       'python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md',
+      'python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md',
+      'python3 tool/qa_release_evidence_links.py docs/qa-builds',
+      'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
+      'python3 tool/verify_final_release_evidence.py docs/qa-builds',
+      'links every validated record by filename',
       'Do not store SSH passwords',
       'private keys',
       'access tokens',
@@ -647,9 +798,17 @@ void main() {
       contains('YYYY-MM-DD-<android|ios|android-ios>-<version+build>.md'),
     );
     expect(qaBuildRecordTemplate, contains('docs/qa-builds/README.md'));
+    expect(
+      qaBuildsReadmeText,
+      contains(
+        'skips this README and ignores non-Markdown evidence attachments',
+      ),
+    );
     expect(rootGitignore, contains('mobile/maclaw_mobile/docs/qa-builds/*'));
-    expect(rootGitignore,
-        contains('!mobile/maclaw_mobile/docs/qa-builds/README.md'));
+    expect(
+      rootGitignore,
+      contains('!mobile/maclaw_mobile/docs/qa-builds/README.md'),
+    );
     expectInOrder(rootGitignore, [
       'mobile/maclaw_mobile/docs/qa-builds/*',
       '!mobile/maclaw_mobile/docs/qa-builds/README.md',
@@ -665,9 +824,30 @@ void main() {
       'MobileLocalStore',
       'shared future',
       'passes without the Drift',
-      'Passed: 187 tests',
+      'Passed: 190 tests',
     ]) {
       expect(evidence, contains(expected));
+    }
+  });
+
+  test('mobile gitignore excludes generated Flutter and Android caches', () {
+    final gitignore = readDoc('.gitignore');
+
+    for (final expected in [
+      '.dart_tool/',
+      '.flutter-plugins',
+      '.flutter-plugins-dependencies',
+      'build/',
+      'android/.gradle/',
+      'android/.kotlin/',
+      'android/local.properties',
+      'ios/Flutter/ephemeral/',
+      'ios/Pods/',
+      'ios/.symlinks/',
+      'ios/ExportOptions.plist',
+      '*.iml',
+    ]) {
+      expect(gitignore, contains(expected));
     }
   });
 
@@ -685,14 +865,77 @@ void main() {
 
   test('release evidence records current full release gate count', () {
     final evidence = readDoc('docs/release_evidence.md');
+    final evidenceText = evidence.replaceAll(RegExp(r'\s+'), ' ');
     final gateRunner = readDoc('tool/run_release_gates.py');
     final gateCount = RegExp(r'^\s*ReleaseGate\(', multiLine: true)
         .allMatches(gateRunner)
         .length;
 
     expect(
-      evidence,
+      evidenceText,
       contains('passed all $gateCount automated release gates'),
     );
+  });
+
+  test('release evidence records current Python release tool test counts', () {
+    final evidence = readDoc('docs/release_evidence.md');
+
+    final expectedCounts = {
+      'tool/configure_platforms_test.py':
+          'Passed: {count} platform configuration tests.',
+      'tool/validate_qa_build_record_test.py':
+          'Passed: {count} QA record validator tests.',
+      'tool/create_qa_build_record_test.py':
+          'Passed: {count} QA build record scaffold tests.',
+      'tool/validate_qa_build_records_dir_test.py':
+          'Passed: {count} QA build records directory validator tests.',
+      'tool/qa_build_record_report_test.py':
+          'Passed: {count} QA build record report tests.',
+      'tool/qa_release_evidence_links_test.py':
+          'Passed: {count} QA release evidence link helper tests.',
+      'tool/qa_preflight_test.py':
+          'Passed: {count} QA preflight helper tests.',
+      'tool/setup_android_signing_test.py':
+          'Passed: {count} Android signing setup helper tests.',
+      'tool/release_status_report_test.py':
+          'Passed: {count} release status report helper tests.',
+      'tool/release_handoff_test.py':
+          'Passed: {count} release handoff helper tests.',
+      'tool/run_release_gates_test.py':
+          'Passed: {count} release gate runner tests.',
+      'tool/verify_debug_apk_evidence_test.py':
+          'Passed: {count} debug APK evidence verifier tests.',
+      'tool/update_debug_apk_evidence_test.py':
+          'Passed: {count} debug APK evidence updater tests.',
+      'tool/signed_artifact_evidence_test.py':
+          'Passed: {count} signed artifact evidence helper tests.',
+      'tool/verify_manual_release_gates_test.py':
+          'Passed: {count} manual release gate parity tests.',
+      'tool/verify_final_release_evidence_test.py':
+          'Passed: {count} final release evidence verifier tests.',
+      'tool/verify_android_release_signing_test.py':
+          'Passed: {count} Android release signing verifier tests.',
+      'tool/build_android_release_test.py':
+          'Passed: {count} Android release build helper tests.',
+      'tool/verify_ios_wrapper_test.py':
+          'Passed: {count} iOS wrapper verifier tests.',
+      'tool/plan_ios_release_test.py':
+          'Passed: {count} iOS release plan helper tests.',
+      'tool/setup_ios_export_options_test.py':
+          'Passed: {count} iOS export options setup helper tests.',
+      'tool/verify_runtime_boundary_test.py':
+          'Passed: {count} runtime boundary verifier tests.',
+    };
+
+    for (final entry in expectedCounts.entries) {
+      final source = readDoc(entry.key);
+      final testCount =
+          RegExp(r'^\s*def test_', multiLine: true).allMatches(source).length;
+      expect(
+        evidence,
+        contains(entry.value.replaceFirst('{count}', '$testCount')),
+        reason: '${entry.key} has $testCount tests',
+      );
+    }
   });
 }

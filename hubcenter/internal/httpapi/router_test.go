@@ -400,6 +400,20 @@ func TestEntryResolveHandlerRoutesPhoneNumber(t *testing.T) {
 	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "phone:19900001111" {
 		t.Fatalf("unexpected phone resolve result: %+v", resolveResult)
 	}
+
+	barePhoneResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"email": "19900001111",
+	}, "")
+	if barePhoneResp.Code != http.StatusOK {
+		t.Fatalf("resolve bare phone status = %d body = %s", barePhoneResp.Code, barePhoneResp.Body.String())
+	}
+	var barePhoneResult entry.ResolveResult
+	if err := json.Unmarshal(barePhoneResp.Body.Bytes(), &barePhoneResult); err != nil {
+		t.Fatalf("decode bare phone resolve response: %v", err)
+	}
+	if barePhoneResult.Mode != "single" || barePhoneResult.DefaultHubID != hubID || barePhoneResult.Email != "phone:19900001111" {
+		t.Fatalf("unexpected bare phone resolve result: %+v", barePhoneResult)
+	}
 }
 
 func TestEntryResolveHandlerDoesNotPublicFallbackUnknownPhoneNumber(t *testing.T) {
@@ -463,6 +477,65 @@ func TestEntryResolveHandlerIgnoresInvalidPhoneNumberWhenEmailProvided(t *testin
 	}
 	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "buyer@example.com" {
 		t.Fatalf("expected invalid phone to fall back to email, got %+v", resolveResult)
+	}
+}
+
+func TestEntryResolveHandlerRejectsInvalidPhoneNumberWithoutEmail(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"phone_number": "abc123456",
+	}, "")
+	if resolveResp.Code != http.StatusBadRequest {
+		t.Fatalf("resolve invalid phone status = %d body = %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	if !strings.Contains(resolveResp.Body.String(), "INVALID_PHONE_NUMBER") {
+		t.Fatalf("expected INVALID_PHONE_NUMBER, got %s", resolveResp.Body.String())
+	}
+}
+
+func TestEntryResolveHandlerDoesNotTreatNumericEmailAsPhone(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "Numeric Email Hub",
+		"base_url":        "https://numeric-email.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+	linkResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"email":      "buyer123456@example.com",
+		"is_default": true,
+	}, "")
+	if linkResp.Code != http.StatusOK {
+		t.Fatalf("sync numeric email link status = %d body=%s", linkResp.Code, linkResp.Body.String())
+	}
+
+	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
+		"email": "buyer123456@example.com",
+	}, "")
+	if resolveResp.Code != http.StatusOK {
+		t.Fatalf("resolve numeric email status = %d body = %s", resolveResp.Code, resolveResp.Body.String())
+	}
+	var resolveResult entry.ResolveResult
+	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolveResult); err != nil {
+		t.Fatalf("decode numeric email resolve response: %v", err)
+	}
+	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "buyer123456@example.com" {
+		t.Fatalf("expected numeric email to remain email route, got %+v", resolveResult)
+	}
+}
+
+func TestNormalizeEntryResolvePhoneIdentityRejectsAlphanumericUserID(t *testing.T) {
+	if got := normalizeEntryResolvePhoneIdentity("abc123456"); got != "" {
+		t.Fatalf("normalizeEntryResolvePhoneIdentity(alphanumeric) = %q, want empty", got)
+	}
+	if got := normalizeEntryResolvePhoneIdentity("199 0000-1111"); got != "phone:19900001111" {
+		t.Fatalf("normalizeEntryResolvePhoneIdentity(phone) = %q, want phone:19900001111", got)
 	}
 }
 
@@ -1434,6 +1507,7 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	token := issueAdminToken(t, svc)
 
 	registerResult, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		InstallationID:       "inst_personal_hub_secret_source",
 		OwnerEmail:           "owner@example.com",
 		Name:                 "Personal Hub",
 		Description:          "Personal remote hub",
@@ -1450,6 +1524,20 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("register hub: %v", err)
+	}
+	hubItems, err := svc.hubs.ListHubs(context.Background())
+	if err != nil {
+		t.Fatalf("list internal hubs: %v", err)
+	}
+	if len(hubItems) != 1 {
+		t.Fatalf("expected 1 internal hub, got %d", len(hubItems))
+	}
+	internalJSON, err := json.Marshal(hubItems[0])
+	if err != nil {
+		t.Fatalf("marshal internal hub: %v", err)
+	}
+	if !bytes.Contains(internalJSON, []byte(`"installation_id":"inst_personal_hub_secret_source"`)) {
+		t.Fatalf("expected internal hub JSON to retain installation_id for HA sync, json=%s", string(internalJSON))
 	}
 	now := time.Now().UTC()
 	if err := svc.store.HubUserLinks.Upsert(context.Background(), &store.HubUserLink{ID: "personal-enterprise", HubID: registerResult.HubID, Email: "user@personal.example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -1489,6 +1577,9 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if bytes.Contains(resp.Body.Bytes(), []byte(`"OwnerEmail"`)) || bytes.Contains(resp.Body.Bytes(), []byte(`"BaseURL"`)) {
 		t.Fatalf("expected snake_case response fields, body=%s", body)
 	}
+	if bytes.Contains(resp.Body.Bytes(), []byte(`"installation_id"`)) || bytes.Contains(resp.Body.Bytes(), []byte(`"InstallationID"`)) {
+		t.Fatalf("expected installation id to be omitted from response, body=%s", body)
+	}
 
 	domainResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/routing/enterprise-mail-domains", nil, token)
 	if domainResp.Code != http.StatusOK {
@@ -1526,6 +1617,94 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	dashboardBody := dashboardResp.Body.String()
 	if !bytes.Contains(dashboardResp.Body.Bytes(), []byte(`"tenant_id":"tenant_default"`)) || bytes.Contains(dashboardResp.Body.Bytes(), []byte(`"tenant_id":""`)) {
 		t.Fatalf("user dashboard should expose default tenant with admin id, body=%s", dashboardBody)
+	}
+}
+
+func TestUpdateHubNameHandlerUpdatesAdminDisplayName(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registerResult, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		InstallationID: "inst_rename_secret_source",
+		OwnerEmail:     "owner-rename@example.com",
+		Name:           "Original Hub Name",
+		BaseURL:        "https://rename.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("register hub: %v", err)
+	}
+
+	if _, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		InstallationID: "inst_rename_secret_source",
+		OwnerEmail:     "owner-rename@example.com",
+		Name:           "Self Reported Before Override",
+		BaseURL:        "https://rename.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+	}); err != nil {
+		t.Fatalf("re-register hub before admin override: %v", err)
+	}
+	beforeOverrideResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if beforeOverrideResp.Code != http.StatusOK {
+		t.Fatalf("list hubs before admin override status = %d, body = %s", beforeOverrideResp.Code, beforeOverrideResp.Body.String())
+	}
+	if !bytes.Contains(beforeOverrideResp.Body.Bytes(), []byte(`"name":"Self Reported Before Override"`)) {
+		t.Fatalf("self-reported name should update before admin override, body=%s", beforeOverrideResp.Body.String())
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/name", map[string]any{
+		"hub_id": registerResult.HubID,
+		"name":   "Desk A Production",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("update hub name status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"name":"Desk A Production"`)) {
+		t.Fatalf("expected updated name in response, body=%s", resp.Body.String())
+	}
+	if bytes.Contains(resp.Body.Bytes(), []byte(`"installation_id"`)) {
+		t.Fatalf("admin update response should not expose installation id, body=%s", resp.Body.String())
+	}
+
+	listResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list hubs status = %d, body = %s", listResp.Code, listResp.Body.String())
+	}
+	if !bytes.Contains(listResp.Body.Bytes(), []byte(`"name":"Desk A Production"`)) {
+		t.Fatalf("expected updated name in list response, body=%s", listResp.Body.String())
+	}
+	if bytes.Contains(listResp.Body.Bytes(), []byte(`"installation_id"`)) {
+		t.Fatalf("admin list response should not expose installation id, body=%s", listResp.Body.String())
+	}
+
+	legacyResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+registerResult.HubID+"/name", map[string]any{
+		"name": "Desk B Backup",
+	}, token)
+	if legacyResp.Code != http.StatusOK {
+		t.Fatalf("legacy update hub name status = %d, body = %s", legacyResp.Code, legacyResp.Body.String())
+	}
+	if !bytes.Contains(legacyResp.Body.Bytes(), []byte(`"name":"Desk B Backup"`)) {
+		t.Fatalf("expected legacy updated name in response, body=%s", legacyResp.Body.String())
+	}
+
+	if _, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		InstallationID: "inst_rename_secret_source",
+		OwnerEmail:     "owner-rename@example.com",
+		Name:           "Self Reported Name",
+		BaseURL:        "https://rename.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+	}); err != nil {
+		t.Fatalf("re-register hub: %v", err)
+	}
+	afterReregisterResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if afterReregisterResp.Code != http.StatusOK {
+		t.Fatalf("list hubs after re-register status = %d, body = %s", afterReregisterResp.Code, afterReregisterResp.Body.String())
+	}
+	if !bytes.Contains(afterReregisterResp.Body.Bytes(), []byte(`"name":"Desk B Backup"`)) || bytes.Contains(afterReregisterResp.Body.Bytes(), []byte(`"name":"Self Reported Name"`)) {
+		t.Fatalf("admin display name should survive hub re-registration, body=%s", afterReregisterResp.Body.String())
 	}
 }
 
@@ -1715,6 +1894,200 @@ func TestAdminRouteQueryByDomainReturnsOnlyExactMatches(t *testing.T) {
 	}
 	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" || result.Hubs[0].TenantID != "tenant_default" {
 		t.Fatalf("expected exact domain route only, got %+v", result.Hubs)
+	}
+}
+
+func TestAdminRouteQuerySupportsPhoneNumber(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-phone@example.com",
+		"name":            "Phone Admin Hub",
+		"base_url":        "https://phone-admin.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+	hubSecret, _ := registerResult["hub_secret"].(string)
+	linkResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"email":      "phone:19900001111",
+		"is_default": true,
+	}, "")
+	if linkResp.Code != http.StatusOK {
+		t.Fatalf("sync phone link status = %d body=%s", linkResp.Code, linkResp.Body.String())
+	}
+
+	for _, seed := range []struct {
+		name      string
+		query     string
+		queryType string
+	}{
+		{name: "bare phone", query: "199 0000 1111"},
+		{name: "phone identity", query: "phone:19900001111", queryType: "phone"},
+	} {
+		t.Run(seed.name, func(t *testing.T) {
+			body := map[string]any{"query": seed.query}
+			if seed.queryType != "" {
+				body["query_type"] = seed.queryType
+			}
+			resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", body, token)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("query status = %d, body = %s", resp.Code, resp.Body.String())
+			}
+			var result entry.ResolveResult
+			if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+				t.Fatalf("decode query response: %v", err)
+			}
+			if result.Mode != "single" || result.DefaultHubID != hubID || result.Email != "phone:19900001111" {
+				t.Fatalf("unexpected phone route query result: %+v", result)
+			}
+		})
+	}
+}
+
+func TestAdminRouteQueryDoesNotTreatNumericEmailAsPhone(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	phoneHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-phone@example.com",
+		"name":            "Phone Hub",
+		"base_url":        "https://phone.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	emailHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-email@example.com",
+		"name":            "Numeric Email Hub",
+		"base_url":        "https://numeric-email.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	for _, seed := range []struct {
+		hub   map[string]any
+		email string
+	}{
+		{phoneHub, "phone:19900001111"},
+		{emailHub, "19900001111@example.com"},
+	} {
+		hubID, _ := seed.hub["hub_id"].(string)
+		hubSecret, _ := seed.hub["hub_secret"].(string)
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+			"hub_secret": hubSecret,
+			"email":      seed.email,
+			"is_default": true,
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("sync %s status = %d body=%s", seed.email, resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query": "19900001111@example.com",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("query status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var result entry.ResolveResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if result.Mode != "single" || result.DefaultHubID != emailHub["hub_id"] || result.Email != "19900001111@example.com" {
+		t.Fatalf("numeric email should resolve as email route, got %+v", result)
+	}
+}
+
+func TestAdminRouteMaintenanceNormalizesPhoneNumber(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	var probedEmail string
+	hubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/center/user-exists" {
+			t.Fatalf("unexpected hub probe path: %s", r.URL.Path)
+		}
+		var req struct {
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode hub probe: %v", err)
+		}
+		probedEmail = req.Email
+		writeJSON(w, http.StatusOK, map[string]any{"exists": true})
+	}))
+	t.Cleanup(hubServer.Close)
+
+	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-phone-maintenance@example.com",
+		"name":            "Phone Maintenance Hub",
+		"base_url":        hubServer.URL,
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID, _ := registerResult["hub_id"].(string)
+
+	restoreResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/restore-email-route", map[string]any{
+		"email":      "199 0000 1111",
+		"hub_id":     hubID,
+		"tenant_id":  "tenant_default",
+		"is_default": true,
+	}, token)
+	if restoreResp.Code != http.StatusOK {
+		t.Fatalf("restore phone route status = %d body=%s", restoreResp.Code, restoreResp.Body.String())
+	}
+	var restoreBody map[string]any
+	if err := json.Unmarshal(restoreResp.Body.Bytes(), &restoreBody); err != nil {
+		t.Fatalf("decode restore response: %v", err)
+	}
+	if restoreBody["email"] != "phone:19900001111" {
+		t.Fatalf("restore response email = %v, want phone:19900001111", restoreBody["email"])
+	}
+
+	queryResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query": "19900001111",
+	}, token)
+	if queryResp.Code != http.StatusOK {
+		t.Fatalf("query phone status = %d body=%s", queryResp.Code, queryResp.Body.String())
+	}
+	var queryResult entry.ResolveResult
+	if err := json.Unmarshal(queryResp.Body.Bytes(), &queryResult); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if queryResult.Mode != "single" || queryResult.DefaultHubID != hubID || queryResult.Email != "phone:19900001111" {
+		t.Fatalf("unexpected restored phone route query result: %+v", queryResult)
+	}
+
+	verifyResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/verify-email-route", map[string]any{
+		"email": "19900001111",
+	}, token)
+	if verifyResp.Code != http.StatusOK {
+		t.Fatalf("verify phone route status = %d body=%s", verifyResp.Code, verifyResp.Body.String())
+	}
+	var verifyBody hubs.AdminRouteVerificationResult
+	if err := json.Unmarshal(verifyResp.Body.Bytes(), &verifyBody); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	if verifyBody.Email != "phone:19900001111" || len(verifyBody.Routes) != 1 || verifyBody.Routes[0].UserExists == nil || !*verifyBody.Routes[0].UserExists {
+		t.Fatalf("unexpected verify response: %+v", verifyBody)
+	}
+	if probedEmail != "phone:19900001111" {
+		t.Fatalf("hub probe email = %q, want phone:19900001111", probedEmail)
+	}
+
+	deleteResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/delete-email-route", map[string]any{
+		"email": "19900001111",
+	}, token)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("delete phone route status = %d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	var deleteBody map[string]any
+	if err := json.Unmarshal(deleteResp.Body.Bytes(), &deleteBody); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if deleteBody["email"] != "phone:19900001111" || deleteBody["deleted_count"] != float64(1) {
+		t.Fatalf("unexpected delete response: %+v", deleteBody)
 	}
 }
 

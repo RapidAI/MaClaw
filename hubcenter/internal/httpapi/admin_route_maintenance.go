@@ -24,7 +24,7 @@ func AdminDeleteEmailRouteHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := strings.TrimSpace(strings.ToLower(req.Email))
+		email := normalizeAdminRouteIdentity(req.Email)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
@@ -63,7 +63,7 @@ func AdminRestoreEmailRouteHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := strings.TrimSpace(strings.ToLower(req.Email))
+		email := normalizeAdminRouteIdentity(req.Email)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
@@ -109,7 +109,7 @@ func AdminVerifyEmailRouteHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := strings.TrimSpace(strings.ToLower(req.Email))
+		email := normalizeAdminRouteIdentity(req.Email)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return

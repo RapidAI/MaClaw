@@ -105,7 +105,9 @@ type CreateRequest struct {
 
 // CascadeRequest is the input from HubCenter cascade push.
 type CascadeRequest struct {
-	Notification *Notification `json:"notification"`
+	Action         string        `json:"action,omitempty"`
+	Notification   *Notification `json:"notification,omitempty"`
+	NotificationID string        `json:"notification_id,omitempty"`
 }
 
 // ClientNotification is the view returned to GUI clients.
@@ -121,8 +123,8 @@ type ClientNotification struct {
 
 // NotificationPushPayload is the payload for WebSocket notification.push envelope.
 type NotificationPushPayload struct {
-	Action       string        `json:"action"`                  // "new" | "revoke"
-	Notification *Notification `json:"notification,omitempty"`  // action=new
+	Action       string        `json:"action"`                    // "new" | "revoke"
+	Notification *Notification `json:"notification,omitempty"`    // action=new
 	NotifID      string        `json:"notification_id,omitempty"` // action=revoke
 }
 

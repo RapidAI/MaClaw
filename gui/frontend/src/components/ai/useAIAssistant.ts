@@ -4725,10 +4725,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
             const result = await DismissAgentView({ view_id: viewId || "", data: data || {} });
-            // When cancelling a workflow, show the confirmation message to the user.
-            if (isCancelWorkflow && result?.text) {
+            if (isCancelWorkflow) {
                 const sessionKey = activeSessionKeyForEvents() || 'desktop-user';
-                setMessages(prev => [...prev, { id: `wf-cancel-${Date.now()}`, role: 'assistant' as const, content: result.text, sessionKey, timestamp: Date.now() }]);
+                const workflowOwnerSessionKey = typeof data?._workflow_user_id === 'string' && data._workflow_user_id.trim()
+                    ? data._workflow_user_id.trim()
+                    : sessionKey;
+                clearWorkflowFormAliasForView(viewId, workflowOwnerSessionKey);
+                updateVisibleAgentViewForSession(workflowOwnerSessionKey, null);
+                // When cancelling a workflow, show the confirmation message to the user if the backend provides one.
+                if (result?.text) {
+                    setMessages(prev => [...prev, { id: `wf-cancel-${Date.now()}`, role: 'assistant' as const, content: result.text, sessionKey, timestamp: Date.now() }]);
+                }
             }
             return;
         } catch (err: any) {
@@ -4747,7 +4754,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 displayText: localizeText(uiLang, "Close task panel", "\u5173\u95ed\u4efb\u52a1\u9762\u677f", "\u95dc\u9589\u4efb\u52d9\u9762\u677f"),
             });
         }
-    }, [activeSessionKeyForEvents, injectSupplementary, sendMessage, uiLang, updateVisibleAgentViewForSession]);
+    }, [activeSessionKeyForEvents, clearWorkflowFormAliasForView, injectSupplementary, sendMessage, uiLang, updateVisibleAgentViewForSession]);
 
     // panelState / panelActions: pre-built objects matching AIAssistantPanelStateProps
     // and AIAssistantPanelActionProps. App.tsx spreads these directly into

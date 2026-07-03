@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -23,13 +24,17 @@ func (a *App) GetHubUserRanking() HubUserRanking {
 	if err != nil {
 		return HubUserRanking{Error: "config load failed"}
 	}
-	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
 	if hubURL == "" || viewerToken == "" {
 		return HubUserRanking{Error: "hub not configured"}
 	}
 
-	data, err := a.getHubJSON(hubURL, viewerToken, "/api/my-ranking")
+	path := "/api/my-ranking"
+	if tenantID := strings.TrimSpace(cfg.RemoteTenantID); tenantID != "" {
+		path += "?tenant_id=" + url.QueryEscape(tenantID)
+	}
+	data, err := a.getHubJSON(hubURL, viewerToken, path)
 	if err != nil {
 		return HubUserRanking{Error: fmt.Sprintf("hub request failed: %v", err)}
 	}

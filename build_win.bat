@@ -12,10 +12,13 @@ set "APP_NAME=MaClaw"
 set "OUTPUT_DIR=%~dp0dist"
 set "NSIS_PATH=C:\Program Files (x86)\NSIS\makensis.exe"
 set "GOVERSIONINFO_PATH=%USERPROFILE%\go\bin\goversioninfo.exe"
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
+set "GO_EXE=C:\Program Files\Go\bin\go.exe"
 
 REM -- Ensure Go tools are in PATH --
 set "GOPATH=%USERPROFILE%\go"
-set "PATH=%GOPATH%\bin;%PATH%"
+set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin;%PATH%"
 set "GOMAXPROCS=1"
 
 REM -- Clean previous MaClaw build artifacts (preserve other brands' files) --
@@ -51,26 +54,26 @@ set /p COMPANY_NAME=<"%~dp0temp_COMPANY_NAME.txt"
 set /p COPYRIGHT_TEXT=<"%~dp0temp_COPYRIGHT.txt"
 del /q "%~dp0temp_BUILD_NUM.txt" "%~dp0temp_VERSION.txt" "%~dp0temp_PRODUCT_NAME.txt" "%~dp0temp_COMPANY_NAME.txt" "%~dp0temp_COPYRIGHT.txt" 2>nul
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-cli_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-cli_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-cli_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-cli_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 echo [INFO] Building Version: %VERSION%
 
 REM -- Sync version with frontend --
 echo [Step 3/14] Syncing version with frontend...
-powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
+"%POWERSHELL_EXE%" -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
 echo [Step 4/14] Building frontend...
 cd /d "%~dp0gui\frontend"
 if not exist "node_modules" (
-    call npm.cmd install --cache ./.npm_cache
+    call "%NPM_CMD%" install --cache ./.npm_cache
     if !errorlevel! neq 0 (
         echo [ERROR] npm install failed.
         goto :error
     )
 )
 if exist "dist" ( rmdir /s /q "dist" )
-call npm.cmd run build
+call "%NPM_CMD%" run build
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend build failed.
     goto :error
@@ -87,14 +90,14 @@ del /q "%~dp0build\windows\wails.exe.manifest.tmp" 2>nul
 del /q "%~dp0build\windows\versioninfo.json.tmp" 2>nul
 if not exist "%GOVERSIONINFO_PATH%" (
     echo [INFO] goversioninfo not found. Installing...
-    go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+    "%GO_EXE%" install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
     if !errorlevel! neq 0 (
         echo [ERROR] Failed to install goversioninfo.
         goto :error
     )
 )
 
-powershell -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
+"%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare Windows version resource inputs.
     goto :error
@@ -128,8 +131,8 @@ del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=0"
 set "CC="
-if not exist "%~dp0build\windows\wails.exe.manifest.tmp" powershell -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false))"
-if not exist "%~dp0build\windows\versioninfo.json.tmp" powershell -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
+if not exist "%~dp0build\windows\wails.exe.manifest.tmp" "%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $safeName = ($cfg.name -replace '[^a-zA-Z0-9._-]',''); if (-not $safeName) { $safeName = 'MaClaw' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $manifestVer = $parts[0]+'.'+$parts[1]+'.'+$parts[2]+'.'+$clampedBuild; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', $safeName).Replace('{{.Info.ProductVersion}}', $manifestVer); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false))"
+if not exist "%~dp0build\windows\versioninfo.json.tmp" "%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $clampedBuild = [Math]::Min([int]$parts[3], 65534); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = $clampedBuild } }; StringFileInfo = @{ Comments = $cfg.info.comments; CompanyName = $cfg.info.companyName; FileDescription = $cfg.info.productName; FileVersion = '%VERSION%'; InternalName = $cfg.info.productName; LegalCopyright = $cfg.info.copyright; OriginalFilename = '%APP_NAME%.exe'; ProductName = $cfg.info.productName; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
 "%GOVERSIONINFO_PATH%" -64 -arm -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
@@ -245,7 +248,7 @@ if exist "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" (
 REM -- Create standalone DataSrv NSIS installer --
 echo [Step 13/14] Creating standalone maclawsrv NSIS installer...
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclawsrv.exe''','!define ARG_MACLAWSRV_AMD64_BINARY ''%OUTPUT_DIR%\maclawsrv_amd64.exe''','!define ARG_MACLAWSRV_ARM64_BINARY ''%OUTPUT_DIR%\maclawsrv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\maclawsrv_build_params.nsh.tmp', $content, $utf8NoBom)"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclawsrv.exe''','!define ARG_MACLAWSRV_AMD64_BINARY ''%OUTPUT_DIR%\maclawsrv_amd64.exe''','!define ARG_MACLAWSRV_ARM64_BINARY ''%OUTPUT_DIR%\maclawsrv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\maclawsrv_build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare maclawsrv installer parameters.
@@ -264,7 +267,7 @@ if exist "%OUTPUT_DIR%\maclawsrv-Setup.exe" (
 REM -- Create standalone DataSrv NSIS installer --
 echo [Step 14/14] Creating standalone maclaw-data-srv NSIS installer...
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $path = '%~dp0build\windows\installer\datasrv_build_params.nsh.tmp'; $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; for ($i = 0; $i -lt 8; $i++) { try { [System.IO.File]::WriteAllText($path, $content, $utf8NoBom); exit 0 } catch { Start-Sleep -Milliseconds 300 } }; throw 'Failed to write datasrv_build_params.nsh.tmp after retries.'"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $path = '%~dp0build\windows\installer\datasrv_build_params.nsh.tmp'; $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; for ($i = 0; $i -lt 8; $i++) { try { [System.IO.File]::WriteAllText($path, $content, $utf8NoBom); exit 0 } catch { Start-Sleep -Milliseconds 300 } }; throw 'Failed to write datasrv_build_params.nsh.tmp after retries.'"
 endlocal
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare DataSrv installer parameters.
@@ -313,7 +316,7 @@ goto :success
 :go_build
 set "GO_BUILD_ATTEMPT=1"
 :go_build_retry
-go build %*
+"%GO_EXE%" build %*
 if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!
@@ -325,7 +328,7 @@ goto :go_build_retry
 :go_build_datasrv
 set "GO_BUILD_ATTEMPT=1"
 :go_build_datasrv_retry
-go -C "%~dp0datasrv" build %*
+"%GO_EXE%" -C "%~dp0datasrv" build %*
 if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!

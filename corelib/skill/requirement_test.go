@@ -400,6 +400,58 @@ func TestExtractRequirements_SkipsBackslashQuotedHeredocBodyCommands(t *testing.
 	}
 }
 
+func TestExtractRequirements_SkipsMultilineQuotedAppInput(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python run.py --metadata \"app_id: pdf-tool\nfields:\nInput\nExpected\nuploaded_file_path: /tmp/demo.pdf\"\nnode run.js",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	for _, unexpected := range []string{"app_id:", "fields:", "Input", "Expected", "uploaded_file_path:"} {
+		if names[unexpected] {
+			t.Fatalf("inferred command requirements = %#v, want multiline quoted app input skipped", names)
+		}
+	}
+	if !names["python"] || !names["node"] {
+		t.Fatalf("inferred command requirements = %#v, want real commands before and after quoted input", names)
+	}
+}
+
+func TestExtractRequirements_InferredCommandAfterMultilineQuoteOnClosingLine(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python run.py --metadata \"app_id: pdf-tool\nfields:\nExpected\" && node run.js",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["fields:"] || names["Expected"] {
+		t.Fatalf("inferred command requirements = %#v, want multiline quoted input skipped", names)
+	}
+	if !names["python"] || !names["node"] {
+		t.Fatalf("inferred command requirements = %#v, want commands before and after multiline quote", names)
+	}
+}
+
 func TestExtractRequirements_SkipsContinuationFlagLines(t *testing.T) {
 	skill := &corelib.NLSkillEntry{
 		Steps: []corelib.NLSkillStep{{

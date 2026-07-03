@@ -45,6 +45,20 @@ const zhHant = {
     monitor: '\u76e3\u63a7',
     settings: '\u8a2d\u5b9a',
 };
+
+function buildUserRankingURL(hubURL: string, tenantID?: string) {
+    const base = (hubURL || '').replace(/\/+$/, '');
+    if (!base) return '';
+    try {
+        const url = new URL(base + '/user-ranking');
+        const tid = String(tenantID || '').trim();
+        if (tid) url.searchParams.set('tenant_id', tid);
+        return url.toString();
+    } catch {
+        return '';
+    }
+}
+
 // Guard anchor: left-nav-item--ai lives in SidebarPrimaryNav.
 export const SidebarNavRail = ({
     navTab,
@@ -53,6 +67,7 @@ export const SidebarNavRail = ({
     brandSidebarName,
     switchTool,
     lang,
+    remoteActivationStatus,
     runningTaskCount,
     t,
     gossipAllowed,
@@ -72,6 +87,11 @@ export const SidebarNavRail = ({
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
     const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
     const rankingRequestSeqRef = useRef(0);
+    const showRegisteredRankingMark = showRanking && !medal && !!remoteActivationStatus?.activated;
+    const openUserRanking = () => {
+        const url = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
+        if (url) BrowserOpenURL(url);
+    };
 
     const fetchRanking = useCallback(() => {
         const requestSeq = ++rankingRequestSeqRef.current;
@@ -83,7 +103,7 @@ export const SidebarNavRail = ({
                 if (!r || r.error) { setMedal(null); return; }
                 const tRank = r.token_rank || 0;
                 const dRank = r.duration_rank || 0;
-                // Pick the best (lowest non-zero) rank — show regardless of position
+                // Pick the best (lowest non-zero) rank and show regardless of position.
                 let bestRank = 0;
                 if (tRank > 0 && (dRank === 0 || tRank <= dRank)) { bestRank = tRank; }
                 else if (dRank > 0) { bestRank = dRank; }
@@ -98,7 +118,7 @@ export const SidebarNavRail = ({
     useEffect(() => {
         fetchRanking();
     }, [fetchRanking]);
-    // Refresh ranking when token usage changes — throttled to avoid flooding Hub API.
+    // Refresh ranking when token usage changes, throttled to avoid flooding Hub API.
     useEffect(() => {
         if (!showRanking) return;
         let throttleTimer: number | undefined;
@@ -193,11 +213,31 @@ export const SidebarNavRail = ({
                 medal={medal}
                 lang={lang}
                 title={lang === 'zh-Hans' ? '点击查看完整排行榜' : lang === 'zh-Hant' ? '點擊查看完整排行榜' : 'View full leaderboard'}
-                onClick={() => {
-                    const hubUrl = (config?.remote_hub_url || '').replace(/\/+$/, '');
-                    if (hubUrl) BrowserOpenURL(hubUrl + '/user-ranking');
-                }}
+                onClick={openUserRanking}
             />}
+            {showRegisteredRankingMark && (
+                <div
+                    className="sidebar-medal-badge"
+                    title={lang === 'zh-Hans' ? '本月排行暂未生成' : lang === 'zh-Hant' ? '本月排行暫未生成' : 'Monthly ranking pending'}
+                    onClick={openUserRanking}
+                    style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '100%',
+                        minHeight: '38px',
+                        padding: '3px 0 5px 0',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                    }}
+                >
+                    <span role="img" aria-label="monthly ranking" style={{ fontSize: '20px', lineHeight: 1 }}>🏅</span>
+                    <span style={{ fontSize: '0.58rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 700, marginTop: '3px' }}>
+                        {lang === 'en' ? 'Rank' : '排行'}
+                    </span>
+                </div>
+            )}
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}

@@ -31,6 +31,11 @@ type UpdateHubVisibilityRequest struct {
 	Visibility string `json:"visibility"`
 }
 
+type UpdateHubNameRequest struct {
+	HubID string `json:"hub_id,omitempty"`
+	Name  string `json:"name"`
+}
+
 type HubIDRequest struct {
 	HubID string `json:"hub_id,omitempty"`
 }
@@ -122,7 +127,9 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 				}
 				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
 			}
-			views = append(views, adminHubView{HubInstance: item, GuestDomains: dashboardByHub[item.ID].GuestDomains, Tenants: tenantItems, DigitalEmployeeAuthorizations: tenantAuths, RegistrationPolicy: adminExternalRegistrationPolicy(policy)})
+			publicItem := *item
+			publicItem.InstallationID = ""
+			views = append(views, adminHubView{HubInstance: &publicItem, GuestDomains: dashboardByHub[item.ID].GuestDomains, Tenants: tenantItems, DigitalEmployeeAuthorizations: tenantAuths, RegistrationPolicy: adminExternalRegistrationPolicy(policy)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"hubs": views})
 	}
@@ -371,6 +378,42 @@ func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "visibility": strings.TrimSpace(req.Visibility)})
+	}
+}
+
+func UpdateHubNameHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req UpdateHubNameRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_NAME", "Hub name is required")
+			return
+		}
+		if len([]rune(name)) > 80 {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_NAME", "Hub name must be at most 80 characters")
+			return
+		}
+		hub, err := service.UpdateName(r.Context(), hubID, name)
+		if err != nil {
+			if errors.Is(err, hubs.ErrHubNotFound) {
+				writeError(w, http.StatusNotFound, "HUB_NOT_FOUND", "Hub not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "UPDATE_HUB_NAME_FAILED", err.Error())
+			return
+		}
+		publicHub := *hub
+		publicHub.InstallationID = ""
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hub": publicHub})
 	}
 }
 

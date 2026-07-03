@@ -441,6 +441,10 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		if strings.TrimSpace(req.PhoneNumber) != "" && strings.TrimSpace(req.Email) == "" && normalizeEntryResolvePhoneIdentity(req.PhoneNumber) == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", "Invalid phone number")
+			return
+		}
 		identity := entryResolveIdentity(req)
 		resp, err := service.ResolveByEmailFromIP(r.Context(), identity, clientIPFromRequest(r), req.InvitationCode)
 		if err != nil {
@@ -459,18 +463,26 @@ func entryResolveIdentity(req EntryResolveRequest) string {
 	if phone := normalizeEntryResolvePhoneIdentity(req.PhoneNumber); phone != "" {
 		return phone
 	}
+	if phone := normalizeEntryResolvePhoneIdentity(req.Email); phone != "" {
+		return phone
+	}
 	return strings.TrimSpace(req.Email)
 }
 
 func normalizeEntryResolvePhoneIdentity(phoneNumber string) string {
 	phoneNumber = strings.TrimSpace(phoneNumber)
-	if phoneNumber == "" {
+	if phoneNumber == "" || strings.Contains(phoneNumber, "@") {
 		return ""
 	}
 	var b strings.Builder
 	for _, r := range phoneNumber {
-		if r >= '0' && r <= '9' {
+		switch {
+		case r >= '0' && r <= '9':
 			b.WriteRune(r)
+		case r == '+' || r == '-' || r == '.' || r == '(' || r == ')' || r == ' ' || r == '\t':
+			continue
+		default:
+			return ""
 		}
 	}
 	if b.Len() < 6 {
@@ -555,7 +567,7 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		query := strings.TrimSpace(strings.ToLower(req.Query))
+		query := normalizeAdminRouteQuery(req.Query)
 		queryType := strings.TrimSpace(strings.ToLower(req.QueryType))
 		var (
 			resp *entry.ResolveResult
@@ -565,6 +577,7 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 		case "domain":
 			resp, err = service.ResolveAdminByDomain(r.Context(), query)
 		default:
+			query = normalizeAdminRouteIdentity(query)
 			resp, err = service.ResolveAdminByEmail(r.Context(), query)
 		}
 		if err != nil {
@@ -574,6 +587,45 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 		externalizeAdminResolveResult(resp)
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func normalizeAdminRouteQuery(query string) string {
+	return strings.TrimSpace(strings.ToLower(query))
+}
+
+func normalizeAdminRouteIdentity(query string) string {
+	return normalizeAdminRoutePhoneQuery(normalizeAdminRouteQuery(query))
+}
+
+func normalizeAdminRoutePhoneQuery(query string) string {
+	if !isAdminRoutePhoneQueryCandidate(query) {
+		return query
+	}
+	if phone := normalizeEntryResolvePhoneIdentity(query); phone != "" {
+		return phone
+	}
+	return query
+}
+
+func isAdminRoutePhoneQueryCandidate(query string) bool {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if strings.HasPrefix(query, "phone:") {
+		return true
+	}
+	if strings.ContainsAny(query, "@.") {
+		return false
+	}
+	hasDigit := false
+	for _, r := range query {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '+' || r == '-' || r == ' ' || r == '\t' || r == '(' || r == ')':
+		default:
+			return false
+		}
+	}
+	return hasDigit
 }
 
 func AdminInvitationCodeQueryHandler(service *entry.Service) http.HandlerFunc {
@@ -720,6 +772,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/user-rankings", RequireAdmin(adminService, CenterUserRankingsHandler(userUsageRepo)))
+	mux.HandleFunc("POST /api/admin/hubs/name", RequireAdmin(adminService, UpdateHubNameHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/{id}/name", RequireAdmin(adminService, UpdateHubNameHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService)))
@@ -836,6 +890,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/admin/notifications", RequireAdmin(adminService, notifHandlers.ListNotifications))
 		mux.HandleFunc("GET /api/v1/admin/notifications/{id}", RequireAdmin(adminService, notifHandlers.GetNotification))
 		mux.HandleFunc("POST /api/v1/admin/notifications/{id}/revoke", RequireAdmin(adminService, notifHandlers.RevokeNotification))
+		mux.HandleFunc("DELETE /api/v1/admin/notifications/{id}", RequireAdmin(adminService, notifHandlers.DeleteNotification))
 	}
 	// SkillMarket API
 	if smHandlers != nil {
@@ -912,6 +967,7 @@ func adminOpaqueHubIDCompat(next http.Handler, adminService *auth.AdminService, 
 		suffix  string
 		handler http.HandlerFunc
 	}{
+		{http.MethodPost, "/name", RequireAdmin(adminService, UpdateHubNameHandler(hubService))},
 		{http.MethodPost, "/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService))},
 		{http.MethodPost, "/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService))},
 		{http.MethodPost, "/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService))},

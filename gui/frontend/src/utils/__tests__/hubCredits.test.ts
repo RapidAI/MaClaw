@@ -6,8 +6,8 @@ describe('hubCredits URL builders', () => {
         expect(buildHubCardStoreURL(' https://hub.example.com/// ')).toBe('https://hub.example.com/card_store');
     });
 
-    it('builds card store URL with tenant scope, email, and token when available', () => {
-        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'dev@example.com', 'viewer token')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+    it('builds card store URL with tenant scope, account identity, email, and token when available', () => {
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'dev@example.com', 'viewer token')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
     });
 
     it('keeps card store token fallback when email is missing', () => {
@@ -15,15 +15,23 @@ describe('hubCredits URL builders', () => {
     });
 
     it('prefers Hub card_store over HubCenter compute-store when both are available', () => {
-        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'dev@example.com', 'viewer token', 'https://hubs.example.com/', 'hub_1')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'dev@example.com', 'viewer token', 'https://hubs.example.com/', 'hub_1')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
     });
 
     it('falls back to HubCenter compute-store when Hub URL is missing', () => {
-        expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&email=dev%40example.com');
+        expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com');
     });
 
     it('includes friendly hub and tenant names in the HubCenter compute-store fallback', () => {
-        expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1', 'Acme Hub', 'Acme Tenant')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&hub_name=Acme%20Hub&tenant_name=Acme%20Tenant&email=dev%40example.com');
+        expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1', 'Acme Hub', 'Acme Tenant')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&hub_name=Acme%20Hub&tenant_name=Acme%20Tenant&account=dev%40example.com&email=dev%40example.com');
+    });
+
+    it('prefers stable user ID and carries mobile for card store identity', () => {
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'phone:19900001111', 'viewer token', '', '', '', '', 'usr_123', '19900001111')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=usr_123&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
+    });
+
+    it('falls back to phone account when email and user ID are missing', () => {
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', '', '', '', '', '', '', '', '19900001111')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=phone%3A19900001111&mobile=19900001111');
     });
 
     it('returns empty card store URL when Hub URL is missing', () => {
@@ -35,7 +43,11 @@ describe('hubCredits URL builders', () => {
     });
 
     it('keeps tenant and email query before the credits token hash', () => {
-        expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'dev@example.com')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+        expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'dev@example.com')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
+    });
+
+    it('prefers stable user ID and carries mobile for credits identity', () => {
+        expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'phone:19900001111', 'usr_123', '19900001111')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=usr_123&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
     });
 
     it('opens the credits page even when viewer token is missing', () => {

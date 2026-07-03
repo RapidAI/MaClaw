@@ -3,17 +3,33 @@
 Use this checklist for signed Android/iOS QA builds. Local tests and the debug
 APK are not enough to close these gates. Attach screenshots, screen recordings,
 device logs, task IDs, and artifact hashes to the QA build record in
-`release_evidence.md`. Start from `qa_build_record_template.md` for each signed
-QA build and save completed records under `docs/qa-builds/`; see
-`docs/qa-builds/README.md` for naming and redaction rules.
+`release_evidence.md`. Generate a validator-named record before QA starts:
+
+```bash
+python3 tool/release_status_report.py
+python3 tool/qa_preflight.py
+python3 tool/create_qa_build_record.py --scope android-ios --version <version+build>
+```
+
+Use `--scope android` or `--scope ios` when Android and iOS evidence are captured
+separately. The command starts from `qa_build_record_template.md` and saves the
+record under `docs/qa-builds/`; see `docs/qa-builds/README.md` for naming and
+redaction rules.
 
 After completing the record, run:
 
 ```bash
 python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md
+python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md
+python3 tool/qa_release_evidence_links.py docs/qa-builds
+python3 tool/validate_qa_build_records_dir.py docs/qa-builds
+python3 tool/verify_final_release_evidence.py docs/qa-builds
 ```
 
-Attach the passing record to `release_evidence.md`.
+Attach the passing record to `release_evidence.md` after both the individual
+record check and directory check pass. Before release approval, the final
+evidence verifier must also pass with validated Android and iOS signed-build
+records present.
 
 Manual evidence fields must include a concise auditable note, traceable evidence
 filename or attachment ID, device log, or task/result identifier. Placeholder
@@ -53,6 +69,27 @@ iOS:
 
 ## Android Signed Build
 
+- Copy `android/key.properties.example` to local `android/key.properties`
+  before building the signed package: `storeFile`, `storePassword`, `keyAlias`,
+  and `keyPassword` are required. Keep `android/key.properties`, `.jks`, and
+  `.keystore` files out of git.
+- To write the local config without putting passwords in shell history, set
+  `MACLAW_ANDROID_STORE_FILE`, `MACLAW_ANDROID_STORE_PASSWORD`,
+  `MACLAW_ANDROID_KEY_ALIAS`, and `MACLAW_ANDROID_KEY_PASSWORD`, then run
+  `python3 tool/setup_android_signing.py`.
+- Confirm a release build without `android/key.properties` fails instead of
+  using the debug signing key.
+- Validate signing inputs without building:
+  `python3 tool/build_android_release.py --artifact apk --dry-run`.
+- Build the signed QA artifact with
+  `python3 tool/build_android_release.py --artifact apk` or
+  `python3 tool/build_android_release.py --artifact appbundle`; record the
+  printed artifact path, size, SHA256, version/build number, signing identity,
+  and installer channel in the QA build record.
+- Generate paste-ready QA artifact fields with
+  `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`.
+  Paste the generated `Artifact path`, `SHA256`, byte size, and optional build
+  metadata into the Android Signed Build section.
 - Install the signed APK/AAB on at least one Android 13+ device.
 - Open MaClaw Mobile and confirm the account screen shows the selected
   HubCenter, discovered Hub, tenant, and LLM access mode; record the selected
@@ -102,6 +139,15 @@ it.
   `group.top.mypapers.maclaw.mobile`.
 - Confirm URL schemes include `maclaw` and
   `ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)`.
+- On macOS, create local export options from `ios/ExportOptions.plist.example`
+  with
+  `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`.
+- On macOS, plan the signed archive/export command with
+  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+  or `--export-method app-store` for TestFlight/App Store Connect. Record the
+  printed bundle IDs, app group, Team ID, archive/export command context,
+  `.xcarchive` path or TestFlight build number, and Runner/Share Extension
+  provisioning profile evidence.
 - Install via development signing or TestFlight, launch/open the app, and
   record the build number plus screenshot or recording evidence.
 

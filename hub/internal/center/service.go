@@ -2010,16 +2010,16 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 			if err != nil {
 				return err
 			}
-			byEmail := map[string]*syncUserUsagePayload{}
+			byAccount := map[string]*syncUserUsagePayload{}
 			for _, row := range tokenRows {
-				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
-				if !isCenterUsageEmail(email) {
+				account := strings.ToLower(strings.TrimSpace(row.UserEmail))
+				if !isCenterUsageAccount(account) {
 					continue
 				}
-				item := byEmail[email]
+				item := byAccount[account]
 				if item == nil {
-					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: email, Day: dayStart.Format("2006-01-02")}
-					byEmail[email] = item
+					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: account, Day: dayStart.Format("2006-01-02")}
+					byAccount[account] = item
 				}
 				item.InputTokens = row.Usage.InputTokens
 				item.OutputTokens = row.Usage.OutputTokens
@@ -2027,18 +2027,18 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 				item.CacheWriteTokens = row.Usage.CacheWriteTokens
 			}
 			for _, row := range durationRows {
-				email := strings.ToLower(strings.TrimSpace(row.UserEmail))
-				if !isCenterUsageEmail(email) {
+				account := strings.ToLower(strings.TrimSpace(row.UserEmail))
+				if !isCenterUsageAccount(account) {
 					continue
 				}
-				item := byEmail[email]
+				item := byAccount[account]
 				if item == nil {
-					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: email, Day: dayStart.Format("2006-01-02")}
-					byEmail[email] = item
+					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: account, Day: dayStart.Format("2006-01-02")}
+					byAccount[account] = item
 				}
 				item.DurationSeconds = row.DurationSeconds
 			}
-			for _, item := range byEmail {
+			for _, item := range byAccount {
 				if item.InputTokens+item.OutputTokens+item.CachedInputTokens+item.CacheWriteTokens+item.DurationSeconds > 0 {
 					items = append(items, *item)
 				}
@@ -2137,6 +2137,26 @@ func isPhoneRouteIdentity(value string) bool {
 func isCenterUsageEmail(email string) bool {
 	email = normalizeEmail(email)
 	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
+}
+
+func isCenterUsageAccount(account string) bool {
+	account = normalizeEmail(account)
+	if isCenterUsageEmail(account) {
+		return true
+	}
+	if !strings.HasPrefix(account, "phone:") || strings.ContainsAny(account, " \t\r\n") {
+		return false
+	}
+	digits := strings.TrimPrefix(account, "phone:")
+	if len(digits) < 6 || len(digits) > 20 {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // shouldAcceptAuthorizationUpdate decides whether a new authorization from

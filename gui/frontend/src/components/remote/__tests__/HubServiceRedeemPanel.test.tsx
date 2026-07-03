@@ -719,14 +719,14 @@ describe('HubServiceRedeemPanel', () => {
 
         fireEvent.click(buyCredits);
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
         });
 
         BrowserOpenURLMock.mockClear();
         fireEvent.click(viewCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
         });
     });
 
@@ -757,7 +757,26 @@ describe('HubServiceRedeemPanel', () => {
         fireEvent.click(buyCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
+        });
+    });
+
+    it('opens card store with stable user ID and mobile for phone-registered accounts', async () => {
+        LoadConfigMock.mockResolvedValue({
+            remote_hub_url: 'https://hub.example.com/',
+            remote_viewer_token: 'viewer token',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'phone:19900001111',
+            remote_user_id: 'usr_phone',
+            remote_mobile: '19900001111',
+        });
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const buyCredits = await screen.findByRole('button', { name: 'Buy Credits' });
+        fireEvent.click(buyCredits);
+
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=usr_phone&user_id=usr_phone&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
         });
     });
 

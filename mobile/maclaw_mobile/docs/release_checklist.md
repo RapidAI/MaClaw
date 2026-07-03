@@ -4,6 +4,10 @@ MaClaw Mobile is an emergency mobile AI app. Release validation must keep the
 first version focused on HubCenter-discovered lookup, urgent documents, manual
 SSH, and digital employee task access.
 
+For a single local readiness summary, run:
+
+- `python3 tool/release_status_report.py`
+
 ## Service
 
 - The app ships exactly three preset official HubCenter candidates:
@@ -31,8 +35,32 @@ SSH, and digital employee task access.
   internet, media/file read, deep link, and share intent entries.
 - Run `flutter build apk --debug` at minimum before handing an Android build to
   QA; use signed release/internal builds for distribution.
+- After building the local debug APK, run
+  `python3 tool/verify_debug_apk_evidence.py` when refreshing
+  `docs/release_evidence.md` so the recorded debug APK path, size, and SHA256
+  match the current artifact.
 - Confirm Android 13+ notification permission can be requested from the account
   screen.
+- Copy `android/key.properties.example` to `android/key.properties` locally
+  before any Android release or internal build. It must provide `storeFile`,
+  `storePassword`, `keyAlias`, and `keyPassword`; the real file and keystore
+  are ignored by git.
+- Prefer `python3 tool/setup_android_signing.py` with
+  `MACLAW_ANDROID_STORE_FILE`, `MACLAW_ANDROID_STORE_PASSWORD`,
+  `MACLAW_ANDROID_KEY_ALIAS`, and `MACLAW_ANDROID_KEY_PASSWORD` set in the local
+  environment so passwords do not appear in shell history.
+- Confirm `flutter build apk --release` or `flutter build appbundle --release`
+  uses the configured release signing key and does not fall back to the debug
+  signing key.
+- Run `python3 tool/build_android_release.py --artifact apk --dry-run` to
+  validate local signing inputs without producing an artifact, then run the
+  same command without `--dry-run` or use `--artifact appbundle` for Play
+  internal testing. Record the printed artifact path, SHA256, version/build
+  number, signing identity, and installer channel in the QA build record.
+- After the signed artifact exists, run
+  `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
+  to generate paste-ready `Artifact path`, `SHA256`, byte-size, and build
+  metadata fields for the QA build record.
 - Build a signed internal test package and verify share-to-app for text, URLs,
   images, PDFs, Word, Excel, and CSV files.
 
@@ -52,6 +80,18 @@ SSH, and digital employee task access.
   maintenance of local or private-network servers only.
 - Install a signed development/TestFlight build and verify share-to-app for
   text, URLs, images, PDFs, Word, Excel, and CSV files.
+- On macOS, run
+  `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`
+  to create local `ios/ExportOptions.plist` from
+  `ios/ExportOptions.plist.example`; use `--export-method app-store` for
+  TestFlight/App Store Connect planning.
+- Then run
+  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+  or use `--export-method app-store` for TestFlight/App Store Connect planning.
+  Record the printed archive/export command context, `.xcarchive` path or
+  TestFlight build number, Team ID, Runner and Share Extension provisioning
+  profiles, bundle IDs, app group, and URL scheme evidence in the QA build
+  record.
 
 ## User Workflows
 
@@ -110,11 +150,32 @@ SSH, and digital employee task access.
 - `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1`
 - `python3 -m unittest tool/configure_platforms_test.py`
 - `python3 -m unittest tool/validate_qa_build_record_test.py`
+- `python3 -m unittest tool/create_qa_build_record_test.py`
+- `python3 -m unittest tool/validate_qa_build_records_dir_test.py`
+- `python3 -m unittest tool/qa_build_record_report_test.py`
+- `python3 -m unittest tool/qa_release_evidence_links_test.py`
+- `python3 -m unittest tool/qa_preflight_test.py`
+- `python3 -m unittest tool/setup_android_signing_test.py`
+- `python3 -m unittest tool/release_status_report_test.py`
+- `python3 -m unittest tool/release_handoff_test.py`
+- `python3 tool/validate_qa_build_records_dir.py docs/qa-builds`
 - `python3 -m unittest tool/verify_runtime_boundary_test.py`
 - `python3 -m unittest tool/run_release_gates_test.py`
+- `python3 -m unittest tool/verify_debug_apk_evidence_test.py`
+- `python3 -m unittest tool/update_debug_apk_evidence_test.py`
+- `python3 -m unittest tool/signed_artifact_evidence_test.py`
+- `python3 -m unittest tool/verify_manual_release_gates_test.py`
+- `python3 -m unittest tool/verify_final_release_evidence_test.py`
+- `python3 -m unittest tool/verify_android_release_signing_test.py`
+- `python3 -m unittest tool/build_android_release_test.py`
+- `python3 -m unittest tool/verify_ios_wrapper_test.py`
+- `python3 -m unittest tool/plan_ios_release_test.py`
+- `python3 -m unittest tool/setup_ios_export_options_test.py`
 - `flutter test test/release_docs_test.dart --concurrency=1 --reporter compact`
 - `flutter create --platforms android,ios .`
 - `python3 tool/configure_platforms.py`
+- `python3 tool/verify_android_release_signing.py`
+- `python3 tool/verify_ios_wrapper.py`
 - `python3 tool/verify_runtime_boundary.py`
 - `flutter pub get`
 - `flutter analyze`
@@ -125,3 +186,15 @@ For a local end-to-end run, use:
 
 - `python3 tool/run_release_gates.py --dry-run`
 - `python3 tool/run_release_gates.py`
+
+Before creating signed QA packages on a local machine, run:
+
+- `python3 tool/qa_preflight.py`
+
+Before approving a release candidate with completed signed-build QA records, run:
+
+- `python3 tool/verify_final_release_evidence.py docs/qa-builds`
+
+This final verifier requires validated Android and iOS signed-build records and
+checks that `docs/release_evidence.md` links every validated QA record by
+filename.

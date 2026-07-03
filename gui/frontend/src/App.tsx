@@ -28,6 +28,7 @@ import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL } from './utils/hubCredits';
+import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
 import { getWailsAppModule } from './utils/wailsAppModule';
@@ -2250,7 +2251,7 @@ function App() {
     }, [refreshSidebarTokenUsage]);
 
     const openHubCreditsPage = useCallback(() => {
-        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id, (config as any)?.remote_email);
+        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id, (config as any)?.remote_email, (config as any)?.remote_user_id, (config as any)?.remote_mobile);
         if (url) {
             safeBrowserOpenURL(url);
             return;
@@ -2329,7 +2330,7 @@ function App() {
         try {
             const freshConfig = await callBackend(() => LoadConfig());
             const sourceConfig = freshConfig || config;
-            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id, undefined, (sourceConfig as any)?.remote_tenant_name);
+            const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id, undefined, (sourceConfig as any)?.remote_tenant_name, (sourceConfig as any)?.remote_user_id, (sourceConfig as any)?.remote_mobile);
             if (url) {
                 safeBrowserOpenURL(url);
                 return;
@@ -4324,7 +4325,7 @@ ${instruction}`;
                                                         setStatus(localizeText("Please fill in API URL and API Key first", "请先填写 API URL 和 API Key", "請先填寫 API URL 和 API Key"));
                                                         return;
                                                     }
-                                                    const protocol = activeTool === 'claude' ? 'anthropic' : 'openai';
+                                                    const protocol = inferProviderModelFetchProtocol(activeTool, currentModel.model_url);
                                                     setFetchingModelList(true);
                                                     setFetchedModelList([]);
                                                     setModelListOpen(false);

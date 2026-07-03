@@ -9,6 +9,7 @@ import {
     ActivateRemote,
     ActivateRemoteSMS,
     GetRemoteRegistrationAuth,
+    ResolveRemoteRegistrationTarget,
     ProbeRemoteHub,
     SendRemoteRegistrationSMS,
     StartOpenAIOAuth,
@@ -57,6 +58,13 @@ import {
 } from "./OnboardingWizardShared";
 import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
 
+function extractDailySMSLimit(message: string): number | null {
+    const match = message.match(/max\s+(\d+)\s+per\s+day/i);
+    if (!match) return null;
+    const limit = Number(match[1]);
+    return Number.isFinite(limit) && limit > 0 ? limit : null;
+}
+
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
@@ -91,13 +99,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const [step, setStep] = useState(1);
     const [regEmail, setRegEmail] = useState(email || "");
-    const [registrationAuthMethod, setRegistrationAuthMethod] = useState<"email" | "phone">("email");
+    const [registrationStage, setRegistrationStage] = useState<"identity" | "details">("identity");
+    const [registrationAuthMethod, setRegistrationAuthMethod] = useState<"email" | "phone" | null>(() => hubUrl ? null : "email");
+    const [registrationAuthError, setRegistrationAuthError] = useState("");
+    const [registrationHubUrl, setRegistrationHubUrl] = useState(hubUrl || "");
+    const [registrationHubID, setRegistrationHubID] = useState("");
+    const [registrationTenantID, setRegistrationTenantID] = useState("");
+    const [registrationTargetResolving, setRegistrationTargetResolving] = useState(false);
     const [regPhone, setRegPhone] = useState("");
     const [smsCode, setSmsCode] = useState("");
     const [smsSending, setSmsSending] = useState(false);
     const [smsCountdown, setSmsCountdown] = useState(0);
-    const [smsCodeLength, setSmsCodeLength] = useState(4);
+    const [smsCodeLength, setSmsCodeLength] = useState(6);
     const [smsTargetPhone, setSmsTargetPhone] = useState("");
+    const [smsPurpose, setSmsPurpose] = useState<"registration" | "verify_bound_phone">("registration");
+    const registrationTargetVersionRef = useRef(0);
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
     const [invError, setInvError] = useState("");
@@ -163,6 +179,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const canPrev = step > 1;
     const isLastStep = step === totalSteps;
     const lastStepCompleted = !!stepDone[step];
+    const normalizeSMSPhone = useCallback((value: string) => value.replace(/\D/g, ""), []);
     const applyHubServiceStatus = useCallback((status?: HubLLMServiceStatus | null) => {
         const shouldSkipLLM = !!status?.active && !!status?.skip_llm_config;
         if (shouldSkipLLM) {
@@ -244,22 +261,36 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, [hubUrl]);
 
     useEffect(() => {
+        if (regDone) return;
         if (!hubUrl) {
+            setRegistrationHubUrl("");
             setRegistrationAuthMethod("email");
             return;
         }
+        setRegistrationHubUrl(hubUrl);
         let cancelled = false;
-        GetRemoteRegistrationAuth(hubUrl).then((cfg: any) => {
-            if (cancelled) return;
+        const authProbeVersion = registrationTargetVersionRef.current;
+        GetRemoteRegistrationAuth(hubUrl, '').then((cfg: any) => {
+            if (cancelled || authProbeVersion !== registrationTargetVersionRef.current) return;
             const method = String(cfg?.method || "email").toLowerCase() === "phone" ? "phone" : "email";
             setRegistrationAuthMethod(method);
-            const nextLength = Number(cfg?.code_length || 4);
-            setSmsCodeLength(Number.isFinite(nextLength) && nextLength > 0 ? nextLength : 4);
+            setRegistrationAuthError("");
+            const nextLength = Number(cfg?.code_length || 6);
+            setSmsCodeLength(Number.isFinite(nextLength) && nextLength > 0 ? nextLength : 6);
         }).catch(() => {
-            if (!cancelled) setRegistrationAuthMethod("email");
+            if (!cancelled && authProbeVersion === registrationTargetVersionRef.current) {
+                setRegistrationAuthMethod(null);
+                setRegistrationAuthError(t("无法读取 Hub 注册方式，请稍后重试", "Unable to load the Hub registration method. Try again shortly."));
+            }
         });
         return () => { cancelled = true; };
-    }, [hubUrl]);
+    }, [hubUrl, regDone, t]);
+
+    useEffect(() => {
+        if (registrationAuthMethod !== "phone" || regPhone.trim()) return;
+        const seededPhone = normalizeSMSPhone(regEmail || email || "");
+        if (seededPhone.length >= 6) setRegPhone(seededPhone);
+    }, [email, normalizeSMSPhone, regEmail, regPhone, registrationAuthMethod]);
 
     useEffect(() => {
         if (smsCountdown <= 0) return;
@@ -371,10 +402,14 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
     const regResultWarning = regResult?.tone === "warning";
-    const normalizeSMSPhone = useCallback((value: string) => value.replace(/\D/g, ""), []);
     const normalizedRegPhone = normalizeSMSPhone(regPhone);
+    const trimmedRegistrationIdentity = regEmail.trim();
+    const registrationIdentityDigits = normalizeSMSPhone(trimmedRegistrationIdentity);
+    const registrationIdentityLooksPhone = registrationIdentityDigits.length >= 6 && /^[+\d\s().-]+$/.test(trimmedRegistrationIdentity);
     const isValidSMSPhone = normalizedRegPhone.length >= 6;
     const smsActionDisabled = smsSending || smsCountdown > 0 || regBusy || regDone || !isValidSMSPhone;
+    const smsCodeReady = registrationAuthMethod !== "phone" || (smsTargetPhone === normalizedRegPhone && smsCode.trim().length >= smsCodeLength);
+    const registerActionDisabled = regBusy || regDone || registrationAuthMethod === null || (registrationAuthMethod === "phone" && !smsCodeReady);
 
     const handleOfflineModeToggle = useCallback((checked: boolean) => {
         setOfflineMode(checked);
@@ -405,6 +440,70 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             onLLMConfigured();
         }
     }, [freeTrialVerified, offlineMode, onLLMConfigured]);
+
+    const returnToRegistrationIdentity = useCallback(() => {
+        registrationTargetVersionRef.current += 1;
+        setRegistrationStage("identity");
+        setRegResult(null);
+        setRegistrationTargetResolving(false);
+        setSmsCode("");
+        setSmsTargetPhone("");
+        setSmsPurpose("registration");
+        setRedeemCode("");
+    }, []);
+
+    const handleRegistrationIdentityContinue = useCallback(async () => {
+        if (registrationTargetResolving) return;
+        if (!trimmedRegistrationIdentity) {
+            setRegResult({ ok: false, msg: t("请输入用户ID", "Please enter user ID") });
+            return;
+        }
+        setRegResult(null);
+        setRegistrationTargetResolving(true);
+        const targetVersion = registrationTargetVersionRef.current + 1;
+        registrationTargetVersionRef.current = targetVersion;
+        try {
+            const target = await ResolveRemoteRegistrationTarget(trimmedRegistrationIdentity) as any;
+            if (targetVersion !== registrationTargetVersionRef.current) return;
+            const targetHubURL = String(target?.hub_url || target?.HubURL || "").trim();
+            const targetHubID = String(target?.hub_id || target?.HubID || "").trim();
+            const targetTenantID = String(target?.tenant_id || target?.TenantID || "").trim();
+            const targetMethod = String(target?.method || target?.Method || "email").toLowerCase() === "phone" ? "phone" : "email";
+            if (targetHubURL) setRegistrationHubUrl(targetHubURL);
+            setRegistrationHubID(targetHubID);
+            setRegistrationTenantID(targetTenantID);
+            setRegistrationAuthMethod(targetMethod);
+            setRegistrationAuthError("");
+            const nextLength = Number(target?.code_length || target?.CodeLength || 0);
+            if (Number.isFinite(nextLength) && nextLength > 0) setSmsCodeLength(nextLength);
+            if (targetMethod === "phone") {
+                if (!registrationIdentityLooksPhone) {
+                    setRegResult({ ok: false, msg: t("该租户需要手机号注册，请使用手机号继续", "This tenant requires phone registration. Continue with a phone number.") });
+                    return;
+                }
+                setRegPhone(registrationIdentityDigits);
+                setSmsCode("");
+                setSmsTargetPhone("");
+                setSmsPurpose("registration");
+            } else if (registrationIdentityLooksPhone) {
+                setRegResult({ ok: false, msg: t("路由已命中该租户，但该租户当前验证方式是邮箱注册，请在 Hub 租户系统设置中切换为手机号注册后再继续", "The route matched this tenant, but its current verification method is email registration. Switch this Hub tenant to phone registration in System Settings, then continue.") });
+                return;
+            }
+            setRegistrationStage("details");
+        } catch (e) {
+            if (targetVersion !== registrationTargetVersionRef.current) return;
+            const errMsg = String(e || "");
+            const authConfigFailed = /registration auth config|Hub registration method/i.test(errMsg);
+            setRegResult({
+                ok: false,
+                msg: authConfigFailed
+                    ? t("已找到可用 Hub，但无法确认该租户的注册验证方式。请检查 Hub 租户系统设置和 /api/enroll/registration-auth 接口后重试。", "A Hub route was found, but the tenant registration verification method could not be confirmed. Check the Hub tenant System Settings and /api/enroll/registration-auth, then try again.")
+                    : errMsg,
+            });
+        } finally {
+            if (targetVersion === registrationTargetVersionRef.current) setRegistrationTargetResolving(false);
+        }
+    }, [registrationIdentityDigits, registrationIdentityLooksPhone, registrationTargetResolving, t, trimmedRegistrationIdentity]);
 
     const updateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (selectedIdx === null) return;
@@ -570,6 +669,35 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, [maclawModel, claudeCodeModel]);
 
     // ── Registration ──
+    const localizeRegistrationSMSError = useCallback((error: unknown): string => {
+        const errMsg = String(error || "");
+        if (errMsg.includes("SMS_DAILY_LIMIT_REACHED")) {
+            const limit = extractDailySMSLimit(errMsg);
+            return limit
+                ? t(`今日短信验证码次数已达上限（每天最多 ${limit} 次），请明天再试或联系管理员。`, `Daily SMS verification limit reached (max ${limit} per day). Try again tomorrow or contact an administrator.`)
+                : t("今日短信验证码次数已达上限，请明天再试或联系管理员。", "Daily SMS verification limit reached. Try again tomorrow or contact an administrator.");
+        }
+        if (errMsg.includes("PHONE_ALREADY_REGISTERED")) {
+            return t("该手机号已注册，请不要重复注册。", "This phone number is already registered.");
+        }
+        if (errMsg.includes("INVALID_PHONE_NUMBER") || errMsg.includes("valid phone number is required")) {
+            return t("请输入有效手机号", "Please enter a valid phone number");
+        }
+        if (errMsg.includes("SMS_PROVIDER_NOT_CONFIGURED")) {
+            return t("短信验证服务尚未配置，请联系管理员。", "SMS verification is not configured. Contact an administrator.");
+        }
+        if (errMsg.includes("SMS_SEND_FAILED")) {
+            return t("短信验证码发送失败，请稍后重试。", "Failed to send SMS verification code. Please try again later.");
+        }
+        if (errMsg.includes("INVALID_SMS_VERIFY_CODE")) {
+            return t("短信验证码不正确，请重新输入。", "The SMS verification code is incorrect. Please enter it again.");
+        }
+        if (errMsg.includes("INVALID_SMS_VERIFY_REQUEST")) {
+            return t("短信验证码格式不正确，请检查位数。", "The SMS verification code format is invalid. Check the code length.");
+        }
+        return errMsg;
+    }, [t]);
+
     const handleSendSMSCode = async () => {
         const normalizedPhone = normalizeSMSPhone(regPhone);
         if (normalizedPhone.length < 6) {
@@ -580,19 +708,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         setSmsSending(true);
         setRegResult(null);
         try {
-            const smsResult = await SendRemoteRegistrationSMS(hubUrl, normalizedPhone) as any;
+            const smsResult = await SendRemoteRegistrationSMS(registrationHubUrl || hubUrl, normalizedPhone, registrationTenantID) as any;
             const nextCodeLength = Number(smsResult?.code_length || smsResult?.CodeLength || 0);
+            const nextPurpose = String(smsResult?.purpose || smsResult?.Purpose || "registration") === "verify_bound_phone" ? "verify_bound_phone" : "registration";
             if (Number.isFinite(nextCodeLength) && nextCodeLength > 0) {
                 setSmsCodeLength(nextCodeLength);
                 setSmsCode(prev => prev.replace(/\D/g, "").slice(0, nextCodeLength));
             }
             setSmsTargetPhone(normalizedPhone);
+            setSmsPurpose(nextPurpose);
             setSmsCountdown(60);
             setRegResult({ ok: true, msg: t("验证码已发送，请查收短信", "Verification code sent. Please check your SMS.") });
         } catch (e) {
             const errMsg = String(e);
-            if (errMsg.includes("PHONE_ALREADY_REGISTERED")) {
-                setRegResult({ ok: false, msg: t("该手机号已注册，请不要重复注册", "This phone number is already registered.") });
+            if (/SMS_|PHONE_ALREADY_REGISTERED|INVALID_PHONE_NUMBER/.test(errMsg)) {
+                setRegResult({ ok: false, msg: localizeRegistrationSMSError(e) });
             } else {
                 setRegResult({ ok: false, msg: errMsg });
             }
@@ -637,10 +767,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 		}
 		try {
 				const result = registrationAuthMethod === "phone"
-					? await ActivateRemoteSMS(hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase())
+					? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID)
 					: await ActivateRemote(regEmail.trim(), invCode.trim().toUpperCase(), "");
-			if (registrationAuthMethod === "phone" && result?.email) {
-				onSaveField({ remote_email: result.email });
+			if (registrationAuthMethod === "phone") {
+				const fields: Record<string, string> = { remote_mobile: normalizeSMSPhone(regPhone) };
+				if (result?.email) fields.remote_email = result.email;
+				onSaveField(fields);
 			}
 			if (result?.vip_flag) setVipFlag(true);
             let redeemNote = "";
@@ -668,9 +800,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 }
             }
             setHubConnecting(true);
+            const isReboundPhoneUser = registrationAuthMethod === "phone" && (smsPurpose === "verify_bound_phone" || result?.rebound_existing_user || result?.ReboundExistingUser);
+            const successMessage = isReboundPhoneUser
+                ? t("Device binding complete. Phone verified. Connecting to Hub in the background - you can continue.", "Device binding complete. Phone verified. Connecting to Hub in the background - you can continue.")
+                : t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步");
             setRegResult({
                 ok: true,
-                msg: `${t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步")}${redeemNote}`,
+                msg: `${successMessage}${redeemNote}`,
             });
             setRegDone(true);
             onRegistered();
@@ -693,13 +829,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             } else if (errMsg.includes("INVITATION_CODE_HUB_OFFLINE")) {
                 setInvError(t("邀请码对应的服务器当前不可用，请稍后重试", "The server for this invitation code is currently offline. Please try again later."));
                 setRegResult({ ok: false, msg: t("目标服务器离线", "Target server offline") });
-            } else if (registrationAuthMethod === "phone" && errMsg.includes("PHONE_ALREADY_REGISTERED")) {
-                setRegResult({ ok: false, msg: t("该手机号已注册，请不要重复注册", "This phone number is already registered.") });
-            } else if (registrationAuthMethod === "phone" && errMsg.includes("INVALID_SMS_VERIFY_CODE")) {
-                setSmsCode("");
-                setRegResult({ ok: false, msg: t("短信验证码不正确，请重新输入", "The SMS verification code is incorrect. Please enter it again.") });
-            } else if (registrationAuthMethod === "phone" && errMsg.includes("INVALID_SMS_VERIFY_REQUEST")) {
-                setRegResult({ ok: false, msg: t("短信验证码格式不正确，请检查位数", "The SMS verification code format is invalid. Check the code length.") });
+            } else if (registrationAuthMethod === "phone" && /SMS_|PHONE_ALREADY_REGISTERED|INVALID_PHONE_NUMBER/.test(errMsg)) {
+                if (errMsg.includes("INVALID_SMS_VERIFY_CODE")) setSmsCode("");
+                setRegResult({ ok: false, msg: localizeRegistrationSMSError(e) });
             } else {
                 setRegResult({ ok: false, msg: errMsg });
             }
@@ -809,10 +941,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     // ── Step labels (memoized) ──
     const labels = useMemo(() => getOnboardingStepLabels(onboardingFlow, lang), [onboardingFlow, lang]);
     const showRegistrationToast = !!regResult && !showConfirm && !showOfflineModeNotice && (isCurrentOnboardingStep(onboardingFlow, step, 'register') || isCurrentOnboardingStep(onboardingFlow, step, 'mode'));
-    const registrationToastTitle = regResultWarning ? t("需要处理", "Action needed", "需要處理") : regResult?.ok ? t("注册完成", "Registration successful", "註冊完成") : t("注册失败", "Registration failed", "註冊失敗");
+    const registrationToastTitle = regResultWarning ? t("需要处理", "Action needed", "需要處理") : regResult?.ok ? t("注册完成", "Registration complete", "註冊完成") : t("注册失败", "Registration failed", "註冊失敗");
     const registrationToastDetail = (() => {
         if (!regResult) return "";
         if (!regResult.ok || regResultWarning) return regResult.msg;
+        if (/Device binding complete|Phone verified/i.test(regResult.msg)) return regResult.msg.replace(/^✅\s*/, "");
         const extraNote = regResult.msg.split("\n").slice(1).map(item => item.trim()).filter(Boolean).join(" ");
         if (extraNote) return extraNote.replace(/^✅\s*/, "");
         if (offlineMode) return t("已进入离线模式，可继续下一步", "Offline mode is ready. You can continue.", "已進入離線模式，可繼續下一步");
@@ -839,6 +972,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <div style={{ minWidth: 0 }}>
                                 <div style={{ color: colors.textPrimary, fontSize: "0.82rem", fontWeight: 800, lineHeight: 1.35 }}>
                                     {registrationToastTitle}
+                                    {regResult.ok && !regResultWarning && (
+                                        <span style={srOnlyStyle}>{t("注册成功", "Registration successful", "註冊成功")}</span>
+                                    )}
                                 </div>
                                 <div style={{ marginTop: 2, color: regResult.ok && !regResultWarning ? colors.success : colors.textSecondary, fontSize: "0.74rem", fontWeight: 600, lineHeight: 1.45 }}>
                                     {registrationToastDetail}
@@ -1096,94 +1232,134 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
                     {(isCurrentOnboardingStep(onboardingFlow, step, 'register') || isCurrentOnboardingStep(onboardingFlow, step, 'mode')) && (
                         <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
-                                {offlineMode
-                                    ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
-                                    : registrationAuthMethod === "phone"
-                                        ? t("选择运行模式。正常联网模式下，完成手机号短信验证并注册到 Hub 后即可使用所有功能。", "Choose a run mode. In online mode, verify your phone number and register it to the Hub to unlock all features.", "選擇運行模式。正常聯網模式下，完成手機號簡訊驗證並註冊到 Hub 後即可使用所有功能。")
-                                        : t("选择运行模式。正常联网模式下，注册邮箱到 Hub 后即可使用所有功能。", "Choose a run mode. In online mode, register your email to the Hub to unlock all features.", "選擇運行模式。正常聯網模式下，註冊郵箱到 Hub 後即可使用所有功能。")}
-                            </p>
-                            <OnboardingOfflineModeOption
-                                offlineMode={offlineMode}
-                                freeTrial={freeTrial}
-                                onToggle={handleOfflineModeToggle}
-                                onFreeTrialChange={handleFreeTrialChange}
-                                t={t}
-                            />
-                            {!offlineMode && (
-                                <>
-                            {registrationAuthMethod === "phone" ? (
-                                <>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                        <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("手机号", "Phone")} <span style={{ color: colors.danger }}>*</span></label>
-                                        <div style={{ display: "flex", flex: 1, minWidth: 0, gap: 8 }}>
-                                            <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regPhone}
-                                                onChange={e => { setRegPhone(e.target.value); setSmsCode(""); setRegResult(null); }}
-                                                placeholder="13800138000" inputMode="tel" spellCheck={false} />
-                                            <button onClick={handleSendSMSCode} disabled={smsActionDisabled} style={{
-                                                ...wizardPrimaryButtonStyle,
-                                                flex: "0 0 108px",
-                                                padding: "0 10px",
-                                                fontSize: "0.76rem",
-                                                opacity: smsActionDisabled ? 0.72 : 1,
-                                                cursor: smsActionDisabled ? "default" : "pointer",
-                                            }}>
-                                                {smsCountdown > 0 ? `${smsCountdown}s` : smsSending ? t("发送中", "Sending") : t("验证码", "Code")}
-                                            </button>
-                                        </div>
+                            {registrationStage === "identity" && !offlineMode ? (
+                                <div style={{ maxWidth: 356, margin: "0 auto" }}>
+                                    <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
+                                        {t("先输入用户ID，系统会根据邮箱或手机号进入对应的注册验证流程。", "First enter your user ID. The system will route email or phone IDs to the right verification flow.")}
+                                    </p>
+                                    <div style={{ marginBottom: 10 }}>
+                                        <label style={labelStyle}>{t("用户ID", "User ID")} <span style={{ color: colors.danger }}>*</span></label>
+                                        <input style={inputStyle} value={regEmail}
+                                            onChange={e => { registrationTargetVersionRef.current += 1; setRegistrationTargetResolving(false); setRegEmail(e.target.value); setRegResult(null); setRedeemCode(""); }}
+                                            placeholder={t("邮箱或手机号", "Email or phone")} spellCheck={false} />
                                     </div>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                        <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("短信验证码", "SMS Code")} <span style={{ color: colors.danger }}>*</span></label>
-                                        <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={smsCode}
-                                            onChange={e => setSmsCode(e.target.value.replace(/\D/g, "").slice(0, smsCodeLength))}
-                                            placeholder={t(`请输入 ${smsCodeLength} 位验证码`, `Enter ${smsCodeLength}-digit code`)}
-                                            inputMode="numeric" spellCheck={false} />
-                                    </div>
-                                </>
+                                    <button onClick={handleRegistrationIdentityContinue} disabled={registrationTargetResolving || !trimmedRegistrationIdentity} style={{
+                                        ...(registrationTargetResolving || !trimmedRegistrationIdentity ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),
+                                        padding: "10px 0", fontSize: "0.8rem",
+                                        cursor: registrationTargetResolving || !trimmedRegistrationIdentity ? "default" : "pointer",
+                                    }}>
+                                        {registrationTargetResolving ? t("检查中...", "Checking...") : t("继续", "Continue")}
+                                    </button>
+                                </div>
                             ) : (
-                                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                    <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("邮箱", "Email")} <span style={{ color: colors.danger }}>*</span></label>
-                                    <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regEmail}
-                                        onChange={e => setRegEmail(e.target.value)}
-                                        placeholder="name@example.com" spellCheck={false} />
-                                </div>
-                            )}
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
-                                    {t("邀请码", "Invitation Code")}{" "}
-                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
-                                </label>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <input style={{ ...inputStyle, width: "100%", ...(invError ? { borderColor: colors.danger } : {}) }}
-                                        value={invCode}
-                                        onChange={e => { setInvCode(e.target.value.toUpperCase()); setInvError(""); }}
-                                        placeholder={t("请输入邀请码（可选）", "Enter invitation code (optional)", "請輸入邀請碼（可選）")}
-                                        maxLength={20} spellCheck={false} />
-                                    {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
-                                </div>
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
-                                    {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}
-                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional", "可選")})</span>
-                                </label>
-                                <input style={{ ...inputStyle, flex: 1, minWidth: 0 }}
-                                    value={redeemCode}
-                                    onChange={e => setRedeemCode(e.target.value.trim().toUpperCase())}
-                                    placeholder={t("请输入服务兑换码（可选）", "Enter service redeem code (optional)", "請輸入服務兌換碼（可選）")}
-                                    spellCheck={false} />
-                            </div>
-                            <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
-                                ...((regDone && !hubConnecting) ? wizardSuccessButtonStyle : wizardPrimaryButtonStyle),
-                                padding: "10px 0", fontSize: "0.8rem",
-                                cursor: regBusy || regDone ? "default" : "pointer",
-                            }}>
-                                <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
-                            </button>
+                                <>
+                                    <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
+                                        {offlineMode
+                                            ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
+                                            : registrationAuthMethod === "phone"
+                                                ? t("使用手机号短信验证并注册到 Hub 后即可使用所有功能。", "Verify your phone number and register it to the Hub to unlock all features.", "完成手機號簡訊驗證並註冊到 Hub 後即可使用所有功能。")
+                                                : t("使用真实用户ID注册到 Hub 后即可使用所有功能。", "Register your real user ID to the Hub to unlock all features.", "使用真實使用者ID註冊到 Hub 後即可使用所有功能。")}
+                                    </p>
+                                    {registrationStage === "details" && !regDone && (
+                                        <button type="button" onClick={returnToRegistrationIdentity} style={{ ...wizardGhostButtonStyle, padding: "6px 10px", marginBottom: 10, fontSize: "0.74rem" }}>
+                                            {t("编辑", "Edit")}
+                                        </button>
+                                    )}
+                                    <OnboardingOfflineModeOption
+                                        offlineMode={offlineMode}
+                                        freeTrial={freeTrial}
+                                        onToggle={handleOfflineModeToggle}
+                                        onFreeTrialChange={handleFreeTrialChange}
+                                        t={t}
+                                    />
+                                    {!offlineMode && !regDone && (
+                                        <>
+                                            {registrationAuthMethod === "phone" ? (
+                                                <>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                                        <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("手机号", "Phone")} <span style={{ color: colors.danger }}>*</span></label>
+                                                        <div style={{ display: "flex", flex: 1, minWidth: 0, gap: 8 }}>
+                                                            <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regPhone}
+                                                                readOnly={registrationStage === "details"}
+                                                                onChange={e => { if (registrationStage !== "details") { setRegPhone(e.target.value); setSmsCode(""); setRegResult(null); } }}
+                                                                placeholder="13800138000" inputMode="tel" spellCheck={false} />
+                                                            <button onClick={handleSendSMSCode} disabled={smsActionDisabled} style={{
+                                                                ...wizardPrimaryButtonStyle,
+                                                                flex: "0 0 108px",
+                                                                padding: "0 10px",
+                                                                fontSize: "0.76rem",
+                                                                opacity: smsActionDisabled ? 0.72 : 1,
+                                                                cursor: smsActionDisabled ? "default" : "pointer",
+                                                            }}>
+                                                                {smsCountdown > 0 ? String(smsCountdown) + "s" : smsSending ? t("发送中", "Sending") : t("验证码", "Code")}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                                        <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("短信验证码", "SMS Code")} <span style={{ color: colors.danger }}>*</span></label>
+                                                        <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={smsCode}
+                                                            onChange={e => setSmsCode(e.target.value.replace(/\D/g, "").slice(0, smsCodeLength))}
+                                                            placeholder={t("请输入 " + smsCodeLength + " 位验证码", "Enter " + smsCodeLength + "-digit code")}
+                                                            inputMode="numeric" spellCheck={false} />
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                                    <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("用户ID", "User ID")} <span style={{ color: colors.danger }}>*</span></label>
+                                                    <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regEmail}
+                                                        onChange={e => setRegEmail(e.target.value)}
+                                                        placeholder={t("邮箱或手机号", "Email or phone")} spellCheck={false} />
+                                                </div>
+                                            )}
+                                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
+                                                    {t("邀请码", "Invitation Code")} {" "}
+                                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
+                                                </label>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <input style={{ ...inputStyle, width: "100%", ...(invError ? { borderColor: colors.danger } : {}) }}
+                                                        value={invCode}
+                                                        onChange={e => { setInvCode(e.target.value.toUpperCase()); setInvError(""); }}
+                                                        placeholder={t("请输入邀请码（可选）", "Enter invitation code (optional)", "請輸入邀請碼（可選）")}
+                                                        maxLength={20} spellCheck={false} />
+                                                    {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
+                                                </div>
+                                            </div>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                                <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
+                                                    {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}
+                                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional", "可選")})</span>
+                                                </label>
+                                                <input style={{ ...inputStyle, flex: 1, minWidth: 0 }}
+                                                    value={redeemCode}
+                                                    onChange={e => setRedeemCode(e.target.value.trim().toUpperCase())}
+                                                    placeholder={t("请输入服务兑换码（可选）", "Enter service redeem code (optional)", "請輸入服務兌換碼（可選）")}
+                                                    spellCheck={false} />
+                                            </div>
+                                            <button onClick={handleRegisterClick} disabled={registerActionDisabled} style={{
+                                                ...((regDone && !hubConnecting) ? wizardSuccessButtonStyle : registerActionDisabled ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),
+                                                padding: "10px 0", fontSize: "0.8rem",
+                                                cursor: registerActionDisabled ? "default" : "pointer",
+                                            }}>
+                                                <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
+                                            </button>
+                                        </>
+                                    )}
+                                    {!offlineMode && regDone && (
+                                        <button type="button" disabled style={{
+                                            ...wizardSuccessButtonStyle,
+                                            padding: "10px 0",
+                                            fontSize: "0.8rem",
+                                            cursor: "default",
+                                        }}>
+                                            <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
+                                        </button>
+                                    )}
                                 </>
                             )}
                         </div>
                     )}
+
 
                     {isCurrentOnboardingStep(onboardingFlow, step, 'llm') && (
                         <div>
@@ -1521,7 +1697,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                             <span style={{ fontSize: 18 }}>✉️</span>
                             <span style={{ fontSize: 15, fontWeight: 700 }}>
-                                {t("确认注册信息", "Confirm Registration")}
+                                {t("注册账号", "Confirm Registration")}
                             </span>
                         </div>
                         {/* Description – warning tone */}
@@ -1537,9 +1713,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                 <path d="M8 6.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
                                 <circle cx="8" cy="11.5" r="0.7" fill="currentColor"/>
                             </svg>
-                            <span>{t("填写真实邮箱，从邮箱中确认后获得其余70%赠送额度。",
-                                "Use a real email. Confirm via email to unlock the remaining 70% bonus credits.",
-                                "填寫真實信箱，從信箱中確認後獲得其餘70%贈送額度。")}</span>
+                            <span>{t("请确认当前用户ID。", "Confirm the current user ID.")}</span>
                         </div>
                         {/* Email card */}
                         <div style={{
@@ -1550,7 +1724,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             display: "flex", alignItems: "center", gap: 10,
                         }}>
                             <div style={{ fontSize: 12, color: colors.textMuted, fontWeight: 500, whiteSpace: "nowrap" }}>
-                                {t("注册邮箱", "Registration Email", "註冊信箱")}
+                                {t("ID", "ID", "ID")}
                             </div>
                             <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, wordBreak: "break-all" }}>
                                 {regEmail}

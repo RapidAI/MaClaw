@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -15,6 +17,7 @@ type requestTenantContextKey struct{}
 const adminUserContextKey adminContextKey = "admin_user"
 
 const DefaultTenantID = store.DefaultTenantID
+const cascadeInstallationIDSettingKey = "hub_installation_id"
 
 func RequireAdmin(admins *auth.AdminService, next http.HandlerFunc, tenantRepos ...store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +83,54 @@ func RequireGlobalAdminAllowTenantQuery(next http.HandlerFunc) http.HandlerFunc 
 		}
 		next(w, r)
 	}
+}
+
+func RequireCascadeAuth(admins *auth.AdminService, settings store.SystemSettingsRepository, next http.HandlerFunc, tenantRepos ...store.TenantRepository) http.HandlerFunc {
+	globalAdminFallback := RequireAdmin(admins, RequireGlobalAdmin(next), tenantRepos...)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(r.URL.Query().Get("tenant_id")) != "" {
+			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
+			return
+		}
+
+		authz := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+			writeError(w, http.StatusUnauthorized, "ADMIN_UNAUTHORIZED", "Admin authorization required")
+			return
+		}
+
+		token := strings.TrimSpace(authz[len("Bearer "):])
+		if cascadeInstallationTokenMatches(r.Context(), settings, token) {
+			next(w, r)
+			return
+		}
+
+		globalAdminFallback(w, r)
+	}
+}
+
+func cascadeInstallationTokenMatches(ctx context.Context, settings store.SystemSettingsRepository, token string) bool {
+	token = strings.TrimSpace(token)
+	if settings == nil || token == "" {
+		return false
+	}
+
+	raw, err := settings.Get(ctx, cascadeInstallationIDSettingKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return false
+	}
+
+	var payload struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return false
+	}
+	expected := strings.TrimSpace(payload.Value)
+	if expected == "" || len(token) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 }
 
 func RequireTenantAdmin(next http.HandlerFunc) http.HandlerFunc {

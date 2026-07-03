@@ -28,6 +28,10 @@ void main() {
 
     expect(gradle, contains('namespace = "top.mypapers.maclaw.mobile"'));
     expect(gradle, contains('applicationId = "top.mypapers.maclaw.mobile"'));
+    expect(gradle, contains('rootProject.file("key.properties")'));
+    expect(gradle, contains('maclawReleaseSigningConfigured'));
+    expect(gradle, contains('signingConfigs.getByName("release")'));
+    expect(gradle, isNot(contains('signingConfigs.getByName("debug")')));
     expect(activity, contains('package top.mypapers.maclaw.mobile'));
     expect(manifest, contains('android:label="MaClaw Mobile"'));
     expect(manifest, contains('android:scheme="maclaw"'));

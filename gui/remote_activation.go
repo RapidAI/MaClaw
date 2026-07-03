@@ -10,25 +10,27 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"log"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 )
 
 type RemoteActivationResult struct {
-	Status       string `json:"status"`
-	HubID        string `json:"hub_id,omitempty"`
-	TenantID     string `json:"tenant_id,omitempty"`
-	TenantName   string `json:"tenant_name,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Code         string `json:"code,omitempty"`
-	UserID       string `json:"user_id,omitempty"`
-	Email        string `json:"email,omitempty"`
-	SN           string `json:"sn,omitempty"`
-	MachineID    string `json:"machine_id,omitempty"`
-	MachineToken string `json:"machine_token,omitempty"`
-	ViewerToken  string `json:"viewer_token,omitempty"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	VIPFlag      bool   `json:"vip_flag,omitempty"`
+	Status              string `json:"status"`
+	HubID               string `json:"hub_id,omitempty"`
+	TenantID            string `json:"tenant_id,omitempty"`
+	TenantName          string `json:"tenant_name,omitempty"`
+	Message             string `json:"message,omitempty"`
+	Code                string `json:"code,omitempty"`
+	UserID              string `json:"user_id,omitempty"`
+	Email               string `json:"email,omitempty"`
+	SN                  string `json:"sn,omitempty"`
+	MachineID           string `json:"machine_id,omitempty"`
+	MachineToken        string `json:"machine_token,omitempty"`
+	ViewerToken         string `json:"viewer_token,omitempty"`
+	ExpiresAt           string `json:"expires_at,omitempty"`
+	VIPFlag             bool   `json:"vip_flag,omitempty"`
+	ReboundExistingUser bool   `json:"rebound_existing_user,omitempty"`
 }
 
 type RemoteRegistrationAuthResult struct {
@@ -38,11 +40,24 @@ type RemoteRegistrationAuthResult struct {
 	Provider       string `json:"provider,omitempty"`
 }
 
+type RemoteRegistrationTargetResult struct {
+	Identity       string `json:"identity"`
+	HubURL         string `json:"hub_url"`
+	HubID          string `json:"hub_id,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	Method         string `json:"method"`
+	CodeTTLMinutes int    `json:"code_ttl_minutes,omitempty"`
+	CodeLength     int    `json:"code_length,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+}
+
 type RemoteSMSSendResult struct {
 	OK         bool   `json:"ok"`
+	Code       string `json:"code,omitempty"`
 	TenantID   string `json:"tenant_id,omitempty"`
 	ExpiresMin int    `json:"expires_min,omitempty"`
 	CodeLength int    `json:"code_length,omitempty"`
+	Purpose    string `json:"purpose,omitempty"`
 	Message    string `json:"message,omitempty"`
 }
 
@@ -88,7 +103,10 @@ type RemoteHubCenterHub struct {
 
 var remoteEnrollTimeout = remote.EnrollTimeout
 
-const skillMarketAutoLoginRetryDelay = 15 * time.Minute
+const (
+	defaultRemoteRegistrationSMSCodeLength = 6
+	skillMarketAutoLoginRetryDelay         = 15 * time.Minute
+)
 
 func sanitizeHubCenterRegistrationURLs(preferred string, discovered []string) (string, []string) {
 	candidates := append([]string{preferred}, discovered...)
@@ -151,33 +169,81 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 	return result, nil
 }
 
-func (a *App) GetRemoteRegistrationAuth(hubURL string) (RemoteRegistrationAuthResult, error) {
+func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteRegistrationAuthResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
-		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: defaultRemoteRegistrationSMSCodeLength}, nil
 	}
-	resp, err := hubHTTPClient.Get(strings.TrimRight(hubURL, "/") + "/api/enroll/registration-auth")
+	authURL := strings.TrimRight(hubURL, "/") + "/api/enroll/registration-auth"
+	if strings.TrimSpace(tenantID) != "" {
+		parsed, err := url.Parse(authURL)
+		if err == nil {
+			q := parsed.Query()
+			q.Set("tenant_id", strings.TrimSpace(tenantID))
+			parsed.RawQuery = q.Encode()
+			authURL = parsed.String()
+		}
+	}
+	resp, err := hubHTTPClient.Get(authURL)
 	if err != nil {
-		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+		return RemoteRegistrationAuthResult{}, fmt.Errorf("load registration auth config: %w", err)
 	}
 	defer resp.Body.Close()
 	var result RemoteRegistrationAuthResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration auth config"); err != nil {
-		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+		return RemoteRegistrationAuthResult{}, err
 	}
-	if resp.StatusCode >= 300 || strings.TrimSpace(result.Method) == "" {
-		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: 4}, nil
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationAuthResult{}, fmt.Errorf("load registration auth config failed: %s", resp.Status)
+	}
+	if strings.TrimSpace(result.Method) == "" {
+		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config missing method")
 	}
 	if result.CodeTTLMinutes <= 0 {
 		result.CodeTTLMinutes = 5
 	}
 	if result.CodeLength <= 0 {
-		result.CodeLength = 4
+		result.CodeLength = defaultRemoteRegistrationSMSCodeLength
 	}
 	return result, nil
 }
 
-func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string) (RemoteSMSSendResult, error) {
+func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrationTargetResult, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return RemoteRegistrationTargetResult{}, fmt.Errorf("user identity is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteRegistrationTargetResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, _, _, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, "", cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	if err != nil {
+		return RemoteRegistrationTargetResult{}, err
+	}
+	hubURL, hubID, tenantID, err := remote.PickBestHubWithTenantAndID(*result)
+	if err != nil {
+		return RemoteRegistrationTargetResult{}, err
+	}
+	auth, err := a.GetRemoteRegistrationAuth(hubURL, tenantID)
+	if err != nil {
+		return RemoteRegistrationTargetResult{}, err
+	}
+	return RemoteRegistrationTargetResult{
+		Identity:       identity,
+		HubURL:         strings.TrimRight(strings.TrimSpace(hubURL), "/"),
+		HubID:          hubID,
+		TenantID:       tenantID,
+		Method:         auth.Method,
+		CodeTTLMinutes: auth.CodeTTLMinutes,
+		CodeLength:     auth.CodeLength,
+		Provider:       auth.Provider,
+	}, nil
+}
+
+func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string, tenantID string) (RemoteSMSSendResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
 		return RemoteSMSSendResult{}, fmt.Errorf("hub URL is required")
@@ -187,6 +253,9 @@ func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string) (Remo
 		return RemoteSMSSendResult{}, fmt.Errorf("valid phone number is required")
 	}
 	payload := map[string]string{"phone_number": phoneNumber}
+	if strings.TrimSpace(tenantID) != "" {
+		payload["tenant_id"] = strings.TrimSpace(tenantID)
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return RemoteSMSSendResult{}, err
@@ -201,6 +270,12 @@ func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string) (Remo
 		return RemoteSMSSendResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		if result.Code != "" && result.Message != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s: %s", result.Code, result.Message)
+		}
+		if result.Code != "" {
+			return RemoteSMSSendResult{}, fmt.Errorf("%s", result.Code)
+		}
 		if result.Message != "" {
 			return RemoteSMSSendResult{}, fmt.Errorf("%s", result.Message)
 		}
@@ -356,24 +431,25 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	// Auto-acquire SkillMarket session token via machine-login.
 	// This allows the user to upload skills immediately after Hub registration
 	// without a separate SkillMarket login step.
-	go a.acquireSkillMarketTokenAfterEnroll(enrollResult.Email, enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(enrollResult, ""), enrollResult.MachineID, enrollResult.ViewerToken)
 
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
-		Status:       enrollResult.Status,
-		HubID:        enrollResult.HubID,
-		TenantID:     enrollResult.TenantID,
-		TenantName:   enrollResult.TenantName,
-		Message:      enrollResult.Message,
-		Code:         enrollResult.Code,
-		UserID:       enrollResult.UserID,
-		Email:        enrollResult.Email,
-		SN:           enrollResult.SN,
-		MachineID:    enrollResult.MachineID,
-		MachineToken: enrollResult.MachineToken,
-		ViewerToken:  enrollResult.ViewerToken,
-		ExpiresAt:    enrollResult.ExpiresAt,
-		VIPFlag:      enrollResult.VIPFlag,
+		Status:              enrollResult.Status,
+		HubID:               enrollResult.HubID,
+		TenantID:            enrollResult.TenantID,
+		TenantName:          enrollResult.TenantName,
+		Message:             enrollResult.Message,
+		Code:                enrollResult.Code,
+		UserID:              enrollResult.UserID,
+		Email:               enrollResult.Email,
+		SN:                  enrollResult.SN,
+		MachineID:           enrollResult.MachineID,
+		MachineToken:        enrollResult.MachineToken,
+		ViewerToken:         enrollResult.ViewerToken,
+		ExpiresAt:           enrollResult.ExpiresAt,
+		VIPFlag:             enrollResult.VIPFlag,
+		ReboundExistingUser: enrollResult.ReboundExistingUser,
 	}
 
 	// GUI-specific: emit state change + background hub connection.
@@ -417,7 +493,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	return result, nil
 }
 
-func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode string, invitationCode string) (RemoteActivationResult, error) {
+func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode string, invitationCode string, tenantID string, hubID string) (RemoteActivationResult, error) {
 	start := time.Now()
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -466,6 +542,9 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		"heartbeat_interval_sec": heartbeat,
 		"client_id":              clientID,
 	}
+	if strings.TrimSpace(tenantID) != "" {
+		body["tenant_id"] = strings.TrimSpace(tenantID)
+	}
 	if strings.TrimSpace(invitationCode) != "" {
 		body["invitation_code"] = strings.TrimSpace(invitationCode)
 	}
@@ -493,9 +572,15 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 	}
 	enrollResult.HubURL = hubURL
 	enrollResult.ClientID = clientID
+	resolvedHubID := strings.TrimSpace(hubID)
+	if resolvedHubID == "" {
+		resolvedHubID = strings.TrimSpace(enrollResult.HubID)
+	}
+	enrollResult.HubID = resolvedHubID
 
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.RemoteEmail = enrollResult.Email
+		cfg.RemoteMobile = phoneNumber
 		cfg.RemoteSN = enrollResult.SN
 		cfg.RemoteUserID = enrollResult.UserID
 		cfg.RemoteTenantID = enrollResult.TenantID
@@ -504,6 +589,9 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		cfg.RemoteMachineName = profile.Name
 		cfg.RemoteMachineToken = enrollResult.MachineToken
 		cfg.RemoteNickname = ""
+		if resolvedHubID != "" {
+			cfg.RemoteHubID = resolvedHubID
+		}
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
 		if enrollResult.ViewerToken != "" {
@@ -518,23 +606,24 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		return RemoteActivationResult{}, err
 	}
 
-	go a.acquireSkillMarketTokenAfterEnroll(enrollResult.Email, enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
 
 	result := RemoteActivationResult{
-		Status:       enrollResult.Status,
-		HubID:        enrollResult.HubID,
-		TenantID:     enrollResult.TenantID,
-		TenantName:   enrollResult.TenantName,
-		Message:      enrollResult.Message,
-		Code:         enrollResult.Code,
-		UserID:       enrollResult.UserID,
-		Email:        enrollResult.Email,
-		SN:           enrollResult.SN,
-		MachineID:    enrollResult.MachineID,
-		MachineToken: enrollResult.MachineToken,
-		ViewerToken:  enrollResult.ViewerToken,
-		ExpiresAt:    enrollResult.ExpiresAt,
-		VIPFlag:      enrollResult.VIPFlag,
+		Status:              enrollResult.Status,
+		HubID:               enrollResult.HubID,
+		TenantID:            enrollResult.TenantID,
+		TenantName:          enrollResult.TenantName,
+		Message:             enrollResult.Message,
+		Code:                enrollResult.Code,
+		UserID:              enrollResult.UserID,
+		Email:               enrollResult.Email,
+		SN:                  enrollResult.SN,
+		MachineID:           enrollResult.MachineID,
+		MachineToken:        enrollResult.MachineToken,
+		ViewerToken:         enrollResult.ViewerToken,
+		ExpiresAt:           enrollResult.ExpiresAt,
+		VIPFlag:             enrollResult.VIPFlag,
+		ReboundExistingUser: enrollResult.ReboundExistingUser,
 	}
 
 	a.emitRemoteStateChanged()
@@ -573,6 +662,25 @@ func isHTTPTimeoutError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func skillMarketAccountFromEnroll(enrollResult *remote.EnrollResult, fallbackPhone string) string {
+	if enrollResult == nil {
+		if phone := normalizeRemoteRegistrationPhoneNumber(fallbackPhone); phone != "" {
+			return "phone:" + phone
+		}
+		return ""
+	}
+	if account := strings.TrimSpace(enrollResult.UserID); account != "" {
+		return account
+	}
+	if account := strings.TrimSpace(enrollResult.Email); account != "" {
+		return account
+	}
+	if phone := normalizeRemoteRegistrationPhoneNumber(fallbackPhone); phone != "" {
+		return "phone:" + phone
+	}
+	return ""
 }
 
 func normalizedRemotePlatform() string {

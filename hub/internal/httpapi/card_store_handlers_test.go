@@ -155,6 +155,28 @@ func TestCardStoreConfigKeepsCustomPeriodLimitsWhenDurationDefaults(t *testing.T
 	}
 }
 
+func TestCardStoreOrderCreateResponseIncludesStableAccountFields(t *testing.T) {
+	resp := cardStoreOrderCreateResponse("tenant-1", "", cardStoreOrder{
+		OrderNo:      "CS1",
+		TenantID:     "tenant-1",
+		UserID:       "usr_phone_123",
+		Email:        "phone:19900001111",
+		ProductID:    "service_test_10",
+		ProductLabel: "Test Card",
+		PaymentMode:  cardStorePaymentModeManual,
+		Status:       "created",
+	})
+	if resp["account"] != "phone:19900001111" {
+		t.Fatalf("account = %#v", resp["account"])
+	}
+	if resp["user_id"] != "usr_phone_123" {
+		t.Fatalf("user_id = %#v", resp["user_id"])
+	}
+	if resp["email"] != "phone:19900001111" {
+		t.Fatalf("legacy email field = %#v", resp["email"])
+	}
+}
+
 func TestRecoverCardStoreCodesRateLimitsByEmailPerDay(t *testing.T) {
 	resetCardStoreRecoverRateLimiterForTest()
 	defer resetCardStoreRecoverRateLimiterForTest()

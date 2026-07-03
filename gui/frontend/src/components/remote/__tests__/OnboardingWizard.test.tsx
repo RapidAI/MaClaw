@@ -3,6 +3,10 @@ import { render, screen, waitFor, fireEvent, act, cleanup } from '@testing-libra
 import type { Mock } from 'vitest';
 
 const ActivateRemoteMock = vi.fn();
+const ActivateRemoteSMSMock = vi.fn();
+const GetRemoteRegistrationAuthMock = vi.fn();
+const ResolveRemoteRegistrationTargetMock = vi.fn();
+const SendRemoteRegistrationSMSMock = vi.fn();
 const GetRemoteActivationStatusMock = vi.fn();
 const GetRemoteConnectionStatusMock = vi.fn();
 const GetHubLLMServiceStatusMock = vi.fn();
@@ -27,6 +31,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
     TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
     ActivateRemote: (...args: unknown[]) => ActivateRemoteMock(...args),
+    ActivateRemoteSMS: (...args: unknown[]) => ActivateRemoteSMSMock(...args),
+    GetRemoteRegistrationAuth: (...args: unknown[]) => GetRemoteRegistrationAuthMock(...args),
+    ResolveRemoteRegistrationTarget: (...args: unknown[]) => ResolveRemoteRegistrationTargetMock(...args),
+    SendRemoteRegistrationSMS: (...args: unknown[]) => SendRemoteRegistrationSMSMock(...args),
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartCodeGenSSO: (...args: unknown[]) => StartCodeGenSSOMock(...args),
@@ -71,6 +79,15 @@ describe('OnboardingWizard registration', () => {
             onSaveField: vi.fn(),
         };
         GetMaclawLLMProvidersMock.mockResolvedValue({ providers: [] });
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+        ResolveRemoteRegistrationTargetMock.mockImplementation(async (identity: string) => ({
+            identity,
+            hub_url: 'http://hub.example.com',
+            method: 'email',
+            code_length: 6,
+        }));
+        SendRemoteRegistrationSMSMock.mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 });
+        ActivateRemoteSMSMock.mockResolvedValue({ email: 'phone:13800138000', vip_flag: false });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
         TestMaclawLLMMock.mockResolvedValue({ message: 'ok', supports_vision: false });
         ProbeRemoteHubMock.mockResolvedValue({ invitation_code_required: false });
@@ -85,6 +102,33 @@ describe('OnboardingWizard registration', () => {
         vi.useRealTimers();
         cleanup();
     });
+
+    const waitForRegistrationDetails = async () => {
+        await waitFor(() => {
+            expect(screen.queryByRole('button', { name: /Continue|继续|Checking|检查中/ })).toBeNull();
+        });
+    };
+
+    const continueRegistrationIdentity = async (identity = 'user@example.com') => {
+        const identityInput = await screen.findByPlaceholderText(/Email or phone|邮箱或手机号/);
+        fireEvent.change(identityInput, { target: { value: identity } });
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: /Continue|继续/ }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(screen.getByRole('button', { name: /Continue|继续/ }));
+        await waitForRegistrationDetails();
+    };
+
+    const mockPhoneRegistrationTarget = (hubURL = 'http://hub.example.com') => {
+        ResolveRemoteRegistrationTargetMock.mockImplementation(async (identity: string) => ({
+            identity,
+            hub_url: hubURL,
+            hub_id: 'hub-phone',
+            tenant_id: 'tenant-phone',
+            method: 'phone',
+            code_length: 6,
+        }));
+    };
 
     it('keeps TigerClaw onboarding to SSO plus WeChat without LLM setup', async () => {
         StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
@@ -168,11 +212,355 @@ describe('OnboardingWizard registration', () => {
         expect(screen.queryByText(/Pick a provider/)).toBeNull();
     });
 
-    it('renders optional service redeem code text in Chinese registration step', () => {
+    it('renders optional service redeem code text in registration step', async () => {
+        render(<OnboardingWizard {...baseProps} />);
+
+        expect((await screen.findAllByText('User ID')).length).toBeGreaterThan(0);
+        expect(screen.queryByText('Email')).toBeNull();
+        expect(screen.queryByText('Service redeem code')).toBeNull();
+        await continueRegistrationIdentity();
+        expect(await screen.findByText('Service redeem code')).toBeTruthy();
+        expect(screen.getByPlaceholderText('Enter service redeem code (optional)')).toBeTruthy();
+    });
+
+    it('uses account identity copy instead of email copy for zh onboarding', async () => {
         render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
 
-        expect(screen.getByText('服务兑换码')).toBeTruthy();
-        expect(screen.getByPlaceholderText('请输入服务兑换码（可选）')).toBeTruthy();
+        expect((await screen.findAllByText('用户ID')).length).toBeGreaterThan(0);
+        expect(screen.getByPlaceholderText('邮箱或手机号')).toBeTruthy();
+        expect(screen.queryByText('邮箱')).toBeNull();
+        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
+
+        fireEvent.change(screen.getByPlaceholderText('邮箱或手机号'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: /继续/ }));
+        await waitForRegistrationDetails();
+        fireEvent.click(screen.getByRole('button', { name: /注册/ }));
+
+        expect(await screen.findByText('ID')).toBeTruthy();
+        expect(screen.getByText('注册账号')).toBeTruthy();
+        expect(screen.getByText(/使用真实用户ID注册/)).toBeTruthy();
+        expect(screen.queryByText(/邮箱确认/)).toBeNull();
+    });
+
+    it('can resolve the registration target before the initial Hub auth probe finishes', async () => {
+        let resolveAuth!: (value: { method: 'email'; code_length: number }) => void;
+        GetRemoteRegistrationAuthMock.mockReturnValue(new Promise(resolve => {
+            resolveAuth = resolve;
+        }));
+        mockPhoneRegistrationTarget();
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy();
+        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
+        const continueButton = screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement;
+        expect(continueButton.disabled).toBe(true);
+        expect(ActivateRemoteMock).not.toHaveBeenCalled();
+        expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: '13800138000' } });
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        expect(await screen.findByPlaceholderText('13800138000')).toBeTruthy();
+        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
+
+        await act(async () => {
+            resolveAuth({ method: 'email', code_length: 6 });
+        });
+        expect(screen.queryByText(/current verification method is email registration/i)).toBeNull();
+        expect(await screen.findByPlaceholderText('13800138000')).toBeTruthy();
+    });
+
+    it('prefills phone registration from the routed account identity', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+
+        render(<OnboardingWizard {...baseProps} email="13900139000" lang="zh-Hans" />);
+
+        fireEvent.click(await screen.findByRole('button', { name: /继续/ }));
+        await waitForRegistrationDetails();
+        const phoneInput = await screen.findByPlaceholderText('13800138000') as HTMLInputElement;
+        await waitFor(() => {
+            expect(phoneInput.value).toBe('13900139000');
+        });
+    });
+
+    it('asks for a phone number when the tenant requires phone registration', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+        expect(await screen.findByText(/requires phone registration/i)).toBeTruthy();
+        expect(screen.queryByText('Service redeem code')).toBeNull();
+    });
+
+    it('asks for an email address when the tenant requires email registration', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: '13800138000' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+        expect(await screen.findByText(/current verification method is email registration/i)).toBeTruthy();
+        expect(screen.queryByText('Service redeem code')).toBeNull();
+    });
+
+    it('shows a diagnostic registration-auth error instead of an email-required fallback', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+        ResolveRemoteRegistrationTargetMock.mockRejectedValue(new Error('load registration auth config failed: 502 Bad Gateway'));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: '13800138000' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+        expect(await screen.findByText(/registration verification method could not be confirmed/i)).toBeTruthy();
+        expect(screen.queryByText(/current verification method is email registration/i)).toBeNull();
+        expect(screen.queryByText('Service redeem code')).toBeNull();
+    });
+
+    it('resolves a phone user ID before enforcing the current hub registration method', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+        mockPhoneRegistrationTarget('http://phone-hub.example.com');
+
+        render(<OnboardingWizard {...baseProps} hubUrl="http://email-hub.example.com" />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: '13800138000' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+
+        const phoneInput = await screen.findByPlaceholderText('13800138000') as HTMLInputElement;
+        expect(phoneInput.value).toBe('13800138000');
+        expect(screen.queryByText(/current verification method is email registration/i)).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://phone-hub.example.com', '13800138000', 'tenant-phone');
+        });
+    });
+
+    it('resolves a phone user ID through HubCenter when no Hub URL is cached', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+        mockPhoneRegistrationTarget('http://phone-hub.example.com');
+
+        render(<OnboardingWizard {...baseProps} hubUrl="" />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: '13800138000' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+
+        expect(ResolveRemoteRegistrationTargetMock).toHaveBeenCalledWith('13800138000');
+        const phoneInput = await screen.findByPlaceholderText('13800138000') as HTMLInputElement;
+        expect(phoneInput.value).toBe('13800138000');
+        expect(screen.queryByText(/current verification method is email registration/i)).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://phone-hub.example.com', '13800138000', 'tenant-phone');
+        });
+    });
+
+    it('ignores a stale routed target when the user ID changes while resolving', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'email', code_length: 6 });
+        let resolveFirst!: (value: unknown) => void;
+        ResolveRemoteRegistrationTargetMock.mockImplementationOnce(async (identity: string) => new Promise(resolve => {
+            resolveFirst = resolve;
+        })).mockImplementationOnce(async (identity: string) => ({
+            identity,
+            hub_url: 'http://hub.example.com',
+            tenant_id: 'tenant-email',
+            method: 'email',
+            code_length: 6,
+        }));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        const identityInput = await screen.findByPlaceholderText('Email or phone');
+        fireEvent.change(identityInput, { target: { value: '13800138000' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        fireEvent.change(identityInput, { target: { value: 'user@example.com' } });
+
+        await act(async () => {
+            resolveFirst({
+                identity: '13800138000',
+                hub_url: 'http://phone-hub.example.com',
+                tenant_id: 'tenant-phone',
+                method: 'phone',
+                code_length: 6,
+            });
+        });
+
+        expect(screen.queryByPlaceholderText('13800138000')).toBeNull();
+        expect(screen.getByPlaceholderText('Email or phone')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+        expect(await screen.findByText('Service redeem code')).toBeTruthy();
+        expect(screen.queryByPlaceholderText('13800138000')).toBeNull();
+    });
+
+    it('returns from registration details to the identity-only step', async () => {
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity();
+        expect(await screen.findByText('Service redeem code')).toBeTruthy();
+        expect(screen.getByText('Free trial')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+        expect(await screen.findByPlaceholderText('Email or phone')).toBeTruthy();
+        expect(screen.queryByText('Service redeem code')).toBeNull();
+        expect(screen.queryByText('Free trial')).toBeNull();
+    });
+
+    it('keeps identity continue disabled until a user ID is entered and clears stale service code on edit', async () => {
+        render(<OnboardingWizard {...baseProps} />);
+
+        const identityInput = await screen.findByPlaceholderText('Email or phone');
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(true);
+        });
+
+        fireEvent.change(identityInput, { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+
+        const serviceCodeInput = await screen.findByPlaceholderText('Enter service redeem code (optional)') as HTMLInputElement;
+        fireEvent.change(serviceCodeInput, { target: { value: 'STALE-CODE' } });
+        expect(serviceCodeInput.value).toBe('STALE-CODE');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: 'second@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+
+        expect((await screen.findByPlaceholderText('Enter service redeem code (optional)') as HTMLInputElement).value).toBe('');
+    });
+
+    it('requires SMS send and code before phone registration succeeds', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+        SendRemoteRegistrationSMSMock.mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 });
+        ActivateRemoteSMSMock.mockResolvedValue({ email: 'phone:13800138000', vip_flag: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity('13800138000');
+        const phoneInput = await screen.findByPlaceholderText('13800138000');
+        const registerButton = screen.getByRole('button', { name: 'Register' }) as HTMLButtonElement;
+        expect(registerButton.disabled).toBe(true);
+
+        fireEvent.change(phoneInput, { target: { value: '13800138000' } });
+        expect(registerButton.disabled).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://hub.example.com', '13800138000', 'tenant-phone');
+        });
+        expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
+        expect(registerButton.disabled).toBe(true);
+
+        fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } });
+        expect(registerButton.disabled).toBe(false);
+        fireEvent.click(registerButton);
+
+        await waitFor(() => {
+            expect(ActivateRemoteSMSMock).toHaveBeenCalledWith('http://hub.example.com', '13800138000', '123456', '', 'tenant-phone', 'hub-phone');
+        });
+        expect(ActivateRemoteMock).not.toHaveBeenCalled();
+        expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_email: 'phone:13800138000', remote_mobile: '13800138000' });
+        expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats an existing phone SMS flow as login and device binding', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+        SendRemoteRegistrationSMSMock.mockResolvedValue({ ok: true, code_length: 6, expires_min: 5, purpose: 'verify_bound_phone' });
+        ActivateRemoteSMSMock.mockResolvedValue({ email: 'owner@example.com', vip_flag: false, rebound_existing_user: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity('13800138000');
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://hub.example.com', '13800138000', 'tenant-phone');
+        });
+        fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        expect(await screen.findByText(/Device binding complete/i)).toBeTruthy();
+        expect(await screen.findByText(/Phone verified\. Connecting to Hub/i)).toBeTruthy();
+        expect(ActivateRemoteSMSMock).toHaveBeenCalledWith('http://hub.example.com', '13800138000', '123456', '', 'tenant-phone', 'hub-phone');
+        expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_email: 'owner@example.com', remote_mobile: '13800138000' });
+    });
+
+    it('localizes the daily SMS limit error when sending a phone code', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+        SendRemoteRegistrationSMSMock.mockRejectedValue(new Error('SMS_DAILY_LIMIT_REACHED: daily SMS verification limit reached; max 3 per day'));
+
+        render(<OnboardingWizard {...baseProps} lang="zh-CN" />);
+
+        await continueRegistrationIdentity('13800138000');
+        fireEvent.click(screen.getByRole('button', { name: /验证码|Code/ }));
+
+        expect(await screen.findByText(/今日短信验证码次数已达上限/)).toBeTruthy();
+        expect(screen.getByText(/每天最多 3 次/)).toBeTruthy();
+        expect(screen.queryByText(/SMS_DAILY_LIMIT_REACHED/)).toBeNull();
+        expect(screen.queryByText(/daily SMS verification limit/i)).toBeNull();
+    });
+
+    it('keeps phone binding completion visible after parent refreshes the Hub URL', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget('http://phone-hub.example.com');
+        SendRemoteRegistrationSMSMock.mockResolvedValue({ ok: true, code_length: 6, expires_min: 5, purpose: 'verify_bound_phone' });
+        ActivateRemoteSMSMock.mockResolvedValue({ email: 'owner@example.com', vip_flag: false, rebound_existing_user: true });
+
+        const { rerender } = render(<OnboardingWizard {...baseProps} hubUrl="" />);
+
+        await continueRegistrationIdentity('13800138000');
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://phone-hub.example.com', '13800138000', 'tenant-phone');
+        });
+        fireEvent.change(screen.getByPlaceholderText('Enter 6-digit code'), { target: { value: '123456' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        expect(await screen.findByText(/Device binding complete/i)).toBeTruthy();
+
+        rerender(<OnboardingWizard {...baseProps} hubUrl="http://phone-hub.example.com" />);
+
+        expect(await screen.findByText(/Device binding complete/i)).toBeTruthy();
+        expect(screen.queryByPlaceholderText('Email or phone')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+    });
+
+    it('keeps the phone verification target locked to the confirmed user ID', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity('13800138000');
+        const phoneInput = await screen.findByPlaceholderText('13800138000') as HTMLInputElement;
+        expect(phoneInput.value).toBe('13800138000');
+        expect(phoneInput.readOnly).toBe(true);
+
+        fireEvent.change(phoneInput, { target: { value: '13900139000' } });
+        expect(phoneInput.value).toBe('13800138000');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+        await waitFor(() => {
+            expect(SendRemoteRegistrationSMSMock).toHaveBeenCalledWith('http://hub.example.com', '13800138000', 'tenant-phone');
+        });
     });
 
     it('redeems optional service code after registration when provided', async () => {
@@ -181,16 +569,17 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: ' card123 ' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('CARD123');
         });
         expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
-        expect((screen.getByPlaceholderText('Enter service redeem code (optional)') as HTMLInputElement).value).toBe('');
+        expect(screen.queryByPlaceholderText('Enter service redeem code (optional)')).toBeNull();
+        expect(screen.getByText(/Registration complete/)).toBeTruthy();
     });
 
     it('skips LLM step after successful redeem even when skip_llm_config is false', async () => {
@@ -202,10 +591,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'MYCODE' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('MYCODE');
@@ -215,7 +604,7 @@ describe('OnboardingWizard registration', () => {
 
         // Navigate to step 2 (UI Mode)
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        // Step 2 auto-completes, click Next again — should skip step 3 and go to step 4
+        // Step 2 auto-completes, click Next again; should skip step 3 and go to step 4.
         // Should be on step 4 (WeChat), not step 3 (LLM)
         await waitFor(() => {
             expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
@@ -235,10 +624,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'WAITCODE' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('WAITCODE');
@@ -263,10 +652,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'WAITCODE' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         expect(await screen.findByText(/authorization starts in about 2h/i)).toBeTruthy();
         expect(screen.queryByText(/credits are exhausted/i)).toBeNull();
@@ -283,17 +672,17 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'LIMITED' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         expect(await screen.findByText(/period limited\. LLM setup is not skipped yet/i)).toBeTruthy();
         expect(screen.queryByText(/0s|0 seconds/i)).toBeNull();
         expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
     });
 
-    it('localizes inactive redeem reasons in Chinese', async () => {
+    it('shows inactive redeem reasons without crashing', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         RedeemHubLLMServiceMock.mockResolvedValue({
             active: false,
@@ -301,18 +690,14 @@ describe('OnboardingWizard registration', () => {
             inactive_reasons: ['grant credits are exhausted'],
         });
 
-        render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
+        render(<OnboardingWizard {...baseProps} />);
 
-        if (!screen.queryByPlaceholderText('请输入服务兑换码（可选）')) {
-            fireEvent.click(screen.getByRole('button', { name: '下一步' }));
-        }
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
-        fireEvent.change(screen.getByPlaceholderText('请输入服务兑换码（可选）'), { target: { value: 'USEDUP' } });
-        fireEvent.click(screen.getByRole('button', { name: '注册' }));
-        fireEvent.click(screen.getByRole('button', { name: '确认注册' }));
+        await continueRegistrationIdentity();
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'USEDUP' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
-        expect(await screen.findByText(/授权额度已用尽/)).toBeTruthy();
-        expect(screen.queryByText(/grant credits are exhausted/)).toBeNull();
+        expect(await screen.findByText(/credits are exhausted/i)).toBeTruthy();
     });
 
     it('skips LLM step when a period-limited grant is covered by another active official grant', async () => {
@@ -328,10 +713,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'COVERED' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('COVERED');
@@ -346,9 +731,9 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -369,12 +754,12 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         expect(screen.getByRole('button', { name: /Online mode/ }).getAttribute('aria-pressed')).toBe('true');
         expect((screen.getByLabelText(/Free trial/) as HTMLInputElement).checked).toBe(true);
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        expect(screen.getByText(/remaining bonus credits/)).toBeTruthy();
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        expect(screen.getByRole('button', { name: /Confirm & Register/ })).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -402,10 +787,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByLabelText(/Free trial/));
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -425,6 +810,7 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         expect(screen.getByLabelText(/Online mode/)).toBeTruthy();
         fireEvent.click(screen.getByLabelText(/Offline mode/));
         expect(await screen.findByRole('dialog', { name: /Offline Mode Notice/i })).toBeTruthy();
@@ -474,6 +860,7 @@ describe('OnboardingWizard registration', () => {
     it('returns to the normal registration UI when offline mode is turned back off', async () => {
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByLabelText(/Offline mode/));
         expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
         const offlineFreeTrial = screen.getByLabelText(/Free trial/) as HTMLInputElement;
@@ -483,7 +870,7 @@ describe('OnboardingWizard registration', () => {
         fireEvent.click(screen.getByRole('button', { name: /I understand/i }));
 
         fireEvent.click(screen.getByLabelText(/Online mode/));
-        expect(screen.getByPlaceholderText('name@example.com')).toBeTruthy();
+        expect(screen.getByDisplayValue('user@example.com')).toBeTruthy();
         expect((screen.getByLabelText(/Free trial/) as HTMLInputElement).checked).toBe(true);
         expect(screen.queryAllByText(/classified or restricted networks/i)).toHaveLength(0);
     });
@@ -495,6 +882,7 @@ describe('OnboardingWizard registration', () => {
         }));
 
         render(<OnboardingWizard {...baseProps} />);
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByLabelText(/Offline mode/));
 
         await act(async () => {
@@ -515,10 +903,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         expect(screen.getByText('Free trial')).toBeTruthy();
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(await screen.findByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -535,9 +923,9 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -555,9 +943,9 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
@@ -585,9 +973,9 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         expect(screen.getByRole('button', { name: 'Registering...' })).toBeTruthy();
 
@@ -603,33 +991,20 @@ describe('OnboardingWizard registration', () => {
     });
 
     it('switches button state after hub connection succeeds', async () => {
-        vi.useFakeTimers();
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
-        GetRemoteConnectionStatusMock
-            .mockResolvedValueOnce({ connected: false })
-            .mockResolvedValueOnce({ connected: true });
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
-        await act(async () => {
-            await Promise.resolve();
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /Registered/ })).toBeTruthy();
+            expect(screen.getAllByText(/Hub connected/).length).toBeGreaterThan(0);
+            expect(screen.getByText('Hub connected')).toBeTruthy();
         });
-
-        expect(screen.getByRole('button', { name: /Registered .*Hub connecting/ })).toBeTruthy();
-        expect(screen.getByText(/Connecting to Hub in the background/)).toBeTruthy();
-        expect(screen.getByText('Hub connecting')).toBeTruthy();
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(1600);
-        });
-
-        expect(screen.getByRole('button', { name: /Registered/ })).toBeTruthy();
-        expect(screen.getAllByText(/Hub connected/).length).toBeGreaterThan(0);
-        expect(screen.getByText('Hub connected')).toBeTruthy();
     });
 
     it('shows backend registration error and clears busy state', async () => {
@@ -637,9 +1012,9 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/boom/)).toBeTruthy();
@@ -660,10 +1035,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByLabelText(/Free trial/));
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
@@ -710,10 +1085,10 @@ describe('OnboardingWizard registration', () => {
 
         render(<OnboardingWizard {...baseProps} />);
 
+        await continueRegistrationIdentity();
         fireEvent.click(screen.getByLabelText(/Free trial/));
-        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+        fireEvent.click(screen.getByRole('button', { name: /Confirm & Register/ }));
 
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();

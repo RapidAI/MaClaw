@@ -212,11 +212,22 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		}
 	})
 
+	// --- Notification Service Module ---
+	notifStore := notification.NewSQLiteStore(provider.Write)
+	if err := notifStore.InitSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("notification schema init: %w", err)
+	}
+	cascadeSvc := notification.NewCascadeService(notifStore)
+	hubNotifResolver := &hubServiceNotifResolver{hubService: hubService}
+	notifSvcCenter := notification.NewService(notifStore, cascadeSvc, hubNotifResolver)
+
 	if haSvc != nil {
 		hubService.SetSyncRecorder(haSvc)
 		haSvc.SetRouteSnapshotRefresher(entryService)
+		haSvc.AttachNotificationStore(notifStore)
+		notifSvcCenter.SetSyncRecorder(haSvc)
 		app.goBackground(func(ctx context.Context) {
-			seedInitialHASnapshots(ctx, haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, skillStore, smStore)
+			seedInitialHASnapshots(ctx, haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, notifStore, skillStore, smStore)
 		})
 		app.goBackground(func(ctx context.Context) {
 			runHAHistoryPruner(ctx, haSvc, cfg.HA.HistoryRetentionDays, cfg.HA.HistoryMaxRetainedOps, cfg.HA.HistoryPruneIntervalMinutes, cfg.HA.HistoryPruneBatchSize)
@@ -233,15 +244,6 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		nodeID = "single"
 	}
 	_ = InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc)
-
-	// --- Notification Service Module ---
-	notifStore := notification.NewSQLiteStore(provider.Write)
-	if err := notifStore.InitSchema(context.Background()); err != nil {
-		return nil, fmt.Errorf("notification schema init: %w", err)
-	}
-	cascadeSvc := notification.NewCascadeService(notifStore)
-	hubNotifResolver := &hubServiceNotifResolver{hubService: hubService}
-	notifSvcCenter := notification.NewService(notifStore, cascadeSvc, hubNotifResolver)
 
 	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage, notifSvcCenter)
 

@@ -47,7 +47,7 @@ func TestUpdateRegistrationAuthConfigRequiresAliyunKeysForPhone(t *testing.T) {
 
 func TestUpdateRegistrationAuthConfigSavesPhoneSettings(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
-	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"速通互联验证平台","aliyun_template_code":"100003","code_ttl_minutes":5,"code_length":4}`)
+	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"速通互联验证平台","aliyun_template_code":"100003","code_ttl_minutes":5,"code_length":6}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
 	rr := httptest.NewRecorder()
 
@@ -62,7 +62,7 @@ func TestUpdateRegistrationAuthConfigSavesPhoneSettings(t *testing.T) {
 	if got.Method != registrationAuthMethodPhone || got.AliyunAccessKeyID != "ak" || got.AliyunAccessKeySecret != "secret" {
 		t.Fatalf("unexpected config: %+v", got)
 	}
-	if got.AliyunSignName != registrationAuthDefaultSignName || got.AliyunTemplateCode != registrationAuthDefaultTemplate || got.CodeTTLMinutes != 5 || got.CodeLength != 4 {
+	if got.AliyunSignName != registrationAuthDefaultSignName || got.AliyunTemplateCode != registrationAuthDefaultTemplate || got.CodeTTLMinutes != 5 || got.CodeLength != 6 {
 		t.Fatalf("unexpected aliyun sms config: %+v", got)
 	}
 	raw := settings.values[registrationAuthConfigKey]
@@ -73,7 +73,7 @@ func TestUpdateRegistrationAuthConfigSavesPhoneSettings(t *testing.T) {
 
 func TestUpdateRegistrationAuthConfigSavesDailySMSLimit(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
-	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":4,"daily_sms_limit":6}`)
+	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":6,"daily_sms_limit":6}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
 	rr := httptest.NewRecorder()
 
@@ -96,7 +96,7 @@ func TestUpdateRegistrationAuthConfigSavesDailySMSLimit(t *testing.T) {
 
 func TestPublicRegistrationAuthConfigIncludesDailySMSLimit(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
-	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":4,"daily_sms_limit":6}`)
+	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":6,"daily_sms_limit":6}`)
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
 	saveRec := httptest.NewRecorder()
 	UpdateRegistrationAuthConfigHandler(settings).ServeHTTP(saveRec, saveReq)
@@ -122,6 +122,44 @@ func TestPublicRegistrationAuthConfigIncludesDailySMSLimit(t *testing.T) {
 	}
 }
 
+func TestPublicRegistrationAuthConfigUsesTenantIDHint(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{
+		registrationAuthConfigKey:                          `{"method":"email","code_ttl_minutes":5,"code_length":6}`,
+		"tenant:tenant_phone:" + registrationAuthConfigKey: `{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":7,"code_length":6,"daily_sms_limit":5}`,
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/enroll/registration-auth?tenant_id=tenant_phone", nil)
+	rr := httptest.NewRecorder()
+	PublicRegistrationAuthConfigHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tenant public status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode tenant response: %v", err)
+	}
+	if got["method"] != "phone" || got["code_length"] != float64(6) || got["daily_sms_limit"] != float64(5) {
+		t.Fatalf("tenant public config = %#v body=%s", got, rr.Body.String())
+	}
+	if _, ok := got["aliyun_access_key_secret"]; ok {
+		t.Fatalf("public tenant config leaked secret: %s", rr.Body.String())
+	}
+
+	defaultReq := httptest.NewRequest(http.MethodGet, "/api/enroll/registration-auth", nil)
+	defaultRR := httptest.NewRecorder()
+	PublicRegistrationAuthConfigHandler(settings).ServeHTTP(defaultRR, defaultReq)
+	if defaultRR.Code != http.StatusOK {
+		t.Fatalf("default public status = %d body=%s", defaultRR.Code, defaultRR.Body.String())
+	}
+	var defaultGot map[string]any
+	if err := json.Unmarshal(defaultRR.Body.Bytes(), &defaultGot); err != nil {
+		t.Fatalf("decode default response: %v", err)
+	}
+	if defaultGot["method"] != "email" {
+		t.Fatalf("default public config = %#v body=%s", defaultGot, defaultRR.Body.String())
+	}
+}
+
 func TestBuildAliyunSMSVerifyCodeSendRequestUsesBusinessTemplate(t *testing.T) {
 	cfg := RegistrationAuthConfig{
 		Method:                registrationAuthMethodPhone,
@@ -129,13 +167,13 @@ func TestBuildAliyunSMSVerifyCodeSendRequestUsesBusinessTemplate(t *testing.T) {
 		AliyunAccessKeySecret: "secret",
 		AliyunSignName:        registrationAuthDefaultSignName,
 		CodeTTLMinutes:        7,
-		CodeLength:            4,
+		CodeLength:            6,
 	}
 	got, err := buildAliyunSMSVerifyCodeSendRequest(cfg, registrationSMSBusinessRegister, "19900001111")
 	if err != nil {
 		t.Fatalf("build send request: %v", err)
 	}
-	if got.Action != registrationSMSSendVerifyCodeActionName || got.TemplateCode != "100001" || got.SignName != registrationAuthDefaultSignName || got.PhoneNumber != "19900001111" || got.CodeLength != 4 {
+	if got.Action != registrationSMSSendVerifyCodeActionName || got.TemplateCode != "100001" || got.SignName != registrationAuthDefaultSignName || got.PhoneNumber != "19900001111" || got.CodeLength != 6 {
 		t.Fatalf("unexpected send request: %+v", got)
 	}
 	if got.TemplateParam != `{"code":"##code##","min":"7"}` {
@@ -152,11 +190,11 @@ func TestBuildAliyunSMSVerifyCodeSendRequestUsesBusinessTemplate(t *testing.T) {
 }
 
 func TestBuildAliyunSMSVerifyCodeCheckRequest(t *testing.T) {
-	got, err := buildAliyunSMSVerifyCodeCheckRequest("19900001111", "3032")
+	got, err := buildAliyunSMSVerifyCodeCheckRequest("19900001111", "303246")
 	if err != nil {
 		t.Fatalf("build check request: %v", err)
 	}
-	if got.Action != registrationSMSCheckVerifyCodeActionName || got.PhoneNumber != "19900001111" || got.VerifyCode != "3032" {
+	if got.Action != registrationSMSCheckVerifyCodeActionName || got.PhoneNumber != "19900001111" || got.VerifyCode != "303246" {
 		t.Fatalf("unexpected check request: %+v", got)
 	}
 }

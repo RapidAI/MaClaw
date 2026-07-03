@@ -1,6 +1,7 @@
 export function localizeByLang(lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans): string {
-    if (lang === "zh-Hans") return zhHans;
-    if (lang === "zh-Hant") return zhHant;
+    const normalizedLang = String(lang || "").toLowerCase();
+    if (normalizedLang === "zh-hant" || normalizedLang === "zh-tw" || normalizedLang === "zh-hk" || normalizedLang === "zh-mo") return zhHant;
+    if (normalizedLang === "zh" || normalizedLang === "zh-hans" || normalizedLang.startsWith("zh-cn") || normalizedLang.startsWith("zh-sg")) return zhHans;
     return en;
 }
 

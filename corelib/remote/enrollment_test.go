@@ -326,6 +326,128 @@ func TestResolveHubs_ReturnsParsedResult(t *testing.T) {
 	}
 }
 
+func TestResolveHubsSendsPhoneNumberForNumericIdentity(t *testing.T) {
+	InvalidateCenterCache()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"quality_score":  10,
+				"routable":       true,
+				"service_status": "ok",
+				"features":       map[string]any{"can_resolve": true},
+			})
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{}})
+		case "/api/entry/resolve":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode resolve payload: %v", err)
+			}
+			if payload["email"] != "199 0000 1111" || payload["phone_number"] != "19900001111" {
+				t.Fatalf("resolve payload = %#v", payload)
+			}
+			_ = json.NewEncoder(w).Encode(HubCenterResolveResult{
+				Email:        "phone:19900001111",
+				Mode:         "single",
+				DefaultHubID: "hub-phone",
+				Hubs: []HubCenterResolveHub{
+					{HubID: "hub-phone", Name: "Phone Hub", BaseURL: "https://phonehub.example.com", Status: "online", TenantID: "tenant-phone"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer center.Close()
+
+	origDefaults := DefaultRemoteHubCenterURLs
+	origDefault := DefaultRemoteHubCenterURL
+	DefaultRemoteHubCenterURLs = []string{center.URL}
+	DefaultRemoteHubCenterURL = center.URL
+	defer func() {
+		DefaultRemoteHubCenterURLs = origDefaults
+		DefaultRemoteHubCenterURL = origDefault
+	}()
+
+	client := NewEnrollmentClient()
+	result, _, _, err := client.ResolveHubs(context.Background(), "199 0000 1111", "", center.URL, nil)
+	if err != nil {
+		t.Fatalf("ResolveHubs() error = %v", err)
+	}
+	if result.Email != "phone:19900001111" || len(result.Hubs) != 1 || result.Hubs[0].TenantID != "tenant-phone" {
+		t.Fatalf("resolve result = %#v", result)
+	}
+}
+
+func TestResolveHubsDoesNotSendPhoneNumberForAlphanumericUserID(t *testing.T) {
+	InvalidateCenterCache()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"quality_score":  10,
+				"routable":       true,
+				"service_status": "ok",
+				"features":       map[string]any{"can_resolve": true},
+			})
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{}})
+		case "/api/entry/resolve":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode resolve payload: %v", err)
+			}
+			if payload["email"] != "abc123456" {
+				t.Fatalf("email payload = %q, want abc123456", payload["email"])
+			}
+			if _, ok := payload["phone_number"]; ok {
+				t.Fatalf("resolve payload unexpectedly included phone_number: %#v", payload)
+			}
+			_ = json.NewEncoder(w).Encode(HubCenterResolveResult{
+				Email:        "abc123456",
+				Mode:         "single",
+				DefaultHubID: "hub-userid",
+				Hubs: []HubCenterResolveHub{
+					{HubID: "hub-userid", Name: "User ID Hub", BaseURL: "https://userid.example.com", Status: "online", TenantID: "tenant-userid"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer center.Close()
+
+	origDefaults := DefaultRemoteHubCenterURLs
+	origDefault := DefaultRemoteHubCenterURL
+	DefaultRemoteHubCenterURLs = []string{center.URL}
+	DefaultRemoteHubCenterURL = center.URL
+	defer func() {
+		DefaultRemoteHubCenterURLs = origDefaults
+		DefaultRemoteHubCenterURL = origDefault
+	}()
+
+	client := NewEnrollmentClient()
+	result, _, _, err := client.ResolveHubs(context.Background(), "abc123456", "", center.URL, nil)
+	if err != nil {
+		t.Fatalf("ResolveHubs() error = %v", err)
+	}
+	if result.Email != "abc123456" || len(result.Hubs) != 1 || result.Hubs[0].TenantID != "tenant-userid" {
+		t.Fatalf("resolve result = %#v", result)
+	}
+}
+
+func TestNormalizeResolvePhoneNumberRejectsAlphanumericUserID(t *testing.T) {
+	if got := normalizeResolvePhoneNumber("abc123456"); got != "" {
+		t.Fatalf("normalizeResolvePhoneNumber(alphanumeric) = %q, want empty", got)
+	}
+	if got := normalizeResolvePhoneNumber("199 0000-1111"); got != "19900001111" {
+		t.Fatalf("normalizeResolvePhoneNumber(phone) = %q, want 19900001111", got)
+	}
+}
+
 func TestBuildMachineProfile(t *testing.T) {
 	profile := BuildMachineProfile("3.0.0")
 	if profile.AppVersion != "3.0.0" {

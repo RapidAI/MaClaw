@@ -84,7 +84,7 @@ func TestRegistrationSMSSendCodeHandlerUsesTenantPhoneConfig(t *testing.T) {
 	if provider.sendReq.PhoneNumber != "19900001111" || provider.sendReq.TemplateCode != "100001" || provider.sendReq.TemplateParam != `{"code":"##code##","min":"5"}` {
 		t.Fatalf("unexpected send request: %+v", provider.sendReq)
 	}
-	if !strings.Contains(rr.Body.String(), `"tenant_id":"tenant_acme"`) || !strings.Contains(rr.Body.String(), `"code_length":4`) {
+	if !strings.Contains(rr.Body.String(), `"tenant_id":"tenant_acme"`) || !strings.Contains(rr.Body.String(), `"code_length":6`) {
 		t.Fatalf("unexpected response: %s", rr.Body.String())
 	}
 }
@@ -340,7 +340,7 @@ func TestRegistrationSMSVerifyAndStartRejectsExistingPhoneUser(t *testing.T) {
 	}
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -368,7 +368,7 @@ func TestRegistrationSMSVerifyAndStartRebindsExistingPhoneIdentityToCanonicalUse
 	}
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -419,7 +419,7 @@ func TestRegistrationSMSVerifyAndStartBackfillsTenantScopedPhoneGrant(t *testing
 	}
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -456,7 +456,7 @@ func TestRegistrationSMSVerifyAndStartContinuesWhenTenantBackfillFails(t *testin
 	}
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
+	body := bytes.NewBufferString(`{"tenant_id":"tenant_b","phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone-existing"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -475,7 +475,7 @@ func TestRegistrationSMSVerifyAndStartRejectsRoutedPhoneBeforeCheckingCode(t *te
 	identity.SetUserRouteSyncer(routeSyncer)
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -510,7 +510,7 @@ func TestRegistrationSMSVerifyAndStartCreatesPhoneIdentity(t *testing.T) {
 	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"desktop","platform":"windows","client_id":"cid-phone"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -521,7 +521,7 @@ func TestRegistrationSMSVerifyAndStartCreatesPhoneIdentity(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "3032" {
+	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "303246" {
 		t.Fatalf("unexpected check request: %+v", provider.checkReq)
 	}
 	var got struct {
@@ -550,7 +550,7 @@ func TestRegistrationSMSVerifyAndStartRejectsFailedCode(t *testing.T) {
 	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
 	provider := &fakeRegistrationSMSProvider{checkPass: false}
 
-	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"3032"}`)
+	body := bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", body)
 	rr := httptest.NewRecorder()
 	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(cfg RegistrationAuthConfig) registrationSMSProvider {
@@ -576,7 +576,7 @@ func saveRegistrationAuthTestConfigWithLimit(t *testing.T, settings store.System
 		AliyunSignName:        registrationAuthDefaultSignName,
 		AliyunTemplateCode:    registrationAuthDefaultTemplate,
 		CodeTTLMinutes:        5,
-		CodeLength:            4,
+		CodeLength:            6,
 		DailySMSLimit:         dailyLimit,
 	})
 	data, err := json.Marshal(cfg)

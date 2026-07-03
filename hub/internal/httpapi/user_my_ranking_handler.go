@@ -27,12 +27,15 @@ func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSumma
 			return
 		}
 		principal, err := authenticateViewerRequest(r, identity)
-		if err != nil {
+		if err != nil || principal == nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
 
-		tenantID := principal.TenantID
+		tenantID := strings.TrimSpace(principal.TenantID)
+		if tenantID == "" {
+			tenantID = RequestTenantID(r)
+		}
 		if tenantID == "" {
 			tenantID = store.DefaultTenantID
 		}
@@ -42,54 +45,56 @@ func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSumma
 		period := "monthly"
 		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		end := start.AddDate(0, 1, 0)
+		rankingCtx := store.WithTenant(r.Context(), tenantID)
 
-		tokenRows, err := sessions.SummarizeUserTokenUsage(store.WithTenant(r.Context(), tenantID), tenantID, start, end)
+		tokenRows, err := sessions.SummarizeUserTokenUsage(rankingCtx, tenantID, start, end)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RANKING_TOKEN_LOAD_FAILED", err.Error())
 			return
 		}
-		durationRows, err := sessions.SummarizeUserDurations(store.WithTenant(r.Context(), tenantID), tenantID, start, end, now)
+		durationRows, err := sessions.SummarizeUserDurations(rankingCtx, tenantID, start, end, now)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RANKING_DURATION_LOAD_FAILED", err.Error())
 			return
 		}
 
-		// Merge token and duration data by email (same logic as admin rankings).
-		byEmail := map[string]*userRankingRow{}
+		// Merge token and duration data by account (same logic as admin rankings).
+		byAccount := map[string]*userRankingRow{}
 		for _, t := range tokenRows {
-			email := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			byEmail[email] = &userRankingRow{UserEmail: email, TotalTokens: t.Usage.TotalTokens()}
+			byAccount[account] = &userRankingRow{UserEmail: account, TotalTokens: t.Usage.TotalTokens()}
 		}
 		for _, d := range durationRows {
-			email := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			row := byEmail[email]
+			row := byAccount[account]
 			if row == nil {
-				row = &userRankingRow{UserEmail: email}
-				byEmail[email] = row
+				row = &userRankingRow{UserEmail: account}
+				byAccount[account] = row
 			}
 			row.DurationSeconds += d.DurationSeconds
+			row.OnlineSeconds += d.OnlineSeconds
 		}
 
-		merged := make([]userRankingRow, 0, len(byEmail))
-		for _, row := range byEmail {
+		merged := make([]userRankingRow, 0, len(byAccount))
+		for _, row := range byAccount {
 			merged = append(merged, *row)
 		}
 		assignUserRankingRanks(merged)
 
 		// Find current user's row.
-		myEmail := strings.ToLower(strings.TrimSpace(principal.Email))
+		myAccount := strings.ToLower(strings.TrimSpace(principal.Email))
 		resp := myRankingResponse{
 			Period:     period,
 			TotalUsers: len(merged),
 		}
 		for _, row := range merged {
-			if row.UserEmail == myEmail {
+			if row.UserEmail == myAccount {
 				resp.TotalTokens = row.TotalTokens
 				resp.DurationSeconds = row.DurationSeconds
 				resp.TokenRank = row.TokenRank

@@ -31,7 +31,7 @@ describe('onboardingFlow', () => {
         expect(flow.totalSteps).toBe(2);
         expect(flow.wxStep).toBe(2);
         expect(flow.llmStep).toBeNull();
-        expect(getOnboardingStepLabels(flow, 'zh-Hans')).toEqual(['邮箱注册', '绑定微信']);
+        expect(getOnboardingStepLabels(flow, 'zh-Hans')).toEqual(['\u8d26\u53f7\u6ce8\u518c', '\u7ed1\u5b9a\u5fae\u4fe1']);
         expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: true })).toEqual([false, true, true]);
         expect(isOnboardingComplete(flow, { regDone: true, llmDone: false, wxCompleted: true })).toBe(true);
     });
@@ -43,7 +43,7 @@ describe('onboardingFlow', () => {
         expect(flow.totalSteps).toBe(3);
         expect(flow.wxStep).toBe(3);
         expect(flow.llmStep).toBe(2);
-        expect(getOnboardingStepLabels(flow, 'zh-Hant')).toEqual(['郵箱註冊', '配置 LLM', '綁定微信']);
+        expect(getOnboardingStepLabels(flow, 'zh-Hant')).toEqual(['\u5e33\u865f\u8a3b\u518a', '\u914d\u7f6e LLM', '\u7d81\u5b9a\u5fae\u4fe1']);
         expect(isCurrentOnboardingStep(flow, 2, 'llm')).toBe(true);
         expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: true })).toEqual([false, true, false, true]);
         expect(isOnboardingComplete(flow, { regDone: true, llmDone: false, wxCompleted: true })).toBe(false);

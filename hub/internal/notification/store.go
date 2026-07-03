@@ -168,6 +168,28 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status Status) erro
 	return nil
 }
 
+// Delete removes a notification and its read receipts from the database.
+func (s *Store) Delete(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM admin_notification_reads WHERE notification_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM admin_notifications WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 // FindBySource queries for a notification with a given source and source_id.
 // Returns nil, nil if not found.
 func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (*Notification, error) {
@@ -234,22 +256,95 @@ func (s *Store) MarkRead(ctx context.Context, machineID, notificationID string) 
 // Only marks notifications that the machine hasn't already read.
 func (s *Store) MarkAllRead(ctx context.Context, machineID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO admin_notification_reads (notification_id, machine_id, read_at)
-		 SELECT id, ?, ? FROM admin_notifications
-		 WHERE status = 'published'
-		   AND (expire_at IS NULL OR expire_at > ?)
-		   AND id NOT IN (SELECT notification_id FROM admin_notification_reads WHERE machine_id = ?)`,
-		machineID, now, now, machineID)
-	return err
+	notifications, err := s.queryUnreadForMachine(ctx, machineID, now, 0)
+	if err != nil {
+		return err
+	}
+	if len(notifications) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO admin_notification_reads (notification_id, machine_id, read_at) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, n := range notifications {
+		if _, err := stmt.ExecContext(ctx, n.ID, machineID, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// GetUnreadForMachine returns up to 10 unread notifications for a machine,
-// excluding expired and revoked notifications, ordered by created_at DESC.
-// Uses LEFT JOIN instead of NOT IN subquery for better performance with many reads.
+// GetUnreadForMachine returns up to 10 unread notifications targeted to the
+// authenticated machine's user/tenant, excluding expired and revoked items.
 func (s *Store) GetUnreadForMachine(ctx context.Context, machineID string) ([]*Notification, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	return s.queryUnreadForMachine(ctx, machineID, now, 10)
+}
 
+func (s *Store) queryUnreadForMachine(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
+	notifications, err := s.queryUnreadForMachineWithDepartments(ctx, machineID, now, limit)
+	if err == nil {
+		return notifications, nil
+	}
+	lowerErr := strings.ToLower(err.Error())
+	if isMissingTableError(err) && strings.Contains(lowerErr, "machines") {
+		return s.getUnreadForMachineLegacy(ctx, machineID, now, limit)
+	}
+	if isMissingTableError(err) && strings.Contains(lowerErr, "org_members") {
+		return s.getUnreadForMachineWithoutDepartments(ctx, machineID, now, limit)
+	}
+	return nil, err
+}
+
+func (s *Store) queryUnreadForMachineWithDepartments(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
+	limitSQL := unreadLimitSQL(limit)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
+		 FROM admin_notifications n
+		 JOIN machines m ON m.id = ?
+		 LEFT JOIN users u ON u.id = m.user_id
+		 LEFT JOIN admin_notification_reads r ON r.notification_id = n.id AND r.machine_id = ?
+		 WHERE n.status = 'published'
+		   AND (n.expire_at IS NULL OR n.expire_at > ?)
+		   AND r.notification_id IS NULL
+		   AND (
+		     n.audience_type = 'all'
+		     OR (n.audience_type = 'tenant' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = COALESCE(NULLIF(u.tenant_id, ''), m.tenant_id)
+		     ))
+		     OR (n.audience_type = 'user' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = m.user_id
+		     ))
+		     OR (n.audience_type = 'department' AND EXISTS (
+		       SELECT 1 FROM org_members om
+		       JOIN json_each(n.audience_ids) a ON a.value = om.department_id
+		       WHERE om.user_id = m.user_id
+		     ))
+		   )
+		 ORDER BY n.created_at DESC
+		 `+limitSQL,
+		machineID, machineID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotificationRows(rows)
+}
+
+func (s *Store) getUnreadForMachineLegacy(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
+	limitSQL := unreadLimitSQL(limit)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
 		 FROM admin_notifications n
@@ -258,13 +353,55 @@ func (s *Store) GetUnreadForMachine(ctx context.Context, machineID string) ([]*N
 		   AND (n.expire_at IS NULL OR n.expire_at > ?)
 		   AND r.notification_id IS NULL
 		 ORDER BY n.created_at DESC
-		 LIMIT 10`,
+		 `+limitSQL,
 		machineID, now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanNotificationRows(rows)
+}
 
+func (s *Store) getUnreadForMachineWithoutDepartments(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
+	limitSQL := unreadLimitSQL(limit)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
+		 FROM admin_notifications n
+		 JOIN machines m ON m.id = ?
+		 LEFT JOIN users u ON u.id = m.user_id
+		 LEFT JOIN admin_notification_reads r ON r.notification_id = n.id AND r.machine_id = ?
+		 WHERE n.status = 'published'
+		   AND (n.expire_at IS NULL OR n.expire_at > ?)
+		   AND r.notification_id IS NULL
+		   AND (
+		     n.audience_type = 'all'
+		     OR (n.audience_type = 'tenant' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = COALESCE(NULLIF(u.tenant_id, ''), m.tenant_id)
+		     ))
+		     OR (n.audience_type = 'user' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = m.user_id
+		     ))
+		   )
+		 ORDER BY n.created_at DESC
+		 `+limitSQL,
+		machineID, machineID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotificationRows(rows)
+}
+
+func unreadLimitSQL(limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" LIMIT %d", limit)
+}
+
+func scanNotificationRows(rows *sql.Rows) ([]*Notification, error) {
 	var results []*Notification
 	for rows.Next() {
 		n, err := scanNotificationFromRows(rows)
@@ -277,8 +414,8 @@ func (s *Store) GetUnreadForMachine(ctx context.Context, machineID string) ([]*N
 }
 
 // GetReadStats returns delivery/read statistics for a notification.
-// TotalPush is the count of machines in the audience, ReadCount is how many
-// have marked it read, and ReadRate is ReadCount/TotalPush.
+// TotalPush is the count of users in the audience, ReadCount is how many
+// machines have marked it read, and ReadRate is ReadCount/TotalPush.
 func (s *Store) GetReadStats(ctx context.Context, notificationID string) (*ReadStats, error) {
 	// Get the notification to resolve audience
 	n, err := s.GetByID(ctx, notificationID)
@@ -289,33 +426,9 @@ func (s *Store) GetReadStats(ctx context.Context, notificationID string) (*ReadS
 		return nil, sql.ErrNoRows
 	}
 
-	// Resolve total push count based on audience
-	var totalPush int
-	switch n.AudienceType {
-	case AudienceAll:
-		ids, err := s.AllActiveMachineIDs(ctx)
-		if err != nil {
-			return nil, err
-		}
-		totalPush = len(ids)
-	case AudienceTenant:
-		ids, err := s.MachineIDsByTenantIDs(ctx, n.AudienceIDs)
-		if err != nil {
-			return nil, err
-		}
-		totalPush = len(ids)
-	case AudienceDepartment:
-		ids, err := s.MachineIDsByDepartmentIDs(ctx, n.AudienceIDs)
-		if err != nil {
-			return nil, err
-		}
-		totalPush = len(ids)
-	case AudienceUser:
-		ids, err := s.MachineIDsByUserIDs(ctx, n.AudienceIDs)
-		if err != nil {
-			return nil, err
-		}
-		totalPush = len(ids)
+	totalPush, err := s.CountAudienceUsers(ctx, n)
+	if err != nil {
+		return nil, err
 	}
 
 	// Count reads
@@ -354,6 +467,87 @@ func (s *Store) AllActiveMachineIDs(ctx context.Context) ([]string, error) {
 	}
 	defer rows.Close()
 	return scanStringColumn(rows)
+}
+
+// CountAudienceUsers returns the number of non-deleted users in a notification's
+// audience. Older tests and partial schemas may not have a users table yet; in
+// that case it falls back to machine counts so notification behavior remains
+// backward-compatible.
+func (s *Store) CountAudienceUsers(ctx context.Context, n *Notification) (int, error) {
+	if n == nil {
+		return 0, nil
+	}
+	switch n.AudienceType {
+	case AudienceAll:
+		count, err := s.countUsersWhere(ctx, "", nil)
+		if isMissingTableError(err) {
+			ids, fallbackErr := s.AllActiveMachineIDs(ctx)
+			if fallbackErr != nil {
+				return 0, fallbackErr
+			}
+			return len(ids), nil
+		}
+		return count, err
+	case AudienceTenant:
+		if len(n.AudienceIDs) == 0 {
+			return 0, nil
+		}
+		query, args := buildInQuery(`tenant_id IN (%s)`, n.AudienceIDs)
+		count, err := s.countUsersWhere(ctx, query, args)
+		if isMissingTableError(err) {
+			ids, fallbackErr := s.MachineIDsByTenantIDs(ctx, n.AudienceIDs)
+			if fallbackErr != nil {
+				return 0, fallbackErr
+			}
+			return len(ids), nil
+		}
+		return count, err
+	case AudienceDepartment:
+		if len(n.AudienceIDs) == 0 {
+			return 0, nil
+		}
+		query, args := buildInQuery(`id IN (SELECT user_id FROM org_members WHERE department_id IN (%s))`, n.AudienceIDs)
+		count, err := s.countUsersWhere(ctx, query, args)
+		if isMissingTableError(err) {
+			if strings.Contains(strings.ToLower(err.Error()), "org_members") {
+				return 0, nil
+			}
+			ids, fallbackErr := s.MachineIDsByDepartmentIDs(ctx, n.AudienceIDs)
+			if fallbackErr != nil {
+				return 0, fallbackErr
+			}
+			return len(ids), nil
+		}
+		return count, err
+	case AudienceUser:
+		if len(n.AudienceIDs) == 0 {
+			return 0, nil
+		}
+		query, args := buildInQuery(`id IN (%s)`, n.AudienceIDs)
+		count, err := s.countUsersWhere(ctx, query, args)
+		if isMissingTableError(err) {
+			ids, fallbackErr := s.MachineIDsByUserIDs(ctx, n.AudienceIDs)
+			if fallbackErr != nil {
+				return 0, fallbackErr
+			}
+			return len(ids), nil
+		}
+		return count, err
+	default:
+		return 0, fmt.Errorf("unknown audience type: %s", n.AudienceType)
+	}
+}
+
+func (s *Store) countUsersWhere(ctx context.Context, where string, args []interface{}) (int, error) {
+	query := `SELECT COUNT(*) FROM users WHERE status != 'deleted'`
+	if strings.TrimSpace(where) != "" {
+		query += " AND " + where
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // MachineIDsByTenantIDs returns machine IDs belonging to the given tenant IDs.
@@ -419,13 +613,13 @@ func (s *Store) MachineIDsByUserIDs(ctx context.Context, userIDs []string) ([]st
 
 func scanNotification(row *sql.Row) (*Notification, error) {
 	var (
-		n                                   Notification
-		category, priority, audienceType    string
-		audienceJSON, status, source        string
-		sourceID, createdBy                 string
-		imPush                              int
-		publishAt, expireAt                 sql.NullString
-		createdAt, updatedAt                string
+		n                                Notification
+		category, priority, audienceType string
+		audienceJSON, status, source     string
+		sourceID, createdBy              string
+		imPush                           int
+		publishAt, expireAt              sql.NullString
+		createdAt, updatedAt             string
 	)
 	err := row.Scan(
 		&n.ID, &n.Title, &n.Content,
@@ -469,13 +663,13 @@ func scanNotification(row *sql.Row) (*Notification, error) {
 
 func scanNotificationFromRows(rows *sql.Rows) (*Notification, error) {
 	var (
-		n                                   Notification
-		category, priority, audienceType    string
-		audienceJSON, status, source        string
-		sourceID, createdBy                 string
-		imPush                              int
-		publishAt, expireAt                 sql.NullString
-		createdAt, updatedAt                string
+		n                                Notification
+		category, priority, audienceType string
+		audienceJSON, status, source     string
+		sourceID, createdBy              string
+		imPush                           int
+		publishAt, expireAt              sql.NullString
+		createdAt, updatedAt             string
 	)
 	err := rows.Scan(
 		&n.ID, &n.Title, &n.Content,
@@ -543,6 +737,10 @@ func scanStringColumn(rows *sql.Rows) ([]string, error) {
 		result = append(result, v)
 	}
 	return result, rows.Err()
+}
+
+func isMissingTableError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table")
 }
 
 // buildInQuery builds a query with a dynamically sized IN clause.

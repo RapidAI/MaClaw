@@ -31,6 +31,7 @@ type createNotificationRequest struct {
 	Priority     string   `json:"priority"`
 	AudienceType string   `json:"audience_type"`
 	AudienceIDs  []string `json:"audience_ids"`
+	Status       string   `json:"status"`
 	IMPush       bool     `json:"im_push"`
 	PublishAt    *string  `json:"publish_at,omitempty"`
 	ExpireAt     *string  `json:"expire_at,omitempty"`
@@ -87,6 +88,12 @@ func (h *NotificationHandler) HandleCreateNotification(w http.ResponseWriter, r 
 		ExpireAt:     expireAt,
 	}
 
+	requestedStatus := notification.Status(strings.TrimSpace(req.Status))
+	if requestedStatus != "" && requestedStatus != notification.StatusDraft && requestedStatus != notification.StatusPublished {
+		writeError(w, http.StatusBadRequest, "INVALID_STATUS", "status must be draft or published")
+		return
+	}
+
 	n, err := h.svc.CreateNotification(r.Context(), createReq)
 	if err != nil {
 		if isNotificationValidationError(err) {
@@ -97,9 +104,15 @@ func (h *NotificationHandler) HandleCreateNotification(w http.ResponseWriter, r 
 		return
 	}
 
-	// If publish_at is nil or in the past, publish immediately.
-	if publishAt == nil || !publishAt.After(time.Now().UTC()) {
-		_ = h.svc.PublishNotification(r.Context(), n.ID)
+	shouldPublish := requestedStatus != notification.StatusDraft && (publishAt == nil || !publishAt.After(time.Now().UTC()))
+	if shouldPublish {
+		if err := h.svc.PublishNotification(r.Context(), n.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "NOTIFICATION_PUBLISH_FAILED", err.Error())
+			return
+		}
+		if refreshed, err := h.svc.GetByID(r.Context(), n.ID); err == nil && refreshed != nil {
+			n = refreshed
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -126,6 +139,9 @@ func (h *NotificationHandler) HandleListNotifications(w http.ResponseWriter, r *
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
 	}
 
 	filter := notification.ListFilter{
@@ -228,6 +244,36 @@ func (h *NotificationHandler) HandleRevokeNotification(w http.ResponseWriter, r 
 }
 
 // ---------------------------------------------------------------------------
+// DELETE /api/v1/admin/notifications/{id} — Delete inactive notification (requireAdmin)
+// ---------------------------------------------------------------------------
+
+// HandleDeleteNotification handles DELETE /api/v1/admin/notifications/{id}.
+func (h *NotificationHandler) HandleDeleteNotification(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "NOTIFICATION_ID_REQUIRED", "notification id is required")
+		return
+	}
+
+	if err := h.svc.DeleteNotification(r.Context(), id); err != nil {
+		switch {
+		case strings.Contains(err.Error(), "not found"):
+			writeError(w, http.StatusNotFound, "NOTIFICATION_NOT_FOUND", err.Error())
+		case strings.Contains(err.Error(), "must be revoked"):
+			writeError(w, http.StatusBadRequest, "NOTIFICATION_DELETE_NOT_ALLOWED", err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "NOTIFICATION_DELETE_FAILED", err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "notification deleted",
+	})
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/notifications/unread — Client pull unread (machine auth)
 // ---------------------------------------------------------------------------
 
@@ -318,6 +364,24 @@ func (h *NotificationHandler) HandleCascade(w http.ResponseWriter, r *http.Reque
 	var req notification.CascadeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body: "+err.Error())
+		return
+	}
+
+	switch strings.TrimSpace(req.Action) {
+	case "revoke":
+		if strings.TrimSpace(req.NotificationID) == "" {
+			writeError(w, http.StatusBadRequest, "NOTIFICATION_ID_REQUIRED", "notification_id is required")
+			return
+		}
+		if err := h.svc.RevokeFromCascade(r.Context(), req.NotificationID); err != nil {
+			writeError(w, http.StatusInternalServerError, "CASCADE_REVOKE_FAILED", "cascade revoke failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	case "", "new":
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_CASCADE_ACTION", "unsupported cascade action")
 		return
 	}
 

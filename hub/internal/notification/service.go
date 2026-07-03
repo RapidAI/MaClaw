@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -198,6 +199,32 @@ func (s *Service) RevokeNotification(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteNotification permanently removes a notification that is no longer
+// active. Published notifications must be revoked first so clients receive the
+// revoke event before the admin history entry is cleaned up.
+func (s *Service) DeleteNotification(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("notification id is required")
+	}
+
+	n, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get notification: %w", err)
+	}
+	if n == nil {
+		return fmt.Errorf("notification not found: %s", id)
+	}
+	if n.Status == StatusPublished {
+		return fmt.Errorf("published notifications must be revoked before delete")
+	}
+
+	if err := s.store.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete notification: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // GetUnreadForMachine
 // ---------------------------------------------------------------------------
@@ -361,6 +388,26 @@ func (s *Service) CreateFromCascade(ctx context.Context, req CascadeRequest) err
 	}
 
 	return nil
+}
+
+// RevokeFromCascade handles a HubCenter cascade revoke. The HubCenter
+// notification ID is stored locally as source_id, while clients know the local
+// Hub notification ID, so the revoke must translate before broadcasting.
+func (s *Service) RevokeFromCascade(ctx context.Context, sourceID string) error {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return fmt.Errorf("cascade revoke notification_id is required")
+	}
+
+	existing, err := s.store.FindBySource(ctx, "hubcenter", sourceID)
+	if err != nil {
+		return fmt.Errorf("find cascade notification: %w", err)
+	}
+	if existing == nil {
+		return nil
+	}
+
+	return s.RevokeNotification(ctx, existing.ID)
 }
 
 // ---------------------------------------------------------------------------

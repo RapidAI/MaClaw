@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import verify_ios_wrapper
+
+
+APPLE_TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
+VALID_EXPORT_METHODS = ("development", "ad-hoc", "enterprise", "app-store")
+RUNNER_BUNDLE_ID = "top.mypapers.maclaw.mobile"
+SHARE_EXTENSION_BUNDLE_ID = "top.mypapers.maclaw.mobile.ShareExtension"
+APP_GROUP = "group.top.mypapers.maclaw.mobile"
+
+
+@dataclass(frozen=True)
+class IOSReleasePlan:
+    archive_command: list[str]
+    export_command: list[str]
+    archive_path: Path
+    export_dir: Path
+    export_options_path: Path
+
+
+def mobile_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def validate_team_id(value: str) -> str:
+    normalized = value.strip().upper()
+    if APPLE_TEAM_ID_RE.fullmatch(normalized) is None:
+        raise argparse.ArgumentTypeError("team id must be a 10-character Apple team identifier")
+    return normalized
+
+
+def release_plan(
+    root: Path,
+    *,
+    team_id: str,
+    export_method: str,
+    archive_path: Path,
+    export_dir: Path,
+    export_options_path: Path,
+) -> IOSReleasePlan:
+    if export_method not in VALID_EXPORT_METHODS:
+        raise ValueError(f"unsupported iOS export method: {export_method}")
+    workspace = root / "ios" / "Runner.xcworkspace"
+    archive_command = [
+        "xcodebuild",
+        "archive",
+        "-workspace",
+        str(workspace),
+        "-scheme",
+        "Runner",
+        "-configuration",
+        "Release",
+        "-archivePath",
+        str(archive_path),
+        "DEVELOPMENT_TEAM=" + team_id,
+    ]
+    export_command = [
+        "xcodebuild",
+        "-exportArchive",
+        "-archivePath",
+        str(archive_path),
+        "-exportPath",
+        str(export_dir),
+        "-exportOptionsPlist",
+        str(export_options_path),
+    ]
+    return IOSReleasePlan(
+        archive_command=archive_command,
+        export_command=export_command,
+        archive_path=archive_path,
+        export_dir=export_dir,
+        export_options_path=export_options_path,
+    )
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(f'"{arg}"' if " " in arg else arg for arg in command)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Plan a signed MaClaw Mobile iOS archive/TestFlight QA build on macOS.",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=mobile_root(),
+        help="Path to mobile/maclaw_mobile. Defaults to this script project root.",
+    )
+    parser.add_argument("--team-id", required=True, type=validate_team_id)
+    parser.add_argument(
+        "--export-method",
+        choices=VALID_EXPORT_METHODS,
+        default="development",
+        help="Xcode export method for the signed QA artifact.",
+    )
+    parser.add_argument(
+        "--archive-path",
+        type=Path,
+        default=Path("build/ios/archive/MaClawMobile.xcarchive"),
+    )
+    parser.add_argument(
+        "--export-dir",
+        type=Path,
+        default=Path("build/ios/export"),
+    )
+    parser.add_argument(
+        "--export-options",
+        type=Path,
+        default=Path("ios/ExportOptions.plist"),
+        help="Path to the Xcode export options plist. Generate it with tool/setup_ios_export_options.py.",
+    )
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+
+    wrapper_errors = verify_ios_wrapper.verify_ios_wrapper(root)
+    if wrapper_errors:
+        print("iOS wrapper is not ready for signed archive planning:", file=sys.stderr)
+        for error in wrapper_errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+    export_options_path = args.export_options
+    export_options_check_path = (
+        export_options_path
+        if export_options_path.is_absolute()
+        else root / export_options_path
+    )
+    if not export_options_check_path.exists():
+        print("iOS export options are not ready for signed archive planning:", file=sys.stderr)
+        print(f"- Missing export options plist: {export_options_check_path}", file=sys.stderr)
+        print(
+            "- Run `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method "
+            f"{args.export_method}` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        plan = release_plan(
+            root,
+            team_id=args.team_id,
+            export_method=args.export_method,
+            archive_path=args.archive_path,
+            export_dir=args.export_dir,
+            export_options_path=export_options_path,
+        )
+    except ValueError as exc:
+        print(f"iOS release plan failed: {exc}", file=sys.stderr)
+        return 1
+
+    print("MaClaw Mobile iOS wrapper inputs verified.")
+    print(f"Runner bundle id: {RUNNER_BUNDLE_ID}")
+    print(f"Share Extension bundle id: {SHARE_EXTENSION_BUNDLE_ID}")
+    print(f"App group: {APP_GROUP}")
+    print(f"Team ID: {args.team_id}")
+    print(f"Export method: {args.export_method}")
+    print(f"Export options: {plan.export_options_path}")
+    print(f"Archive command: {_format_command(plan.archive_command)}")
+    print(f"Export command: {_format_command(plan.export_command)}")
+    print("Record the .xcarchive path or TestFlight build number, Team ID, Runner and Share Extension provisioning profiles, bundle IDs, app group, and URL scheme evidence in the QA build record.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

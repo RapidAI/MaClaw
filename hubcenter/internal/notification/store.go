@@ -65,25 +65,47 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 
 // Create inserts a new HubCenter notification into the database.
 func (s *SQLiteStore) Create(ctx context.Context, n *Notification) error {
-	audienceJSON, err := json.Marshal(n.AudienceIDs)
+	args, err := notificationSQLArgs(n)
 	if err != nil {
-		return fmt.Errorf("marshal audience_ids: %w", err)
+		return err
 	}
 
-	imPush := 0
-	if n.IMPush {
-		imPush = 1
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO hc_notifications
+				(id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		args...,
+	)
+	return err
+}
+
+// Upsert inserts or replaces a HubCenter notification without triggering
+// cascade side effects. It is used by HA apply paths.
+func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
+	args, err := notificationSQLArgs(n)
+	if err != nil {
+		return err
 	}
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO hc_notifications
 			(id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ID, n.Title, n.Content,
-		string(n.Category), string(n.Priority), string(n.AudienceType),
-		string(audienceJSON), string(n.Status), imPush, n.CreatedBy,
-		formatNullableTime(n.PublishAt), formatNullableTime(n.ExpireAt),
-		n.CreatedAt.UTC().Format(time.RFC3339), n.UpdatedAt.UTC().Format(time.RFC3339),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			content = excluded.content,
+			category = excluded.category,
+			priority = excluded.priority,
+			audience_type = excluded.audience_type,
+			audience_ids = excluded.audience_ids,
+			status = excluded.status,
+			im_push = excluded.im_push,
+			created_by = excluded.created_by,
+			publish_at = excluded.publish_at,
+			expire_at = excluded.expire_at,
+			created_at = excluded.created_at,
+			updated_at = excluded.updated_at`,
+		args...,
 	)
 	return err
 }
@@ -161,6 +183,28 @@ func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status Status
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// Delete removes a HubCenter notification and its cascade results.
+func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hc_cascade_results WHERE notification_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM hc_notifications WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 // RecordCascadeResult records or updates the push result for a specific Hub.
@@ -326,4 +370,22 @@ func formatNullableTime(t *time.Time) interface{} {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func notificationSQLArgs(n *Notification) ([]interface{}, error) {
+	audienceJSON, err := json.Marshal(n.AudienceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("marshal audience_ids: %w", err)
+	}
+	imPush := 0
+	if n.IMPush {
+		imPush = 1
+	}
+	return []interface{}{
+		n.ID, n.Title, n.Content,
+		string(n.Category), string(n.Priority), string(n.AudienceType),
+		string(audienceJSON), string(n.Status), imPush, n.CreatedBy,
+		formatNullableTime(n.PublishAt), formatNullableTime(n.ExpireAt),
+		n.CreatedAt.UTC().Format(time.RFC3339), n.UpdatedAt.UTC().Format(time.RFC3339),
+	}, nil
 }

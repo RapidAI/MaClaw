@@ -77,6 +77,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InitiateVEConversation: initiateVEConversationMock,
     AddVEToGroup: addVEToGroupMock,
     RefreshWorkflowV2StateForTab: vi.fn().mockResolvedValue({}),
+    GetTabWorkingDir: vi.fn().mockResolvedValue({ path: '' }),
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
@@ -368,6 +369,123 @@ describe('AIAssistantPanel property tests', () => {
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         expect(input.disabled).toBe(false);
         expect(input.getAttribute('aria-label') || '').toContain('Opening the workflow form');
+    });
+
+    it('cancels an awaiting workflow after the form panel has been closed', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const dismissAgentView = vi.fn().mockResolvedValue(undefined);
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [
+                { name: '_workflow_phase', type: 'hidden', value: 'audience_goal' },
+                { name: '_workflow_id', type: 'hidden', value: 'wf-route-1' },
+                { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:D:/tasks/workflow-project' },
+                { name: '_workflow_event_scope_id', type: 'hidden', value: 'proj-route-1' },
+            ],
+            submitLabel: 'Submit workflow form',
+        };
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, cancelSession, dismissAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'wf-route-1',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            workflow_id: 'wf-route-1',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                agentView: null,
+            }}
+        />);
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Opening workflow form'));
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(dismissAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+                __cancel_workflow: true,
+                _workflow_phase: 'audience_goal',
+                _workflow_id: 'wf-route-1',
+                _workflow_user_id: 'desktop-user:D:/tasks/workflow-project',
+                _workflow_event_scope_id: 'proj-route-1',
+            }));
+        });
+        expect(cancelSession).not.toHaveBeenCalled();
+    });
+
+    it('does not reuse a closed workflow form route after the workflow id changes', async () => {
+        const dismissAgentView = vi.fn().mockResolvedValue(undefined);
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [
+                { name: '_workflow_phase', type: 'hidden', value: 'audience_goal' },
+                { name: '_workflow_id', type: 'hidden', value: 'wf-old' },
+                { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:D:/old-task' },
+                { name: '_workflow_event_scope_id', type: 'hidden', value: 'proj-old' },
+            ],
+        };
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = { ...props.state, agentView: workflowForm };
+        props.actions = { ...props.actions, dismissAgentView, cancelSession: vi.fn().mockResolvedValue({ canceledText: '' }) };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'wf-old',
+            workflow_id: 'wf-old',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [{ id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true }],
+        }));
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+
+        rerender(<AIAssistantPanel {...props} state={{ ...props.state, agentView: null }} />);
+        act(() => phaseUpdateHandler({
+            id: 'wf-new',
+            workflow_id: 'wf-new',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [{ id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true }],
+        }));
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(dismissAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+                __cancel_workflow: true,
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user',
+            }));
+        });
     });
 
     it('shows document generation progress after a workflow form is submitted', async () => {

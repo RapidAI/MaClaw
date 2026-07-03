@@ -187,11 +187,17 @@ export function AboutPanel({
     const [ranking, setRanking] = useState<{ totalTokens: number; durationSeconds: number; tokenRank: number; durationRank: number; totalUsers: number } | null>(null);
 
     const fetchRanking = useCallback(() => {
-        if (!hasRegisteredMachine) return;
+        if (!hasRegisteredMachine) {
+            setRanking(null);
+            return;
+        }
         GetHubUserRanking()
             .then((result) => {
                 const r = result as { total_tokens?: number; duration_seconds?: number; token_rank?: number; duration_rank?: number; total_users?: number; error?: string } | null;
-                if (!r || r.error) return;
+                if (!r || r.error) {
+                    setRanking(null);
+                    return;
+                }
                 setRanking({
                     totalTokens: r.total_tokens || 0,
                     durationSeconds: r.duration_seconds || 0,
@@ -200,7 +206,7 @@ export function AboutPanel({
                     totalUsers: r.total_users || 0,
                 });
             })
-            .catch(() => undefined);
+            .catch(() => setRanking(null));
     }, [hasRegisteredMachine]);
 
     useEffect(() => {
@@ -268,6 +274,21 @@ export function AboutPanel({
         const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
         return `${medal} ${t("aboutRankPrefix")}${rank}/${total}${t("aboutRankSuffix")}`;
     };
+
+    const formatRankingValue = (value: string, rank: number, total: number): string => {
+        const rankText = formatRank(rank, total);
+        return rankText ? `${value} ${rankText}` : value;
+    };
+
+    const bestRankingIcon = (() => {
+        const ranks = [ranking?.tokenRank || 0, ranking?.durationRank || 0].filter(rank => rank > 0);
+        if (ranks.length === 0) return '🏅';
+        const best = Math.min(...ranks);
+        if (best === 1) return '🏆';
+        if (best === 2) return '🥈';
+        if (best === 3) return '🥉';
+        return '🏅';
+    })();
 
     return (
         <div className="about-page">
@@ -356,20 +377,26 @@ export function AboutPanel({
                             </div>
                             <div className="about-identity-item" />
                         </div>
-                        {ranking && (ranking.totalTokens > 0 || ranking.durationSeconds > 0) && (
+                        {hasRegisteredMachine && (
                             <div className="about-identity-row">
                                 <div className="about-identity-item">
-                                    <dt className="about-kv-label">{t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span></dt>
+                                    <dt className="about-kv-label">
+                                        {bestRankingIcon} {t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
+                                    </dt>
                                     <dd className="about-identity-value about-identity-value--muted">
-                                        {formatDuration(ranking.durationSeconds)}
-                                        {ranking.durationRank > 0 && <span className="about-rank-badge">{formatRank(ranking.durationRank, ranking.totalUsers)}</span>}
+                                        {ranking
+                                            ? formatRankingValue(formatDuration(ranking.durationSeconds), ranking.durationRank, ranking.totalUsers)
+                                            : emptyValue}
                                     </dd>
                                 </div>
                                 <div className="about-identity-item">
-                                    <dt className="about-kv-label">{t("aboutTotalTokens")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span></dt>
+                                    <dt className="about-kv-label">
+                                        {t("aboutTotalTokens")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
+                                    </dt>
                                     <dd className="about-identity-value about-identity-value--muted">
-                                        {formatTokens(ranking.totalTokens)}
-                                        {ranking.tokenRank > 0 && <span className="about-rank-badge">{formatRank(ranking.tokenRank, ranking.totalUsers)}</span>}
+                                        {ranking
+                                            ? formatRankingValue(formatTokens(ranking.totalTokens), ranking.tokenRank, ranking.totalUsers)
+                                            : emptyValue}
                                     </dd>
                                 </div>
                             </div>

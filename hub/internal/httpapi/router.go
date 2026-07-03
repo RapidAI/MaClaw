@@ -133,6 +133,9 @@ func NewRouter(
 	requireGlobalAdminAllowTenantQuery := func(h http.HandlerFunc) http.HandlerFunc {
 		return requireAdmin(RequireGlobalAdminAllowTenantQuery(h))
 	}
+	requireCascadeAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return RequireCascadeAuth(admins, system, h, tenantRepo)
+	}
 	requireTenantAdmin := func(h http.HandlerFunc) http.HandlerFunc {
 		return requireAdmin(RequireTenantAdmin(h))
 	}
@@ -834,7 +837,11 @@ func NewRouter(
 	if hubDB != nil {
 		notifStore := notification.NewStore(hubDB)
 		_ = notifStore.InitSchema(context.Background())
-		notifSvc := notification.NewService(notifStore, nil, nil)
+		var notifPusher notification.WSBroadcaster
+		if deviceSvc != nil {
+			notifPusher = notification.NewPusher(deviceSvc, deviceSvc)
+		}
+		notifSvc := notification.NewService(notifStore, notifPusher, nil)
 		notifHandler := NewNotificationHandler(notifSvc)
 
 		// Admin routes (requireAdmin)
@@ -842,6 +849,12 @@ func NewRouter(
 		mux.HandleFunc("GET /api/v1/admin/notifications", requireAdmin(notifHandler.HandleListNotifications))
 		mux.HandleFunc("GET /api/v1/admin/notifications/{id}", requireAdmin(notifHandler.HandleGetNotification))
 		mux.HandleFunc("POST /api/v1/admin/notifications/{id}/revoke", requireAdmin(notifHandler.HandleRevokeNotification))
+		mux.HandleFunc("DELETE /api/v1/admin/notifications/{id}", requireAdmin(notifHandler.HandleDeleteNotification))
+		mux.HandleFunc("POST /api/admin/notifications", requireAdmin(notifHandler.HandleCreateNotification))
+		mux.HandleFunc("GET /api/admin/notifications", requireAdmin(notifHandler.HandleListNotifications))
+		mux.HandleFunc("GET /api/admin/notifications/{id}", requireAdmin(notifHandler.HandleGetNotification))
+		mux.HandleFunc("POST /api/admin/notifications/{id}/revoke", requireAdmin(notifHandler.HandleRevokeNotification))
+		mux.HandleFunc("DELETE /api/admin/notifications/{id}", requireAdmin(notifHandler.HandleDeleteNotification))
 
 		// Client routes (machine auth)
 		machineAuth := requireMachineAuth(identity)
@@ -849,8 +862,8 @@ func NewRouter(
 		mux.HandleFunc("POST /api/v1/notifications/{id}/read", machineAuth(notifHandler.HandleMarkRead))
 		mux.HandleFunc("POST /api/v1/notifications/read-all", machineAuth(notifHandler.HandleMarkAllRead))
 
-		// Cascade route (requireGlobalAdmin — HubCenter uses global admin token)
-		mux.HandleFunc("POST /api/v1/notifications/cascade", requireGlobalAdmin(notifHandler.HandleCascade))
+		// Cascade route: HubCenter uses the registered installation ID as a pre-shared token.
+		mux.HandleFunc("POST /api/v1/notifications/cascade", requireCascadeAuth(notifHandler.HandleCascade))
 	}
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)

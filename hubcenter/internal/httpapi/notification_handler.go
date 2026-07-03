@@ -125,6 +125,25 @@ func (h *NotificationHandlers) RevokeNotification(w http.ResponseWriter, r *http
 	})
 }
 
+// DeleteNotification handles DELETE /api/v1/admin/notifications/{id}.
+// Only inactive notifications (draft, expired, revoked) can be deleted.
+func (h *NotificationHandlers) DeleteNotification(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ID", "Notification ID is required")
+		return
+	}
+
+	if err := h.service.DeleteNotification(r.Context(), id); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+	})
+}
+
 // handleServiceError maps notification service errors to appropriate HTTP responses.
 func (h *NotificationHandlers) handleServiceError(w http.ResponseWriter, err error) {
 	switch {
@@ -132,6 +151,8 @@ func (h *NotificationHandlers) handleServiceError(w http.ResponseWriter, err err
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Notification not found")
 	case errors.Is(err, notification.ErrCannotRevoke):
 		writeError(w, http.StatusBadRequest, "CANNOT_REVOKE", "Only published notifications can be revoked")
+	case errors.Is(err, notification.ErrCannotDelete):
+		writeError(w, http.StatusBadRequest, "CANNOT_DELETE", "Published notifications must be revoked before delete")
 	case errors.Is(err, notification.ErrTitleRequired):
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, notification.ErrTitleTooLong):

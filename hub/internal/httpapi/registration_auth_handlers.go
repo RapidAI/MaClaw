@@ -17,7 +17,7 @@ const (
 	registrationAuthDefaultTemplate    = "100001"
 	registrationAuthDefaultSignName    = "速通互联验证平台"
 	registrationAuthDefaultTTLMinutes  = 5
-	registrationAuthDefaultCodeLength  = 4
+	registrationAuthDefaultCodeLength  = 6
 	registrationAuthDefaultDailyLimit  = 3
 )
 

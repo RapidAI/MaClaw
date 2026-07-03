@@ -67,6 +67,56 @@ def release_gates() -> list[ReleaseGate]:
             [sys.executable, "-m", "unittest", "tool/validate_qa_build_record_test.py"],
         ),
         ReleaseGate(
+            "QA build record scaffold tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/create_qa_build_record_test.py"],
+        ),
+        ReleaseGate(
+            "QA records directory validator tests",
+            mobile,
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tool/validate_qa_build_records_dir_test.py",
+            ],
+        ),
+        ReleaseGate(
+            "QA build record report tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/qa_build_record_report_test.py"],
+        ),
+        ReleaseGate(
+            "QA release evidence link helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/qa_release_evidence_links_test.py"],
+        ),
+        ReleaseGate(
+            "QA preflight helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/qa_preflight_test.py"],
+        ),
+        ReleaseGate(
+            "Android signing setup helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/setup_android_signing_test.py"],
+        ),
+        ReleaseGate(
+            "Release status report helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/release_status_report_test.py"],
+        ),
+        ReleaseGate(
+            "Release handoff helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/release_handoff_test.py"],
+        ),
+        ReleaseGate(
+            "QA records directory validation",
+            mobile,
+            [sys.executable, "tool/validate_qa_build_records_dir.py", "docs/qa-builds"],
+        ),
+        ReleaseGate(
             "Runtime boundary verifier tests",
             mobile,
             [sys.executable, "-m", "unittest", "tool/verify_runtime_boundary_test.py"],
@@ -75,6 +125,56 @@ def release_gates() -> list[ReleaseGate]:
             "Release gate runner tests",
             mobile,
             [sys.executable, "-m", "unittest", "tool/run_release_gates_test.py"],
+        ),
+        ReleaseGate(
+            "Debug APK evidence verifier tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/verify_debug_apk_evidence_test.py"],
+        ),
+        ReleaseGate(
+            "Debug APK evidence updater tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/update_debug_apk_evidence_test.py"],
+        ),
+        ReleaseGate(
+            "Signed artifact evidence helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/signed_artifact_evidence_test.py"],
+        ),
+        ReleaseGate(
+            "Manual release gate parity tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/verify_manual_release_gates_test.py"],
+        ),
+        ReleaseGate(
+            "Final release evidence verifier tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/verify_final_release_evidence_test.py"],
+        ),
+        ReleaseGate(
+            "Android release signing verifier tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/verify_android_release_signing_test.py"],
+        ),
+        ReleaseGate(
+            "Android release build helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/build_android_release_test.py"],
+        ),
+        ReleaseGate(
+            "iOS wrapper verifier tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/verify_ios_wrapper_test.py"],
+        ),
+        ReleaseGate(
+            "iOS release plan helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/plan_ios_release_test.py"],
+        ),
+        ReleaseGate(
+            "iOS export options setup helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/setup_ios_export_options_test.py"],
         ),
         ReleaseGate(
             "Release documentation tests",
@@ -97,6 +197,16 @@ def release_gates() -> list[ReleaseGate]:
             "Apply MaClaw native wrapper configuration",
             mobile,
             [sys.executable, "tool/configure_platforms.py"],
+        ),
+        ReleaseGate(
+            "Android release signing verification",
+            mobile,
+            [sys.executable, "tool/verify_android_release_signing.py"],
+        ),
+        ReleaseGate(
+            "iOS wrapper verification",
+            mobile,
+            [sys.executable, "tool/verify_ios_wrapper.py"],
         ),
         ReleaseGate(
             "Runtime boundary verification",

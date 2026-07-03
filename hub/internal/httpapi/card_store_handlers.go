@@ -178,6 +178,8 @@ type cardStoreOrders struct {
 
 type createCardStoreOrderRequest struct {
 	ProductID      string `json:"product_id"`
+	Account        string `json:"account,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
 	Email          string `json:"email"`
 	SecondaryEmail string `json:"secondary_email,omitempty"`
 	TenantID       string `json:"tenant_id,omitempty"`
@@ -702,7 +704,7 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		email := normalizeCardStoreUserIdentity(req.Email)
+		email := normalizeCardStoreUserIdentity(firstNonEmptyCardStoreIdentity(req.Account, req.UserID, req.Email))
 		secondaryEmail := normalizeCardStoreEmail(req.SecondaryEmail)
 		if !validCardStoreUserIdentity(email) || (secondaryEmail != "" && !validCardStoreEmail(secondaryEmail)) {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_EMAIL_INVALID", "valid user identity is required")
@@ -788,7 +790,9 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 }
 
 func cardStoreOrderCreateResponse(tenantID string, email string, order cardStoreOrder) map[string]any {
-	resp := map[string]any{"order_no": order.OrderNo, "tenant_id": tenantID, "email": email, "product_id": order.ProductID, "product_label": order.ProductLabel, "payment_mode": order.PaymentMode, "pay_url": order.PayURL, "payment_id": order.PaymentID, "status": order.Status, "mail_status": order.MailStatus}
+	account := normalizeCardStoreUserIdentity(firstNonEmptyCardStoreIdentity(order.Email, email))
+	userID := strings.TrimSpace(order.UserID)
+	resp := map[string]any{"order_no": order.OrderNo, "tenant_id": tenantID, "user_id": userID, "account": account, "email": account, "product_id": order.ProductID, "product_label": order.ProductLabel, "payment_mode": order.PaymentMode, "pay_url": order.PayURL, "payment_id": order.PaymentID, "status": order.Status, "mail_status": order.MailStatus}
 	if order.PayChannel != "" {
 		resp["pay_channel"] = order.PayChannel
 		resp["pay_channel_label"] = order.PayChannelLabel
@@ -829,6 +833,15 @@ func cardStoreOrderCreateResponse(tenantID string, email string, order cardStore
 		resp["auto_redeem_error"] = order.AutoRedeemError
 	}
 	return resp
+}
+
+func firstNonEmptyCardStoreIdentity(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func CardStorePaymentNotifyHandler(system store.SystemSettingsRepository, mailer cardStoreMailer, identities ...*auth.IdentityService) http.HandlerFunc {

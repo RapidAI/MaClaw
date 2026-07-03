@@ -4,36 +4,48 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func requireStringSlice(t *testing.T, name string, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s = %#v, want %#v", name, got, want)
+	}
+}
+
 func TestExtractCommandFileReferencesHandlesQuotedPathsAndFlagAssignments(t *testing.T) {
 	got := ExtractCommandFileReferences(`python "scripts/my tool.py" --helper=./helper.js https://cdn.example/app.js --out result.txt`)
 	want := []string{"scripts/my tool.py", "./helper.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
+}
+
+func TestExtractCommandFileReferencesSkipsMultilineQuotedAppInput(t *testing.T) {
+	got := ExtractCommandFileReferences("python run.py --metadata \"app_id: pdf-tool\nfields:\nInput\nmissing.py\" && node ./helper.js")
+	want := []string{"run.py", "./helper.js"}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
+}
+
+func TestExtractCommandFileReferencesDoesNotContinueInsideMultilineQuote(t *testing.T) {
+	got := ExtractCommandFileReferences("python run.py --metadata 'first line \\\nmissing.py' && node ./helper.js")
+	want := []string{"run.py", "./helper.js"}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesHandlesEscapedSpaces(t *testing.T) {
 	got := ExtractCommandFileReferences(`python scripts/my\ tool.py --helper=./helper\ script.js`)
 	want := []string{"scripts/my tool.py", "./helper script.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
+}
+
+func TestExtractCommandFileReferencesKeepsQuotedBarePathWithSpaces(t *testing.T) {
+	got := ExtractCommandFileReferences(`python "my tool.py"`)
+	want := []string{"my tool.py"}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsShellComments(t *testing.T) {
@@ -41,77 +53,43 @@ func TestExtractCommandFileReferencesSkipsShellComments(t *testing.T) {
 # missing.py
 node ./helper#tag.js`)
 	want := []string{"run.py", "./helper#tag.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsOutputFlagTargets(t *testing.T) {
 	got := ExtractCommandFileReferences(`python generate.py --output=generated.py --helper=./helper.js -o result.js --write-to final.mjs`)
 	want := []string{"generate.py", "./helper.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesHandlesSlashStyleFlags(t *testing.T) {
 	got := ExtractCommandFileReferences(`render.exe /out:generated.py /output result.js /input:source.py /config=./helper.js`)
 	want := []string{"source.py", "./helper.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsOutputRedirectionTargets(t *testing.T) {
 	got := ExtractCommandFileReferences(`python generate.py > output.py 2> errors.py`)
 	want := []string{"generate.py"}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesJoinsContinuationLines(t *testing.T) {
 	got := ExtractCommandFileReferences("python \\\n  scripts/run.py \\\n  --helper=./helper.js")
 	want := []string{"scripts/run.py", "./helper.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsHeredocBodies(t *testing.T) {
 	got := ExtractCommandFileReferences("cat > generated.py <<'PY'\nprint('not_a_reference.py')\nPY\npython run.py")
 	want := []string{"run.py"}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsBackslashQuotedHeredocBodies(t *testing.T) {
 	got := ExtractCommandFileReferences("cat <<\\PY\nprint('not_a_reference.py')\nPY\npython run.py")
 	want := []string{"run.py"}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsInlineInterpreterCode(t *testing.T) {
@@ -124,27 +102,13 @@ func TestExtractCommandFileReferencesSkipsInlineInterpreterCode(t *testing.T) {
 func TestExtractCommandFileReferencesDoesNotSkipToolConfigFlag(t *testing.T) {
 	got := ExtractCommandFileReferences(`my-tool -c config.py --eval helper.js`)
 	want := []string{"config.py", "helper.js"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesRecognizesModernScriptExtensions(t *testing.T) {
 	got := ExtractCommandFileReferences(`npx tsx scripts/run.ts && node view.jsx && go run main.go`)
 	want := []string{"scripts/run.ts", "view.jsx", "main.go"}
-	if len(got) != len(want) {
-		t.Fatalf("ExtractCommandFileReferences() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ExtractCommandFileReferences()[%d] = %q, want %q (all=%#v)", i, got[i], want[i], got)
-		}
-	}
+	requireStringSlice(t, "ExtractCommandFileReferences()", got, want)
 }
 
 func TestExtractCommandFileReferencesSkipsGlobsAndGoPackagePatterns(t *testing.T) {
@@ -384,6 +348,157 @@ func TestCheckStepFileReferencesTracksPowerShellContinuation(t *testing.T) {
 			Params: map[string]interface{}{
 				"preferred_shell": "powershell",
 				"command":         "python `\n  scripts/run.py",
+			},
+		}},
+	}
+
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() unexpected error: %v", err)
+	}
+}
+
+func TestCheckStepFileReferencesReportsMissingScriptAfterPowerShellBacktickContinuation(t *testing.T) {
+	dir := t.TempDir()
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-missing-after-continuation",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command":         "python `\n  scripts/missing.py",
+			},
+		}},
+	}
+
+	err := CheckStepFileReferences(entry)
+	if err == nil || !strings.Contains(err.Error(), "missing.py") {
+		t.Fatalf("CheckStepFileReferences() error = %v, want missing script after PowerShell continuation", err)
+	}
+}
+
+func TestCheckStepFileReferencesDoesNotTreatPowerShellBackslashAsContinuation(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-backslash-not-continuation",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command":         "cd scripts\\\npython run.py",
+			},
+		}},
+	}
+
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() unexpected error: %v", err)
+	}
+}
+
+func TestCheckStepFileReferencesPowerShellQuotedDirectoryTrailingBackslash(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-quoted-dir-trailing-backslash",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command": `cd "scripts\"
+python run.py`,
+			},
+		}},
+	}
+
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() unexpected error: %v", err)
+	}
+}
+
+func TestCheckStepFileReferencesPowerShellBacktickEscapedQuoteBeforeHash(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-backtick-escaped-quote-before-hash",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command":         "Write-Output \"value `\" # not comment\"\npython scripts/run.py",
+			},
+		}},
+	}
+
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() unexpected error: %v", err)
+	}
+}
+
+func TestCheckStepFileReferencesPowerShellBackslashBeforeQuoteInFileReference(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-file-ref-trailing-backslash-dir",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command":         `python "scripts\run.py"`,
+			},
+		}},
+	}
+
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() unexpected error: %v", err)
+	}
+}
+
+func TestCheckStepFileReferencesPowerShellCallOperatorFileReference(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.ps1"), []byte("Write-Output ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "powershell-call-operator-file-ref",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"preferred_shell": "powershell",
+				"command":         `& "scripts\run.ps1"`,
 			},
 		}},
 	}

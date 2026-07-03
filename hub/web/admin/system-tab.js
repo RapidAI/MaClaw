@@ -404,7 +404,7 @@ function renderRegistrationAuthConfig(cfg = {}) {
   _s('registrationAuthAliyunAccessKeySecret', 'value', cfg.aliyun_access_key_secret || '');
   _s('registrationAuthAliyunSignName', 'value', cfg.aliyun_sign_name || '速通互联验证平台');
   _s('registrationAuthCodeTTLMinutes', 'value', String(cfg.code_ttl_minutes || 5));
-  _s('registrationAuthCodeLength', 'value', String(cfg.code_length || 4));
+  _s('registrationAuthCodeLength', 'value', String(cfg.code_length || 6));
   _s('registrationAuthDailySMSLimit', 'value', String(cfg.daily_sms_limit || 3));
   const link = document.getElementById('registrationAuthBuyLink');
   if (link) link.href = cfg.aliyun_sms_buy_url || 'https://common-buy.aliyun.com/?commodityCode=dypns_smsverify_public_cn#buy';
@@ -431,7 +431,7 @@ async function saveRegistrationAuthConfig() {
     aliyun_sign_name: (document.getElementById('registrationAuthAliyunSignName') && document.getElementById('registrationAuthAliyunSignName').value || '').trim(),
     aliyun_template_code: '100001',
     code_ttl_minutes: Number((document.getElementById('registrationAuthCodeTTLMinutes') && document.getElementById('registrationAuthCodeTTLMinutes').value || '5').trim()),
-    code_length: Number((document.getElementById('registrationAuthCodeLength') && document.getElementById('registrationAuthCodeLength').value || '4').trim()),
+    code_length: Number((document.getElementById('registrationAuthCodeLength') && document.getElementById('registrationAuthCodeLength').value || '6').trim()),
     daily_sms_limit: Number((document.getElementById('registrationAuthDailySMSLimit') && document.getElementById('registrationAuthDailySMSLimit').value || '3').trim())
   };
   if (method === 'phone' && (!payload.aliyun_access_key_id || !payload.aliyun_access_key_secret || !payload.aliyun_sign_name || !Number.isFinite(payload.code_ttl_minutes) || payload.code_ttl_minutes < 1 || payload.code_ttl_minutes > 30 || !Number.isFinite(payload.code_length) || payload.code_length < 4 || payload.code_length > 8 || !Number.isFinite(payload.daily_sms_limit) || payload.daily_sms_limit < 1 || payload.daily_sms_limit > 50)) {

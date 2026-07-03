@@ -52,7 +52,7 @@ type FailureEventLogFilter struct {
 
 type HubInstance struct {
 	ID                                    string     `json:"id"`
-	InstallationID                        string     `json:"installation_id"`
+	InstallationID                        string     `json:"installation_id,omitempty"`
 	HubOrigin                             string     `json:"hub_origin"`
 	DefaultSignupScope                    string     `json:"default_signup_scope"`
 	OwnerEmail                            string     `json:"owner_email"`
@@ -287,6 +287,7 @@ type HubRepository interface {
 	UpdateHeartbeat(ctx context.Context, hubID string, at time.Time) error
 	ListByEmail(ctx context.Context, email string) ([]*HubInstance, error)
 	ListAll(ctx context.Context) ([]*HubInstance, error)
+	UpdateName(ctx context.Context, hubID string, name string, updatedAt time.Time) error
 	UpdateVisibility(ctx context.Context, hubID string, visibility string, updatedAt time.Time) error
 	SetDisabled(ctx context.Context, hubID string, disabled bool, reason string, updatedAt time.Time) error
 	UpdateRegistration(ctx context.Context, hub *HubInstance) error

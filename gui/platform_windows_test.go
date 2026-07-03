@@ -63,3 +63,69 @@ func TestFindSh_ReturnsNonEmptyOnError(t *testing.T) {
 		t.Fatalf("expected shell path to contain sh.exe or bash.exe, got: %s", path)
 	}
 }
+
+func TestVCRedistRegistryPathAndInstaller(t *testing.T) {
+	tests := []struct {
+		name               string
+		processorArch      string
+		processorArchW6432 string
+		wantRegPath        string
+		wantFileName       string
+	}{
+		{
+			name:          "amd64",
+			processorArch: "AMD64",
+			wantRegPath:   `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64`,
+			wantFileName:  "vc_redist.x64.exe",
+		},
+		{
+			name:          "native arm64",
+			processorArch: "ARM64",
+			wantRegPath:   `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\ARM64`,
+			wantFileName:  "vc_redist.arm64.exe",
+		},
+		{
+			name:               "emulated arm64",
+			processorArch:      "AMD64",
+			processorArchW6432: "arm64",
+			wantRegPath:        `SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\ARM64`,
+			wantFileName:       "vc_redist.arm64.exe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROCESSOR_ARCHITECTURE", tt.processorArch)
+			t.Setenv("PROCESSOR_ARCHITEW6432", tt.processorArchW6432)
+
+			if got := vcRedistRegistryPath(); got != tt.wantRegPath {
+				t.Fatalf("vcRedistRegistryPath() = %q, want %q", got, tt.wantRegPath)
+			}
+
+			_, gotFileName := vcRedistInstaller()
+			if gotFileName != tt.wantFileName {
+				t.Fatalf("vcRedistInstaller() fileName = %q, want %q", gotFileName, tt.wantFileName)
+			}
+		})
+	}
+}
+
+func TestWindowsDirFallbacks(t *testing.T) {
+	t.Setenv("SystemRoot", `C:\WindowsRoot`)
+	t.Setenv("windir", `D:\WindowsDir`)
+	if got := windowsDir(); got != `C:\WindowsRoot` {
+		t.Fatalf("windowsDir() with SystemRoot = %q, want C:\\WindowsRoot", got)
+	}
+
+	t.Setenv("SystemRoot", "")
+	t.Setenv("windir", `D:\WindowsDir`)
+	if got := windowsDir(); got != `D:\WindowsDir` {
+		t.Fatalf("windowsDir() with windir = %q, want D:\\WindowsDir", got)
+	}
+
+	t.Setenv("SystemRoot", "")
+	t.Setenv("windir", "")
+	if got := windowsDir(); got != `C:\Windows` {
+		t.Fatalf("windowsDir() fallback = %q, want C:\\Windows", got)
+	}
+}

@@ -98,20 +98,24 @@ export function ActivateRemote(arg1, arg2, arg3) {
   return window['go']['main']['App']['ActivateRemote'](arg1, arg2, arg3);
 }
 
-export function ActivateRemoteSMS(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4);
+export function ActivateRemoteSMS(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
-export function GetRemoteRegistrationAuth(arg1) {
-  return window['go']['main']['App']['GetRemoteRegistrationAuth'](arg1);
+export function GetRemoteRegistrationAuth(arg1, arg2) {
+  return window['go']['main']['App']['GetRemoteRegistrationAuth'](arg1, arg2);
+}
+
+export function ResolveRemoteRegistrationTarget(arg1) {
+  return window['go']['main']['App']['ResolveRemoteRegistrationTarget'](arg1);
 }
 
 export function ProbeRemoteHub(arg1, arg2) {
   return window['go']['main']['App']['ProbeRemoteHub'](arg1, arg2);
 }
 
-export function SendRemoteRegistrationSMS(arg1, arg2) {
-  return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2);
+export function SendRemoteRegistrationSMS(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2, arg3);
 }
 
 export function ClearRemoteActivation() {

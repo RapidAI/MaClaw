@@ -71,29 +71,29 @@ func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "USER_RANKINGS_DURATION_LOAD_FAILED", err.Error())
 			return
 		}
-		byEmail := map[string]*userRankingRow{}
+		byAccount := map[string]*userRankingRow{}
 		for _, t := range tokenRows {
-			email := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			byEmail[email] = &userRankingRow{UserEmail: email, UserName: email, TotalTokens: t.Usage.TotalTokens()}
+			byAccount[account] = &userRankingRow{UserEmail: account, UserName: account, TotalTokens: t.Usage.TotalTokens()}
 		}
 		for _, d := range durationRows {
-			email := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingEmail(email) {
+			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
+			if !isUserRankingAccount(account) {
 				continue
 			}
-			row := byEmail[email]
+			row := byAccount[account]
 			if row == nil {
-				row = &userRankingRow{UserEmail: email, UserName: email}
-				byEmail[email] = row
+				row = &userRankingRow{UserEmail: account, UserName: account}
+				byAccount[account] = row
 			}
 			row.DurationSeconds += d.DurationSeconds
 			row.OnlineSeconds += d.OnlineSeconds
 		}
-		merged := make([]userRankingRow, 0, len(byEmail))
-		for _, row := range byEmail {
+		merged := make([]userRankingRow, 0, len(byAccount))
+		for _, row := range byAccount {
 			merged = append(merged, *row)
 		}
 		assignUserRankingRanks(merged)
@@ -186,9 +186,31 @@ func sortUserRankingRows(rows []userRankingRow, dimension string) {
 	})
 }
 
+func isUserRankingAccount(account string) bool {
+	account = strings.TrimSpace(account)
+	return isUserRankingEmail(account) || isUserRankingPhone(account)
+}
+
 func isUserRankingEmail(email string) bool {
 	email = strings.TrimSpace(email)
 	return strings.Count(email, "@") == 1 && !strings.ContainsAny(email, " \t\r\n") && !strings.HasPrefix(email, "@") && !strings.HasSuffix(email, "@")
+}
+
+func isUserRankingPhone(account string) bool {
+	account = strings.TrimSpace(strings.ToLower(account))
+	if !strings.HasPrefix(account, "phone:") || strings.ContainsAny(account, " \t\r\n") {
+		return false
+	}
+	digits := strings.TrimPrefix(account, "phone:")
+	if len(digits) < 6 || len(digits) > 20 {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeUserRankingPeriod(v string) string {
