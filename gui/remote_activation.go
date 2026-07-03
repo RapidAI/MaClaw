@@ -960,6 +960,7 @@ func (a *App) ClearRemoteActivation() error {
 
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.RemoteEmail = ""
+		cfg.RemoteMobile = ""
 		cfg.RemoteSN = ""
 		cfg.RemoteUserID = ""
 		cfg.RemoteTenantID = ""
@@ -971,6 +972,8 @@ func (a *App) ClearRemoteActivation() error {
 		cfg.RemoteNickname = ""
 		cfg.RemoteHubID = ""
 		cfg.RemoteHubURL = ""
+		cfg.RemoteHubCenterURL = ""
+		cfg.RemoteHubCenterURLs = nil
 	}); err != nil {
 		return err
 	}

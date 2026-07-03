@@ -309,8 +309,8 @@
 }
 
 .about-contact-dialog {
-    width: 460px;
-    max-width: min(92vw, 460px);
+    width: 520px;
+    max-width: min(92vw, 520px);
 }
 
 .about-contact-dialog__header {
@@ -333,11 +333,31 @@
     line-height: 1.55;
 }
 
-.about-contact-dialog__code-row {
+.about-contact-dialog__field-row {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.about-contact-dialog__field-row .form-label {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.35;
+}
+
+.about-contact-dialog__code-control {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
     align-items: center;
+}
+
+.about-contact-dialog__code-control .about-action-button {
+    min-width: 86px;
+    white-space: nowrap;
 }
 
 .about-contact-dialog__message {
@@ -345,6 +365,26 @@
     color: var(--theme-text-secondary);
     font-size: 0.82rem;
     line-height: 1.45;
+}
+
+.about-contact-dialog .modal-actions {
+    gap: 12px;
+    margin-top: 18px;
+}
+
+@media (max-width: 520px) {
+    .about-contact-dialog__field-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    .about-contact-dialog__code-control {
+        grid-template-columns: 1fr;
+    }
+
+    .about-contact-dialog__code-control .about-action-button {
+        width: 100%;
+    }
 }
 
 .about-rank-badge {

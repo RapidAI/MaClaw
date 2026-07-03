@@ -15,6 +15,16 @@ import release_status_report
 import validate_qa_build_records_dir
 
 
+def command_sequence(output: str) -> list[str]:
+    start = output.index("```bash")
+    end = output.index("```", start + len("```bash"))
+    return [
+        line.strip()
+        for line in output[start + len("```bash") : end].splitlines()
+        if line.strip()
+    ]
+
+
 class ReleaseHandoffTest(unittest.TestCase):
     def make_root(self) -> Path:
         root = Path(self.tmp.name)
@@ -85,7 +95,7 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("python3 tool/setup_ios_export_options.py --team-id ABCDE12345 --export-method development", output)
         self.assertIn("python3 tool/signed_artifact_evidence.py ios", output)
         self.assertIn('--archive-or-build "<Xcode archive path or TestFlight build number>"', output)
-        self.assertIn('--provisioning-profiles "<Runner profile; Share Extension profile>"', output)
+        self.assertIn('--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"', output)
         self.assertIn("python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.log", output)
         self.assertIn("python3 tool/create_qa_build_record.py --scope android-ios --version 1.0.0+42", output)
         self.assertIn('--release-handoff-result "docs/qa-builds/handoff-1.0.0+42.md"', output)
@@ -98,6 +108,39 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("Runtime boundary verifier result", output)
         self.assertIn("Digital employee list", output)
         self.assertIn("Do not store signing secrets", output)
+
+    def test_format_handoff_command_sequence_is_copyable_in_order(self) -> None:
+        root = self.make_root()
+        handoff = release_handoff.build_handoff(
+            root,
+            version="1.0.0+42",
+            team_id="ABCDE12345",
+            export_method="ad-hoc",
+            build_status=self.blocked_status,
+        )
+
+        self.assertEqual(
+            [
+                "python3 tool/release_status_report.py --team-id ABCDE12345 --export-method ad-hoc",
+                "python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id ABCDE12345 --export-method ad-hoc --output docs/qa-builds/handoff-1.0.0+42.md",
+                "python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "python3 tool/setup_android_signing.py",
+                "python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --dry-run",
+                "python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42",
+                "python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version 1.0.0+42 --signing-identity \"<alias or certificate fingerprint>\" --installer-channel \"<internal test channel>\"",
+                "python3 tool/setup_ios_export_options.py --team-id ABCDE12345 --export-method ad-hoc",
+                "python3 tool/plan_ios_release.py --team-id ABCDE12345 --export-method ad-hoc",
+                "python3 tool/signed_artifact_evidence.py ios --archive-or-build \"<Xcode archive path or TestFlight build number>\" --team-id ABCDE12345 --provisioning-profiles \"<Runner profile UUID/name; Share Extension profile UUID/name>\"",
+                "python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.log",
+                "python3 tool/create_qa_build_record.py --scope android-ios --version 1.0.0+42 --release-handoff-result \"docs/qa-builds/handoff-1.0.0+42.md\" --runtime-boundary-result \"MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log\" --automated-gates-result \"run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log\"",
+                "python3 tool/validate_qa_build_record.py docs/qa-builds/<YYYY-MM-DD>-android-ios-1.0.0+42.md",
+                "python3 tool/qa_build_record_report.py docs/qa-builds/<YYYY-MM-DD>-android-ios-1.0.0+42.md",
+                "python3 tool/qa_release_evidence_links.py docs/qa-builds",
+                "python3 tool/validate_qa_build_records_dir.py docs/qa-builds",
+                "python3 tool/verify_final_release_evidence.py docs/qa-builds",
+            ],
+            command_sequence(release_handoff.format_handoff(handoff)),
+        )
 
     def test_format_handoff_reports_ready_status(self) -> None:
         root = self.make_root()
@@ -156,6 +199,63 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertTrue(target.exists())
         self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
         self.assertIn("1.0.0+42", target.read_text(encoding="utf-8"))
+
+    def test_main_refuses_to_overwrite_existing_output_without_force(self) -> None:
+        root = self.make_root()
+        target = root / "handoff.md"
+        target.write_text("existing handoff evidence", encoding="utf-8")
+        stderr = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.ready_status
+            with redirect_stderr(stderr):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(1, exit_code)
+        self.assertEqual("existing handoff evidence", target.read_text(encoding="utf-8"))
+        self.assertIn("pass --force to overwrite", stderr.getvalue())
+
+    def test_main_force_overwrites_existing_output(self) -> None:
+        root = self.make_root()
+        target = root / "handoff.md"
+        target.write_text("existing handoff evidence", encoding="utf-8")
+        stdout = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.ready_status
+            with redirect_stdout(stdout):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                        "--force",
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("MaClaw Mobile Release Handoff", target.read_text(encoding="utf-8"))
+        self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
 
     def test_main_prints_ready_handoff_to_stdout(self) -> None:
         root = self.make_root()

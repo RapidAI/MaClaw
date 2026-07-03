@@ -38,6 +38,9 @@ QA_BUILD_RECORD_FILENAME_RE = re.compile(
     r"(?P<version>\d+(?:\.\d+){1,3}\+\d+)\.md$"
 )
 TESTFLIGHT_BUILD_RE = re.compile(r"(?i)\btestflight\s+build\s+\d+\b")
+IOS_PROFILE_REFERENCE_RE = re.compile(
+    r"(?i)(\buuid\s+[a-z0-9][a-z0-9-]{5,}\b|\.mobileprovision\b|\bprofile name\s+[^;,\n]{4,})"
+)
 PRIVATE_KEY_BLOCK_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?im)\b(?:password|passwd|token|access[_-]?token|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"<>]{8,}"
@@ -1276,11 +1279,7 @@ def _mentions_ios_profiles(value: str) -> bool:
         and normalized not in PLACEHOLDER_VALUES
         and "runner" in normalized
         and ("share extension" in normalized or "shareextension" in normalized)
-        and (
-            "uuid" in normalized
-            or ".mobileprovision" in normalized
-            or "provisioning profile" in normalized
-        )
+        and IOS_PROFILE_REFERENCE_RE.search(value) is not None
     )
 
 

@@ -307,6 +307,32 @@ func TestVerifyRemoteRegistrationContactCodeStoresNormalizedHubResponse(t *testi
 	}
 }
 
+func TestClearRemoteActivationClearsRegistrationContactDetails(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:        "https://hub.example",
+		RemoteHubCenterURL:  "https://hubcenter.example",
+		RemoteHubCenterURLs: []string{"https://hubcenter.example"},
+		RemoteEmail:         "user@example.com",
+		RemoteMobile:        "19900001111",
+		RemoteMachineID:     "machine-1",
+		RemoteMachineToken:  "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.ClearRemoteActivation(); err != nil {
+		t.Fatalf("ClearRemoteActivation() error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.RemoteEmail != "" || cfg.RemoteMobile != "" || cfg.RemoteHubURL != "" || cfg.RemoteHubCenterURL != "" || len(cfg.RemoteHubCenterURLs) != 0 || cfg.RemoteMachineID != "" || cfg.RemoteMachineToken != "" {
+		t.Fatalf("remote registration fields not cleared: email=%q mobile=%q hub=%q hubcenter=%q hubcenters=%v machine=%q token=%q", cfg.RemoteEmail, cfg.RemoteMobile, cfg.RemoteHubURL, cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs, cfg.RemoteMachineID, cfg.RemoteMachineToken)
+	}
+}
+
 func TestActivateRemoteSMSIncludesTenantID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/enroll/sms/verify-and-start" {

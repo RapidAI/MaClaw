@@ -81,6 +81,35 @@ class VerifyRuntimeBoundaryTest(unittest.TestCase):
                 log_path.read_text(encoding="utf-8"),
             )
 
+    def test_main_refuses_to_overwrite_success_log_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lib").mkdir()
+            (root / "lib" / "main.dart").write_text(
+                "void main() {}\n",
+                encoding="utf-8",
+            )
+            log_path = root / "runtime-boundary.log"
+            log_path.write_text("existing runtime evidence", encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                exit_code = verify_runtime_boundary.main(
+                    ["--root", str(root), "--log", str(log_path)],
+                )
+
+            self.assertEqual(1, exit_code)
+            self.assertEqual("existing runtime evidence", log_path.read_text(encoding="utf-8"))
+            self.assertIn("pass --force to overwrite", stderr.getvalue())
+
+            with redirect_stdout(StringIO()):
+                exit_code = verify_runtime_boundary.main(
+                    ["--root", str(root), "--log", str(log_path), "--force"],
+                )
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("runtime boundary verified", log_path.read_text(encoding="utf-8"))
+
     def test_main_can_write_violation_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

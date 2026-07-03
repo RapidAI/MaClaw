@@ -23,6 +23,9 @@ python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --v
   --automated-gates-result "run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
 ```
 
+The handoff, runtime-boundary log, and release-gates log commands refuse to
+overwrite existing saved evidence files unless `--force` is provided.
+
 If the handoff, runtime-boundary, and release-gate outputs use different saved
 paths or attachment IDs, replace the three Final Release Decision references
 while creating the record:

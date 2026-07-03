@@ -269,7 +269,11 @@ def _print_and_log(line: str, log_lines: list[str]) -> None:
     log_lines.append(line)
 
 
-def _write_log(path: Path, log_lines: list[str]) -> None:
+def _write_log(path: Path, log_lines: list[str], *, force: bool = False) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(
+            f"{path} already exists; pass --force to overwrite release-gates evidence log",
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(log_lines).rstrip() + "\n", encoding="utf-8")
 
@@ -318,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Optional path to write gate sequence and command output for QA evidence.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing release-gates evidence log.",
+    )
     args = parser.parse_args(argv)
 
     gates = release_gates()
@@ -326,17 +335,28 @@ def main(argv: list[str] | None = None) -> int:
         for index, gate in enumerate(gates, start=1):
             _print_and_log(format_gate(gate, index=index, total=len(gates)), log_lines)
         if args.log:
-            _write_log(args.log, log_lines)
+            try:
+                _write_log(args.log, log_lines, force=args.force)
+            except FileExistsError as exc:
+                print(f"Release gates log write failed: {exc}", file=sys.stderr)
+                return 1
         return 0
 
+    exit_code = 0
     try:
         for index, gate in enumerate(gates, start=1):
             run_gate(gate, index=index, total=len(gates), log_lines=log_lines)
         _print_and_log("All MaClaw Mobile automated release gates passed.", log_lines)
-    finally:
-        if args.log:
-            _write_log(args.log, log_lines)
-    return 0
+    except subprocess.CalledProcessError as exc:
+        exit_code = exc.returncode or 1
+
+    if args.log:
+        try:
+            _write_log(args.log, log_lines, force=args.force)
+        except FileExistsError as exc:
+            print(f"Release gates log write failed: {exc}", file=sys.stderr)
+            return 1
+    return exit_code
 
 
 if __name__ == "__main__":

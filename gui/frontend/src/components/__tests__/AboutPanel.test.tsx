@@ -63,6 +63,15 @@ const baseProps = {
         aboutContactCodeFailed: 'Failed to send verification code.',
         aboutContactVerified: 'Verified and saved.',
         aboutContactVerifyFailed: 'Verification failed.',
+        aboutContactErrorEmailAlreadyRegistered: 'This email is already registered in the current tenant.',
+        aboutContactErrorPhoneAlreadyRegistered: 'This phone number is already registered in the current tenant.',
+        aboutContactErrorInvalidCode: 'The verification code is incorrect or has expired.',
+        aboutContactErrorVerifyLocked: 'Too many failed attempts. Please try again later.',
+        aboutContactErrorMailNotConfigured: 'Email verification is not configured for the current tenant.',
+        aboutContactErrorSmsDailyLimitReached: 'The SMS verification limit has been reached. Please try again tomorrow.',
+        aboutContactErrorRateLimited: 'Requests are too frequent. Please wait and try again.',
+        aboutContactErrorMachineUnauthorized: 'The current machine registration is invalid. Please register again.',
+        aboutContactErrorTenantMismatch: 'The current account does not belong to this tenant.',
         aboutMachineId: 'Machine ID',
         remoteActivation: 'Registration',
         remoteActivated: 'Registered',
@@ -189,6 +198,19 @@ describe('AboutPanel', () => {
         expect(onRegistrationContactUpdated).toHaveBeenCalledTimes(1);
     });
 
+    it('localizes registration contact backend error codes', async () => {
+        vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('EMAIL_ALREADY_REGISTERED: Email is already registered'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        const setButtons = screen.getAllByText('Set');
+        fireEvent.click(setButtons[1]);
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'dev@example.com' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        expect(await screen.findByText('This email is already registered in the current tenant.')).toBeTruthy();
+        expect(screen.queryByText(/EMAIL_ALREADY_REGISTERED/)).toBeNull();
+    });
+
     it('treats phone account identity as registered phone, not registered email', () => {
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'phone:19900001111', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
@@ -258,6 +280,23 @@ describe('AboutPanel', () => {
             expect(ProbeRemoteHub).toHaveBeenLastCalledWith('https://hub-two.example', 'dev@example.com');
         });
         expect(await screen.findByText('Team Two')).toBeTruthy();
+    });
+
+    it('refreshes probed tenant when phone registration identity changes', async () => {
+        vi.mocked(ProbeRemoteHub)
+            .mockResolvedValueOnce({ tenant_name: 'Phone Team One' })
+            .mockResolvedValueOnce({ tenant_name: 'Phone Team Two' });
+
+        const { rerender } = render(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub.example', remote_mobile: '19900001111' } as any} />);
+
+        expect(await screen.findByText('Phone Team One')).toBeTruthy();
+
+        rerender(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub.example', remote_mobile: '19900002222' } as any} />);
+
+        await waitFor(() => {
+            expect(ProbeRemoteHub).toHaveBeenLastCalledWith('https://hub.example', 'phone:19900002222');
+        });
+        expect(await screen.findByText('Phone Team Two')).toBeTruthy();
     });
 
     it('hides thanks section when content is empty', () => {

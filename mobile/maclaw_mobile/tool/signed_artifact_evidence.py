@@ -13,6 +13,9 @@ ANDROID_ARTIFACT_MARKERS = ("release", "signed", "internal")
 APPLE_TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 VERSION_BUILD_RE = re.compile(r"^\d+(?:\.\d+){1,3}\+\d+$")
 TESTFLIGHT_BUILD_RE = re.compile(r"(?i)\btestflight\s+build\s+\d+\b")
+IOS_PROFILE_REFERENCE_RE = re.compile(
+    r"(?i)(\buuid\s+[a-z0-9][a-z0-9-]{5,}\b|\.mobileprovision\b|\bprofile name\s+[^;,\n]{4,})"
+)
 PLACEHOLDER_VALUES = {
     "",
     "ok",
@@ -133,11 +136,7 @@ def is_trackable_ios_profiles(value: str) -> bool:
         and normalized not in PLACEHOLDER_VALUES
         and "runner" in normalized
         and ("share extension" in normalized or "shareextension" in normalized)
-        and (
-            "uuid" in normalized
-            or ".mobileprovision" in normalized
-            or "provisioning profile" in normalized
-        )
+        and IOS_PROFILE_REFERENCE_RE.search(value) is not None
     )
 
 

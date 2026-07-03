@@ -94,7 +94,7 @@ For a single local readiness summary, run:
   profiles, bundle IDs, app group, and URL scheme evidence in the QA build
   record.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
   to generate paste-ready archive/build, Team ID, and provisioning-profile
   evidence for the QA build record.
 

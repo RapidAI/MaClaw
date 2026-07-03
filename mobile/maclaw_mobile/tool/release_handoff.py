@@ -133,7 +133,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         "python3 tool/signed_artifact_evidence.py ios "
         '--archive-or-build "<Xcode archive path or TestFlight build number>" '
         f"--team-id {handoff.team_id} "
-        '--provisioning-profiles "<Runner profile; Share Extension profile>"'
+        '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"'
     )
 
     lines = [
@@ -225,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=plan_ios_release.VALID_EXPORT_METHODS,
     )
     parser.add_argument("--output", type=Path, help="Optional Markdown output path.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing handoff output file.",
+    )
     args = parser.parse_args(argv)
 
     handoff = build_handoff(
@@ -236,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     output = format_handoff(handoff)
     if args.output:
+        if args.output.exists() and not args.force:
+            print(
+                f"Release handoff output already exists: {args.output}; pass --force to overwrite.",
+                file=sys.stderr,
+            )
+            return 1
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output, encoding="utf-8")
         print(f"Wrote MaClaw Mobile release handoff: {args.output}")

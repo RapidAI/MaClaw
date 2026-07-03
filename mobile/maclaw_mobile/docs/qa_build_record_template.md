@@ -89,7 +89,9 @@ URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER):
 `Archive/TestFlight build` must identify an `.xcarchive` or TestFlight build.
 `Team ID` must be the 10-character Apple team identifier. `Provisioning
 profiles` must mention both Runner and Share Extension profiles.
-Use `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+Do not write only `UUID`; include the actual profile UUID value,
+`.mobileprovision` file, or explicit profile name for each target.
+Use `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
 to generate paste-ready archive/build, Team ID, and provisioning-profile
 evidence.
 

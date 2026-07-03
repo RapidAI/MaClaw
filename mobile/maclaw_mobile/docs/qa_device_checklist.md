@@ -22,6 +22,8 @@ already been saved, pass their traceable references to
 `create_qa_build_record.py` with `--release-handoff-result`,
 `--runtime-boundary-result`, and `--automated-gates-result` so the Final Release
 Decision section starts with those evidence links already filled.
+The handoff, runtime-boundary log, and release-gates log commands refuse to
+overwrite existing saved evidence files unless `--force` is provided.
 
 Use `--scope android` or `--scope ios` when Android and iOS evidence are captured
 separately. The command starts from `qa_build_record_template.md` and saves the
@@ -168,7 +170,7 @@ it.
   `.xcarchive` path or TestFlight build number, and Runner/Share Extension
   provisioning profile evidence.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile; Share Extension profile>"`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
   and paste the generated archive/build, Team ID, and provisioning-profile
   fields into the QA build record.
 - Install via development signing or TestFlight, launch/open the app, and

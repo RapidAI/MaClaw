@@ -83,6 +83,25 @@ function registrationProbeIdentityFromConfig(remoteEmail: unknown, remoteMobile:
     return mobile ? `${phoneAccountPrefix}${mobile}` : '';
 }
 
+const registrationContactErrorKeys: Array<[string, string]> = [
+    ['EMAIL_ALREADY_REGISTERED', 'aboutContactErrorEmailAlreadyRegistered'],
+    ['PHONE_ALREADY_REGISTERED', 'aboutContactErrorPhoneAlreadyRegistered'],
+    ['INVALID_VERIFY_CODE', 'aboutContactErrorInvalidCode'],
+    ['INVALID_SMS_VERIFY_CODE', 'aboutContactErrorInvalidCode'],
+    ['VERIFY_LOCKED', 'aboutContactErrorVerifyLocked'],
+    ['MAIL_NOT_CONFIGURED', 'aboutContactErrorMailNotConfigured'],
+    ['SMS_DAILY_LIMIT_REACHED', 'aboutContactErrorSmsDailyLimitReached'],
+    ['RATE_LIMITED', 'aboutContactErrorRateLimited'],
+    ['MACHINE_UNAUTHORIZED', 'aboutContactErrorMachineUnauthorized'],
+    ['TENANT_MISMATCH', 'aboutContactErrorTenantMismatch'],
+];
+
+function formatRegistrationContactError(err: unknown, fallbackKey: string, t: (key: string) => string): string {
+    const raw = String((err as any)?.message || err || '').toUpperCase();
+    const match = registrationContactErrorKeys.find(([code]) => raw.includes(code));
+    return t(match?.[1] || fallbackKey);
+}
+
 const MarkdownLink = ({ node, ...props }: any) => (
     <a
         {...props}
@@ -126,7 +145,7 @@ export function AboutPanel({
             id: String(config?.remote_tenant_id || ''),
             name: String(config?.remote_tenant_name || ''),
         });
-    }, [config?.remote_hub_url, config?.remote_email, config?.remote_tenant_id, config?.remote_tenant_name]);
+    }, [config?.remote_hub_url, config?.remote_email, (config as any)?.remote_mobile, config?.remote_tenant_id, config?.remote_tenant_name]);
 
     const probeIdentity = registrationProbeIdentityFromConfig(config?.remote_email, (config as any)?.remote_mobile);
     useEffect(() => {
@@ -200,7 +219,7 @@ export function AboutPanel({
             setContactCodeSent(true);
             setContactMessage(t("aboutContactCodeSent").replace("{length}", String(length)).replace("{minutes}", String(expires)));
         } catch (err: any) {
-            setContactMessage(String(err?.message || err || t("aboutContactCodeFailed")));
+            setContactMessage(formatRegistrationContactError(err, "aboutContactCodeFailed", t));
         } finally {
             setContactBusy(false);
             setContactBusyAction('');
@@ -217,7 +236,7 @@ export function AboutPanel({
             onRegistrationContactUpdated?.();
             window.setTimeout(() => setContactDialog(null), 350);
         } catch (err: any) {
-            setContactMessage(String(err?.message || err || t("aboutContactVerifyFailed")));
+            setContactMessage(formatRegistrationContactError(err, "aboutContactVerifyFailed", t));
         } finally {
             setContactBusy(false);
             setContactBusyAction('');
@@ -595,25 +614,30 @@ export function AboutPanel({
                             <button className="modal-close" onClick={() => setContactDialog(null)}>&times;</button>
                         </div>
                         <p className="about-contact-dialog__desc">{t("aboutContactDialogDesc")}</p>
-                        <label className="form-label">{contactValueLabel}</label>
-                        <input
-                            className="form-input"
-                            type={contactInputType}
-                            value={contactValue}
-                            onChange={e => { setContactValue(e.target.value); setContactCodeSent(false); setContactMessage(''); }}
-                            placeholder={contactDialog.kind === 'phone' ? t("aboutRegisterPhonePlaceholder") : t("aboutRegisterEmailPlaceholder")}
-                        />
-                        <label className="form-label">{t("aboutVerifyCode")}</label>
-                        <div className="about-contact-dialog__code-row">
+                        <label className="about-contact-dialog__field-row">
+                            <span className="form-label">{contactValueLabel}</span>
                             <input
                                 className="form-input"
-                                value={contactCode}
-                                onChange={e => setContactCode(e.target.value)}
-                                placeholder={t("aboutVerifyCodePlaceholder")}
+                                type={contactInputType}
+                                value={contactValue}
+                                onChange={e => { setContactValue(e.target.value); setContactCodeSent(false); setContactMessage(''); }}
+                                placeholder={contactDialog.kind === 'phone' ? t("aboutRegisterPhonePlaceholder") : t("aboutRegisterEmailPlaceholder")}
                             />
-                            <button className="btn-link about-action-button" disabled={contactBusy || !contactValue.trim()} onClick={sendContactCode}>
-                                {contactBusyAction === 'send' ? t("loading") : t("aboutSendCodeBtn")}
-                            </button>
+                        </label>
+                        <div className="about-contact-dialog__field-row about-contact-dialog__code-row">
+                            <label className="form-label" htmlFor="about-contact-verify-code">{t("aboutVerifyCode")}</label>
+                            <div className="about-contact-dialog__code-control">
+                                <input
+                                    id="about-contact-verify-code"
+                                    className="form-input"
+                                    value={contactCode}
+                                    onChange={e => setContactCode(e.target.value)}
+                                    placeholder={t("aboutVerifyCodePlaceholder")}
+                                />
+                                <button className="btn-link about-action-button" disabled={contactBusy || !contactValue.trim()} onClick={sendContactCode}>
+                                    {contactBusyAction === 'send' ? t("loading") : t("aboutSendCodeBtn")}
+                                </button>
+                            </div>
                         </div>
                         {contactMessage && <div className="about-contact-dialog__message">{contactMessage}</div>}
                         <div className="modal-actions">

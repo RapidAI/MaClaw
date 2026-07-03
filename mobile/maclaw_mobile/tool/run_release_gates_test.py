@@ -166,6 +166,35 @@ class RunReleaseGatesTest(unittest.TestCase):
             self.assertIn("Go mobile API", text)
             self.assertIn("Android debug APK", text)
 
+    def test_dry_run_refuses_to_overwrite_log_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "release-gates.log"
+            log_path.write_text("existing release gate evidence", encoding="utf-8")
+            output = StringIO()
+            error = StringIO()
+
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(
+                    1,
+                    run_release_gates.main(["--dry-run", "--log", str(log_path)]),
+                )
+
+            self.assertEqual(
+                "existing release gate evidence",
+                log_path.read_text(encoding="utf-8"),
+            )
+            self.assertIn("pass --force to overwrite", error.getvalue())
+
+            with redirect_stdout(StringIO()):
+                self.assertEqual(
+                    0,
+                    run_release_gates.main(
+                        ["--dry-run", "--log", str(log_path), "--force"],
+                    ),
+                )
+
+            self.assertIn("Go mobile API", log_path.read_text(encoding="utf-8"))
+
     def test_run_can_write_log_file_with_command_output(self) -> None:
         gate = run_release_gates.ReleaseGate(
             "Stub gate",

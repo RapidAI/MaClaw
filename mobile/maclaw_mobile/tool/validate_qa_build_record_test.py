@@ -746,6 +746,42 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_ios_provisioning_profiles_reject_bare_uuid_words(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
+                "Provisioning profiles: Runner profile UUID and Share Extension profile UUID",
+            ),
+        )
+
+        self.assertIn(
+            "Provisioning profiles must mention Runner, Share Extension, and trackable profile ID/file/name",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ios_provisioning_profiles_accept_files_and_profile_names(self) -> None:
+        file_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
+                "Provisioning profiles: Runner Release.mobileprovision; Share Extension Release.mobileprovision",
+            ),
+        )
+        name_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
+                "Provisioning profiles: Runner profile name MaClaw Runner Release; Share Extension profile name MaClaw Share Extension Release",
+            ),
+        )
+
+        self.assertNotIn(
+            "Provisioning profiles must mention Runner, Share Extension, and trackable profile ID/file/name",
+            validate_qa_build_record.missing_required_fields(file_values),
+        )
+        self.assertNotIn(
+            "Provisioning profiles must mention Runner, Share Extension, and trackable profile ID/file/name",
+            validate_qa_build_record.missing_required_fields(name_values),
+        )
+
     def test_ios_testflight_build_must_use_explicit_build_number_label(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(

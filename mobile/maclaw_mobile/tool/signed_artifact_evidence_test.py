@@ -128,14 +128,14 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
         lines = signed_artifact_evidence.ios_evidence_lines(
             archive_or_build="build/ios/archive/Runner.xcarchive",
             team_id="abcde12345",
-            provisioning_profiles="Runner profile UUID and Share Extension profile UUID",
+            provisioning_profiles="Runner profile UUID abc123; Share Extension profile UUID def456",
         )
 
         self.assertEqual(
             [
                 "Archive/TestFlight build: build/ios/archive/Runner.xcarchive",
                 "Team ID: ABCDE12345",
-                "Provisioning profiles: Runner profile UUID and Share Extension profile UUID",
+                "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
             ],
             lines,
         )
@@ -151,6 +151,27 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
         )
 
         self.assertIn("Archive/TestFlight build: TestFlight build 42", lines)
+
+    def test_ios_evidence_accepts_profile_files_and_names(self) -> None:
+        file_lines = signed_artifact_evidence.ios_evidence_lines(
+            archive_or_build="TestFlight build 42",
+            team_id="ABCDE12345",
+            provisioning_profiles=(
+                "Runner Release.mobileprovision; "
+                "Share Extension Release.mobileprovision"
+            ),
+        )
+        name_lines = signed_artifact_evidence.ios_evidence_lines(
+            archive_or_build="TestFlight build 42",
+            team_id="ABCDE12345",
+            provisioning_profiles=(
+                "Runner profile name MaClaw Runner Release; "
+                "Share Extension profile name MaClaw Share Extension Release"
+            ),
+        )
+
+        self.assertIn("Runner Release.mobileprovision", "\n".join(file_lines))
+        self.assertIn("MaClaw Share Extension Release", "\n".join(name_lines))
 
     def test_ios_evidence_rejects_untrackable_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "Archive/TestFlight build"):
@@ -172,6 +193,13 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
                 archive_or_build="TestFlight build 42",
                 team_id="ABCDE12345",
                 provisioning_profiles="profiles present",
+            )
+
+        with self.assertRaisesRegex(ValueError, "Provisioning profiles"):
+            signed_artifact_evidence.ios_evidence_lines(
+                archive_or_build="TestFlight build 42",
+                team_id="ABCDE12345",
+                provisioning_profiles="Runner profile UUID and Share Extension profile UUID",
             )
 
     def test_android_cli_prints_evidence(self) -> None:
@@ -228,7 +256,7 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
                     "--team-id",
                     "<APPLE_TEAM_ID>",
                     "--provisioning-profiles",
-                    "<Runner profile; Share Extension profile>",
+                    "<Runner profile UUID/name; Share Extension profile UUID/name>",
                 ],
             )
 

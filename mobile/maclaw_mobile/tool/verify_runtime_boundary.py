@@ -131,7 +131,11 @@ def format_result(violations: list[BoundaryViolation]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_log(path: Path, text: str) -> None:
+def write_log(path: Path, text: str, *, force: bool = False) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(
+            f"{path} already exists; pass --force to overwrite runtime-boundary evidence log",
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
@@ -151,13 +155,22 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Optional path to write the runtime-boundary verification result for QA evidence.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing runtime-boundary evidence log.",
+    )
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
     violations = find_violations(root)
     output = format_result(violations)
     if args.log:
-        write_log(args.log, output)
+        try:
+            write_log(args.log, output, force=args.force)
+        except FileExistsError as exc:
+            print(f"Runtime boundary log write failed: {exc}", file=sys.stderr)
+            return 1
     if not violations:
         print(output, end="")
         return 0
