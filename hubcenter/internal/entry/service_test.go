@@ -238,6 +238,65 @@ func TestResolveByEmailUsesOfficialTenantPublicFallbackPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveByEmailUsesOfficialTenantPublicFallbackPolicyForPhone(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_phone_public", OwnerEmail: "owner@example.com", Name: "Official Phone Hub", BaseURL: "https://official-phone.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_phone_public":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"phone":{"tenant_id":"phone","signup_scope":"public","is_public_fallback":true,"invite_enabled":true,"max_active_invites":100,"monthly_invite_quota":500,"per_invite_max_uses_default":1,"per_invite_max_uses_max":20,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected one phone public fallback hub, got mode=%s hubs=%d message=%q", result.Mode, len(result.Hubs), result.Message)
+	}
+	if result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "phone" {
+		t.Fatalf("unexpected phone fallback route: %+v", result.Hubs[0])
+	}
+}
+
+func TestResolveByEmailPhoneRouteDoesNotMixPublicFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	linkedHub := &store.HubInstance{ID: "hub_registered_phone", OwnerEmail: "registered@example.com", Name: "Registered Phone Hub", BaseURL: "https://registered-phone.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret-registered", CreatedAt: now, UpdatedAt: now}
+	fallbackHub := &store.HubInstance{ID: "hub_phone_public_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Public Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret-fallback", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, linkedHub); err != nil {
+		t.Fatalf("create linked hub: %v", err)
+	}
+	if err := st.Hubs.Create(ctx, fallbackHub); err != nil {
+		t.Fatalf("create fallback hub: %v", err)
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "link_registered_phone", HubID: linkedHub.ID, TenantID: "tenant_registered", Email: "phone:19900001111", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create phone link: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_public_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"phone_public":{"tenant_id":"phone_public","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected only registered phone route, got %+v", result)
+	}
+	if result.Hubs[0].HubID != linkedHub.ID || result.Hubs[0].TenantID != "tenant_registered" {
+		t.Fatalf("unexpected registered phone route: %+v", result.Hubs[0])
+	}
+}
+
 func TestResolveByEmailNormalizesStoredRegistrationPolicy(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -1568,6 +1627,442 @@ func TestResolveByEmailKeepsSameHubTenantCandidates(t *testing.T) {
 	}
 	if !seen["tenant_a"] || !seen["tenant_b"] {
 		t.Fatalf("missing tenant candidates: %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailFiltersStaleTenantDomainRouteByConfiguredTenantDomains(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_stale_tenant_route",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Stale Tenant Route",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"corporate_email_domain_source":"configured",
+			"corporate_email_domain":"qianxin.com",
+			"corporate_email_domains":["qianxin.com"],
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"tenant_default":["qianxin.com"],"vantagics":["qianxin.com"]},
+			"tenant_names":{"vantagics":"万策智能科技"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "link_existing_default", HubID: hub.ID, Email: "znsoft@163.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create existing user link: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "stale_vantagics_163", HubID: hub.ID, TenantID: "vantagics", Domain: "163.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert stale tenant route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected only existing default user route, got %+v", result)
+	}
+	if result.Hubs[0].TenantID != "" {
+		t.Fatalf("expected stale tenant route to be filtered, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailFiltersStaleDefaultTenantDomainRouteByConfiguredTenantDomains(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_stale_default_route",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Stale Default Route",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"tenant_default":["qianxin.com"]},
+			"tenant_names":{"tenant_default":"Default Tenant"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "stale_default_163", HubID: hub.ID, Domain: "163.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert stale default route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "none" {
+		t.Fatalf("expected stale default tenant route to be filtered, got %+v", result)
+	}
+}
+
+func TestResolveByEmailFiltersStaleDefaultTenantDomainRouteByCorporateDomains(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:                   "hub_stale_default_corporate_route",
+		OwnerEmail:           "owner@example.com",
+		Name:                 "Hub Stale Corporate Route",
+		BaseURL:              "https://hub.example.com",
+		Visibility:           "shared",
+		EnrollmentMode:       "open",
+		CorporateEmailDomain: "qianxin.com",
+		CapabilitiesJSON: `{
+			"corporate_email_domain_source":"configured",
+			"corporate_email_domain":"qianxin.com",
+			"corporate_email_domains":["qianxin.com"]
+		}`,
+		Status:        "online",
+		HubSecretHash: "secret",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "stale_default_corporate_163", HubID: hub.ID, Domain: "163.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert stale default route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "none" {
+		t.Fatalf("expected stale corporate default tenant route to be filtered, got %+v", result)
+	}
+}
+
+func TestResolveByEmailFallsBackToPublicWhenDomainRoutesAreFiltered(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	restrictedHub := &store.HubInstance{
+		ID:             "hub_filtered_domain_route",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Filtered Domain Route",
+		BaseURL:        "https://filtered.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret-filtered",
+		CapabilitiesJSON: `{
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"tenant_default":["qianxin.com"]}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	publicHub := &store.HubInstance{
+		ID:                   "hub_public_after_filtered_route",
+		OwnerEmail:           "public@example.com",
+		Name:                 "Public Hub",
+		BaseURL:              "https://public.example.com",
+		Visibility:           "shared",
+		EnrollmentMode:       "open",
+		CorporateEmailDomain: "qianxin.com",
+		CapabilitiesJSON: `{
+			"corporate_email_domain_source":"configured",
+			"corporate_email_domain":"qianxin.com",
+			"corporate_email_domains":["qianxin.com"]
+		}`,
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-public",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	for _, hub := range []*store.HubInstance{restrictedHub, publicHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "stale_filtered_163", HubID: restrictedHub.ID, Domain: "163.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert stale filtered route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "new@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != publicHub.ID {
+		t.Fatalf("expected public fallback after filtered domain route, got %+v", result)
+	}
+}
+
+func TestResolveByEmailKeepsExistingTenantLinkWhenTenantDomainsChanged(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_existing_tenant_link",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Existing Tenant Link",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"corporate_email_domain_source":"configured",
+			"corporate_email_domain":"qianxin.com",
+			"corporate_email_domains":["qianxin.com"],
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"tenant_default":["qianxin.com"],"vantagics":["qianxin.com"]},
+			"tenant_names":{"vantagics":"万策智能科技"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "link_existing_vantagics", HubID: hub.ID, TenantID: "vantagics", Email: "znsoft@163.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create existing tenant link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected existing tenant user route, got %+v", result)
+	}
+	if result.Hubs[0].TenantID != "vantagics" {
+		t.Fatalf("expected existing tenant link to survive domain change, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailKeepsMultipleExistingTenantLinksWhenTenantDomainsChanged(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_existing_tenant_links",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Existing Tenant Links",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"tenant_a":["a.example"],"tenant_b":["b.example"]},
+			"tenant_names":{"tenant_a":"Tenant A","tenant_b":"Tenant B"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: "link_tenant_a_legacy", HubID: hub.ID, TenantID: "tenant_a", Email: "legacy@163.com", CreatedAt: now, UpdatedAt: now},
+		{ID: "link_tenant_b_legacy", HubID: hub.ID, TenantID: "tenant_b", Email: "legacy@163.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("create link %s: %v", link.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "legacy@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) != 2 {
+		t.Fatalf("expected both existing tenant links to survive domain changes, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, hub := range result.Hubs {
+		seen[hub.TenantID] = true
+	}
+	if !seen["tenant_a"] || !seen["tenant_b"] {
+		t.Fatalf("expected tenant_a and tenant_b links, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailKeepsExistingLinksDespiteTenantDomainMismatch(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_duplicate_existing_links",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Duplicate Existing Links",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"vantagics":["qianxin.com"]},
+			"tenant_names":{"vantagics":"万策智能科技"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: "link_default_legacy", HubID: hub.ID, Email: "znsoft@163.com", IsDefault: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "link_vantagics_mismatch", HubID: hub.ID, TenantID: "vantagics", Email: "znsoft@163.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("create link %s: %v", link.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) != 2 {
+		t.Fatalf("expected both existing user routes, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, hub := range result.Hubs {
+		seen[hub.TenantID] = true
+	}
+	if !seen[""] || !seen["vantagics"] {
+		t.Fatalf("expected default and tenant existing routes, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailKeepsMatchingTenantLinkAndUnrestrictedDuplicate(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_matching_tenant_link",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Matching Tenant Link",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CapabilitiesJSON: `{
+			"tenant_domain_source":"configured",
+			"tenant_domains":{"vantagics":["qianxin.com"]},
+			"tenant_names":{"vantagics":"万策智能科技"}
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: "link_default_duplicate", HubID: hub.ID, Email: "user@qianxin.com", IsDefault: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "link_vantagics_match", HubID: hub.ID, TenantID: "vantagics", Email: "user@qianxin.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("create link %s: %v", link.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "user@qianxin.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) != 2 {
+		t.Fatalf("expected matching tenant and unrestricted routes, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, hub := range result.Hubs {
+		seen[hub.TenantID] = true
+	}
+	if !seen[""] || !seen["vantagics"] {
+		t.Fatalf("expected default and matching tenant routes, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailDoesNotMixExistingUserRouteWithPublicFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	linkedHub := &store.HubInstance{
+		ID:             "hub_existing_user_route",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Existing User Hub",
+		BaseURL:        "https://existing.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret-existing",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	publicHub := &store.HubInstance{
+		ID:                 "hub_public_not_for_existing_user",
+		OwnerEmail:         "public@example.com",
+		Name:               "Public Hub",
+		BaseURL:            "https://public.example.com",
+		Visibility:         "shared",
+		EnrollmentMode:     "open",
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-public",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	for _, hub := range []*store.HubInstance{linkedHub, publicHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "link_existing_user", HubID: linkedHub.ID, Email: "znsoft@163.com", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create existing user link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected only existing user route, got %+v", result)
+	}
+	if result.Hubs[0].HubID != linkedHub.ID {
+		t.Fatalf("expected linked hub only, got %+v", result.Hubs)
 	}
 }
 

@@ -94,6 +94,8 @@ class PlanIOSReleaseTest(unittest.TestCase):
                         "ABCD123456",
                         "--export-method",
                         "ad-hoc",
+                        "--provisioning-profiles",
+                        "Runner profile UUID abc123; Share Extension profile UUID def456",
                     ],
                 )
 
@@ -105,7 +107,69 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertIn("Export options:", text)
         self.assertIn("ExportOptions.plist", text)
         self.assertIn("Archive command: xcodebuild archive", text)
+        self.assertIn("iOS QA artifact evidence:", text)
+        self.assertIn("Archive/TestFlight build: build/ios/archive/MaClawMobile.xcarchive", text)
+        self.assertIn("Team ID: ABCD123456", text)
+        self.assertIn("Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456", text)
         self.assertIn("Record the .xcarchive path or TestFlight build number", text)
+
+    def test_main_record_dir_validates_local_archive_and_prints_relative_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_export_options(root)
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+            output = StringIO()
+
+            with patch("verify_ios_wrapper.verify_ios_wrapper", return_value=[]), redirect_stdout(output):
+                exit_code = plan_ios_release.main(
+                    [
+                        "--root",
+                        tmp,
+                        "--team-id",
+                        "ABCD123456",
+                        "--provisioning-profiles",
+                        "Runner profile UUID abc123; Share Extension profile UUID def456",
+                        "--record-dir",
+                        "docs/qa-builds",
+                    ],
+                )
+
+        text = output.getvalue()
+        self.assertEqual(0, exit_code)
+        self.assertIn("iOS QA artifact evidence:", text)
+        self.assertIn(
+            "Archive/TestFlight build: ../../build/ios/archive/MaClawMobile.xcarchive",
+            text,
+        )
+
+    def test_main_record_dir_rejects_missing_local_archive_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_export_options(root)
+            output = StringIO()
+            error = StringIO()
+
+            with patch("verify_ios_wrapper.verify_ios_wrapper", return_value=[]), redirect_stdout(output), redirect_stderr(error):
+                exit_code = plan_ios_release.main(
+                    [
+                        "--root",
+                        tmp,
+                        "--team-id",
+                        "ABCD123456",
+                        "--provisioning-profiles",
+                        "Runner profile UUID abc123; Share Extension profile UUID def456",
+                        "--record-dir",
+                        "docs/qa-builds",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("iOS QA artifact evidence could not be generated", error.getvalue())
+        self.assertIn("iOS archive does not exist", error.getvalue())
+        self.assertNotIn("Traceback", error.getvalue())
 
     def test_main_reports_wrapper_errors_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,6 +197,11 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("iOS export options are not ready", error.getvalue())
         self.assertIn("setup_ios_export_options.py", error.getvalue())
+        self.assertIn(
+            "python3 tool/setup_ios_export_options.py --team-id ABCD123456 --export-method development",
+            error.getvalue(),
+        )
+        self.assertNotIn("<APPLE_TEAM_ID>", error.getvalue())
 
     def test_main_reports_mismatched_export_options_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +223,10 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("teamID must match ABCD123456", error.getvalue())
         self.assertIn("method must match development", error.getvalue())
+        self.assertIn(
+            "python3 tool/setup_ios_export_options.py --team-id ABCD123456 --export-method development",
+            error.getvalue(),
+        )
         self.assertNotIn("Traceback", error.getvalue())
 
 

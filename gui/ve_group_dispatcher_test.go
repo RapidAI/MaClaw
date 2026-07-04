@@ -98,10 +98,11 @@ func TestForwardAgentResponseFilesLocalDispatchDoesNotWaitForHubUpload(t *testin
 		t.Fatalf("SaveConfig: %v", err)
 	}
 	dispatcher := NewGroupChatDispatcher(app)
+	sess := &groupExecutorSession{SessionID: "session-1"}
 
 	done := make(chan struct{})
 	go func() {
-		dispatcher.forwardAgentResponseFiles("session-1", &IMAgentResponse{LocalFilePath: filePath}, true)
+		dispatcher.forwardAgentResponseFiles(sess, &IMAgentResponse{LocalFilePath: filePath}, true)
 		close(done)
 	}()
 	select {

@@ -457,6 +457,54 @@ func TestAdminModelServiceCreditDisplaysPreserveFractionalCredits(t *testing.T) 
 	}
 }
 
+func TestGovernanceAdminExposesVerifiedPhoneRouteSync(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "governance-tab.js"))
+	if err != nil {
+		t.Fatalf("read governance-tab.js: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		`syncVerifiedPhoneRoutes`,
+		`/api/admin/routing/sync-verified-phone-routes`,
+		`syncPhoneRoutes`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("governance-tab.js must expose verified phone route sync, missing %s", want)
+		}
+	}
+}
+
+func TestCenterAdminExposesGlobalVerifiedPhoneRouteSync(t *testing.T) {
+	centerBody, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "center-tab.js"))
+	if err != nil {
+		t.Fatalf("read center-tab.js: %v", err)
+	}
+	centerContent := string(centerBody)
+	for _, want := range []string{
+		`syncVerifiedPhoneRoutesFromCenter`,
+		`/api/admin/routing/sync-verified-phone-routes`,
+		`syncPhoneRoutes`,
+	} {
+		if !strings.Contains(centerContent, want) {
+			t.Fatalf("center-tab.js must expose global verified phone route sync, missing %s", want)
+		}
+	}
+
+	indexBody, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "index.html"))
+	if err != nil {
+		t.Fatalf("read admin index.html: %v", err)
+	}
+	indexContent := string(indexBody)
+	for _, want := range []string{
+		`id="centerSyncPhoneRoutesBtn"`,
+		`onclick="syncVerifiedPhoneRoutesFromCenter(this)"`,
+	} {
+		if !strings.Contains(indexContent, want) {
+			t.Fatalf("admin center page must expose global phone route sync button, missing %s", want)
+		}
+	}
+}
+
 func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "marketplace-tab.js"))
 	if err != nil {

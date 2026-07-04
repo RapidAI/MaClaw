@@ -840,7 +840,7 @@ func (a *App) activeWorkflowForRecentTaskPath(projectPath string) *ProjectWorkfl
 
 func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState {
 	projectPath = normalizeProjectSessionPath(projectPath)
-	if a == nil || projectPath == "" || a.workflowDisabled.Load() {
+	if a == nil || projectPath == "" {
 		return nil
 	}
 	lookup := func(path string) *ProjectWorkflowState {
@@ -881,6 +881,9 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 	}
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != "" && executionProjectPath != projectPath {
 		return lookup(executionProjectPath)
+	}
+	if a.workflowDisabled.Load() {
+		return nil
 	}
 	return nil
 }

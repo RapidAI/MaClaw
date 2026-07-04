@@ -42,12 +42,13 @@ type blockedIPPageLister interface {
 }
 
 type snapshotCandidate struct {
-	hub           *store.HubInstance
-	tenantID      string
-	routeDomain   string
-	routePriority int
-	rank          int
-	ownerLink     bool
+	hub                        *store.HubInstance
+	tenantID                   string
+	routeDomain                string
+	routePriority              int
+	rank                       int
+	ownerLink                  bool
+	registrationPolicyFallback bool
 }
 
 type resolvedCandidate struct {
@@ -65,6 +66,7 @@ type routeSnapshot struct {
 	domainRoutes         map[string][]snapshotCandidate
 	publicHubs           []snapshotCandidate
 	activeHubsByID       map[string]*store.HubInstance   // all active hubs indexed by ID
+	tenantDomainsByHub   map[string]map[string][]string  // hub_id -> tenant_id -> allowed email domains
 	invitationCodeRoutes map[string]invitationCodeTarget // invitation_code → (hub_id, tenant_id)
 }
 
@@ -183,11 +185,15 @@ func listSnapshotPages[T any](ctx context.Context, listPage func(context.Context
 
 func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*store.HubUserLink, routeItems []*store.HubDomainRoute, blockedEmailItems []*store.BlockedEmail, blockedIPItems []*store.BlockedIP, policies map[string]registrationPolicyConfig, includeOwnerLinks bool) *routeSnapshot {
 	activeHubs := make(map[string]*store.HubInstance, len(hubItems))
+	tenantDomainsByHub := make(map[string]map[string][]string, len(hubItems))
 	for _, hub := range hubItems {
 		if hub == nil || hub.IsDisabled || hub.Status != "online" {
 			continue
 		}
 		activeHubs[hub.ID] = hub
+		if tenantDomains := tenantDomainCapabilityMap(hub); len(tenantDomains) > 0 {
+			tenantDomainsByHub[hub.ID] = tenantDomains
+		}
 	}
 
 	snap := &routeSnapshot{
@@ -199,6 +205,7 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 		domainRoutes:         map[string][]snapshotCandidate{},
 		publicHubs:           make([]snapshotCandidate, 0),
 		activeHubsByID:       activeHubs,
+		tenantDomainsByHub:   tenantDomainsByHub,
 		invitationCodeRoutes: nil, // populated by entry.Service.Rebuild after snapshot is built
 	}
 
@@ -423,7 +430,7 @@ func appendPolicyPublicFallbacks(snap *routeSnapshot, hub *store.HubInstance, cf
 		if effectivePolicySignupScope(cfg, policy) != "public" {
 			continue
 		}
-		snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(tenantID), rank: rankPublicHub, routePriority: 1000})
+		snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(tenantID), rank: rankPublicHub, routePriority: 1000, registrationPolicyFallback: true})
 		added = true
 	}
 	return added
@@ -654,11 +661,15 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 	}
 
 	defaultHubID := strings.TrimSpace(s.defaultHubIDs[email])
-	for _, candidate := range s.emailRoutes[email] {
+	hasDirectNonPrivateUserRoute := false
+	for _, candidate := range s.resolveEmailRouteCandidates(email) {
 		if candidate.hub != nil && candidate.hub.ID == defaultHubID {
 			candidate.rank = rankDefaultLink
 		} else if candidate.hub != nil && strings.EqualFold(candidate.hub.Visibility, "private") {
 			candidate.rank = rankPrivateLink
+		}
+		if candidate.hub != nil && !strings.EqualFold(candidate.hub.Visibility, "private") {
+			hasDirectNonPrivateUserRoute = true
 		}
 		merge(candidate)
 	}
@@ -666,19 +677,59 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
 	}
 	if isPhoneRouteIdentity(email) {
+		if len(resultsByHub) == 0 {
+			for _, candidate := range s.publicHubs {
+				if candidate.registrationPolicyFallback {
+					merge(candidate)
+				}
+			}
+		}
 		return buildResolveResult(email, resultsByHub, "No phone route found"), nil
 	}
+	if hasDirectNonPrivateUserRoute {
+		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
+	}
 	domainCandidates := s.domainRoutes[extractEmailDomain(email)]
+	domainCandidateMatched := false
 	for _, candidate := range domainCandidates {
+		if !s.candidateAllowsEmailDomain(candidate, email) {
+			continue
+		}
+		domainCandidateMatched = true
 		merge(candidate)
 	}
-	if len(domainCandidates) == 0 {
+	if !domainCandidateMatched {
 		for _, candidate := range s.publicHubs {
 			merge(candidate)
 		}
 	}
 
 	return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
+}
+
+func (s *routeSnapshot) resolveEmailRouteCandidates(email string) []snapshotCandidate {
+	if s == nil {
+		return nil
+	}
+	candidates := s.emailRoutes[email]
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	allowed := make([]snapshotCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		configured, matches := s.candidateEmailDomainStatus(candidate, email)
+		if !configured {
+			allowed = append(allowed, candidate)
+			continue
+		}
+		if matches {
+			allowed = append(allowed, candidate)
+		}
+	}
+	if len(allowed) > 0 {
+		return allowed
+	}
+	return candidates
 }
 
 func (s *routeSnapshot) resolveAdminEmail(email string) *ResolveResult {
@@ -771,6 +822,97 @@ func (s *routeSnapshot) mergeCandidate(resultsByHub map[string]resolvedCandidate
 	if !ok || compareHubPriority(next, current) {
 		resultsByHub[key] = next
 	}
+}
+
+func (s *routeSnapshot) candidateAllowsEmailDomain(candidate snapshotCandidate, email string) bool {
+	configured, matches := s.candidateEmailDomainStatus(candidate, email)
+	return !configured || matches
+}
+
+func (s *routeSnapshot) candidateEmailDomainStatus(candidate snapshotCandidate, email string) (configured bool, matches bool) {
+	if s == nil || candidate.hub == nil {
+		return false, false
+	}
+	if candidate.routeDomain == "" {
+		return false, false
+	}
+	domain := extractEmailDomain(email)
+	if domain == "" {
+		return false, false
+	}
+	tenantID := normalizeCapabilityTenantID(candidate.tenantID)
+	tenantDomains := s.tenantDomainsByHub[strings.TrimSpace(candidate.hub.ID)][tenantID]
+	if len(tenantDomains) == 0 {
+		return false, false
+	}
+	for _, allowed := range tenantDomains {
+		if strings.EqualFold(allowed, domain) {
+			return true, true
+		}
+	}
+	return true, false
+}
+
+func tenantDomainCapabilityMap(hub *store.HubInstance) map[string][]string {
+	if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return tenantDomainMapWithDefaultCorporateDomains(nil, hub, nil)
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return tenantDomainMapWithDefaultCorporateDomains(nil, hub, nil)
+	}
+	out := map[string][]string{}
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprint(caps["tenant_domain_source"])), "configured") {
+		if raw, ok := caps["tenant_domains"].(map[string]any); ok {
+			for rawTenantID, rawDomains := range raw {
+				domains := normalizeTenantCapabilityDomains(capabilityStringList(rawDomains))
+				if len(domains) == 0 {
+					continue
+				}
+				out[normalizeCapabilityTenantID(rawTenantID)] = domains
+			}
+		}
+	}
+	return tenantDomainMapWithDefaultCorporateDomains(out, hub, caps)
+}
+
+func tenantDomainMapWithDefaultCorporateDomains(out map[string][]string, hub *store.HubInstance, caps map[string]any) map[string][]string {
+	if len(out[""]) > 0 {
+		return out
+	}
+	values := []string{}
+	if hub != nil && caps != nil && strings.EqualFold(strings.TrimSpace(fmt.Sprint(caps["corporate_email_domain_source"])), "configured") {
+		values = append(values, capabilityStringList(caps["corporate_email_domains"])...)
+		if single := strings.TrimSpace(fmt.Sprint(caps["corporate_email_domain"])); single != "" {
+			values = append(values, single)
+		}
+	}
+	domains := normalizeTenantCapabilityDomains(values)
+	if len(domains) == 0 {
+		return out
+	}
+	if out == nil {
+		out = map[string][]string{}
+	}
+	out[""] = domains
+	return out
+}
+
+func normalizeTenantCapabilityDomains(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		domain := normalizeCorporateEmailDomain(value)
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		out = append(out, domain)
+	}
+	return out
 }
 
 func virtualHubCandidateKey(candidate snapshotCandidate) string {

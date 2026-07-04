@@ -20,19 +20,19 @@ ha:
     - fqdn: hubs.mypapers.top
       node_id: hc-1
       node_name: hubcenter-1
-      advertise_url: https://hubs.mypapers.top
+      advertise_url: http://hub.mypapers.top:9388
       public_url: https://hubs.mypapers.top
       enabled: true
     - fqdn: hubs.maclaw.top
       node_id: hc-2
       node_name: hubcenter-2
-      advertise_url: https://hubs.maclaw.top
+      advertise_url: http://107.172.86.131:9388
       public_url: https://hubs.maclaw.top
       enabled: true
     - fqdn: hubs2.maclaw.top
       node_id: hc-3
       node_name: hubcenter-3
-      advertise_url: https://hubs2.maclaw.top
+      advertise_url: http://66.154.113.63:9388
       public_url: https://hubs2.maclaw.top
       enabled: true
 

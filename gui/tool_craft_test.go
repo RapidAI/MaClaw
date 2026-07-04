@@ -186,6 +186,18 @@ func TestBuildRunCommand(t *testing.T) {
 	}
 }
 
+func TestFormatCraftExecutionProgressClarifiesTimeoutLimit(t *testing.T) {
+	progress := formatCraftExecutionProgress("node", 1, 2, 300)
+	for _, want := range []string{"正在执行脚本", "node", "第 1/2 次", "最长等待 300s"} {
+		if !strings.Contains(progress, want) {
+			t.Fatalf("progress missing %q: %s", want, progress)
+		}
+	}
+	if strings.Contains(progress, "超时 300s") {
+		t.Fatalf("progress should describe the timeout as a limit, got: %s", progress)
+	}
+}
+
 func TestBuildCraftUserPrompt_AddsArtifactRepairHints(t *testing.T) {
 	prompt := buildCraftUserPrompt(
 		craftToolRequest{Task: "generate report"},

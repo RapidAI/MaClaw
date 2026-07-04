@@ -1073,29 +1073,30 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "patent_application",
 		Name:        "中国专利申请",
-		Description: "面向中国国家知识产权局（CNIPA）的专利撰写全流程：交底书解析 → 查新检索 → 权利要求撰写 → 附图整理 → 说明书撰写 → 申请文件组装",
-		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "专利交底书", "权利要求书", "中国专利", "CNIPA", "patent application"},
+		Description: "面向中国国家知识产权局（CNIPA）的专利申请文件准备流程：材料解析 → 查新/近似检索 → 权利要求或保护要点 → 附图/图片整理 → 说明书或简要说明 → 申请文件组装",
+		Keywords:    []string{"专利申请", "专利撰写", "发明专利", "实用新型", "外观设计", "专利交底书", "权利要求书", "中国专利", "CNIPA", "patent application"},
 		Phases: []PhaseTemplate{
-			{ID: "pa_disclosure_parsing", Name: "交底书解析与技术提炼", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
+			{ID: "pa_disclosure_parsing", Name: "申请材料解析", NeedsConfirm: true, ToolPolicy: ToolPolicyFull,
 				InputSchema: &PhaseInputSchema{
 					Title:       "专利申请信息",
-					Description: "选择输入方式：提供交底书文件，或手工输入技术内容。",
+					Description: "选择输入方式：提供交底书文件、手工输入技术内容，或提供外观设计图片/照片。",
 					Fields: []PhaseInputField{
 						{Name: "patent_type", Label: "专利类型", Type: "select", Required: true, Options: []PhaseInputOption{
 							{Label: "发明专利", Value: "invention"},
 							{Label: "实用新型", Value: "utility_model"},
+							{Label: "外观设计", Value: "design"},
 						}, Default: "invention"},
 						{Name: "applicant", Label: "申请人（单位/个人）", Type: "text", Required: true, Placeholder: "如：XX科技有限公司"},
-						{Name: "inventors", Label: "发明人", Type: "text", Required: true, Placeholder: "如：张三、李四（逗号分隔）"},
-						{Name: "tech_field", Label: "技术领域", Type: "text", Required: true, Placeholder: "如：人工智能、新能源电池、机械加工"},
-						{Name: "output_dir", Label: "文档输出目录", Type: "directory", Placeholder: "选择文档输出目录（留空则保存到交底书同目录）"},
+						{Name: "inventors", Label: "发明人/设计人", Type: "text", Required: true, Placeholder: "如：张三、李四（逗号分隔）"},
+						{Name: "tech_field", Label: "技术领域/产品类别", Type: "text", Required: true, Placeholder: "如：人工智能、新能源电池、机械加工、智能音箱"},
+						{Name: "output_dir", Label: "文档输出目录", Type: "directory", Placeholder: "选择文档输出目录（留空则保存到材料或图片同目录）"},
 					},
 					Variants: []PhaseInputVariant{
 						{
 							ID:    "file_mode",
-							Label: "交底书文件",
+							Label: "交底书/申请材料文件",
 							Fields: []PhaseInputField{
-								{Name: "disclosure_path", Label: "交底书文件路径", Type: "file", Required: true, Placeholder: "选择交底书文件（Word/PDF）"},
+								{Name: "disclosure_path", Label: "交底书/申请材料文件路径", Type: "file", Required: true, Placeholder: "选择交底书或申请材料文件（Word/PDF）"},
 							},
 						},
 						{
@@ -1110,13 +1111,23 @@ func PatentApplicationTemplate() *WorkflowTemplate {
 								{Name: "prior_art", Label: "已知的现有技术/对比文件（可选）", Type: "textarea", Placeholder: "列出已知的相关专利号或文献，每行一个"},
 							},
 						},
+						{
+							ID:    "design_mode",
+							Label: "外观设计图片或照片",
+							Fields: []PhaseInputField{
+								{Name: "design_product_name", Label: "产品名称", Type: "text", Required: true, Placeholder: "如：智能音箱、包装盒、显示屏幕面板"},
+								{Name: "design_product_use", Label: "产品用途", Type: "textarea", Required: true, Placeholder: "简要说明使用该外观设计的产品用途"},
+								{Name: "design_images_paths", Label: "外观设计图片或照片路径（每行一个）", Type: "textarea", Required: true, Placeholder: "如：\nD:\\专利\\主视图.png\nD:\\专利\\立体图.jpg"},
+								{Name: "design_brief_description", Label: "简要说明", Type: "textarea", Required: true, Placeholder: "说明设计要点、最能表明设计要点的图片或照片、是否请求保护色彩等"},
+							},
+						},
 					},
 				},
 			},
-			{ID: "pa_prior_art_search", Name: "查新检索与新颖性分析", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
-			{ID: "pa_claims_drafting", Name: "权利要求书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
-			{ID: "pa_figures_organization", Name: "附图生成与整理", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
-			{ID: "pa_description_writing", Name: "说明书撰写", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "pa_prior_art_search", Name: "查新/近似检索分析", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "pa_claims_drafting", Name: "权利要求/保护要点", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "pa_figures_organization", Name: "附图/图片整理", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
+			{ID: "pa_description_writing", Name: "说明书/简要说明", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 			{ID: "pa_document_assembly", Name: "申请文件组装与检查", NeedsConfirm: true, ToolPolicy: ToolPolicyFull},
 		},
 	}

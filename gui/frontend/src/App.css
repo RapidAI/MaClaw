@@ -368,8 +368,25 @@
 }
 
 .about-contact-dialog .modal-actions {
-    gap: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
     margin-top: 18px;
+}
+
+.about-contact-dialog .modal-actions .btn-hide,
+.about-contact-dialog .modal-actions .btn-primary {
+    min-width: 112px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+    font-size: 0.82rem;
+    line-height: 1;
+    box-sizing: border-box;
 }
 
 @media (max-width: 520px) {
@@ -384,6 +401,11 @@
 
     .about-contact-dialog__code-control .about-action-button {
         width: 100%;
+    }
+
+    .about-contact-dialog .modal-actions .btn-hide,
+    .about-contact-dialog .modal-actions .btn-primary {
+        flex: 1 1 132px;
     }
 }
 

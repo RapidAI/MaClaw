@@ -56,6 +56,15 @@ func (tenantIMRuntimeTestUsers) GetByEmail(context.Context, string) (*store.User
 func (tenantIMRuntimeTestUsers) GetByTenantEmail(context.Context, string, string) (*store.User, error) {
 	return nil, nil
 }
+func (tenantIMRuntimeTestUsers) GetByTenantIdentity(context.Context, string, string, string) (*store.User, error) {
+	return nil, nil
+}
+func (tenantIMRuntimeTestUsers) ListIdentitiesByUser(context.Context, string, string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (tenantIMRuntimeTestUsers) UpsertIdentity(context.Context, *store.UserIdentity) error {
+	return nil
+}
 func (tenantIMRuntimeTestUsers) List(context.Context) ([]*store.User, error) { return nil, nil }
 func (tenantIMRuntimeTestUsers) ListByTenant(context.Context, string) ([]*store.User, error) {
 	return nil, nil

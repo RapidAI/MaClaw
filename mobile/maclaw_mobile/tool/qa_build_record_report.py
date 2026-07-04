@@ -5,24 +5,50 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import release_evidence_commands
 import validate_qa_build_record
 
 
+_DEFAULT_FINAL_PREFILLS = release_evidence_commands.final_decision_prefills()
+
 EVIDENCE_FIELD_HINTS = {
     "Release handoff result": (
-        "Attach the `python3 tool/release_handoff.py --version <version+build> "
-        "--team-id <APPLE_TEAM_ID> --export-method <export-method> "
-        "--output <path>` output path, handoff transcript, or attachment ID."
+        f"Use `{_DEFAULT_FINAL_PREFILLS['Release handoff result']}` "
+        f"after running `{release_evidence_commands.release_handoff_command()}`."
     ),
     "Runtime boundary verification result": (
-        "Paste `MaClaw Mobile runtime boundary verified.` from "
-        "`python3 tool/verify_runtime_boundary.py --log <path>` or reference its log attachment."
+        f"Use `{_DEFAULT_FINAL_PREFILLS['Runtime boundary verification result']}` after running "
+        "`python3 tool/verify_runtime_boundary.py --log "
+        "docs/qa-builds/runtime-boundary-<version+build>.log`."
     ),
     "Automated release gates result": (
-        "Paste the `python3 tool/run_release_gates.py` result, gate count, "
-        "and log attachment ID."
+        f"Use `{_DEFAULT_FINAL_PREFILLS['Automated release gates result']}` after running "
+        "`python3 tool/run_release_gates.py --log "
+        "docs/qa-builds/release-gates-<version+build>.log`."
     ),
 }
+
+
+def _evidence_field_hints(
+    version: str = release_evidence_commands.DEFAULT_VERSION,
+    *,
+    scope: str = release_evidence_commands.DEFAULT_SCOPE,
+) -> dict[str, str]:
+    prefills = release_evidence_commands.final_decision_prefills(version)
+    return {
+        "Release handoff result": (
+            f"Use `{prefills['Release handoff result']}` "
+            f"after running `{release_evidence_commands.release_handoff_command(version=version, scope=scope)}`."
+        ),
+        "Runtime boundary verification result": (
+            f"Use `{prefills['Runtime boundary verification result']}` after running "
+            f"`{release_evidence_commands.runtime_boundary_command(version)}`."
+        ),
+        "Automated release gates result": (
+            f"Use `{prefills['Automated release gates result']}` after running "
+            f"`{release_evidence_commands.release_gates_command(version)}`."
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -59,10 +85,15 @@ def _filled_required_count(values: dict[str, list[str]], field: str) -> int:
 
 def required_evidence_progress(
     values: dict[str, list[str]],
+    *,
+    scope: str = release_evidence_commands.DEFAULT_SCOPE,
 ) -> RequiredEvidenceProgress:
+    values = validate_qa_build_record.scoped_values(values, scope)
     filled = 0
     required = 0
-    for field, required_count in validate_qa_build_record.REQUIRED_FIELD_COUNTS.items():
+    for field, required_count in validate_qa_build_record.required_field_counts_for_scope(
+        scope,
+    ).items():
         required += required_count
         filled += min(_filled_required_count(values, field), required_count)
     return RequiredEvidenceProgress(filled=filled, required=required)
@@ -101,10 +132,21 @@ def generate_report(path: Path) -> QaBuildRecordReport:
 
     text = path.read_text(encoding="utf-8")
     values = validate_qa_build_record.parse_record(text)
+    scope = validate_qa_build_record.record_scope_from_path(path)
+    in_scope_values = validate_qa_build_record.scoped_values(values, scope)
     secret_errors = validate_qa_build_record.raw_secret_errors(text)
-    filename_errors = validate_qa_build_record.qa_build_record_filename_errors(path, values)
-    evidence_errors = validate_qa_build_record.missing_required_fields(values)
-    artifact_errors = validate_qa_build_record.local_artifact_errors(values, path.parent)
+    filename_errors = validate_qa_build_record.qa_build_record_filename_errors(
+        path,
+        in_scope_values,
+    )
+    evidence_errors = validate_qa_build_record.missing_required_fields(
+        values,
+        scope=scope,
+    )
+    artifact_errors = validate_qa_build_record.local_artifact_errors(
+        in_scope_values,
+        path.parent,
+    )
     known_errors = set(
         path_errors + secret_errors + filename_errors + evidence_errors + artifact_errors
     )
@@ -112,7 +154,7 @@ def generate_report(path: Path) -> QaBuildRecordReport:
     return QaBuildRecordReport(
         path=path,
         passed=not validation_errors,
-        progress=required_evidence_progress(values),
+        progress=required_evidence_progress(values, scope=scope),
         path_errors=path_errors + filename_errors,
         secret_errors=secret_errors,
         evidence_errors=evidence_errors,
@@ -130,11 +172,80 @@ def _format_section(title: str, errors: list[str]) -> list[str]:
 
 
 def _evidence_hints(errors: list[str]) -> list[str]:
+    return _evidence_hints_for_version(
+        errors,
+        release_evidence_commands.DEFAULT_VERSION,
+    )
+
+
+def _evidence_hints_for_version(
+    errors: list[str],
+    version: str,
+    *,
+    scope: str = release_evidence_commands.DEFAULT_SCOPE,
+) -> list[str]:
+    hints_by_field = _evidence_field_hints(version, scope=scope)
     hints = []
-    for field, hint in EVIDENCE_FIELD_HINTS.items():
+    for field, hint in hints_by_field.items():
         if any(error == field or error.startswith(f"{field} ") for error in errors):
             hints.append(f"- {field}: {hint}")
     return hints
+
+
+ANDROID_ARTIFACT_FIELDS = {
+    "Artifact path",
+    "SHA256",
+    "Artifact size bytes",
+    "Version/build number",
+    "Signing identity",
+    "Installer channel",
+}
+IOS_ARTIFACT_FIELDS = {
+    "Archive/TestFlight build",
+    "Team ID",
+    "Provisioning profiles",
+}
+
+
+def _matches_field_error(error: str, fields: set[str]) -> bool:
+    return any(error == field or error.startswith(f"{field} ") for field in fields)
+
+
+def _artifact_hints_for_version(errors: list[str], version: str) -> list[str]:
+    hints: list[str] = []
+    if any(_matches_field_error(error, ANDROID_ARTIFACT_FIELDS) for error in errors):
+        hints.append(
+            "- Android signed artifact: run `"
+            + release_evidence_commands.android_artifact_evidence_command(version)
+            + "` and paste the generated fields into the QA record."
+        )
+    if any(_matches_field_error(error, IOS_ARTIFACT_FIELDS) for error in errors):
+        hints.append(
+            "- iOS archive/TestFlight artifact: run `"
+            + release_evidence_commands.ios_artifact_evidence_command()
+            + "` and paste the generated fields into the QA record."
+        )
+    return hints
+
+
+def _secret_redaction_hints(errors: list[str]) -> list[str]:
+    if not errors:
+        return []
+    return [
+        "- Remove raw secrets from the QA record, then replace them with redacted evidence, attachment IDs, task IDs, artifact hashes, or reviewer notes.",
+        "- Re-run `python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md` before linking the record from docs/release_evidence.md.",
+    ]
+
+
+def _version_for_report(report: QaBuildRecordReport) -> str:
+    match = validate_qa_build_record.QA_BUILD_RECORD_FILENAME_RE.fullmatch(report.path.name)
+    if match is None:
+        return release_evidence_commands.DEFAULT_VERSION
+    return match.group("version")
+
+
+def _scope_for_report(report: QaBuildRecordReport) -> str:
+    return validate_qa_build_record.record_scope_from_path(report.path)
 
 
 def format_report(report: QaBuildRecordReport) -> str:
@@ -158,13 +269,38 @@ def format_report(report: QaBuildRecordReport) -> str:
     )
     if sections:
         lines.extend(sections)
-        hints = _evidence_hints(report.evidence_errors)
+        version = _version_for_report(report)
+        scope = _scope_for_report(report)
+        hints = _evidence_hints_for_version(
+            report.evidence_errors,
+            version,
+            scope=scope,
+        )
         if hints:
             lines.append("")
             lines.append("How to fill release decision evidence:")
             lines.extend(hints)
+        artifact_hints = _artifact_hints_for_version(
+            report.evidence_errors + report.artifact_errors,
+            version,
+        )
+        if artifact_hints:
+            lines.append("")
+            lines.append("How to fill signed artifact evidence:")
+            lines.extend(artifact_hints)
+        secret_hints = _secret_redaction_hints(report.secret_errors)
+        if secret_hints:
+            lines.append("")
+            lines.append("How to fix secret redaction failures:")
+            lines.extend(secret_hints)
     else:
         lines.append("No gaps found by the QA build record validator.")
+        lines.append("")
+        lines.append("Next action:")
+        lines.append(
+            f"- Run `{release_evidence_commands.qa_release_evidence_link_command(scope=_scope_for_report(report))}` "
+            "to link validated QA records in docs/release_evidence.md."
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 

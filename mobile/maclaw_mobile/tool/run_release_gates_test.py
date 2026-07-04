@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import run_release_gates
+import release_evidence_commands
 
 
 def assert_in_order(test: unittest.TestCase, text: str, expected_parts: list[str]) -> None:
@@ -41,6 +42,7 @@ class RunReleaseGatesTest(unittest.TestCase):
                 "QA build record report tests",
                 "QA release evidence link helper tests",
                 "QA preflight helper tests",
+                "Release evidence command helper tests",
                 "Android signing setup helper tests",
                 "Release status report helper tests",
                 "Release handoff helper tests",
@@ -51,6 +53,7 @@ class RunReleaseGatesTest(unittest.TestCase):
                 "Debug APK evidence updater tests",
                 "Signed artifact evidence helper tests",
                 "Manual release gate parity tests",
+                "Manual release gate verification",
                 "Final release evidence verifier tests",
                 "Android release signing verifier tests",
                 "Android release build helper tests",
@@ -69,6 +72,12 @@ class RunReleaseGatesTest(unittest.TestCase):
                 "Android debug APK",
             ],
             [gate.name for gate in gates],
+        )
+
+    def test_release_gate_count_matches_qa_evidence_constant(self) -> None:
+        self.assertEqual(
+            release_evidence_commands.AUTOMATED_RELEASE_GATE_COUNT,
+            len(run_release_gates.release_gates()),
         )
 
     def test_go_gates_run_from_repo_root_and_flutter_gates_from_mobile_root(self) -> None:
@@ -96,6 +105,7 @@ class RunReleaseGatesTest(unittest.TestCase):
             "python3 -m unittest tool/qa_build_record_report_test.py",
             "python3 -m unittest tool/qa_release_evidence_links_test.py",
             "python3 -m unittest tool/qa_preflight_test.py",
+            "python3 -m unittest tool/release_evidence_commands_test.py",
             "python3 -m unittest tool/setup_android_signing_test.py",
             "python3 -m unittest tool/release_status_report_test.py",
             "python3 -m unittest tool/release_handoff_test.py",
@@ -106,6 +116,7 @@ class RunReleaseGatesTest(unittest.TestCase):
             "python3 -m unittest tool/update_debug_apk_evidence_test.py",
             "python3 -m unittest tool/signed_artifact_evidence_test.py",
             "python3 -m unittest tool/verify_manual_release_gates_test.py",
+            "python3 tool/verify_manual_release_gates.py",
             "python3 -m unittest tool/verify_final_release_evidence_test.py",
             "python3 -m unittest tool/verify_android_release_signing_test.py",
             "python3 -m unittest tool/build_android_release_test.py",
@@ -212,15 +223,56 @@ class RunReleaseGatesTest(unittest.TestCase):
             output = StringIO()
             error = StringIO()
             with patch("run_release_gates.release_gates", return_value=[gate]):
-                with patch("run_release_gates.subprocess.run", return_value=completed):
+                with patch(
+                    "run_release_gates.subprocess.run",
+                    return_value=completed,
+                ) as subprocess_run:
                     with redirect_stdout(output), redirect_stderr(error):
                         self.assertEqual(0, run_release_gates.main(["--log", str(log_path)]))
+
+            subprocess_run.assert_called_once()
+            _, kwargs = subprocess_run.call_args
+            self.assertEqual("utf-8", kwargs["encoding"])
+            self.assertEqual("replace", kwargs["errors"])
 
             text = log_path.read_text(encoding="utf-8")
             self.assertIn("==> [01/1] Stub gate:", text)
             self.assertIn("stub stdout", text)
             self.assertIn("stub stderr", text)
-            self.assertIn("All MaClaw Mobile automated release gates passed.", text)
+            self.assertIn(
+                run_release_gates.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
+                text,
+            )
+
+    def test_run_failure_writes_log_file_with_partial_output(self) -> None:
+        gate = run_release_gates.ReleaseGate(
+            "Failing gate",
+            Path.cwd(),
+            ["stub-command"],
+        )
+        completed = run_release_gates.subprocess.CompletedProcess(
+            args=["stub-command"],
+            returncode=7,
+            stdout="partial stdout\n",
+            stderr="failure stderr\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "release-gates.log"
+            output = StringIO()
+            error = StringIO()
+            with patch("run_release_gates.release_gates", return_value=[gate]):
+                with patch("run_release_gates.subprocess.run", return_value=completed):
+                    with redirect_stdout(output), redirect_stderr(error):
+                        self.assertEqual(7, run_release_gates.main(["--log", str(log_path)]))
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("==> [01/1] Failing gate:", text)
+            self.assertIn("partial stdout", text)
+            self.assertIn("failure stderr", text)
+            self.assertNotIn(
+                run_release_gates.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
+                text,
+            )
 
     def test_executable_command_resolves_windows_batch_shims(self) -> None:
         with patch("run_release_gates.shutil.which", return_value=r"D:\flutter\bin\flutter.BAT"):

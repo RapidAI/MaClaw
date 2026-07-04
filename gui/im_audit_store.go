@@ -50,10 +50,14 @@ const (
 
 // IMAuditStore manages SQLite-backed IM message audit storage.
 type IMAuditStore struct {
-	mu      sync.Mutex
-	db      *sql.DB
-	writeCh chan IMAuditMessage // async write channel
-	done    chan struct{}       // signals writer goroutine exit
+	mu          sync.Mutex
+	db          *sql.DB
+	writeCh     chan IMAuditMessage // async write channel
+	done        chan struct{}       // signals writer goroutine exit
+	closing     chan struct{}
+	cleanupDone chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // NewIMAuditStore opens or creates the audit database at dbPath.
@@ -79,9 +83,11 @@ func NewIMAuditStore(dbPath string) (*IMAuditStore, error) {
 	}
 
 	store := &IMAuditStore{
-		db:      db,
-		writeCh: make(chan IMAuditMessage, 256),
-		done:    make(chan struct{}),
+		db:          db,
+		writeCh:     make(chan IMAuditMessage, 256),
+		done:        make(chan struct{}),
+		closing:     make(chan struct{}),
+		cleanupDone: make(chan struct{}),
 	}
 
 	// Background writer goroutine — drains writeCh and batches INSERTs.
@@ -123,6 +129,14 @@ func (s *IMAuditStore) Write(msg IMAuditMessage) {
 	msg.Platform = normalizeIMAuditPlatform(msg.Platform)
 
 	select {
+	case <-s.closing:
+		return
+	default:
+	}
+
+	select {
+	case <-s.closing:
+		return
 	case s.writeCh <- msg:
 	default:
 		log.Printf("[im-audit] write channel full, dropping message for user=%s", msg.UserID)
@@ -386,20 +400,35 @@ func (s *IMAuditStore) ExportCSV(platform, userID, keyword, outputDir string) (s
 
 // Close drains pending writes and closes the database.
 func (s *IMAuditStore) Close() error {
-	if s.writeCh != nil {
-		close(s.writeCh) // signal writeLoop to exit
-		<-s.done         // wait for it to drain
-	}
-	if s.db != nil {
-		return s.db.Close()
-	}
-	return nil
+	s.closeOnce.Do(func() {
+		if s.closing != nil {
+			close(s.closing)
+		}
+		if s.writeCh != nil {
+			close(s.writeCh) // signal writeLoop to exit
+			<-s.done         // wait for it to drain
+		}
+		if s.cleanupDone != nil {
+			<-s.cleanupDone
+		}
+		if s.db != nil {
+			s.closeErr = s.db.Close()
+		}
+	})
+	return s.closeErr
 }
 
 // autoCleanup removes records older than imAuditRetentionDays.
 // Runs with a short delay to avoid competing with writeLoop at startup.
 func (s *IMAuditStore) autoCleanup() {
-	time.Sleep(2 * time.Second)
+	defer close(s.cleanupDone)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-s.closing:
+		return
+	case <-timer.C:
+	}
 	n, err := s.DeleteBefore(imAuditRetentionDays)
 	if err != nil {
 		log.Printf("[im-audit] auto cleanup error: %v", err)

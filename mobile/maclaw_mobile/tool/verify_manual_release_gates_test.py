@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qa_release_evidence_links
+import release_evidence_commands
 import verify_manual_release_gates
 
 
@@ -16,17 +18,34 @@ def write_docs(
     audit_blockers: str,
     checklist: str,
     final_decision: str,
+    qa_builds_readme: str | None = None,
 ) -> None:
     docs = root / "docs"
     docs.mkdir()
+    (docs / "qa-builds").mkdir()
     (docs / "release_evidence.md").write_text(
         "# Evidence\n\n## Manual Release Gates\n\n"
         + evidence_table
+        + "\n\n"
+        + verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND
+        + "\n"
+        + release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND
+        + "\n\n"
+        + qa_release_evidence_links.QA_LINKS_START
+        + "\n"
+        + qa_release_evidence_links.QA_LINKS_END
         + "\n\n## Build Record Template\n",
         encoding="utf-8",
     )
     (docs / "release_audit.md").write_text(
-        "# Audit\n\n## Remaining Release Blockers\n\n"
+        "# Audit\n\n"
+        "Completed signed-build QA records must pass "
+        "`python3 tool/validate_qa_build_record.py` without secret redaction "
+        "failures before the audit can count them as release evidence. If "
+        "validation fails, run `python3 tool/qa_build_record_report.py "
+        "docs/qa-builds/<record>.md` and replace raw secrets with redacted "
+        "evidence.\n\n"
+        "## Remaining Release Blockers\n\n"
         + audit_blockers
         + "\n\nRecord these results with `docs/qa_device_checklist.md`.\n",
         encoding="utf-8",
@@ -36,6 +55,21 @@ def write_docs(
         "# Template\n\n## Final Release Decision\n\n```text\n"
         + final_decision
         + "\n```\n",
+        encoding="utf-8",
+    )
+    (docs / "qa-builds" / "README.md").write_text(
+        qa_builds_readme
+        or (
+            "# QA Builds\n\n"
+            + verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND
+            + "\n"
+            + release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND
+            + "\n"
+            + "\n".join(
+                verify_manual_release_gates.QA_BUILDS_README_SCOPED_INTERNAL_QA_COMMANDS
+            )
+            + "\n"
+        ),
         encoding="utf-8",
     )
 
@@ -99,6 +133,9 @@ def valid_checklist() -> str:
             "Record selected HubCenter, discovered Hub, tenant, API base URL, and realtime Hub URL evidence.",
             "## Manual SSH Smoke Test",
             "Connect to the QA host, run a read-only command, copy output, and delete credentials.",
+            verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND,
+            release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND,
+            *verify_manual_release_gates.SCOPED_INTERNAL_QA_COMMANDS,
         ]
     )
 
@@ -170,6 +207,32 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
             "\n".join(errors),
         )
 
+    def test_rejects_missing_audit_qa_record_validation_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist(),
+                final_decision=valid_final_decision(),
+            )
+            audit = root / "docs" / "release_audit.md"
+            audit.write_text(
+                audit.read_text(encoding="utf-8").replace(
+                    "without secret redaction failures",
+                    "after manual review",
+                ),
+                encoding="utf-8",
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "release_audit.md must require completed signed-build QA records",
+            "\n".join(errors),
+        )
+
     def test_rejects_missing_qa_checklist_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -192,6 +255,54 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
             "\n".join(errors),
         )
 
+    def test_rejects_missing_or_wrong_scoped_internal_qa_commands(self) -> None:
+        android_handoff = release_evidence_commands.release_handoff_command(
+            version=release_evidence_commands.DEFAULT_VERSION,
+            scope="android",
+        )
+        readme_android_handoff = release_evidence_commands.release_handoff_command(
+            version="1.0.0+42",
+            scope="android",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist().replace(android_handoff, ""),
+                final_decision=valid_final_decision(),
+                qa_builds_readme=(
+                    "# QA Builds\n\n"
+                    + verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND
+                    + "\n"
+                    + release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND
+                    + "\n"
+                    + "\n".join(
+                        verify_manual_release_gates.QA_BUILDS_README_SCOPED_INTERNAL_QA_COMMANDS
+                    )
+                    + "\n"
+                ).replace(
+                    readme_android_handoff,
+                    readme_android_handoff.replace(
+                        " --output ",
+                        " --team-id <APPLE_TEAM_ID> --output ",
+                    ),
+                ),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        joined = "\n".join(errors)
+        self.assertIn(
+            "qa_device_checklist.md must document scoped internal QA command",
+            joined,
+        )
+        self.assertIn(
+            "qa-builds/README.md must not show Android-only handoff with Apple Team ID options",
+            joined,
+        )
+
     def test_rejects_missing_final_decision_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -209,8 +320,78 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
 
             errors = verify_manual_release_gates.validate_manual_release_gates(root)
 
+            self.assertIn(
+                "Hub discovery smoke passed: passed / waived with reason",
+                "\n".join(errors),
+            )
+
+    def test_rejects_missing_final_release_evidence_log_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist().replace(
+                    verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND,
+                    "python3 tool/verify_final_release_evidence.py docs/qa-builds",
+                ),
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
         self.assertIn(
-            "Hub discovery smoke passed: passed / waived with reason",
+            "qa_device_checklist.md must include final release evidence verifier log command",
+            "\n".join(errors),
+        )
+
+    def test_rejects_missing_qa_release_evidence_link_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist().replace(
+                    release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND,
+                    "python3 tool/qa_release_evidence_links.py docs/qa-builds",
+                ),
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "qa_device_checklist.md must include QA release evidence link update command",
+            "\n".join(errors),
+        )
+
+    def test_rejects_missing_guarded_qa_record_link_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist(),
+                final_decision=valid_final_decision(),
+            )
+            evidence = root / "docs" / "release_evidence.md"
+            evidence.write_text(
+                evidence.read_text(encoding="utf-8").replace(
+                    qa_release_evidence_links.QA_LINKS_START
+                    + "\n"
+                    + qa_release_evidence_links.QA_LINKS_END,
+                    "",
+                ),
+                encoding="utf-8",
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "release_evidence.md must contain the guarded QA build record link block markers",
             "\n".join(errors),
         )
 

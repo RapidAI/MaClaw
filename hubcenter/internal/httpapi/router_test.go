@@ -537,6 +537,9 @@ func TestNormalizeEntryResolvePhoneIdentityRejectsAlphanumericUserID(t *testing.
 	if got := normalizeEntryResolvePhoneIdentity("199 0000-1111"); got != "phone:19900001111" {
 		t.Fatalf("normalizeEntryResolvePhoneIdentity(phone) = %q, want phone:19900001111", got)
 	}
+	if got := normalizeEntryResolvePhoneIdentity("phone:19900001111"); got != "phone:19900001111" {
+		t.Fatalf("normalizeEntryResolvePhoneIdentity(phone identity) = %q, want phone:19900001111", got)
+	}
 }
 
 func TestMobileServiceRedemptionResolvesHubWithoutIssuingToken(t *testing.T) {
@@ -1920,17 +1923,22 @@ func TestAdminRouteQuerySupportsPhoneNumber(t *testing.T) {
 	}
 
 	for _, seed := range []struct {
-		name      string
-		query     string
-		queryType string
+		name        string
+		query       string
+		queryType   string
+		phoneNumber string
 	}{
 		{name: "bare phone", query: "199 0000 1111"},
 		{name: "phone identity", query: "phone:19900001111", queryType: "phone"},
+		{name: "explicit phone number", query: "ignored@example.com", queryType: "email", phoneNumber: "phone:19900001111"},
 	} {
 		t.Run(seed.name, func(t *testing.T) {
 			body := map[string]any{"query": seed.query}
 			if seed.queryType != "" {
 				body["query_type"] = seed.queryType
+			}
+			if seed.phoneNumber != "" {
+				body["phone_number"] = seed.phoneNumber
 			}
 			resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", body, token)
 			if resp.Code != http.StatusOK {
@@ -1944,6 +1952,21 @@ func TestAdminRouteQuerySupportsPhoneNumber(t *testing.T) {
 				t.Fatalf("unexpected phone route query result: %+v", result)
 			}
 		})
+	}
+}
+
+func TestAdminRouteQueryRejectsInvalidPhoneNumber(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	for _, body := range []map[string]any{
+		{"query": "abc123", "query_type": "phone"},
+		{"query": "ignored@example.com", "phone_number": "phone:abc123"},
+	} {
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", body, token)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("query status = %d, want 400 body=%s", resp.Code, resp.Body.String())
+		}
 	}
 }
 

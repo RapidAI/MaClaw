@@ -134,6 +134,29 @@ func TestNonCodingDefinitionDoesNotClaimLiveDataOrSearch(t *testing.T) {
 	t.Fatal("non_coding definition not found")
 }
 
+func TestWorkflowDefinitionCoversCNIPAPatentApplicationTypes(t *testing.T) {
+	for _, def := range DefaultDefinitions() {
+		if def.Label != LabelWorkflowTask {
+			continue
+		}
+		for _, want := range []string{
+			"patent_application=中国专利申请/撰写(按发明、实用新型、外观设计类型准备申请文件)",
+			"帮我准备一份实用新型专利申请文件",
+			"帮我整理外观设计专利申请图片和简要说明",
+		} {
+			found := containsSubstring(def.TreeText, want)
+			for _, text := range def.EmbedTexts {
+				found = found || containsSubstring(text, want)
+			}
+			if !found {
+				t.Fatalf("workflow definition missing %q", want)
+			}
+		}
+		return
+	}
+	t.Fatal("workflow_task definition not found")
+}
+
 func TestBuildIntentTreeFromDefinitions(t *testing.T) {
 	defs := DefaultDefinitions()
 	tree := BuildIntentTreeText(defs)

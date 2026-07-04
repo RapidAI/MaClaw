@@ -9,9 +9,14 @@ from typing import Callable
 
 import build_android_release
 import plan_ios_release
+import release_evidence_commands
 import validate_qa_build_records_dir
 import verify_android_release_signing
 import verify_ios_wrapper
+import verify_manual_release_gates
+
+
+SIGNED_QA_RECORD_HINT = release_evidence_commands.signed_qa_record_hint()
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,10 @@ def _blocker(name: str, details: list[str]) -> PreflightCheck:
     return PreflightCheck(name=name, status="blocker", details=details)
 
 
+def _scope_label(scope: str) -> str:
+    return release_evidence_commands.scope_label(scope)
+
+
 def validate_ios_export_options(
     root: Path,
     *,
@@ -49,9 +58,16 @@ def validate_ios_export_options(
 ) -> list[str]:
     export_options = root / "ios" / "ExportOptions.plist"
     if not export_options.exists():
+        setup_team_id = team_id or "<APPLE_TEAM_ID>"
+        setup_export_method = export_method or "development"
         return [
             f"Missing iOS export options plist: {export_options}",
-            "Run `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development` before iOS signed-build planning.",
+            "Run `"
+            + release_evidence_commands.setup_ios_export_options_command(
+                team_id=setup_team_id,
+                export_method=setup_export_method,
+            )
+            + "` before iOS signed-build planning.",
         ]
     if not export_options.is_file():
         return [f"iOS export options path must be a file: {export_options}"]
@@ -85,6 +101,7 @@ def validate_ios_export_options(
 def run_preflight(
     root: Path,
     *,
+    scope: str = release_evidence_commands.DEFAULT_SCOPE,
     ios_team_id: str | None = None,
     ios_export_method: str | None = None,
     android_config_validator: Callable[[Path], list[str]] = verify_android_release_signing.verify_android_release_signing,
@@ -95,42 +112,81 @@ def run_preflight(
         [Path],
         list[validate_qa_build_records_dir.RecordValidationResult],
     ] = validate_qa_build_records_dir.validate_directory,
+    manual_gate_validator: Callable[
+        [Path],
+        list[str],
+    ] = verify_manual_release_gates.validate_manual_release_gates,
 ) -> list[PreflightCheck]:
     root = root.resolve()
+    scope = release_evidence_commands.validate_scope(scope)
     checks: list[PreflightCheck] = []
+    signed_record_hint = release_evidence_commands.signed_qa_record_hint(
+        scope=scope,
+        team_id=ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method=ios_export_method or release_evidence_commands.DEFAULT_EXPORT_METHOD,
+    )
 
-    android_config_errors = android_config_validator(root)
+    if release_evidence_commands.scope_covers_android(scope):
+        android_config_errors = android_config_validator(root)
+        checks.append(
+            _blocker("Android release signing Gradle guard", android_config_errors)
+            if android_config_errors
+            else _ok("Android release signing Gradle guard", "release signing config is guarded against debug-key fallback")
+        )
+
+        _, android_key_errors = android_key_validator(root)
+        if android_key_errors:
+            android_key_errors = [
+                *android_key_errors,
+                "Run `"
+                + release_evidence_commands.setup_android_signing_command()
+                + "` with MACLAW_ANDROID_STORE_FILE, MACLAW_ANDROID_STORE_PASSWORD, "
+                "MACLAW_ANDROID_KEY_ALIAS, and MACLAW_ANDROID_KEY_PASSWORD set "
+                "before Android signed-build planning.",
+            ]
+        checks.append(
+            _blocker("Android local signing inputs", android_key_errors)
+            if android_key_errors
+            else _ok("Android local signing inputs", "android/key.properties and signing store are present")
+        )
+
+    if release_evidence_commands.scope_covers_ios(scope):
+        ios_errors = ios_wrapper_validator(root)
+        checks.append(
+            _blocker("iOS wrapper and Share Extension", ios_errors)
+            if ios_errors
+            else _ok("iOS wrapper and Share Extension", "Runner, Share Extension, URL schemes, and app group wiring are present")
+        )
+
+        ios_export_errors = ios_export_options_validator(
+            root,
+            team_id=ios_team_id,
+            export_method=ios_export_method,
+        )
+        checks.append(
+            _blocker("iOS export options", ios_export_errors)
+            if ios_export_errors
+            else _ok("iOS export options", "ios/ExportOptions.plist is readable and has a valid Team ID/export method")
+        )
+
+    try:
+        manual_gate_errors = manual_gate_validator(root)
+    except (OSError, ValueError) as exc:
+        manual_gate_errors = [
+            f"Manual release gate documentation cannot be verified: {exc}",
+        ]
     checks.append(
-        _blocker("Android release signing Gradle guard", android_config_errors)
-        if android_config_errors
-        else _ok("Android release signing Gradle guard", "release signing config is guarded against debug-key fallback")
+        _blocker("Manual release gate documentation", manual_gate_errors)
+        if manual_gate_errors
+        else _ok(
+            "Manual release gate documentation",
+            "release audit, QA checklist, QA record template, final evidence log command, "
+            "QA record link block, scoped internal QA commands, and QA record "
+            "validation/redaction rules are aligned without secret redaction failures",
+        )
     )
 
-    _, android_key_errors = android_key_validator(root)
-    checks.append(
-        _blocker("Android local signing inputs", android_key_errors)
-        if android_key_errors
-        else _ok("Android local signing inputs", "android/key.properties and signing store are present")
-    )
-
-    ios_errors = ios_wrapper_validator(root)
-    checks.append(
-        _blocker("iOS wrapper and Share Extension", ios_errors)
-        if ios_errors
-        else _ok("iOS wrapper and Share Extension", "Runner, Share Extension, URL schemes, and app group wiring are present")
-    )
-
-    ios_export_errors = ios_export_options_validator(
-        root,
-        team_id=ios_team_id,
-        export_method=ios_export_method,
-    )
-    checks.append(
-        _blocker("iOS export options", ios_export_errors)
-        if ios_export_errors
-        else _ok("iOS export options", "ios/ExportOptions.plist is readable and has a valid Team ID/export method")
-    )
-
+    has_preflight_blockers = any(check.is_blocker for check in checks)
     records_dir = root / "docs" / "qa-builds"
     if not records_dir.exists():
         checks.append(_blocker("QA build record directory", [f"Missing QA build record directory: {records_dir}"]))
@@ -139,26 +195,64 @@ def run_preflight(
     else:
         results = records_dir_validator(records_dir)
         invalid = [result for result in results if result.errors]
+        valid = [result.path for result in results if not result.errors]
+        in_scope_valid = [
+            path
+            for path in valid
+            if validate_qa_build_records_dir.record_matches_scope(path, scope)
+        ]
+        out_of_scope_valid = [
+            path for path in valid if path not in in_scope_valid
+        ]
         if invalid:
             details: list[str] = []
             for result in invalid:
                 details.append(f"{result.path}:")
                 details.extend(f"  - {error}" for error in result.errors)
             checks.append(_blocker("Existing QA build records", details))
-        elif results:
-            checks.append(_ok("Existing QA build records", f"{len(results)} completed record(s) already validate"))
+        elif in_scope_valid:
+            detail = f"{len(in_scope_valid)} in-scope completed record(s) already validate"
+            if out_of_scope_valid:
+                detail += f"; {len(out_of_scope_valid)} out-of-scope record(s) ignored for {_scope_label(scope)} preflight"
+            checks.append(_ok("Existing QA build records", detail))
         else:
+            if has_preflight_blockers:
+                detail = (
+                    "signed-build QA record creation is deferred until preflight "
+                    "blockers are clear; re-run `"
+                    + release_evidence_commands.qa_preflight_command(
+                        scope=scope,
+                        team_id=ios_team_id
+                        or release_evidence_commands.DEFAULT_TEAM_ID
+                        if release_evidence_commands.scope_covers_ios(scope)
+                        else None,
+                        export_method=ios_export_method
+                        or release_evidence_commands.DEFAULT_EXPORT_METHOD
+                        if release_evidence_commands.scope_covers_ios(scope)
+                        else None,
+                    )
+                    + "` after fixing blockers"
+                )
+            else:
+                detail = signed_record_hint
+            if out_of_scope_valid:
+                detail = (
+                    f"{len(out_of_scope_valid)} out-of-scope completed record(s) already validate; "
+                    f"create an in-scope {_scope_label(scope)} QA record. "
+                    + detail
+                )
             checks.append(
                 _info(
                     "Existing QA build records",
-                    "no completed signed-build QA records yet; run tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method <export-method> --output docs/qa-builds/handoff-<version+build>.md and follow its prefilled create_qa_build_record.py command after capturing verify_runtime_boundary.py --log and run_release_gates.py --log evidence",
+                    detail,
                 ),
             )
 
     checks.append(
         _info(
             "Release evidence link step",
-            "after QA records validate, run tool/qa_release_evidence_links.py docs/qa-builds and paste the generated links into docs/release_evidence.md",
+            "after QA records validate, "
+            + release_evidence_commands.qa_release_evidence_link_hint(scope=scope),
         ),
     )
     return checks
@@ -189,6 +283,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to mobile/maclaw_mobile. Defaults to this script project root.",
     )
     parser.add_argument(
+        "--scope",
+        choices=release_evidence_commands.VALID_SCOPES,
+        default=release_evidence_commands.DEFAULT_SCOPE,
+        help="Platform scope for local signed-build QA preflight.",
+    )
+    parser.add_argument(
         "--team-id",
         type=plan_ios_release.validate_team_id,
         help="Optional Apple Team ID to verify against ios/ExportOptions.plist.",
@@ -202,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = run_preflight(
         args.root,
+        scope=args.scope,
         ios_team_id=args.team_id,
         ios_export_method=args.export_method,
     )

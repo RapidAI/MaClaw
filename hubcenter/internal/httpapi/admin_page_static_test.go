@@ -324,6 +324,7 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/llm-service-tab.js",
 		"assets/js/compute-market-tab.js",
 		"assets/js/user-rankings-tab.js",
+		"assets/js/notification-admin.js",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("admin split script order = %v, want %v", got, want)
@@ -362,7 +363,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=compact-compute-orders-20260622`,
+		`/admin/assets/css/admin-shell.css?v=notif-card-css-20260704`,
 		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
@@ -549,6 +550,11 @@ func TestAdminPageRouteQueryRendererIsSingleSource(t *testing.T) {
 		t.Fatalf("admin page should define renderRouteQueryResult once, got %d", count)
 	}
 	assertContainsAll(t, html, "admin route query renderer", []string{`tr('routeQueryHubDomain')`, `hub.corporate_email_domain||'-'`})
+	assertContainsAll(t, html, "admin route phone query", []string{
+		`meta.queryType==='phone'`,
+		`body.phone_number=meta.phone`,
+		`routeQueryTypePhone`,
+	})
 }
 
 func TestAdminPageEscapesBlockedPolicyLists(t *testing.T) {

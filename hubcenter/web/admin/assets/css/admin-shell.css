@@ -151,3 +151,4 @@
 .notif-hub-check{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap}
 .notif-cascade-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}.notif-cascade-table th,.notif-cascade-table td{padding:10px 14px;text-align:left;border-bottom:1px solid rgba(31,34,48,.06)}.notif-cascade-table th{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:rgba(255,255,255,.6)}.notif-cascade-table tr:last-child td{border-bottom:none}
 .notif-content-preview{padding:14px 16px;border-radius:14px;border:1px solid rgba(31,34,48,.06);background:rgba(255,255,255,.82);white-space:pre-wrap;font-size:13px;line-height:1.7;max-height:300px;overflow-y:auto}
+.notif-card{cursor:pointer}.notif-card-row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.notif-card-main{min-width:0;flex:1}.notif-card-actions{flex-shrink:0}

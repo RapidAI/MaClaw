@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import qa_preflight
+import release_evidence_commands
 import release_status_report
 import validate_qa_build_records_dir
 
@@ -39,22 +40,271 @@ class ReleaseStatusReportTest(unittest.TestCase):
                 qa_preflight.PreflightCheck("Android local signing inputs", "blocker", ["missing key.properties"]),
             ],
             validate_records=lambda _: [bad_record],
-            verify_final=lambda _: ["Final release evidence requires a validated Android signed-build QA record."],
+            verify_final=lambda _path, **_kwargs: [
+                "Final release evidence requires a validated Android signed-build QA record.",
+            ],
         )
         output = release_status_report.format_status(status)
 
         self.assertFalse(status.ready)
         self.assertIn("[BLOCKER] Android local signing inputs", output)
-        self.assertIn("QA build records: 0 valid, 1 invalid", output)
+        self.assertIn(
+            "QA build records: 0 in-scope valid, 0 out-of-scope valid, 1 invalid",
+            output,
+        )
         self.assertIn("Branch", output)
         self.assertIn("Result: NOT READY.", output)
-        self.assertIn("release_handoff.py with --version <version+build>", output)
+        self.assertIn("Fix invalid signed-build QA records", output)
+        self.assertIn(
+            release_evidence_commands.qa_build_record_report_hint(str(bad_record.path)),
+            output,
+        )
+        self.assertNotIn(
+            "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
+            output,
+        )
+        self.assertNotIn(
+            release_evidence_commands.release_handoff_command(),
+            output,
+        )
+
+    def test_not_ready_without_records_points_to_create_record_flow(self) -> None:
+        root = self.make_root()
+
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[],
+            final_errors=[
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ],
+        )
+        output = release_status_report.format_status(status)
+
+        self.assertIn(release_evidence_commands.release_handoff_command(), output)
+        self.assertIn(
+            "release handoff is only a QA plan, not a completed QA record",
+            output,
+        )
+        self.assertIn(
+            "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
+            output,
+        )
         self.assertIn("--team-id <APPLE_TEAM_ID>", output)
         self.assertIn("--export-method <export-method>", output)
         self.assertIn("--output docs/qa-builds/handoff-<version+build>.md", output)
         self.assertIn("verify_runtime_boundary.py --log", output)
         self.assertIn("run_release_gates.py --log", output)
-        self.assertIn("prefilled create_qa_build_record.py", output)
+        self.assertIn("tool/create_qa_build_record.py", output)
+        self.assertIn(
+            '--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-<version+build>.md"',
+            output,
+        )
+        self.assertIn(
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log"',
+            output,
+        )
+        self.assertIn(
+            '--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"',
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.android_artifact_evidence_command(),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.ios_artifact_evidence_command(),
+            output,
+        )
+
+    def test_not_ready_without_records_preserves_supplied_ios_values(self) -> None:
+        root = self.make_root()
+
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[],
+            final_errors=[
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ],
+            ios_team_id="ABCDE12345",
+            ios_export_method="ad-hoc",
+        )
+        output = release_status_report.format_status(status)
+
+        self.assertIn("--team-id ABCDE12345", output)
+        self.assertIn("--export-method ad-hoc", output)
+        self.assertNotIn("--team-id <APPLE_TEAM_ID>", output)
+        self.assertNotIn("--export-method <export-method>", output)
+
+    def test_preflight_blocker_next_action_uses_readable_scope_label(self) -> None:
+        root = self.make_root()
+
+        for scope, label in [
+            ("android", "Android"),
+            ("ios", "iOS"),
+            ("android-ios", "Android/iOS"),
+        ]:
+            with self.subTest(scope=scope):
+                status = release_status_report.ReleaseStatus(
+                    root=root,
+                    preflight_checks=[
+                        qa_preflight.PreflightCheck("Stub", "blocker", ["blocked"]),
+                    ],
+                    record_results=[],
+                    final_errors=[],
+                    scope=scope,
+                )
+                output = release_status_report.format_status(status)
+
+                self.assertIn(
+                    f"Clear preflight blockers, then build signed {label} QA packages.",
+                    output,
+                )
+                self.assertNotIn(f"signed {scope} QA packages", output)
+
+    def test_preflight_blocker_defers_record_creation_flow_until_preflight_passes(self) -> None:
+        root = self.make_root()
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[
+                qa_preflight.PreflightCheck(
+                    "Android local signing inputs",
+                    "blocker",
+                    ["Missing Android signing file: android/key.properties"],
+                ),
+            ],
+            record_results=[],
+            final_errors=[
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ],
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn("- [Preflight] Android local signing inputs", output)
+        self.assertIn("Missing Android signing file: android/key.properties", output)
+        self.assertIn(
+            "Re-run `"
+            + release_evidence_commands.qa_preflight_command(
+                team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+                export_method=release_evidence_commands.DEFAULT_EXPORT_METHOD,
+            )
+            + "`",
+            output,
+        )
+        self.assertNotIn(
+            "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
+            output,
+        )
+        self.assertNotIn(release_evidence_commands.release_handoff_command(), output)
+
+    def test_not_ready_with_valid_records_points_to_final_evidence_blockers(self) -> None:
+        root = self.make_root()
+        valid_record = validate_qa_build_records_dir.RecordValidationResult(
+            path=root / "docs" / "qa-builds" / "2026-07-02-android-1.0.0+42.md",
+            errors=[],
+        )
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[valid_record],
+            final_errors=[
+                "Final release evidence requires a validated iOS signed-build QA record.",
+            ],
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertFalse(status.ready)
+        self.assertIn(
+            "Resolve final evidence blockers above:",
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.signed_qa_record_hint(),
+            output,
+        )
+        self.assertNotIn(
+            "Link validated QA records in docs/release_evidence.md and rerun final verification.",
+            output,
+        )
+
+    def test_android_scope_reports_ios_records_as_out_of_scope(self) -> None:
+        root = self.make_root()
+        ios_record = validate_qa_build_records_dir.RecordValidationResult(
+            path=root / "docs" / "qa-builds" / "2026-07-02-ios-1.0.0+42.md",
+            errors=[],
+        )
+        bad_ios_record = validate_qa_build_records_dir.RecordValidationResult(
+            path=root / "docs" / "qa-builds" / "2026-07-02-ios-1.0.0+43.md",
+            errors=["Missing SSH smoke evidence"],
+        )
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[ios_record, bad_ios_record],
+            final_errors=[
+                "Final release evidence requires a validated Android signed-build QA record.",
+            ],
+            scope="android",
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn(
+            "QA build records: 0 in-scope valid, 1 out-of-scope valid, 1 invalid",
+            output,
+        )
+        self.assertIn("[OUT-OF-SCOPE] 2026-07-02-ios-1.0.0+42.md", output)
+        self.assertIn("[OUT-OF-SCOPE INVALID] 2026-07-02-ios-1.0.0+43.md", output)
+        self.assertIn("Missing SSH smoke evidence", output)
+        self.assertNotIn("[VALID] 2026-07-02-ios-1.0.0+42.md", output)
+        self.assertIn(
+            release_evidence_commands.signed_qa_record_hint(scope="android"),
+            output,
+        )
+        self.assertIn(
+            "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
+            output,
+        )
+        self.assertNotIn(
+            release_evidence_commands.qa_build_record_report_hint(str(bad_ios_record.path)),
+            output,
+        )
+        self.assertNotIn("Resolve final evidence blockers above:", output)
+
+    def test_not_ready_with_version_mismatch_uses_final_verifier_next_action(self) -> None:
+        root = self.make_root()
+        valid_records = [
+            validate_qa_build_records_dir.RecordValidationResult(
+                path=root / "docs" / "qa-builds" / "2026-07-02-android-1.0.0+42.md",
+                errors=[],
+            ),
+            validate_qa_build_records_dir.RecordValidationResult(
+                path=root / "docs" / "qa-builds" / "2026-07-02-ios-1.0.0+43.md",
+                errors=[],
+            ),
+        ]
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=valid_records,
+            final_errors=[
+                "Final release evidence records must use the same version/build: 1.0.0+42, 1.0.0+43",
+            ],
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn(
+            release_evidence_commands.qa_record_version_mismatch_hint(),
+            output,
+        )
+        self.assertNotIn(
+            release_evidence_commands.release_handoff_command(),
+            output,
+        )
 
     def test_ready_report_when_everything_passes(self) -> None:
         root = self.make_root()
@@ -69,13 +319,61 @@ class ReleaseStatusReportTest(unittest.TestCase):
                 qa_preflight.PreflightCheck("Android local signing inputs", "ok", ["ready"]),
             ],
             validate_records=lambda _: [valid_record],
-            verify_final=lambda _: [],
+            verify_final=lambda _path, **_kwargs: [],
         )
         output = release_status_report.format_status(status)
 
         self.assertTrue(status.ready)
         self.assertIn("[VALID] 2026-07-02-android-ios-1.0.0+42.md", output)
+        self.assertIn(
+            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 0 invalid",
+            output,
+        )
         self.assertIn("Result: READY for final release approval.", output)
+
+        scoped_ready = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[
+                validate_qa_build_records_dir.RecordValidationResult(
+                    path=root / "docs" / "qa-builds" / "2026-07-02-android-1.0.0+42.md",
+                    errors=[],
+                ),
+                validate_qa_build_records_dir.RecordValidationResult(
+                    path=root / "docs" / "qa-builds" / "2026-07-02-ios-1.0.0+43.md",
+                    errors=["Out-of-scope iOS evidence gap"],
+                ),
+            ],
+            final_errors=[],
+            scope="android",
+        )
+        scoped_output = release_status_report.format_status(scoped_ready)
+        self.assertTrue(scoped_ready.ready)
+        self.assertIn(
+            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 1 invalid",
+            scoped_output,
+        )
+        self.assertIn("[OUT-OF-SCOPE INVALID] 2026-07-02-ios-1.0.0+43.md", scoped_output)
+        self.assertIn("Result: READY for final release approval.", scoped_output)
+
+    def test_build_status_passes_scope_to_final_verifier(self) -> None:
+        root = self.make_root()
+        seen: dict[str, str] = {}
+
+        def verify_final(_path: Path, **kwargs: str) -> list[str]:
+            seen["scope"] = kwargs["scope"]
+            return []
+
+        status = release_status_report.build_status(
+            root,
+            scope="android",
+            preflight=lambda *_args, **_kwargs: [],
+            validate_records=lambda _: [],
+            verify_final=verify_final,
+        )
+
+        self.assertEqual("android", seen["scope"])
+        self.assertEqual("android", status.scope)
 
     def test_main_prints_not_ready_to_stderr_for_current_empty_fixture(self) -> None:
         root = self.make_root()

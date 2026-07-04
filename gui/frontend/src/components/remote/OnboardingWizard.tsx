@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, useId } from "react";
 import { createPortal } from "react-dom";
 import { colors, radius } from "./styles";
 import { QRCodeSVG } from "qrcode.react";
@@ -68,6 +68,7 @@ function extractDailySMSLimit(message: string): number | null {
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
+    const registrationIdentityInputId = useId();
 
     // Track the app-level theme mode so the portal (rendered outside #App) can
     // inherit dark-mode CSS variables. Uses MutationObserver for live updates.
@@ -469,16 +470,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             const targetHubID = String(target?.hub_id || target?.HubID || "").trim();
             const targetTenantID = String(target?.tenant_id || target?.TenantID || "").trim();
             const targetMethod = String(target?.method || target?.Method || "email").toLowerCase() === "phone" ? "phone" : "email";
+            const nextAuthMethod = targetMethod === "phone" && !registrationIdentityLooksPhone ? "email" : targetMethod;
             if (targetHubURL) setRegistrationHubUrl(targetHubURL);
             setRegistrationHubID(targetHubID);
             setRegistrationTenantID(targetTenantID);
-            setRegistrationAuthMethod(targetMethod);
+            setRegistrationAuthMethod(nextAuthMethod);
             setRegistrationAuthError("");
             const nextLength = Number(target?.code_length || target?.CodeLength || 0);
             if (Number.isFinite(nextLength) && nextLength > 0) setSmsCodeLength(nextLength);
             if (targetMethod === "phone") {
                 if (!registrationIdentityLooksPhone) {
-                    setRegResult({ ok: false, msg: t("该租户需要手机号注册，请使用手机号继续", "This tenant requires phone registration. Continue with a phone number.") });
+                    setRegistrationStage("details");
                     return;
                 }
                 setRegPhone(registrationIdentityDigits);
@@ -829,6 +831,14 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             } else if (errMsg.includes("INVITATION_CODE_HUB_OFFLINE")) {
                 setInvError(t("邀请码对应的服务器当前不可用，请稍后重试", "The server for this invitation code is currently offline. Please try again later."));
                 setRegResult({ ok: false, msg: t("目标服务器离线", "Target server offline") });
+            } else if (/REGISTRATION_DISABLED|PHONE_REGISTRATION_REQUIRED|EMAIL_DOMAIN_NOT_ALLOWED/.test(errMsg) && registrationAuthMethod !== "phone") {
+                setRegResult({
+                    ok: false,
+                    msg: t(
+                        "该租户不接受新的邮箱注册或当前邮箱域名。如果这是已注册邮箱，请确认输入的是原注册邮箱并重试；否则请按租户要求使用手机号或允许的邮箱继续。",
+                        "This tenant does not accept new email registrations or this email domain. If this is an existing account, confirm the original email and try again; otherwise continue with a phone number or an allowed email domain.",
+                    ),
+                });
             } else if (registrationAuthMethod === "phone" && /SMS_|PHONE_ALREADY_REGISTERED|INVALID_PHONE_NUMBER/.test(errMsg)) {
                 if (errMsg.includes("INVALID_SMS_VERIFY_CODE")) setSmsCode("");
                 setRegResult({ ok: false, msg: localizeRegistrationSMSError(e) });
@@ -994,7 +1004,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 </div>
             )}
             <div style={{
-                background: "var(--theme-surface)", borderRadius: 16, width: 460, maxHeight: "90vh",
+                background: "var(--theme-surface)", borderRadius: 16, width: "min(460px, calc(100vw - 32px))", maxHeight: "90vh",
                 overflowY: "auto", boxShadow: "0 16px 48px rgba(15,23,42,0.22)",
                 border: "1px solid var(--theme-border)", display: "flex", flexDirection: "column",
             }}>
@@ -1003,7 +1013,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     padding: "20px 22px 18px", position: "relative", flexShrink: 0,
                     borderBottom: "1px solid var(--theme-border)",
                 }}>
-                    <button onClick={onClose} style={{
+                    <button aria-label={t("关闭", "Close")} onClick={onClose} style={{
                         position: "absolute", top: 12, right: 14, border: "none",
                         background: "transparent", cursor: "pointer", fontSize: "1.25rem",
                         color: colors.textMuted, lineHeight: 1,
@@ -1233,15 +1243,15 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     {(isCurrentOnboardingStep(onboardingFlow, step, 'register') || isCurrentOnboardingStep(onboardingFlow, step, 'mode')) && (
                         <div>
                             {registrationStage === "identity" && !offlineMode ? (
-                                <div style={{ maxWidth: 356, margin: "0 auto" }}>
-                                    <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
+                                <div style={{ maxWidth: 396, margin: "0 auto" }}>
+                                    <p style={{ margin: "0 0 12px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.45, textAlign: "left" }}>
                                         {t("先输入用户ID，系统会根据邮箱或手机号进入对应的注册验证流程。", "First enter your user ID. The system will route email or phone IDs to the right verification flow.")}
                                     </p>
-                                    <div style={{ marginBottom: 10 }}>
-                                        <label style={labelStyle}>{t("用户ID", "User ID")} <span style={{ color: colors.danger }}>*</span></label>
-                                        <input style={inputStyle} value={regEmail}
+                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                        <label htmlFor={registrationIdentityInputId} style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap", textAlign: "left" }}>{t("用户ID", "User ID")} <span aria-hidden="true" style={{ color: colors.danger }}>*</span></label>
+                                        <input id={registrationIdentityInputId} required aria-required="true" style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regEmail}
                                             onChange={e => { registrationTargetVersionRef.current += 1; setRegistrationTargetResolving(false); setRegEmail(e.target.value); setRegResult(null); setRedeemCode(""); }}
-                                            placeholder={t("邮箱或手机号", "Email or phone")} spellCheck={false} />
+                                            placeholder={t("邮箱或手机号", "Email or phone")} autoComplete="username" spellCheck={false} />
                                     </div>
                                     <button onClick={handleRegistrationIdentityContinue} disabled={registrationTargetResolving || !trimmedRegistrationIdentity} style={{
                                         ...(registrationTargetResolving || !trimmedRegistrationIdentity ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),

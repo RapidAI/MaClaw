@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import tempfile
@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import create_qa_build_record
+import release_evidence_commands
 
 
 class CreateQaBuildRecordTest(unittest.TestCase):
@@ -61,25 +62,57 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 scope="android-ios",
                 version_build="1.0.0+42",
                 final_decision_prefills={
-                    "Release handoff result": "docs/qa-builds/handoff-1.0.0+42.md",
-                    "Runtime boundary verification result": "boundary.log: verified",
-                    "Automated release gates result": "release-gates.log: 36 gates passed",
+                    "Release handoff result": "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                    "Runtime boundary verification result": "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                    "Automated release gates result": "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                 },
             )
 
             text = target.read_text(encoding="utf-8")
             self.assertIn(
-                "Release handoff result: docs/qa-builds/handoff-1.0.0+42.md",
+                "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
                 text,
             )
             self.assertIn(
-                "Runtime boundary verification result: boundary.log: verified",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                 text,
             )
             self.assertIn(
-                "Automated release gates result: release-gates.log: 36 gates passed",
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                 text,
             )
+
+    def test_create_record_rejects_invalid_final_decision_prefill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            records_dir = root / "qa-builds"
+            template.write_text(
+                "Date: YYYY-MM-DD\n"
+                "Release handoff result:\n"
+                "Runtime boundary verification result:\n"
+                "Automated release gates result:\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "invalid Final Release Decision prefill",
+            ):
+                create_qa_build_record.create_record(
+                    template_path=template,
+                    records_dir=records_dir,
+                    record_date="2026-07-02",
+                    scope="android-ios",
+                    version_build="1.0.0+42",
+                    final_decision_prefills={
+                        "Release handoff result": "QA screenshot captured",
+                        "Runtime boundary verification result": "QA screenshot captured",
+                        "Automated release gates result": "QA screenshot captured",
+                    },
+                )
+
+            self.assertFalse(records_dir.exists())
 
     def test_create_record_rejects_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +159,50 @@ class CreateQaBuildRecordTest(unittest.TestCase):
 
             self.assertIn("Date: 2026-07-02", target.read_text(encoding="utf-8"))
 
+    def test_create_record_removes_out_of_scope_platform_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            records_dir = root / "qa-builds"
+            template.write_text(
+                "# Template\n\n"
+                "## Build Identity\n\n"
+                "Date: YYYY-MM-DD\n\n"
+                "## Android Signed Build\n\n"
+                "Artifact path:\n\n"
+                "## iOS Signed Build And Share Extension\n\n"
+                "Archive/TestFlight build:\n\n"
+                "## Final Release Decision\n\n"
+                "Release handoff result:\n",
+                encoding="utf-8",
+            )
+
+            android_target = create_qa_build_record.create_record(
+                template_path=template,
+                records_dir=records_dir,
+                record_date="2026-07-02",
+                scope="android",
+                version_build="1.0.0+42",
+            )
+            ios_target = create_qa_build_record.create_record(
+                template_path=template,
+                records_dir=records_dir,
+                record_date="2026-07-02",
+                scope="ios",
+                version_build="1.0.0+42",
+            )
+
+            android_text = android_target.read_text(encoding="utf-8")
+            ios_text = ios_target.read_text(encoding="utf-8")
+            self.assertIn("## Android Signed Build", android_text)
+            self.assertNotIn("## iOS Signed Build", android_text)
+            self.assertNotIn("iOS manual gates passed:", android_text)
+            self.assertIn("## iOS Signed Build", ios_text)
+            self.assertNotIn("## Android Signed Build", ios_text)
+            self.assertNotIn("Android manual gates passed:", ios_text)
+            self.assertIn("## Build Identity", android_text)
+            self.assertIn("## Final Release Decision", ios_text)
+
     def test_validate_version_build_rejects_missing_build_number(self) -> None:
         with self.assertRaises(create_qa_build_record.argparse.ArgumentTypeError):
             create_qa_build_record.validate_version_build("1.0.0")
@@ -155,8 +232,149 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 )
 
             self.assertEqual(0, exit_code)
-            self.assertTrue((records_dir / "2026-07-02-android-1.0.0+42.md").exists())
+            record = records_dir / "2026-07-02-android-1.0.0+42.md"
+            self.assertTrue(record.exists())
             self.assertIn("Validate after completing evidence", output.getvalue())
+            self.assertIn(
+                release_evidence_commands.validate_qa_build_record_command(str(record)),
+                output.getvalue(),
+            )
+            self.assertIn(
+                release_evidence_commands.qa_build_record_report_command(str(record)),
+                output.getvalue(),
+            )
+            self.assertIn(
+                release_evidence_commands.qa_release_evidence_link_command(
+                    records_dir=str(records_dir),
+                    scope="android",
+                ),
+                output.getvalue(),
+            )
+
+    def test_main_prints_scope_specific_signed_artifact_evidence_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            records_dir = root / "qa-builds"
+            template.write_text("Date: YYYY-MM-DD\n", encoding="utf-8")
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = create_qa_build_record.main(
+                    [
+                        "--date",
+                        "2026-07-02",
+                        "--scope",
+                        "android-ios",
+                        "--version",
+                        "1.0.0+42",
+                        "--template",
+                        str(template),
+                        "--records-dir",
+                        str(records_dir),
+                    ],
+                )
+
+            self.assertEqual(0, exit_code)
+            text = output.getvalue()
+            self.assertIn(
+                release_evidence_commands.android_artifact_evidence_command(
+                    "1.0.0+42",
+                    record_dir=str(records_dir),
+                ),
+                text,
+            )
+            self.assertIn(
+                release_evidence_commands.ios_artifact_evidence_command(
+                    record_dir=str(records_dir),
+                ),
+                text,
+            )
+
+    def test_main_omits_unneeded_signed_artifact_evidence_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            records_dir = root / "qa-builds"
+            template.write_text("Date: YYYY-MM-DD\n", encoding="utf-8")
+            output = StringIO()
+
+            with redirect_stdout(output):
+                exit_code = create_qa_build_record.main(
+                    [
+                        "--date",
+                        "2026-07-02",
+                        "--scope",
+                        "android",
+                        "--version",
+                        "1.0.0+42",
+                        "--template",
+                        str(template),
+                        "--records-dir",
+                        str(records_dir),
+                    ],
+                )
+
+            self.assertEqual(0, exit_code)
+            text = output.getvalue()
+            self.assertIn(
+                release_evidence_commands.android_artifact_evidence_command(
+                    "1.0.0+42",
+                    record_dir=str(records_dir),
+                ),
+                text,
+            )
+            self.assertNotIn(
+                release_evidence_commands.ios_artifact_evidence_command(
+                    record_dir=str(records_dir),
+                ),
+                text,
+            )
+
+    def test_main_default_records_dir_keeps_short_follow_up_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            default_records_dir = root / "docs" / "qa-builds"
+            template.write_text("Date: YYYY-MM-DD\n", encoding="utf-8")
+            output = StringIO()
+            original_default_records_dir = create_qa_build_record.default_records_dir
+
+            try:
+                create_qa_build_record.default_records_dir = lambda: default_records_dir
+                with redirect_stdout(output):
+                    exit_code = create_qa_build_record.main(
+                        [
+                            "--date",
+                            "2026-07-02",
+                            "--scope",
+                            "android",
+                            "--version",
+                            "1.0.0+42",
+                            "--template",
+                            str(template),
+                            "--records-dir",
+                            str(default_records_dir),
+                            "--force",
+                        ],
+                    )
+            finally:
+                create_qa_build_record.default_records_dir = original_default_records_dir
+
+            self.assertEqual(0, exit_code)
+            text = output.getvalue()
+            self.assertIn(
+                release_evidence_commands.android_artifact_evidence_command(
+                    "1.0.0+42",
+                ),
+                text,
+            )
+            self.assertIn(
+                release_evidence_commands.qa_release_evidence_link_command(
+                    scope="android",
+                ),
+                text,
+            )
 
     def test_main_accepts_final_decision_prefill_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -186,11 +404,11 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                         "--records-dir",
                         str(records_dir),
                         "--release-handoff-result",
-                        "handoff.md attachment",
+                        "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
                         "--runtime-boundary-result",
-                        "MaClaw Mobile runtime boundary verified.",
+                        "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                         "--automated-gates-result",
-                        "run_release_gates.py: 36 gates passed",
+                        "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                     ],
                 )
 
@@ -198,15 +416,52 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             text = (records_dir / "2026-07-02-android-ios-1.0.0+42.md").read_text(
                 encoding="utf-8",
             )
-            self.assertIn("Release handoff result: handoff.md attachment", text)
             self.assertIn(
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified.",
+                "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
                 text,
             )
             self.assertIn(
-                "Automated release gates result: run_release_gates.py: 36 gates passed",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                 text,
             )
+            self.assertIn(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                text,
+            )
+
+    def test_main_rejects_invalid_final_decision_prefill_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.md"
+            records_dir = root / "qa-builds"
+            template.write_text(
+                "Date: YYYY-MM-DD\n"
+                "Release handoff result:\n",
+                encoding="utf-8",
+            )
+            error = StringIO()
+
+            with redirect_stderr(error):
+                exit_code = create_qa_build_record.main(
+                    [
+                        "--date",
+                        "2026-07-02",
+                        "--scope",
+                        "android",
+                        "--version",
+                        "1.0.0+42",
+                        "--template",
+                        str(template),
+                        "--records-dir",
+                        str(records_dir),
+                        "--release-handoff-result",
+                        "QA screenshot captured",
+                    ],
+                )
+
+            self.assertEqual(1, exit_code)
+            self.assertIn("invalid Final Release Decision prefill", error.getvalue())
+            self.assertFalse(records_dir.exists())
 
     def test_main_reports_existing_record_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,17 +20,19 @@ import (
 )
 
 var (
-	ErrInvalidEmail           = errors.New("invalid email")
-	ErrEmailBlocked           = errors.New("email blocked")
-	ErrInvalidUserCredentials = errors.New("invalid user credentials")
-	ErrMachineUnauthorized    = errors.New("machine unauthorized")
-	ErrInvitationCodeRequired = errors.New("invitation code is required")
-	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
-	ErrInvitationExpired      = errors.New("invitation code has expired")
-	ErrRegistrationDisabled   = errors.New("new user registration is disabled for this tenant")
-	ErrRoutedToAnotherHub     = errors.New("email is routed to another hub")
-	identitySNCounter         atomic.Uint64
-	tenantEmailDomainPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	ErrInvalidEmail               = errors.New("invalid email")
+	ErrEmailBlocked               = errors.New("email blocked")
+	ErrInvalidUserCredentials     = errors.New("invalid user credentials")
+	ErrMachineUnauthorized        = errors.New("machine unauthorized")
+	ErrInvitationCodeRequired     = errors.New("invitation code is required")
+	ErrInvalidInvitationCode      = errors.New("invalid or used invitation code")
+	ErrInvitationExpired          = errors.New("invitation code has expired")
+	ErrRegistrationDisabled       = errors.New("new user registration is disabled for this tenant")
+	ErrEmailDomainNotAllowed      = errors.New("email domain is not allowed for this tenant")
+	ErrRoutedToAnotherHub         = errors.New("email is routed to another hub")
+	identitySNCounter             atomic.Uint64
+	tenantEmailDomainPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	verifiedPhoneRouteRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute}
 )
 
 // InvitationCodeValidator abstracts the invitation code service to avoid circular imports.
@@ -66,11 +68,17 @@ type UserRouteValidator interface {
 	AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error)
 }
 
+type userIdentityReassigner interface {
+	ReassignIdentity(ctx context.Context, tenantID, identityType, value, userID string, verified bool, verifiedAt time.Time) error
+}
+
 const (
 	systemKeyEnrollmentMode      = "identity_enrollment_mode"
 	systemKeyPublicBaseURL       = "server_public_base_url"
 	systemKeyCenterRegistration  = "center_registration"
 	defaultMobileOfficialLLMMode = "maclaw_official"
+	loginTokenPurposeLogin       = "login"
+	loginTokenPurposeVerifyEmail = "registration_email_verification"
 )
 
 type EnrollmentResult struct {
@@ -408,6 +416,11 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 
 	// Invitation code validation - only required for new users
 	invitationAccepted := false
+	if user == nil {
+		if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+			return nil, err
+		}
+	}
 	if user == nil && s.invitationSvc != nil {
 		required, err := s.invitationSvc.IsRequiredForTenant(ctx, tenantID)
 		if err != nil {
@@ -507,6 +520,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		return nil, err
 	}
 	if user == nil {
+		if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+			return nil, err
+		}
 		if err := s.ensureUserRouteAllowed(ctx, email); err != nil {
 			return nil, err
 		}
@@ -558,7 +574,22 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			if err != nil {
 				return nil, err
 			}
+			if s.mailer != nil {
+				result, err := s.sendRegistrationVerification(ctx, email, "")
+				if err != nil {
+					return nil, err
+				}
+				return s.withMobileLoginRequestContext(ctx, result), nil
+			}
 		}
+	}
+
+	if user != nil && s.mailer != nil && !user.EmailVerified {
+		result, err := s.sendRegistrationVerification(ctx, email, "")
+		if err != nil {
+			return nil, err
+		}
+		return s.withMobileLoginRequestContext(ctx, result), nil
 	}
 
 	// User exists and is active. Try to send a login email, but if the mailer
@@ -606,6 +637,9 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	if err != nil {
 		return nil, err
 	}
+	if existing != nil && existing.Purpose != "" && existing.Purpose != loginTokenPurposeLogin {
+		existing = nil
+	}
 	if existing != nil {
 		// Refresh the token hashes so we can send a new confirm URL and return a new poll_id.
 		if err := s.loginTok.RefreshToken(ctx, existing.ID, hashToken(rawToken), hashToken(rawPollToken)); err != nil {
@@ -619,7 +653,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 			Email:         email,
 			TokenHash:     hashToken(rawToken),
 			PollTokenHash: hashToken(rawPollToken),
-			Purpose:       "login",
+			Purpose:       loginTokenPurposeLogin,
 			ExpiresAt:     now.Add(15 * time.Minute),
 			CreatedAt:     now,
 		}); err != nil {
@@ -673,29 +707,29 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	}), nil
 }
 
-// sendRegistrationVerification creates a login token and sends a dedicated
+// sendRegistrationVerification creates a verification token and sends a dedicated
 // registration verification email (with language-appropriate content explaining
 // the 70% bonus credits). This is distinct from SendLoginConfirmation which is
 // a generic "click to sign in" email.
 func (s *IdentityService) sendRegistrationVerification(ctx context.Context, email, language string) (*EmailLoginRequestResult, error) {
 	tenantID := tenantIDFromContext(ctx)
-	rawToken, err := randomToken(32)
-	if err != nil {
-		return nil, err
+	if s.mailer == nil {
+		return nil, fmt.Errorf("mail delivery is not configured")
 	}
-	rawPollToken, err := randomToken(32)
+	rawToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
+	tokenID := newID("lt")
 	if err := s.loginTok.Create(ctx, &store.LoginToken{
-		ID:            newID("lt"),
+		ID:            tokenID,
 		TenantID:      tenantID,
 		Email:         email,
 		TokenHash:     hashToken(rawToken),
-		PollTokenHash: hashToken(rawPollToken),
-		Purpose:       "login",
+		PollTokenHash: "",
+		Purpose:       loginTokenPurposeVerifyEmail,
 		ExpiresAt:     now.Add(72 * time.Hour), // 3 days for registration verification (vs 15min for login)
 		CreatedAt:     now,
 	}); err != nil {
@@ -705,21 +739,53 @@ func (s *IdentityService) sendRegistrationVerification(ctx context.Context, emai
 	// Use a direct GET endpoint for email verification — user clicks the link
 	// and gets a success page immediately, no PWA frontend required.
 	confirmURL := s.buildVerifyEmailURL(rawToken)
+	verificationCode := registrationVerificationCode(rawToken)
 
-	if s.mailer == nil {
-		return nil, fmt.Errorf("mail delivery is not configured")
+	if err := s.mailer.SendRegistrationVerification(store.WithTenant(ctx, tenantID), email, confirmURL, verificationCode, language); err != nil {
+		_ = s.loginTok.Consume(ctx, tokenID, time.Now())
+		return nil, err
 	}
-	if err := s.mailer.SendRegistrationVerification(store.WithTenant(ctx, tenantID), email, confirmURL, language); err != nil {
+	if err := s.consumePendingRegistrationVerificationTokens(ctx, tenantID, email, tokenID); err != nil {
+		_ = s.loginTok.Consume(ctx, tokenID, time.Now())
 		return nil, err
 	}
 
 	return &EmailLoginRequestResult{
 		Status:   "pending_email_confirmation",
 		TenantID: tenantID,
-		Message:  "Registration verification email sent",
-		PollID:   rawPollToken,
+		Message:  "Registration verification email sent. Please open the email to view your verification code.",
 		SentTo:   "email",
 	}, nil
+}
+
+func (s *IdentityService) consumePendingRegistrationVerificationTokens(ctx context.Context, tenantID, email, exceptID string) error {
+	if s == nil || s.loginTok == nil {
+		return nil
+	}
+	latest, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantID, email)
+	if err != nil {
+		return err
+	}
+	if latest == nil || latest.Purpose != loginTokenPurposeVerifyEmail {
+		return nil
+	}
+	tokens, err := s.loginTok.ListPendingByTenant(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, token := range tokens {
+		if token == nil || token.ID == exceptID || token.Purpose != loginTokenPurposeVerifyEmail {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(token.Email), strings.TrimSpace(email)) {
+			continue
+		}
+		if err := s.loginTok.Consume(ctx, token.ID, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // createLoginTokenForPoll creates (or refreshes) a login token for the given
@@ -741,6 +807,9 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 	if err != nil {
 		return nil, err
 	}
+	if existing != nil && existing.Purpose != "" && existing.Purpose != loginTokenPurposeLogin {
+		existing = nil
+	}
 	if existing != nil {
 		if err := s.loginTok.RefreshToken(ctx, existing.ID, hashToken(rawToken), hashToken(rawPollToken)); err != nil {
 			return nil, err
@@ -753,7 +822,7 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 			Email:         email,
 			TokenHash:     hashToken(rawToken),
 			PollTokenHash: hashToken(rawPollToken),
-			Purpose:       "login",
+			Purpose:       loginTokenPurposeLogin,
 			ExpiresAt:     now.Add(expiry),
 			CreatedAt:     now,
 		}); err != nil {
@@ -774,6 +843,9 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 		return "", nil, err
 	}
 	if loginToken == nil || loginToken.ConsumedAt != nil || time.Now().After(loginToken.ExpiresAt) {
+		return "", nil, ErrInvalidUserCredentials
+	}
+	if loginToken.Purpose != "" && loginToken.Purpose != loginTokenPurposeLogin {
 		return "", nil, ErrInvalidUserCredentials
 	}
 
@@ -813,6 +885,42 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	return rawViewerToken, user, nil
 }
 
+func (s *IdentityService) ConfirmRegistrationVerification(ctx context.Context, rawToken string) (string, *store.User, error) {
+	loginToken, err := s.loginTok.GetByTokenHash(ctx, hashToken(rawToken))
+	if err != nil {
+		return "", nil, err
+	}
+	if loginToken == nil || loginToken.ConsumedAt != nil || time.Now().After(loginToken.ExpiresAt) {
+		return "", nil, ErrInvalidUserCredentials
+	}
+	if loginToken.Purpose != loginTokenPurposeVerifyEmail {
+		return "", nil, ErrInvalidUserCredentials
+	}
+
+	ctx = WithTenant(ctx, loginToken.TenantID)
+	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
+	if err != nil {
+		return "", nil, err
+	}
+	if user == nil || user.Status != "active" {
+		return "", nil, ErrInvalidUserCredentials
+	}
+
+	now := time.Now()
+	if err := s.loginTok.Consume(ctx, loginToken.ID, now); err != nil {
+		return "", nil, err
+	}
+	if err := s.consumePendingRegistrationVerificationTokens(ctx, loginToken.TenantID, loginToken.Email, loginToken.ID); err != nil {
+		return "", nil, err
+	}
+	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, user.Email); err != nil {
+		return "", nil, err
+	}
+	_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
+
+	return registrationVerificationCode(rawToken), user, nil
+}
+
 // PollEmailLogin checks if the login token identified by rawPollToken has been
 // consumed (i.e. the user clicked the email confirmation link). If consumed,
 // it creates a new viewer token and returns it so the original PWA tab can
@@ -823,6 +931,9 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 		return nil, err
 	}
 	if loginToken == nil {
+		return &EmailPollResult{Status: "invalid"}, nil
+	}
+	if loginToken.Purpose != "" && loginToken.Purpose != loginTokenPurposeLogin {
 		return &EmailPollResult{Status: "invalid"}, nil
 	}
 	if time.Now().After(loginToken.ExpiresAt) {
@@ -971,6 +1082,36 @@ func tenantAllowsNewUserRegistration(tenant *store.Tenant) bool {
 	return true
 }
 
+func (s *IdentityService) ensureTenantEmailDomainAllowed(ctx context.Context, tenantID, email string) error {
+	if !strings.Contains(normalizeEmail(email), "@") {
+		return nil
+	}
+	if s == nil || s.tenants == nil {
+		return nil
+	}
+	tenant, err := s.tenants.GetByID(ctx, normalizeTenantIDValue(tenantID))
+	if err != nil {
+		return err
+	}
+	if tenant == nil {
+		return nil
+	}
+	allowedDomains := tenantConfiguredEmailDomains(tenant)
+	if len(allowedDomains) == 0 {
+		return nil
+	}
+	domain := emailDomain(email)
+	if domain == "" {
+		return ErrInvalidEmail
+	}
+	for _, allowed := range allowedDomains {
+		if domain == allowed {
+			return nil
+		}
+	}
+	return ErrEmailDomainNotAllowed
+}
+
 func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
 	tenantID = normalizeTenantIDValue(tenantID)
 	ctx = WithTenant(ctx, tenantID)
@@ -987,6 +1128,9 @@ func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, ema
 	}
 	if user != nil {
 		return user, nil
+	}
+	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+		return nil, err
 	}
 	if err := s.ensureUserRouteAllowed(ctx, email); err != nil {
 		return nil, err
@@ -1022,6 +1166,32 @@ func (s *IdentityService) BindVerifiedPhoneToUser(ctx context.Context, user *sto
 		return ErrInvalidEmail
 	}
 	now := time.Now().UTC()
+	phoneIdentity := "phone:" + phoneNumber
+	if existing, err := s.LookupUserByPhone(WithTenant(ctx, user.TenantID), phoneNumber); err != nil {
+		return err
+	} else if existing != nil && existing.ID != user.ID {
+		claimable, err := s.canClaimVerifiedPhoneOwner(ctx, existing, user, phoneIdentity)
+		if err != nil {
+			return err
+		}
+		if !claimable {
+			return fmt.Errorf("user identity phone:%s already belongs to another user", phoneNumber)
+		}
+		reassigner, ok := s.users.(userIdentityReassigner)
+		if !ok {
+			return fmt.Errorf("user identity phone:%s already belongs to another user", phoneNumber)
+		}
+		if err := reassigner.ReassignIdentity(WithTenant(ctx, user.TenantID), user.TenantID, "phone", phoneNumber, user.ID, true, now); err != nil {
+			return err
+		}
+		s.syncVerifiedPhoneRoute(WithTenant(ctx, user.TenantID), phoneIdentity)
+		if changed, err := llmservice.BackfillRegistryUserIDs(WithTenant(ctx, user.TenantID), s.settings, s.users, user.TenantID); err != nil {
+			log.Printf("[identity] backfill LLM registry user IDs after phone bind failed for %s (%s): %v", user.Email, user.ID, err)
+		} else if changed {
+			log.Printf("[identity] backfilled LLM registry user IDs after phone bind for %s (%s)", user.Email, user.ID)
+		}
+		return nil
+	}
 	if err := s.users.UpsertIdentity(ctx, &store.UserIdentity{
 		ID:         user.ID + "_phone",
 		TenantID:   user.TenantID,
@@ -1035,7 +1205,6 @@ func (s *IdentityService) BindVerifiedPhoneToUser(ctx context.Context, user *sto
 	}); err != nil {
 		return err
 	}
-	phoneIdentity := "phone:" + phoneNumber
 	s.syncVerifiedPhoneRoute(WithTenant(ctx, user.TenantID), phoneIdentity)
 	if changed, err := llmservice.BackfillRegistryUserIDs(WithTenant(ctx, user.TenantID), s.settings, s.users, user.TenantID); err != nil {
 		log.Printf("[identity] backfill LLM registry user IDs after phone bind failed for %s (%s): %v", user.Email, user.ID, err)
@@ -1045,14 +1214,51 @@ func (s *IdentityService) BindVerifiedPhoneToUser(ctx context.Context, user *sto
 	return nil
 }
 
+func (s *IdentityService) canClaimVerifiedPhoneOwner(ctx context.Context, existing, currentUser *store.User, phoneIdentity string) (bool, error) {
+	if existing == nil {
+		return false, nil
+	}
+	email := strings.TrimSpace(existing.Email)
+	if strings.EqualFold(email, strings.TrimSpace(phoneIdentity)) {
+		return true, nil
+	}
+	currentEmail := ""
+	if currentUser != nil {
+		currentEmail = normalizeEmail(currentUser.Email)
+	}
+	if strings.Contains(normalizeEmail(email), "@") {
+		if currentEmail != "" && normalizeEmail(email) == currentEmail {
+			return true, nil
+		}
+		return false, nil
+	}
+	if s == nil || s.users == nil {
+		return true, nil
+	}
+	rows, err := s.users.ListIdentitiesByUser(ctx, existing.TenantID, existing.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row == nil || !strings.EqualFold(strings.TrimSpace(row.Type), "email") {
+			continue
+		}
+		rowEmail := normalizeEmail(row.Value)
+		if strings.Contains(rowEmail, "@") {
+			if currentEmail != "" && rowEmail == currentEmail {
+				continue
+			}
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func (s *IdentityService) BindVerifiedEmailToUser(ctx context.Context, user *store.User, email string) error {
-	if s == nil || s.users == nil || user == nil {
-		return nil
+	if err := s.CanBindVerifiedEmailToUser(ctx, user, email); err != nil {
+		return err
 	}
 	email = normalizeEmail(email)
-	if email == "" {
-		return ErrInvalidEmail
-	}
 	now := time.Now().UTC()
 	if err := s.users.UpsertIdentity(ctx, &store.UserIdentity{
 		ID:         user.ID + "_email",
@@ -1070,13 +1276,130 @@ func (s *IdentityService) BindVerifiedEmailToUser(ctx context.Context, user *sto
 	return nil
 }
 
+func (s *IdentityService) CanBindVerifiedEmailToUser(ctx context.Context, user *store.User, email string) error {
+	if s == nil || s.users == nil || user == nil {
+		return nil
+	}
+	email = normalizeEmail(email)
+	if email == "" {
+		return ErrInvalidEmail
+	}
+	existing, err := s.users.GetByTenantIdentity(ctx, user.TenantID, "email", email)
+	if err != nil {
+		return err
+	}
+	if existing != nil && existing.ID == user.ID {
+		return nil
+	}
+	if err := s.ensureTenantEmailDomainAllowed(ctx, user.TenantID, email); err != nil {
+		return err
+	}
+	if existing == nil {
+		if err := s.ensureUserRouteAllowed(WithTenant(ctx, user.TenantID), email); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *IdentityService) syncVerifiedPhoneRoute(ctx context.Context, phoneIdentity string) {
 	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(phoneIdentity) == "" {
 		return
 	}
-	if err := s.userRouteSyncer.SyncUserRouteReplaceAll(ctx, phoneIdentity, tenantIDFromContext(ctx)); err != nil {
-		log.Printf("[identity] sync verified phone route failed for %s: %v", phoneIdentity, err)
+	tenantID := tenantIDFromContext(ctx)
+	if err := s.userRouteSyncer.SyncUserRouteReplaceAll(ctx, phoneIdentity, tenantID); err != nil {
+		log.Printf("[identity] sync verified phone route failed for %s tenant=%s: %v", phoneIdentity, tenantID, err)
+		s.retryVerifiedPhoneRouteSync(tenantID, phoneIdentity)
 	}
+}
+
+func (s *IdentityService) retryVerifiedPhoneRouteSync(tenantID, phoneIdentity string) {
+	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(phoneIdentity) == "" {
+		return
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	go func() {
+		delays := append([]time.Duration(nil), verifiedPhoneRouteRetryDelays...)
+		for attempt, delay := range delays {
+			timer := time.NewTimer(delay)
+			<-timer.C
+			ctx := WithTenant(context.Background(), tenantID)
+			if err := s.userRouteSyncer.SyncUserRouteReplaceAll(ctx, phoneIdentity, tenantID); err != nil {
+				log.Printf("[identity] retry verified phone route sync attempt %d/%d failed for %s tenant=%s: %v", attempt+1, len(delays), phoneIdentity, tenantID, err)
+				continue
+			}
+			log.Printf("[identity] retry verified phone route sync succeeded for %s tenant=%s", phoneIdentity, tenantID)
+			return
+		}
+	}()
+}
+
+func (s *IdentityService) SyncVerifiedPhoneRoutes(ctx context.Context) (int, error) {
+	return s.syncVerifiedPhoneRoutes(ctx, "")
+}
+
+func (s *IdentityService) SyncVerifiedPhoneRoutesForTenant(ctx context.Context, tenantID string) (int, error) {
+	return s.syncVerifiedPhoneRoutes(ctx, tenantID)
+}
+
+func (s *IdentityService) syncVerifiedPhoneRoutes(ctx context.Context, tenantIDFilter string) (int, error) {
+	if s == nil || s.users == nil || s.userRouteSyncer == nil {
+		return 0, nil
+	}
+	tenantIDFilter = strings.TrimSpace(tenantIDFilter)
+	var (
+		users []*store.User
+		err   error
+	)
+	if tenantIDFilter != "" {
+		users, err = s.users.ListByTenant(ctx, tenantIDFilter)
+	} else {
+		users, err = s.users.List(ctx)
+	}
+	if err != nil {
+		return 0, err
+	}
+	seen := map[string]struct{}{}
+	count := 0
+	var joined error
+	for _, user := range users {
+		if user == nil || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		tenantID := strings.TrimSpace(user.TenantID)
+		if tenantID == "" {
+			tenantID = store.DefaultTenantID
+		}
+		identities, err := s.users.ListIdentitiesByUser(ctx, tenantID, user.ID)
+		if err != nil {
+			joined = errors.Join(joined, err)
+			continue
+		}
+		for _, identity := range identities {
+			if identity == nil || !identity.Verified || !strings.EqualFold(strings.TrimSpace(identity.Type), "phone") {
+				continue
+			}
+			phoneNumber := normalizePhoneIdentityValue(identity.Value)
+			if phoneNumber == "" {
+				continue
+			}
+			key := tenantID + "\x00" + phoneNumber
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			phoneIdentity := "phone:" + phoneNumber
+			if err := s.userRouteSyncer.SyncUserRouteReplaceAll(WithTenant(ctx, tenantID), phoneIdentity, tenantID); err != nil {
+				joined = errors.Join(joined, fmt.Errorf("%s: %w", phoneIdentity, err))
+				continue
+			}
+			count++
+		}
+	}
+	return count, joined
 }
 
 func normalizePhoneIdentityValue(value string) string {
@@ -1112,12 +1435,78 @@ func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string
 		return s.resolveTenantByConfiguredDomain(ctx, email)
 	}
 	if len(seen) > 1 {
+		if resolved, ok, err := s.resolveExistingTenantAmbiguityByDomain(ctx, email, seen); err != nil {
+			return "", false, false, err
+		} else if ok {
+			return resolved, true, false, nil
+		}
 		return "", true, true, nil
 	}
 	for id := range seen {
 		return id, true, false, nil
 	}
 	return "", false, false, nil
+}
+
+func (s *IdentityService) resolveExistingTenantAmbiguityByDomain(ctx context.Context, email string, tenantIDs map[string]struct{}) (string, bool, error) {
+	if s == nil || s.tenants == nil || len(tenantIDs) == 0 {
+		return "", false, nil
+	}
+	domain := emailDomain(email)
+	if domain == "" {
+		return "", false, nil
+	}
+	items, err := s.tenants.List(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	tenantsByID := map[string]*store.Tenant{}
+	inactiveTenantIDs := map[string]struct{}{}
+	for _, tenant := range items {
+		if tenant == nil {
+			continue
+		}
+		id := normalizeTenantIDValue(tenant.ID)
+		if tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+			inactiveTenantIDs[id] = struct{}{}
+			continue
+		}
+		tenantsByID[id] = tenant
+	}
+	exactMatches := []string{}
+	unrestricted := []string{}
+	for tenantID := range tenantIDs {
+		normalizedTenantID := normalizeTenantIDValue(tenantID)
+		if _, inactive := inactiveTenantIDs[normalizedTenantID]; inactive {
+			continue
+		}
+		tenant := tenantsByID[normalizedTenantID]
+		if tenant == nil {
+			unrestricted = append(unrestricted, normalizedTenantID)
+			continue
+		}
+		domains := tenantConfiguredEmailDomains(tenant)
+		if len(domains) == 0 {
+			unrestricted = append(unrestricted, normalizedTenantID)
+			continue
+		}
+		for _, candidate := range domains {
+			if strings.EqualFold(candidate, domain) {
+				exactMatches = append(exactMatches, normalizedTenantID)
+				break
+			}
+		}
+	}
+	if len(exactMatches) == 1 {
+		return normalizeTenantIDValue(exactMatches[0]), true, nil
+	}
+	if len(exactMatches) > 1 {
+		return "", false, nil
+	}
+	if len(unrestricted) == 1 {
+		return normalizeTenantIDValue(unrestricted[0]), true, nil
+	}
+	return "", false, nil
 }
 
 func (s *IdentityService) resolveTenantByConfiguredDomain(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
@@ -1430,6 +1819,9 @@ func (s *IdentityService) createApprovedUser(ctx context.Context, email string) 
 }
 
 func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
+	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	user := &store.User{
 		ID:               newID("u"),
@@ -1545,6 +1937,9 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		s.syncUserRoute(ctx, target.Email)
 		return existing, target, nil
 	}
+	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, target.Email); err != nil {
+		return nil, nil, err
+	}
 	user, err := s.createApprovedUserForTenant(ctx, tenantID, target.Email)
 	if err != nil {
 		return nil, nil, err
@@ -1596,6 +1991,9 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 		return nil, err
 	}
 	if user == nil {
+		if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+			return nil, err
+		}
 		user, err = s.createApprovedUser(ctx, email)
 		if err != nil {
 			return nil, err
@@ -1817,6 +2215,12 @@ func (s *IdentityService) buildVerifyEmailURL(rawToken string) string {
 		base = "http://127.0.0.1:9399"
 	}
 	return fmt.Sprintf("%s/api/auth/verify-email?token=%s", base, url.QueryEscape(rawToken))
+}
+
+func registrationVerificationCode(rawToken string) string {
+	sum := sha256.Sum256([]byte("registration-email-verification:" + rawToken))
+	n := (int(sum[0])<<16 | int(sum[1])<<8 | int(sum[2])) % 1000000
+	return fmt.Sprintf("%06d", n)
 }
 
 // resolvePublicBaseURL reads the dynamic public base URL from settings,

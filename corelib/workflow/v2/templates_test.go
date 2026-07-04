@@ -2,6 +2,7 @@ package v2
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -162,5 +163,118 @@ func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 		if !typeSet[required] {
 			t.Errorf("AllTypes() missing expected template: %q", required)
 		}
+	}
+}
+
+func TestPatentApplicationTemplateSupportsRequiredCNIPATypes(t *testing.T) {
+	tmpl := PatentApplicationTemplate()
+	if tmpl == nil || len(tmpl.Phases) == 0 || tmpl.Phases[0].InputSchema == nil {
+		t.Fatal("PatentApplicationTemplate missing initial input schema")
+	}
+
+	var patentType *PhaseInputField
+	for i := range tmpl.Phases[0].InputSchema.Fields {
+		if tmpl.Phases[0].InputSchema.Fields[i].Name == "patent_type" {
+			patentType = &tmpl.Phases[0].InputSchema.Fields[i]
+			break
+		}
+	}
+	if patentType == nil {
+		t.Fatal("patent_type field not found")
+	}
+
+	got := map[string]bool{}
+	for _, opt := range patentType.Options {
+		got[opt.Value] = true
+	}
+	for _, want := range []string{"invention", "utility_model", "design"} {
+		if !got[want] {
+			t.Fatalf("patent_type missing %q option; got %#v", want, got)
+		}
+	}
+}
+
+func TestPatentApplicationTemplateHasDesignInputVariant(t *testing.T) {
+	tmpl := PatentApplicationTemplate()
+	if tmpl == nil || len(tmpl.Phases) == 0 || tmpl.Phases[0].InputSchema == nil {
+		t.Fatal("PatentApplicationTemplate missing initial input schema")
+	}
+
+	var designVariant *PhaseInputVariant
+	for i := range tmpl.Phases[0].InputSchema.Variants {
+		if tmpl.Phases[0].InputSchema.Variants[i].ID == "design_mode" {
+			designVariant = &tmpl.Phases[0].InputSchema.Variants[i]
+			break
+		}
+	}
+	if designVariant == nil {
+		t.Fatal("design_mode variant not found")
+	}
+
+	required := map[string]bool{}
+	names := map[string]bool{}
+	for _, field := range designVariant.Fields {
+		if names[field.Name] {
+			t.Fatalf("design_mode contains duplicate field %q", field.Name)
+		}
+		names[field.Name] = true
+		if field.Required {
+			required[field.Name] = true
+		}
+	}
+	for _, want := range []string{"design_product_name", "design_product_use", "design_images_paths", "design_brief_description"} {
+		if !required[want] {
+			t.Fatalf("design_mode missing required field %q; got %#v", want, required)
+		}
+	}
+	if names["output_dir"] {
+		t.Fatal("design_mode should use the shared output_dir field instead of declaring a duplicate")
+	}
+}
+
+func TestPatentApplicationTemplateUsesTypeNeutralPhaseNames(t *testing.T) {
+	tmpl := PatentApplicationTemplate()
+	got := map[string]string{}
+	for _, phase := range tmpl.Phases {
+		got[phase.ID] = phase.Name
+	}
+	for phaseID, want := range map[string]string{
+		"pa_disclosure_parsing":   "申请材料解析",
+		"pa_prior_art_search":     "查新/近似检索分析",
+		"pa_claims_drafting":      "权利要求/保护要点",
+		"pa_figures_organization": "附图/图片整理",
+		"pa_description_writing":  "说明书/简要说明",
+	} {
+		if got[phaseID] != want {
+			t.Fatalf("%s name = %q, want %q", phaseID, got[phaseID], want)
+		}
+	}
+}
+
+func TestPatentApplicationFileModeUsesTypeNeutralLabels(t *testing.T) {
+	tmpl := PatentApplicationTemplate()
+	schema := tmpl.Phases[0].InputSchema
+	if schema == nil {
+		t.Fatal("PatentApplicationTemplate missing initial input schema")
+	}
+	if !strings.Contains(schema.Description, "外观设计图片/照片") {
+		t.Fatalf("schema description should mention design image/photo input, got %q", schema.Description)
+	}
+
+	var fileVariant *PhaseInputVariant
+	for i := range schema.Variants {
+		if schema.Variants[i].ID == "file_mode" {
+			fileVariant = &schema.Variants[i]
+			break
+		}
+	}
+	if fileVariant == nil {
+		t.Fatal("file_mode variant not found")
+	}
+	if fileVariant.Label != "交底书/申请材料文件" {
+		t.Fatalf("file_mode label = %q, want type-neutral label", fileVariant.Label)
+	}
+	if len(fileVariant.Fields) != 1 || fileVariant.Fields[0].Label != "交底书/申请材料文件路径" {
+		t.Fatalf("file_mode field label should be type-neutral, got %#v", fileVariant.Fields)
 	}
 }

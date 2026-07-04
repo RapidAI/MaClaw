@@ -52,22 +52,25 @@ type RemoteRegistrationTargetResult struct {
 }
 
 type RemoteSMSSendResult struct {
-	OK         bool   `json:"ok"`
-	Code       string `json:"code,omitempty"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	ExpiresMin int    `json:"expires_min,omitempty"`
-	CodeLength int    `json:"code_length,omitempty"`
-	Purpose    string `json:"purpose,omitempty"`
-	Message    string `json:"message,omitempty"`
+	OK                bool   `json:"ok"`
+	Code              string `json:"code,omitempty"`
+	TenantID          string `json:"tenant_id,omitempty"`
+	ExpiresMin        int    `json:"expires_min,omitempty"`
+	CodeLength        int    `json:"code_length,omitempty"`
+	Purpose           string `json:"purpose,omitempty"`
+	DailySMSRemaining int    `json:"daily_sms_remaining,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 type RemoteRegistrationContactResult struct {
 	OK                bool   `json:"ok"`
 	Kind              string `json:"kind,omitempty"`
+	TenantID          string `json:"tenant_id,omitempty"`
 	Email             string `json:"email,omitempty"`
 	PhoneNumber       string `json:"phone_number,omitempty"`
 	ExpiresMin        int    `json:"expires_min,omitempty"`
 	CodeLength        int    `json:"code_length,omitempty"`
+	Purpose           string `json:"purpose,omitempty"`
 	DailySMSRemaining int    `json:"daily_sms_remaining,omitempty"`
 	Code              string `json:"code,omitempty"`
 	Message           string `json:"message,omitempty"`
@@ -253,8 +256,17 @@ func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrati
 	}
 	hubURL, hubID, tenantID, err := remote.PickBestHubWithTenantAndID(*result)
 	if err != nil {
+		if strings.TrimSpace(cfg.RemoteHubURL) != "" && canFallbackToConfiguredHubForPhoneRoute(identity, result) {
+			if fallback, fallbackErr := a.resolveRemoteRegistrationTargetFromHub(identity, cfg.RemoteHubURL, cfg.RemoteHubID, cfg.RemoteTenantID); fallbackErr == nil {
+				return fallback, nil
+			}
+		}
 		return RemoteRegistrationTargetResult{}, err
 	}
+	return a.resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID)
+}
+
+func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID string) (RemoteRegistrationTargetResult, error) {
 	auth, err := a.GetRemoteRegistrationAuth(hubURL, tenantID)
 	if err != nil {
 		return RemoteRegistrationTargetResult{}, err
@@ -271,18 +283,44 @@ func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrati
 	}, nil
 }
 
+func canFallbackToConfiguredHubForPhoneRoute(identity string, result *remote.HubCenterResolveResult) bool {
+	if !isRemoteRegistrationPhoneIdentity(identity) || result == nil || len(result.Hubs) != 0 {
+		return false
+	}
+	message := strings.TrimSpace(strings.ToLower(result.Message))
+	return message == "no phone route found"
+}
+
+func isRemoteRegistrationPhoneIdentity(identity string) bool {
+	identity = strings.TrimSpace(identity)
+	if identity == "" || strings.Contains(identity, "@") {
+		return false
+	}
+	return len(normalizeRemoteRegistrationPhoneNumber(identity)) >= 6
+}
+
 func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string, tenantID string) (RemoteSMSSendResult, error) {
+	return sendRemoteRegistrationSMS(hubURL, phoneNumber, tenantID, "", "")
+}
+
+func sendRemoteRegistrationSMS(hubURL string, phoneNumber string, tenantID string, machineID string, machineToken string) (RemoteSMSSendResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
 		return RemoteSMSSendResult{}, fmt.Errorf("hub URL is required")
 	}
 	phoneNumber = normalizeRemoteRegistrationPhoneNumber(phoneNumber)
 	if len(phoneNumber) < 6 {
-		return RemoteSMSSendResult{}, fmt.Errorf("valid phone number is required")
+		return RemoteSMSSendResult{}, fmt.Errorf("INVALID_PHONE_NUMBER: valid phone number is required")
 	}
 	payload := map[string]string{"phone_number": phoneNumber}
 	if strings.TrimSpace(tenantID) != "" {
 		payload["tenant_id"] = strings.TrimSpace(tenantID)
+	}
+	if strings.TrimSpace(machineID) != "" {
+		payload["machine_id"] = strings.TrimSpace(machineID)
+	}
+	if strings.TrimSpace(machineToken) != "" {
+		payload["machine_token"] = strings.TrimSpace(machineToken)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -290,14 +328,17 @@ func (a *App) SendRemoteRegistrationSMS(hubURL string, phoneNumber string, tenan
 	}
 	resp, err := hubHTTPClient.Post(strings.TrimRight(hubURL, "/")+"/api/enroll/sms/send-code", "application/json", bytes.NewReader(data))
 	if err != nil {
+		log.Printf("[registration-contact] phone send failed endpoint=/api/enroll/sms/send-code tenant=%s machine=%s err=%v", strings.TrimSpace(tenantID), strings.TrimSpace(machineID), err)
 		return RemoteSMSSendResult{}, err
 	}
 	defer resp.Body.Close()
 	var result RemoteSMSSendResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration SMS"); err != nil {
+		log.Printf("[registration-contact] phone send decode failed endpoint=/api/enroll/sms/send-code tenant=%s machine=%s status=%d err=%v", strings.TrimSpace(tenantID), strings.TrimSpace(machineID), resp.StatusCode, err)
 		return RemoteSMSSendResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		log.Printf("[registration-contact] phone send rejected endpoint=/api/enroll/sms/send-code tenant=%s machine=%s status=%d code=%s", strings.TrimSpace(tenantID), strings.TrimSpace(machineID), resp.StatusCode, result.Code)
 		if result.Code != "" && result.Message != "" {
 			return RemoteSMSSendResult{}, fmt.Errorf("%s: %s", result.Code, result.Message)
 		}
@@ -324,6 +365,26 @@ func (a *App) SendRemoteRegistrationContactCode(kind string, value string) (Remo
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	if hubURL == "" {
 		return RemoteRegistrationContactResult{}, fmt.Errorf("hub URL is required")
+	}
+	if kind == "phone" {
+		if strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
+			return RemoteRegistrationContactResult{}, fmt.Errorf("MACHINE_UNAUTHORIZED: registered machine credentials are required")
+		}
+		result, err := sendRemoteRegistrationSMS(hubURL, value, cfg.RemoteTenantID, cfg.RemoteMachineID, cfg.RemoteMachineToken)
+		if err != nil {
+			return RemoteRegistrationContactResult{}, err
+		}
+		return RemoteRegistrationContactResult{
+			OK:                result.OK,
+			Kind:              "phone",
+			TenantID:          result.TenantID,
+			ExpiresMin:        result.ExpiresMin,
+			CodeLength:        result.CodeLength,
+			Purpose:           result.Purpose,
+			DailySMSRemaining: result.DailySMSRemaining,
+			Code:              result.Code,
+			Message:           result.Message,
+		}, nil
 	}
 	payload, err := remoteRegistrationContactPayload(cfg, kind, value, "")
 	if err != nil {
@@ -360,6 +421,40 @@ func (a *App) VerifyRemoteRegistrationContactCode(kind string, value string, ver
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	if hubURL == "" {
 		return RemoteRegistrationContactResult{}, fmt.Errorf("hub URL is required")
+	}
+	if kind == "phone" {
+		payload, err := remoteRegistrationSMSContactVerifyPayload(cfg, value, verifyCode)
+		if err != nil {
+			return RemoteRegistrationContactResult{}, err
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return RemoteRegistrationContactResult{}, err
+		}
+		resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/sms/verify-and-start", "application/json", bytes.NewReader(data))
+		if err != nil {
+			log.Printf("[registration-contact] phone verify failed endpoint=/api/enroll/sms/verify-and-start tenant=%s machine=%s err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), err)
+			return RemoteRegistrationContactResult{}, err
+		}
+		defer resp.Body.Close()
+		var result RemoteRegistrationContactResult
+		if err := remote.DecodeHTTPJSONResponse(resp, &result, "verify registration SMS contact code"); err != nil {
+			log.Printf("[registration-contact] phone verify decode failed endpoint=/api/enroll/sms/verify-and-start tenant=%s machine=%s status=%d err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), resp.StatusCode, err)
+			return RemoteRegistrationContactResult{}, err
+		}
+		if resp.StatusCode >= 300 {
+			log.Printf("[registration-contact] phone verify rejected endpoint=/api/enroll/sms/verify-and-start tenant=%s machine=%s status=%d code=%s", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), resp.StatusCode, result.Code)
+			return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "verify contact SMS code failed: "+resp.Status)
+		}
+		phone := normalizeRemoteRegistrationPhoneNumber(result.PhoneNumber)
+		if phone == "" {
+			phone = normalizeRemoteRegistrationPhoneNumber(value)
+		}
+		if _, err := a.PatchConfigFields(map[string]interface{}{"remote_mobile": phone}); err != nil {
+			return RemoteRegistrationContactResult{}, err
+		}
+		a.emitRemoteStateChanged()
+		return result, nil
 	}
 	payload, err := remoteRegistrationContactPayload(cfg, kind, value, verifyCode)
 	if err != nil {
@@ -415,7 +510,7 @@ func normalizeRemoteRegistrationContactKind(kind string) string {
 
 func remoteRegistrationContactPayload(cfg corelib.AppConfig, kind string, value string, verifyCode string) (map[string]string, error) {
 	if strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
-		return nil, fmt.Errorf("registered machine credentials are required")
+		return nil, fmt.Errorf("MACHINE_UNAUTHORIZED: registered machine credentials are required")
 	}
 	payload := map[string]string{
 		"kind":          kind,
@@ -429,17 +524,38 @@ func remoteRegistrationContactPayload(cfg corelib.AppConfig, kind string, value 
 	if kind == "email" {
 		email := strings.TrimSpace(value)
 		if email == "" || !strings.Contains(email, "@") {
-			return nil, fmt.Errorf("valid email is required")
+			return nil, fmt.Errorf("INVALID_EMAIL: valid email is required")
 		}
 		payload["email"] = email
 		return payload, nil
 	}
 	phone := normalizeRemoteRegistrationPhoneNumber(value)
 	if len(phone) < 6 {
-		return nil, fmt.Errorf("valid phone number is required")
+		return nil, fmt.Errorf("INVALID_PHONE_NUMBER: valid phone number is required")
 	}
 	payload["phone_number"] = phone
 	return payload, nil
+}
+
+func remoteRegistrationSMSContactVerifyPayload(cfg corelib.AppConfig, value string, verifyCode string) (map[string]string, error) {
+	if strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
+		return nil, fmt.Errorf("MACHINE_UNAUTHORIZED: registered machine credentials are required")
+	}
+	phone := normalizeRemoteRegistrationPhoneNumber(value)
+	if len(phone) < 6 {
+		return nil, fmt.Errorf("INVALID_PHONE_NUMBER: valid phone number is required")
+	}
+	verifyCode = strings.TrimSpace(verifyCode)
+	if verifyCode == "" {
+		return nil, fmt.Errorf("verification code is required")
+	}
+	return map[string]string{
+		"phone_number":  phone,
+		"verify_code":   verifyCode,
+		"tenant_id":     strings.TrimSpace(cfg.RemoteTenantID),
+		"machine_id":    strings.TrimSpace(cfg.RemoteMachineID),
+		"machine_token": strings.TrimSpace(cfg.RemoteMachineToken),
+	}, nil
 }
 
 func remoteRegistrationContactError(result RemoteRegistrationContactResult, fallback string) error {

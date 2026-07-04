@@ -358,11 +358,11 @@ export const phaseLabels: Record<string, string> = {
     iterative_improvement: "迭代改进",
     experiment_report: "实验报告",
     // Patent application workflow
-    pa_disclosure_parsing: "交底书解析与技术提炼",
-    pa_prior_art_search: "查新检索与新颖性分析",
-    pa_claims_drafting: "权利要求书撰写",
-    pa_description_writing: "说明书撰写",
-    pa_figures_organization: "附图生成与整理",
+    pa_disclosure_parsing: "申请材料解析",
+    pa_prior_art_search: "查新/近似检索分析",
+    pa_claims_drafting: "权利要求/保护要点",
+    pa_description_writing: "说明书/简要说明",
+    pa_figures_organization: "附图/图片整理",
     pa_document_assembly: "申请文件组装与检查",
     // US Patent application workflow
     us_disclosure_analysis: "Disclosure Analysis / 交底书解析",

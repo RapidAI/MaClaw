@@ -23,6 +23,12 @@ type fakeBoundUserRouteDeleter struct {
 	email    string
 	tenantID string
 	err      error
+	calls    []fakeBoundUserRouteDeleteCall
+}
+
+type fakeBoundUserRouteDeleteCall struct {
+	email    string
+	tenantID string
 }
 
 func (f *fakeBoundUserRouteDeleter) DeleteUserRoute(_ context.Context, email string, tenantIDOpt ...string) error {
@@ -30,7 +36,21 @@ func (f *fakeBoundUserRouteDeleter) DeleteUserRoute(_ context.Context, email str
 	if len(tenantIDOpt) > 0 {
 		f.tenantID = tenantIDOpt[0]
 	}
+	f.calls = append(f.calls, fakeBoundUserRouteDeleteCall{email: email, tenantID: f.tenantID})
 	return f.err
+}
+
+type failBatchBoundUserRepo struct {
+	fakePlatformUserRepo
+	identities map[string][]*store.UserIdentity
+}
+
+func (f failBatchBoundUserRepo) ListIdentitiesByUsers(context.Context, string, []string) (map[string][]*store.UserIdentity, error) {
+	return nil, errors.New("batch failed")
+}
+
+func (f failBatchBoundUserRepo) ListIdentitiesByUser(_ context.Context, tenantID, userID string) ([]*store.UserIdentity, error) {
+	return f.identities[store.NormalizeTenantID(tenantID)+"\x00"+strings.TrimSpace(userID)], nil
 }
 
 func seedVirtualBoundUser(t *testing.T, services *hubAdminRouterTestServices, tenantID, userID, email string) {
@@ -170,6 +190,154 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	}
 }
 
+func TestListUsersHandlerReturnsEmailAndPhoneContacts(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	emailResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/users/manual-bind", map[string]any{
+		"email": "contact@example.com",
+	}, token)
+	if emailResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", emailResp.Code, emailResp.Body.String())
+	}
+	emailUser, err := services.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, "contact@example.com")
+	if err != nil {
+		t.Fatalf("get email user: %v", err)
+	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        emailUser.ID + "_phone",
+		TenantID:  store.DefaultTenantID,
+		UserID:    emailUser.ID,
+		Type:      "phone",
+		Value:     "18800001111",
+		Verified:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
+	if err := services.store.Users.Create(ctx, &store.User{
+		ID:               "user_phone_contact",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:19900001111",
+		SN:               "SN-phone-contact",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if err := services.store.Users.Create(ctx, &store.User{
+		ID:               "user_legacy_phone_only",
+		TenantID:         store.DefaultTenantID,
+		Email:            "",
+		SN:               "SN-legacy-phone",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("create legacy phone user: %v", err)
+	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        "user_legacy_phone_only_phone",
+		TenantID:  store.DefaultTenantID,
+		UserID:    "user_legacy_phone_only",
+		Type:      "phone",
+		Value:     "17700001111",
+		Verified:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("bind legacy phone identity: %v", err)
+	}
+
+	listResp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/users", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	type listUserContactPayload struct {
+		ID         string                  `json:"id"`
+		Email      string                  `json:"email"`
+		Emails     []string                `json:"emails"`
+		Phone      string                  `json:"phone"`
+		Phones     []string                `json:"phones"`
+		Identities []BoundUserIdentityView `json:"identities"`
+	}
+	var payload struct {
+		Users []listUserContactPayload `json:"users"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byEmail := map[string]listUserContactPayload{}
+	byID := map[string]listUserContactPayload{}
+	for _, user := range payload.Users {
+		byEmail[user.Email] = user
+		byID[user.ID] = user
+	}
+	emailContact, ok := byEmail["contact@example.com"]
+	if !ok {
+		t.Fatalf("email user missing from response: %#v", payload.Users)
+	}
+	if !containsString(emailContact.Emails, "contact@example.com") || emailContact.Phone != "18800001111" || !containsString(emailContact.Phones, "18800001111") {
+		t.Fatalf("email user contacts mismatch: %#v", emailContact)
+	}
+	phoneContact, ok := byEmail["phone:19900001111"]
+	if !ok {
+		t.Fatalf("phone user missing from response: %#v", payload.Users)
+	}
+	if len(phoneContact.Emails) != 0 || phoneContact.Phone != "19900001111" || !containsString(phoneContact.Phones, "19900001111") {
+		t.Fatalf("phone user contacts mismatch: %#v", phoneContact)
+	}
+	legacyPhoneContact, ok := byID["user_legacy_phone_only"]
+	if !ok {
+		t.Fatalf("legacy phone-only user missing from response: %#v", payload.Users)
+	}
+	if legacyPhoneContact.Email != "" || len(legacyPhoneContact.Emails) != 0 || legacyPhoneContact.Phone != "17700001111" || !containsString(legacyPhoneContact.Phones, "17700001111") {
+		t.Fatalf("legacy phone-only contacts mismatch: %#v", legacyPhoneContact)
+	}
+}
+
+func TestPreloadBoundUserIdentitiesFallsBackWhenBatchFails(t *testing.T) {
+	repo := failBatchBoundUserRepo{
+		fakePlatformUserRepo: fakePlatformUserRepo{},
+		identities: map[string][]*store.UserIdentity{
+			store.DefaultTenantID + "\x00user_email": {
+				{TenantID: store.DefaultTenantID, UserID: "user_email", Type: "phone", Value: "18800001111", Verified: true},
+			},
+		},
+	}
+	rows := preloadBoundUserIdentities(context.Background(), repo, []*store.User{
+		{ID: "user_email", TenantID: store.DefaultTenantID, Email: "contact@example.com"},
+	})
+	got := rows[boundUserIdentityKey(store.DefaultTenantID, "user_email")]
+	if len(got) != 1 || got[0].Value != "18800001111" {
+		t.Fatalf("fallback identities mismatch: %#v", rows)
+	}
+}
+
+func TestBoundUserContactFieldsHandlesLegacyPhoneAccountAndDedupes(t *testing.T) {
+	emails, phone, phones, identities := boundUserContactFields(&store.User{
+		ID:            "user_phone",
+		TenantID:      store.DefaultTenantID,
+		Email:         "phone:19900001111",
+		EmailVerified: false,
+	}, []*store.UserIdentity{
+		{Type: "phone", Value: "19900001111", Verified: true},
+		{Type: "email", Value: "buyer@example.com", Verified: true},
+	})
+	if !containsString(emails, "buyer@example.com") || phone != "19900001111" || len(phones) != 1 {
+		t.Fatalf("unexpected contacts emails=%#v phone=%q phones=%#v identities=%#v", emails, phone, phones, identities)
+	}
+	if len(identities) != 2 {
+		t.Fatalf("expected deduped email and phone identities, got %#v", identities)
+	}
+}
+
 func TestListUsersHandlerKeepsSameEmailTenantsSeparate(t *testing.T) {
 	services := newAdminRouterTestContext(t)
 	token := issueHubAdminToken(t, services.handler)
@@ -305,6 +473,160 @@ func TestDeleteBoundUserHandlerDeletesCenterRouteWithTenantID(t *testing.T) {
 	}
 	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_route", "route-delete@example.com"); err != nil || got != nil {
 		t.Fatalf("expected user deleted after route delete, got=%#v err=%v", got, err)
+	}
+}
+
+func TestDeleteBoundUserHandlerClearsEmailPhoneIdentitiesAndRoutes(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-identities", TenantID: "tenant_route", Email: "delete-identities@example.com", SN: "sn-delete-identities", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for _, identityRow := range []*store.UserIdentity{
+		{ID: "delete-identities_email", TenantID: user.TenantID, UserID: user.ID, Type: "email", Value: "delete-identities@example.com", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+		{ID: "delete-identities_alias", TenantID: user.TenantID, UserID: user.ID, Type: "email", Value: "delete-identities-alias@example.com", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+		{ID: "delete-identities_phone", TenantID: user.TenantID, UserID: user.ID, Type: "phone", Value: "17090134628", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.UpsertIdentity(ctx, identityRow); err != nil {
+			t.Fatalf("upsert identity %s: %v", identityRow.ID, err)
+		}
+	}
+	tenantSystem := scopedSystemSettingsForTenant(user.TenantID, services.store.System)
+	redeemedAt := now
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		UserBindings: []llmservice.UserBinding{
+			{UserID: user.ID, Email: user.Email, ServiceGroupIDs: []string{"coding-basic"}},
+			{Email: "delete-identities-alias@example.com", ServiceGroupIDs: []string{"coding-basic"}},
+		},
+		Grants: []llmservice.Grant{
+			{ID: "grant-primary", UserID: user.ID, Email: user.Email, ServiceGroupID: "coding-basic", Source: "card", StartsAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now},
+			{ID: "grant-alias", Email: "delete-identities-alias@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now},
+		},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-primary", RedeemedByUserID: user.ID, RedeemedByEmail: user.Email, RedeemedAt: &redeemedAt, CreatedAt: now},
+			{ID: "card-alias", RedeemedByEmail: "delete-identities-alias@example.com", RedeemedAt: &redeemedAt, CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatalf("seed LLM registry: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	routeDeleter := &fakeBoundUserRouteDeleter{}
+	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, System: services.store.System, DB: services.db, RouteDeleter: routeDeleter}, services.store.System)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=delete-identities@example.com", nil)
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, user.TenantID, user.Email); err != nil || got != nil {
+		t.Fatalf("expected user deleted, got=%#v err=%v", got, err)
+	}
+	if got, err := services.store.Users.GetByTenantIdentity(ctx, user.TenantID, "phone", "17090134628"); err != nil || got != nil {
+		t.Fatalf("expected phone identity deleted, got=%#v err=%v", got, err)
+	}
+	if rows, err := services.store.Users.ListIdentitiesByUser(ctx, user.TenantID, user.ID); err != nil || len(rows) != 0 {
+		t.Fatalf("expected identities deleted, rows=%#v err=%v", rows, err)
+	}
+	gotRoutes := map[string]string{}
+	for _, call := range routeDeleter.calls {
+		gotRoutes[call.email] = call.tenantID
+	}
+	for _, routeIdentity := range []string{"delete-identities@example.com", "delete-identities-alias@example.com", "phone:17090134628"} {
+		if gotRoutes[routeIdentity] != user.TenantID {
+			t.Fatalf("missing route delete for %s in %#v", routeIdentity, routeDeleter.calls)
+		}
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatalf("load LLM registry: %v", err)
+	}
+	if len(reg.UserBindings) != 0 || len(reg.Grants) != 0 || len(reg.Cards) != 0 {
+		t.Fatalf("expected LLM registry user data cleared, got bindings=%#v grants=%#v cards=%#v", reg.UserBindings, reg.Grants, reg.Cards)
+	}
+}
+
+func TestDeleteBoundUserHandlerDeletesLegacyPhoneOnlyUserByID(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-phone-only", TenantID: "tenant_phone_only", Email: "", SN: "sn-phone-only", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:         "delete-phone-only_phone",
+		TenantID:   user.TenantID,
+		UserID:     user.ID,
+		Type:       "phone",
+		Value:      "17090134628",
+		Verified:   true,
+		VerifiedAt: &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("upsert phone identity: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	routeDeleter := &fakeBoundUserRouteDeleter{}
+	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, System: services.store.System, DB: services.db, RouteDeleter: routeDeleter}, services.store.System)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_phone_only&user_id=delete-phone-only&phone=17090134628", nil)
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got, err := services.store.Users.GetByID(ctx, user.ID); err != nil || got != nil {
+		t.Fatalf("expected phone-only user deleted, got=%#v err=%v", got, err)
+	}
+	if got, err := services.store.Users.GetByTenantIdentity(ctx, user.TenantID, "phone", "17090134628"); err != nil || got != nil {
+		t.Fatalf("expected phone identity deleted, got=%#v err=%v", got, err)
+	}
+	if len(routeDeleter.calls) != 1 || routeDeleter.calls[0].email != "phone:17090134628" || routeDeleter.calls[0].tenantID != user.TenantID {
+		t.Fatalf("expected phone route delete, got %#v", routeDeleter.calls)
+	}
+}
+
+func TestDeleteBoundUserHandlerRejectsMismatchedUserIDPhone(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	users := []*store.User{
+		{ID: "delete-mismatch-a", TenantID: "tenant_mismatch", Email: "", SN: "sn-mismatch-a", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "delete-mismatch-b", TenantID: "tenant_mismatch", Email: "delete-mismatch-b@example.com", SN: "sn-mismatch-b", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, user := range users {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	for _, identityRow := range []*store.UserIdentity{
+		{ID: "delete-mismatch-a_phone", TenantID: "tenant_mismatch", UserID: "delete-mismatch-a", Type: "phone", Value: "17090134628", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+		{ID: "delete-mismatch-b_phone", TenantID: "tenant_mismatch", UserID: "delete-mismatch-b", Type: "phone", Value: "17090134629", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.UpsertIdentity(ctx, identityRow); err != nil {
+			t.Fatalf("upsert identity %s: %v", identityRow.ID, err)
+		}
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	handler := DeleteBoundUserHandler(identity, &UserDataPurger{Identity: identity, System: services.store.System, DB: services.db, RouteDeleter: &fakeBoundUserRouteDeleter{}}, services.store.System)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_mismatch&user_id=delete-mismatch-a&phone=17090134629", nil)
+	handler(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected mismatch to be rejected as not found, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, user := range users {
+		if got, err := services.store.Users.GetByID(ctx, user.ID); err != nil || got == nil {
+			t.Fatalf("expected user %s kept, got=%#v err=%v", user.ID, got, err)
+		}
 	}
 }
 

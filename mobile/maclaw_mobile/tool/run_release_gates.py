@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from release_evidence_commands import AUTOMATED_RELEASE_GATE_SUCCESS_LINE
+
 
 @dataclass(frozen=True)
 class ReleaseGate:
@@ -97,6 +99,11 @@ def release_gates() -> list[ReleaseGate]:
             [sys.executable, "-m", "unittest", "tool/qa_preflight_test.py"],
         ),
         ReleaseGate(
+            "Release evidence command helper tests",
+            mobile,
+            [sys.executable, "-m", "unittest", "tool/release_evidence_commands_test.py"],
+        ),
+        ReleaseGate(
             "Android signing setup helper tests",
             mobile,
             [sys.executable, "-m", "unittest", "tool/setup_android_signing_test.py"],
@@ -145,6 +152,11 @@ def release_gates() -> list[ReleaseGate]:
             "Manual release gate parity tests",
             mobile,
             [sys.executable, "-m", "unittest", "tool/verify_manual_release_gates_test.py"],
+        ),
+        ReleaseGate(
+            "Manual release gate verification",
+            mobile,
+            [sys.executable, "tool/verify_manual_release_gates.py"],
         ),
         ReleaseGate(
             "Final release evidence verifier tests",
@@ -292,6 +304,8 @@ def run_gate(
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if completed.stdout:
         print(completed.stdout, end="")
@@ -346,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for index, gate in enumerate(gates, start=1):
             run_gate(gate, index=index, total=len(gates), log_lines=log_lines)
-        _print_and_log("All MaClaw Mobile automated release gates passed.", log_lines)
+        _print_and_log(AUTOMATED_RELEASE_GATE_SUCCESS_LINE, log_lines)
     except subprocess.CalledProcessError as exc:
         exit_code = exc.returncode or 1
 

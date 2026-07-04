@@ -389,6 +389,10 @@ func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.Hand
 		ctx := auth.WithTenant(r.Context(), RequestTenantID(r))
 		user, err := identity.AdminConfirmLoginByEmail(ctx, email)
 		if err != nil {
+			if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+				writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_TEST_KEY_USER_FAILED", err.Error())
 			return
 		}

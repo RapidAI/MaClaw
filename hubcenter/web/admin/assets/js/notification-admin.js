@@ -381,12 +381,12 @@ function notifCardHtml(n) {
   var deleteBtn = notifCanDelete(n)
     ? '<button class="btn-danger" type="button" onclick="event.stopPropagation();notifDelete(' + notifJsArg(n.id) + ')">' + escapeHtml(tr('notifDelete')) + '</button>'
     : '';
-  return '<div class="item news-card" onclick="renderNotifDetail(' + notifJsArg(n.id) + ')" style="cursor:pointer">'
-    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">'
-    + '<div style="min-width:0;flex:1"><div class="news-title">' + escapeHtml(n.title || '') + '</div>'
+  return '<div class="item news-card notif-card" onclick="renderNotifDetail(' + notifJsArg(n.id) + ')">'
+    + '<div class="notif-card-row">'
+    + '<div class="notif-card-main"><div class="news-title">' + escapeHtml(n.title || '') + '</div>'
     + '<div class="news-meta">' + catLabel + ' ' + statusBadge + ' ' + prioLabel + cascadeHint + '</div>'
     + '<div class="item-meta">' + escapeHtml(time) + '</div></div>'
-    + (deleteBtn ? '<div class="actions" style="flex-shrink:0">' + deleteBtn + '</div>' : '')
+    + (deleteBtn ? '<div class="actions notif-card-actions">' + deleteBtn + '</div>' : '')
     + '</div>'
     + '</div>';
 }

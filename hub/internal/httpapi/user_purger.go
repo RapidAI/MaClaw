@@ -16,8 +16,9 @@ import (
 )
 
 // UserDataPurger provides a single entry point for removing all user data from
-// the system. All cleanup steps are best-effort — failures are logged but do not
-// block subsequent steps or the final user record deletion.
+// the system. Most cleanup steps are best-effort, but local identity cleanup is
+// required because stale identities would make admin user cards and login lookup
+// appear bound after deletion.
 //
 // Adding a new user-linked table? Add a step to PurgeAll. This is the single
 // source of truth for "what data does a user leave behind".
@@ -51,6 +52,7 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 	tenantID := store.NormalizeTenantID(user.TenantID)
 	email := strings.TrimSpace(strings.ToLower(user.Email))
 	userID := user.ID
+	cleanupEmails, routeIdentities := collectUserPurgeIdentities(ctx, p.Identity, tenantID, user)
 
 	logErr := func(area string, err error) {
 		if err != nil {
@@ -68,25 +70,33 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 	}
 
 	// 2. Invitation codes bound to email.
-	if p.InvitationSvc != nil && email != "" {
-		deleted, err := p.InvitationSvc.DeleteCodeByTenantEmail(ctx, tenantID, email)
-		logErr("invitation_codes", err)
-		result.DeletedInvitationCodes = deleted
+	if p.InvitationSvc != nil && len(cleanupEmails) > 0 {
+		for _, cleanupEmail := range cleanupEmails {
+			deleted, err := p.InvitationSvc.DeleteCodeByTenantEmail(ctx, tenantID, cleanupEmail)
+			logErr("invitation_codes", err)
+			result.DeletedInvitationCodes += deleted
+		}
 	}
 
 	// 3. Feishu IM binding.
-	if p.FeishuNotify != nil && email != "" {
-		p.FeishuNotify.RemoveOpenIDForTenant(tenantID, email)
+	if p.FeishuNotify != nil && len(cleanupEmails) > 0 {
+		for _, cleanupEmail := range cleanupEmails {
+			p.FeishuNotify.RemoveOpenIDForTenant(tenantID, cleanupEmail)
+		}
 	}
 
 	// 4. Other IM bindings (QQ, WeChat, DingTalk).
-	removeIMBindingsForTenant(p.IMCleaners, tenantID, email)
+	for _, cleanupEmail := range cleanupEmails {
+		removeIMBindingsForTenant(p.IMCleaners, tenantID, cleanupEmail)
+	}
 
 	// 5. Enrollment records.
 	if p.Identity != nil {
-		if repo := p.Identity.EnrollmentsRepo(); repo != nil && email != "" {
-			_, err := repo.DeleteByTenantEmail(ctx, tenantID, email)
-			logErr("enrollments", err)
+		if repo := p.Identity.EnrollmentsRepo(); repo != nil && len(cleanupEmails) > 0 {
+			for _, cleanupEmail := range cleanupEmails {
+				_, err := repo.DeleteByTenantEmail(ctx, tenantID, cleanupEmail)
+				logErr("enrollments", err)
+			}
 		}
 	}
 
@@ -99,10 +109,12 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 	}
 
 	// 7. Security group membership (department).
-	if p.SecuritySvc != nil && email != "" {
+	if p.SecuritySvc != nil && len(cleanupEmails) > 0 {
 		tenantCtx := security.WithTenant(ctx, tenantID)
-		err := p.SecuritySvc.RemoveUser(tenantCtx, "", email)
-		logErr("security_group", err)
+		for _, cleanupEmail := range cleanupEmails {
+			err := p.SecuritySvc.RemoveUser(tenantCtx, "", cleanupEmail)
+			logErr("security_group", err)
+		}
 	}
 
 	// 8. LLM service: user bindings, grants, redeemed cards.
@@ -110,15 +122,24 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 		tenantSystem := ScopedSystemSettingsForTenant(tenantID, p.System)
 		err := llmservice.PurgeUserFromRegistryForUser(ctx, tenantSystem, userID, email)
 		logErr("llm_service_registry", err)
+		for _, cleanupEmail := range cleanupEmails {
+			if cleanupEmail == email {
+				continue
+			}
+			err := llmservice.PurgeUserFromRegistryForUser(ctx, tenantSystem, "", cleanupEmail)
+			logErr("llm_service_registry", err)
+		}
 	}
 
 	// ─── Phase 2: Direct SQL cleanup (tables without repo delete methods) ──
 
 	if p.DB != nil {
 		// 9. Login tokens.
-		if email != "" {
-			_, err := p.DB.ExecContext(ctx, `DELETE FROM login_tokens WHERE tenant_id = ? AND lower(email) = lower(?)`, tenantID, email)
-			logErr("login_tokens", err)
+		if len(cleanupEmails) > 0 {
+			for _, cleanupEmail := range cleanupEmails {
+				_, err := p.DB.ExecContext(ctx, `DELETE FROM login_tokens WHERE tenant_id = ? AND lower(email) = lower(?)`, tenantID, cleanupEmail)
+				logErr("login_tokens", err)
+			}
 		}
 		// 10. MCP secret bindings.
 		if userID != "" {
@@ -131,9 +152,11 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 			logErr("mcp_hub_secrets", err)
 		}
 		// 12. User capability inventory.
-		if email != "" {
-			_, err := p.DB.ExecContext(ctx, `DELETE FROM user_capability_inventory WHERE tenant_id = ? AND lower(user_email) = lower(?)`, tenantID, email)
-			logErr("user_capability_inventory", err)
+		if len(cleanupEmails) > 0 {
+			for _, cleanupEmail := range cleanupEmails {
+				_, err := p.DB.ExecContext(ctx, `DELETE FROM user_capability_inventory WHERE tenant_id = ? AND lower(user_email) = lower(?)`, tenantID, cleanupEmail)
+				logErr("user_capability_inventory", err)
+			}
 		}
 		// 13. Workflow intent sessions.
 		if userID != "" {
@@ -145,11 +168,27 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 			_, err := p.DB.ExecContext(ctx, `DELETE FROM workflow_states WHERE tenant_id = ? AND user_id = ?`, tenantID, userID)
 			logErr("workflow_states", err)
 		}
+		// 15. User identities. These are the local email/phone bindings shown on
+		// admin user cards, and the users table does not cascade-delete them.
+		if userID != "" {
+			if _, err := p.DB.ExecContext(ctx, `DELETE FROM user_identities WHERE tenant_id = ? AND user_id = ?`, tenantID, userID); err != nil {
+				logErr("user_identities", err)
+				return result, err
+			}
+		}
 	}
 
 	// ─── Phase 3: User record deletion ───────────────────────────────────
 
-	if p.Identity != nil && p.Identity.UsersRepo() != nil {
+	if p.DB != nil && userID != "" {
+		res, err := p.DB.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND id = ?`, tenantID, userID)
+		if err != nil {
+			return result, err
+		}
+		if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+			return result, sql.ErrNoRows
+		}
+	} else if p.Identity != nil && p.Identity.UsersRepo() != nil {
 		if err := p.Identity.UsersRepo().DeleteByTenantEmail(ctx, tenantID, email); err != nil {
 			return result, err
 		}
@@ -157,12 +196,92 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 
 	// ─── Phase 4: External system notification (post-delete) ─────────────
 
-	// 15. Hub Center route removal.
-	if p.RouteDeleter != nil && email != "" {
-		if err := p.RouteDeleter.DeleteUserRoute(ctx, email, tenantID); err != nil {
-			result.RouteDeleteWarning = err.Error()
+	// 16. Hub Center route removal.
+	if p.RouteDeleter != nil {
+		var warnings []string
+		for _, routeIdentity := range routeIdentities {
+			if err := p.RouteDeleter.DeleteUserRoute(ctx, routeIdentity, tenantID); err != nil {
+				warnings = append(warnings, routeIdentity+": "+err.Error())
+			}
+		}
+		if len(warnings) > 0 {
+			result.RouteDeleteWarning = strings.Join(warnings, "; ")
 		}
 	}
 
 	return result, nil
+}
+
+func collectUserPurgeIdentities(ctx context.Context, identity *auth.IdentityService, tenantID string, user *store.User) ([]string, []string) {
+	var emails []string
+	var routeIdentities []string
+	seenEmails := map[string]struct{}{}
+	seenRoutes := map[string]struct{}{}
+
+	addEmail := func(value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" || strings.HasPrefix(value, "phone:") {
+			return
+		}
+		if _, ok := seenEmails[value]; !ok {
+			seenEmails[value] = struct{}{}
+			emails = append(emails, value)
+		}
+		if _, ok := seenRoutes[value]; !ok {
+			seenRoutes[value] = struct{}{}
+			routeIdentities = append(routeIdentities, value)
+		}
+	}
+	addPhone := func(value string) {
+		value = normalizePurgePhoneIdentity(value)
+		if value == "" {
+			return
+		}
+		routeIdentity := "phone:" + value
+		if _, ok := seenRoutes[routeIdentity]; ok {
+			return
+		}
+		seenRoutes[routeIdentity] = struct{}{}
+		routeIdentities = append(routeIdentities, routeIdentity)
+	}
+
+	account := strings.TrimSpace(user.Email)
+	if strings.HasPrefix(strings.ToLower(account), "phone:") {
+		addPhone(account)
+	} else {
+		addEmail(account)
+	}
+
+	if identity == nil || identity.UsersRepo() == nil || strings.TrimSpace(user.ID) == "" {
+		return emails, routeIdentities
+	}
+	rows, err := identity.UsersRepo().ListIdentitiesByUser(ctx, tenantID, user.ID)
+	if err != nil {
+		log.Printf("[user-purge] list user identities for %s (%s): %v", user.Email, user.ID, err)
+		return emails, routeIdentities
+	}
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		switch strings.TrimSpace(strings.ToLower(row.Type)) {
+		case "email":
+			addEmail(row.Value)
+		case "phone":
+			addPhone(row.Value)
+		}
+	}
+	return emails, routeIdentities
+}
+
+func normalizePurgePhoneIdentity(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "phone:")
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

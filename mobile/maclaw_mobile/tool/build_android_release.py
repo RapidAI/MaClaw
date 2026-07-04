@@ -9,10 +9,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import release_evidence_commands
 import verify_android_release_signing
+import signed_artifact_evidence
 
 
 REQUIRED_KEY_PROPERTIES = ("storeFile", "storePassword", "keyAlias", "keyPassword")
+ANDROID_RELEASE_ARTIFACTS = ("apk", "appbundle")
 BUILD_NAME_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
 BUILD_NUMBER_RE = re.compile(r"^\d+$")
 
@@ -74,6 +77,11 @@ def build_plan(
     build_name: str | None = None,
     build_number: str | None = None,
 ) -> AndroidReleaseBuildPlan:
+    if artifact not in ANDROID_RELEASE_ARTIFACTS:
+        raise ValueError(
+            "Android --artifact must be one of "
+            + ", ".join(ANDROID_RELEASE_ARTIFACTS),
+        )
     key_values, errors = validate_key_properties(root)
     if errors:
         raise ValueError("; ".join(errors))
@@ -115,6 +123,36 @@ def _executable_command(command: list[str]) -> list[str]:
     return [executable, *command[1:]]
 
 
+def _qa_evidence_options_error(
+    *,
+    record_dir: Path | None,
+    signing_identity: str | None,
+    installer_channel: str | None,
+) -> str:
+    provided = [
+        record_dir is not None,
+        bool(signing_identity),
+        bool(installer_channel),
+    ]
+    if any(provided) and not all(provided):
+        return (
+            "Generating QA artifact evidence requires --record-dir, "
+            "--signing-identity, and --installer-channel together."
+        )
+    return ""
+
+
+def _is_local_signing_input_error(message: str) -> bool:
+    return any(
+        marker in message
+        for marker in (
+            "Missing Android signing file",
+            "android/key.properties",
+            "Android signing storeFile",
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Build a signed MaClaw Mobile Android release artifact with local key.properties.",
@@ -127,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--artifact",
-        choices=("apk", "appbundle"),
+        choices=ANDROID_RELEASE_ARTIFACTS,
         default="apk",
         help="Signed Android artifact type to build.",
     )
@@ -138,8 +176,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Validate signing inputs and print the Flutter build command without running it.",
     )
+    parser.add_argument(
+        "--record-dir",
+        type=Path,
+        help="Optional docs/qa-builds directory used to print QA artifact evidence after a successful build.",
+    )
+    parser.add_argument(
+        "--signing-identity",
+        help="Optional non-debug release/internal signing identity for QA artifact evidence.",
+    )
+    parser.add_argument(
+        "--installer-channel",
+        help="Optional auditable distribution channel for QA artifact evidence.",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
+
+    evidence_error = _qa_evidence_options_error(
+        record_dir=args.record_dir,
+        signing_identity=args.signing_identity,
+        installer_channel=args.installer_channel,
+    )
+    if evidence_error:
+        print(f"Android release build cannot start: {evidence_error}", file=sys.stderr)
+        return 1
 
     config_errors = verify_android_release_signing.verify_android_release_signing(root)
     if config_errors:
@@ -157,6 +217,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ValueError as exc:
         print(f"Android release build cannot start: {exc}", file=sys.stderr)
+        if _is_local_signing_input_error(str(exc)):
+            print(
+                f"- Run `{release_evidence_commands.setup_android_signing_command()}` "
+                "with release signing environment variables first.",
+                file=sys.stderr,
+            )
         return 1
 
     print("Android release signing inputs verified.")
@@ -180,6 +246,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Artifact: {plan.artifact_path}")
     print(f"Size: {plan.artifact_path.stat().st_size} bytes")
     print(f"SHA256: {_sha256_file(plan.artifact_path)}")
+    if args.record_dir is not None:
+        try:
+            evidence_lines = signed_artifact_evidence.android_evidence_lines(
+                plan.artifact_path,
+                record_dir=args.record_dir,
+                version=f"{args.build_name.strip()}+{args.build_number.strip()}",
+                signing_identity=args.signing_identity or "",
+                installer_channel=args.installer_channel or "",
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"QA artifact evidence could not be generated: {exc}", file=sys.stderr)
+            return 1
+        print("QA artifact evidence:")
+        for line in evidence_lines:
+            print(line)
     print("Record the artifact path, SHA256, version/build number, signing identity, and installer channel in the QA build record.")
     return 0
 

@@ -1308,7 +1308,7 @@ func (s *Service) syncUserRouteInternal(ctx context.Context, email string, repla
 		return err
 	}
 	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
-		return nil
+		return fmt.Errorf("hub center registration is missing or incomplete")
 	}
 	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
 	if err != nil {

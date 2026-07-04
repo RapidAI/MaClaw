@@ -100,7 +100,14 @@ func TestSendVEGroupMessageWithAttachmentsLocalMentionAvoidsFileRelayUpload(t *t
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	dispatcher := client.groupChatDispatcher()
+	dispatcher.RegisterSession("session-1")
+	t.Cleanup(func() {
+		if !dispatcher.UnregisterSessionAndWait("session-1", 5*time.Second) {
+			t.Errorf("timed out waiting for local group executor cleanup")
+		}
+		app.resetPathBoundStateForDataDirChange()
+	})
 
 	if err := app.SendVEGroupMessageWithAttachments("session-1", "@本地AI 看附件", []string{"本地AI"}, []string{imagePath}); err != nil {
 		t.Fatalf("SendVEGroupMessageWithAttachments: %v", err)
@@ -152,7 +159,14 @@ func TestSendVEGroupMessageWithAttachmentsMixedMentionsSendsRemoteAttachment(t *
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	dispatcher := client.groupChatDispatcher()
+	dispatcher.RegisterSession("session-1")
+	t.Cleanup(func() {
+		if !dispatcher.UnregisterSessionAndWait("session-1", 5*time.Second) {
+			t.Errorf("timed out waiting for local group executor cleanup")
+		}
+		app.resetPathBoundStateForDataDirChange()
+	})
 
 	if err := app.SendVEGroupMessageWithAttachments("session-1", "@local-maclaw @remote-ve see file", []string{"local-maclaw", "remote-ve"}, []string{imagePath}); err != nil {
 		t.Fatalf("SendVEGroupMessageWithAttachments: %v", err)

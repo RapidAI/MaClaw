@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -7,6 +7,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+from release_evidence_commands import (
+    AUTOMATED_RELEASE_GATE_COUNT,
+    AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
+    VALID_SCOPES,
+)
 
 
 OFFICIAL_HUBCENTER_URLS = [
@@ -34,7 +40,7 @@ VERSION_BUILD_RE = re.compile(
 )
 QA_BUILD_RECORD_FILENAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})-"
-    r"(?P<scope>android|ios|android-ios|ios-android)-"
+    r"(?P<scope>" + "|".join(re.escape(scope) for scope in VALID_SCOPES) + r")-"
     r"(?P<version>\d+(?:\.\d+){1,3}\+\d+)\.md$"
 )
 TESTFLIGHT_BUILD_RE = re.compile(r"(?i)\btestflight\s+build\s+\d+\b")
@@ -45,7 +51,19 @@ PRIVATE_KEY_BLOCK_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?im)\b(?:password|passwd|token|access[_-]?token|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"<>]{8,}"
 )
-TOKEN_LITERAL_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,})\b")
+TOKEN_LITERAL_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35})\b"
+)
+JWT_LITERAL_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+AUTHORIZATION_HEADER_RE = re.compile(
+    r"(?i)\bauthorization\s*:\s*(?:bearer\s+[A-Za-z0-9._~+/=-]{12,}|basic\s+[A-Za-z0-9+/=]{12,})"
+)
+HTTP_SECRET_HEADER_RE = re.compile(
+    r"(?i)\b(?:cookie|set-cookie|private-token|x-api-key)\s*:\s*[^\s;,'\"<>][^,\n]{7,}"
+)
+URL_EMBEDDED_CREDENTIAL_RE = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]{2,}://[A-Za-z0-9._~%+-]{1,64}:[^@\s/'\"<>]{8,}@"
+)
 ANDROID_ARTIFACT_SUFFIXES = (".apk", ".aab")
 DOCUMENT_TEMPLATE_MARKERS = (
     "notice",
@@ -166,6 +184,20 @@ REQUIRED_FIELD_COUNTS = {
     field: REQUIRED_FIELDS.count(field) for field in set(REQUIRED_FIELDS)
 }
 
+ANDROID_ONLY_FIELDS = {
+    "Account screen shows selected Hub and tenant",
+    "Android manual gates passed",
+    "Android signed install result",
+    "Artifact path",
+    "Installer channel",
+    "Local network / SSH scenario",
+    "Media/file access",
+    "No custom Hub URL setting found",
+    "SHA256",
+    "Signing identity",
+    "Version/build number",
+}
+
 OPTIONAL_FIELDS = {
     "Known issues / waivers",
     "Device logs / screenshots / recordings",
@@ -279,6 +311,25 @@ DUAL_PLATFORM_EVIDENCE_FIELDS = {
     "Notification permission",
     "Camera permission",
     "Microphone permission",
+}
+
+IOS_ONLY_FIELDS = {
+    "App group",
+    "Archive/TestFlight build",
+    "iOS manual gates passed",
+    "iOS signed install result",
+    "Local network permission",
+    "Photo library permission",
+    "Provisioning profiles",
+    "Runner bundle id",
+    "Share Extension bundle id",
+    "Speech recognition permission",
+    "Team ID",
+    "URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)",
+}
+
+SCOPED_DUAL_PLATFORM_FIELDS = DUAL_PLATFORM_EVIDENCE_FIELDS | {
+    "Device model / OS",
 }
 
 AI_SEARCH_EVIDENCE_FIELDS = {
@@ -478,6 +529,12 @@ MANUAL_EVIDENCE_FIELDS = {
     "Automated release gates result",
 }
 
+FINAL_AUTOMATED_EVIDENCE_FIELDS = {
+    "Release handoff result": "must reference release_handoff.py output or saved handoff evidence",
+    "Runtime boundary verification result": "must reference verify_runtime_boundary.py verified output or log evidence",
+    "Automated release gates result": "must reference run_release_gates.py gate count and saved log evidence",
+}
+
 LLM_ACCESS_MODES = {
     "maclaw_official",
     "desktop_qr_third_party",
@@ -672,6 +729,56 @@ def _is_attachment_evidence(value: str) -> bool:
         )
         or re.search(r"\battachment[-_ #:]?[a-z0-9][a-z0-9._-]{2,}\b", normalized)
         is not None
+    )
+
+
+def _is_release_handoff_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and "handoff" in normalized
+        and (
+            "release_handoff.py" in normalized
+            or "handoff-" in normalized
+            or "handoff output" in normalized
+            or "handoff evidence" in normalized
+        )
+        and any(marker in normalized for marker in (".md", "docs/qa-builds", "attachment"))
+    )
+
+
+def _is_runtime_boundary_result_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and "runtime" in normalized
+        and "boundary" in normalized
+        and (
+            "verify_runtime_boundary.py" in normalized
+            or "runtime-boundary-" in normalized
+            or "runtime boundary verified" in normalized
+            or "runtime boundary verification" in normalized
+        )
+        and any(marker in normalized for marker in (".log", "docs/qa-builds", "attachment"))
+    )
+
+
+def _is_automated_release_gates_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    expected_gate_count = rf"\b{AUTOMATED_RELEASE_GATE_COUNT}\s+gates?\s+passed\b"
+    expected_success_line = AUTOMATED_RELEASE_GATE_SUCCESS_LINE.lower()
+    return (
+        _is_auditable_note(value)
+        and (
+            "run_release_gates.py" in normalized
+            or "release-gates-" in normalized
+            or "release gates" in normalized
+        )
+        and (
+            re.search(expected_gate_count, normalized) is not None
+            or expected_success_line in normalized
+        )
+        and any(marker in normalized for marker in (".log", "docs/qa-builds", "attachment"))
     )
 
 
@@ -1272,6 +1379,10 @@ def _is_trackable_ios_archive(value: str) -> bool:
     return normalized.endswith(".xcarchive") or TESTFLIGHT_BUILD_RE.search(value) is not None
 
 
+def _is_local_ios_archive_path(value: str) -> bool:
+    return value.strip().lower().endswith(".xcarchive")
+
+
 def _mentions_ios_profiles(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -1298,10 +1409,51 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def missing_required_fields(values: dict[str, list[str]]) -> list[str]:
+def record_scope_from_path(path: Path) -> str:
+    match = QA_BUILD_RECORD_FILENAME_RE.fullmatch(path.name)
+    if match is None:
+        return "android-ios"
+    return match.group("scope")
+
+
+def scoped_values(values: dict[str, list[str]], scope: str) -> dict[str, list[str]]:
+    if scope == "android-ios":
+        return values
+    scoped: dict[str, list[str]] = {}
+    for field, field_values in values.items():
+        if scope == "android" and field in IOS_ONLY_FIELDS:
+            continue
+        if scope == "ios" and field in ANDROID_ONLY_FIELDS:
+            continue
+        if field in SCOPED_DUAL_PLATFORM_FIELDS:
+            if scope == "android":
+                scoped[field] = field_values[:1]
+            else:
+                scoped[field] = field_values[1:2] if len(field_values) > 1 else field_values[:1]
+            continue
+        scoped[field] = field_values
+    return scoped
+
+
+def required_field_counts_for_scope(scope: str) -> dict[str, int]:
+    if scope == "android-ios":
+        return REQUIRED_FIELD_COUNTS
+    scoped = scoped_values(
+        {field: ["x"] * count for field, count in REQUIRED_FIELD_COUNTS.items()},
+        scope,
+    )
+    return {field: len(values) for field, values in scoped.items()}
+
+
+def missing_required_fields(
+    values: dict[str, list[str]],
+    *,
+    scope: str = "android-ios",
+) -> list[str]:
     missing = []
+    values = scoped_values(values, scope)
     llm_modes = [value for value in values.get("LLM access mode", []) if value]
-    for field, required_count in sorted(REQUIRED_FIELD_COUNTS.items()):
+    for field, required_count in sorted(required_field_counts_for_scope(scope).items()):
         filled_count = _filled_count(values, field)
         if filled_count < required_count:
             suffix = (
@@ -1356,6 +1508,15 @@ def missing_required_fields(values: dict[str, list[str]]) -> list[str]:
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_auditable_note(value) for value in field_values):
             missing.append(f"{field} must contain auditable QA evidence, not a placeholder")
+    final_automated_checks = {
+        "Release handoff result": _is_release_handoff_evidence,
+        "Runtime boundary verification result": _is_runtime_boundary_result_evidence,
+        "Automated release gates result": _is_automated_release_gates_evidence,
+    }
+    for field, check in sorted(final_automated_checks.items()):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(check(value) for value in field_values):
+            missing.append(f"{field} {FINAL_AUTOMATED_EVIDENCE_FIELDS[field]}")
     for field, markers in sorted(PERMISSION_EVIDENCE_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
@@ -1575,26 +1736,32 @@ def missing_required_fields(values: dict[str, list[str]]) -> list[str]:
         missing.append("Device model / OS must include device model and Android/iOS OS version")
     if device_values:
         normalized_devices = [value.lower() for value in device_values]
-        if len(normalized_devices) >= 2:
+        if scope == "android-ios" and len(normalized_devices) >= 2:
             if "android" not in normalized_devices[0]:
                 missing.append("First Device model / OS entry must be the Android QA device")
             if "ios" not in normalized_devices[1]:
                 missing.append("Second Device model / OS entry must be the iOS QA device")
-        if not any("android" in value for value in normalized_devices) or not any(
+        if scope == "android-ios" and (
+            not any("android" in value for value in normalized_devices) or not any(
             "ios" in value for value in normalized_devices
+            )
         ):
             missing.append("Device model / OS must include both Android and iOS devices")
+        if scope == "android" and not any("android" in value for value in normalized_devices):
+            missing.append("Device model / OS must include an Android QA device")
+        if scope == "ios" and not any("ios" in value for value in normalized_devices):
+            missing.append("Device model / OS must include an iOS QA device")
         android_versions = [
             version
             for value in device_values
             for version in [_android_major_version(value)]
             if version is not None
         ]
-        if android_versions and not any(version >= 13 for version in android_versions):
+        if scope != "ios" and android_versions and not any(version >= 13 for version in android_versions):
             missing.append("Device model / OS must include at least one Android 13+ device")
     for field in sorted(DUAL_PLATFORM_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
-        if len(field_values) >= 2:
+        if scope == "android-ios" and len(field_values) >= 2:
             if not _mentions_android(field_values[0]):
                 missing.append(f"First {field} entry must be Android evidence")
             if not _mentions_ios(field_values[1]):
@@ -1788,10 +1955,23 @@ def local_artifact_errors(values: dict[str, list[str]], record_dir: Path) -> lis
     for raw_path in artifact_paths:
         artifact_path = _resolve_artifact_path(raw_path, record_dir)
         if not artifact_path.exists():
+            errors.append(f"Local signed artifact is missing: {raw_path}")
+            continue
+        if not artifact_path.is_file():
+            errors.append(f"Local signed artifact is not a file: {raw_path}")
             continue
         actual = _sha256_file(artifact_path)
         if actual not in sha_values:
             errors.append(f"SHA256 does not match local artifact {raw_path}")
+    for raw_path in values.get("Archive/TestFlight build", []):
+        if not raw_path or not _is_local_ios_archive_path(raw_path):
+            continue
+        archive_path = _resolve_artifact_path(raw_path, record_dir)
+        if not archive_path.exists():
+            errors.append(f"Local iOS archive is missing: {raw_path}")
+            continue
+        if not archive_path.is_dir():
+            errors.append(f"Local iOS archive is not a directory: {raw_path}")
     return errors
 
 
@@ -1825,6 +2005,10 @@ def raw_secret_errors(text: str) -> list[str]:
         PRIVATE_KEY_BLOCK_RE.search(text)
         or SECRET_ASSIGNMENT_RE.search(text)
         or TOKEN_LITERAL_RE.search(text)
+        or JWT_LITERAL_RE.search(text)
+        or AUTHORIZATION_HEADER_RE.search(text)
+        or HTTP_SECRET_HEADER_RE.search(text)
+        or URL_EMBEDDED_CREDENTIAL_RE.search(text)
     ):
         return [
             "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
@@ -1845,11 +2029,13 @@ def validate_file(path: Path) -> list[str]:
         return ["QA build record path must point to a completed record, not the template"]
     text = path.read_text(encoding="utf-8")
     values = parse_record(text)
+    scope = record_scope_from_path(path)
+    in_scope_values = scoped_values(values, scope)
     return (
         raw_secret_errors(text)
-        + qa_build_record_filename_errors(path, values)
-        + missing_required_fields(values)
-        + local_artifact_errors(values, path.parent)
+        + qa_build_record_filename_errors(path, in_scope_values)
+        + missing_required_fields(values, scope=scope)
+        + local_artifact_errors(in_scope_values, path.parent)
     )
 
 

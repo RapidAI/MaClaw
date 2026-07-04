@@ -335,7 +335,7 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			break
 		}
 
-		sendProgress(fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次，超时 %ds）...", request.Language, attempt, attempts, request.Timeout))
+		sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
 		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv)
 		lastAttempt = craftAttemptResult{
 			ScriptPath: scriptPath,
@@ -360,6 +360,13 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 
 	result := buildCraftFailureResult(request, lastAttempt, providerName, providerURL)
 	return result, fmt.Errorf("%s", firstNonEmptyCraftText(lastAttempt.VerificationMessage, "craft_tool execution failed"))
+}
+
+func formatCraftExecutionProgress(language string, attempt, attempts, timeout int) string {
+	if timeout > 0 {
+		return fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次，最长等待 %ds）...", language, attempt, attempts, timeout)
+	}
+	return fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次）...", language, attempt, attempts)
 }
 
 func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAvailability) craftToolRequest {

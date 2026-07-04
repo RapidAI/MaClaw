@@ -93,9 +93,10 @@ class SetupIOSExportOptionsTest(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertIn("Wrote local iOS export options", stdout.getvalue())
         self.assertIn(
-            "python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method enterprise",
+            "python3 tool/qa_preflight.py --team-id <APPLE_TEAM_ID> --export-method enterprise",
             stdout.getvalue(),
         )
+        self.assertIn("keep ios/ExportOptions.plist local", stdout.getvalue())
 
     def test_main_rejects_invalid_team_id_without_traceback(self) -> None:
         stderr = StringIO()

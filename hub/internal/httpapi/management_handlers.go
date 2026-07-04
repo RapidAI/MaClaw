@@ -31,6 +31,8 @@ type LookupUserRequest struct {
 type DeleteBoundUserRequest struct {
 	Email    string `json:"email"`
 	TenantID string `json:"tenant_id"`
+	UserID   string `json:"user_id"`
+	Phone    string `json:"phone"`
 }
 
 type ForceDeleteVirtualBoundUserRequest struct {
@@ -123,6 +125,10 @@ type BoundUserView struct {
 	ID                string                    `json:"id"`
 	TenantID          string                    `json:"tenant_id"`
 	Email             string                    `json:"email"`
+	Emails            []string                  `json:"emails,omitempty"`
+	Phone             string                    `json:"phone,omitempty"`
+	Phones            []string                  `json:"phones,omitempty"`
+	Identities        []BoundUserIdentityView   `json:"identities,omitempty"`
 	SN                string                    `json:"sn"`
 	Status            string                    `json:"status"`
 	EnrollmentStatus  string                    `json:"enrollment_status"`
@@ -132,6 +138,138 @@ type BoundUserView struct {
 	EmailVerified     bool                      `json:"email_verified"`
 	HasServiceAccess  bool                      `json:"has_service_access,omitempty"`
 	ServiceStatus     *llmservice.ServiceStatus `json:"service_status,omitempty"`
+}
+
+type BoundUserIdentityView struct {
+	Type     string `json:"type"`
+	Value    string `json:"value"`
+	Verified bool   `json:"verified"`
+}
+
+type boundUserIdentityBatchLister interface {
+	ListIdentitiesByUsers(ctx context.Context, tenantID string, userIDs []string) (map[string][]*store.UserIdentity, error)
+}
+
+func boundUserIdentityKey(tenantID, userID string) string {
+	return store.NormalizeTenantID(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
+
+func preloadBoundUserIdentities(ctx context.Context, repo store.UserRepository, users []*store.User) map[string][]*store.UserIdentity {
+	out := map[string][]*store.UserIdentity{}
+	if repo == nil {
+		return out
+	}
+	tenantUsers := map[string][]string{}
+	seen := map[string]struct{}{}
+	for _, user := range users {
+		if user == nil || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		tenantID := store.NormalizeTenantID(user.TenantID)
+		key := boundUserIdentityKey(tenantID, user.ID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		tenantUsers[tenantID] = append(tenantUsers[tenantID], strings.TrimSpace(user.ID))
+	}
+	if batch, ok := repo.(boundUserIdentityBatchLister); ok {
+		for tenantID, userIDs := range tenantUsers {
+			rowsByUser, err := batch.ListIdentitiesByUsers(ctx, tenantID, userIDs)
+			if err != nil {
+				log.Printf("[admin/users] ListIdentitiesByUsers failed for tenant=%s: %v", tenantID, err)
+				preloadBoundUserIdentitiesIndividually(ctx, repo, out, tenantID, userIDs)
+				continue
+			}
+			for userID, rows := range rowsByUser {
+				out[boundUserIdentityKey(tenantID, userID)] = rows
+			}
+		}
+		return out
+	}
+	for tenantID, userIDs := range tenantUsers {
+		preloadBoundUserIdentitiesIndividually(ctx, repo, out, tenantID, userIDs)
+	}
+	return out
+}
+
+func preloadBoundUserIdentitiesIndividually(ctx context.Context, repo store.UserRepository, out map[string][]*store.UserIdentity, tenantID string, userIDs []string) {
+	for _, userID := range userIDs {
+		rows, err := repo.ListIdentitiesByUser(ctx, tenantID, userID)
+		if err != nil {
+			log.Printf("[admin/users] ListIdentitiesByUser failed for tenant=%s user=%s: %v", tenantID, userID, err)
+			continue
+		}
+		out[boundUserIdentityKey(tenantID, userID)] = rows
+	}
+}
+
+func boundUserContactFields(user *store.User, identityRows []*store.UserIdentity) ([]string, string, []string, []BoundUserIdentityView) {
+	emailSeen := map[string]struct{}{}
+	phoneSeen := map[string]struct{}{}
+	identitySeen := map[string]struct{}{}
+	emails := make([]string, 0, 1)
+	phones := make([]string, 0, 1)
+	identityViews := make([]BoundUserIdentityView, 0, 2)
+
+	addEmail := func(value string, verified bool) {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.HasPrefix(strings.ToLower(value), "phone:") || !strings.Contains(value, "@") {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, ok := emailSeen[key]; !ok {
+			emailSeen[key] = struct{}{}
+			emails = append(emails, value)
+		}
+		identityKey := "email\x00" + key
+		if _, ok := identitySeen[identityKey]; !ok {
+			identitySeen[identityKey] = struct{}{}
+			identityViews = append(identityViews, BoundUserIdentityView{Type: "email", Value: value, Verified: verified})
+		}
+	}
+	addPhone := func(value string, verified bool) {
+		value = strings.TrimSpace(value)
+		value = strings.TrimPrefix(strings.ToLower(value), "phone:")
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, ok := phoneSeen[key]; !ok {
+			phoneSeen[key] = struct{}{}
+			phones = append(phones, value)
+		}
+		identityKey := "phone\x00" + key
+		if _, ok := identitySeen[identityKey]; !ok {
+			identitySeen[identityKey] = struct{}{}
+			identityViews = append(identityViews, BoundUserIdentityView{Type: "phone", Value: value, Verified: verified})
+		}
+	}
+
+	if user != nil {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(user.Email)), "phone:") {
+			addPhone(user.Email, true)
+		} else {
+			addEmail(user.Email, user.EmailVerified)
+		}
+	}
+	for _, row := range identityRows {
+		if row == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(row.Type)) {
+		case "email":
+			addEmail(row.Value, row.Verified)
+		case "phone":
+			addPhone(row.Value, row.Verified)
+		}
+	}
+
+	primaryPhone := ""
+	if len(phones) > 0 {
+		primaryPhone = phones[0]
+	}
+	return emails, primaryPhone, phones, identityViews
 }
 
 type BoundUserRouteDeleter interface {
@@ -156,6 +294,10 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 				return
 			}
+			if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+				writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "MANUAL_BIND_FAILED", err.Error())
 			return
 		}
@@ -175,6 +317,8 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+		phone := strings.TrimSpace(r.URL.Query().Get("phone"))
 		if r.Body != nil {
 			var req DeleteBoundUserRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -184,10 +328,16 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 				if tenantID == "" {
 					tenantID = strings.TrimSpace(req.TenantID)
 				}
+				if userID == "" {
+					userID = strings.TrimSpace(req.UserID)
+				}
+				if phone == "" {
+					phone = strings.TrimSpace(req.Phone)
+				}
 			}
 		}
-		if email == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
+		if email == "" && userID == "" && phone == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email, user_id, or phone is required")
 			return
 		}
 		email = strings.TrimSpace(strings.ToLower(email))
@@ -196,10 +346,10 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 			return
 		}
 
-		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, email)
+		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, email, userID, phone)
 		if err != nil {
-			if err == errAmbiguousTenantEmail {
-				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when email exists in multiple tenants")
+			if err == errAmbiguousTenantEmail || err == errAmbiguousTenantIdentity {
+				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when the identity exists in multiple tenants")
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
@@ -281,10 +431,10 @@ func ForceDeleteVirtualBoundUserHandler(admins *auth.AdminService, identity *aut
 			writeError(w, http.StatusInternalServerError, "USER_DELETE_UNAVAILABLE", "User repository is unavailable")
 			return
 		}
-		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, strings.ToLower(strings.TrimSpace(email)))
+		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, strings.ToLower(strings.TrimSpace(email)), "", "")
 		if err != nil {
-			if err == errAmbiguousTenantEmail {
-				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when email exists in multiple tenants")
+			if err == errAmbiguousTenantEmail || err == errAmbiguousTenantIdentity {
+				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when the identity exists in multiple tenants")
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
@@ -333,16 +483,40 @@ func boundUserIsVirtualEmployee(ctx context.Context, system store.SystemSettings
 }
 
 var errAmbiguousTenantEmail = errors.New("email exists in multiple tenants")
+var errAmbiguousTenantIdentity = errors.New("identity exists in multiple tenants")
 
-func resolveBoundUserForDelete(r *http.Request, users store.UserRepository, tenantID, email string) (*store.User, error) {
+func resolveBoundUserForDelete(r *http.Request, users store.UserRepository, tenantID, email, userID, phone string) (*store.User, error) {
 	if r == nil || users == nil {
 		return nil, nil
 	}
+	if userID = strings.TrimSpace(userID); userID != "" {
+		user, err := users.GetByID(r.Context(), userID)
+		if err != nil || user == nil {
+			return user, err
+		}
+		if admin := AdminFromContext(r.Context()); adminHasTenantScope(admin) && store.NormalizeTenantID(user.TenantID) != AdminTenantID(r.Context()) {
+			return nil, nil
+		}
+		if tenantID != "" && store.NormalizeTenantID(user.TenantID) != store.NormalizeTenantID(tenantID) {
+			return nil, nil
+		}
+		if !boundUserDeleteUserMatchesFilters(r.Context(), users, user, email, phone) {
+			return nil, nil
+		}
+		return user, nil
+	}
 	if admin := AdminFromContext(r.Context()); adminHasTenantScope(admin) {
-		return users.GetByTenantEmail(r.Context(), AdminTenantID(r.Context()), email)
+		tenantID := AdminTenantID(r.Context())
+		if email != "" {
+			return users.GetByTenantEmail(r.Context(), tenantID, email)
+		}
+		return users.GetByTenantIdentity(r.Context(), tenantID, "phone", phone)
 	}
 	if tenantID != "" {
-		return users.GetByTenantEmail(r.Context(), tenantID, email)
+		if email != "" {
+			return users.GetByTenantEmail(r.Context(), tenantID, email)
+		}
+		return users.GetByTenantIdentity(r.Context(), tenantID, "phone", phone)
 	}
 	items, err := users.List(r.Context())
 	if err != nil {
@@ -350,15 +524,84 @@ func resolveBoundUserForDelete(r *http.Request, users store.UserRepository, tena
 	}
 	var matched *store.User
 	for _, item := range items {
-		if item == nil || !strings.EqualFold(strings.TrimSpace(item.Email), strings.TrimSpace(email)) {
+		if item == nil || !boundUserDeleteCandidateMatches(r.Context(), users, item, email, phone) {
 			continue
 		}
 		if matched != nil && store.NormalizeTenantID(matched.TenantID) != store.NormalizeTenantID(item.TenantID) {
-			return nil, errAmbiguousTenantEmail
+			if email != "" {
+				return nil, errAmbiguousTenantEmail
+			}
+			return nil, errAmbiguousTenantIdentity
 		}
 		matched = item
 	}
 	return matched, nil
+}
+
+func boundUserDeleteCandidateMatches(ctx context.Context, users store.UserRepository, user *store.User, email, phone string) bool {
+	if user == nil {
+		return false
+	}
+	if email != "" && strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(email)) {
+		return true
+	}
+	phone = normalizePurgePhoneIdentity(phone)
+	if phone == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(user.Email), "phone:"+phone) {
+		return true
+	}
+	rows, err := users.ListIdentitiesByUser(ctx, store.NormalizeTenantID(user.TenantID), user.ID)
+	if err != nil {
+		log.Printf("[admin/users] ListIdentitiesByUser failed while resolving delete for tenant=%s user=%s: %v", user.TenantID, user.ID, err)
+		return false
+	}
+	for _, row := range rows {
+		if row != nil && strings.EqualFold(strings.TrimSpace(row.Type), "phone") && normalizePurgePhoneIdentity(row.Value) == phone {
+			return true
+		}
+	}
+	return false
+}
+
+func boundUserDeleteUserMatchesFilters(ctx context.Context, users store.UserRepository, user *store.User, email, phone string) bool {
+	email = strings.TrimSpace(email)
+	phone = normalizePurgePhoneIdentity(phone)
+	if email == "" && phone == "" {
+		return true
+	}
+	emailMatched := email == ""
+	phoneMatched := phone == ""
+	emailMatched = emailMatched || strings.EqualFold(strings.TrimSpace(user.Email), email)
+	phoneMatched = phoneMatched || strings.EqualFold(strings.TrimSpace(user.Email), "phone:"+phone)
+	if emailMatched && phoneMatched {
+		return true
+	}
+	rows, err := users.ListIdentitiesByUser(ctx, store.NormalizeTenantID(user.TenantID), user.ID)
+	if err != nil {
+		log.Printf("[admin/users] ListIdentitiesByUser failed while validating delete for tenant=%s user=%s: %v", user.TenantID, user.ID, err)
+		return false
+	}
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(row.Type)) {
+		case "email":
+			if email != "" && strings.EqualFold(strings.TrimSpace(row.Value), email) {
+				emailMatched = true
+			}
+		case "phone":
+			if phone != "" && normalizePurgePhoneIdentity(row.Value) == phone {
+				phoneMatched = true
+			}
+		}
+		if emailMatched && phoneMatched {
+			return true
+		}
+	}
+	return emailMatched && phoneMatched
 }
 func ListBlockedEmailsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +720,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			writeError(w, http.StatusInternalServerError, "LIST_USERS_FAILED", err.Error())
 			return
 		}
+		identityRows := preloadBoundUserIdentities(r.Context(), identity.UsersRepo(), items)
 		out := make([]BoundUserView, 0, len(items))
 		seenUsers := make(map[string]struct{}, len(items))
 		virtualEmailCache := map[string]map[string]struct{}{}
@@ -485,11 +729,15 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				continue
 			}
 			emailKey := strings.TrimSpace(strings.ToLower(user.Email))
-			if emailKey == "" {
+			tenantID := store.NormalizeTenantID(user.TenantID)
+			emails, primaryPhone, phones, identities := boundUserContactFields(user, identityRows[boundUserIdentityKey(tenantID, user.ID)])
+			if emailKey == "" && len(emails) == 0 && len(phones) == 0 {
 				continue
 			}
-			tenantID := store.NormalizeTenantID(user.TenantID)
-			seenKey := tenantID + "\x00" + emailKey
+			seenKey := tenantID + "\x00" + strings.TrimSpace(user.ID)
+			if strings.TrimSpace(user.ID) == "" {
+				seenKey = tenantID + "\x00" + emailKey
+			}
 			if _, exists := seenUsers[seenKey]; exists {
 				continue
 			}
@@ -516,6 +764,10 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				ID:                user.ID,
 				TenantID:          tenantID,
 				Email:             user.Email,
+				Emails:            emails,
+				Phone:             primaryPhone,
+				Phones:            phones,
+				Identities:        identities,
 				SN:                user.SN,
 				Status:            user.Status,
 				EnrollmentStatus:  user.EnrollmentStatus,

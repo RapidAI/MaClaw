@@ -7728,14 +7728,14 @@ func maclawAppClassifyDependencyInstallError(dep maclawAppInstallPlanDependency,
 	switch {
 	case strings.Contains(lower, "policy") || strings.Contains(lower, "enterprise-only") || strings.Contains(lower, "non-enterprise"):
 		code = "policy_rejected"
+	case strings.Contains(lower, "checksum") || strings.Contains(lower, "signature") || strings.Contains(lower, "sha256") || strings.Contains(lower, "integrity"):
+		code = "package_integrity_failed"
 	case strings.Contains(lower, "not found") || strings.Contains(lower, "404") || strings.Contains(lower, "no such"):
 		code = "not_found"
 	case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "permission") || strings.Contains(lower, "denied") || strings.Contains(lower, "401") || strings.Contains(lower, "403"):
 		code = "access_denied"
 	case strings.Contains(lower, "version") && (strings.Contains(lower, "mismatch") || strings.Contains(lower, "constraint") || strings.Contains(lower, "satisf") || strings.Contains(lower, "required")):
 		code = "version_mismatch"
-	case strings.Contains(lower, "checksum") || strings.Contains(lower, "signature") || strings.Contains(lower, "sha256") || strings.Contains(lower, "integrity"):
-		code = "package_integrity_failed"
 	case strings.Contains(lower, "download") || strings.Contains(lower, "timeout") || strings.Contains(lower, "connection") || strings.Contains(lower, "network"):
 		code = "download_failed"
 	case strings.Contains(lower, "scan") || strings.Contains(lower, "admit") || strings.Contains(lower, "security"):

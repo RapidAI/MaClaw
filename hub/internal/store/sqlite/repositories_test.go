@@ -114,6 +114,137 @@ func TestUserRepositoryIdentityCannotMoveToAnotherUser(t *testing.T) {
 	}
 }
 
+func TestUserRepositoryUpsertIdentityClaimsOrphanIdentity(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "user_email", TenantID: "tenant_a", Email: "buyer@example.com", SN: "SN-user-email", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	repo, ok := st.Users.(*userRepo)
+	if !ok {
+		t.Fatal("expected sqlite user repo")
+	}
+	if _, err := repo.db.ExecContext(ctx,
+		`INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"orphan_phone", "tenant_a", "missing_user", "phone", "19900001111", 1, now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("seed orphan identity: %v", err)
+	}
+	if got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "phone", "19900001111"); err != nil || got != nil {
+		t.Fatalf("orphan identity should not resolve before claim, got=%#v err=%v", got, err)
+	}
+
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{TenantID: "tenant_a", UserID: user.ID, Type: "phone", Value: "19900001111", Verified: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("claim orphan phone: %v", err)
+	}
+	got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "phone", "19900001111")
+	if err != nil {
+		t.Fatalf("lookup claimed phone: %v", err)
+	}
+	if got == nil || got.ID != user.ID {
+		t.Fatalf("claimed phone owner = %#v, want %s", got, user.ID)
+	}
+}
+
+func TestUserRepositoryListIdentitiesByUsers(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, user := range []*store.User{
+		{ID: "user_email", TenantID: "tenant_a", Email: "buyer@example.com", SN: "SN-user-email", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "user_phone", TenantID: "tenant_a", Email: "phone:19900001111", SN: "SN-user-phone", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	for _, identity := range []*store.UserIdentity{
+		{TenantID: "tenant_a", UserID: "user_email", Type: "email", Value: "buyer@example.com", Verified: true, CreatedAt: now, UpdatedAt: now},
+		{TenantID: "tenant_a", UserID: "user_email", Type: "phone", Value: "18800001111", Verified: true, CreatedAt: now, UpdatedAt: now},
+		{TenantID: "tenant_a", UserID: "user_phone", Type: "phone", Value: "19900001111", Verified: true, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Users.UpsertIdentity(ctx, identity); err != nil {
+			t.Fatalf("upsert identity %#v: %v", identity, err)
+		}
+	}
+	batchRepo, ok := st.Users.(interface {
+		ListIdentitiesByUsers(context.Context, string, []string) (map[string][]*store.UserIdentity, error)
+	})
+	if !ok {
+		t.Fatal("user repository does not support batch identity listing")
+	}
+	got, err := batchRepo.ListIdentitiesByUsers(ctx, "tenant_a", []string{"user_email", "user_phone", "missing_user", "user_email"})
+	if err != nil {
+		t.Fatalf("list identities by users: %v", err)
+	}
+	if len(got["user_email"]) != 2 || len(got["user_phone"]) != 1 {
+		t.Fatalf("unexpected identities by user: %#v", got)
+	}
+	if _, ok := got["missing_user"]; !ok || len(got["missing_user"]) != 0 {
+		t.Fatalf("expected missing user entry, got %#v", got["missing_user"])
+	}
+}
+
+func TestUserRepositoryReassignIdentityReplacesTargetIdentity(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, user := range []*store.User{
+		{ID: "user_email", TenantID: "tenant_a", Email: "buyer@example.com", SN: "SN-user-email", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "user_phone", TenantID: "tenant_a", Email: "phone:19900001111", SN: "SN-user-phone", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{TenantID: "tenant_a", UserID: "user_email", Type: "phone", Value: "18800001111", Verified: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("bind old phone: %v", err)
+	}
+	reassigner, ok := st.Users.(interface {
+		ReassignIdentity(context.Context, string, string, string, string, bool, time.Time) error
+	})
+	if !ok {
+		t.Fatal("user repository does not support identity reassignment")
+	}
+	if err := reassigner.ReassignIdentity(ctx, "tenant_a", "phone", "19900001111", "user_email", true, now); err != nil {
+		t.Fatalf("reassign identity: %v", err)
+	}
+
+	got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "phone", "19900001111")
+	if err != nil {
+		t.Fatalf("lookup new phone identity: %v", err)
+	}
+	if got == nil || got.ID != "user_email" {
+		t.Fatalf("new phone identity owner = %#v, want user_email", got)
+	}
+	old, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "phone", "18800001111")
+	if err != nil {
+		t.Fatalf("lookup old phone identity: %v", err)
+	}
+	if old != nil {
+		t.Fatalf("old phone identity still exists: %#v", old)
+	}
+	identities, err := st.Users.ListIdentitiesByUser(ctx, "tenant_a", "user_email")
+	if err != nil {
+		t.Fatalf("list identities: %v", err)
+	}
+	phoneCount := 0
+	for _, identity := range identities {
+		if identity.Type == "phone" {
+			phoneCount++
+			if identity.ID != "user_email_phone" || identity.Value != "19900001111" {
+				t.Fatalf("unexpected phone identity after reassign: %#v", identity)
+			}
+		}
+	}
+	if phoneCount != 1 {
+		t.Fatalf("phone identity count = %d, want 1", phoneCount)
+	}
+}
+
 func TestInvitationCodeMarkUsedOnlyConsumesUnusedCode(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

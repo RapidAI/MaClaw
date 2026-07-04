@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -44,6 +45,18 @@ def complete_record() -> str:
             value = "passed"
         if field in validate_qa_build_record.MANUAL_EVIDENCE_FIELDS:
             value = f"QA evidence captured for {field} with screenshot/log reference"
+        if field == "Release handoff result":
+            value = "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md"
+        if field == "Runtime boundary verification result":
+            value = (
+                "MaClaw Mobile runtime boundary verified; log: "
+                "docs/qa-builds/runtime-boundary-1.0.0+42.log"
+            )
+        if field == "Automated release gates result":
+            value = (
+                "run_release_gates.py: 38 gates passed; log: "
+                "docs/qa-builds/release-gates-1.0.0+42.log"
+            )
         if field in validate_qa_build_record.LOGIN_RESULT_FIELDS:
             value = (
                 "MaClaw official account login authenticated through HubCenter "
@@ -252,6 +265,26 @@ def complete_record() -> str:
     return "\n".join(lines)
 
 
+def scoped_record(scope: str) -> str:
+    lines = []
+    dual_seen: dict[str, int] = {}
+    for line in complete_record().splitlines():
+        field = line.split(":", 1)[0]
+        if scope == "android" and field in validate_qa_build_record.IOS_ONLY_FIELDS:
+            continue
+        if scope == "ios" and field in validate_qa_build_record.ANDROID_ONLY_FIELDS:
+            continue
+        if field in validate_qa_build_record.SCOPED_DUAL_PLATFORM_FIELDS:
+            occurrence = dual_seen.get(field, 0)
+            dual_seen[field] = occurrence + 1
+            if scope == "android" and occurrence != 0:
+                continue
+            if scope == "ios" and occurrence != 1:
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 class ValidateQABuildRecordTest(unittest.TestCase):
     def test_template_fields_are_required_or_explicitly_optional(self) -> None:
         template = (
@@ -309,12 +342,159 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
         self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
 
-    def test_completed_record_file_passes_without_local_artifact(self) -> None:
+    def test_android_scoped_record_does_not_require_ios_fields(self) -> None:
+        values = validate_qa_build_record.parse_record(scoped_record("android"))
+
+        self.assertEqual(
+            [],
+            validate_qa_build_record.missing_required_fields(values, scope="android"),
+        )
+
+    def test_ios_scoped_record_does_not_require_android_fields(self) -> None:
+        values = validate_qa_build_record.parse_record(scoped_record("ios"))
+
+        self.assertEqual(
+            [],
+            validate_qa_build_record.missing_required_fields(values, scope="ios"),
+        )
+
+    def test_scoped_record_files_validate_against_filename_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            android_record = root / "2026-07-02-android-1.0.0+42.md"
+            android_record.write_text(
+                scoped_record("android").replace("SHA256: " + "a" * 64, f"SHA256: {digest}"),
+                encoding="utf-8",
+            )
+            ios_record = root / "2026-07-02-ios-1.0.0+42.md"
+            ios_record.write_text(scoped_record("ios"), encoding="utf-8")
+
+            self.assertEqual([], validate_qa_build_record.validate_file(android_record))
+            self.assertEqual([], validate_qa_build_record.validate_file(ios_record))
+
+    def test_completed_record_file_passes_with_matching_local_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            artifact = (
+                Path(tmp)
+                / "build"
+                / "app"
+                / "outputs"
+                / "flutter-apk"
+                / "app-release.apk"
+            )
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            record.write_text(
+                complete_record().replace("SHA256: " + "a" * 64, f"SHA256: {digest}"),
+                encoding="utf-8",
+            )
+
+            self.assertEqual([], validate_qa_build_record.validate_file(record))
+
+    def test_completed_record_file_requires_local_signed_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             record = Path(tmp) / "qa-record.md"
             record.write_text(complete_record(), encoding="utf-8")
 
+            self.assertIn(
+                "Local signed artifact is missing: build/app/outputs/flutter-apk/app-release.apk",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_completed_record_file_requires_local_ios_archive_when_archive_path_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            artifact = (
+                Path(tmp)
+                / "build"
+                / "app"
+                / "outputs"
+                / "flutter-apk"
+                / "app-release.apk"
+            )
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            record.write_text(
+                complete_record()
+                .replace("SHA256: " + "a" * 64, f"SHA256: {digest}")
+                .replace(
+                    "Archive/TestFlight build: TestFlight build 42",
+                    "Archive/TestFlight build: build/ios/archive/MaClawMobile.xcarchive",
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "Local iOS archive is missing: build/ios/archive/MaClawMobile.xcarchive",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_completed_record_file_accepts_existing_local_ios_archive_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            artifact = (
+                Path(tmp)
+                / "build"
+                / "app"
+                / "outputs"
+                / "flutter-apk"
+                / "app-release.apk"
+            )
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            archive = Path(tmp) / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record.write_text(
+                complete_record()
+                .replace("SHA256: " + "a" * 64, f"SHA256: {digest}")
+                .replace(
+                    "Archive/TestFlight build: TestFlight build 42",
+                    "Archive/TestFlight build: build/ios/archive/MaClawMobile.xcarchive",
+                ),
+                encoding="utf-8",
+            )
+
             self.assertEqual([], validate_qa_build_record.validate_file(record))
+
+    def test_completed_record_file_rejects_local_ios_archive_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            artifact = (
+                Path(tmp)
+                / "build"
+                / "app"
+                / "outputs"
+                / "flutter-apk"
+                / "app-release.apk"
+            )
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            archive = Path(tmp) / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.parent.mkdir(parents=True)
+            archive.write_text("not an archive directory", encoding="utf-8")
+            record.write_text(
+                complete_record()
+                .replace("SHA256: " + "a" * 64, f"SHA256: {digest}")
+                .replace(
+                    "Archive/TestFlight build: TestFlight build 42",
+                    "Archive/TestFlight build: build/ios/archive/MaClawMobile.xcarchive",
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "Local iOS archive is not a directory: build/ios/archive/MaClawMobile.xcarchive",
+                validate_qa_build_record.validate_file(record),
+            )
 
     def test_branch_is_required_for_release_traceability(self) -> None:
         values = validate_qa_build_record.parse_record(
@@ -1857,6 +2037,78 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn("Runtime boundary verification result", missing)
         self.assertIn("Automated release gates result", missing)
 
+    def test_automated_gate_evidence_fields_must_match_expected_artifacts(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                "Release handoff result: QA evidence screenshot captured for release approval",
+            )
+            .replace(
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: QA evidence screenshot captured for release approval",
+            )
+            .replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: QA evidence screenshot captured for release approval",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Release handoff result must reference release_handoff.py output or saved handoff evidence",
+            missing,
+        )
+        self.assertIn(
+            "Runtime boundary verification result must reference verify_runtime_boundary.py verified output or log evidence",
+            missing,
+        )
+        self.assertIn(
+            "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
+            missing,
+        )
+
+    def test_automated_gate_evidence_requires_current_gate_count(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+            ),
+        )
+
+        self.assertIn(
+            "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_automated_gate_evidence_accepts_real_runner_success_line(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: run_release_gates.py log docs/qa-builds/release-gates-1.0.0+42.log includes "
+                + validate_qa_build_record.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
+            ),
+        )
+
+        self.assertNotIn(
+            "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_automated_gate_evidence_rejects_generic_all_gates_passed(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: run_release_gates.py log docs/qa-builds/release-gates-1.0.0+42.log says all gates passed.",
+            ),
+        )
+
+        self.assertIn(
+            "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_final_decision_yes_is_not_specific_enough(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
@@ -2099,7 +2351,21 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             qa_builds = Path(tmp) / "qa-builds"
             qa_builds.mkdir()
             record = qa_builds / "2026-07-02-android-ios-1.0.0+42.md"
-            record.write_text(complete_record(), encoding="utf-8")
+            artifact = (
+                qa_builds
+                / "build"
+                / "app"
+                / "outputs"
+                / "flutter-apk"
+                / "app-release.apk"
+            )
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            record.write_text(
+                complete_record().replace("SHA256: " + "a" * 64, f"SHA256: {digest}"),
+                encoding="utf-8",
+            )
 
             self.assertEqual([], validate_qa_build_record.validate_file(record))
 
@@ -2108,6 +2374,18 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             qa_builds = Path(tmp) / "qa-builds"
             qa_builds.mkdir()
             record = qa_builds / "qa-record.md"
+            record.write_text(complete_record(), encoding="utf-8")
+
+            self.assertIn(
+                "QA build record filename must be YYYY-MM-DD-<android|ios|android-ios>-<version+build>.md",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_legacy_ios_android_scope_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            qa_builds = Path(tmp) / "qa-builds"
+            qa_builds.mkdir()
+            record = qa_builds / "2026-07-02-ios-android-1.0.0+42.md"
             record.write_text(complete_record(), encoding="utf-8")
 
             self.assertIn(
@@ -2179,6 +2457,132 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             record.write_text(
                 complete_record()
                 + "\nKnown issues / waivers: leaked token sk-abcdefghijklmnopqrstuvwxyz123456",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_literal_cloud_access_key_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nManual SSH notes: cloud log showed key id AKIAIOSFODNN7EXAMPLE",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_literal_google_api_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nPhoto assistant notes: image API key AIzaabcdefghijklmnopqrstuvwxyz123456789",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_literal_jwt_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nHub discovery notes: bootstrap token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0ZW5hbnQiOiJxYSIsInN1YiI6InVzZXIifQ.c2lnbmF0dXJlMTIzNDU2Nzg5",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_authorization_bearer_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nDevice logs / screenshots / recordings: Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_authorization_basic_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nDevice logs / screenshots / recordings: Authorization: Basic dXNlcjpzdXBlcnNlY3JldA==",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_cookie_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nHub discovery notes: Cookie: session=abcdefghijklmnopqrstuvwxyz; tenant=qa",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_set_cookie_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nHub discovery notes: Set-Cookie: maclaw_session=abcdefghijklmnopqrstuvwxyz; HttpOnly",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_private_token_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nHub discovery notes: PRIVATE-TOKEN: abcdefghijklmnopqrstuvwxyz123456",
+                encoding="utf-8",
+            )
+
+            self.assertIn(
+                "QA build record must not contain raw secrets; use redacted evidence or attachment IDs",
+                validate_qa_build_record.validate_file(record),
+            )
+
+    def test_validate_file_rejects_url_embedded_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "qa-record.md"
+            record.write_text(
+                complete_record()
+                + "\nManual SSH notes: reproduced with ssh://qa-user:SuperSecret123@server.example.com:22",
                 encoding="utf-8",
             )
 

@@ -131,7 +131,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Wrote local Android signing config: {target}")
-    print("Run `python3 tool/qa_preflight.py` next; do not commit android/key.properties.")
+    print(
+        "Complete iOS ExportOptions if this QA scope includes iOS, then run "
+        "`python3 tool/qa_preflight.py`; do not commit android/key.properties."
+    )
     return 0
 
 

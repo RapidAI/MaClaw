@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +12,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
-	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -34,10 +35,7 @@ type RegistrationContactVerifyRequest struct {
 	MachineToken string `json:"machine_token,omitempty"`
 }
 
-func RegistrationContactSendCodeHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, mailer *mail.Service, factory registrationSMSProviderFactory) http.HandlerFunc {
-	if factory == nil {
-		factory = aliyunDypnsProviderForRegistration
-	}
+func RegistrationContactSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, system store.SystemSettingsRepository, smsFactory registrationSMSProviderFactory) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req RegistrationContactSendCodeRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
@@ -56,12 +54,27 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, system s
 				writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "Valid email is required")
 				return
 			}
-			if existing, err := lookupEmailIdentityUser(r.Context(), identity, principal.TenantID, email); err != nil {
+			existing, err := lookupEmailIdentityUser(r.Context(), identity, principal.TenantID, email)
+			if err != nil {
 				writeError(w, http.StatusInternalServerError, "EMAIL_LOOKUP_FAILED", err.Error())
 				return
-			} else if existing != nil && existing.ID != user.ID {
+			}
+			if existing != nil && existing.ID != user.ID {
 				writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
 				return
+			}
+			if err := identity.CanBindVerifiedEmailToUser(auth.WithTenant(r.Context(), principal.TenantID), user, email); err != nil {
+				switch {
+				case errors.Is(err, auth.ErrRoutedToAnotherHub):
+					writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
+					return
+				case errors.Is(err, auth.ErrEmailDomainNotAllowed):
+					writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+					return
+				default:
+					writeError(w, http.StatusInternalServerError, "EMAIL_BIND_CHECK_FAILED", err.Error())
+					return
+				}
 			}
 			if mailer == nil {
 				writeError(w, http.StatusInternalServerError, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
@@ -84,55 +97,19 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, system s
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "email", "expires_min": int(verifyCodeTTL.Minutes()), "code_length": 6})
 		case "phone":
-			cfg, err := loadRegistrationAuthConfigForTenant(r, system, principal.TenantID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
-				return
-			}
-			phone := normalizePhoneNumber(req.PhoneNumber)
-			if !validRegistrationPhoneNumber(phone) {
-				writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", "valid phone number is required")
-				return
-			}
-			if existing, err := lookupPhoneIdentityUser(r.Context(), identity, principal.TenantID, phone); err != nil {
-				writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
-				return
-			} else if existing != nil && existing.ID != user.ID {
-				writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
-				return
-			}
-			smsReq, err := buildAliyunSMSVerifyCodeSendRequest(cfg, registrationSMSBusinessBindNewPhone, phone)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
-				return
-			}
-			tenantSystem := ScopedSystemSettingsForTenant(principal.TenantID, system)
-			usageNow := nowForRegistrationContact()
-			remaining, err := reserveRegistrationSMSSend(r.Context(), tenantSystem, phone, cfg.DailySMSLimit, usageNow)
-			if err != nil {
-				if limitErr, ok := err.(errRegistrationSMSDailyLimit); ok {
-					writeError(w, http.StatusTooManyRequests, "SMS_DAILY_LIMIT_REACHED", limitErr.Error())
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "SMS_DAILY_LIMIT_CHECK_FAILED", err.Error())
-				return
-			}
-			if err := factory(cfg).SendVerifyCode(r.Context(), smsReq); err != nil {
-				_ = releaseRegistrationSMSSend(r.Context(), tenantSystem, phone, usageNow)
-				writeError(w, http.StatusBadGateway, "SMS_VERIFY_SEND_FAILED", err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "phone", "expires_min": cfg.CodeTTLMinutes, "code_length": cfg.CodeLength, "daily_sms_remaining": remaining})
+			forwardRegistrationContactSMS(w, r, RegistrationSMSSendCodeRequest{
+				PhoneNumber:  req.PhoneNumber,
+				TenantID:     principal.TenantID,
+				MachineID:    req.MachineID,
+				MachineToken: req.MachineToken,
+			}, RegistrationSMSSendCodeHandler(identity, system, smsFactory))
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_CONTACT_KIND", "contact kind must be email or phone")
 		}
 	}
 }
 
-func RegistrationContactVerifyHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory) http.HandlerFunc {
-	if factory == nil {
-		factory = aliyunDypnsProviderForRegistration
-	}
+func RegistrationContactVerifyHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, smsFactory registrationSMSProviderFactory) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req RegistrationContactVerifyRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
@@ -172,55 +149,44 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 					writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
 					return
 				}
+				if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+					writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+					return
+				}
+				if errors.Is(err, auth.ErrRoutedToAnotherHub) {
+					writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
+					return
+				}
 				writeError(w, http.StatusInternalServerError, "EMAIL_BIND_FAILED", err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "email", "email": email})
 		case "phone":
-			cfg, err := loadRegistrationAuthConfigForTenant(r, system, principal.TenantID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
-				return
-			}
-			phone := normalizePhoneNumber(req.PhoneNumber)
-			checkReq, err := buildAliyunSMSVerifyCodeCheckRequest(phone, req.VerifyCode, cfg.CodeLength)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
-				return
-			}
-			valid, err := factory(cfg).CheckVerifyCode(r.Context(), checkReq)
-			if err != nil {
-				writeError(w, http.StatusBadGateway, "SMS_VERIFY_CHECK_FAILED", err.Error())
-				return
-			}
-			if !valid {
-				writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_CODE", "Invalid SMS verification code")
-				return
-			}
-			if existing, err := lookupPhoneIdentityUser(r.Context(), identity, principal.TenantID, phone); err != nil {
-				writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
-				return
-			} else if existing != nil && existing.ID != user.ID {
-				writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
-				return
-			}
-			if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(r.Context(), principal.TenantID), user, phone); err != nil {
-				if isRegistrationContactIdentityConflict(err) {
-					writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "PHONE_BIND_FAILED", err.Error())
-				return
-			}
-			tenantSystem := ScopedSystemSettingsForTenant(principal.TenantID, system)
-			if changed, err := llmservice.BackfillRegistryUserIDs(auth.WithTenant(r.Context(), principal.TenantID), tenantSystem, identity.UsersRepo(), principal.TenantID); err == nil && changed {
-				invalidateLLMRuntimeCaches(tenantSystem)
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "phone", "phone_number": phone})
+			forwardRegistrationContactSMS(w, r, RegistrationSMSVerifyAndStartRequest{
+				PhoneNumber:  req.PhoneNumber,
+				VerifyCode:   req.VerifyCode,
+				TenantID:     principal.TenantID,
+				MachineID:    req.MachineID,
+				MachineToken: req.MachineToken,
+			}, RegistrationSMSVerifyAndStartHandler(identity, system, smsFactory))
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_CONTACT_KIND", "contact kind must be email or phone")
 		}
 	}
+}
+
+func forwardRegistrationContactSMS(w http.ResponseWriter, r *http.Request, payload any, handler http.HandlerFunc) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INVALID_SMS_FORWARD_PAYLOAD", err.Error())
+		return
+	}
+	next := r.Clone(r.Context())
+	next.Body = io.NopCloser(bytes.NewReader(data))
+	next.ContentLength = int64(len(data))
+	next.Header = r.Header.Clone()
+	next.Header.Set("Content-Type", "application/json")
+	handler(w, next)
 }
 
 func authenticateRegistrationContactUser(w http.ResponseWriter, r *http.Request, identity *auth.IdentityService, tenantID, machineID, machineToken string) (*auth.MachinePrincipal, *store.User, bool) {

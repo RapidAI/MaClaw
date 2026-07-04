@@ -126,3 +126,30 @@ func TestResolveHubCenterCandidatesKeepsDefaultFailoverWithCachedSingleNode(t *t
 		t.Fatalf("candidates = %#v, want %#v", got, want)
 	}
 }
+
+func TestGetHubCenterJSONDoesNotPromoteDefaultFailoverOverLoopback(t *testing.T) {
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{"https://hubs.maclaw.top"}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+
+	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+
+	var dest map[string]bool
+	_, _, err := app.getHubCenterJSONFromCandidates(context.Background(), server.Client(), []string{server.URL, "https://hubs.maclaw.top"}, "/health", 0, &dest)
+	if err != nil {
+		t.Fatalf("getHubCenterJSONFromCandidates: %v", err)
+	}
+	if !dest["ok"] {
+		t.Fatalf("dest = %+v", dest)
+	}
+	base, all := app.hubCenterCache.Get()
+	if base != server.URL || !remote.StringSliceEqual(all, []string{server.URL}) {
+		t.Fatalf("cache = (%q, %#v), want loopback server only", base, all)
+	}
+}

@@ -200,6 +200,36 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('invoice_app')).toBeTruthy();
         expect(screen.queryByText('paper_digest')).toBeNull();
     });
+    it('keeps learned skill names and descriptions compact in the list', async () => {
+        const longDescription = '读取 C:\\Users\\ma139\\Desktop\\test\\auth-*.json 文件的数量，并列出前 5 个和后 5 个文件名。';
+        const longName = 'craft_c_users_ma139_desktop_test_auth_json_file_counter';
+        ListNLSkillsMock.mockResolvedValue([
+            {
+                name: longName,
+                description: longDescription,
+                triggers: ['auth json'],
+                steps: [{ action: 'run_skill', params: {}, on_error: 'stop' }],
+                status: 'active',
+                created_at: '2026-04-09T00:00:00Z',
+                source: 'learned',
+                execution_class: 'native_skill',
+                usage_count: 0,
+                success_rate: 0,
+            },
+        ]);
+
+        renderPanel();
+
+        await waitFor(() => {
+            expect(ListNLSkillsMock).toHaveBeenCalled();
+        });
+        fireEvent.click(screen.getByRole('button', { name: /自学习 \(1\)/ }));
+
+        expect(screen.getByTitle(longName)).toBeTruthy();
+        expect(screen.getByText(getLearnedSkillDescriptionPreview(longDescription))).toBeTruthy();
+        expect(screen.queryByText(longDescription)).toBeNull();
+        expect(screen.getByTitle(longDescription)).toBeTruthy();
+    });
     it('does not show the obsolete MaClaw App upload action in the filtered category', async () => {
         UploadNLSkillToMarketMock.mockResolvedValue('submission-app-1');
         renderPanel();

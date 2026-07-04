@@ -547,6 +547,66 @@ func (r *userRepo) ListIdentitiesByUser(ctx context.Context, tenantID, userID st
 	return items, rows.Err()
 }
 
+func (r *userRepo) ListIdentitiesByUsers(ctx context.Context, tenantID string, userIDs []string) (map[string][]*store.UserIdentity, error) {
+	out := map[string][]*store.UserIdentity{}
+	cleanIDs := make([]string, 0, len(userIDs))
+	seen := map[string]struct{}{}
+	for _, userID := range userIDs {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		cleanIDs = append(cleanIDs, userID)
+		out[userID] = nil
+	}
+	if len(cleanIDs) == 0 {
+		return out, nil
+	}
+	tenantID = normalizeTenantID(tenantID)
+	const batchSize = 500
+	for start := 0; start < len(cleanIDs); start += batchSize {
+		end := start + batchSize
+		if end > len(cleanIDs) {
+			end = len(cleanIDs)
+		}
+		batch := cleanIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, 0, 1+len(batch))
+		args = append(args, tenantID)
+		for _, userID := range batch {
+			args = append(args, userID)
+		}
+		rows, err := r.readDB.QueryContext(
+			ctx,
+			`SELECT id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at
+			 FROM user_identities WHERE tenant_id = ? AND user_id IN (`+placeholders+`) ORDER BY user_id, type, value`,
+			args...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			item, err := scanUserIdentity(rows)
+			if err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			out[item.UserID] = append(out[item.UserID], item)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdentity) error {
 	if identity == nil {
 		return nil
@@ -582,10 +642,17 @@ func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdent
 		`INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, type, value) DO UPDATE SET
+		   id = excluded.id,
+		   user_id = excluded.user_id,
 		   verified = excluded.verified,
 		   verified_at = excluded.verified_at,
 		   updated_at = excluded.updated_at
-		 WHERE user_identities.user_id = excluded.user_id`,
+		 WHERE user_identities.user_id = excluded.user_id
+		    OR NOT EXISTS (
+		      SELECT 1 FROM users u
+		      WHERE u.tenant_id = user_identities.tenant_id
+		        AND u.id = user_identities.user_id
+		    )`,
 		id,
 		normalizeTenantID(identity.TenantID),
 		strings.TrimSpace(identity.UserID),
@@ -603,6 +670,61 @@ func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdent
 		return fmt.Errorf("user identity %s:%s already belongs to another user", identityType, value)
 	}
 	return nil
+}
+
+func (r *userRepo) ReassignIdentity(ctx context.Context, tenantID, identityType, value, userID string, verified bool, verifiedAt time.Time) error {
+	identityType, value = normalizeUserIdentity(identityType, value)
+	tenantID = normalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || identityType == "" || value == "" || userID == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	verifiedValue := 0
+	if verified {
+		verifiedValue = 1
+	}
+	verifiedAtValue := ""
+	if !verifiedAt.IsZero() {
+		verifiedAtValue = verifiedAt.UTC().Format(time.RFC3339)
+	} else if verified {
+		verifiedAtValue = now.Format(time.RFC3339)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM user_identities
+		 WHERE tenant_id = ? AND user_id = ? AND type = ? AND lower(value) <> lower(?)`,
+		tenantID,
+		userID,
+		identityType,
+		value,
+	); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE user_identities
+		 SET id = ?, user_id = ?, verified = ?, verified_at = ?, updated_at = ?
+		 WHERE tenant_id = ? AND type = ? AND lower(value) = lower(?)`,
+		userID+"_"+identityType,
+		userID,
+		verifiedValue,
+		verifiedAtValue,
+		now.Format(time.RFC3339),
+		tenantID,
+		identityType,
+		value,
+	)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return fmt.Errorf("user identity %s:%s not found", identityType, value)
+	}
+	return tx.Commit()
 }
 
 type rowScanner interface {

@@ -366,6 +366,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// confirmation links are also sent to bound IM channels.
 	identityService.SetLoginNotifier(broadcaster)
 	identityService.SetUserRouteSyncer(centerService)
+	startVerifiedPhoneRouteBackfillLoop(identityService)
 
 	// Register session event listener 闂?routes through IM Adapter when available,
 	// falls back to legacy notifier path.
@@ -936,6 +937,42 @@ func loadTenantDingTalkConfig(ctx context.Context, system store.SystemSettingsRe
 		return dingtalk.Config{}
 	}
 	return cfg
+}
+
+func startVerifiedPhoneRouteBackfillLoop(identity *auth.IdentityService) {
+	if identity == nil {
+		return
+	}
+	go func() {
+		delays := []time.Duration{0, 30 * time.Second, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
+		for attempt, delay := range delays {
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				<-timer.C
+			}
+			count, err := identity.SyncVerifiedPhoneRoutes(context.Background())
+			if err != nil {
+				log.Printf("[bootstrap] verified phone route backfill attempt %d/%d failed after syncing %d route(s): %v", attempt+1, len(delays), count, err)
+				continue
+			}
+			if count > 0 {
+				log.Printf("[bootstrap] synced %d verified phone route(s) to hub center", count)
+			}
+			break
+		}
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			count, err := identity.SyncVerifiedPhoneRoutes(context.Background())
+			if err != nil {
+				log.Printf("[bootstrap] verified phone route reconciliation failed after syncing %d route(s): %v", count, err)
+				continue
+			}
+			if count > 0 {
+				log.Printf("[bootstrap] reconciled %d verified phone route(s) to hub center", count)
+			}
+		}
+	}()
 }
 
 func firstNonEmpty(values ...string) string {

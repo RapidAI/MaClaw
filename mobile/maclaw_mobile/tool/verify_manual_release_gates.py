@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import qa_release_evidence_links
+import release_evidence_commands
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,70 @@ CANONICAL_MANUAL_GATES = (
         ("Hub discovery smoke test", "selected HubCenter", "realtime Hub URL"),
         ("Hub Discovery And Service Smoke Test", "selected HubCenter", "realtime"),
         "Hub discovery smoke passed",
+    ),
+)
+
+FINAL_RELEASE_EVIDENCE_LOG_COMMAND = (
+    release_evidence_commands.verify_final_release_evidence_command(
+        scope=release_evidence_commands.DEFAULT_SCOPE,
+        version=release_evidence_commands.DEFAULT_VERSION,
+    )
+)
+QA_RELEASE_EVIDENCE_LINK_COMMAND = (
+    release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND
+)
+AUDIT_QA_RECORD_VALIDATION_KEYWORDS = (
+    "tool/validate_qa_build_record.py",
+    "without secret redaction failures",
+    "tool/qa_build_record_report.py",
+    "redacted evidence",
+)
+SCOPED_INTERNAL_QA_COMMANDS = (
+    release_evidence_commands.release_status_report_command(scope="android"),
+    release_evidence_commands.release_handoff_command(
+        version=release_evidence_commands.DEFAULT_VERSION,
+        scope="android",
+    ),
+    release_evidence_commands.qa_preflight_command(scope="android"),
+    release_evidence_commands.release_status_report_command(
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
+    ),
+    release_evidence_commands.release_handoff_command(
+        version=release_evidence_commands.DEFAULT_VERSION,
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
+    ),
+    release_evidence_commands.qa_preflight_command(
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
+    ),
+)
+QA_BUILDS_README_SCOPED_INTERNAL_QA_COMMANDS = (
+    release_evidence_commands.release_status_report_command(scope="android"),
+    release_evidence_commands.release_handoff_command(
+        version="1.0.0+42",
+        scope="android",
+    ),
+    release_evidence_commands.qa_preflight_command(scope="android"),
+    release_evidence_commands.release_status_report_command(
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
+    ),
+    release_evidence_commands.release_handoff_command(
+        version="1.0.0+42",
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
+    ),
+    release_evidence_commands.qa_preflight_command(
+        scope="ios",
+        team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+        export_method="development",
     ),
 )
 
@@ -125,12 +193,24 @@ def _contains_all(text: str, keywords: tuple[str, ...]) -> bool:
     return all(keyword.casefold() in normalized for keyword in keywords)
 
 
+def _has_android_handoff_with_ios_options(text: str) -> bool:
+    return any(
+        "python3 tool/release_handoff.py" in line
+        and re.search(r"--scope\s+android(?:\s|$)", line) is not None
+        and "--team-id" in line
+        for line in text.splitlines()
+    )
+
+
 def validate_manual_release_gates(root: Path) -> list[str]:
     docs = root / "docs"
     evidence = (docs / "release_evidence.md").read_text(encoding="utf-8")
     audit = (docs / "release_audit.md").read_text(encoding="utf-8")
     checklist = (docs / "qa_device_checklist.md").read_text(encoding="utf-8")
     template = (docs / "qa_build_record_template.md").read_text(encoding="utf-8")
+    qa_builds_readme = (docs / "qa-builds" / "README.md").read_text(
+        encoding="utf-8",
+    )
 
     errors: list[str] = []
     expected_gates = [gate.gate for gate in CANONICAL_MANUAL_GATES]
@@ -152,6 +232,12 @@ def validate_manual_release_gates(root: Path) -> list[str]:
             errors.append(f"{gate_name} required evidence is not auditable.")
 
     blockers = _bullet_items(_section(audit, "Remaining Release Blockers"))
+    if not _contains_all(audit, AUDIT_QA_RECORD_VALIDATION_KEYWORDS):
+        errors.append(
+            "release_audit.md must require completed signed-build QA records "
+            "to pass validation without secret redaction failures and point "
+            "operators to qa_build_record_report.py remediation."
+        )
     for gate in CANONICAL_MANUAL_GATES:
         if not any(_contains_all(blocker, gate.audit_keywords) for blocker in blockers):
             errors.append(
@@ -169,6 +255,48 @@ def validate_manual_release_gates(root: Path) -> list[str]:
             errors.append(f"QA build record final decision must include `{expected}`.")
     if "Automated gates passed: passed / waived with reason" not in final_decision:
         errors.append("QA build record final decision must include automated gates.")
+
+    final_evidence_docs = {
+        "release_evidence.md": evidence,
+        "qa_device_checklist.md": checklist,
+        "qa-builds/README.md": qa_builds_readme,
+    }
+    for filename, text in final_evidence_docs.items():
+        if FINAL_RELEASE_EVIDENCE_LOG_COMMAND not in text:
+            errors.append(
+                f"{filename} must include final release evidence verifier log command: "
+                f"`{FINAL_RELEASE_EVIDENCE_LOG_COMMAND}`."
+            )
+        if QA_RELEASE_EVIDENCE_LINK_COMMAND not in text:
+            errors.append(
+                f"{filename} must include QA release evidence link update command: "
+                f"`{QA_RELEASE_EVIDENCE_LINK_COMMAND}`."
+            )
+
+    scoped_command_docs = {
+        "qa_device_checklist.md": (checklist, SCOPED_INTERNAL_QA_COMMANDS),
+        "qa-builds/README.md": (
+            qa_builds_readme,
+            QA_BUILDS_README_SCOPED_INTERNAL_QA_COMMANDS,
+        ),
+    }
+    for filename, (text, commands) in scoped_command_docs.items():
+        for command in commands:
+            if command not in text:
+                errors.append(
+                    f"{filename} must document scoped internal QA command: `{command}`."
+                )
+        if _has_android_handoff_with_ios_options(text):
+            errors.append(
+                f"{filename} must not show Android-only handoff with Apple Team ID options."
+            )
+
+    start = evidence.find(qa_release_evidence_links.QA_LINKS_START)
+    end = evidence.find(qa_release_evidence_links.QA_LINKS_END)
+    if start < 0 or end < 0 or end < start:
+        errors.append(
+            "release_evidence.md must contain the guarded QA build record link block markers."
+        )
 
     return errors
 

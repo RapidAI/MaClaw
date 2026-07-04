@@ -47,8 +47,10 @@ void main() {
   }
 
   void expectHandoffCommandsWriteEvidence(String docText) {
-    final commands = RegExp(r'^python3 tool/release_handoff\.py --version .*$',
-            multiLine: true)
+    final commands = RegExp(
+      r'^python3 tool/release_handoff\.py --version .*$',
+      multiLine: true,
+    )
         .allMatches(docText)
         .map((match) => match.group(0)!)
         .toList();
@@ -86,6 +88,10 @@ void main() {
     expect(evidence, contains('docs/qa_build_record_template.md'));
     expect(evidence, contains('docs/qa-builds/README.md'));
     expect(audit, contains('qa_device_checklist.md'));
+    expect(audit, contains('tool/validate_qa_build_record.py'));
+    expect(audit, contains('without secret redaction failures'));
+    expect(audit, contains('tool/qa_build_record_report.py'));
+    expect(audit, contains('redacted evidence'));
     expect(qa, contains('release_evidence.md'));
     expect(qa, contains('qa_build_record_template.md'));
     expect(qa, contains('docs/qa-builds/README.md'));
@@ -103,13 +109,53 @@ void main() {
     expect(
       qa,
       contains(
-        'python3 tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md',
+        'python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md',
+      ),
+    );
+    expect(
+      qa,
+      contains(
+        'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      ),
+    );
+    expect(
+      qa,
+      contains('python3 tool/release_status_report.py --scope android'),
+    );
+    expect(
+      qa,
+      contains(
+        'python3 tool/release_handoff.py --version <version+build> --scope android --output docs/qa-builds/handoff-android-<version+build>.md',
+      ),
+    );
+    expect(
+      qa,
+      contains('python3 tool/qa_preflight.py --scope android'),
+    );
+    expect(
+      qa,
+      isNot(
+        contains(
+          'python3 tool/release_handoff.py --version <version+build> --scope android --team-id',
+        ),
+      ),
+    );
+    expect(
+      qa,
+      contains(
+        'python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md',
       ),
     );
     expectHandoffCommandsWriteEvidence(qa);
     expect(releaseDocCorpus(), contains('tool/create_qa_build_record.py'));
     expect(qa, contains('tool/validate_qa_build_records_dir.py'));
     expect(qa, contains('tool/verify_final_release_evidence.py'));
+    expect(
+      qa,
+      contains(
+        'python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log',
+      ),
+    );
   });
 
   test('user guide preserves mobile product decisions', () {
@@ -184,6 +230,157 @@ void main() {
       checklist,
       contains('capabilities stay behind the official Hub'),
     );
+    final checklistText = checklist.replaceAll(RegExp(r'\s+'), ' ');
+    for (final expected in [
+      'Hub APIs',
+      'realtime updates',
+      'explicit digital employee task handoff',
+      'not through Dart FFI',
+      'gomobile bindings',
+      'dynamic libraries',
+      'native corelib method-channel bridges',
+    ]) {
+      expect(checklistText, contains(expected));
+    }
+  });
+
+  test('release docs keep handoff commands scoped and evidence-writing', () {
+    final docs = {
+      'docs/release_checklist.md': readDoc('docs/release_checklist.md'),
+      'docs/release_evidence.md': readDoc('docs/release_evidence.md'),
+      'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+    };
+    final commandPattern = RegExp(r'python3 tool/release_handoff\.py[^\n`]*');
+
+    for (final entry in docs.entries) {
+      final commands = commandPattern
+          .allMatches(entry.value)
+          .map((match) => match.group(0)!)
+          .toList();
+      for (final command in commands) {
+        expect(command, contains('--scope '), reason: entry.key);
+        expect(
+          command,
+          contains('--output docs/qa-builds/handoff-'),
+          reason: entry.key,
+        );
+      }
+    }
+  });
+
+  test('release docs keep automated evidence commands writing QA logs', () {
+    final docs = {
+      'docs/release_evidence.md': readDoc('docs/release_evidence.md'),
+      'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+    };
+
+    final runtimeLogPattern = RegExp(
+      r'python3 tool/verify_runtime_boundary\.py --log docs/qa-builds/runtime-boundary-[^\s`]+\.log',
+    );
+    final releaseGatesLogPattern = RegExp(
+      r'python3 tool/run_release_gates\.py --log docs/qa-builds/release-gates-[^\s`]+\.log',
+    );
+
+    for (final entry in docs.entries) {
+      expect(
+        runtimeLogPattern.hasMatch(entry.value),
+        isTrue,
+        reason: '${entry.key} should document saved runtime-boundary evidence',
+      );
+      expect(
+        releaseGatesLogPattern.hasMatch(entry.value),
+        isTrue,
+        reason: '${entry.key} should document saved release-gates evidence',
+      );
+    }
+
+    expect(
+      docs['docs/release_evidence.md'],
+      contains('The local transcript was saved under `docs/qa-builds/`'),
+    );
+    expect(
+      docs['docs/release_evidence.md']!.replaceAll(RegExp(r'\s+'), ' '),
+      contains(
+        'attach the versioned `release-gates-<version+build>.log` from signed-build QA as external evidence',
+      ),
+    );
+  });
+
+  test('release docs keep final evidence verifier commands log-backed', () {
+    final docs = {
+      'docs/release_checklist.md': readDoc('docs/release_checklist.md'),
+      'docs/release_evidence.md': readDoc('docs/release_evidence.md'),
+      'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+    };
+    final commandPattern =
+        RegExp(r'python3 tool/verify_final_release_evidence\.py[^\n`]*');
+
+    for (final entry in docs.entries) {
+      final commands = commandPattern
+          .allMatches(entry.value)
+          .map((match) => match.group(0)!)
+          .toList();
+      expect(commands, isNotEmpty, reason: entry.key);
+      for (final command in commands) {
+        expect(command, contains('--scope '), reason: entry.key);
+        expect(
+          command,
+          contains('--log docs/qa-builds/final-release-evidence-'),
+          reason: entry.key,
+        );
+        expect(command, contains('.log'), reason: entry.key);
+      }
+    }
+  });
+
+  test('release docs keep final decision log references in QA builds', () {
+    final docs = {
+      'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+    };
+    final runtimeResultPattern = RegExp(
+      r'--runtime-boundary-result "MaClaw Mobile runtime boundary verified\. log: docs/qa-builds/runtime-boundary-[^"]+\.log"',
+    );
+    final gateResultPattern = RegExp(
+      r'--automated-gates-result "run_release_gates\.py: \d+ gates passed; log: docs/qa-builds/release-gates-[^"]+\.log"',
+    );
+
+    for (final entry in docs.entries) {
+      expect(
+        runtimeResultPattern.hasMatch(entry.value),
+        isTrue,
+        reason: '${entry.key} should prefill runtime-boundary QA log evidence',
+      );
+      expect(
+        gateResultPattern.hasMatch(entry.value),
+        isTrue,
+        reason: '${entry.key} should prefill release-gates QA log evidence',
+      );
+    }
+  });
+
+  test('signed QA evidence command examples keep setup and preflight before saved logs',
+      () {
+    final docs = {
+      'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+    };
+
+    for (final entry in docs.entries) {
+      expectInOrder(entry.value, [
+        'python3 tool/release_status_report.py',
+        'python3 tool/release_handoff.py',
+        'python3 tool/setup_android_signing.py',
+        'python3 tool/setup_ios_export_options.py',
+        'python3 tool/qa_preflight.py',
+        'python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-',
+        'python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-',
+        'python3 tool/create_qa_build_record.py',
+      ]);
+    }
   });
 
   test('QA checklist covers signed build manual gates', () {
@@ -309,6 +506,14 @@ void main() {
       'WeChat',
       'clipboard',
       'saved local path',
+      'Before attaching any screenshot',
+      'terminal output, or device log',
+      'redact private customer content and raw secrets',
+      'Authorization/Cookie',
+      'JWTs',
+      'API keys',
+      'cloud access key IDs',
+      'URLs with embedded credentials',
       'Manual SSH Smoke Test',
       'Disconnect and reconnect',
       'sensitive-data warning',
@@ -560,6 +765,7 @@ void main() {
       'python3 -m unittest tool/qa_build_record_report_test.py',
       'python3 -m unittest tool/qa_release_evidence_links_test.py',
       'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
@@ -597,14 +803,32 @@ void main() {
     expect(checklist, contains('tool/qa_build_record_report_test.py'));
     expect(checklist, contains('tool/qa_release_evidence_links_test.py'));
     expect(checklist, contains('tool/qa_preflight_test.py'));
+    expect(checklist, contains('tool/release_evidence_commands_test.py'));
     expect(checklist, contains('tool/setup_android_signing_test.py'));
     expect(checklist, contains('tool/setup_android_signing.py'));
     expect(checklist, contains('tool/release_status_report_test.py'));
     expect(checklist, contains('python3 tool/release_status_report.py'));
-    expect(checklist, contains('python3 tool/qa_preflight.py'));
+    expectInOrder(checklist, [
+      'Before creating signed QA packages on a local machine, run:',
+      'python3 tool/setup_android_signing.py',
+      'python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+    ]);
+    expect(
+      checklist,
+      contains(
+        'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      ),
+    );
     expect(
       checklist,
       contains('python3 tool/validate_qa_build_records_dir.py docs/qa-builds'),
+    );
+    expect(
+      checklist,
+      contains(
+        'python3 tool/validate_qa_build_records_dir.py docs/qa-builds --scope android',
+      ),
     );
     expect(checklist, contains('tool/verify_runtime_boundary_test.py'));
     expect(
@@ -642,6 +866,30 @@ void main() {
     expect(
       checklist,
       contains(
+        'python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log',
+      ),
+    );
+    expect(checklist, contains('guarded QA build record link block'));
+    expect(
+      checklist,
+      contains(
+        'python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence',
+      ),
+    );
+    for (final expected in [
+      'Validated records must already pass `python3 tool/validate_qa_build_record.py`',
+      'without secret redaction failures',
+      'Authorization/Cookie headers',
+      'JWTs',
+      'API keys',
+      'cloud access key IDs',
+      'URLs with embedded credentials',
+    ]) {
+      expect(checklist, contains(expected));
+    }
+    expect(
+      checklist,
+      contains(
         'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
       ),
     );
@@ -652,8 +900,24 @@ void main() {
     expect(evidence, contains('tool/qa_build_record_report_test.py'));
     expect(evidence, contains('tool/qa_release_evidence_links.py'));
     expect(evidence, contains('tool/qa_release_evidence_links_test.py'));
+    expect(evidence, contains('deferred final verifier messaging'));
+    expect(evidence, contains('cover Android/iOS'));
+    expect(
+      evidence,
+      contains(
+        'python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence',
+      ),
+    );
+    expect(evidence, contains('<!-- QA_BUILD_RECORD_LINKS_START -->'));
+    expect(evidence, contains('<!-- QA_BUILD_RECORD_LINKS_END -->'));
+    expectInOrder(evidence, [
+      '<!-- QA_BUILD_RECORD_LINKS_START -->',
+      '<!-- QA_BUILD_RECORD_LINKS_END -->',
+    ]);
     expect(evidence, contains('tool/qa_preflight.py'));
     expect(evidence, contains('tool/qa_preflight_test.py'));
+    expect(evidence, contains('tool/release_evidence_commands.py'));
+    expect(evidence, contains('tool/release_evidence_commands_test.py'));
     expect(evidence, contains('tool/setup_android_signing.py'));
     expect(evidence, contains('tool/setup_android_signing_test.py'));
     expect(evidence, contains('tool/release_status_report.py'));
@@ -668,6 +932,8 @@ void main() {
     expect(evidence, contains('tool/verify_manual_release_gates_test.py'));
     expect(evidence, contains('tool/verify_final_release_evidence.py'));
     expect(evidence, contains('tool/verify_final_release_evidence_test.py'));
+    expect(evidence, contains('auditable verification scope'));
+    expect(evidence, contains('QA records directory'));
     expect(evidence, contains('tool/verify_android_release_signing.py'));
     expect(evidence, contains('tool/verify_android_release_signing_test.py'));
     expect(evidence, contains('android/key.properties.example'));
@@ -704,6 +970,7 @@ void main() {
       'python3 -m unittest tool/qa_build_record_report_test.py',
       'python3 -m unittest tool/qa_release_evidence_links_test.py',
       'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
@@ -746,6 +1013,7 @@ void main() {
       'python3 -m unittest tool/qa_build_record_report_test.py',
       'python3 -m unittest tool/qa_release_evidence_links_test.py',
       'python3 -m unittest tool/qa_preflight_test.py',
+      'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
@@ -822,13 +1090,25 @@ void main() {
       'docs/qa_build_record_template.md',
       'build date, platform scope, and build number',
       'python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42',
-      'python3 tool/qa_preflight.py',
-      'python3 tool/release_status_report.py',
-      'python3 tool/release_handoff.py --version 1.0.0+42 --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md',
+      'python3 tool/setup_android_signing.py',
+      'python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md',
+      'python3 tool/release_status_report.py --scope android',
+      'python3 tool/release_handoff.py --version 1.0.0+42 --scope android --output docs/qa-builds/handoff-android-1.0.0+42.md',
+      'python3 tool/qa_preflight.py --scope android',
+      'python3 tool/release_handoff.py --version 1.0.0+42 --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-1.0.0+42.md',
       'python3 tool/verify_runtime_boundary.py',
       'python3 tool/run_release_gates.py',
       'Release handoff result',
       'Runtime boundary verification result',
+      'no embedded Go corelib',
+      'Dart FFI',
+      'gomobile binding',
+      'native corelib MethodChannel bridge',
+      'discovered Hub APIs',
+      'explicitly authorized digital employee handoff',
       'Automated release gates result',
       'runtime-boundary log, and release-gates log commands refuse to',
       'overwrite existing saved evidence files unless `--force` is provided',
@@ -838,18 +1118,44 @@ void main() {
       'python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md',
       'python3 tool/qa_release_evidence_links.py docs/qa-builds',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
+      'python3 tool/validate_qa_build_records_dir.py docs/qa-builds --scope android',
       'python3 tool/verify_final_release_evidence.py docs/qa-builds',
+      'docs/qa-builds/final-release-evidence-<version+build>.log',
       'links every validated record by filename',
       'Do not store SSH passwords',
       'private keys',
       'access tokens',
+      'private key blocks',
+      '`password=`/`token=`/`api_key=` assignments',
+      'Authorization Bearer/Basic headers',
+      'Cookie/Set-Cookie/PRIVATE-TOKEN/X-API-Key',
+      'literal API tokens',
+      'JWTs',
+      'cloud access key IDs',
+      'Google API keys',
+      'URLs with embedded credentials',
       'redacted screenshots',
       'attachment IDs',
       'artifact hashes',
     ]) {
       expect(qaBuildsReadme, contains(expected));
     }
+    expect(
+      qaBuildsReadme,
+      isNot(
+        contains(
+          'python3 tool/release_handoff.py --version 1.0.0+42 --scope android --team-id',
+        ),
+      ),
+    );
     expect(qaBuildsReadmeText, contains('private customer content'));
+    for (final expected in [
+      'Out-of-scope invalid records appear as an ignored warning',
+      'do not block the current scoped Android or iOS package',
+      'records whose filename scope cannot be parsed',
+    ]) {
+      expect(qaBuildsReadmeText, contains(expected));
+    }
     expect(qaBuildRecordTemplate, contains('docs/qa-builds/'));
     expect(
       qaBuildRecordTemplate,
@@ -859,7 +1165,7 @@ void main() {
     expect(
       qaBuildsReadmeText,
       contains(
-        'skips this README and ignores non-Markdown evidence attachments',
+        'skips this README, handoff-*.md release-handoff evidence files, and non-Markdown evidence attachments',
       ),
     );
     expect(rootGitignore, contains('mobile/maclaw_mobile/docs/qa-builds/*'));
@@ -893,6 +1199,7 @@ void main() {
 
     for (final expected in [
       '.dart_tool/',
+      '.idea/',
       '.flutter-plugins',
       '.flutter-plugins-dependencies',
       'build/',
@@ -937,6 +1244,8 @@ void main() {
 
   test('release evidence records current Python release tool test counts', () {
     final evidence = readDoc('docs/release_evidence.md');
+    final evidenceText = evidence.replaceAll(RegExp(r'\s+'), ' ');
+    final gateRunner = readDoc('tool/run_release_gates.py');
 
     final expectedCounts = {
       'tool/configure_platforms_test.py':
@@ -953,6 +1262,8 @@ void main() {
           'Passed: {count} QA release evidence link helper tests.',
       'tool/qa_preflight_test.py':
           'Passed: {count} QA preflight helper tests.',
+      'tool/release_evidence_commands_test.py':
+          'Passed: {count} release evidence command helper tests.',
       'tool/setup_android_signing_test.py':
           'Passed: {count} Android signing setup helper tests.',
       'tool/release_status_report_test.py':
@@ -985,6 +1296,20 @@ void main() {
           'Passed: {count} runtime boundary verifier tests.',
     };
 
+    final gateTestPaths = RegExp(r'tool/[A-Za-z0-9_]+_test\.py')
+        .allMatches(gateRunner)
+        .map((match) => match.group(0)!)
+        .toSet()
+        .toList()
+      ..sort();
+    final documentedTestPaths = expectedCounts.keys.toList()..sort();
+    expect(
+      documentedTestPaths,
+      gateTestPaths,
+      reason:
+          'Every Python unittest release gate should have an evidence test-count entry.',
+    );
+
     for (final entry in expectedCounts.entries) {
       final source = readDoc(entry.key);
       final testCount =
@@ -995,5 +1320,53 @@ void main() {
         reason: '${entry.key} has $testCount tests',
       );
     }
+    expect(
+      evidenceText,
+      contains(
+        'Android-only handoff commands must not include Apple Team ID options while iOS-only commands keep Team ID and export method values',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'scope-specific handoff evidence paths for Android-only and iOS-only internal QA',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'non-colliding scoped handoff output paths for Android-only and iOS-only QA',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'scoped internal QA command parity so Android-only and iOS-only QA command examples stay part of preflight',
+      ),
+    );
+    for (final expected in [
+      'out-of-scope invalid records as ignored warnings while current-scope or unparseable invalid records still block',
+      'reporting out-of-scope invalid records as ignored warnings instead of blocking Android-only or iOS-only link updates',
+      'scoped final verification ignoring invalid records whose filenames clearly belong to the other platform',
+    ]) {
+      expect(evidenceText, contains(expected));
+    }
+  });
+
+  test('release evidence records aggregate Python release tool test count', () {
+    final evidence = readDoc('docs/release_evidence.md');
+    final testCount = Directory('tool')
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.endsWith('_test.py'))
+        .map((file) => RegExp(r'^\s*def test_', multiLine: true)
+            .allMatches(file.readAsStringSync())
+            .length)
+        .fold<int>(0, (sum, count) => sum + count);
+
+    expect(
+      evidence,
+      contains('Passed: $testCount Python release tool tests.'),
+    );
   });
 }

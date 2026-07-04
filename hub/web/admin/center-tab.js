@@ -25,7 +25,12 @@
       de_disabled: 'Disabled by admin',
       de_expired: 'Authorization expired',
       de_quota_zero: 'No quota allocated',
-      de_not_subscribed: 'Not subscribed'
+      de_not_subscribed: 'Not subscribed',
+      syncPhoneRoutes: 'Sync Phone Routes',
+      syncPhoneRoutesBusy: 'Syncing...',
+      syncPhoneRoutesRunning: 'Syncing verified phone routes...',
+      syncPhoneRoutesDone: 'Synced {count} phone route(s)',
+      syncPhoneRoutesFailed: 'Sync phone routes failed: {error}'
     },
     zh: {
       corporateEmailDomain: '\u4e3b\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d',
@@ -47,7 +52,12 @@
       de_disabled: '\u5df2\u88ab\u7ba1\u7406\u5458\u7981\u7528',
       de_expired: '\u6388\u6743\u5df2\u8fc7\u671f',
       de_quota_zero: '\u672a\u5206\u914d\u914d\u989d',
-      de_not_subscribed: '\u672a\u8ba2\u9605'
+      de_not_subscribed: '\u672a\u8ba2\u9605',
+      syncPhoneRoutes: '\u540c\u6b65\u624b\u673a\u8def\u7531',
+      syncPhoneRoutesBusy: '\u540c\u6b65\u4e2d...',
+      syncPhoneRoutesRunning: '\u6b63\u5728\u540c\u6b65\u5df2\u9a8c\u8bc1\u624b\u673a\u8def\u7531...',
+      syncPhoneRoutesDone: '\u5df2\u540c\u6b65 {count} \u6761\u624b\u673a\u8def\u7531',
+      syncPhoneRoutesFailed: '\u540c\u6b65\u624b\u673a\u8def\u7531\u5931\u8d25: {error}'
     }
   };
 
@@ -98,7 +108,8 @@
       centerAcceptPublicSignupHeroLabel: 'acceptPublicSignup',
       centerAcceptPublicSignupHint: 'acceptPublicSignupHint',
       centerDigitalEmployeeQuotaLabel: 'digitalEmployeeQuota',
-      centerDigitalEmployeeExpiresLabel: 'digitalEmployeeExpires'
+      centerDigitalEmployeeExpiresLabel: 'digitalEmployeeExpires',
+      centerSyncPhoneRoutesBtn: 'syncPhoneRoutes'
     };
     Object.keys(mapping).forEach(function(id) {
       var el = document.getElementById(id);
@@ -281,6 +292,31 @@
       if (actions) actions.classList.remove('hidden');
       setOutput(msg);
       showToast(msg, 'error');
+    }
+  };
+
+  global.syncVerifiedPhoneRoutesFromCenter = async function syncVerifiedPhoneRoutesFromCenter(button) {
+    if (!centerGlobalScoped()) return;
+    var original = button ? button.textContent : '';
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = centerTabText('syncPhoneRoutesBusy');
+      }
+      showToast(centerTabText('syncPhoneRoutesRunning'), 'info');
+      var data = await api('/api/admin/routing/sync-verified-phone-routes', { method: 'POST' });
+      var msg = centerTabText('syncPhoneRoutesDone').replace('{count}', String(data.synced_count || 0));
+      setOutput(msg);
+      showToast(msg, 'success');
+    } catch (err) {
+      var failMsg = centerTabText('syncPhoneRoutesFailed').replace('{error}', err.message);
+      setOutput(failMsg);
+      showToast(failMsg, 'error');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = original || centerTabText('syncPhoneRoutes');
+      }
     }
   };
 

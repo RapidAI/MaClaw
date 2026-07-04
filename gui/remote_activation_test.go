@@ -174,6 +174,95 @@ func TestResolveRemoteRegistrationTargetUsesHubCenterPhoneRoute(t *testing.T) {
 	}
 }
 
+func TestResolveRemoteRegistrationTargetFallsBackToConfiguredHubForMissingPhoneRoute(t *testing.T) {
+	remote.InvalidateCenterCache()
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("tenant_id"); got != "tenant_default" {
+			t.Fatalf("registration auth tenant_id = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"phone","code_length":6,"code_ttl_minutes":5}`))
+	}))
+	defer hub.Close()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+			return
+		}
+		if r.URL.Path == "/api/client/hubcenters" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+			return
+		}
+		if r.URL.Path != "/api/entry/resolve" {
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["email"] != "19900001111" || payload["phone_number"] != "19900001111" {
+			t.Fatalf("resolve payload = %#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"email":"phone:19900001111","mode":"none","message":"No phone route found"}`))
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL: center.URL,
+		RemoteHubURL:       hub.URL,
+		RemoteHubID:        "hub-configured",
+		RemoteTenantID:     "tenant_default",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	got, err := app.ResolveRemoteRegistrationTarget("19900001111")
+	if err != nil {
+		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v", err)
+	}
+	if got.HubURL != hub.URL || got.HubID != "hub-configured" || got.TenantID != "tenant_default" || got.Method != "phone" || got.CodeLength != 6 {
+		t.Fatalf("resolved fallback target = %#v", got)
+	}
+}
+
+func TestResolveRemoteRegistrationTargetDoesNotFallbackWithoutConfiguredHub(t *testing.T) {
+	remote.InvalidateCenterCache()
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/quality" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"quality_score":100,"routable":true,"service_status":"ok","features":{"can_resolve":true}}`))
+			return
+		}
+		if r.URL.Path == "/api/client/hubcenters" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"urls":[],"nodes":[],"count":0,"ttl_seconds":300}`))
+			return
+		}
+		if r.URL.Path != "/api/entry/resolve" {
+			t.Fatalf("unexpected center path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"email":"phone:19900001111","mode":"none","message":"No phone route found"}`))
+	}))
+	defer center.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: center.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	_, err := app.ResolveRemoteRegistrationTarget("19900001111")
+	if err == nil || !strings.Contains(err.Error(), "No phone route found") {
+		t.Fatalf("ResolveRemoteRegistrationTarget() error = %v, want No phone route found", err)
+	}
+}
+
 func TestResolveRemoteRegistrationTargetDoesNotFallbackToEmailWhenAuthConfigFails(t *testing.T) {
 	remote.InvalidateCenterCache()
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +393,92 @@ func TestVerifyRemoteRegistrationContactCodeStoresNormalizedHubResponse(t *testi
 	}
 	if cfg.RemoteMobile != "19900001111" {
 		t.Fatalf("RemoteMobile = %q, want existing phone preserved", cfg.RemoteMobile)
+	}
+}
+
+func TestRemoteRegistrationContactPhoneUsesRegistrationSMSEndpoints(t *testing.T) {
+	var sawSend bool
+	var sawVerify bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/enroll/sms/send-code":
+			sawSend = true
+			if payload["phone_number"] != "17090134628" || payload["tenant_id"] != "tenant-acme" || payload["machine_id"] != "machine-1" || payload["machine_token"] != "token-1" {
+				t.Fatalf("send payload = %#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"tenant_id":"tenant-acme","code_length":6,"expires_min":5,"purpose":"registration","daily_sms_remaining":4}`))
+		case "/api/enroll/sms/verify-and-start":
+			sawVerify = true
+			if payload["phone_number"] != "17090134628" || payload["verify_code"] != "123456" || payload["tenant_id"] != "tenant-acme" || payload["machine_id"] != "machine-1" || payload["machine_token"] != "token-1" {
+				t.Fatalf("verify payload = %#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"kind":"phone","tenant_id":"tenant-acme","phone_number":"17090134628"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteTenantID:     "tenant-acme",
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	sendResult, err := app.SendRemoteRegistrationContactCode("phone", "170 9013 4628")
+	if err != nil {
+		t.Fatalf("SendRemoteRegistrationContactCode() error = %v", err)
+	}
+	if sendResult.Kind != "phone" || sendResult.TenantID != "tenant-acme" || sendResult.Purpose != "registration" || sendResult.CodeLength != 6 || sendResult.ExpiresMin != 5 || sendResult.DailySMSRemaining != 4 {
+		t.Fatalf("send result = %#v", sendResult)
+	}
+	if _, err := app.VerifyRemoteRegistrationContactCode("phone", "170 9013 4628", "123456"); err != nil {
+		t.Fatalf("VerifyRemoteRegistrationContactCode() error = %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !sawSend || !sawVerify {
+		t.Fatalf("registration SMS endpoints not both called: send=%v verify=%v", sawSend, sawVerify)
+	}
+	if cfg.RemoteMobile != "17090134628" {
+		t.Fatalf("RemoteMobile = %q, want verified phone", cfg.RemoteMobile)
+	}
+}
+
+func TestRemoteRegistrationContactPhoneRequiresMachineCredentialsBeforeSendingSMS(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("SMS endpoint should not be called without machine credentials: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:   server.URL,
+		RemoteTenantID: "tenant-acme",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	_, err := app.SendRemoteRegistrationContactCode("phone", "17090134628")
+	if err == nil {
+		t.Fatal("SendRemoteRegistrationContactCode() error = nil")
+	}
+	if !strings.Contains(err.Error(), "MACHINE_UNAUTHORIZED") {
+		t.Fatalf("error = %v, want MACHINE_UNAUTHORIZED", err)
+	}
+	if called {
+		t.Fatal("SMS endpoint was called")
 	}
 }
 

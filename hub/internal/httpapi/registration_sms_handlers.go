@@ -32,8 +32,10 @@ const registrationSMSDailyUsageKey = "registration_sms_daily_usage"
 var registrationSMSDailyUsageMu sync.Mutex
 
 type RegistrationSMSSendCodeRequest struct {
-	PhoneNumber string `json:"phone_number"`
-	TenantID    string `json:"tenant_id,omitempty"`
+	PhoneNumber  string `json:"phone_number"`
+	TenantID     string `json:"tenant_id,omitempty"`
+	MachineID    string `json:"machine_id,omitempty"`
+	MachineToken string `json:"machine_token,omitempty"`
 }
 
 type RegistrationSMSVerifyAndStartRequest struct {
@@ -48,6 +50,8 @@ type RegistrationSMSVerifyAndStartRequest struct {
 	ClientID             string `json:"client_id"`
 	InvitationCode       string `json:"invitation_code"`
 	TenantID             string `json:"tenant_id,omitempty"`
+	MachineID            string `json:"machine_id,omitempty"`
+	MachineToken         string `json:"machine_token,omitempty"`
 	GroupID              string `json:"group_id"`
 	Language             string `json:"language,omitempty"`
 }
@@ -63,6 +67,15 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 			return
 		}
 		tenantID := tenantIDForSMSRegistration(r, req.TenantID)
+		var currentUser *store.User
+		if strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != "" {
+			principal, user, ok := authenticateRegistrationContactUser(w, r, identity, tenantID, req.MachineID, req.MachineToken)
+			if !ok {
+				return
+			}
+			tenantID = principal.TenantID
+			currentUser = user
+		}
 		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
@@ -72,31 +85,36 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
-		phoneIdentity, err := phoneRegistrationIdentity(req.PhoneNumber)
+		phoneNumber := normalizePhoneNumber(req.PhoneNumber)
+		phoneIdentity, err := phoneRegistrationIdentity(phoneNumber)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", err.Error())
 			return
 		}
-		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, req.PhoneNumber)
+		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, phoneNumber)
 		if err != nil {
 			writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
+			return
+		}
+		if currentUser != nil && existingUser != nil && existingUser.ID != currentUser.ID && !canClaimPhoneIdentityForCurrentUser(existingUser, currentUser, phoneIdentity) {
+			writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 			return
 		}
 		business := registrationSMSBusinessRegister
 		if existingUser != nil {
 			business = registrationSMSBusinessVerifyBoundPhone
-		} else if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity); err != nil {
+		} else if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity, currentUser); err != nil {
 			writePhoneRegistrationLookupError(w, err)
 			return
 		}
-		smsReq, err := buildAliyunSMSVerifyCodeSendRequest(cfg, business, req.PhoneNumber)
+		smsReq, err := buildAliyunSMSVerifyCodeSendRequest(cfg, business, phoneNumber)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
 			return
 		}
 		tenantSystem := ScopedSystemSettingsForTenant(tenantID, system)
 		usageNow := time.Now()
-		remaining, err := reserveRegistrationSMSSend(r.Context(), tenantSystem, req.PhoneNumber, cfg.DailySMSLimit, usageNow)
+		remaining, err := reserveRegistrationSMSSend(r.Context(), tenantSystem, phoneNumber, cfg.DailySMSLimit, usageNow)
 		if err != nil {
 			if limitErr, ok := err.(errRegistrationSMSDailyLimit); ok {
 				writeError(w, http.StatusTooManyRequests, "SMS_DAILY_LIMIT_REACHED", limitErr.Error())
@@ -106,7 +124,7 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 			return
 		}
 		if err := factory(cfg).SendVerifyCode(r.Context(), smsReq); err != nil {
-			_ = releaseRegistrationSMSSend(r.Context(), tenantSystem, req.PhoneNumber, usageNow)
+			_ = releaseRegistrationSMSSend(r.Context(), tenantSystem, phoneNumber, usageNow)
 			writeError(w, http.StatusBadGateway, "SMS_VERIFY_SEND_FAILED", err.Error())
 			return
 		}
@@ -137,6 +155,17 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			return
 		}
 		tenantID := tenantIDForSMSRegistration(r, req.TenantID)
+		var currentPrincipal *auth.MachinePrincipal
+		var currentUser *store.User
+		if strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != "" {
+			principal, user, ok := authenticateRegistrationContactUser(w, r, identity, tenantID, req.MachineID, req.MachineToken)
+			if !ok {
+				return
+			}
+			currentPrincipal = principal
+			currentUser = user
+			tenantID = principal.TenantID
+		}
 		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
@@ -146,23 +175,24 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
-		phoneIdentity, err := phoneRegistrationIdentity(req.PhoneNumber)
+		phoneNumber := normalizePhoneNumber(req.PhoneNumber)
+		phoneIdentity, err := phoneRegistrationIdentity(phoneNumber)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", err.Error())
 			return
 		}
-		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, req.PhoneNumber)
+		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, phoneNumber)
 		if err != nil {
 			writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
 			return
 		}
 		if existingUser == nil {
-			if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity); err != nil {
+			if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity, currentUser); err != nil {
 				writePhoneRegistrationLookupError(w, err)
 				return
 			}
 		}
-		checkReq, err := buildAliyunSMSVerifyCodeCheckRequest(req.PhoneNumber, req.VerifyCode, cfg.CodeLength)
+		checkReq, err := buildAliyunSMSVerifyCodeCheckRequest(phoneNumber, req.VerifyCode, cfg.CodeLength)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
 			return
@@ -174,6 +204,34 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		}
 		if !ok {
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_CODE", "Invalid SMS verification code")
+			return
+		}
+		if currentUser != nil {
+			if existingUser != nil && existingUser.ID != currentUser.ID && !canClaimPhoneIdentityForCurrentUser(existingUser, currentUser, phoneIdentity) {
+				writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
+				return
+			}
+			ctx := auth.WithTenant(r.Context(), currentPrincipal.TenantID)
+			if err := identity.BindVerifiedPhoneToUser(ctx, currentUser, phoneNumber); err != nil {
+				if isRegistrationContactIdentityConflict(err) {
+					writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "PHONE_BIND_FAILED", err.Error())
+				return
+			}
+			tenantSystem := ScopedSystemSettingsForTenant(currentPrincipal.TenantID, system)
+			if changed, err := llmservice.BackfillRegistryUserIDs(ctx, tenantSystem, identity.UsersRepo(), currentPrincipal.TenantID); err != nil {
+				log.Printf("[registration-sms] tenant-scoped LLM registry backfill after profile phone bind failed for tenant=%s user=%s: %v", currentPrincipal.TenantID, currentUser.ID, err)
+			} else if changed {
+				invalidateLLMRuntimeCaches(tenantSystem)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":           true,
+				"kind":         "phone",
+				"tenant_id":    currentPrincipal.TenantID,
+				"phone_number": phoneNumber,
+			})
 			return
 		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
@@ -205,7 +263,7 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			return
 		}
 		respMap := enrollmentStartResponseMap(resp)
-		respMap["phone_number"] = normalizePhoneNumber(req.PhoneNumber)
+		respMap["phone_number"] = phoneNumber
 		if existingUser != nil {
 			respMap["rebound_existing_user"] = true
 		}
@@ -394,40 +452,69 @@ func phoneRegistrationIdentity(phoneNumber string) (string, error) {
 	return "phone:" + phoneNumber, nil
 }
 
-func phoneIdentityExistsInHub(ctx context.Context, users store.UserRepository, phoneIdentity string) (bool, error) {
+func phoneIdentityExistsInHub(ctx context.Context, users store.UserRepository, phoneIdentity string) (*store.User, error) {
 	if users == nil {
-		return false, nil
+		return nil, nil
 	}
 	phoneIdentity = strings.TrimSpace(strings.ToLower(phoneIdentity))
 	if phoneIdentity == "" {
-		return false, nil
+		return nil, nil
 	}
 	items, err := users.List(ctx)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	for _, user := range items {
 		if user == nil {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(user.Email), phoneIdentity) {
-			return true, nil
+			return user, nil
 		}
 	}
-	return false, nil
+	return nil, nil
 }
 
-func ensurePhoneIdentityCanRegister(ctx context.Context, identity *auth.IdentityService, tenantID, phoneIdentity string) error {
+func isClaimablePhoneIdentityUser(user *store.User, phoneIdentity string) bool {
+	if user == nil {
+		return false
+	}
+	email := strings.TrimSpace(user.Email)
+	if strings.EqualFold(email, strings.TrimSpace(phoneIdentity)) {
+		return true
+	}
+	return email == "" || !strings.Contains(strings.ToLower(email), "@")
+}
+
+func canClaimPhoneIdentityForCurrentUser(existing, currentUser *store.User, phoneIdentity string) bool {
+	if existing == nil || currentUser == nil {
+		return false
+	}
+	if store.NormalizeTenantID(existing.TenantID) != store.NormalizeTenantID(currentUser.TenantID) {
+		return false
+	}
+	existingEmail := strings.TrimSpace(strings.ToLower(existing.Email))
+	currentEmail := strings.TrimSpace(strings.ToLower(currentUser.Email))
+	if existingEmail != "" && currentEmail != "" && existingEmail == currentEmail {
+		return true
+	}
+	return isClaimablePhoneIdentityUser(existing, phoneIdentity)
+}
+
+func ensurePhoneIdentityCanRegister(ctx context.Context, identity *auth.IdentityService, tenantID, phoneIdentity string, currentUser *store.User) error {
 	if identity == nil {
 		return nil
 	}
 	if identity.UsersRepo() != nil {
-		exists, err := phoneIdentityExistsInHub(ctx, identity.UsersRepo(), phoneIdentity)
+		existing, err := phoneIdentityExistsInHub(ctx, identity.UsersRepo(), phoneIdentity)
 		if err != nil {
 			return errPhoneRegistrationLookup{err: err}
 		}
-		if exists {
-			return errPhoneAlreadyRegistered{}
+		if existing != nil {
+			if !canClaimPhoneIdentityForCurrentUser(existing, currentUser, phoneIdentity) {
+				return errPhoneAlreadyRegistered{}
+			}
+			return nil
 		}
 	}
 	if err := identity.CanRegisterUserRoute(auth.WithTenant(ctx, tenantID), phoneIdentity); err != nil {
@@ -545,6 +632,8 @@ func writeEnrollmentStartError(w http.ResponseWriter, err error, resp *auth.Enro
 		writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 	case errors.Is(err, auth.ErrRegistrationDisabled):
 		writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", err.Error())
+	case errors.Is(err, auth.ErrEmailDomainNotAllowed):
+		writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
 	case errors.Is(err, auth.ErrInvitationExpired):
 		errResp := map[string]any{
 			"ok":      false,

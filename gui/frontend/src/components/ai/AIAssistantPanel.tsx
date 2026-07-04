@@ -57,6 +57,8 @@ import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
+const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
+
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
 function normalizeWorkflowPhaseStatus(status: unknown): string {
@@ -2221,7 +2223,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
     const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
-    const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === "remote_high_risk_bash";
+    const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}

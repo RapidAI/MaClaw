@@ -1445,7 +1445,7 @@ func TestRegisterLocalExecutorInGroupUsesRegisteredDispatcherFastPath(t *testing
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	registerTestGroupSession(t, app, client, "session-1")
 
 	registration, err := app.RegisterLocalExecutorInGroup("session-1")
 	if err != nil {
@@ -1457,6 +1457,18 @@ func TestRegisterLocalExecutorInGroupUsesRegisteredDispatcherFastPath(t *testing
 	if got := atomic.LoadInt32(&hubCalls); got != 0 {
 		t.Fatalf("Hub calls = %d, want 0", got)
 	}
+}
+
+func registerTestGroupSession(t *testing.T, app *App, client *RemoteHubClient, sessionID string) {
+	t.Helper()
+	dispatcher := client.groupChatDispatcher()
+	dispatcher.registerSessionForHubSyncOnly(sessionID)
+	t.Cleanup(func() {
+		if !dispatcher.UnregisterSessionAndWait(sessionID, 5*time.Second) {
+			t.Errorf("timed out waiting for local group executor cleanup")
+		}
+		app.resetPathBoundStateForDataDirChange()
+	})
 }
 
 func TestSendVEMessageReturnsBeforeDetailCacheRefresh(t *testing.T) {
@@ -1812,7 +1824,7 @@ func TestSendVEGroupMessageLocalMentionTextFallbackDoesNotBroadcast(t *testing.T
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	registerTestGroupSession(t, app, client, "session-1")
 
 	if err := app.SendVEGroupMessage("session-1", "@本机AI 你是?", nil); err != nil {
 		t.Fatalf("SendVEGroupMessage: %v", err)
@@ -1864,11 +1876,6 @@ func TestSendVEGroupMessageWithoutMentionTargetsMultiVEGroup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
-	app.remoteSessions = NewRemoteSessionManager(app)
-	client := NewRemoteHubClient(app, app.remoteSessions)
-	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
-
 	if err := app.SendVEGroupMessage("session-1", "北京天气", nil); err != nil {
 		t.Fatalf("SendVEGroupMessage: %v", err)
 	}
@@ -1977,11 +1984,6 @@ func TestSendVEGroupMessageWithoutMentionKeepsSingleVEDefaultResponder(t *testin
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
-	app.remoteSessions = NewRemoteSessionManager(app)
-	client := NewRemoteHubClient(app, app.remoteSessions)
-	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
-
 	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
 		t.Fatalf("SendVEGroupMessage: %v", err)
 	}
@@ -2240,7 +2242,7 @@ func TestSendVEGroupMessageLocalMentionSyncsInputAsLocalTarget(t *testing.T) {
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	registerTestGroupSession(t, app, client, "session-1")
 
 	if err := app.SendVEGroupMessage("session-1", "hello local", []string{"local-maclaw"}); err != nil {
 		t.Fatalf("SendVEGroupMessage: %v", err)
@@ -2294,7 +2296,7 @@ func TestSendVEGroupMessageMixedMentionsTargetsLocalAndRemote(t *testing.T) {
 	app.remoteSessions = NewRemoteSessionManager(app)
 	client := NewRemoteHubClient(app, app.remoteSessions)
 	app.remoteSessions.SetHubClient(client)
-	client.groupChatDispatcher().RegisterSession("session-1")
+	registerTestGroupSession(t, app, client, "session-1")
 
 	if err := app.SendVEGroupMessage("session-1", "@local-maclaw @remote-ve hello", []string{"local-maclaw", "remote-ve"}); err != nil {
 		t.Fatalf("SendVEGroupMessage: %v", err)

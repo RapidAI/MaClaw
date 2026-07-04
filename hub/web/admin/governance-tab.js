@@ -54,7 +54,14 @@
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     smartRouteAllLabel: { zh: '\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route for all' },
     emailVerifiedTooltip: { zh: '\u90ae\u7bb1\u5df2\u9a8c\u8bc1', en: 'Email verified' },
-    boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
+    contactEmailLabel: { zh: '\u90ae\u7bb1', en: 'Email' },
+    contactPhoneLabel: { zh: '\u624b\u673a', en: 'Phone' },
+    boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / \u624b\u673a / SN...', en: 'Search email / phone / SN...' },
+    syncPhoneRoutes: { zh: '\u540c\u6b65\u624b\u673a\u8def\u7531', en: 'Sync Phone Routes' },
+    syncPhoneRoutesBusy: { zh: '\u540c\u6b65\u4e2d...', en: 'Syncing...' },
+    syncPhoneRoutesRunning: { zh: '\u6b63\u5728\u540c\u6b65\u5df2\u9a8c\u8bc1\u624b\u673a\u8def\u7531...', en: 'Syncing verified phone routes...' },
+    syncPhoneRoutesDone: { zh: '\u5df2\u540c\u6b65 {count} \u6761\u624b\u673a\u8def\u7531', en: 'Synced {count} phone route(s)' },
+    syncPhoneRoutesFailed: { zh: '\u540c\u6b65\u624b\u673a\u8def\u7531\u5931\u8d25: {error}', en: 'Sync phone routes failed: {error}' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
     loadContentAuditConfigFailed: { zh: '\u52a0\u8f7d\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Load content audit config failed: ' },
     contentAuditConfigSaved: { zh: '\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58', en: 'Content audit config saved' },
@@ -82,6 +89,75 @@
 
   function governanceUserTypeLabel(type) {
     return gt(type === 'virtual' ? 'virtualEmployees' : 'regularUsers');
+  }
+
+  function uniqueStrings(values) {
+    var seen = {};
+    var out = [];
+    (values || []).forEach(function(value) {
+      value = String(value || '').trim();
+      if (!value) return;
+      var key = value.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(value);
+    });
+    return out;
+  }
+
+  function normalizePhoneDigits(value) {
+    return String(value || '').replace(/\D/g, '');
+  }
+
+  function boundUserEmails(item) {
+    var values = Array.isArray(item && item.emails) ? item.emails.slice() : [];
+    var email = String(item && item.email || '').trim();
+    if (email && email.toLowerCase().indexOf('phone:') !== 0 && email.indexOf('@') !== -1) values.unshift(email);
+    return uniqueStrings(values);
+  }
+
+  function boundUserPhones(item) {
+    var values = Array.isArray(item && item.phones) ? item.phones.slice() : [];
+    if (item && item.phone) values.unshift(item.phone);
+    var email = String(item && item.email || '').trim();
+    if (email.toLowerCase().indexOf('phone:') === 0) values.unshift(email.slice(6));
+    return uniqueStrings(values);
+  }
+
+  function boundUserSearchText(item) {
+    var parts = [item && item.email, item && item.sn, item && item.id].concat(boundUserEmails(item), boundUserPhones(item));
+    var normalizedPhones = boundUserPhones(item).map(normalizePhoneDigits);
+    return parts.concat(normalizedPhones).map(function(value) { return String(value || '').toLowerCase(); }).join(' ');
+  }
+
+  function boundUserMatchesSearch(item, query) {
+    query = String(query || '').trim().toLowerCase();
+    if (!query) return true;
+    var text = boundUserSearchText(item);
+    if (text.indexOf(query) !== -1) return true;
+    var digits = normalizePhoneDigits(query);
+    return digits.length > 0 && text.indexOf(digits) !== -1;
+  }
+
+  function renderBoundUserContacts(item) {
+    var rows = [];
+    var emails = boundUserEmails(item);
+    var phones = boundUserPhones(item);
+    if (emails.length) {
+      rows.push('<div class="item-meta" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(gt('contactEmailLabel')) + ': ' + escapeHtml(emails.join(', ')) + '</div>');
+    }
+    if (phones.length) {
+      rows.push('<div class="item-meta mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">' + escapeHtml(gt('contactPhoneLabel')) + ': ' + escapeHtml(phones.join(', ')) + '</div>');
+    }
+    return rows.join('');
+  }
+
+  function boundUserDisplayName(item) {
+    var emails = boundUserEmails(item);
+    if (emails.length) return emails[0];
+    var phones = boundUserPhones(item);
+    if (phones.length) return phones[0];
+    return item && item.email || '';
   }
 
   function groupBoundUsers(items) {
@@ -274,7 +350,7 @@
     const items = global._boundUsersAll || [];
     const query = (global._boundUsersSearch || '').trim().toLowerCase();
     const filtered = query ? items.filter(function(item) {
-      return (item.email || '').toLowerCase().indexOf(query) !== -1 || (item.sn || '').toLowerCase().indexOf(query) !== -1;
+      return boundUserMatchesSearch(item, query);
     }) : items;
     const pageSize = 36;
     const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -282,7 +358,10 @@
     if (global._boundUsersPage < 1) global._boundUsersPage = 1;
     const start = (global._boundUsersPage - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
-    const searchHtml = '<div style="margin-bottom:8px"><input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)"></div>';
+    const searchHtml = '<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<input id="boundUsersSearchInput" placeholder="' + gt('boundUsersSearchPlaceholder') + '" value="' + escapeHtml(global._boundUsersSearch || '') + '" style="max-width:260px;height:34px" oninput="window._boundUsersSearch=this.value;window._boundUsersPage=1;clearTimeout(window._busDeb);window._busDeb=setTimeout(_renderBoundUsersPage,200)">'
+      + '<button type="button" class="btn-secondary" id="syncVerifiedPhoneRoutesBtn" style="height:34px;font-size:12px;padding:0 12px" onclick="syncVerifiedPhoneRoutes(this)">' + escapeHtml(gt('syncPhoneRoutes')) + '</button>'
+      + '</div>';
     var grouped = groupBoundUsers(pageItems);
     var gridStyle = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px';
     var sections = ['regular', 'virtual'].map(function(type) {
@@ -296,11 +375,14 @@
           ? '<span class="badge warn" style="padding:4px 8px;font-size:10px" title="' + escapeHtml(gt('virtualEmployeeHint')) + '">' + escapeHtml(gt('virtualEmployees')) + '</span>'
           : '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(gt('regularUsers')) + '</span>';
         var actionLabel = item.is_virtual_employee ? gt('virtualUserDeleteLabel') : gt('unbindUser');
-        var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId)">' + escapeHtml(actionLabel) + '</button>';
+        var primaryPhone = boundUserPhones(item)[0] || '';
+        var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" data-user-id="' + escapeHtml(String(item.id || '')) + '" data-phone="' + escapeHtml(String(primaryPhone || '')) + '" data-is-virtual="' + (item.is_virtual_employee ? 'true' : 'false') + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId, this.dataset.userId, this.dataset.phone)">' + escapeHtml(actionLabel) + '</button>';
         var verifiedStar = item.email_verified ? '<span title="' + escapeHtml(gt('emailVerifiedTooltip')) + '" style="color:#f59e0b;font-size:13px;margin-left:4px;cursor:default">&#9733;</span>' : '';
+        var displayName = boundUserDisplayName(item);
         return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
           + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
-          + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(item.email) + verifiedStar + '</div>'
+          + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(displayName) + verifiedStar + '</div>'
+          + renderBoundUserContacts(item)
           + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">'
           + '<span class="badge info" style="padding:4px 8px;font-size:10px">' + escapeHtml(formatStatus(item.enrollment_status || item.status || 'active')) + '</span>'
           + typeBadge
@@ -348,19 +430,30 @@
     }
   };
 
-  global.unbindBoundUser = async function unbindBoundUser(email, tenantID) {
+  global.unbindBoundUser = async function unbindBoundUser(email, tenantID, userID, phone) {
     email = String(email || '').trim();
     tenantID = String(tenantID || '').trim();
-    if (!email) return;
+    userID = String(userID || '').trim();
+    phone = String(phone || '').trim();
+    if (!email && !userID && !phone) return;
     var matched = (global._boundUsersAll || []).find(function(item) {
-      return String(item && item.email || '').trim().toLowerCase() === email.toLowerCase()
-        && String(item && item.tenant_id || '').trim() === tenantID;
+      if (tenantID && String(item && item.tenant_id || '').trim() !== tenantID) return false;
+      if (userID && String(item && item.id || '').trim() === userID) return true;
+      if (email && String(item && item.email || '').trim().toLowerCase() === email.toLowerCase()) return true;
+      if (phone) {
+        var phoneDigits = normalizePhoneDigits(phone);
+        return boundUserPhones(item).some(function(value) {
+          return String(value || '').trim() === phone || (phoneDigits && normalizePhoneDigits(value) === phoneDigits);
+        });
+      }
+      return false;
     }) || null;
     var isVirtualEmployee = !!(matched && matched.is_virtual_employee);
+    var displayIdentity = boundUserDisplayName(matched || { email: email, phone: phone, phones: phone ? [phone] : [] }) || email || phone || userID;
     if (isVirtualEmployee) {
-      var warning = gt('virtualUserDeleteWarning') + '\n\n' + email;
+      var warning = gt('virtualUserDeleteWarning') + '\n\n' + displayIdentity;
       if (!confirm(warning)) return;
-      var password = await promptGovernanceAdminPassword(gt('virtualUserDeleteLabel'), gt('virtualUserDeletePasswordPrompt') + '\n' + email, gt('virtualUserDeleteLabel'));
+      var password = await promptGovernanceAdminPassword(gt('virtualUserDeleteLabel'), gt('virtualUserDeletePasswordPrompt') + '\n' + displayIdentity, gt('virtualUserDeleteLabel'));
       if (password === null) return;
       if (!password) {
         const emptyMsg = gt('virtualUserDeleteFailed').replace('{error}', 'admin_password is required');
@@ -386,11 +479,16 @@
       }
       return;
     }
-    if (!confirm(gt('unbindConfirm').replace('{email}', email))) return;
+    if (!confirm(gt('unbindConfirm').replace('{email}', displayIdentity))) return;
     try {
-      const query = '?email=' + encodeURIComponent(email) + (tenantID ? '&tenant_id=' + encodeURIComponent(tenantID) : '');
+      const params = new URLSearchParams();
+      if (email) params.set('email', email);
+      if (tenantID) params.set('tenant_id', tenantID);
+      if (userID) params.set('user_id', userID);
+      if (phone) params.set('phone', phone);
+      const query = '?' + params.toString();
       const data = await api('/api/admin/users' + query, { method: 'DELETE' });
-      const removedEmail = data.email || email;
+      const removedEmail = data.email || displayIdentity;
       let msg = gt('unbindSuccess').replace('{email}', removedEmail);
       if (data.route_delete_warning) msg += ' Route sync warning: ' + data.route_delete_warning;
       setOutput(msg);
@@ -408,6 +506,30 @@
       global.renderBoundUsers(data.users || []);
     } catch (err) {
       setOutput(tr('bindFailed', { error: err.message }));
+    }
+  };
+
+  global.syncVerifiedPhoneRoutes = async function syncVerifiedPhoneRoutes(button) {
+    const original = button ? button.textContent : '';
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = gt('syncPhoneRoutesBusy');
+      }
+      showToast(gt('syncPhoneRoutesRunning'), 'info');
+      const data = await api('/api/admin/routing/sync-verified-phone-routes', { method: 'POST' });
+      const msg = gt('syncPhoneRoutesDone').replace('{count}', String(data.synced_count || 0));
+      setOutput(msg);
+      showToast(msg, 'success');
+    } catch (err) {
+      const msg = gt('syncPhoneRoutesFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = original || gt('syncPhoneRoutes');
+      }
     }
   };
 

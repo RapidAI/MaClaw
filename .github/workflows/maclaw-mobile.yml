@@ -54,6 +54,8 @@ jobs:
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/qa_preflight_test.py
       - working-directory: mobile/maclaw_mobile
+        run: python3 -m unittest tool/release_evidence_commands_test.py
+      - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/setup_android_signing_test.py
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/release_status_report_test.py
@@ -73,6 +75,8 @@ jobs:
         run: python3 -m unittest tool/signed_artifact_evidence_test.py
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/verify_manual_release_gates_test.py
+      - working-directory: mobile/maclaw_mobile
+        run: python3 tool/verify_manual_release_gates.py
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/verify_final_release_evidence_test.py
       - working-directory: mobile/maclaw_mobile

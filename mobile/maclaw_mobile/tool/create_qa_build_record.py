@@ -6,13 +6,24 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import release_evidence_commands
+import validate_qa_build_record
 
-VALID_SCOPES = ("android", "ios", "android-ios")
+
+VALID_SCOPES = release_evidence_commands.VALID_SCOPES
 VERSION_BUILD_RE = re.compile(r"^\d+(?:\.\d+){1,3}\+\d+$")
 FINAL_DECISION_PREFILL_FIELDS = {
     "release_handoff_result": "Release handoff result",
     "runtime_boundary_result": "Runtime boundary verification result",
     "automated_gates_result": "Automated release gates result",
+}
+OUT_OF_SCOPE_SECTION_PREFIXES = {
+    "android": ("## iOS ",),
+    "ios": ("## Android ",),
+}
+OUT_OF_SCOPE_FIELD_PREFIXES = {
+    "android": ("iOS manual gates passed:",),
+    "ios": ("Android manual gates passed:",),
 }
 
 
@@ -56,10 +67,17 @@ def record_filename(record_date: str, scope: str, version_build: str) -> str:
     return f"{record_date}-{scope}-{version_build}.md"
 
 
+def records_dir_command_arg(records_dir: Path) -> str:
+    if records_dir.resolve() == default_records_dir().resolve():
+        return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    return str(records_dir)
+
+
 def render_record(
     template: str,
     record_date: str,
     version_build: str,
+    scope: str = release_evidence_commands.DEFAULT_SCOPE,
     final_decision_prefills: dict[str, str] | None = None,
 ) -> str:
     rendered = (
@@ -74,7 +92,42 @@ def render_record(
         if not value.strip():
             continue
         rendered = rendered.replace(f"{field}:", f"{field}: {value.strip()}", 1)
-    return rendered
+    return remove_out_of_scope_sections(rendered, scope)
+
+
+def remove_out_of_scope_sections(markdown: str, scope: str) -> str:
+    prefixes = OUT_OF_SCOPE_SECTION_PREFIXES.get(scope)
+    field_prefixes = OUT_OF_SCOPE_FIELD_PREFIXES.get(scope, ())
+    if not prefixes and not field_prefixes:
+        return markdown
+    lines = markdown.splitlines(keepends=True)
+    kept: list[str] = []
+    skip = False
+    for line in lines:
+        if line.startswith("## "):
+            skip = any(line.startswith(prefix) for prefix in prefixes or ())
+        if not skip and not any(line.startswith(prefix) for prefix in field_prefixes):
+            kept.append(line)
+    return "".join(kept)
+
+
+def final_decision_prefill_errors(prefills: dict[str, str]) -> list[str]:
+    values = {
+        field: [value.strip()]
+        for field, value in prefills.items()
+        if field in FINAL_DECISION_PREFILL_FIELDS.values() and value.strip()
+    }
+    if not values:
+        return []
+    expected_prefixes = [
+        f"{field} {hint}"
+        for field, hint in validate_qa_build_record.FINAL_AUTOMATED_EVIDENCE_FIELDS.items()
+    ]
+    return [
+        error
+        for error in validate_qa_build_record.missing_required_fields(values)
+        if error in expected_prefixes
+    ]
 
 
 def create_record(
@@ -91,6 +144,11 @@ def create_record(
         raise ValueError(f"unsupported scope: {scope}")
     if not template_path.exists():
         raise FileNotFoundError(f"QA build record template not found: {template_path}")
+    prefill_errors = final_decision_prefill_errors(final_decision_prefills or {})
+    if prefill_errors:
+        raise ValueError(
+            "invalid Final Release Decision prefill: " + "; ".join(prefill_errors),
+        )
     records_dir.mkdir(parents=True, exist_ok=True)
     target = records_dir / record_filename(record_date, scope, version_build)
     if target.exists() and not force:
@@ -99,6 +157,7 @@ def create_record(
         template_path.read_text(encoding="utf-8"),
         record_date,
         version_build,
+        scope,
         final_decision_prefills,
     )
     target.write_text(rendered, encoding="utf-8")
@@ -179,7 +238,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Created QA build record: {target}")
-    print(f"Validate after completing evidence: python3 tool/validate_qa_build_record.py {target}")
+    records_dir_arg = records_dir_command_arg(args.records_dir)
+    if release_evidence_commands.scope_covers_android(args.scope):
+        print(
+            "Generate Android signed artifact evidence: "
+            f"{release_evidence_commands.android_artifact_evidence_command(args.version, record_dir=records_dir_arg)}",
+        )
+    if release_evidence_commands.scope_covers_ios(args.scope):
+        print(
+            "Generate iOS signed artifact evidence: "
+            f"{release_evidence_commands.ios_artifact_evidence_command(record_dir=records_dir_arg)}",
+        )
+    print(
+        "Validate after completing evidence: "
+        f"{release_evidence_commands.validate_qa_build_record_command(str(target))}",
+    )
+    print(
+        "Inspect missing evidence if validation fails: "
+        f"{release_evidence_commands.qa_build_record_report_command(str(target))}",
+    )
+    print(
+        "After validation passes, update release evidence links: "
+        f"{release_evidence_commands.qa_release_evidence_link_command(records_dir=records_dir_arg, scope=args.scope)}",
+    )
     return 0
 
 

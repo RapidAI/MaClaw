@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -33,6 +34,7 @@ type hubAdminRouterTestServices struct {
 	handler http.Handler
 	admins  *auth.AdminService
 	store   *store.Store
+	db      *sql.DB
 }
 
 func TestResolveHubRuntimeDataDirPrefersSQLiteDSNDirectory(t *testing.T) {
@@ -162,6 +164,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		handler: router,
 		admins:  admins,
 		store:   st,
+		db:      provider.Write,
 	}
 }
 

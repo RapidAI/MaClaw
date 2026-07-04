@@ -66,8 +66,9 @@ func currentLLMAuthorizationSyncChecker() *llmservice.AuthorizationChecker {
 }
 
 type AdminRouteQueryRequest struct {
-	Query     string `json:"query"`
-	QueryType string `json:"query_type,omitempty"`
+	Query       string `json:"query"`
+	QueryType   string `json:"query_type,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
 }
 
 type HubHeartbeatRequest struct {
@@ -471,6 +472,7 @@ func entryResolveIdentity(req EntryResolveRequest) string {
 
 func normalizeEntryResolvePhoneIdentity(phoneNumber string) string {
 	phoneNumber = strings.TrimSpace(phoneNumber)
+	phoneNumber = strings.TrimPrefix(strings.ToLower(phoneNumber), "phone:")
 	if phoneNumber == "" || strings.Contains(phoneNumber, "@") {
 		return ""
 	}
@@ -569,6 +571,10 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 		}
 		query := normalizeAdminRouteQuery(req.Query)
 		queryType := strings.TrimSpace(strings.ToLower(req.QueryType))
+		if strings.TrimSpace(req.PhoneNumber) != "" {
+			queryType = "phone"
+			query = strings.TrimSpace(req.PhoneNumber)
+		}
 		var (
 			resp *entry.ResolveResult
 			err  error
@@ -576,6 +582,14 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 		switch queryType {
 		case "domain":
 			resp, err = service.ResolveAdminByDomain(r.Context(), query)
+		case "phone":
+			phone := normalizeEntryResolvePhoneIdentity(query)
+			if phone == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", "Invalid phone number")
+				return
+			}
+			query = phone
+			resp, err = service.ResolveAdminByEmail(r.Context(), query)
 		default:
 			query = normalizeAdminRouteIdentity(query)
 			resp, err = service.ResolveAdminByEmail(r.Context(), query)

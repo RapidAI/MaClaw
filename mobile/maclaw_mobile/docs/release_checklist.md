@@ -6,7 +6,7 @@ SSH, and digital employee task access.
 
 For a single local readiness summary, run:
 
-- `python3 tool/release_status_report.py`
+- `python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`
 
 ## Service
 
@@ -23,6 +23,10 @@ For a single local readiness summary, run:
 - The Flutter app does not embed or directly call Go `corelib`; core MaClaw
   capabilities stay behind the official Hub or authorized remote digital
   employees.
+- New mobile features that need existing core MaClaw capabilities must expose
+  them through Hub APIs, realtime updates, or explicit digital employee task
+  handoff, not through Dart FFI, gomobile bindings, dynamic libraries, or native
+  corelib method-channel bridges.
 - Export downloads reject absolute URLs outside the discovered Hub.
 - Realtime WebSocket resolves only against the discovered Hub realtime path.
 
@@ -61,7 +65,12 @@ For a single local readiness summary, run:
 - After the signed artifact exists, run
   `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
   to generate paste-ready `Artifact path`, `SHA256`, byte-size, and build
-  metadata fields for the QA build record.
+  metadata fields for the QA build record. You can also pass `--record-dir`,
+  `--signing-identity`, and `--installer-channel` directly to
+  `tool/build_android_release.py` to print the same evidence immediately after
+  a successful signed build. The `Artifact path` must remain
+  resolvable from `docs/qa-builds`; QA record validation fails if the local
+  signed artifact is missing or its SHA256 does not match.
 - Build a signed internal test package and verify share-to-app for text, URLs,
   images, PDFs, Word, Excel, and CSV files.
 
@@ -89,10 +98,11 @@ For a single local readiness summary, run:
 - Then run
   `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
-  Record the printed archive/export command context, `.xcarchive` path or
-  TestFlight build number, Team ID, Runner and Share Extension provisioning
-  profiles, bundle IDs, app group, and URL scheme evidence in the QA build
-  record.
+  Add `--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  to print paste-ready iOS QA artifact evidence together with the archive/export
+  command context. Record the `.xcarchive` path or TestFlight build number,
+  Team ID, Runner and Share Extension provisioning profiles, bundle IDs, app
+  group, and URL scheme evidence in the QA build record.
 - After the signed archive/TestFlight build exists, run
   `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
   to generate paste-ready archive/build, Team ID, and provisioning-profile
@@ -160,6 +170,7 @@ For a single local readiness summary, run:
 - `python3 -m unittest tool/qa_build_record_report_test.py`
 - `python3 -m unittest tool/qa_release_evidence_links_test.py`
 - `python3 -m unittest tool/qa_preflight_test.py`
+- `python3 -m unittest tool/release_evidence_commands_test.py`
 - `python3 -m unittest tool/setup_android_signing_test.py`
 - `python3 -m unittest tool/release_status_report_test.py`
 - `python3 -m unittest tool/release_handoff_test.py`
@@ -170,6 +181,7 @@ For a single local readiness summary, run:
 - `python3 -m unittest tool/update_debug_apk_evidence_test.py`
 - `python3 -m unittest tool/signed_artifact_evidence_test.py`
 - `python3 -m unittest tool/verify_manual_release_gates_test.py`
+- `python3 tool/verify_manual_release_gates.py`
 - `python3 -m unittest tool/verify_final_release_evidence_test.py`
 - `python3 -m unittest tool/verify_android_release_signing_test.py`
 - `python3 -m unittest tool/build_android_release_test.py`
@@ -194,15 +206,30 @@ For a local end-to-end run, use:
 
 Before creating signed QA packages on a local machine, run:
 
-- `python3 tool/qa_preflight.py`
+- `python3 tool/setup_android_signing.py`
+- `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`
+- `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`
 
 Before approving a release candidate with completed signed-build QA records, run:
 
-- `python3 tool/verify_final_release_evidence.py docs/qa-builds`
+- `python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log`
 
 This final verifier requires validated Android and iOS signed-build records and
 checks that `docs/release_evidence.md` links every validated QA record by
-filename.
+filename inside the guarded QA build record link block written by
+`python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence`.
+For Android-only or iOS-only internal QA evidence packages, pass the same scope
+to the link updater, directory validator, and final verifier, such as
+`python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence --scope android`
+and
+`python3 tool/validate_qa_build_records_dir.py docs/qa-builds --scope android`
+and
+`python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android --log docs/qa-builds/final-release-evidence-android-<version+build>.log`.
+Validated records must already pass `python3 tool/validate_qa_build_record.py`
+without secret redaction failures, including raw Authorization/Cookie headers,
+JWTs, API keys, cloud access key IDs, and URLs with embedded credentials.
+The final verifier writes the success or failure transcript to the log path
+above; pass `--force` only when intentionally regenerating that saved evidence.
 Each completed record must include these Final Release Decision fields before
 approval:
 - `Release handoff result`

@@ -764,7 +764,7 @@ func buildPassthroughProcess(cmd PassthroughCommand, values map[string]string) (
 	}
 	switch cmd.Runtime {
 	case "powershell":
-		program := "powershell.exe"
+		program := passthroughRuntimeProgram("powershell.exe")
 		if runtime.GOOS != "windows" {
 			program = "pwsh"
 		}
@@ -772,7 +772,7 @@ func buildPassthroughProcess(cmd PassthroughCommand, values map[string]string) (
 	case "pwsh":
 		return "pwsh", append([]string{"-NoProfile", "-File", resolvedScript}, processArgs...), absCwd, nil
 	case "cmd":
-		return "cmd.exe", append([]string{"/C", resolvedScript}, processArgs...), absCwd, nil
+		return passthroughRuntimeProgram("cmd.exe"), append([]string{"/C", resolvedScript}, processArgs...), absCwd, nil
 	case "bash":
 		return "bash", append([]string{resolvedScript}, processArgs...), absCwd, nil
 	case "python":
@@ -784,6 +784,49 @@ func buildPassthroughProcess(cmd PassthroughCommand, values map[string]string) (
 	default:
 		return "", nil, "", fmt.Errorf("unsupported runtime %q", cmd.Runtime)
 	}
+}
+
+func passthroughRuntimeProgram(name string) string {
+	if runtime.GOOS != "windows" {
+		return name
+	}
+	if strings.EqualFold(name, "cmd.exe") {
+		if comspec := strings.TrimSpace(os.Getenv("ComSpec")); comspec != "" {
+			if st, err := os.Stat(comspec); err == nil && !st.IsDir() {
+				return comspec
+			}
+		}
+		if systemRoot := strings.TrimSpace(os.Getenv("SystemRoot")); systemRoot != "" {
+			candidate := filepath.Join(systemRoot, "System32", "cmd.exe")
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if strings.EqualFold(name, "powershell.exe") {
+		if systemRoot := strings.TrimSpace(os.Getenv("SystemRoot")); systemRoot != "" {
+			candidate := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if strings.EqualFold(name, "git") || strings.EqualFold(name, "git.exe") {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+		for _, candidate := range []string{
+			`C:\Program Files\Git\cmd\git.exe`,
+			`C:\Program Files\Git\bin\git.exe`,
+			`C:\Program Files (x86)\Git\cmd\git.exe`,
+			`C:\Program Files (x86)\Git\bin\git.exe`,
+		} {
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return name
 }
 
 func previewPassthroughProcessArgs(cmd PassthroughCommand, values map[string]string) ([]string, error) {
@@ -1054,7 +1097,7 @@ func passthroughHelpText(lang ...string) string {
 			"/runctl status\n" +
 			"  Show task counts, /exec state, registry path, and audit count.\n" +
 			"/runctl show <name>\n" +
-			"  Show script path, runtime, working directory, timeout, and parameter definitions.\n" +
+			"  Show script path, runtime, working directory, timeout limit, and parameter definitions.\n" +
 			"/runctl export <name>\n" +
 			"  Export the /runctl save registration command for copying, migration, or rebuild.\n" +
 			"/runctl save <name> --cmd 'command template' [--runtime direct] [--param \"name:type:required:default:example\"] [--params-json ...] --confirm\n" +
@@ -1086,7 +1129,7 @@ func passthroughHelpText(lang ...string) string {
 		"/runctl status\n" +
 		"  查看直通任务总数、/exec 是否开启、注册表路径和审计记录数量。\n" +
 		"/runctl show <任务名>\n" +
-		"  查看某个直通任务的脚本路径、运行时、工作目录、超时、参数定义。\n" +
+		"  查看某个直通任务的脚本路径、运行时、工作目录、超时上限、参数定义。\n" +
 		"/runctl export <任务名>\n" +
 		"  只导出某个直通任务的 /runctl save 注册命令，方便从 IM 复制、迁移或重建。\n" +
 		"/runctl save <任务名> --cmd '命令模板' [--runtime direct] [--param \"name:type:required:default:example\"] [--params-json '[{\"name\":\"target\",\"type\":\"path\",\"required\":true,\"example\":\"D:\\\\workprj\\\\aicoder\"}]'] --confirm\n" +
@@ -1163,7 +1206,7 @@ func formatPassthroughCommandShowWithLang(cmd PassthroughCommand, lang string) s
 		title = cmd.Name
 	}
 	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
-		fmt.Fprintf(&b, "Command: %s\nTitle: %s\nScript: %s\nRuntime: %s\nWorking directory: %s\nTimeout: %ds\nEnabled: %v\nRequires confirmation: %v",
+		fmt.Fprintf(&b, "Command: %s\nTitle: %s\nScript: %s\nRuntime: %s\nWorking directory: %s\nTimeout limit: %ds\nEnabled: %v\nRequires confirmation: %v",
 			cmd.Name, title, cmd.ScriptPath, cmd.Runtime, cmd.Cwd, cmd.TimeoutSeconds, cmd.Enabled, cmd.ConfirmRequired)
 		if len(cmd.TemplateArgs) > 0 {
 			fmt.Fprintf(&b, "\nTemplate args: %s", formatPassthroughArgList(cmd.TemplateArgs))
@@ -1182,7 +1225,7 @@ func formatPassthroughCommandShowWithLang(cmd PassthroughCommand, lang string) s
 		fmt.Fprintf(&b, "\nRemote registration command: %s", passthroughRunctlSaveExample(cmd))
 		return b.String()
 	}
-	fmt.Fprintf(&b, "命令：%s\n标题：%s\n脚本：%s\n运行时：%s\n工作目录：%s\n超时：%ds\n状态：%v\n需要确认：%v",
+	fmt.Fprintf(&b, "命令：%s\n标题：%s\n脚本：%s\n运行时：%s\n工作目录：%s\n超时上限：%ds\n状态：%v\n需要确认：%v",
 		cmd.Name, title, cmd.ScriptPath, cmd.Runtime, cmd.Cwd, cmd.TimeoutSeconds, cmd.Enabled, cmd.ConfirmRequired)
 	if len(cmd.TemplateArgs) > 0 {
 		fmt.Fprintf(&b, "\n模板参数：%s", formatPassthroughArgList(cmd.TemplateArgs))

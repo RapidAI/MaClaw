@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import release_evidence_commands
+import signed_artifact_evidence
 import verify_ios_wrapper
 
 
@@ -143,6 +145,22 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("ios/ExportOptions.plist"),
         help="Path to the Xcode export options plist. Generate it with tool/setup_ios_export_options.py.",
     )
+    parser.add_argument(
+        "--provisioning-profiles",
+        help=(
+            "Optional Runner and Share Extension provisioning profile UUID/name/file "
+            "summary used to print paste-ready QA artifact evidence."
+        ),
+    )
+    parser.add_argument(
+        "--record-dir",
+        type=Path,
+        help=(
+            "Optional docs/qa-builds directory; validates local .xcarchive paths "
+            "and prints them relative to the QA record location when artifact "
+            "evidence is generated."
+        ),
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
 
@@ -168,8 +186,12 @@ def main(argv: list[str] | None = None) -> int:
         for error in export_options_errors:
             print(f"- {error}", file=sys.stderr)
         print(
-            "- Run `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method "
-            f"{args.export_method}` first.",
+            "- Run `"
+            + release_evidence_commands.setup_ios_export_options_command(
+                team_id=args.team_id,
+                export_method=args.export_method,
+            )
+            + "` first.",
             file=sys.stderr,
         )
         return 1
@@ -196,6 +218,30 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Export options: {plan.export_options_path}")
     print(f"Archive command: {_format_command(plan.archive_command)}")
     print(f"Export command: {_format_command(plan.export_command)}")
+    if args.provisioning_profiles:
+        record_dir = None
+        if args.record_dir is not None:
+            record_dir = (
+                args.record_dir
+                if args.record_dir.is_absolute()
+                else root / args.record_dir
+            )
+        archive_or_build = plan.archive_path
+        if record_dir is not None and not archive_or_build.is_absolute():
+            archive_or_build = root / archive_or_build
+        try:
+            evidence_lines = signed_artifact_evidence.ios_evidence_lines(
+                archive_or_build=str(archive_or_build),
+                team_id=args.team_id,
+                provisioning_profiles=args.provisioning_profiles,
+                record_dir=record_dir,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"iOS QA artifact evidence could not be generated: {exc}", file=sys.stderr)
+            return 1
+        print("iOS QA artifact evidence:")
+        for line in evidence_lines:
+            print(line)
     print("Record the .xcarchive path or TestFlight build number, Team ID, Runner and Share Extension provisioning profiles, bundle IDs, app group, and URL scheme evidence in the QA build record.")
     return 0
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -168,7 +169,10 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	}
 
 	timeout := resolveCodingCommandTimeout(args, command)
-	workDir := resolvePath(stringVal(args, "working_dir"))
+	workDir := ""
+	if rawWorkDir := strings.TrimSpace(stringVal(args, "working_dir")); rawWorkDir != "" {
+		workDir = resolvePath(rawWorkDir)
+	}
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -186,7 +190,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 		// PowerShell 5.1 doesn't support && (only 7+ does), but quoted text must
 		// remain untouched because it can be data passed to tests or scripts.
 		psCommand := convertUnquotedAndAndForPowerShell(command)
-		shellName = "powershell"
+		shellName = passthroughRuntimeProgram("powershell.exe")
 		// Wrap the command so Go observes the real command result. Native
 		// tools often write progress to stderr even when they exit 0, while
 		// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
@@ -201,7 +205,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 
 	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
-	cmd.Env = coretool.AppendUTF8Env(os.Environ())
+	cmd.Env = codingCommandEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -262,6 +266,66 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	}
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+func codingCommandEnv() []string {
+	env := coretool.AppendUTF8Env(os.Environ())
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	gitDir := ""
+	if gitPath := passthroughRuntimeProgram("git"); filepath.IsAbs(gitPath) {
+		gitDir = filepath.Dir(gitPath)
+	}
+	return appendWindowsPathEntries(env,
+		filepath.Join(systemRoot, "System32"),
+		filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
+		gitDir,
+	)
+}
+
+func appendWindowsPathEntries(env []string, entries ...string) []string {
+	pathIdx := -1
+	pathValue := ""
+	for i, item := range env {
+		if strings.HasPrefix(strings.ToLower(item), "path=") {
+			pathIdx = i
+			pathValue = item[len("Path="):]
+			break
+		}
+	}
+	parts := []string{}
+	if pathValue != "" {
+		parts = strings.Split(pathValue, string(os.PathListSeparator))
+	}
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		if key := strings.ToLower(strings.TrimSpace(part)); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		key := strings.ToLower(entry)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		parts = append(parts, entry)
+		seen[key] = struct{}{}
+	}
+	newPath := "Path=" + strings.Join(parts, string(os.PathListSeparator))
+	if pathIdx >= 0 {
+		env[pathIdx] = newPath
+		return env
+	}
+	return append(env, newPath)
 }
 
 func convertUnquotedAndAndForPowerShell(command string) string {

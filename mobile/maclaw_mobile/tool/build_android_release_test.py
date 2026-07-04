@@ -100,6 +100,19 @@ class BuildAndroidReleaseTest(unittest.TestCase):
             plan.artifact_path,
         )
 
+    def test_build_plan_rejects_unknown_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+
+            with self.assertRaisesRegex(ValueError, "--artifact"):
+                build_android_release.build_plan(
+                    root,
+                    artifact="aab",
+                    build_name="1.2.3",
+                    build_number="45",
+                )
+
     def test_build_plan_requires_trackable_version_and_build_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -184,6 +197,60 @@ class BuildAndroidReleaseTest(unittest.TestCase):
 
         self.assertEqual(1, exit_code)
         self.assertIn("Android release build cannot start", error.getvalue())
+        self.assertIn("python3 tool/setup_android_signing.py", error.getvalue())
+        self.assertIn("release signing environment variables", error.getvalue())
+
+    def test_main_does_not_suggest_signing_setup_for_version_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            error = StringIO()
+
+            with patch(
+                "verify_android_release_signing.verify_android_release_signing",
+                return_value=[],
+            ), redirect_stderr(error):
+                exit_code = build_android_release.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--artifact",
+                        "apk",
+                        "--build-name",
+                        "1.0.0",
+                        "--dry-run",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("both --build-name and --build-number", error.getvalue())
+        self.assertNotIn("setup_android_signing.py", error.getvalue())
+
+    def test_main_requires_complete_qa_evidence_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            error = StringIO()
+
+            with redirect_stderr(error):
+                exit_code = build_android_release.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--artifact",
+                        "apk",
+                        "--build-name",
+                        "1.0.0",
+                        "--build-number",
+                        "42",
+                        "--record-dir",
+                        str(root / "docs" / "qa-builds"),
+                        "--dry-run",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("requires --record-dir", error.getvalue())
 
     def test_main_reports_flutter_build_failure_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,6 +283,54 @@ class BuildAndroidReleaseTest(unittest.TestCase):
         self.assertIn("Android release signing inputs verified", output.getvalue())
         self.assertIn("Android release build failed with exit code 7", error.getvalue())
         self.assertNotIn("Traceback", error.getvalue())
+
+    def test_main_prints_paste_ready_qa_artifact_evidence_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+            output = StringIO()
+
+            def create_artifact(*_args, **_kwargs):
+                artifact = root / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"signed release apk bytes")
+                return subprocess.CompletedProcess(args=["flutter"], returncode=0)
+
+            with patch(
+                "verify_android_release_signing.verify_android_release_signing",
+                return_value=[],
+            ), patch(
+                "build_android_release.subprocess.run",
+                side_effect=create_artifact,
+            ), redirect_stdout(output):
+                exit_code = build_android_release.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--artifact",
+                        "apk",
+                        "--build-name",
+                        "1.0.0",
+                        "--build-number",
+                        "42",
+                        "--record-dir",
+                        str(record_dir),
+                        "--signing-identity",
+                        "Android release keystore alias maclaw-mobile",
+                        "--installer-channel",
+                        "internal app sharing",
+                    ],
+                )
+
+        self.assertEqual(0, exit_code)
+        text = output.getvalue()
+        self.assertIn("QA artifact evidence:", text)
+        self.assertIn("Artifact path: ../../build/app/outputs/flutter-apk/app-release.apk", text)
+        self.assertIn("Version/build number: 1.0.0+42", text)
+        self.assertIn("Signing identity: Android release keystore alias maclaw-mobile", text)
+        self.assertIn("Installer channel: internal app sharing", text)
 
 
 if __name__ == "__main__":

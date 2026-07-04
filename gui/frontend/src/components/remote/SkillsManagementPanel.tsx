@@ -397,9 +397,9 @@ function learnedSourceIcon(source: string): string {
 }
 
 const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
-export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS): string {
+export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): string {
     const normalized = description.trim().replace(/\s+/g, " ");
-    if (!normalized) return "-"; const chars = Array.from(normalized);
+    if (!normalized) return emptyText; const chars = Array.from(normalized);
     return chars.length <= maxChars ? normalized : chars.slice(0, maxChars).join("") + "...";
 }
 
@@ -1381,7 +1381,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>🧠</span>}
                                                     <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
-                                                <div style={{ fontSize: "0.74rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4 }}>{s.description || "—"}</div>
+                                                <div style={{ ...localSkillsDescriptionPreviewStyle, marginTop: "4px" }} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "", LEARNED_DESCRIPTION_PREVIEW_CHARS, "—")}</div>
                                                 {(s.status === "needs_setup" || s.status === "needs_review") && (
                                                     <div style={{ fontSize: "0.7rem", color: colors.warning, marginTop: "3px" }}>
                                                         ⚠️ {s.status === "needs_setup"
@@ -1417,10 +1417,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         ) : (
                             /* Table layout for wide panels */
                             <div style={localSkillsTableContainerStyle}>
-                                <table style={{ ...localSkillsTableStyle, minWidth: "760px" }}>
+                                <table style={{ ...localSkillsTableStyle, minWidth: "880px" }}>
                                     <thead>
                                         <tr style={{ background: colors.surfaceMuted }}>
-                                            <th style={{ ...thStyle, width: "140px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                            <th style={{ ...thStyle, width: "190px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
                                             <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
                                             <th style={{ ...thStyle, width: "72px", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
                                             <th style={{ ...thStyle, width: "92px", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
@@ -1432,14 +1432,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         {filteredSkillsForMyTab.map((s) => (
                                             <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
                                                 <td style={{ ...tdStyle, textAlign: "left" }}>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                                    <div style={localSkillsNameCellStyle}>
                                                         {s.is_maclaw_app && <span title="App">📱</span>}
                                                         {isLearnedSource(s.source ?? "") && <span title={localizeText("Learned", "自学习", "自學習")}>🧠</span>}
-                                                        <span style={{ cursor: "pointer", color: colors.primary }} onClick={() => setDetailSkill(s)}>{s.name}</span>
+                                                        <span style={localSkillsNameLinkStyle} onClick={() => setDetailSkill(s)} title={s.name}>{s.name}</span>
                                                     </div>
                                                 </td>
                                                 <td style={tdStyle}>
-                                                    <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                                    <div style={localSkillsDescriptionPreviewStyle} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "", LEARNED_DESCRIPTION_PREVIEW_CHARS, "—")}</div>
                                                     {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
                                                         <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px", lineHeight: 1.35, overflowWrap: "anywhere" }} title={skillReviewReason(s, localizeText)}>
                                                             {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
@@ -2223,6 +2223,29 @@ const descCellStyle: CSSProperties = {
     overflowWrap: "anywhere",
 };
 
+const localSkillsDescriptionPreviewStyle: CSSProperties = {
+    ...descCellStyle,
+    fontSize: "0.74rem",
+    color: colors.textSecondary,
+};
+
+const localSkillsNameCellStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    minWidth: 0,
+};
+
+const localSkillsNameLinkStyle: CSSProperties = {
+    cursor: "pointer",
+    color: colors.primary,
+    display: "block",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
 const localSkillsMetaTextStyle: CSSProperties = {
     display: "block",
     maxWidth: "100%",
@@ -2432,7 +2455,7 @@ const chipStyle: CSSProperties = {
 
 const chipActiveStyle: CSSProperties = {
     background: colors.infoBg,
-    borderColor: colors.primary,
+    border: `1px solid ${colors.primary}`,
     color: colors.primary,
     fontWeight: 600,
 };

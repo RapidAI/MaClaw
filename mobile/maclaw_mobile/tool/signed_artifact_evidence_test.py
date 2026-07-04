@@ -33,7 +33,7 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
             )
 
             output = "\n".join(lines)
-            self.assertIn("Artifact path: ..\\..\\build\\app\\outputs\\flutter-apk\\app-release.apk", output)
+            self.assertIn("Artifact path: ../../build/app/outputs/flutter-apk/app-release.apk", output)
             self.assertIn(
                 f"SHA256: {hashlib.sha256(content).hexdigest().upper()}",
                 output,
@@ -56,6 +56,21 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 signed_artifact_evidence.android_evidence_lines(
                     Path(tmp) / "app-release.apk",
+                )
+
+    def test_android_evidence_rejects_missing_record_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "app-release.apk"
+            artifact.write_bytes(b"signed")
+
+            with self.assertRaisesRegex(FileNotFoundError, "QA record directory"):
+                signed_artifact_evidence.android_evidence_lines(
+                    artifact,
+                    record_dir=root / "missing-qa-builds",
+                    version="1.0.0+42",
+                    signing_identity="release alias upload key SHA256:AA",
+                    installer_channel="Firebase App Distribution internal track",
                 )
 
     def test_android_evidence_rejects_untrackable_artifact_name(self) -> None:
@@ -139,6 +154,73 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
             ],
             lines,
         )
+
+    def test_ios_evidence_with_record_dir_validates_and_relativizes_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+
+            lines = signed_artifact_evidence.ios_evidence_lines(
+                archive_or_build=str(archive),
+                team_id="ABCDE12345",
+                provisioning_profiles="Runner profile UUID abc123; Share Extension profile UUID def456",
+                record_dir=record_dir,
+            )
+
+        self.assertIn(
+            "Archive/TestFlight build: ../../build/ios/archive/MaClawMobile.xcarchive",
+            lines,
+        )
+
+    def test_ios_evidence_with_record_dir_rejects_missing_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record_dir = Path(tmp) / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+
+            with self.assertRaises(FileNotFoundError):
+                signed_artifact_evidence.ios_evidence_lines(
+                    archive_or_build=str(Path(tmp) / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"),
+                    team_id="ABCDE12345",
+                    provisioning_profiles="Runner profile UUID abc123; Share Extension profile UUID def456",
+                    record_dir=record_dir,
+                )
+
+    def test_ios_evidence_with_record_dir_rejects_archive_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.parent.mkdir(parents=True)
+            archive.write_text("not an archive directory", encoding="utf-8")
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "not a directory"):
+                signed_artifact_evidence.ios_evidence_lines(
+                    archive_or_build=str(archive),
+                    team_id="ABCDE12345",
+                    provisioning_profiles="Runner profile UUID abc123; Share Extension profile UUID def456",
+                    record_dir=record_dir,
+                )
+
+    def test_ios_evidence_rejects_record_dir_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.parent.mkdir(parents=True)
+            record_dir.write_text("not a directory", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "QA record path"):
+                signed_artifact_evidence.ios_evidence_lines(
+                    archive_or_build=str(archive),
+                    team_id="ABCDE12345",
+                    provisioning_profiles="Runner profile UUID abc123; Share Extension profile UUID def456",
+                    record_dir=record_dir,
+                )
 
     def test_ios_evidence_accepts_explicit_testflight_build(self) -> None:
         lines = signed_artifact_evidence.ios_evidence_lines(
@@ -243,6 +325,36 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
         self.assertIn("--version", stderr.getvalue())
         self.assertIn("--signing-identity", stderr.getvalue())
         self.assertIn("--installer-channel", stderr.getvalue())
+
+    def test_ios_cli_prints_record_relative_archive_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = signed_artifact_evidence.main(
+                    [
+                        "ios",
+                        "--archive-or-build",
+                        str(archive),
+                        "--team-id",
+                        "ABCDE12345",
+                        "--provisioning-profiles",
+                        "Runner profile UUID abc123; Share Extension profile UUID def456",
+                        "--record-dir",
+                        str(record_dir),
+                    ],
+                )
+
+        self.assertEqual(0, exit_code)
+        self.assertIn(
+            "Archive/TestFlight build: ../../build/ios/archive/MaClawMobile.xcarchive",
+            stdout.getvalue(),
+        )
 
     def test_ios_cli_reports_placeholder_errors(self) -> None:
         stderr = StringIO()

@@ -223,6 +223,17 @@ describe('OnboardingWizard registration', () => {
         expect(screen.getByPlaceholderText('Enter service redeem code (optional)')).toBeTruthy();
     });
 
+    it('associates the identity-only user ID label with its input', async () => {
+        render(<OnboardingWizard {...baseProps} />);
+
+        const identityInput = await screen.findByLabelText(/User ID/) as HTMLInputElement;
+        expect(identityInput.placeholder).toBe('Email or phone');
+        expect(identityInput.getAttribute('autocomplete')).toBe('username');
+        expect(identityInput.required).toBe(true);
+        expect(identityInput.getAttribute('aria-required')).toBe('true');
+        expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
+    });
+
     it('uses account identity copy instead of email copy for zh onboarding', async () => {
         render(<OnboardingWizard {...baseProps} lang="zh-Hans" />);
 
@@ -287,17 +298,63 @@ describe('OnboardingWizard registration', () => {
         });
     });
 
-    it('asks for a phone number when the tenant requires phone registration', async () => {
+    it('lets an email identity attempt existing-account activation when the tenant now requires phone registration', async () => {
         GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
         mockPhoneRegistrationTarget();
+        ActivateRemoteMock.mockResolvedValue({ email: 'user@example.com', vip_flag: false });
 
         render(<OnboardingWizard {...baseProps} />);
 
         fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: 'user@example.com' } });
         fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
 
-        expect(await screen.findByText(/requires phone registration/i)).toBeTruthy();
-        expect(screen.queryByText('Service redeem code')).toBeNull();
+        expect(await screen.findByText('Service redeem code')).toBeTruthy();
+        expect(screen.queryByText(/requires phone registration/i)).toBeNull();
+        expect(screen.queryByPlaceholderText('13800138000')).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(await screen.findByRole('button', { name: /Confirm & Register/ }));
+
+        await waitFor(() => {
+            expect(ActivateRemoteMock).toHaveBeenCalledWith('user@example.com', '', '');
+        });
+        expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
+    });
+
+    it('shows a phone-registration hint only after the hub rejects a new email registration', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+        ActivateRemoteMock.mockRejectedValue(new Error('REGISTRATION_DISABLED: new user registration is disabled for this tenant'));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: 'new-user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(await screen.findByRole('button', { name: /Confirm & Register/ }));
+
+        expect(await screen.findByText(/does not accept new email registrations/i)).toBeTruthy();
+        expect(ActivateRemoteMock).toHaveBeenCalledWith('new-user@example.com', '', '');
+        expect(ActivateRemoteSMSMock).not.toHaveBeenCalled();
+    });
+
+    it('localizes tenant email-domain rejection after attempting email activation', async () => {
+        GetRemoteRegistrationAuthMock.mockResolvedValue({ method: 'phone', code_length: 6 });
+        mockPhoneRegistrationTarget();
+        ActivateRemoteMock.mockRejectedValue(new Error('EMAIL_DOMAIN_NOT_ALLOWED: email domain is not allowed for this tenant'));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(await screen.findByPlaceholderText('Email or phone'), { target: { value: 'new-user@163.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitForRegistrationDetails();
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(await screen.findByRole('button', { name: /Confirm & Register/ }));
+
+        expect(await screen.findByText(/does not accept new email registrations or this email domain/i)).toBeTruthy();
+        expect(screen.queryByText(/EMAIL_DOMAIN_NOT_ALLOWED/)).toBeNull();
+        expect(ActivateRemoteMock).toHaveBeenCalledWith('new-user@163.com', '', '');
     });
 
     it('asks for an email address when the tenant requires email registration', async () => {

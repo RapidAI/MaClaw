@@ -194,6 +194,10 @@ Credential deletion confirmation:
 # Paste the handoff output path, attachment ID, or command transcript reference.
 Release handoff result:
 # Paste `python3 tool/verify_runtime_boundary.py` output or log attachment ID.
+# This must prove the signed app has no embedded Go corelib, Dart FFI,
+# gomobile binding, dynamic library, or native corelib MethodChannel bridge;
+# core MaClaw capabilities must be reached through the discovered Hub APIs,
+# realtime channel, or explicitly authorized digital employee handoff.
 Runtime boundary verification result:
 # Paste `python3 tool/run_release_gates.py` result, gate count, and log attachment ID.
 Automated release gates result:

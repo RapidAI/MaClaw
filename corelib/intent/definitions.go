@@ -321,9 +321,9 @@ func DefaultDefinitions() []IntentDefinition {
 				"project_proposal=项目立项, event_planning=活动策划, " +
 				"competitive_analysis=竞品分析, bid_response=招投标, " +
 				"contract_review=合同审查, due_diligence=尽职调查(对公司做商业评估), " +
-				"compliance_audit=合规审计, patent_analysis=专利分析, " +
-				"patent_application=中国专利申请/撰写(根据交底书生成权利要求书+说明书), " +
-				"us_patent_application=US patent/美国专利申请(USPTO filing, claims+specification in English)。",
+					"compliance_audit=合规审计, patent_analysis=专利分析, " +
+					"patent_application=中国专利申请/撰写(按发明、实用新型、外观设计类型准备申请文件), " +
+					"us_patent_application=US patent/美国专利申请(USPTO filing, claims+specification in English)。",
 			EmbedTexts: []string{
 				"帮我做一份产品设计文档",
 				"写一份商业计划书",
@@ -341,10 +341,12 @@ func DefaultDefinitions() []IntentDefinition {
 				"设计一个实验方案",
 				"写一份基金申请书",
 				"做一个创新方案",
-				"写一份测试方案",
-				"帮我写一份专利申请书",
-				"根据交底书撰写发明专利",
-				"file a US patent application",
+					"写一份测试方案",
+					"帮我写一份专利申请书",
+					"根据交底书撰写发明专利",
+					"帮我准备一份实用新型专利申请文件",
+					"帮我整理外观设计专利申请图片和简要说明",
+					"file a US patent application",
 				"draft USPTO patent claims based on this disclosure",
 				"帮我申请美国专利",
 				"write a business plan",

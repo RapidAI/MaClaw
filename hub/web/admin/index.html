@@ -323,7 +323,13 @@
 
       <!-- Tab: Center -->
       <section id="tab-center" class="panel card">
-        <div class="head"><div><h3 data-i18n="centerTitle"></h3><div class="desc" data-i18n="centerDesc"></div></div><button class="btn-ghost" onclick="loadCenterStatus()" data-i18n="refreshStatus"></button></div>
+        <div class="head">
+          <div><h3 data-i18n="centerTitle"></h3><div class="desc" data-i18n="centerDesc"></div></div>
+          <div class="actions" style="gap:8px;flex-wrap:wrap;justify-content:flex-end">
+            <button class="btn-secondary" id="centerSyncPhoneRoutesBtn" style="height:34px;padding:0 12px;font-size:12px" onclick="syncVerifiedPhoneRoutesFromCenter(this)"></button>
+            <button class="btn-ghost" onclick="loadCenterStatus()" data-i18n="refreshStatus"></button>
+          </div>
+        </div>
         <div class="grid2" style="gap:10px">
           <div class="item" style="padding:14px 16px">
             <div id="centerConfigForm">

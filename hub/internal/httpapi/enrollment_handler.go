@@ -93,6 +93,10 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, securitySvc *secur
 				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 				return
 			}
+			if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+				writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "APPROVE_FAILED", err.Error())
 			return
 		}
@@ -184,6 +188,10 @@ func AdminConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 		}
 		user, err := identity.AdminConfirmLoginByEmail(auth.WithTenant(r.Context(), RequestTenantID(r)), req.Email)
 		if err != nil {
+			if errors.Is(err, auth.ErrEmailDomainNotAllowed) {
+				writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "CONFIRM_FAILED", err.Error())
 			return
 		}

@@ -129,6 +129,10 @@ def is_trackable_ios_archive(value: str) -> bool:
     return normalized.endswith(".xcarchive") or TESTFLIGHT_BUILD_RE.search(value) is not None
 
 
+def is_local_ios_archive_path(value: str) -> bool:
+    return value.strip().lower().endswith(".xcarchive")
+
+
 def is_trackable_ios_profiles(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -143,7 +147,18 @@ def is_trackable_ios_profiles(value: str) -> bool:
 def display_path(path: Path, *, record_dir: Path | None = None) -> str:
     if record_dir is None:
         return str(path)
-    return os.path.relpath(path.resolve(), record_dir.resolve())
+    return Path(os.path.relpath(path.resolve(), record_dir.resolve())).as_posix()
+
+
+def validate_record_dir(record_dir: Path | None) -> Path | None:
+    if record_dir is None:
+        return None
+    record_dir = record_dir.resolve()
+    if not record_dir.exists():
+        raise FileNotFoundError(f"QA record directory does not exist: {record_dir}")
+    if not record_dir.is_dir():
+        raise ValueError(f"QA record path is not a directory: {record_dir}")
+    return record_dir
 
 
 def android_evidence_lines(
@@ -155,6 +170,7 @@ def android_evidence_lines(
     installer_channel: str = "",
 ) -> list[str]:
     artifact = artifact.resolve()
+    record_dir = validate_record_dir(record_dir)
     if not artifact.exists():
         raise FileNotFoundError(f"Android signed artifact does not exist: {artifact}")
     if not artifact.is_file():
@@ -207,6 +223,7 @@ def ios_evidence_lines(
     archive_or_build: str,
     team_id: str = "",
     provisioning_profiles: str = "",
+    record_dir: Path | None = None,
 ) -> list[str]:
     archive_or_build = archive_or_build.strip()
     team_id = team_id.strip().upper()
@@ -221,7 +238,18 @@ def ios_evidence_lines(
         raise ValueError(
             "Provisioning profiles must mention Runner, Share Extension, and a trackable profile UUID/file/name.",
         )
-    lines = [f"Archive/TestFlight build: {archive_or_build}"]
+    archive_label = archive_or_build.replace(chr(92), chr(47))
+    if record_dir is not None and is_local_ios_archive_path(archive_or_build):
+        archive_path = Path(archive_or_build).resolve()
+        if not archive_path.exists():
+            raise FileNotFoundError(f"iOS archive does not exist: {archive_path}")
+        if not archive_path.is_dir():
+            raise ValueError(f"iOS archive is not a directory: {archive_path}")
+        record_dir = validate_record_dir(record_dir)
+        archive_label = display_path(archive_path, record_dir=record_dir)
+    elif record_dir is not None:
+        validate_record_dir(record_dir)
+    lines = [f"Archive/TestFlight build: {archive_label}"]
     lines.append(f"Team ID: {team_id}")
     lines.append(f"Provisioning profiles: {provisioning_profiles}")
     return lines
@@ -249,6 +277,12 @@ def main(argv: list[str] | None = None) -> int:
     ios.add_argument("--archive-or-build", required=True)
     ios.add_argument("--team-id", required=True)
     ios.add_argument("--provisioning-profiles", required=True)
+    ios.add_argument(
+        "--record-dir",
+        type=Path,
+        default=None,
+        help="Optional docs/qa-builds directory; validates local .xcarchive paths and prints them relative to it.",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -265,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                 archive_or_build=args.archive_or_build,
                 team_id=args.team_id,
                 provisioning_profiles=args.provisioning_profiles,
+                record_dir=args.record_dir,
             )
     except (FileNotFoundError, ValueError) as exc:
         print(f"Signed artifact evidence generation failed: {exc}", file=sys.stderr)

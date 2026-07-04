@@ -64,14 +64,35 @@ const baseProps = {
         aboutContactVerified: 'Verified and saved.',
         aboutContactVerifyFailed: 'Verification failed.',
         aboutContactErrorEmailAlreadyRegistered: 'This email is already registered in the current tenant.',
+        aboutContactErrorEmailRoutedToAnotherHub: 'This email belongs to another Hub and cannot be bound in the current tenant.',
+        aboutContactErrorEmailDomainNotAllowed: 'This email domain is not allowed for the current tenant.',
+        aboutContactErrorEmailBindCheckFailed: 'Failed to confirm this email for the current tenant. Please try again later.',
+        aboutContactErrorEmailLookupFailed: 'Failed to check whether this email is already registered. Please try again later.',
+        aboutContactErrorEmailBindFailed: 'Failed to bind the email. Please try again later.',
         aboutContactErrorPhoneAlreadyRegistered: 'This phone number is already registered in the current tenant.',
+        aboutContactErrorPhoneLookupFailed: 'Failed to check whether this phone number is already registered. Please try again later.',
+        aboutContactErrorPhoneRouteCheckFailed: 'Failed to confirm this phone number for the current tenant. Please try again later.',
+        aboutContactErrorPhoneBindFailed: 'Failed to bind the phone number. Please try again later.',
+        aboutContactErrorPhoneUseSmsRegistration: 'Phone verification must use the registration SMS flow. Please send the code again.',
         aboutContactErrorInvalidCode: 'The verification code is incorrect or has expired.',
         aboutContactErrorVerifyLocked: 'Too many failed attempts. Please try again later.',
         aboutContactErrorMailNotConfigured: 'Email verification is not configured for the current tenant.',
+        aboutContactErrorMailSendFailed: "Failed to send the email verification code. Please check the current tenant's email configuration.",
+        aboutContactErrorCodeGenFailed: 'Failed to generate a verification code. Please try again later.',
+        aboutContactErrorPhoneRegistrationDisabled: 'Phone registration is not enabled for the current tenant.',
+        aboutContactErrorInvalidEmail: 'Please enter a valid email address.',
+        aboutContactErrorInvalidPhoneNumber: 'Please enter a valid phone number.',
+        aboutContactErrorInvalidSmsVerifyRequest: 'The SMS verification request is invalid. Please check the phone number or code.',
+        aboutContactErrorSmsConfigUnavailable: 'SMS verification configuration is unavailable for the current tenant.',
+        aboutContactErrorSmsLimitCheckFailed: 'Failed to check the SMS verification limit. Please try again later.',
+        aboutContactErrorSmsSendFailed: "Failed to send the SMS verification code. Please check the current tenant's SMS configuration.",
+        aboutContactErrorSmsCheckFailed: 'Failed to verify the SMS code. Please try again later.',
         aboutContactErrorSmsDailyLimitReached: 'The SMS verification limit has been reached. Please try again tomorrow.',
         aboutContactErrorRateLimited: 'Requests are too frequent. Please wait and try again.',
         aboutContactErrorMachineUnauthorized: 'The current machine registration is invalid. Please register again.',
         aboutContactErrorTenantMismatch: 'The current account does not belong to this tenant.',
+        aboutContactErrorUserNotFound: 'The current registered user was not found. Please register again.',
+        aboutContactErrorInvalidContactKind: 'Please choose email or phone number.',
         aboutMachineId: 'Machine ID',
         remoteActivation: 'Registration',
         remoteActivated: 'Registered',
@@ -198,6 +219,24 @@ describe('AboutPanel', () => {
         expect(onRegistrationContactUpdated).toHaveBeenCalledTimes(1);
     });
 
+    it('does not refresh registration contact details when verification fails', async () => {
+        const onRegistrationContactUpdated = vi.fn();
+        vi.mocked(VerifyRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('INVALID_VERIFY_CODE: bad code'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} onRegistrationContactUpdated={onRegistrationContactUpdated} />);
+
+        const setButtons = screen.getAllByText('Set');
+        fireEvent.click(setButtons[1]);
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'dev@example.com' } });
+        fireEvent.click(screen.getByText('Send Code'));
+        await screen.findByText('6-digit code sent. It expires in 5 minutes.');
+
+        fireEvent.change(screen.getByPlaceholderText('Enter code'), { target: { value: '000000' } });
+        fireEvent.click(screen.getByText('Verify and Save'));
+
+        expect(await screen.findByText('The verification code is incorrect or has expired.')).toBeTruthy();
+        expect(onRegistrationContactUpdated).not.toHaveBeenCalled();
+    });
+
     it('localizes registration contact backend error codes', async () => {
         vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('EMAIL_ALREADY_REGISTERED: Email is already registered'));
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
@@ -209,6 +248,57 @@ describe('AboutPanel', () => {
 
         expect(await screen.findByText('This email is already registered in the current tenant.')).toBeTruthy();
         expect(screen.queryByText(/EMAIL_ALREADY_REGISTERED/)).toBeNull();
+    });
+
+    it('localizes email route errors from the current tenant check', async () => {
+        vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('EMAIL_ROUTED_TO_ANOTHER_HUB: hub_other'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        const setButtons = screen.getAllByText('Set');
+        fireEvent.click(setButtons[1]);
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'dev@example.com' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        expect(await screen.findByText('This email belongs to another Hub and cannot be bound in the current tenant.')).toBeTruthy();
+        expect(screen.queryByText(/EMAIL_ROUTED_TO_ANOTHER_HUB/)).toBeNull();
+    });
+
+    it('localizes email verification delivery failures', async () => {
+        vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('MAIL_SEND_FAILED: smtp rejected recipient'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        const setButtons = screen.getAllByText('Set');
+        fireEvent.click(setButtons[1]);
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'dev@example.com' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        expect(await screen.findByText("Failed to send the email verification code. Please check the current tenant's email configuration.")).toBeTruthy();
+        expect(screen.queryByText(/MAIL_SEND_FAILED/)).toBeNull();
+    });
+
+    it('localizes phone contact SMS send failures', async () => {
+        vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('SMS_VERIFY_SEND_FAILED: provider rejected template'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        const setButtons = screen.getAllByText('Set');
+        fireEvent.click(setButtons[0]);
+        fireEvent.change(screen.getByPlaceholderText('Enter phone number'), { target: { value: '17090134628' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        expect(await screen.findByText("Failed to send the SMS verification code. Please check the current tenant's SMS configuration.")).toBeTruthy();
+        expect(screen.queryByText(/SMS_VERIFY_SEND_FAILED/)).toBeNull();
+    });
+
+    it('localizes local contact validation failures', async () => {
+        vi.mocked(SendRemoteRegistrationContactCode).mockRejectedValueOnce(new Error('INVALID_EMAIL: valid email is required'));
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_mobile: '17090134628', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' } as any} />);
+
+        fireEvent.click(screen.getByText('Set'));
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'not-an-email' } });
+        fireEvent.click(screen.getByText('Send Code'));
+
+        expect(await screen.findByText('Please enter a valid email address.')).toBeTruthy();
+        expect(screen.queryByText(/INVALID_EMAIL/)).toBeNull();
     });
 
     it('treats phone account identity as registered phone, not registered email', () => {

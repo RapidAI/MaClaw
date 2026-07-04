@@ -135,8 +135,12 @@ func TestPassthroughFormattersEnglish(t *testing.T) {
 		t.Fatalf("unexpected English list:\n%s", list)
 	}
 	show := formatPassthroughCommandShowWithLang(PassthroughCommand{Name: "repair", ScriptPath: "repair.ps1", Runtime: "powershell", TimeoutSeconds: 60, Enabled: true}, "en")
-	if !strings.Contains(show, "Command: repair") || !strings.Contains(show, "Run example:") || strings.Contains(show, "命令：") {
+	if !strings.Contains(show, "Command: repair") || !strings.Contains(show, "Timeout limit: 60s") || !strings.Contains(show, "Run example:") || strings.Contains(show, "命令：") {
 		t.Fatalf("unexpected English show:\n%s", show)
+	}
+	help := passthroughHelpText("en")
+	if !strings.Contains(help, "timeout limit") {
+		t.Fatalf("English help should describe timeout as a limit:\n%s", help)
 	}
 }
 
@@ -171,6 +175,7 @@ func TestFormatPassthroughCommandShowIncludesTemplateAndRunExample(t *testing.T)
 	})
 	for _, want := range []string{
 		"git-status",
+		"超时上限：120s",
 		`-C ${target} status --message "hello world" ""`,
 		"--target path",
 		"/run git-status --target D:\\workprj\\aicoder --confirm",
@@ -459,9 +464,13 @@ func TestPassthroughRegistrySaveAndDeleteWithAudit(t *testing.T) {
 func TestPassthroughRegistryRunRejectedAttemptsRecordAudit(t *testing.T) {
 	dir := t.TempDir()
 	reg := newPassthroughRegistry(filepath.Join(dir, "commands.json"))
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable failed: %v", err)
+	}
 	if _, err := reg.Upsert(PassthroughCommand{
 		Name:            "repair-env",
-		ScriptPath:      "git",
+		ScriptPath:      exe,
 		Runtime:         "direct",
 		TimeoutSeconds:  5,
 		ConfirmRequired: true,

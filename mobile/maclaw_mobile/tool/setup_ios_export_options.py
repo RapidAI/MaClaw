@@ -77,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Wrote local iOS export options: {target}")
     print(
-        "Run `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> "
-        f"--export-method {args.export_method}` next."
+        "Run `python3 tool/qa_preflight.py --team-id <APPLE_TEAM_ID> "
+        f"--export-method {args.export_method}` next; keep ios/ExportOptions.plist local."
     )
     return 0
 

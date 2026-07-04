@@ -2049,10 +2049,10 @@ func TestRemoteCodingSubAgentHighRiskBashCanBeUserApproved(t *testing.T) {
 	if !strings.Contains(result, "handler unavailable") {
 		t.Fatalf("approved command should proceed to SSH handler, got %q", result)
 	}
-	if gotReq.ToolName != "ssh_bash" || gotReq.Path != "git reset --hard HEAD" || gotReq.ProjectPath != "/repo/project/sub" {
+	if gotReq.ToolName != remoteSSHBashToolName || gotReq.Path != "git reset --hard HEAD" || gotReq.ProjectPath != "/repo/project/sub" {
 		t.Fatalf("approval request = %#v", gotReq)
 	}
-	if gotReq.Kind != "remote_high_risk_bash" || gotReq.AutoAllow || !strings.Contains(gotReq.Message, "拒绝执行高风险命令") {
+	if gotReq.Kind != remoteHighRiskApprovalKind || gotReq.AutoAllow || !strings.Contains(gotReq.Message, "拒绝执行高风险命令") {
 		t.Fatalf("high-risk approval metadata = %#v", gotReq)
 	}
 }
@@ -8859,7 +8859,7 @@ func TestCodingSubAgentGitDiffSupportsGitFileWorktree(t *testing.T) {
 
 func runGitForTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(gitForTest(t), args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -8868,6 +8868,28 @@ func runGitForTest(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
 	}
 }
+
+func gitForTest(t *testing.T) string {
+	t.Helper()
+	if path, err := exec.LookPath("git"); err == nil {
+		return path
+	}
+	if runtime.GOOS == "windows" {
+		for _, path := range []string{
+			`C:\Program Files\Git\cmd\git.exe`,
+			`C:\Program Files\Git\bin\git.exe`,
+			`C:\Program Files (x86)\Git\cmd\git.exe`,
+			`C:\Program Files (x86)\Git\bin\git.exe`,
+		} {
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+	t.Fatalf("git executable not found in PATH")
+	return ""
+}
+
 func TestCodingSubAgentFinalGitDiffFailureDoesNotMarkChecked(t *testing.T) {
 	missingProject := filepath.Join(t.TempDir(), "missing-project")
 	cb := &codingSubAgentCallbacks{

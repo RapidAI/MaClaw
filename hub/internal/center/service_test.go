@@ -129,6 +129,18 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 	}
 }
 
+func TestSyncUserRouteReportsMissingCenterRegistration(t *testing.T) {
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = "https://hubs.example.com"
+	svc := NewService(cfg, newFakeSettingsRepo())
+
+	err := svc.SyncUserRouteReplaceAll(context.Background(), "phone:19900001111", store.DefaultTenantID)
+	if err == nil || !strings.Contains(err.Error(), "hub center registration is missing or incomplete") {
+		t.Fatalf("SyncUserRouteReplaceAll() error = %v, want missing registration", err)
+	}
+}
+
 func TestUserUsageSyncStartDayUsesLimitedBackfill(t *testing.T) {
 	svc := NewService(config.Default(), newFakeSettingsRepo())
 	now := time.Date(2026, 6, 24, 15, 30, 0, 0, time.UTC)

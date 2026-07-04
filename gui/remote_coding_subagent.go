@@ -1106,6 +1106,11 @@ type remoteHighRiskApprovalState struct {
 	callback   ScopeApprovalCallback
 }
 
+const (
+	remoteHighRiskApprovalKind = "remote_high_risk_bash"
+	remoteSSHBashToolName      = "ssh_bash"
+)
+
 func newRemoteHighRiskApprovalState(callback ScopeApprovalCallback, fullAccess bool) *remoteHighRiskApprovalState {
 	return &remoteHighRiskApprovalState{
 		fullAccess: fullAccess,
@@ -1181,11 +1186,11 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 		return rejection
 	}
 	decision := callback(ScopeApprovalRequest{
-		ToolName:    "ssh_bash",
+		ToolName:    remoteSSHBashToolName,
 		Path:        command,
 		ProjectPath: workingDir,
 		Directory:   workingDir,
-		Kind:        "remote_high_risk_bash",
+		Kind:        remoteHighRiskApprovalKind,
 		Message:     rejection,
 		AutoAllow:   false,
 	})

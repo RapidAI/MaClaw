@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
+	stdmail "net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -32,7 +34,11 @@ type Config struct {
 // Send delivers an email via SMTP. It adds RFC 5322 compliant Message-ID and
 // Date headers that strict mail servers (e.g. Gmail) require.
 func Send(ctx context.Context, cfg Config, to []string, subject, body string) error {
-	if len(to) == 0 {
+	recipients, err := normalizeRecipients(to)
+	if err != nil {
+		return err
+	}
+	if len(recipients) == 0 {
 		return fmt.Errorf("mail recipient is required")
 	}
 	cfg = normalizeConfig(cfg)
@@ -50,13 +56,17 @@ func Send(ctx context.Context, cfg Config, to []string, subject, body string) er
 	if fromEmail == "" {
 		return fmt.Errorf("mail sender is not configured")
 	}
+	fromEmail, err = normalizeEmailAddress(fromEmail)
+	if err != nil {
+		return fmt.Errorf("invalid mail sender: %w", err)
+	}
 
-	message := buildMessage(cfg.FromName, fromEmail, to, subject, body)
+	message := buildMessage(cfg.FromName, fromEmail, recipients, subject, body)
 	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
 	if useImplicitTLS(cfg) {
-		return sendWithImplicitTLS(ctx, addr, cfg, fromEmail, to, message)
+		return sendWithImplicitTLS(ctx, addr, cfg, fromEmail, recipients, message)
 	}
-	return sendWithSMTP(ctx, addr, cfg, fromEmail, to, message)
+	return sendWithSMTP(ctx, addr, cfg, fromEmail, recipients, message)
 }
 
 // buildMessage constructs an RFC 5322 compliant email with Message-ID and Date.
@@ -69,8 +79,8 @@ func buildMessage(fromName, fromEmail string, to []string, subject, body string)
 
 	headers := []string{
 		"From: " + formatFrom(fromName, fromEmail),
-		"To: " + strings.Join(to, ", "),
-		"Subject: " + subject,
+		"To: " + formatAddressList(to),
+		"Subject: " + encodeHeaderText(subject),
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
 		"Message-ID: " + msgID,
 		"MIME-Version: 1.0",
@@ -217,11 +227,83 @@ func defaultPort(port int) int {
 	return 587
 }
 
+func normalizeRecipients(to []string) ([]string, error) {
+	recipients := make([]string, 0, len(to))
+	for _, recipient := range to {
+		recipient, err := normalizeEmailAddress(recipient)
+		if err != nil {
+			return nil, fmt.Errorf("invalid mail recipient: %w", err)
+		}
+		recipients = append(recipients, recipient)
+	}
+	return recipients, nil
+}
+
+func normalizeEmailAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("address is empty")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("address contains a line break")
+	}
+	addr, err := stdmail.ParseAddress(value)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(addr.Address) == "" || strings.ContainsAny(addr.Address, "\r\n") {
+		return "", fmt.Errorf("address is empty")
+	}
+	return addr.Address, nil
+}
+
+func formatAddressList(addresses []string) string {
+	formatted := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		address = strings.TrimSpace(address)
+		if address == "" {
+			continue
+		}
+		if parsed, err := stdmail.ParseAddress(address); err == nil {
+			formatted = append(formatted, parsed.String())
+			continue
+		}
+		formatted = append(formatted, (&stdmail.Address{Address: address}).String())
+	}
+	return strings.Join(formatted, ", ")
+}
+
 func formatFrom(name, email string) string {
-	if strings.TrimSpace(name) == "" {
+	name = sanitizeHeaderText(name)
+	email = strings.TrimSpace(email)
+	if name == "" {
 		return email
 	}
-	return fmt.Sprintf("%s <%s>", name, email)
+	return (&stdmail.Address{Name: name, Address: email}).String()
+}
+
+func encodeHeaderText(value string) string {
+	value = sanitizeHeaderText(value)
+	if value == "" || isASCII(value) {
+		return value
+	}
+	return mime.QEncoding.Encode("UTF-8", value)
+}
+
+func sanitizeHeaderText(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
+}
+
+func isASCII(value string) bool {
+	for _, r := range value {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
 }
 
 func wrapMailError(err error) error {

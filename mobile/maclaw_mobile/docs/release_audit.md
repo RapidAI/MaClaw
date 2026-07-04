@@ -6,7 +6,13 @@ manual release gates. Do not mark a release complete until every `Manual gate`
 item has real signed-build, real-device, or Hub discovery smoke-test
 evidence.
 
-Use `qa_device_checklist.md` to execute and record those manual gates.
+Use `qa_device_checklist.md` to execute and record those manual gates. Completed
+signed-build QA records must pass `python3 tool/validate_qa_build_record.py`
+without secret redaction failures before the audit can count them as release
+evidence. If validation fails, run
+`python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md` and replace
+raw secrets with redacted evidence, attachment IDs, task IDs, artifact hashes,
+or reviewer notes.
 
 Status legend:
 

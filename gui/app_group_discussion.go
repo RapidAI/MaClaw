@@ -1898,8 +1898,10 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	// AND the message is intended for it (no explicit @mention, or @mentions local AI).
 	// History sessions lose the in-memory dispatcher registration on restart,
 	// so we auto-register and dispatch here (mirroring SendVEGroupMessage behavior).
+	implicitLocalDispatch := len(msg.ToIDs) == 0 && !groupDiscussionDetailHasDefaultReplyTarget(detail, localID)
+	explicitLocalDispatch := groupDiscussionHistoryToIDsContainLocalAI(msg.ToIDs, localID)
 	shouldDispatchLocal := groupDiscussionHistoryHasLocalAIParticipant(detail) &&
-		(len(msg.ToIDs) == 0 || groupDiscussionHistoryToIDsContainLocalAI(msg.ToIDs, localID))
+		(implicitLocalDispatch || explicitLocalDispatch)
 	if shouldDispatchLocal {
 		// NOTE: localMsg.FromID must be empty for local dispatch. The dispatcher's
 		// "skip own messages" check compares msg.FromID against the local machine ID.

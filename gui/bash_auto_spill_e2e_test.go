@@ -54,7 +54,7 @@ func TestAutoSpillEndToEndExecutesCorrectly(t *testing.T) {
 	var shell string
 	var args []string
 	if runtime.GOOS == "windows" {
-		shell = "powershell"
+		shell = passthroughRuntimeProgram("powershell.exe")
 		args = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + result.Command}
 	} else {
@@ -111,7 +111,7 @@ func TestAutoSpillEndToEndChinesePatent(t *testing.T) {
 	var shell string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shell = "powershell"
+		shell = passthroughRuntimeProgram("powershell.exe")
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + result.Command}
 	} else {

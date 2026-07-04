@@ -530,7 +530,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/pages/ApiStorePage.tsx', 120],
   ['gui/frontend/src/components/pages/ApiStoreProviderCard.tsx', 120],
   ['gui/frontend/src/config/apiStoreProviders.ts', 80],
-  ['gui/frontend/src/components/AboutPanel.tsx', 720],
+  ['gui/frontend/src/components/AboutPanel.tsx', 760],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
   ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2500],

@@ -48,9 +48,11 @@ func (d *GroupChatDispatcher) getLocalMachineID() string {
 }
 
 type groupExecutorSession struct {
-	SessionID string
-	ctx       context.Context
-	cancel    context.CancelFunc
+	SessionID   string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	hubSyncOnly bool
 }
 
 // NewGroupChatDispatcher creates a new dispatcher.
@@ -64,6 +66,14 @@ func NewGroupChatDispatcher(app *App) *GroupChatDispatcher {
 // RegisterSession marks a session as having local AI enabled.
 // After this call, incoming messages for this session will be routed to the main agent.
 func (d *GroupChatDispatcher) RegisterSession(sessionID string) {
+	d.registerSession(sessionID, false)
+}
+
+func (d *GroupChatDispatcher) registerSessionForHubSyncOnly(sessionID string) {
+	d.registerSession(sessionID, true)
+}
+
+func (d *GroupChatDispatcher) registerSession(sessionID string, hubSyncOnly bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, exists := d.sessions[sessionID]; exists {
@@ -71,21 +81,54 @@ func (d *GroupChatDispatcher) RegisterSession(sessionID string) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d.sessions[sessionID] = &groupExecutorSession{
-		SessionID: sessionID,
-		ctx:       ctx,
-		cancel:    cancel,
+		SessionID:   sessionID,
+		ctx:         ctx,
+		cancel:      cancel,
+		hubSyncOnly: hubSyncOnly,
 	}
 	log.Printf("[group-dispatcher] registered session %s for local executor", sessionID)
 }
 
 // UnregisterSession removes a session from the dispatcher.
 func (d *GroupChatDispatcher) UnregisterSession(sessionID string) {
+	_ = d.unregisterSession(sessionID)
+}
+
+func (d *GroupChatDispatcher) unregisterSession(sessionID string) *groupExecutorSession {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if sess, exists := d.sessions[sessionID]; exists {
 		sess.cancel()
 		delete(d.sessions, sessionID)
 		log.Printf("[group-dispatcher] unregistered session %s", sessionID)
+		return sess
+	}
+	return nil
+}
+
+func (d *GroupChatDispatcher) UnregisterSessionAndWait(sessionID string, timeout time.Duration) bool {
+	sess := d.unregisterSession(sessionID)
+	if sess == nil {
+		return true
+	}
+	return sess.wait(timeout)
+}
+
+func (s *groupExecutorSession) wait(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -129,9 +172,19 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 	if sess.ctx.Err() != nil {
 		return
 	}
+	if sess.hubSyncOnly {
+		if localDispatch {
+			d.app.syncLocalDispatchInputToHub(sessionID, msg)
+		}
+		return
+	}
 
 	// Route to main agent in a goroutine (non-blocking)
-	go d.routeToMainAgent(sess, msg, localDispatch)
+	sess.wg.Add(1)
+	go func() {
+		defer sess.wg.Done()
+		d.routeToMainAgent(sess, msg, localDispatch)
+	}()
 }
 
 func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a2a.GroupDiscussionMessage, localDispatch bool) {
@@ -253,7 +306,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 
 	// Send stream end
 	if resp != nil {
-		d.forwardAgentResponseFiles(sess.SessionID, resp, localDispatch)
+		d.forwardAgentResponseFiles(sess, resp, localDispatch)
 		if localDispatch {
 			d.emitStreamToFrontend(sess.SessionID, "")
 			// Always preserve stream_end so Hub history can collapse streamed chunks reliably.
@@ -276,10 +329,11 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	}
 }
 
-func (d *GroupChatDispatcher) forwardAgentResponseFiles(sessionID string, resp *IMAgentResponse, localDispatch bool) {
+func (d *GroupChatDispatcher) forwardAgentResponseFiles(sess *groupExecutorSession, resp *IMAgentResponse, localDispatch bool) {
 	if d == nil || d.app == nil || resp == nil {
 		return
 	}
+	sessionID := sess.SessionID
 	paths := append([]string{}, resp.LocalFilePaths...)
 	if strings.TrimSpace(resp.LocalFilePath) != "" {
 		paths = append([]string{resp.LocalFilePath}, paths...)
@@ -292,7 +346,11 @@ func (d *GroupChatDispatcher) forwardAgentResponseFiles(sessionID string, resp *
 			} else {
 				log.Printf("[group-dispatcher] failed to prepare local response file %s for session %s: %v", path, sessionID, localErr)
 			}
-			go d.syncAgentResponseFileToHub(sessionID, path)
+			sess.wg.Add(1)
+			go func(path string) {
+				defer sess.wg.Done()
+				d.syncAgentResponseFileToHub(sessionID, path)
+			}(path)
 			continue
 		}
 		d.syncAgentResponseFileToHub(sessionID, path)

@@ -4,17 +4,22 @@ Use this checklist for signed Android/iOS QA builds. Local tests and the debug
 APK are not enough to close these gates. Attach screenshots, screen recordings,
 device logs, task IDs, and artifact hashes to the QA build record in
 `release_evidence.md`. Generate a validator-named record before QA starts:
+Before attaching any screenshot, recording, terminal output, or device log,
+redact private customer content and raw secrets such as Authorization/Cookie
+headers, JWTs, API keys, cloud access key IDs, and URLs with embedded credentials.
 
 ```bash
-python3 tool/release_status_report.py
-python3 tool/release_handoff.py --version <version+build> --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
+python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
+python3 tool/setup_android_signing.py
+python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
-python3 tool/qa_preflight.py
 python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
-  --release-handoff-result "docs/qa-builds/handoff-<version+build>.md" \
+  --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-<version+build>.md" \
   --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log" \
-  --automated-gates-result "run_release_gates.py: 36 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
+  --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
 ```
 
 When the handoff, runtime-boundary, and release-gate command outputs have
@@ -29,21 +34,47 @@ Use `--scope android` or `--scope ios` when Android and iOS evidence are capture
 separately. The command starts from `qa_build_record_template.md` and saves the
 record under `docs/qa-builds/`; see `docs/qa-builds/README.md` for naming and
 redaction rules.
+For Android-only internal QA, the status, handoff, and preflight commands do not
+need Apple Team ID or export method values:
+
+```bash
+python3 tool/release_status_report.py --scope android
+python3 tool/release_handoff.py --version <version+build> --scope android --output docs/qa-builds/handoff-android-<version+build>.md
+python3 tool/qa_preflight.py --scope android
+```
+
+For iOS-only internal QA, keep the Apple Team ID and export method on the iOS
+commands:
+
+```bash
+python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
+python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+```
 
 After completing the record, run:
 
 ```bash
 python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md
 python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md
-python3 tool/qa_release_evidence_links.py docs/qa-builds
+python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence
 python3 tool/validate_qa_build_records_dir.py docs/qa-builds
-python3 tool/verify_final_release_evidence.py docs/qa-builds
+python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log
 ```
+
+For Android-only or iOS-only internal QA, pass the same scope to the link updater
+directory validator, and final verifier, for example
+`python3 tool/qa_release_evidence_links.py docs/qa-builds --update-release-evidence --scope android`
+followed by
+`python3 tool/validate_qa_build_records_dir.py docs/qa-builds --scope android`
+and
+`python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android --log docs/qa-builds/final-release-evidence-android-<version+build>.log`.
 
 Attach the passing record to `release_evidence.md` after both the individual
 record check and directory check pass. Before release approval, the final
 evidence verifier must also pass with validated Android and iOS signed-build
-records present.
+records present, and its saved final-release-evidence log should be attached or
+referenced with the QA evidence.
 The completed record's Final Release Decision must include:
 - `Release handoff result`
 - `Runtime boundary verification result`
@@ -110,7 +141,10 @@ iOS:
 - Generate paste-ready QA artifact fields with
   `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`.
   Paste the generated `Artifact path`, `SHA256`, byte size, and optional build
-  metadata into the Android Signed Build section.
+  metadata into the Android Signed Build section. Keep the signed artifact at
+  the generated path, relative to `docs/qa-builds`, until
+  `python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md` passes;
+  the validator checks both local artifact existence and SHA256.
 - Install the signed APK/AAB on at least one Android 13+ device.
 - Open MaClaw Mobile and confirm the account screen shows the selected
   HubCenter, discovered Hub, tenant, and LLM access mode; record the selected
@@ -171,6 +205,8 @@ it.
   provisioning profile evidence.
 - After the signed archive/TestFlight build exists, run
   `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  or pass the same provisioning profile summary to
+  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method <export-method> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
   and paste the generated archive/build, Team ID, and provisioning-profile
   fields into the QA build record.
 - Install via development signing or TestFlight, launch/open the app, and

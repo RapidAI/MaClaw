@@ -219,11 +219,11 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "report", name: "分析报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
   "patent_application": [
-    { id: "pa_disclosure_parsing", name: "交底书解析与技术提炼", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
-    { id: "pa_prior_art_search", name: "查新检索与新颖性分析", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
-    { id: "pa_claims_drafting", name: "权利要求书撰写", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
-    { id: "pa_figures_organization", name: "附图生成与整理", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
-    { id: "pa_description_writing", name: "说明书撰写", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_disclosure_parsing", name: "申请材料解析", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_prior_art_search", name: "查新/近似检索分析", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_claims_drafting", name: "权利要求/保护要点", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_figures_organization", name: "附图/图片整理", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
+    { id: "pa_description_writing", name: "说明书/简要说明", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
     { id: "pa_document_assembly", name: "申请文件组装与检查", index: 5, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
   ],
   "presentation_design": [

@@ -55,8 +55,8 @@ func (m *testMailer) SendLoginConfirmation(ctx context.Context, to string, confi
 	return m.Send(ctx, []string{to}, "login", confirmURL)
 }
 
-func (m *testMailer) SendRegistrationVerification(ctx context.Context, to string, confirmURL string, lang ...string) error {
-	return m.Send(ctx, []string{to}, "registration-verification", confirmURL)
+func (m *testMailer) SendRegistrationVerification(ctx context.Context, to string, confirmURL string, code string, lang ...string) error {
+	return m.Send(ctx, []string{to}, "registration-verification", confirmURL+"\n"+code)
 }
 
 func TestAdminSendTestMailHandlerRequiresMailer(t *testing.T) {

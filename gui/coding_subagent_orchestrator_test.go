@@ -427,6 +427,8 @@ func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	active := 0
 	maxActive := 0
+	releaseConcurrentTasks := make(chan struct{})
+	var releaseOnce sync.Once
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
@@ -435,9 +437,17 @@ func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
 		if active > maxActive {
 			maxActive = active
 		}
+		if active >= 2 {
+			releaseOnce.Do(func() { close(releaseConcurrentTasks) })
+		}
 		mu.Unlock()
 
-		time.Sleep(20 * time.Millisecond)
+		if task.Index < 2 {
+			select {
+			case <-releaseConcurrentTasks:
+			case <-time.After(2 * time.Second):
+			}
+		}
 
 		mu.Lock()
 		active--
