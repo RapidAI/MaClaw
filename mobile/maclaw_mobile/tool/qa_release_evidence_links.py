@@ -41,30 +41,39 @@ def summarize_records(
 ) -> EvidenceLinkSummary:
     scope = release_evidence_commands.validate_scope(scope)
     results = validate_qa_build_records_dir.validate_directory(records_dir)
-    valid_records = [
-        result.path
-        for result in results
-        if not result.errors
-        and validate_qa_build_records_dir.record_matches_scope(result.path, scope)
-    ]
-    blocking_invalid_records = [
-        result
-        for result in results
-        if result.errors
-        and not validate_qa_build_records_dir.record_is_known_out_of_scope(
-            result.path,
-            scope,
-        )
-    ]
-    out_of_scope_invalid_records = [
-        result
-        for result in results
-        if result.errors
-        and validate_qa_build_records_dir.record_is_known_out_of_scope(
-            result.path,
-            scope,
-        )
-    ]
+    valid_records = sorted(
+        [
+            result.path
+            for result in results
+            if not result.errors
+            and validate_qa_build_records_dir.record_matches_scope(result.path, scope)
+        ],
+        key=lambda path: path.name,
+    )
+    blocking_invalid_records = sorted(
+        [
+            result
+            for result in results
+            if result.errors
+            and not validate_qa_build_records_dir.record_is_known_out_of_scope(
+                result.path,
+                scope,
+            )
+        ],
+        key=lambda result: result.path.name,
+    )
+    out_of_scope_invalid_records = sorted(
+        [
+            result
+            for result in results
+            if result.errors
+            and validate_qa_build_records_dir.record_is_known_out_of_scope(
+                result.path,
+                scope,
+            )
+        ],
+        key=lambda result: result.path.name,
+    )
     versions = sorted(
         version
         for version in {_version_for_record(path) for path in valid_records}
@@ -134,6 +143,9 @@ def format_links(summary: EvidenceLinkSummary) -> str:
         f"Verification scope: {release_evidence_commands.scope_label(summary.scope)}",
     ]
     if summary.valid_records:
+        ready_to_link = (
+            len(summary.versions) == 1 and has_required_platform_coverage(summary)
+        )
         lines.append("")
         if len(summary.versions) == 1:
             lines.append(f"Validated version/build: {summary.versions[0]}")
@@ -152,10 +164,15 @@ def format_links(summary: EvidenceLinkSummary) -> str:
                 "Validated records are missing final release platform coverage: "
                 + ", ".join(missing_platform_coverage(summary)),
             )
-        lines.append("Validated records to link from docs/release_evidence.md:")
+        if ready_to_link:
+            lines.append("Validated records to link from docs/release_evidence.md:")
+        else:
+            lines.append(
+                "Validated records found, but not ready to link from docs/release_evidence.md:"
+            )
         lines.extend(_record_link(path, summary.records_dir) for path in summary.valid_records)
         lines.append("")
-        if len(summary.versions) == 1 and has_required_platform_coverage(summary):
+        if ready_to_link:
             lines.append(
                 "After adding these links, run: "
                 + release_evidence_commands.verify_final_release_evidence_command(
@@ -260,9 +277,15 @@ def release_evidence_update_hints(summary: EvidenceLinkSummary) -> list[str]:
             missing_scope = "android"
         elif missing == ["iOS"]:
             missing_scope = "ios"
+        version = (
+            summary.versions[0]
+            if len(summary.versions) == 1
+            else release_evidence_commands.DEFAULT_VERSION
+        )
         hints.append(
             release_evidence_commands.signed_qa_record_hint(
                 scope=missing_scope,
+                version=version,
                 records_dir=records_dir,
             ),
         )

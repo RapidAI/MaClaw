@@ -53,8 +53,11 @@ class MobileBootstrap {
   }
 
   MobileBootstrap withVerifiedPhoneCredits(String phoneNumber) {
-    final creditsAccount = _normalizeCreditsAccount('phone:$phoneNumber');
-    if (!llmAccess.official || creditsAccount == 'phone:') {
+    final value = phoneNumber.trim();
+    final creditsAccount = _trustedPhoneCreditsAccount(
+      value.toLowerCase().startsWith('phone:') ? value : 'phone:$value',
+    );
+    if (!llmAccess.official || creditsAccount.isEmpty) {
       return this;
     }
     return MobileBootstrap(
@@ -66,6 +69,16 @@ class MobileBootstrap {
       limits: limits,
     );
   }
+}
+
+String _trustedPhoneCreditsAccount(String value) {
+  final normalized = _normalizeCreditsAccount(value);
+  if (!normalized.toLowerCase().startsWith('phone:')) return '';
+  final phone = normalized.substring(normalized.indexOf(':') + 1);
+  if (phone.isEmpty) return '';
+  final allDigits =
+      phone.codeUnits.every((codeUnit) => codeUnit >= 48 && codeUnit <= 57);
+  return allDigits ? 'phone:$phone' : '';
 }
 
 String _phoneDigits(String value) {

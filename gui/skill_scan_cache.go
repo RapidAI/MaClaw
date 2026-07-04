@@ -457,5 +457,5 @@ func skillScanCacheSigningKey() ([]byte, error) {
 }
 
 func skillScanCacheSigningKeyPath() string {
-	return filepath.Join(corelib.MaclawBaseDir(), "data", skillScanCacheSigningKeyName)
+	return filepath.Join(corelib.MaclawDataDir(), skillScanCacheSigningKeyName)
 }

@@ -1,3 +1,5 @@
+import '../documents/mobile_document_import.dart';
+
 enum MobileSharedIntentKind { text, link, file, image }
 
 class MobileSharedIntentPayload {
@@ -98,7 +100,12 @@ class MobileSharedIntent {
       if (intent != null) intents.add(intent);
     }
     for (final intent in intents) {
-      if (intent.opensDocuments) return intent;
+      if (intent.opensDocuments && _canImportSharedDocumentIntent(intent)) {
+        return intent;
+      }
+    }
+    for (final intent in intents) {
+      if (!intent.opensDocuments) return intent;
     }
     return intents.firstOrNull;
   }
@@ -113,6 +120,18 @@ class MobileSharedIntent {
       return null;
     }
     if (value.isEmpty && message != null && message.isNotEmpty) {
+      return MobileSharedIntent.fromMedia(
+        value: message,
+        typeName: 'text',
+        mimeType: 'text/plain',
+        message: message,
+        receivedAt: receivedAt,
+      );
+    }
+    if (_payloadLooksLikeDocument(payload) &&
+        !canImportMobileDocumentPath(value) &&
+        message != null &&
+        message.isNotEmpty) {
       return MobileSharedIntent.fromMedia(
         value: message,
         typeName: 'text',
@@ -162,4 +181,17 @@ class MobileSharedIntent {
 String? _firstHttpUrl(String value) {
   final match = RegExp(r'https?://[^\s<>"\]\)]+').firstMatch(value.trim());
   return match?.group(0);
+}
+
+bool _canImportSharedDocumentIntent(MobileSharedIntent intent) {
+  if (!intent.opensDocuments) return false;
+  return canImportMobileDocumentPath(intent.value);
+}
+
+bool _payloadLooksLikeDocument(MobileSharedIntentPayload payload) {
+  final typeName = payload.typeName.trim().toLowerCase();
+  final mimeType = (payload.mimeType ?? '').trim().toLowerCase();
+  return typeName == 'file' ||
+      typeName == 'image' ||
+      mimeType.startsWith('image/');
 }

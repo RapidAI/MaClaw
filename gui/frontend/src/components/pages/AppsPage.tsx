@@ -4995,22 +4995,34 @@ function businessOperationRunEvidence(result: BusinessOperationResultView): Pick
 }
 
 async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string, remoteOnly: boolean) {
+    const localPath = artifactPath.trim();
     if (runID && artifactRef) {
         if (remoteOnly) {
             await DownloadSkillRunArtifact(runID, artifactRef);
         }
-        await OpenSkillRunArtifact(runID, artifactRef);
-        return;
+        try {
+            await OpenSkillRunArtifact(runID, artifactRef);
+            return;
+        } catch (error) {
+            if (!localPath) throw error;
+            console.warn('[apps] open artifact by registry failed; falling back to local path', error);
+        }
     }
-    await OpenFileOrShowInFolder(artifactPath);
+    await OpenFileOrShowInFolder(localPath);
 }
 
 async function revealSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string) {
+    const localPath = artifactPath.trim();
     if (runID && artifactRef) {
-        await RevealSkillRunArtifact(runID, artifactRef);
-        return;
+        try {
+            await RevealSkillRunArtifact(runID, artifactRef);
+            return;
+        } catch (error) {
+            if (!localPath) throw error;
+            console.warn('[apps] reveal artifact by registry failed; falling back to local path', error);
+        }
     }
-    await ShowItemInFolder(artifactPath);
+    await ShowItemInFolder(localPath);
 }
 
 function artifactStatusLabel(status: SkillRunStatusView | null, text: typeof labels.zh) {
@@ -8317,6 +8329,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [fileInputResetKey, setFileInputResetKey] = useState(0);
     const [toolParams, setToolParams] = useState('');
     const [fieldValues, setFieldValues] = useState<Record<string, string | boolean>>({});
     const [outputMode, setOutputMode] = useState('docx');
@@ -8343,6 +8356,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setFileName('');
         setSelectedFile(null);
         setSelectedFiles([]);
+        setFileInputResetKey((key) => key + 1);
         setToolParams('');
         setFieldValues({});
         setOutputMode(normalizeOutputModes(app?.manifest?.skill?.outputModes)[0]);
@@ -8827,7 +8841,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 const value = fieldValues[field.name] ?? field.default ?? '';
                 return String(value).trim() === '';
             });
-            if ((showFileInput && !fileName) || missingRequiredField) {
+            if ((showFileInput && selectedFiles.length === 0) || missingRequiredField) {
                 setValidationMessage(text.validationMissing);
                 setRunState('error');
                 return;
@@ -9631,6 +9645,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                     {showFileInput && (
                                         <label className="apps-drop-zone">
                                             <input
+                                                key={fileInputResetKey}
                                                 type="file"
                                                 multiple={allowMultipleFiles}
                                                 onChange={(event) => {
@@ -9642,7 +9657,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                                     markDirty();
                                                 }}
                                             />
-                                            <span>{fileName ? `${text.selectedFile}: ${fileName}` : text.upload}</span>
+                                            <span>{selectedFileLabel ? `${text.selectedFile}: ${selectedFileLabel}` : text.upload}</span>
                                             <strong>{text.chooseFile}</strong>
                                         </label>
                                     )}
@@ -9759,6 +9774,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 setFileName('');
                                 setSelectedFile(null);
                                 setSelectedFiles([]);
+                                setFileInputResetKey((key) => key + 1);
                                 setToolParams('');
                                 setFieldValues({});
                                 setOutputMode(outputModes[0]);

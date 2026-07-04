@@ -2475,6 +2475,9 @@ func withSkillAppInputFileAliases(runArgs map[string]interface{}) map[string]int
 		if outputMode != "" {
 			outputPath := synthesizeSkillAppOutputPath(stagedPath, outputMode)
 			if outputPath != "" {
+				if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+					log.Printf("[skill-app] create synthesized output dir failed path=%q err=%v", filepath.Dir(outputPath), err)
+				}
 				out["output"] = outputPath
 				log.Printf("[skill-app] synthesized output path: %s (input=%s, mode=%s)", outputPath, filepath.Base(stagedPath), outputMode)
 			}
@@ -2505,9 +2508,9 @@ func skillAppOutputModeFromRunArgs(runArgs map[string]interface{}) string {
 // and the desired output format extension. Returns empty string if synthesis
 // is not possible (e.g. missing input path or format).
 //
-// Strategy: place the output file next to the input file with the same base
-// name and the target format as extension. If the input already has that
-// extension, append "_output" to avoid overwriting.
+// Strategy: place ordinary outputs next to the input file with the same base
+// name and the target format as extension. App-staged input files use a
+// persistent output directory so staged-input cleanup cannot delete artifacts.
 func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
 	inputPath = strings.TrimSpace(inputPath)
 	outputFormat = strings.TrimSpace(strings.ToLower(outputFormat))
@@ -2522,6 +2525,9 @@ func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
 	if base == "" {
 		base = "output"
 	}
+	if outputDir := persistentSkillAppOutputDir(inputPath); outputDir != "" {
+		dir = outputDir
+	}
 
 	outputPath := filepath.Join(dir, base+"."+outputFormat)
 	// Avoid overwriting input when formats match (e.g. pdf→pdf)
@@ -2529,6 +2535,24 @@ func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
 		outputPath = filepath.Join(dir, base+"_output."+outputFormat)
 	}
 	return outputPath
+}
+
+func persistentSkillAppOutputDir(inputPath string) string {
+	inputPath = strings.TrimSpace(inputPath)
+	if inputPath == "" {
+		return ""
+	}
+	inputDir := filepath.Dir(filepath.Clean(inputPath))
+	stagingRoot := filepath.Clean(filepath.Join(corelib.MaclawBaseDir(), "temp", "app-inputs"))
+	rel, err := filepath.Rel(stagingRoot, inputDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || !strings.HasPrefix(parts[0], "input-") {
+		return ""
+	}
+	return filepath.Join(corelib.MaclawAppOutputsDir(), parts[0])
 }
 
 func sanitizeSkillAppInputFileName(name string) string {

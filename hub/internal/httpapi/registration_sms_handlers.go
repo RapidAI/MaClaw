@@ -227,10 +227,11 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 				invalidateLLMRuntimeCaches(tenantSystem)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":           true,
-				"kind":         "phone",
-				"tenant_id":    currentPrincipal.TenantID,
-				"phone_number": phoneNumber,
+				"ok":              true,
+				"kind":            "phone",
+				"tenant_id":       currentPrincipal.TenantID,
+				"phone_number":    phoneNumber,
+				"credits_account": phoneIdentity,
 			})
 			return
 		}
@@ -264,6 +265,7 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		}
 		respMap := enrollmentStartResponseMap(resp)
 		respMap["phone_number"] = phoneNumber
+		respMap["credits_account"] = phoneIdentity
 		if existingUser != nil {
 			respMap["rebound_existing_user"] = true
 		}

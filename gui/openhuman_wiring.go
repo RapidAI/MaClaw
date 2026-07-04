@@ -86,7 +86,7 @@ func (a *App) initOpenHumanModules() {
 	}
 
 	// A4: Tool Memory
-	toolMemPath := filepath.Join(corelib.MaclawBaseDir(), "data", "tool_rules.json")
+	toolMemPath := filepath.Join(corelib.MaclawDataDir(), "tool_rules.json")
 	a.ohModules.toolMemory = coretool.NewToolMemoryStore(toolMemPath)
 	log.Printf("[openhuman] tool memory initialized at %s", toolMemPath)
 

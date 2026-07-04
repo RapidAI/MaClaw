@@ -299,6 +299,40 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             errors,
         )
 
+    def test_main_missing_ios_points_to_same_version_ios_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            android = records_dir / "2026-07-02-android-1.0.0+42.md"
+            android.write_text("android", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [f"- [{android.name}](docs/qa-builds/{android.name})"],
+            )
+            output = StringIO()
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(android, []),
+                ],
+            ), redirect_stdout(output):
+                exit_code = verify_final_release_evidence.main(
+                    [str(records_dir), "--release-evidence", str(evidence)],
+                )
+
+        text = output.getvalue()
+        self.assertEqual(1, exit_code)
+        self.assertIn(
+            release_evidence_commands.signed_qa_record_hint(
+                scope="ios",
+                version="1.0.0+42",
+                records_dir=str(records_dir.resolve()),
+            ),
+            text,
+        )
+        self.assertNotIn("setup_android_signing.py", text)
+        self.assertNotIn("signed_artifact_evidence.py android", text)
+
     def test_android_scope_accepts_android_only_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)
@@ -559,6 +593,113 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             errors,
         )
 
+    def test_guarded_block_rejects_stale_or_unvalidated_qa_record_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            stale_record = records_dir / "2026-07-02-android-ios-1.0.0+41.md"
+            record.write_text("record", encoding="utf-8")
+            stale_record.write_text("stale", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [
+                    f"- [{record.name}](docs/qa-builds/{record.name})",
+                    f"- [{stale_record.name}](docs/qa-builds/{stale_record.name})",
+                ],
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ):
+                errors = verify_final_release_evidence.verify_final_release_evidence(
+                    records_dir,
+                    evidence,
+                )
+
+        joined_errors = "\n".join(errors)
+        self.assertIn(
+            "Release evidence document guarded QA build record link block must not include stale or unvalidated QA record links:",
+            joined_errors,
+        )
+        self.assertIn(
+            "2026-07-02-android-ios-1.0.0+41.md",
+            joined_errors,
+        )
+
+    def test_guarded_block_reports_missing_and_stale_links_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            android = records_dir / "2026-07-02-android-1.0.0+42.md"
+            ios = records_dir / "2026-07-02-ios-1.0.0+42.md"
+            stale_record = records_dir / "2026-07-02-android-ios-1.0.0+41.md"
+            android.write_text("android", encoding="utf-8")
+            ios.write_text("ios", encoding="utf-8")
+            stale_record.write_text("stale", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [
+                    f"- [{android.name}](docs/qa-builds/{android.name})",
+                    f"- [{stale_record.name}](docs/qa-builds/{stale_record.name})",
+                ],
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(android, []),
+                    validate_qa_build_records_dir.RecordValidationResult(ios, []),
+                ],
+            ):
+                errors = verify_final_release_evidence.verify_final_release_evidence(
+                    records_dir,
+                    evidence,
+                )
+
+        joined_errors = "\n".join(errors)
+        self.assertIn(
+            "Release evidence document must include Markdown links for every validated QA build record: "
+            "2026-07-02-ios-1.0.0+42.md",
+            errors,
+        )
+        self.assertIn(
+            "Release evidence document guarded QA build record link block must not include stale or unvalidated QA record links:",
+            joined_errors,
+        )
+        self.assertIn(
+            "2026-07-02-android-ios-1.0.0+41.md",
+            joined_errors,
+        )
+
+    def test_guarded_block_allows_non_qa_markdown_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text("record", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [
+                    f"- [{record.name}](docs/qa-builds/{record.name})",
+                    "- [QA notes](docs/qa-builds/notes.md)",
+                ],
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ):
+                self.assertEqual(
+                    [],
+                    verify_final_release_evidence.verify_final_release_evidence(
+                        records_dir,
+                        evidence,
+                    ),
+                )
+
     def test_valid_records_reject_missing_release_evidence_document(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)
@@ -685,6 +826,7 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.qa_release_evidence_link_hint(
                 records_dir=str(records_dir.resolve()),
+                version="1.0.0+42",
             ),
             text,
         )
@@ -692,6 +834,7 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             [
                 release_evidence_commands.qa_release_evidence_link_hint(
                     records_dir=str(records_dir.resolve()),
+                    version="1.0.0+42",
                 ),
             ],
             verify_final_release_evidence.next_action_hints(
@@ -732,6 +875,7 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.qa_release_evidence_link_hint(
                 records_dir=str(records_dir.resolve()),
+                version="1.0.0+42",
             ),
             text,
         )
@@ -895,7 +1039,7 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
                 records_dir,
                 [f"- [{record.name}](docs/qa-builds/{record.name})"],
             )
-            log_path = records_dir / "logs" / "final-release-evidence.log"
+            log_path = records_dir / "logs" / "final-release-evidence-1.0.0+42.log"
 
             with patch(
                 "validate_qa_build_records_dir.validate_directory",
@@ -920,6 +1064,87 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             self.assertIn(f"- QA records directory: {records_dir.resolve()}", text)
             self.assertIn("- Version/build: 1.0.0+42", text)
             self.assertIn(f"  - {record.name}", text)
+
+    def test_main_success_rejects_log_filename_with_wrong_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text("record", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [f"- [{record.name}](docs/qa-builds/{record.name})"],
+            )
+            log_path = records_dir / "logs" / "final-release-evidence-1.0.0+41.log"
+            output = StringIO()
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ), redirect_stdout(output):
+                exit_code = verify_final_release_evidence.main(
+                    [
+                        str(records_dir),
+                        "--release-evidence",
+                        str(evidence),
+                        "--log",
+                        str(log_path),
+                    ],
+                )
+
+            self.assertEqual(1, exit_code)
+            self.assertIn(
+                "Final release evidence log filename must match the validated version/build: expected final-release-evidence-1.0.0+42.log",
+                output.getvalue(),
+            )
+            self.assertIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    str(records_dir.resolve()),
+                    log=(records_dir.resolve() / "final-release-evidence-1.0.0+42.log").as_posix(),
+                ),
+                output.getvalue(),
+            )
+            self.assertNotIn(
+                release_evidence_commands.create_record_command(),
+                output.getvalue(),
+            )
+            self.assertFalse(log_path.exists())
+
+    def test_main_android_scope_success_requires_scope_qualified_log_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-1.0.0+42.md"
+            record.write_text("record", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [f"- [{record.name}](docs/qa-builds/{record.name})"],
+            )
+            log_path = records_dir / "logs" / "final-release-evidence-android-1.0.0+42.log"
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ), redirect_stdout(StringIO()):
+                exit_code = verify_final_release_evidence.main(
+                    [
+                        str(records_dir),
+                        "--release-evidence",
+                        str(evidence),
+                        "--scope",
+                        "android",
+                        "--log",
+                        str(log_path),
+                    ],
+                )
+
+            self.assertEqual(0, exit_code)
+            self.assertIn(
+                "- Verification scope: android",
+                log_path.read_text(encoding="utf-8"),
+            )
 
     def test_main_failure_can_write_auditable_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

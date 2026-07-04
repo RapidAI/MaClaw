@@ -70,7 +70,7 @@ var (
 
 // craftedToolsDir returns the directory for storing crafted tool scripts.
 func craftedToolsDir() string {
-	return filepath.Join(corelib.MaclawBaseDir(), "data", "crafted_tools")
+	return filepath.Join(corelib.MaclawDataDir(), "crafted_tools")
 }
 
 // toolCraftTool is the implementation of the "craft_tool" tool.

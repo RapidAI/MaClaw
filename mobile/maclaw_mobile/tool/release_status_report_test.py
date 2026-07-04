@@ -49,7 +49,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertFalse(status.ready)
         self.assertIn("[BLOCKER] Android local signing inputs", output)
         self.assertIn(
-            "QA build records: 0 in-scope valid, 0 out-of-scope valid, 1 invalid",
+            "QA build records: 0 in-scope valid, 0 out-of-scope valid, 1 blocking invalid, 0 out-of-scope invalid",
             output,
         )
         self.assertIn("Branch", output)
@@ -292,9 +292,14 @@ class ReleaseStatusReportTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            release_evidence_commands.signed_qa_record_hint(),
+            release_evidence_commands.signed_qa_record_hint(
+                scope="ios",
+                version="1.0.0+42",
+            ),
             output,
         )
+        self.assertNotIn("setup_android_signing.py", output)
+        self.assertNotIn("signed_artifact_evidence.py android", output)
         self.assertNotIn(
             "Link validated QA records in docs/release_evidence.md and rerun final verification.",
             output,
@@ -329,9 +334,9 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.verify_final_release_evidence_command(
                 str(records_dir.resolve()),
-                version=release_evidence_commands.DEFAULT_VERSION,
+                version="1.0.0+42",
                 log=release_evidence_commands.final_release_evidence_log_path(
-                    release_evidence_commands.DEFAULT_VERSION,
+                    "1.0.0+42",
                     records_dir=str(records_dir.resolve()),
                 ),
             ),
@@ -361,7 +366,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         output = release_status_report.format_status(status)
 
         self.assertIn(
-            "QA build records: 0 in-scope valid, 1 out-of-scope valid, 1 invalid",
+            "QA build records: 0 in-scope valid, 1 out-of-scope valid, 0 blocking invalid, 1 out-of-scope invalid",
             output,
         )
         self.assertIn("[OUT-OF-SCOPE] 2026-07-02-ios-1.0.0+42.md", output)
@@ -434,7 +439,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertTrue(status.ready)
         self.assertIn("[VALID] 2026-07-02-android-ios-1.0.0+42.md", output)
         self.assertIn(
-            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 0 invalid",
+            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 0 blocking invalid, 0 out-of-scope invalid",
             output,
         )
         self.assertIn("Result: READY for final release approval.", output)
@@ -458,7 +463,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         scoped_output = release_status_report.format_status(scoped_ready)
         self.assertTrue(scoped_ready.ready)
         self.assertIn(
-            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 1 invalid",
+            "QA build records: 1 in-scope valid, 0 out-of-scope valid, 0 blocking invalid, 1 out-of-scope invalid",
             scoped_output,
         )
         self.assertIn("[OUT-OF-SCOPE INVALID] 2026-07-02-ios-1.0.0+43.md", scoped_output)

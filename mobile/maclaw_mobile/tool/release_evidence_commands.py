@@ -400,6 +400,10 @@ def signed_qa_record_hint(
             f"`{android_artifact_evidence_command(version, record_dir=records_dir)}`"
         )
     if scope_covers_ios(scope):
+        ios_plan_command = ios_release_plan_command(
+            team_id=team_id,
+            export_method=export_method,
+        )
         ios_plan_evidence_command = ios_release_plan_command(
             team_id=team_id,
             export_method=export_method,
@@ -411,9 +415,10 @@ def signed_qa_record_hint(
             record_dir=records_dir,
         )
         artifact_hints.append(
-            "generate iOS artifact evidence during archive planning with "
-            f"`{ios_plan_evidence_command}` or after the signed archive/TestFlight "
-            "build exists with "
+            "plan iOS archive/export first with "
+            f"`{ios_plan_command}`; after the signed .xcarchive/TestFlight build "
+            "exists, generate iOS artifact evidence with "
+            f"`{ios_plan_evidence_command}` or "
             f"`{ios_evidence_command}`",
         )
     artifact_hint = ""
@@ -449,12 +454,13 @@ def qa_release_evidence_link_hint(
     *,
     scope: str = DEFAULT_SCOPE,
     records_dir: str = DEFAULT_QA_RECORDS_DIR,
+    version: str = DEFAULT_VERSION,
 ) -> str:
     scope = validate_scope(scope)
     return (
         f"run `{qa_release_evidence_link_command(scope=scope, records_dir=records_dir)}` to write validated links "
         "into docs/release_evidence.md, then run "
-        f"`{verify_final_release_evidence_command(records_dir, scope=scope, version=DEFAULT_VERSION, log=final_release_evidence_log_path(DEFAULT_VERSION, scope=scope, records_dir=records_dir))}`"
+        f"`{verify_final_release_evidence_command(records_dir, scope=scope, version=version, log=final_release_evidence_log_path(version, scope=scope, records_dir=records_dir))}`"
     )
 
 

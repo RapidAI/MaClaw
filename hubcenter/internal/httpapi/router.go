@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -38,11 +41,19 @@ type MobileDesktopQRSessionRequest struct {
 	QRPayload string `json:"qr_payload"`
 }
 
+type mobileDesktopQRSessionPayload struct {
+	Version   int    `json:"v"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	HubURL    string `json:"hub_url"`
+}
+
 // LLMRouteHook is called during router setup to register LLM service routes.
 // Set by the application layer after constructing LLM dependencies.
 var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)
 var llmAuthorizationSyncMu sync.RWMutex
 var llmAuthorizationSyncChecker *llmservice.AuthorizationChecker
+var mobileDesktopQRSessionHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 const heartbeatAuthorizationKeyLLMCompute = "llm_compute"
 
@@ -718,18 +729,142 @@ func MobileServiceRedemptionHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
-func MobileDesktopQRSessionHandler() http.HandlerFunc {
+func MobileDesktopQRSessionHandler(hubService *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req MobileDesktopQRSessionRequest
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if strings.TrimSpace(req.QRPayload) == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Desktop QR payload is required")
+		payload, err := parseMobileDesktopQRSessionPayload(req.QRPayload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "DESKTOP_QR_SESSION_REQUIRES_SIGNED_GUI_PAYLOAD", err.Error())
 			return
 		}
-		writeError(w, http.StatusBadRequest, "DESKTOP_QR_SESSION_REQUIRES_SIGNED_GUI_PAYLOAD", "Desktop GUI QR login requires a Hub-signed mobile session payload. Provider-only LLM QR payloads can be authorized after mobile login.")
+		hub, err := registeredMobileQRHub(r.Context(), hubService, payload.HubURL)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "DESKTOP_QR_SESSION_HUB_LOOKUP_FAILED", "Failed to verify the desktop QR Hub")
+			return
+		}
+		if hub == nil {
+			writeError(w, http.StatusBadRequest, "DESKTOP_QR_SESSION_UNKNOWN_HUB", "Desktop GUI QR Hub is not registered with this HubCenter")
+			return
+		}
+		consumePayload, err := consumeMobileDesktopQRSession(r.Context(), hub, req.QRPayload)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "DESKTOP_QR_SESSION_CONSUME_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, consumePayload)
+	}
+}
+
+func parseMobileDesktopQRSessionPayload(raw string) (mobileDesktopQRSessionPayload, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return mobileDesktopQRSessionPayload{}, fmt.Errorf("Desktop QR payload is required")
+	}
+	var payload mobileDesktopQRSessionPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return mobileDesktopQRSessionPayload{}, fmt.Errorf("Desktop GUI QR login requires a Hub-signed mobile session payload. Provider-only LLM QR payloads can be authorized after mobile login.")
+	}
+	payload.Type = strings.TrimSpace(payload.Type)
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	payload.HubURL = strings.TrimSpace(payload.HubURL)
+	if payload.Type != "maclaw_mobile_llm_authorization" || payload.SessionID == "" || payload.HubURL == "" {
+		return mobileDesktopQRSessionPayload{}, fmt.Errorf("Desktop GUI QR login requires a Hub-signed mobile session payload. Provider-only LLM QR payloads can be authorized after mobile login.")
+	}
+	return payload, nil
+}
+
+func registeredMobileQRHub(ctx context.Context, hubService *hubs.Service, hubURL string) (*store.HubInstance, error) {
+	if hubService == nil {
+		return nil, nil
+	}
+	items, err := hubService.ListHubs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, hub := range items {
+		if hub == nil || hub.IsDisabled || !strings.EqualFold(strings.TrimSpace(hub.Status), "online") {
+			continue
+		}
+		if !isHTTPSURLOrigin(hub.BaseURL) || !isHTTPSURLOrigin(hubURL) {
+			continue
+		}
+		if sameURLOrigin(hub.BaseURL, hubURL) {
+			return hub, nil
+		}
+	}
+	return nil, nil
+}
+
+func consumeMobileDesktopQRSession(ctx context.Context, hub *store.HubInstance, qrPayload string) (map[string]any, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("registered Hub has no base URL")
+	}
+	body, err := json.Marshal(map[string]string{"qr_payload": strings.TrimSpace(qrPayload)})
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	resp, err := mobileDesktopQRSessionHTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, defaultJSONBodyLimit))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Hub desktop QR consume failed with HTTP %d", resp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return nil, fmt.Errorf("Hub returned invalid desktop QR consume response")
+	}
+	payload["hub_id"] = hub.ID
+	payload["hub_url"] = baseURL
+	return payload, nil
+}
+
+func sameURLOrigin(a, b string) bool {
+	left, err := url.Parse(strings.TrimSpace(a))
+	if err != nil || left.Scheme == "" || left.Host == "" {
+		return false
+	}
+	right, err := url.Parse(strings.TrimSpace(b))
+	if err != nil || right.Scheme == "" || right.Host == "" {
+		return false
+	}
+	return strings.EqualFold(left.Scheme, right.Scheme) &&
+		strings.EqualFold(left.Hostname(), right.Hostname()) &&
+		effectiveURLPort(left) == effectiveURLPort(right)
+}
+
+func isHTTPSURLOrigin(raw string) bool {
+	uri, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(uri.Scheme, "https") && uri.Host != ""
+}
+
+func effectiveURLPort(uri *url.URL) string {
+	if port := uri.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(uri.Scheme) {
+	case "http", "ws":
+		return "80"
+	case "https", "wss":
+		return "443"
+	default:
+		return ""
 	}
 }
 
@@ -822,7 +957,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))
 	mux.HandleFunc("POST /api/mobile/service-redemptions", MobileServiceRedemptionHandler(entryService))
-	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileDesktopQRSessionHandler())
+	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileDesktopQRSessionHandler(hubService))
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
 	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))

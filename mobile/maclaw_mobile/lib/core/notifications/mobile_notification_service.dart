@@ -129,6 +129,7 @@ class MobileNotificationService {
   void handleNotificationResponse(NotificationResponse response) {
     final payload = response.payload?.trim() ?? '';
     if (payload.isEmpty) return;
+    if (mobileNotificationPayloadBasePath(payload) == null) return;
     _latestOpenedNotification = MobileNotificationOpen(
       payload: payload,
       notificationId: response.id,

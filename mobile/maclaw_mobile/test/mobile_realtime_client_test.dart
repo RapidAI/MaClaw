@@ -88,7 +88,36 @@ void main() {
     expect(task?.taskId, 'task-1');
     expect(task?.status, 'done');
     expect(task?.payload['result'], 'ok');
+    expect(task?.payload['task_id'], 'task-1');
+    expect(task?.payload['status'], 'done');
     expect(MobileRealtimeEvent.tryParse('not json'), isNull);
+  });
+
+  test('copies top-level realtime identifiers into sparse payloads', () {
+    final event = MobileRealtimeEvent.tryParse({
+      'type': 'document_task',
+      'task_id': 'upload-top-1',
+      'status': 'ready',
+      'payload': {
+        'filename': 'incident.pdf',
+        'draft_id': 'draft-top-1',
+      },
+    });
+    final exportEvent = MobileRealtimeEvent.tryParse({
+      'type': 'document_task',
+      'job_id': 'export-top-1',
+      'status': 'ready',
+      'payload': {
+        'draft_id': 'draft-1',
+        'format': 'pdf',
+      },
+    });
+
+    expect(event?.payload['task_id'], 'upload-top-1');
+    expect(event?.payload['status'], 'ready');
+    expect(exportEvent?.taskId, 'export-top-1');
+    expect(exportEvent?.payload['job_id'], 'export-top-1');
+    expect(exportEvent?.payload['status'], 'ready');
   });
 
   test('parses hub task payload as realtime event payload', () {

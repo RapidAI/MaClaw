@@ -160,6 +160,30 @@ func TestListSharedPythonRuntimesReportsMismatchedLockID(t *testing.T) {
 	}
 }
 
+func TestListSharedPythonRuntimesReportsFailedStageAndError(t *testing.T) {
+	dataDir := t.TempDir()
+	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := fmt.Errorf("uv not found")
+	if _, err := failSharedPythonRuntime(plan, "pdf-word", "resolve_uv", failure); err == nil {
+		t.Fatal("expected failure to be returned")
+	}
+
+	items, err := ListSharedPythonRuntimes(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one failed runtime", items)
+	}
+	got := items[0]
+	if got.Status != "failed" || got.Stage != "resolve_uv" || got.Error != failure.Error() || len(got.UsedBy) != 1 || got.UsedBy[0] != "pdf-word" {
+		t.Fatalf("failed runtime status = %#v", got)
+	}
+}
+
 func TestWriteSharedRuntimeLockPreservesCreatedAtAndMergesUsedBy(t *testing.T) {
 	dataDir := t.TempDir()
 	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"requests"}})
@@ -293,7 +317,7 @@ func TestEnsureSharedPythonRuntimeReinstallsPackagesWhenLockNotReady(t *testing.
 	}
 }
 
-func TestEnsureSharedPythonRuntimeLeavesInstallingLockOnFailure(t *testing.T) {
+func TestEnsureSharedPythonRuntimeWritesFailedLockOnFailure(t *testing.T) {
 	dataDir := t.TempDir()
 	spec := SharedPythonRuntimeSpec{Packages: []string{"rapidocr-onnxruntime==1.4.4"}}
 	plan, err := PlanSharedPythonRuntime(dataDir, spec)
@@ -331,11 +355,122 @@ func TestEnsureSharedPythonRuntimeLeavesInstallingLockOnFailure(t *testing.T) {
 	if err := json.Unmarshal(lockData, &lock); err != nil {
 		t.Fatal(err)
 	}
-	if lock.Status != "installing" || len(lock.UsedBy) != 1 || lock.UsedBy[0] != "ocr-app" {
-		t.Fatalf("failed install should leave installing lock with used_by: %#v", lock)
+	if lock.Status != "failed" || lock.Stage != "uv_pip_install" || lock.Error == "" || len(lock.UsedBy) != 1 || lock.UsedBy[0] != "ocr-app" {
+		t.Fatalf("failed install should write failed lock with used_by/stage/error: %#v", lock)
 	}
 	if sharedPythonRuntimeReady(plan) {
-		t.Fatal("installing lock must not be treated as ready")
+		t.Fatal("failed lock must not be treated as ready")
+	}
+}
+
+func TestEnsureSharedPythonRuntimeFallsBackToPipWhenUVMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf", "python-docx"}}
+	plan, err := PlanSharedPythonRuntime(dataDir, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "pip-fallback.log")
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", logPath)
+	oldResolveUV := sharedRuntimeResolveUVExecutable
+	sharedRuntimeResolveUVExecutable = func() (string, error) {
+		return "", fmt.Errorf("uv not found")
+	}
+	oldResolveSeed := sharedRuntimeResolveSeedPython
+	sharedRuntimeResolveSeedPython = func() (string, error) {
+		return "python", nil
+	}
+	oldCheckPython := sharedRuntimeCheckPython
+	sharedRuntimeCheckPython = func(string) (string, bool) {
+		return "Python " + plan.Python + ".8", true
+	}
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() {
+		sharedRuntimeResolveUVExecutable = oldResolveUV
+		sharedRuntimeResolveSeedPython = oldResolveSeed
+		sharedRuntimeCheckPython = oldCheckPython
+		sharedRuntimeExecCommand = oldExec
+	})
+
+	ensured, err := EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensured.ID != plan.ID {
+		t.Fatalf("runtime ID = %q, want %q", ensured.ID, plan.ID)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "-m venv "+plan.EnvDir) {
+		t.Fatalf("expected venv creation, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, plan.PythonPath+" -m pip install --quiet pymupdf python-docx") {
+		t.Fatalf("expected venv pip install, got:\n%s", logText)
+	}
+	lockData, err := os.ReadFile(plan.LockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready sharedPythonRuntimeLock
+	if err := json.Unmarshal(lockData, &ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "ready" || len(ready.UsedBy) != 1 || ready.UsedBy[0] != "pdf-word" {
+		t.Fatalf("lock should be ready after pip fallback: %#v", ready)
+	}
+}
+
+func TestEnsureSharedPythonRuntimePipFallbackRejectsWrongPythonMinor(t *testing.T) {
+	dataDir := t.TempDir()
+	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}}
+	plan, err := PlanSharedPythonRuntime(dataDir, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldResolveUV := sharedRuntimeResolveUVExecutable
+	sharedRuntimeResolveUVExecutable = func() (string, error) {
+		return "", fmt.Errorf("uv not found")
+	}
+	oldResolveSeed := sharedRuntimeResolveSeedPython
+	sharedRuntimeResolveSeedPython = func() (string, error) {
+		return "python", nil
+	}
+	oldCheckPython := sharedRuntimeCheckPython
+	sharedRuntimeCheckPython = func(string) (string, bool) {
+		return "Python 3.11.9", true
+	}
+	t.Cleanup(func() {
+		sharedRuntimeResolveUVExecutable = oldResolveUV
+		sharedRuntimeResolveSeedPython = oldResolveSeed
+		sharedRuntimeCheckPython = oldCheckPython
+	})
+
+	_, err = EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil)
+	if err == nil || !strings.Contains(err.Error(), "requires Python "+plan.Python) {
+		t.Fatalf("error = %v, want Python minor mismatch", err)
+	}
+	lockData, readErr := os.ReadFile(plan.LockPath)
+	if readErr != nil {
+		t.Fatalf("failed lock should be written for mismatched Python: %v", readErr)
+	}
+	var lock sharedPythonRuntimeLock
+	if err := json.Unmarshal(lockData, &lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.Status != "failed" || lock.Stage != "validate_seed_python" || len(lock.UsedBy) != 1 || lock.UsedBy[0] != "pdf-word" || !strings.Contains(lock.Error, "requires Python "+plan.Python) {
+		t.Fatalf("lock = %#v, want failed validate_seed_python with mismatch error", lock)
+	}
+	if sharedPythonRuntimeReady(plan) {
+		t.Fatal("failed mismatch lock must not be treated as ready")
 	}
 }
 
@@ -390,6 +525,39 @@ func TestSharedPythonRuntimeFakeUV(t *testing.T) {
 		os.Exit(1)
 	}
 	file, err := os.OpenFile(os.Getenv("MACLAW_FAKE_UV_LOG"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if _, err := file.WriteString(line); err != nil {
+		_ = file.Close()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func TestSharedPythonRuntimeFakePip(t *testing.T) {
+	if os.Getenv("MACLAW_FAKE_PIP_RUNTIME_LOG") == "" {
+		return
+	}
+	sep := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		fmt.Fprintln(os.Stderr, "missing fake pip separator")
+		os.Exit(2)
+	}
+	line := strings.Join(os.Args[sep+1:], " ") + "\n"
+	file, err := os.OpenFile(os.Getenv("MACLAW_FAKE_PIP_RUNTIME_LOG"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

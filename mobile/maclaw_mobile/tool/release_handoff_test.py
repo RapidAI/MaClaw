@@ -330,11 +330,14 @@ class ReleaseHandoffTest(unittest.TestCase):
         )
         scoped_output = release_handoff.format_handoff(scoped_handoff)
         self.assertIn(
-            release_evidence_commands.qa_release_evidence_link_hint(scope="android"),
+            release_evidence_commands.qa_release_evidence_link_hint(
+                scope="android",
+                version="1.0.0+42",
+            ),
             scoped_output,
         )
         self.assertIn(
-            "docs/qa-builds/final-release-evidence-android-<version+build>.log",
+            "docs/qa-builds/final-release-evidence-android-1.0.0+42.log",
             scoped_output,
         )
         self.assertNotIn(
@@ -360,7 +363,9 @@ class ReleaseHandoffTest(unittest.TestCase):
         )
         self.assertIn("Final evidence next actions:", output)
         self.assertIn(
-            release_evidence_commands.qa_release_evidence_link_hint(),
+            release_evidence_commands.qa_release_evidence_link_hint(
+                version="1.0.0+42",
+            ),
             output,
         )
         self.assertNotIn(
@@ -623,9 +628,9 @@ class ReleaseHandoffTest(unittest.TestCase):
             release_evidence_commands.verify_final_release_evidence_command(
                 records_dir,
                 scope="android",
-                version=release_evidence_commands.DEFAULT_VERSION,
+                version="1.0.0+42",
                 log=release_evidence_commands.final_release_evidence_log_path(
-                    release_evidence_commands.DEFAULT_VERSION,
+                    "1.0.0+42",
                     scope="android",
                     records_dir=records_dir,
                 ),

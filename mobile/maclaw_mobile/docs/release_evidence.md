@@ -102,8 +102,10 @@ Before final release approval with completed signed-build QA records, run
 `python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log`
 to require validated Android and iOS evidence records for the same
 version/build, require this file to link every validated QA record by filename,
-and save the success or failure transcript as release evidence; existing logs
-require `--force` before they can be overwritten.
+and save the success or failure transcript as release evidence; successful final
+evidence logs must use that same version/build in the
+`final-release-evidence*.log` filename, and existing logs require `--force`
+before they can be overwritten.
 
 ## Resolved Automated Test Residuals
 
@@ -141,6 +143,36 @@ require `--force` before they can be overwritten.
 | Realtime document/digital employee updates | `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart` |
 
 ## Latest Local Verification
+
+2026-07-05:
+
+- Desktop GUI LLM QR Hub boundary:
+  - Updated mobile QR session bootstrap so unauthenticated desktop GUI QR
+    connection always posts to the selected official HubCenter endpoint instead
+    of directly trusting `hub_url` embedded in the QR payload.
+  - Updated authenticated third-party LLM QR authorization so a QR payload that
+    declares `hub_url` must match the current discovered Hub origin before the
+    mobile client sends the authorization request.
+  - Implemented the HubCenter mobile QR endpoint so it verifies the QR
+    `hub_url` against registered online Hubs before proxying the original
+    payload to that Hub's one-time mobile consume endpoint.
+  - Hardened HubCenter QR proxy errors so upstream Hub response bodies are not
+    echoed back to the mobile app, and normalized same-origin matching across
+    explicit default ports such as `https://host` and `https://host:443`.
+  - Hardened HubCenter QR proxy success responses so `hub_id` and `hub_url`
+    are always overwritten with the verified registered Hub identity before
+    returning data to the mobile app.
+  - Aligned HubCenter QR bootstrap with the mobile runtime boundary by
+    accepting only HTTPS registered Hub origins for QR session proxying.
+  - Added regression coverage that an arbitrary QR `hub_url` is not used as a
+    direct mobile endpoint and that a different authenticated Hub URL is
+    rejected before request dispatch. HubCenter coverage now also proves
+    unregistered QR Hub URLs are rejected before proxy dispatch and that
+    upstream consume failures do not leak Hub response bodies.
+- Verified:
+  - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+  - `flutter test test\auth_service_test.dart test\api_client_test.dart test\llm_setup_screen_test.dart --concurrency=1 --reporter compact`
+  - `flutter analyze`
 
 2026-07-02:
 
@@ -270,19 +302,26 @@ require `--force` before they can be overwritten.
     Extension.
   - Enforces LLM mode consistency: official MaClaw LLM records must mark the
     desktop GUI QR authorization as `not-used-official-mode` and prove LLM
-    calls use the recorded `phone:<number>` account's official credits, while
-    `desktop_qr_third_party` records must include a trackable QR authorization
-    ID, and the LLM access evidence must match the selected mode.
+    calls after SMS verification use the recorded `phone:<number>` account's
+    official credits, while
+    `desktop_qr_third_party` records must include a real trackable MaClaw
+    desktop GUI QR authorization ID instead of the official-mode
+    `not-used-official-mode` sentinel, and the LLM access evidence must match
+    the selected mode and recorded Tenant ID.
   - Requires manual device evidence fields, including install results, share
     payloads, permissions, Hub smoke, and SSH smoke results, to contain
     auditable notes instead of placeholders such as `ok`, `yes`, or `done`.
   - Requires manual SSH smoke fields to describe the specific tested action:
     host type, auth mode, connect result, read-only command, command output
     excerpt, disconnect result, reconnect result, and copied output evidence.
+  - Requires manual SSH smoke evidence to reference the recorded
+    `server-profile:<id>` notification payload when server abnormal
+    notification evidence is present.
   - Requires SSH AI analysis evidence to mention preview confirmation, the
     sensitive-data warning, and redacted/masked/sanitized terminal or log
     output before AI analysis; requires AI result evidence to include
-    explanation, command drafts, and manual/not-auto-executed proof; and
+    explanation, command drafts, manual/not-auto-executed proof, and redacted
+    SSH terminal/log output context; and
     requires credential deletion evidence to mention cleared
     password/private-key or secure-storage state.
   - Requires status polling and realtime update evidence to identify task/job or
@@ -292,19 +331,26 @@ require `--force` before they can be overwritten.
   - Requires notification delivery evidence for document/export completion,
     digital employee task completion, and SSH abnormal/disconnect scenarios,
     including typed payload or tap/open target proof for document,
-    `digital-employee-task:`, and `server-profile:` targets.
+    `digital-employee-task:`, and `server-profile:` targets, and requires the
+    notification evidence to reference recorded document export job and digital
+    employee task IDs plus redacted/masked/sanitized notification message
+    preview proof.
   - Requires network offline/recovery evidence to show HubCenter/network
     unavailable warnings and restored search, document, digital employee, or
     realtime service behavior after connectivity returns.
   - Requires account-screen, no-custom-Hub-URL, and bootstrap smoke evidence to
     explicitly mention selected Hub, tenant, absent custom Hub URL settings,
-    user/quota, feature flags, and service status.
+    user/quota, feature flags, and service status, with account-screen Hub and
+    tenant evidence matching the recorded Discovered Hub URL and Tenant ID.
   - Requires login evidence to prove MaClaw Mobile's phone-number-only path:
     HubCenter-mediated SMS verification and official credits bound to the phone
-    account.
+    account, including the first LLM call after verification using that phone
+    account's MaClaw official credits.
   - Requires account privacy and local-data evidence to record theme/speech
     language changes, local work-record clearing, retained server credentials
-    after local reset, and separate explicit server/SSH credential clearing.
+    in secure storage/vault after local reset, and separate explicit
+    server/SSH credential clearing,
+    tied to any recorded `server-profile:<id>` notification payload.
   - Requires HubCenter probe evidence to list the exact three official
     HubCenters, discovered Hub evidence to include Hub URL plus tenant, and LLM
     evidence to identify MaClaw official access or desktop GUI QR third-party
@@ -315,23 +361,38 @@ require `--force` before they can be overwritten.
   - Requires document upload task IDs to identify document upload/import tasks,
     and PDF/Word/Markdown export job IDs to match the requested export format.
   - Requires exported document share evidence to prove PDF, Word, and Markdown
-    exports were downloaded/saved and handed to a share target or local path.
+    exports were downloaded/saved and handed to a share target or local path,
+    to reference the recorded PDF, Word, and Markdown export job IDs, and to
+    prove exported document previews were redacted/masked/sanitized before
+    external sharing or saving.
   - Requires share-to-app payload evidence to describe the expected mobile
     routing: shared text/URLs open the assistant with citations where
     applicable, while files/images enter document import/upload tasks with the
     expected payload format named.
-  - Requires AI citation smoke evidence to include a visible HTTPS source URL,
+  - Requires AI citation smoke evidence to include a visible HTTPS source URL
+    from the answer/result citations area, not only a backend/API log URL,
     and shared-result evidence to name the share target or concrete output such
-    as Mail, WeChat, clipboard, exported file, or saved local path.
+    as Mail, WeChat, clipboard, exported file, or saved local path, and to
+    reference a recorded citation URL plus redacted/masked/sanitized shared
+    answer/result preview proof.
   - Requires mobile assistant input evidence to prove both voice transcription
     and photo/image assistant input, with a resulting cited answer or document
-    upload task ID.
+    upload task ID, and to reference a recorded citation URL or document upload
+    task ID.
   - Requires search-result document draft evidence to cover every first-version
-    template: notice, report, email, proposal, meeting minutes, and statement.
+    template: notice, report, email, proposal, meeting minutes, and statement,
+    and to reference a recorded citation URL.
   - Requires runtime permission fields to describe prompt/result evidence and
-    the matching feature scenario, such as camera/photo import, voice
-    microphone/speech, media/file import, local-network SSH, photo library, or
-    notification entry point.
+    the matching feature scenario, including camera/photo and photo-library
+    permission evidence tied to real photo/image/screenshot assistant input,
+    microphone and speech-recognition permission evidence tied to voice
+    assistant question transcription, media/file import, local-network SSH, or
+    notification permission evidence tied to real document export, digital
+    employee, or SSH abnormal notification delivery/open flows; media/file
+    access evidence must prove real file picker or share-to-app document
+    import/upload coverage for PDF, Word, Excel, CSV, and image/photo payloads;
+    local-network permission evidence must be tied to a real SSH connection
+    against a recorded `server-profile:<id>` and a read-only command result.
   - Requires signed-build device evidence to name device model plus Android/iOS
     OS version, with both Android and iOS devices represented and at least one
     Android 13+ device recorded.
@@ -348,11 +409,14 @@ require `--force` before they can be overwritten.
     requires `Git commit` to be a 7-40 character hexadecimal commit SHA, and
     document/export/digital employee task IDs to be trackable values rather
     than placeholders such as `ok`; digital employee task IDs must identify
-    digital employee tasks rather than generic task IDs.
+    digital employee tasks rather than generic task IDs, include Hub/tenant/LLM
+    credits/manual-confirmation context, and match the recorded selected
+    HubCenter, discovered Hub, Tenant ID, and MaClaw phone-account credits.
   - Requires final release decision fields to explicitly say passed or waived
     instead of accepting ambiguous values such as `ok` or `yes`; waiver
     decisions must include a reason and a `Known issues / waivers` summary
-    that names each waived final gate.
+    that names each waived final gate and includes a trackable waiver
+    ticket/issue/approval reference.
   - Rejects negative final-decision phrases such as `not passed`, instead of
     treating a nested `passed` word as approval.
   - Verifies UTF-8 Chinese approval/waiver wording (`通过`, `已通过`, `批准`,
@@ -556,6 +620,12 @@ require `--force` before they can be overwritten.
     attempts a service connection.
   - Covers client-side rejection of invalid phone numbers before HubCenter
     probe, Hub SMS send, or Hub verification requests are attempted.
+- `go test ./hub/internal/httpapi -run "TestRegistrationSMSVerifyAndStart(WithMachineCredentialsBindsCurrentMachineUser|CreatesPhoneIdentity|BackfillsTenantScopedPhoneGrant|ContinuesWhenTenantBackfillFails|RebindsExistingPhoneIdentityToCanonicalUser)"`
+  - Passed.
+  - Covers Hub SMS verification success responses explicitly returning
+    `credits_account: phone:<digits>` for both existing machine-user phone
+    binding and new phone-identity enrollment, so mobile official LLM usage can
+    be tied to the verified phone account.
 - `flutter test test/documents_screen_test.dart --concurrency=1 --reporter expanded`
   - Passed: 12 document workflow widget tests.
   - Covers long-running import refresh, failed-import retry, and failed-export
@@ -572,12 +642,15 @@ require `--force` before they can be overwritten.
     drafts from lookup results, history cleanup confirmation, and local search
     history redaction for both query text and answer previews.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 8 shared-intent classification tests.
+  - Passed: 14 shared-intent classification and controller tests.
   - Covers routing shared PDF, Word, Excel, and CSV files into the document
     import flow instead of the AI text lookup flow.
   - Covers file and image shares that include a URL in the platform message:
     the URL remains available as context, but the payload still enters document
     import instead of being misrouted to assistant lookup.
+  - Covers unsupported shared attachments with a message or link falling back to
+    assistant lookup, while mixed batches still prefer a later importable
+    document over an unsupported attachment.
 - `flutter test test/platform_permissions_test.dart --concurrency=1 --reporter expanded`
   - Passed: 4 platform wrapper tests.
   - Covers Android share MIME declarations and iOS Share Extension activation
@@ -586,7 +659,7 @@ require `--force` before they can be overwritten.
     microphone, speech recognition, photo library, and local network access,
     and rejects known mojibake/replacement markers.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 463 Python release tool tests.
+  - Passed: 507 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
@@ -597,7 +670,7 @@ require `--force` before they can be overwritten.
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 141 QA record validator tests.
+  - Passed: 175 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
     tenant Hub versus HubCenter URL separation,
@@ -608,7 +681,8 @@ require `--force` before they can be overwritten.
     SHA256 matching, iOS archive/TestFlight build identity, Team ID, and provisioning profile
     auditability including rejection of bare `UUID` words without actual profile
     IDs/files/names and acceptance of trackable UUID, `.mobileprovision`, or
-    profile-name evidence, build identity/branch/signing placeholder rejection,
+    profile-name evidence, rejection of documented iOS archive/profile
+    placeholder strings, build identity/branch/signing placeholder rejection,
     Android installer channel platform enforcement,
     git branch name format enforcement,
     Flutter SDK semver enforcement,
@@ -616,17 +690,34 @@ require `--force` before they can be overwritten.
     official LLM credits evidence bound to the recorded phone account, Desktop
     GUI QR authorization ID linkage,
     and tenant ID format enforcement,
-    API/realtime URL exact discovered-Hub-origin matching,
+    API/realtime URL exact discovered-Hub-origin matching plus API
+    client/realtime WebSocket evidence semantics,
     HubCenter login/probe/discovered Hub tenant/LLM access evidence and
     selected HubCenter/discovered Hub/Tenant ID consistency,
-    account-screen/custom-Hub/bootstrap official-boundary evidence,
-    document upload/export format-specific task/job evidence and digital employee task ID semantics,
-    AI search query/citation URL/shared-result target/voice-photo input/document-draft
+    account-screen/custom-Hub/bootstrap official-boundary evidence including
+    recorded Discovered Hub URL, phone-account, and Tenant ID linkage,
+    weak-network recovery evidence tied to the selected HubCenter, recorded
+    discovered Hub URL, Tenant ID, and recorded task/job IDs,
+    document upload/export format-specific task/job evidence, document upload
+    task ID, document export job ID, and digital employee task ID linkage in
+    status polling and realtime update evidence, exported
+    document share evidence linked to recorded PDF/Word/Markdown export job
+    IDs, and digital employee task ID semantics tied to recorded HubCenter,
+    discovered Hub, Tenant ID, and MaClaw phone-account credits,
+    AI search query evidence linked to recorded citation URLs, shared-result
+    citation linkage and externalized-result redaction proof, voice-photo input
+    result linkage, document-draft citation linkage
     smoke evidence semantics, manual and optional evidence placeholder rejection,
-    SSH smoke action-specific evidence validation, SSH AI analysis preview/sensitive-data warning/redacted-output evidence, command draft/manual execution, and credential deletion evidence,
+    SSH smoke action-specific evidence validation, recorded server-profile ID
+    linkage for manual SSH smoke and account privacy server credential evidence,
+    SSH AI analysis preview/sensitive-data warning/redacted-output evidence, command draft/manual execution with redacted SSH output context, and credential deletion evidence,
     status polling/realtime task update ID linkage, typed notification payload
-    evidence, and digital employee handoff warning evidence,
-    runtime permission prompt/result and feature-scenario evidence validation,
+    evidence tied to recorded document export and digital employee task IDs
+    plus redacted notification message preview proof,
+    and digital employee handoff warning evidence,
+    runtime permission prompt/result and feature-scenario evidence validation
+    including voice/photo assistant input linkage and task notification
+    delivery/open linkage,
     iOS URL scheme evidence requiring both `maclaw` and `ShareMedia`,
     share-to-app expected-flow and payload-format evidence validation,
     Android/iOS device OS evidence validation including Android 13+ coverage and
@@ -646,7 +737,8 @@ require `--force` before they can be overwritten.
     current automated release gate count enforcement, exact counted
     release-gate runner success-line acceptance, legacy uncounted success-line
     rejection, generic `all gates passed` rejection,
-    independent approver enforcement, waiver reasons and per-gate waiver summaries, English
+    independent approver enforcement, waiver reasons, per-gate waiver summaries,
+    trackable waiver ticket/approval references, English
     waiver wording, UTF-8 Chinese approval/waiver wording (`通过`, `已通过`,
     `批准`, `豁免`), date ordering, date/commit/task ID auditability,
     version/build number format enforcement, rejection of unedited final-decision
@@ -674,7 +766,7 @@ require `--force` before they can be overwritten.
     record directory, while the default directory still prints short
     `docs/qa-builds` commands.
 - `python -m unittest tool\validate_qa_build_records_dir_test.py`
-  - Passed: 13 QA build records directory validator tests.
+  - Passed: 14 QA build records directory validator tests.
   - Covers scanning completed Markdown records under `docs/qa-builds/`,
     skipping `README.md`, ignoring non-Markdown evidence attachments, empty
     directories before signed QA records exist, missing/non-directory path
@@ -690,6 +782,9 @@ require `--force` before they can be overwritten.
     from validator-compatible filenames and prints a final verifier command with
     the matching saved `final-release-evidence*.log` path in the same QA
     records directory being validated.
+  - Covers validated-record success output warning when records span multiple
+    version/build values, with a single-version remediation hint before final
+    evidence verification.
   - Covers explicit directory-validation `--scope` output that separates
     in-scope from out-of-scope valid records and uses only in-scope records to
     choose the final verifier log version, while pointing out-of-scope-only
@@ -732,13 +827,21 @@ require `--force` before they can be overwritten.
     handoff, runtime-boundary, release-gates, signed artifact, validation, and
     release-evidence link hints stay in the same directory as the record being
     repaired.
+  - Covers passing record next actions printing both the release-evidence link
+    command and the matching final evidence verifier command with the record's
+    concrete version/build and scope.
   - Covers release handoff evidence paths being rejected as non-QA-record
     inputs without mixing in missing evidence-field noise.
 - `python -m unittest tool\qa_release_evidence_links_test.py`
-  - Passed: 20 QA release evidence link helper tests.
+  - Passed: 22 QA release evidence link helper tests.
   - Covers empty QA record directories, valid record Markdown link output,
     invalid record exclusion, invalid-record CLI failure behavior, and valid
-    record CLI output.
+    record CLI output, with deterministic filename ordering for generated QA
+    record links.
+  - Covers incomplete link readiness output: validated records with multiple
+    version/build values or missing requested platform coverage are reported as
+    found but not ready to link, so operators are not prompted to paste partial
+    final evidence links by hand.
   - Covers ignoring release handoff evidence files, including scoped
     Android-only and iOS-only handoff files, so handoff Markdown is never linked
     as completed signed-build QA evidence.
@@ -764,9 +867,9 @@ require `--force` before they can be overwritten.
     link block.
   - Covers link-update failures printing targeted Next action hints for
     multi-version QA records and missing Android/iOS platform coverage,
-    including scoped signed-QA-record creation hints when only one platform is
-    missing, and signed-QA-record creation hints when no validated records
-    exist yet.
+    including scoped signed-QA-record creation hints that use the existing
+    validated record version/build when only one platform is missing, and
+    signed-QA-record creation hints when no validated records exist yet.
   - Covers those link-update Next action hints preserving the current QA
     records directory for empty directories, missing platform coverage, and
     multi-version remediation.
@@ -955,6 +1058,9 @@ require `--force` before they can be overwritten.
   - Covers scoped status output that separates in-scope valid QA records from
     out-of-scope valid records, so Android-only and iOS-only status reports do
     not make the wrong platform's evidence look sufficient.
+  - Covers scoped status summaries separating blocking invalid records from
+    out-of-scope invalid records, so ignored wrong-platform gaps do not make a
+    scoped ready report look contradictory.
   - Covers out-of-scope-only status next actions that ask operators to create
     in-scope signed-build QA records before resolving final evidence blockers.
   - Covers invalid QA build record next actions that point directly to
@@ -1060,14 +1166,15 @@ require `--force` before they can be overwritten.
     lines, missing artifact failures, missing section failures, and CLI update
     behavior.
 - `python -m unittest tool\signed_artifact_evidence_test.py`
-  - Passed: 22 signed artifact evidence helper tests.
+  - Passed: 23 signed artifact evidence helper tests.
   - Covers Android signed APK hash/size snippets, record-relative paths, debug
     artifact rejection, untrackable names, missing artifacts, Android
     version/build format validation, required Android version/build, signing
     identity, and installer channel evidence at both function and CLI layers,
     iOS archive metadata snippets, local `.xcarchive` record-dir validation and relative evidence paths, explicit TestFlight build snippets, iOS Team
-    ID/profile validation with trackable UUID, `.mobileprovision`, and profile
-    name references, CLI output, and CLI error reporting.
+    ID/profile validation with trackable UUID, `.mobileprovision`, profile
+    name references, documented placeholder rejection, CLI output, and CLI
+    error reporting.
   - Covers rejecting missing or non-directory `--record-dir` values before
     generating record-relative Android artifact or iOS archive evidence.
   - Covers CLI help describing `--record-dir` as a generic QA records
@@ -1092,7 +1199,7 @@ require `--force` before they can be overwritten.
     Android-only handoff commands must not include Apple Team ID options while
     iOS-only commands keep Team ID and export method values.
 - `python -m unittest tool\verify_final_release_evidence_test.py`
-  - Passed: 31 final release evidence verifier tests.
+  - Passed: 37 final release evidence verifier tests.
   - Covers the final release evidence package rule that completed signed-build
     QA records must validate successfully and cover the requested platform
     scope before approval, including full Android/iOS final release coverage
@@ -1100,8 +1207,12 @@ require `--force` before they can be overwritten.
     evidence document must link every validated in-scope QA record inside the
     guarded QA build record link block, using `docs/qa-builds/...` for the
     canonical QA directory or the actual record path for custom QA record
-    directories, while ordinary development gates may still pass with an empty
-    `docs/qa-builds/` directory.
+    directories, and must reject stale or unvalidated QA build record links in
+    that guarded block while allowing ordinary non-QA markdown links. Missing
+    validated QA record links and stale/unvalidated guarded-block links are
+    reported together so operators can fix the final evidence block in one pass.
+    Ordinary development gates may still pass with an empty `docs/qa-builds/`
+    directory.
   - Covers rejecting legacy `ios-android` scope filenames as final Android/iOS
     coverage even if a downstream validator mistakenly reports them as valid.
   - Covers that release handoff evidence files, including scoped Android-only
@@ -1113,7 +1224,11 @@ require `--force` before they can be overwritten.
   - Covers final verifier CLI failure output that prints the shared copyable
     signed-build QA next-action hint, and switches to the shared release
     evidence link update hint when validated QA records exist but the guarded
-    link block is incomplete.
+    link block is incomplete, using the validated QA record version/build for
+    the follow-up final evidence log path instead of leaving a placeholder.
+  - Covers missing-platform final verifier next actions using the existing
+    validated QA record version/build when prompting operators to create the
+    missing Android or iOS signed-build QA record.
   - Covers custom QA record directories in final verifier failure next actions,
     so missing-record and missing-link remediation commands do not fall back to
     `docs/qa-builds`.
@@ -1136,9 +1251,13 @@ require `--force` before they can be overwritten.
     version/build, Android/iOS platform coverage, release evidence path, and
     validated QA record filenames.
   - Covers optional final verifier `--log` output for success and failure
-    transcripts; both transcript types retain the verification scope, QA records
-    directory, and release evidence path needed to audit the archived result,
-    plus overwrite protection and explicit `--force` regeneration.
+    transcripts; successful transcript filenames must match the validated
+    version/build and requested scope, wrong-version log paths print the
+    matching `verify_final_release_evidence.py --log ...` remediation command
+    instead of falling back to generic QA-record creation hints, both transcript
+    types retain the verification scope, QA records directory, and release
+    evidence path needed to audit the archived result, plus overwrite
+    protection and explicit `--force` regeneration.
 - `python -m unittest tool\verify_android_release_signing_test.py`
   - Passed: 7 Android release signing verifier tests.
   - Covers the Gradle release signing guard, rejection of debug-key fallback,
@@ -1177,6 +1296,9 @@ require `--force` before they can be overwritten.
   - Covers optional `--record-dir` evidence generation that validates local
     `.xcarchive` paths, prints archive paths relative to `docs/qa-builds`, and
     reports missing archives without a traceback.
+  - Covers the documented two-step iOS release flow: run archive/export
+    planning before the signed archive exists, then generate record-relative
+    iOS archive evidence only after the `.xcarchive` or TestFlight build exists.
   - Covers rejecting `--record-dir` without `--provisioning-profiles` before
     wrapper/export checks, so iOS artifact evidence generation is explicit.
   - Covers CLI help describing `--record-dir` as a generic QA records
@@ -1218,18 +1340,29 @@ require `--force` before they can be overwritten.
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
 - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1`
-  - Passed; revalidated on the current worktree after the export download URL
-    safety updates.
+  - Passed; revalidated on the current worktree after the desktop GUI QR
+    HubCenter proxy updates.
   - Covers official mobile service redemption resolving the user's Hub/tenant
     without issuing a token from HubCenter, unknown redemption rejection, and
     rejection of legacy provider-only desktop LLM QR payloads at HubCenter.
+  - Covers desktop GUI mobile QR session bootstrap through HubCenter: HubCenter
+    verifies that the QR `hub_url` belongs to a registered online Hub before
+    proxying the original payload to the Hub one-time consume endpoint, enriches
+    successful responses with the verified registered Hub ID and Hub URL even
+    when the Hub response attempts to return different values, and rejects
+    unregistered QR Hub URLs before any proxy request is dispatched.
+  - Covers sanitizing non-2xx Hub consume failures so upstream Hub response
+    bodies are not leaked to mobile clients, and covers same-origin comparison
+    with explicit default ports such as `https://host:443` and `http://host:80`.
+  - Covers rejecting registered but non-HTTPS QR Hub URLs before proxy
+    dispatch, matching the mobile app's HTTPS-only discovered Hub requirement.
 - `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1`
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
 - `python -m unittest tool\configure_platforms_test.py`
   - Passed: 14 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 141 QA record validator tests.
+  - Passed: 175 QA record validator tests.
 - `python -m unittest tool\create_qa_build_record_test.py`
   - Passed: 14 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
@@ -1260,14 +1393,14 @@ require `--force` before they can be overwritten.
     metadata while retaining task IDs, employee IDs, task type, status, and
     recent-history ordering for mobile recovery.
 - `flutter test test/mobile_bootstrap_test.dart --concurrency=1 --reporter compact`
-  - Passed: 5 bootstrap parsing tests.
+  - Passed: 7 bootstrap parsing tests.
   - Covers verified phone accounts defaulting the mobile official LLM credits
     account to `phone:<digits>` when Hub bootstrap returns official LLM access
     without a separate `credits_account`, including formatted phone-number
-    input being normalized to the digits-only credits account, SMS-verified
-    phone login supplying the official credits fallback after bootstrap, and
-    malformed `phone:` credits with letters remaining untrusted instead of being
-    coerced.
+    input and verified `phone:<digits>` credits accounts being normalized to the
+    digits-only credits account, SMS-verified phone login supplying the official
+    credits fallback after bootstrap, and malformed `phone:` credits with
+    letters remaining untrusted instead of being coerced.
 - `flutter test test/mobile_credits_test.dart --concurrency=1 --reporter compact`
   - Passed: 2 shared mobile credits helper tests.
   - Covers the common trusted credits rule used by startup routing, account
@@ -1326,10 +1459,9 @@ require `--force` before they can be overwritten.
     recovery prompt is shown in the app shell.
 - `flutter test test/app_smoke_test.dart --concurrency=1 --reporter compact`
   - Passed: 10 app shell and startup smoke tests.
-  - Covers unknown or unrouteable notification payloads showing an explicit
-    unrecognized-task reminder instead of falsely reporting task recovery, while
-    valid typed payloads and redacted URL payloads still recover to the expected
-    feature tab.
+  - Covers unknown or unrouteable notification payloads being ignored before
+    they can fake task recovery, while valid typed payloads and redacted URL
+    payloads still recover to the expected feature tab.
 - `flutter test test/documents_state_test.dart --concurrency=1 --reporter compact`
   - Passed: 15 document state/controller tests.
   - Covers mobile shared-document uploads rejecting unsupported file types
@@ -1337,11 +1469,14 @@ require `--force` before they can be overwritten.
     document formats such as PDF, Word, Excel, CSV, and images through the same
     allowlist used by the manual file picker.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
-  - Passed: 12 mobile shared-intent model/controller tests.
+  - Passed: 14 mobile shared-intent model/controller tests.
   - Covers multi-payload share batches where a text caption or context URL is
     delivered before the actual file payload: supported files and images still
     route to document import, while empty file paths with only message text
     fall back to assistant lookup instead of attempting an empty document upload.
+  - Covers unsupported shared attachments with message/link context falling
+    back to assistant lookup, while mixed batches still prefer a later supported
+    document over an unsupported file.
   - Covers suppressing immediate duplicate shared payloads from the initial
     media load and live share stream while still allowing the same file or link
     to be shared again after the duplicate window.
@@ -1353,6 +1488,12 @@ require `--force` before they can be overwritten.
     retry affordances, official discovered-Hub realtime ping/event parsing, and
     external realtime paths being rejected before the mobile client opens a
     websocket outside the discovered Hub.
+- `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/documents_state_test.dart test/digital_employees_controller_test.dart --concurrency=1 --reporter compact`
+  - Passed: 28 realtime, document state, and digital employee controller tests.
+  - Covers realtime bridge dispatch for document and digital employee events,
+    parsing sparse realtime frames that put task/job ID and status at the top
+    level while the nested payload only contains result fields, and applying
+    those updates without losing typed notification IDs or task cache linkage.
 - `flutter test test/account_screen_test.dart test/app_preferences_test.dart test/mobile_notification_service_test.dart test/mobile_local_store_test.dart test/secure_vault_test.dart --concurrency=1 --reporter compact`
   - Passed: 25 account settings, notification, local storage, and secure-vault
     tests.
@@ -1364,10 +1505,12 @@ require `--force` before they can be overwritten.
     server profile and SSH credential deletion, local cache migration, and
     secure storage cleanup.
 - `flutter test test/mobile_notification_service_test.dart --concurrency=1 --reporter compact`
-  - Passed: 5 mobile notification service tests.
+  - Passed: 7 mobile notification service tests.
   - Covers typed notification payload routing for document, digital employee,
     and server alerts requiring a non-empty trackable ID after the prefix, while
-    retaining legacy URL payload routing for document recovery.
+    retaining legacy URL payload routing for document recovery. Invalid typed
+    payloads and unknown raw IDs are ignored at notification-open time and do
+    not replace a valid pending notification payload.
 - `flutter analyze`
   - Passed after restoring readable app shell tab/share text and replacing
     mojibake-prone UI assertions with Unicode-safe test constants.
@@ -1382,9 +1525,10 @@ require `--force` before they can be overwritten.
     fields, password/Token/private-key warning, plus environment-variable and
     long-option secret redaction such as `MYSQL_PWD=...`,
     `AWS_SECRET_ACCESS_KEY=...`, `--password ...`, and quoted values like
-    `password="..."`, `API_KEY='...'`, and `--token '...'`,
-    API-boundary redaction after session initialization, command draft
-    non-execution, terminal output copy, reconnect profile selection,
+    `password="..."`, `API_KEY='...'`, and `--token '...'`; embedded URL
+    credentials in `https://`, `postgres://`, `redis://`, and `ssh://`
+    payloads; API-boundary redaction after session initialization, command
+    draft non-execution, terminal output copy, reconnect profile selection,
     credential deletion, and SSH risk classification, including recursive-force
     `rm` variants such as `-fr`, split `-r -f`, `--` separators, and uppercase
     `-Rf` flags.

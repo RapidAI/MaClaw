@@ -243,7 +243,7 @@ func (s *Store) LoadBackup(filename string) (*Snapshot, error) {
 
 // DefaultDataDir returns the default data directory path.
 func DefaultDataDir() string {
-	return filepath.Join(corelib.MaclawBaseDir(), "data")
+	return corelib.MaclawDataDir()
 }
 
 // DefaultStore creates a Store under the active data directory.

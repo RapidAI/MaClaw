@@ -215,6 +215,9 @@ void main() {
       'MYSQL_PWD=mysql-secret AWS_SECRET_ACCESS_KEY=aws-secret\n'
       'mysql --password cli-secret --token \'quoted cli token\' -e "select 1"\n'
       'https://admin:pass@example.com/logs\n'
+      'postgres://dbuser:db-pass@db.internal/app\n'
+      'redis://:redis-pass@cache.internal:6379/0\n'
+      'ssh://root:ssh-pass@jump.internal\n'
       '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n'
       '-----END OPENSSH PRIVATE KEY-----',
     );
@@ -229,6 +232,9 @@ void main() {
     expect(redacted, contains('--password [REDACTED_SECRET]'));
     expect(redacted, contains('--token [REDACTED_SECRET]'));
     expect(redacted, contains('https://[REDACTED_CREDENTIALS]@example.com'));
+    expect(redacted, contains('postgres://[REDACTED_CREDENTIALS]@db.internal'));
+    expect(redacted, contains('redis://[REDACTED_CREDENTIALS]@cache.internal'));
+    expect(redacted, contains('ssh://[REDACTED_CREDENTIALS]@jump.internal'));
     expect(redacted, contains('[REDACTED_PRIVATE_KEY]'));
     expect(redacted, isNot(contains('secret-token')));
     expect(redacted, isNot(contains('super-secret')));
@@ -239,6 +245,9 @@ void main() {
     expect(redacted, isNot(contains('cli-secret')));
     expect(redacted, isNot(contains('quoted cli token')));
     expect(redacted, isNot(contains('admin:pass')));
+    expect(redacted, isNot(contains('dbuser:db-pass')));
+    expect(redacted, isNot(contains('redis-pass')));
+    expect(redacted, isNot(contains('root:ssh-pass')));
   });
 
   test('mobile SSH output handoff context marks server maintenance source', () {

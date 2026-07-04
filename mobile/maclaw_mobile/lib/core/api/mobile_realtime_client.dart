@@ -116,16 +116,29 @@ class MobileRealtimeEvent {
 
   factory MobileRealtimeEvent.fromJson(Map<String, dynamic> json) {
     final nestedPayload = json['payload'] ?? json['task'];
+    final payload = nestedPayload is Map
+        ? Map<String, dynamic>.from(nestedPayload)
+        : Map<String, dynamic>.from(json);
+    final topLevelTaskId = json['task_id'] as String? ?? '';
+    final topLevelJobId = json['job_id'] as String? ?? '';
+    if (topLevelTaskId.isNotEmpty) {
+      payload.putIfAbsent('task_id', () => topLevelTaskId);
+    }
+    if (topLevelJobId.isNotEmpty) {
+      payload.putIfAbsent('job_id', () => topLevelJobId);
+    }
+    final topLevelStatus = json['status'] as String? ?? '';
+    if (topLevelStatus.isNotEmpty) {
+      payload.putIfAbsent('status', () => topLevelStatus);
+    }
     return MobileRealtimeEvent(
       type: json['type'] as String? ?? '',
       userId: json['user_id'] as String? ?? '',
       tenantId: json['tenant_id'] as String? ?? '',
-      taskId: json['task_id'] as String? ?? '',
-      status: json['status'] as String? ?? '',
+      taskId: topLevelTaskId.isNotEmpty ? topLevelTaskId : topLevelJobId,
+      status: topLevelStatus,
       serverTime: DateTime.tryParse(json['server_time'] as String? ?? ''),
-      payload: nestedPayload is Map
-          ? Map<String, dynamic>.from(nestedPayload)
-          : Map<String, dynamic>.from(json),
+      payload: payload,
     );
   }
 

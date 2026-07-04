@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 const sharedPythonRuntimeSchema = "maclaw.python_runtime.v1"
@@ -48,6 +49,7 @@ type SharedPythonRuntimePlan struct {
 type SharedPythonRuntimeStatus struct {
 	SharedPythonRuntimePlan
 	Status     string   `json:"status"`
+	Stage      string   `json:"stage,omitempty"`
 	UsedBy     []string `json:"used_by,omitempty"`
 	CreatedAt  string   `json:"created_at,omitempty"`
 	UpdatedAt  string   `json:"updated_at,omitempty"`
@@ -60,13 +62,18 @@ type SharedPythonRuntimeStatus struct {
 type sharedPythonRuntimeLock struct {
 	SharedPythonRuntimePlan
 	Status     string   `json:"status"`
+	Stage      string   `json:"stage,omitempty"`
 	CreatedAt  string   `json:"created_at"`
 	UpdatedAt  string   `json:"updated_at"`
 	UsedBy     []string `json:"used_by,omitempty"`
 	LastUsedAt string   `json:"last_used_at,omitempty"`
+	Error      string   `json:"error,omitempty"`
 }
 
 var sharedRuntimeExecCommand = exec.Command
+var sharedRuntimeResolveUVExecutable = resolveUVExecutable
+var sharedRuntimeResolveSeedPython = resolveSharedRuntimeSeedPython
+var sharedRuntimeCheckPython = checkPython
 
 var (
 	sharedRuntimeMu       sync.Mutex
@@ -129,7 +136,7 @@ func PlanSharedPythonRuntime(dataDir string, spec SharedPythonRuntimeSpec) (Shar
 }
 
 func EnsureSharedPythonRuntime(spec SharedPythonRuntimeSpec, usedBy string, emit ProgressFunc) (SharedPythonRuntimePlan, error) {
-	return EnsureSharedPythonRuntimeWithDataDir(filepath.Join(corelib.MaclawBaseDir(), "data"), spec, usedBy, emit)
+	return EnsureSharedPythonRuntimeWithDataDir(maclawpath.DataDir(), spec, usedBy, emit)
 }
 
 func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRuntimeSpec, usedBy string, emit ProgressFunc) (SharedPythonRuntimePlan, error) {
@@ -142,9 +149,10 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 	}
 	unlock := lockSharedPythonRuntime(plan.ID)
 	defer unlock()
-	uvPath, err := resolveUVExecutable()
+	uvPath, err := sharedRuntimeResolveUVExecutable()
 	if err != nil {
-		return plan, err
+		log.Printf("[pyenv] uv unavailable for shared Python runtime %s, falling back to python -m venv + pip: %v", plan.ID, err)
+		return ensureSharedPythonRuntimeWithPip(plan, usedBy, emit)
 	}
 	if sharedPythonRuntimeReady(plan) {
 		if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
@@ -159,23 +167,23 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 		return plan, err
 	}
 	if err := os.MkdirAll(plan.CacheDir, 0o755); err != nil {
-		return plan, err
+		return failSharedPythonRuntime(plan, usedBy, "create_cache_dir", err)
 	}
 	if err := writeSharedRuntimeLock(plan, usedBy, "installing"); err != nil {
 		return plan, err
 	}
 	if err := runUV(plan, uvPath, "python", "install", plan.Python); err != nil {
-		return plan, err
+		return failSharedPythonRuntime(plan, usedBy, "uv_python_install", err)
 	}
 	if _, err := os.Stat(plan.PythonPath); os.IsNotExist(err) {
 		if emit != nil {
 			emit("python_runtime", 35, "creating shared virtual environment")
 		}
 		if err := runUV(plan, uvPath, "venv", plan.EnvDir, "--python", plan.Python); err != nil {
-			return plan, err
+			return failSharedPythonRuntime(plan, usedBy, "uv_venv", err)
 		}
 	} else if err != nil {
-		return plan, err
+		return failSharedPythonRuntime(plan, usedBy, "stat_python", err)
 	}
 	if emit != nil {
 		emit("python_runtime", 60, "installing Python dependencies")
@@ -186,7 +194,7 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 	}
 	args = append(args, plan.Packages...)
 	if err := runUV(plan, uvPath, args...); err != nil {
-		return plan, err
+		return failSharedPythonRuntime(plan, usedBy, "uv_pip_install", err)
 	}
 	if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
 		return plan, err
@@ -195,6 +203,103 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 		emit("python_runtime", 100, "shared Python runtime ready")
 	}
 	return plan, nil
+}
+
+func ensureSharedPythonRuntimeWithPip(plan SharedPythonRuntimePlan, usedBy string, emit ProgressFunc) (SharedPythonRuntimePlan, error) {
+	if sharedPythonRuntimeReady(plan) {
+		if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
+			return plan, err
+		}
+		return plan, nil
+	}
+	seedPython, err := sharedRuntimeResolveSeedPython()
+	if err != nil {
+		return failSharedPythonRuntime(plan, usedBy, "resolve_seed_python", err)
+	}
+	if err := validateSharedRuntimeSeedPython(seedPython, plan); err != nil {
+		return failSharedPythonRuntime(plan, usedBy, "validate_seed_python", err)
+	}
+	if emit != nil {
+		emit("python_runtime", 10, "preparing shared Python "+plan.Python+" with pip")
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.EnvDir), 0o755); err != nil {
+		return plan, err
+	}
+	if err := writeSharedRuntimeLock(plan, usedBy, "installing"); err != nil {
+		return plan, err
+	}
+	if _, err := os.Stat(plan.PythonPath); os.IsNotExist(err) {
+		if emit != nil {
+			emit("python_runtime", 35, "creating shared virtual environment")
+		}
+		if err := runSharedRuntimeCommand(plan, seedPython, "-m", "venv", plan.EnvDir); err != nil {
+			return failSharedPythonRuntime(plan, usedBy, "pip_venv", err)
+		}
+	} else if err != nil {
+		return failSharedPythonRuntime(plan, usedBy, "stat_python", err)
+	}
+	if emit != nil {
+		emit("python_runtime", 60, "installing Python dependencies")
+	}
+	pipArgs := []string{"-m", "pip", "install", "--quiet"}
+	for _, indexURL := range plan.IndexURLs {
+		pipArgs = append(pipArgs, "--index-url", indexURL)
+	}
+	pipArgs = append(pipArgs, plan.Packages...)
+	if err := runSharedRuntimeCommand(plan, plan.PythonPath, pipArgs...); err != nil {
+		if ensureErr := runSharedRuntimeCommand(plan, plan.PythonPath, "-m", "ensurepip", "--upgrade"); ensureErr != nil {
+			return failSharedPythonRuntime(plan, usedBy, "pip_ensurepip", fmt.Errorf("%w\nensurepip fallback failed: %v", err, ensureErr))
+		}
+		if err := runSharedRuntimeCommand(plan, plan.PythonPath, pipArgs...); err != nil {
+			return failSharedPythonRuntime(plan, usedBy, "pip_install", err)
+		}
+	}
+	if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
+		return plan, err
+	}
+	if emit != nil {
+		emit("python_runtime", 100, "shared Python runtime ready")
+	}
+	return plan, nil
+}
+
+func resolveSharedRuntimeSeedPython() (string, error) {
+	if st := Detect(); st.Available && strings.TrimSpace(st.PythonPath) != "" {
+		return st.PythonPath, nil
+	}
+	for _, name := range []string{"python3", "python"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("python not found, cannot create shared Python runtime without uv")
+}
+
+func validateSharedRuntimeSeedPython(seedPython string, plan SharedPythonRuntimePlan) error {
+	seedPython = strings.TrimSpace(seedPython)
+	if seedPython == "" {
+		return fmt.Errorf("python not found, cannot create shared Python runtime without uv")
+	}
+	version, ok := sharedRuntimeCheckPython(seedPython)
+	if !ok {
+		return fmt.Errorf("python %q is not usable for shared Python runtime %s", seedPython, plan.ID)
+	}
+	if sharedRuntimePythonVersionMatches(version, plan.Python) {
+		return nil
+	}
+	return fmt.Errorf("python %q is %s, but shared runtime %s requires Python %s; install uv to provision the requested runtime", seedPython, version, plan.ID, plan.Python)
+}
+
+func sharedRuntimePythonVersionMatches(version, wanted string) bool {
+	major, minor, _, _, ok := parseVersion(version)
+	if !ok {
+		return false
+	}
+	wanted = strings.TrimSpace(wanted)
+	if wanted == "" {
+		return true
+	}
+	return wanted == fmt.Sprintf("%d.%d", major, minor)
 }
 
 func lockSharedPythonRuntime(id string) func() {
@@ -291,7 +396,11 @@ func resolveUVExecutable() (string, error) {
 }
 
 func runUV(plan SharedPythonRuntimePlan, uvPath string, args ...string) error {
-	cmd := sharedRuntimeExecCommand(uvPath, args...)
+	return runSharedRuntimeCommand(plan, uvPath, args...)
+}
+
+func runSharedRuntimeCommand(plan SharedPythonRuntimePlan, name string, args ...string) error {
+	cmd := sharedRuntimeExecCommand(name, args...)
 	cmd.Env = append(os.Environ(),
 		"UV_CACHE_DIR="+plan.CacheDir,
 		"PYTHONIOENCODING=utf-8",
@@ -299,12 +408,26 @@ func runUV(plan SharedPythonRuntimePlan, uvPath string, args ...string) error {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("uv %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s %s failed: %w\n%s", filepath.Base(name), strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 func writeSharedRuntimeLock(plan SharedPythonRuntimePlan, usedBy, status string) error {
+	return writeSharedRuntimeLockWithError(plan, usedBy, status, "", nil)
+}
+
+func failSharedPythonRuntime(plan SharedPythonRuntimePlan, usedBy, stage string, err error) (SharedPythonRuntimePlan, error) {
+	if err == nil {
+		return plan, nil
+	}
+	if writeErr := writeSharedRuntimeLockWithError(plan, usedBy, "failed", stage, err); writeErr != nil {
+		return plan, fmt.Errorf("%w\nfailed to write runtime failure lock: %v", err, writeErr)
+	}
+	return plan, err
+}
+
+func writeSharedRuntimeLockWithError(plan SharedPythonRuntimePlan, usedBy, status, stage string, runtimeErr error) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	existing := sharedPythonRuntimeLock{}
 	if data, err := os.ReadFile(plan.LockPath); err == nil {
@@ -316,9 +439,13 @@ func writeSharedRuntimeLock(plan SharedPythonRuntimePlan, usedBy, status string)
 	lock := sharedPythonRuntimeLock{
 		SharedPythonRuntimePlan: plan,
 		Status:                  status,
+		Stage:                   strings.TrimSpace(stage),
 		CreatedAt:               now,
 		UpdatedAt:               now,
 		LastUsedAt:              now,
+	}
+	if runtimeErr != nil {
+		lock.Error = strings.TrimSpace(runtimeErr.Error())
 	}
 	if existing.CreatedAt != "" {
 		lock.CreatedAt = existing.CreatedAt
@@ -339,6 +466,9 @@ func writeSharedRuntimeLock(plan SharedPythonRuntimePlan, usedBy, status string)
 	}
 	data, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.LockPath), 0o755); err != nil {
 		return err
 	}
 	return fileutil.AtomicWriteFile(plan.LockPath, append(data, '\n'), 0o644)
@@ -400,10 +530,14 @@ func ListSharedPythonRuntimes(dataDir string) ([]SharedPythonRuntimeStatus, erro
 			} else {
 				status.SharedPythonRuntimePlan = mergeSharedPythonRuntimePlanDefaults(lock.SharedPythonRuntimePlan, plan)
 				status.Status = firstNonEmptyRuntimeString(lock.Status, "unknown")
+				status.Stage = lock.Stage
 				status.UsedBy = append([]string(nil), lock.UsedBy...)
 				status.CreatedAt = lock.CreatedAt
 				status.UpdatedAt = lock.UpdatedAt
 				status.LastUsedAt = lock.LastUsedAt
+				if lock.Error != "" {
+					status.Error = lock.Error
+				}
 				if lock.ID != "" && lock.ID != id {
 					status.Status = "invalid_lock"
 					status.Error = fmt.Sprintf("lock id %q does not match directory %q", lock.ID, id)

@@ -133,6 +133,40 @@ void main() {
     expect(bootstrap.llmAccess.creditsAccount, 'phone:19900001111');
   });
 
+  test('verified phone login can supply official phone credits account', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'user': {
+        'user_id': 'u-phone',
+        'tenant_id': 'tenant_a',
+      },
+      'llm_access': {
+        'mode': 'maclaw_official',
+        'status': 'available',
+      },
+    }).withVerifiedPhoneCredits('phone:199 0000-1111');
+
+    expect(bootstrap.user.creditsAccount, 'phone:19900001111');
+    expect(bootstrap.llmAccess.official, isTrue);
+    expect(bootstrap.llmAccess.creditsAccount, 'phone:19900001111');
+  });
+
+  test('verified phone login rejects malformed credits account', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'user': {
+        'user_id': 'u-phone',
+        'tenant_id': 'tenant_a',
+      },
+      'llm_access': {
+        'mode': 'maclaw_official',
+        'status': 'available',
+      },
+    }).withVerifiedPhoneCredits('phone:user19900001111');
+
+    expect(bootstrap.user.creditsAccount, '');
+    expect(bootstrap.llmAccess.official, isTrue);
+    expect(bootstrap.llmAccess.creditsAccount, '');
+  });
+
   test('does not normalize malformed phone credits with letters', () {
     final bootstrap = MobileBootstrap.fromJson({
       'user': {

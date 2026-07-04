@@ -13,7 +13,7 @@ import (
 // saveScreenshotToFile saves base64-encoded PNG data to a local file under
 // ~/.maclaw/data/screenshots/ and returns the absolute file path.
 func (h *IMMessageHandler) saveScreenshotToFile(base64Data string) (string, error) {
-	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "screenshots")
+	dir := filepath.Join(corelib.MaclawDataDir(), "screenshots")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create screenshots directory: %w", err)
 	}
@@ -32,7 +32,7 @@ func (h *IMMessageHandler) saveScreenshotToFile(base64Data string) (string, erro
 // saveFileDataToLocal saves base64-encoded file data to ~/.maclaw/data/files/
 // and returns the absolute file path.
 func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string, error) {
-	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "files")
+	dir := filepath.Join(corelib.MaclawDataDir(), "files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create files directory: %w", err)
 	}

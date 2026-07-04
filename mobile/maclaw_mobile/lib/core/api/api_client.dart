@@ -61,6 +61,11 @@ class ApiClient {
     String qrPayload,
   ) async {
     final payload = parseMaclawDesktopLlmQrPayload(qrPayload);
+    if (payload.hubUrl.isNotEmpty && !sameOrigin(payload.hubUrl, _hubUrl)) {
+      throw UnsupportedError(
+        'Desktop LLM QR authorization must belong to the current MaClaw Hub.',
+      );
+    }
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/mobile/llm/desktop-qr-authorizations',
       data: {'qr_payload': payload.raw},

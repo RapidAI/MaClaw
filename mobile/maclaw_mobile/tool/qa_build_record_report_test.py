@@ -71,6 +71,17 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 ),
                 output,
             )
+            self.assertIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    str(record.parent),
+                    version="1.0.0+42",
+                    log=release_evidence_commands.final_release_evidence_log_path(
+                        "1.0.0+42",
+                        records_dir=str(record.parent),
+                    ),
+                ),
+                output,
+            )
 
     def test_scoped_ios_record_report_does_not_request_android_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,6 +120,19 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 release_evidence_commands.qa_release_evidence_link_command(
                     scope="android",
                     records_dir=str(record.parent),
+                ),
+                output,
+            )
+            self.assertIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    str(record.parent),
+                    scope="android",
+                    version="1.0.0+42",
+                    log=release_evidence_commands.final_release_evidence_log_path(
+                        "1.0.0+42",
+                        scope="android",
+                        records_dir=str(record.parent),
+                    ),
                 ),
                 output,
             )

@@ -130,6 +130,51 @@ func TestSkillArtifactRegistryCleanupRemovesMissingAndExpired(t *testing.T) {
 	}
 }
 
+func TestSkillArtifactRegistryCleanupRemovesOnlyExpiredAppOutputFiles(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	appOutputPath := filepath.Join(app.GetDataDir(), "app-outputs", "input-123", "result.txt")
+	if err := os.MkdirAll(filepath.Dir(appOutputPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(appOutputPath, []byte("generated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(t.TempDir(), "keep.txt")
+	if err := os.WriteFile(userPath, []byte("user file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.registerSkillRunArtifacts(&SkillRunStatus{
+		RunID: "run-expired-files",
+		Artifacts: []SkillRunArtifact{
+			{ID: "app-output", URI: "artifact://skill-run/run-expired-files/app-output", Path: appOutputPath},
+			{ID: "user-file", URI: "artifact://skill-run/run-expired-files/user-file", Path: userPath},
+		},
+	})
+	db, err := openSkillArtifactRegistryDB(app.skillArtifactRegistryDBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().AddDate(0, 0, -10).Format(time.RFC3339)
+	if _, err := db.ExecContext(context.Background(), `UPDATE skill_run_artifacts SET updated_at = ?`, old); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	result, err := app.CleanupSkillArtifactRegistry(7, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["expired"] != 2 {
+		t.Fatalf("cleanup result = %#v, want two expired rows", result)
+	}
+	if _, err := os.Stat(appOutputPath); !os.IsNotExist(err) {
+		t.Fatalf("expired app output still exists or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(userPath); err != nil {
+		t.Fatalf("user path should not be removed: %v", err)
+	}
+}
+
 func TestSkillArtifactRegistryListFiltersOwner(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	pathA := filepath.Join(t.TempDir(), "a.pdf")

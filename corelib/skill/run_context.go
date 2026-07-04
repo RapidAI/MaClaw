@@ -571,7 +571,7 @@ func normalizeRunCheckDataDir(dataDir string) string {
 }
 
 func defaultRunCheckDataDir() string {
-	return filepath.Join(corelib.MaclawBaseDir(), "data")
+	return corelib.MaclawDataDir()
 }
 
 func markProvidedEnvVar(ctx *CheckContext, name string) {

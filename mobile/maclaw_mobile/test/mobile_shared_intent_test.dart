@@ -175,6 +175,50 @@ void main() {
     expect(intent.sharedUrl, 'https://example.com/context');
   });
 
+  test('falls back to assistant text for unsupported files with message', () {
+    final intent = MobileSharedIntent.fromPayloads(
+      const [
+        MobileSharedIntentPayload(
+          value: '/tmp/server-backup.zip',
+          typeName: 'file',
+          mimeType: 'application/zip',
+          message: _runbookMessage,
+        ),
+      ],
+    );
+
+    expect(intent, isNotNull);
+    expect(intent!.kind, MobileSharedIntentKind.link);
+    expect(intent.opensAssistant, isTrue);
+    expect(intent.opensDocuments, isFalse);
+    expect(intent.value, _runbookMessage);
+    expect(intent.sharedUrl, 'https://example.com/runbook');
+  });
+
+  test('prefers importable file over unsupported attachment in share batch', () {
+    final intent = MobileSharedIntent.fromPayloads(
+      const [
+        MobileSharedIntentPayload(
+          value: '/tmp/server-backup.zip',
+          typeName: 'file',
+          mimeType: 'application/zip',
+          message: _fileMessageWithUrl,
+        ),
+        MobileSharedIntentPayload(
+          value: '/tmp/incident.pdf',
+          typeName: 'file',
+          mimeType: 'application/pdf',
+          message: _fileMessageWithUrl,
+        ),
+      ],
+    );
+
+    expect(intent, isNotNull);
+    expect(intent!.kind, MobileSharedIntentKind.file);
+    expect(intent.opensDocuments, isTrue);
+    expect(intent.value, '/tmp/incident.pdf');
+  });
+
   test('treats empty file payload paths with message as assistant text', () {
     final intent = MobileSharedIntent.fromPayloads(
       const [

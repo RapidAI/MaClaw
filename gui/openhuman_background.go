@@ -39,7 +39,7 @@ func (a *App) startMemoryTreeSealScheduler() {
 		return
 	}
 
-	storePath := filepath.Join(corelib.MaclawBaseDir(), "data", "memory_tree")
+	storePath := filepath.Join(corelib.MaclawDataDir(), "memory_tree")
 	if err := os.MkdirAll(storePath, 0755); err != nil {
 		log.Printf("[memory-tree] failed to create dir: %v", err)
 		return

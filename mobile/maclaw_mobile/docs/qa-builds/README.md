@@ -19,7 +19,7 @@ python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-meth
 python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-1.0.0+42.log
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.log
@@ -67,7 +67,7 @@ commands:
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version 1.0.0+42 --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-1.0.0+42.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
 
@@ -92,6 +92,10 @@ The validator resolves that path relative to `docs/qa-builds` and fails when
 the local signed artifact is missing or its SHA256 differs from the record. For
 iOS evidence, generate local archive evidence with
 `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`.
+Alternatively, after the local archive exists, rerun
+`python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+to print the same record-relative iOS archive evidence together with the
+archive/export command context.
 A recorded `.xcarchive` path is resolved relative to `docs/qa-builds` and must
 exist as a local archive directory; explicit `TestFlight build <number>`
 evidence is validated through the QA record fields instead.
@@ -153,6 +157,11 @@ current scoped Android or iOS package. Invalid records for the current scope, or
 records whose filename scope cannot be parsed, still block release evidence
 updates and point to `tool/qa_build_record_report.py`.
 
+If validated in-scope records span multiple version/build values, the directory
+validator prints a warning and a single-version remediation hint. Keep final
+release QA records to one version/build before updating release-evidence links
+or running final evidence verification.
+
 The directory validator skips this README, handoff-*.md release-handoff
 evidence files, and non-Markdown evidence attachments.
 
@@ -169,8 +178,11 @@ name, such as
 `python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android --log docs/qa-builds/final-release-evidence-android-<version+build>.log`.
 
 The final verifier log captures the success or failure transcript for the
-release evidence package. Existing logs are not overwritten unless `--force` is
-passed intentionally.
+release evidence package. Once validated QA records exist, replace
+`<version+build>` with the validated QA record version/build; successful final
+evidence logs must use that same version/build in the
+`final-release-evidence*.log` filename. Existing logs are not overwritten unless
+`--force` is passed intentionally.
 
 Do not store SSH passwords, private keys, access tokens, or private customer
 content in these records. The validator rejects high-confidence raw secrets,

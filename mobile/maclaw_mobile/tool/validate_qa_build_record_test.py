@@ -14,6 +14,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import validate_qa_build_record
 
 
+DIGITAL_EMPLOYEE_TASK_CONTEXT = (
+    "Digital employee task digital-employee-task-id-12345 submitted "
+    "through selected HubCenter https://hubs.maclaw.top and "
+    "discovered Hub https://tenant-a.maclaw.top for tenant tenant-a "
+    "with LLM credits phone:+8613800138000 and manual confirmation "
+    "execution boundary draft_only_until_mobile_user_confirms; "
+    "screenshot digital-employee-task-context-42"
+)
+
+LOGIN_RESULT_CONTEXT = (
+    "MaClaw official phone account phone:+8613800138000 authenticated through "
+    "HubCenter after SMS verification code; mobile session opened with official "
+    "credits bound to the phone account; first LLM call after verification used "
+    "phone:+8613800138000 credits; screenshot login-result-42"
+)
+
+OFFICIAL_LLM_ACCESS_CONTEXT = (
+    "MaClaw official LLM access mode available using phone account "
+    "phone:+8613800138000 official credits for tenant tenant-a; "
+    "screenshot llm-access-42; after SMS verification passed, LLM calls use "
+    "the verified phone account's MaClaw official credits"
+)
+
+DOCUMENT_EXPORT_SHARE_CONTEXT = (
+    "Exported PDF, Word/docx, and Markdown/.md files were downloaded and shared "
+    "through the system share sheet to Mail after redacted document preview "
+    "check for pdf-export-job-id-12345, word-export-job-id-12345, and "
+    "markdown-export-job-id-12345; saved local path evidence export-share-42"
+)
+
+SERVER_CREDENTIAL_RETENTION_CONTEXT = (
+    "After local reset, server profiles and SSH credentials password and private "
+    "key remained available in secure storage for server-profile:srv-prod; "
+    "screenshot credential-retain-42"
+)
+
+
 def complete_record() -> str:
     lines = []
     device_model_count = 0
@@ -41,6 +78,8 @@ def complete_record() -> str:
             value = "release-owner"
         if field in validate_qa_build_record.TASK_ID_FIELDS:
             value = f"{field.lower().replace(' ', '-')}-12345"
+        if field in validate_qa_build_record.DIGITAL_EMPLOYEE_TASK_FIELDS:
+            value = DIGITAL_EMPLOYEE_TASK_CONTEXT
         if field in validate_qa_build_record.PASS_DECISION_FIELDS:
             value = "passed"
         if field in validate_qa_build_record.MANUAL_EVIDENCE_FIELDS:
@@ -58,12 +97,7 @@ def complete_record() -> str:
                 "docs/qa-builds/release-gates-1.0.0+42.log"
             )
         if field in validate_qa_build_record.LOGIN_RESULT_FIELDS:
-            value = (
-                "MaClaw official phone account phone:+8613800138000 "
-                "authenticated through HubCenter after SMS verification code; "
-                "mobile session opened with official credits bound to the phone "
-                "account; screenshot login-result-42"
-            )
+            value = LOGIN_RESULT_CONTEXT
         if field in validate_qa_build_record.SHARE_TEXT_EVIDENCE_FIELDS:
             value = f"{platform} Assistant opened from shared text for {field}; screenshot share-text-{field.lower().replace(' ', '-')}-{platform.lower()}"
         if field in validate_qa_build_record.SHARE_URL_EVIDENCE_FIELDS:
@@ -71,65 +105,71 @@ def complete_record() -> str:
         if field in validate_qa_build_record.SHARE_DOCUMENT_EVIDENCE_FIELDS:
             value = f"{platform} document import upload task ID share-{field.lower().replace(' ', '-')}-{platform.lower()}-12345"
         if field in validate_qa_build_record.AI_SEARCH_EVIDENCE_FIELDS:
-            value = "Search query asked: what changed in mobile emergency SSH maintenance? screenshot ai-search-42"
+            value = (
+                "Search query asked: what changed in mobile emergency SSH "
+                "maintenance? Result showed citation "
+                "https://example.test/source-a; screenshot ai-search-42"
+            )
         if field in validate_qa_build_record.MOBILE_INPUT_EVIDENCE_FIELDS:
             value = (
                 "Voice input recognized transcript for assistant question and "
                 "photo/image assistant input produced search citation answer "
-                "or document upload task ID; screenshot mobile-input-42"
+                "with source https://example.test/source-a; screenshot "
+                "mobile-input-42"
             )
         if field in validate_qa_build_record.CITATION_EVIDENCE_FIELDS:
             value = "Visible citations shown with source URLs https://example.test/source-a screenshot citations-42"
         if field in validate_qa_build_record.SHARED_RESULT_EVIDENCE_FIELDS:
-            value = "System share sheet opened and shared result to Mail target; screenshot shared-result-42"
+            value = (
+                "System share sheet opened and shared result with citation "
+                "https://example.test/source-a to Mail target after redacted "
+                "answer preview check; screenshot shared-result-42"
+            )
         if field in validate_qa_build_record.DOCUMENT_DRAFT_EVIDENCE_FIELDS:
             value = (
                 "Assistant search result with citations created document draft "
                 "templates for notice, report, email, proposal, meeting minutes, "
-                "and statement; screenshot draft-from-search-42"
+                "and statement from source https://example.test/source-a; "
+                "screenshot draft-from-search-42"
             )
         if field in validate_qa_build_record.DOCUMENT_EXPORT_SHARE_FIELDS:
-            value = (
-                "Exported PDF, Word/docx, and Markdown/.md files were downloaded "
-                "and shared through the system share sheet to Mail; saved local "
-                "path evidence export-share-42"
-            )
+            value = DOCUMENT_EXPORT_SHARE_CONTEXT
         if field in validate_qa_build_record.SIGNED_INSTALL_RESULT_FIELDS:
             value = (
                 f"Signed build installed and launched for {field}; "
                 f"screenshot install-launch-{field.lower().replace(' ', '-')}"
             )
         if field == "Host type":
-            value = "Linux cloud server host type recorded; screenshot ssh-host-42"
+            value = "Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42"
         if field == "Auth mode":
-            value = "Password auth mode used for QA SSH server; screenshot ssh-auth-42"
+            value = "Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42"
         if field == "Connect result":
-            value = "SSH connected successfully to QA server; screenshot ssh-connect-42"
+            value = "SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42"
         if field == "Read-only command":
-            value = "Read-only command whoami executed; screenshot ssh-command-42"
+            value = "Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42"
         if field == "Command output excerpt":
-            value = "Command output excerpt shows stdout for whoami: qa-user; screenshot ssh-output-42"
+            value = "Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42"
         if field == "Disconnect result":
-            value = "SSH disconnected and terminal closed cleanly; screenshot ssh-disconnect-42"
+            value = "SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42"
         if field == "Reconnect result":
-            value = "SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42"
+            value = "SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42"
         if field == "Copied output evidence":
-            value = "Copied terminal output to clipboard; screenshot ssh-copy-42"
+            value = "Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42"
         if field in validate_qa_build_record.SSH_AI_ANALYSIS_WARNING_FIELDS:
             value = (
-                "SSH terminal output preview was redacted before AI analysis "
+                "SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis "
                 "confirmation after sensitive-data warning; screenshot "
                 "ssh-ai-analysis-warning-42"
             )
         if field in validate_qa_build_record.SSH_AI_RESULT_FIELDS:
             value = (
-                "AI explanation returned with command draft suggestions for "
-                "manual confirmation, not auto executed; screenshot ssh-ai-result-42"
+                "AI explanation returned from redacted SSH terminal output with command draft suggestions for "
+                "manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42"
             )
         if field in validate_qa_build_record.CREDENTIAL_DELETION_FIELDS:
             value = (
                 "Deleted server profile and cleared password/private key "
-                "credentials from secure storage; screenshot credential-delete-42"
+                "credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42"
             )
         if field in validate_qa_build_record.ACCOUNT_PREFERENCE_FIELDS:
             value = (
@@ -140,37 +180,42 @@ def complete_record() -> str:
             value = (
                 "Cleared local work records cache including search history, "
                 "document drafts, command history, digital employee prompts, "
-                "and app preferences; screenshot local-reset-42"
+                "and app preferences while preserving server-profile:srv-prod; "
+                "screenshot local-reset-42"
             )
         if field in validate_qa_build_record.SERVER_CREDENTIAL_RETENTION_FIELDS:
-            value = (
-                "After local reset, server profiles and SSH credentials password "
-                "and private key remained available; screenshot credential-retain-42"
-            )
+            value = SERVER_CREDENTIAL_RETENTION_CONTEXT
         if field in validate_qa_build_record.SERVER_CREDENTIAL_CLEAR_FIELDS:
             value = (
                 "Separate explicit account action cleared server profiles and SSH "
-                "credentials including password/private key; screenshot credential-clear-42"
+                "credentials including password/private key for "
+                "server-profile:srv-prod; screenshot credential-clear-42"
             )
         if field in validate_qa_build_record.STATUS_POLLING_FIELDS:
             value = (
-                "Status polling result for digital employee task "
-                "digital-employee-task-id-12345 returned done "
-                "with result message; screenshot status-polling-42"
+                "Status polling result for document upload task "
+                "document-upload-task-id-12345 returned parsed draft, and "
+                "document export job pdf-export-job-id-12345 returned ready, "
+                "and "
+                "digital employee task digital-employee-task-id-12345 returned "
+                "done with result message; screenshot status-polling-42"
             )
         if field in validate_qa_build_record.REALTIME_UPDATE_FIELDS:
             value = (
-                "Realtime WebSocket event updated digital employee task "
-                "digital-employee-task-id-12345 status to done; "
+                "Realtime WebSocket event updated document upload task "
+                "document-upload-task-id-12345 to parsed draft, document "
+                "export job pdf-export-job-id-12345 to ready, and digital "
+                "employee task digital-employee-task-id-12345 status to done; "
                 "screenshot realtime-task-update-42"
             )
         if field in validate_qa_build_record.NOTIFICATION_DELIVERY_FIELDS:
             value = (
                 "Notification delivered and shown for document export completion, "
                 "digital employee task completion, and SSH abnormal disconnect; "
-                "tap opened typed payloads document-export:export-42, "
+                "tap opened typed payloads document-export:pdf-export-job-id-12345, "
                 "digital-employee-task:digital-employee-task-id-12345, "
                 "and server-profile:srv-prod for the matching task or export; "
+                "notification message previews were redacted before display; "
                 "screenshot notification-delivery-42"
             )
         if field in validate_qa_build_record.ACCOUNT_HUB_TENANT_FIELDS:
@@ -185,14 +230,18 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.BOOTSTRAP_SERVICE_FIELDS:
             value = (
-                "Bootstrap response shows user, quota limits, feature flags, "
-                "and service status; screenshot bootstrap-status-42"
+                "Bootstrap response shows user phone:+8613800138000 for tenant "
+                "tenant-a, quota limits, feature flags, and service status; "
+                "screenshot bootstrap-status-42"
             )
         if field in validate_qa_build_record.NETWORK_RECOVERY_FIELDS:
             value = (
                 "Network offline warning shown when HubCenter was unreachable; "
-                "after recovery HubCenter online status returned and search, "
-                "document export, digital employee, and realtime surfaces resumed; "
+                "after recovery selected HubCenter https://hubs.maclaw.top "
+                "and discovered Hub https://tenant-a.maclaw.top for tenant "
+                "tenant-a returned online status, while search, document "
+                "export pdf-export-job-id-12345, digital employee task "
+                "digital-employee-task-id-12345, and realtime surfaces resumed; "
                 "screenshot network-recovery-42"
             )
         if field in validate_qa_build_record.HUBCENTER_PROBE_FIELDS:
@@ -208,11 +257,7 @@ def complete_record() -> str:
                 "screenshot discovered-hub-tenant-42"
             )
         if field in validate_qa_build_record.LLM_ACCESS_EVIDENCE_FIELDS:
-            value = (
-                "MaClaw official LLM access mode available using phone account "
-                "phone:+8613800138000 official credits for tenant tenant-a; "
-                "screenshot llm-access-42"
-            )
+            value = OFFICIAL_LLM_ACCESS_CONTEXT
         if field in validate_qa_build_record.LLM_SETUP_RESTRICTION_FIELDS:
             value = (
                 "LLM setup configuration shows MaClaw official service redemption "
@@ -221,7 +266,67 @@ def complete_record() -> str:
                 "screenshot llm-setup-restriction-42"
             )
         if field in validate_qa_build_record.PERMISSION_EVIDENCE_FIELDS:
-            value = f"{platform if validate_qa_build_record.REQUIRED_FIELD_COUNTS[field] > 1 else 'QA device'} {field} prompt granted on QA device; screenshot permission-{field.lower().replace(' ', '-')}"
+            permission_scope = (
+                platform
+                if validate_qa_build_record.REQUIRED_FIELD_COUNTS[field] > 1
+                else "QA device"
+            )
+            value = (
+                f"{permission_scope} {field} prompt granted on QA device; "
+                f"screenshot permission-{field.lower().replace(' ', '-')}"
+            )
+        if field == "Notification permission":
+            value = (
+                f"{platform} Notification permission prompt granted from account "
+                "screen, then real task notifications delivered and opened for "
+                "document export document-export:pdf-export-job-id-12345, "
+                "digital employee digital-employee-task:digital-employee-task-id-12345, "
+                "and SSH abnormal server-profile:srv-prod; screenshot "
+                f"permission-notification-task-flow-{platform.lower()}"
+            )
+        if field == "Camera permission":
+            value = (
+                f"{platform} Camera permission prompt granted while capturing "
+                "photo/image assistant input for the mobile AI question; "
+                "screenshot permission-camera-assistant-input"
+            )
+        if field == "Microphone permission":
+            value = (
+                f"{platform} Microphone permission prompt granted while recording "
+                "voice assistant question input with transcript; screenshot "
+                "permission-microphone-voice-input"
+            )
+        if field == "Media/file access":
+            value = (
+                "Android Media/file access permission granted through file "
+                "picker and share-to-app document import/upload for PDF, Word "
+                ".docx, Excel .xlsx, CSV, and image/photo payloads; screenshot "
+                "permission-media-file-document-import"
+            )
+        if field == "Local network / SSH scenario":
+            value = (
+                "Android Local network permission prompt granted, then SSH "
+                "connected to server-profile:srv-prod and read-only command "
+                "whoami returned output; screenshot permission-local-network-ssh"
+            )
+        if field == "Local network permission":
+            value = (
+                "iOS Local network permission prompt granted, then SSH "
+                "connected to server-profile:srv-prod and read-only command "
+                "whoami returned output; screenshot permission-local-network-ssh"
+            )
+        if field == "Speech recognition permission":
+            value = (
+                "iOS Speech recognition permission prompt granted while "
+                "transcribing voice assistant question input; screenshot "
+                "permission-speech-recognition-voice-input"
+            )
+        if field == "Photo library permission":
+            value = (
+                "iOS Photo library permission prompt granted while importing "
+                "photo/image/screenshot assistant input for the mobile AI "
+                "question; screenshot permission-photo-library-assistant-input"
+            )
         if field == "Device model / OS":
             device_model_count += 1
             value = (
@@ -264,9 +369,15 @@ def complete_record() -> str:
         if field == "App group":
             value = validate_qa_build_record.APP_GROUP
         if field == "API base URL confirmation":
-            value = "https://tenant-a.maclaw.top"
+            value = (
+                "API client base URL confirmed using discovered Hub "
+                "https://tenant-a.maclaw.top; screenshot api-base-url-42"
+            )
         if field == "Realtime Hub URL confirmation":
-            value = "https://tenant-a.maclaw.top"
+            value = (
+                "Realtime WebSocket Hub URL connected to discovered Hub "
+                "https://tenant-a.maclaw.top; screenshot realtime-hub-url-42"
+            )
         lines.append(f"{field}: {value}")
     return "\n".join(lines)
 
@@ -708,12 +819,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "API base URL confirmation: https://tenant-a.maclaw.top",
-                "API base URL confirmation: https://other-tenant.maclaw.top",
+                "API base URL confirmation: API client base URL confirmed using discovered Hub https://tenant-a.maclaw.top; screenshot api-base-url-42",
+                "API base URL confirmation: API client base URL confirmed using discovered Hub https://other-tenant.maclaw.top; screenshot api-base-url-42",
             )
             .replace(
-                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top",
-                "Realtime Hub URL confirmation: https://realtime.example.invalid",
+                "Realtime Hub URL confirmation: Realtime WebSocket Hub URL connected to discovered Hub https://tenant-a.maclaw.top; screenshot realtime-hub-url-42",
+                "Realtime Hub URL confirmation: Realtime WebSocket Hub URL connected to discovered Hub https://realtime.example.invalid; screenshot realtime-hub-url-42",
             ),
         )
 
@@ -736,12 +847,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Discovered Hub URL: https://tenant-a.maclaw.top/api/mobile/bootstrap",
             )
             .replace(
-                "API base URL confirmation: https://tenant-a.maclaw.top",
-                "API base URL confirmation: https://tenant-a.maclaw.top/api/mobile/search",
+                "API base URL confirmation: API client base URL confirmed using discovered Hub https://tenant-a.maclaw.top; screenshot api-base-url-42",
+                "API base URL confirmation: API client base URL confirmed using discovered Hub https://tenant-a.maclaw.top/api/mobile/search; screenshot api-base-url-42",
             )
             .replace(
-                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top",
-                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top/api/mobile/realtime?token=redacted",
+                "Realtime Hub URL confirmation: Realtime WebSocket Hub URL connected to discovered Hub https://tenant-a.maclaw.top; screenshot realtime-hub-url-42",
+                "Realtime Hub URL confirmation: Realtime WebSocket Hub URL connected to discovered Hub https://tenant-a.maclaw.top/api/mobile/realtime?token=redacted; screenshot realtime-hub-url-42",
             ),
         )
 
@@ -757,6 +868,30 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         )
         self.assertIn(
             "Realtime Hub URL confirmation must be the discovered Hub origin URL",
+            missing,
+        )
+
+    def test_api_and_realtime_url_confirmations_must_be_evidence_notes(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "API base URL confirmation: API client base URL confirmed using discovered Hub https://tenant-a.maclaw.top; screenshot api-base-url-42",
+                "API base URL confirmation: https://tenant-a.maclaw.top",
+            )
+            .replace(
+                "Realtime Hub URL confirmation: Realtime WebSocket Hub URL connected to discovered Hub https://tenant-a.maclaw.top; screenshot realtime-hub-url-42",
+                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "API base URL confirmation must describe API client base URL evidence",
+            missing,
+        )
+        self.assertIn(
+            "Realtime Hub URL confirmation must describe realtime WebSocket Hub URL evidence",
             missing,
         )
 
@@ -837,12 +972,52 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Desktop GUI QR authorization ID: qr-auth-20260702",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
-                "LLM access evidence: Desktop GUI QR third-party LLM access authorized by qr-auth-20260702 for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw desktop GUI QR third-party LLM access authorized by qr-auth-20260702 for tenant tenant-a; screenshot llm-access-42",
             ),
         )
 
         self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
+
+    def test_third_party_llm_evidence_must_use_maclaw_desktop_gui_qr(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "LLM access mode: maclaw_official",
+                "LLM access mode: desktop_qr_third_party",
+            )
+            .replace(
+                "Desktop GUI QR authorization ID: not-used-official-mode",
+                "Desktop GUI QR authorization ID: qr-auth-20260702",
+            )
+            .replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: Generic desktop QR third-party LLM access authorized by qr-auth-20260702 for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must match desktop_qr_third_party mode",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_third_party_llm_rejects_official_mode_qr_sentinel(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "LLM access mode: maclaw_official",
+                "LLM access mode: desktop_qr_third_party",
+            )
+            .replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: Desktop GUI QR third-party LLM access authorized by not-used-official-mode for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "Desktop GUI QR authorization ID must be a real desktop GUI QR authorization for third-party LLM access",
+            validate_qa_build_record.missing_required_fields(values),
+        )
 
     def test_third_party_llm_evidence_must_reference_qr_authorization_id(
         self,
@@ -858,7 +1033,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Desktop GUI QR authorization ID: qr-auth-20260702",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: Desktop GUI QR third-party LLM access authorized for tenant tenant-a; screenshot llm-access-42",
             ),
         )
@@ -871,7 +1046,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_llm_access_evidence_must_match_selected_mode(self) -> None:
         official_values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: Desktop GUI QR third-party LLM access authorized for tenant tenant-a; screenshot llm-access-42",
             ),
         )
@@ -903,8 +1078,25 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must match maclaw_official mode",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_official_llm_access_evidence_must_follow_sms_verification(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available "
+                "using phone account phone:+8613800138000 official credits for "
+                "tenant tenant-a; screenshot llm-access-42",
             ),
         )
 
@@ -918,7 +1110,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613900139000 official credits for tenant tenant-a; screenshot llm-access-42",
             ),
         )
@@ -926,6 +1118,40 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "LLM access evidence must reference the recorded MaClaw phone account",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_llm_access_evidence_must_match_recorded_tenant_id(self) -> None:
+        official_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-b; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must reference the recorded Tenant ID",
+            validate_qa_build_record.missing_required_fields(official_values),
+        )
+
+        third_party_values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "LLM access mode: maclaw_official",
+                "LLM access mode: desktop_qr_third_party",
+            )
+            .replace(
+                "Desktop GUI QR authorization ID: not-used-official-mode",
+                "Desktop GUI QR authorization ID: qr-auth-20260702",
+            )
+            .replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: Desktop GUI QR third-party LLM access authorized by qr-auth-20260702 for tenant tenant-b; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must reference the recorded Tenant ID",
+            validate_qa_build_record.missing_required_fields(third_party_values),
         )
 
     def test_llm_setup_surface_restriction_must_exclude_arbitrary_endpoints(self) -> None:
@@ -944,13 +1170,26 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_voice_photo_assistant_input_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer or document upload task ID; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer with source https://example.test/source-a; screenshot mobile-input-42",
                 "Voice/photo assistant input evidence: Mobile input screenshot captured during QA run",
             ),
         )
 
         self.assertIn(
             "Voice/photo assistant input evidence must describe voice transcription and photo/image assistant input results",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_voice_photo_assistant_input_must_reference_recorded_result(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer; screenshot mobile-input-42",
+            ),
+        )
+
+        self.assertIn(
+            "Voice/photo assistant input evidence must reference a recorded citation URL or document upload task ID",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -1101,6 +1340,29 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_ios_artifact_fields_reject_documented_placeholders(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Archive/TestFlight build: TestFlight build 42",
+                "Archive/TestFlight build: .xcarchive path or TestFlight build number",
+            )
+            .replace(
+                "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
+                "Provisioning profiles: <Runner profile UUID/name; Share Extension profile UUID/name>",
+            ),
+        )
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Archive/TestFlight build must identify an .xcarchive or TestFlight build",
+            missing,
+        )
+        self.assertIn(
+            "Provisioning profiles must mention Runner, Share Extension, and trackable profile ID/file/name",
+            missing,
+        )
+
     def test_ios_provisioning_profiles_accept_files_and_profile_names(self) -> None:
         file_values = validate_qa_build_record.parse_record(
             complete_record().replace(
@@ -1246,8 +1508,34 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_document_export_share_evidence_must_cover_all_formats(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Exported document share evidence: Exported PDF, Word/docx, and Markdown/.md files were downloaded and shared through the system share sheet to Mail; saved local path evidence export-share-42",
+                f"Exported document share evidence: {DOCUMENT_EXPORT_SHARE_CONTEXT}",
                 "Exported document share evidence: Exported PDF file was downloaded and shared to Mail",
+            ),
+        )
+
+        self.assertIn(
+            "Exported document share evidence must describe exported PDF, Word, and Markdown download/share evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_document_export_share_evidence_must_reference_recorded_export_jobs(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Exported document share evidence: {DOCUMENT_EXPORT_SHARE_CONTEXT}",
+                "Exported document share evidence: Exported PDF, Word/docx, and Markdown/.md files were downloaded and shared through the system share sheet to Mail; saved local path evidence export-share-42",
+            ),
+        )
+
+        self.assertIn(
+            "Exported document share evidence must reference recorded PDF, Word, and Markdown export job IDs",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_document_export_share_evidence_must_describe_redacted_preview(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                " after redacted document preview check",
+                "",
             ),
         )
 
@@ -1259,7 +1547,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_digital_employee_task_id_must_identify_employee_task(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Digital employee task ID: digital-employee-task-id-12345",
+                f"Digital employee task ID: {DIGITAL_EMPLOYEE_TASK_CONTEXT}",
                 "Digital employee task ID: generic-task-12345",
             ),
         )
@@ -1267,6 +1555,54 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Digital employee task ID must identify a digital employee task",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_digital_employee_task_id_must_include_mobile_context(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Digital employee task ID: {DIGITAL_EMPLOYEE_TASK_CONTEXT}",
+                "Digital employee task ID: Digital employee task "
+                "digital-employee-task-id-12345 submitted; "
+                "screenshot digital-employee-task-context-42",
+            ),
+        )
+
+        self.assertIn(
+            "Digital employee task ID must describe Hub/tenant/LLM credits and manual confirmation context",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_digital_employee_task_id_must_match_recorded_hub_tenant_and_credits(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Digital employee task ID: {DIGITAL_EMPLOYEE_TASK_CONTEXT}",
+                "Digital employee task ID: Digital employee task "
+                "digital-employee-task-id-12345 submitted through selected "
+                "HubCenter https://hubs2.maclaw.top and discovered Hub "
+                "https://tenant-b.maclaw.top for tenant tenant-b with LLM "
+                "credits phone:+8613900139000 and manual confirmation "
+                "execution boundary draft_only_until_mobile_user_confirms; "
+                "screenshot digital-employee-task-context-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Digital employee task ID must reference the recorded selected HubCenter URL",
+            missing,
+        )
+        self.assertIn(
+            "Digital employee task ID must reference the recorded Discovered Hub URL",
+            missing,
+        )
+        self.assertIn(
+            "Digital employee task ID must reference the recorded Tenant ID",
+            missing,
+        )
+        self.assertIn(
+            "Digital employee task ID must reference the recorded MaClaw phone account credits",
+            missing,
         )
 
     def test_duplicate_android_ios_fields_require_both_entries(self) -> None:
@@ -1337,12 +1673,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Android signed install result: ok",
             )
             .replace(
-                "Camera permission: Android Camera permission prompt granted on QA device; screenshot permission-camera-permission",
+                "Camera permission: Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
                 "Camera permission: yes",
                 1,
             )
             .replace(
-                "Connect result: SSH connected successfully to QA server; screenshot ssh-connect-42",
+                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
                 "Connect result: done",
             ),
         )
@@ -1366,22 +1702,22 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android Notification permission prompt granted on QA device; screenshot permission-notification-permission",
+                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android",
                 "Runtime evidence captured in release notes",
                 1,
             )
             .replace(
-                "Android Camera permission prompt granted on QA device; screenshot permission-camera-permission",
+                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
                 "Permission prompt granted on QA device; screenshot permission-generic-a",
                 1,
             )
             .replace(
-                "Android Microphone permission prompt granted on QA device; screenshot permission-microphone-permission",
+                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input",
                 "Permission prompt granted on QA device; screenshot permission-generic-b",
                 1,
             )
             .replace(
-                "QA device Local network permission prompt granted on QA device; screenshot permission-local-network-permission",
+                "iOS Local network permission prompt granted, then SSH connected to server-profile:srv-prod and read-only command whoami returned output; screenshot permission-local-network-ssh",
                 "Permission prompt granted on QA device; screenshot permission-generic-c",
                 1,
             ),
@@ -1393,9 +1729,117 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             "Notification permission must describe permission prompt/result evidence",
             "Camera permission must describe permission prompt/result evidence",
             "Microphone permission must describe permission prompt/result evidence",
-            "Local network permission must describe permission prompt/result evidence",
+            "Local network permission must describe local-network permission evidence tied to a real SSH connection and read-only command",
         ]:
             self.assertIn(expected, missing)
+
+    def test_notification_permission_must_link_to_real_task_notifications(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android",
+                "Android Notification permission prompt granted from account screen; screenshot permission-notification-settings-android",
+                1,
+            )
+            .replace(
+                "iOS Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-ios",
+                "iOS Notification permission prompt granted from account screen; screenshot permission-notification-settings-ios",
+                1,
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Notification permission must link permission evidence to real task notification delivery/open",
+            missing,
+        )
+
+    def test_mobile_input_permissions_must_link_to_assistant_flows(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
+                "Android Camera permission prompt granted for QA device settings; screenshot permission-camera-settings",
+                1,
+            )
+            .replace(
+                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input",
+                "Android Microphone permission prompt granted for QA device settings; screenshot permission-microphone-settings",
+                1,
+            )
+            .replace(
+                "iOS Speech recognition permission prompt granted while transcribing voice assistant question input; screenshot permission-speech-recognition-voice-input",
+                "iOS Speech recognition permission prompt granted in Settings; screenshot permission-speech-recognition-settings",
+                1,
+            )
+            .replace(
+                "iOS Photo library permission prompt granted while importing photo/image/screenshot assistant input for the mobile AI question; screenshot permission-photo-library-assistant-input",
+                "iOS Photo library permission prompt granted in Settings; screenshot permission-photo-library-settings",
+                1,
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        for expected in [
+            "Camera permission must link permission evidence to voice/photo assistant input",
+            "Microphone permission must link permission evidence to voice/photo assistant input",
+            "Photo library permission must link permission evidence to voice/photo assistant input",
+            "Speech recognition permission must link permission evidence to voice/photo assistant input",
+        ]:
+            self.assertIn(expected, missing)
+
+    def test_media_file_access_must_cover_document_import_formats(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Media/file access: Android Media/file access permission "
+                "granted through file picker and share-to-app document "
+                "import/upload for PDF, Word .docx, Excel .xlsx, CSV, and "
+                "image/photo payloads; screenshot "
+                "permission-media-file-document-import",
+                "Media/file access: Android Media/file access permission "
+                "granted through Settings; screenshot permission-media-file",
+            ),
+        )
+
+        self.assertIn(
+            "Media/file access must describe file/media access for PDF, Word, Excel, CSV, and image/photo imports",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_local_network_permission_must_link_to_real_ssh_connection(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Local network / SSH scenario: Android Local network "
+                "permission prompt granted, then SSH connected to "
+                "server-profile:srv-prod and read-only command whoami "
+                "returned output; screenshot permission-local-network-ssh",
+                "Local network / SSH scenario: Android Local network "
+                "permission prompt granted in Settings; screenshot "
+                "permission-local-network-settings",
+            )
+            .replace(
+                "Local network permission: iOS Local network permission prompt "
+                "granted, then SSH connected to server-profile:srv-prod and "
+                "read-only command whoami returned output; screenshot "
+                "permission-local-network-ssh",
+                "Local network permission: iOS Local network permission prompt "
+                "granted in Settings; screenshot permission-local-network-settings",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Local network / SSH scenario must describe local-network permission evidence tied to a real SSH connection and read-only command",
+            missing,
+        )
+        self.assertIn(
+            "Local network permission must describe local-network permission evidence tied to a real SSH connection and read-only command",
+            missing,
+        )
 
     def test_share_payload_fields_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
@@ -1471,7 +1915,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Search query asked: what changed in mobile emergency SSH maintenance? screenshot ai-search-42",
+                "Search query asked: what changed in mobile emergency SSH maintenance? Result showed citation https://example.test/source-a; screenshot ai-search-42",
                 "Assistant evidence captured in release notes",
             )
             .replace(
@@ -1479,11 +1923,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Answer area verified in screenshot bundle",
             )
             .replace(
-                "System share sheet opened and shared result to Mail target; screenshot shared-result-42",
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
                 "Result evidence captured in release notes",
             )
             .replace(
-                "Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-search-42",
+                "Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
                 "Draft evidence captured in release notes",
             ),
         )
@@ -1501,7 +1945,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_document_draft_from_search_must_cover_every_template_type(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-search-42",
+                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
                 "Document draft created from search: Assistant search result with citations created report document draft template; screenshot draft-from-search-42",
             ),
         )
@@ -1511,10 +1955,36 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_document_draft_from_search_must_reference_recorded_citation_url(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-search-42",
+            ),
+        )
+
+        self.assertIn(
+            "Document draft created from search must reference a recorded citation URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_ai_search_smoke_fields_accept_specific_evidence(self) -> None:
         values = validate_qa_build_record.parse_record(complete_record())
 
         self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
+
+    def test_ai_search_query_must_reference_recorded_citation_url(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Search query asked: what changed in mobile emergency SSH maintenance? Result showed citation https://example.test/source-a; screenshot ai-search-42",
+                "Search query asked: what changed in mobile emergency SSH maintenance? screenshot ai-search-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI search query must reference a recorded citation URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
 
     def test_citation_evidence_requires_visible_https_source_url(self) -> None:
         values = validate_qa_build_record.parse_record(
@@ -1529,11 +1999,50 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_citation_evidence_must_be_visible_in_answer_or_result(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Visible citations shown with source URLs https://example.test/source-a screenshot citations-42",
+                "Citation source URL https://example.test/source-a captured in backend log citations-42",
+            ),
+        )
+
+        self.assertIn(
+            "Visible citations / sources must identify visible citations, sources, or URLs",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_shared_result_evidence_requires_target_or_output(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "System share sheet opened and shared result to Mail target; screenshot shared-result-42",
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
                 "Shared result button was tapped and screenshot shared-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "Shared result must describe copy, export, or system-share evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_shared_result_evidence_must_reference_recorded_citation_url(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
+                "System share sheet opened and shared result to Mail target; screenshot shared-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "Shared result must reference a recorded citation URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_shared_result_evidence_must_describe_redacted_externalized_content(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                " after redacted answer preview check",
+                "",
             ),
         )
 
@@ -1594,15 +2103,15 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: SSH analysis completed with screenshot/log reference",
             )
             .replace(
-                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
                 "AI explanation / command draft result: AI result screenshot captured",
             )
             .replace(
-                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials from secure storage; screenshot credential-delete-42",
+                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
                 "Credential deletion confirmation: Server profile cleanup screenshot captured",
             ),
         )
@@ -1614,7 +2123,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
         self.assertIn(
-            "AI explanation / command draft result must describe AI explanation, command drafts, and manual execution evidence",
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
             missing,
         )
         self.assertIn(
@@ -1622,10 +2131,23 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
 
+    def test_ssh_ai_result_must_include_redacted_terminal_output_context(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_ssh_ai_analysis_warning_must_include_redacted_output_preview(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: AI analysis preview confirmation accepted after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
             ),
         )
@@ -1643,15 +2165,15 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Theme and speech language change result: Settings screenshot captured",
             )
             .replace(
-                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
                 "Local work records reset confirmation: Cache cleared screenshot captured",
             )
             .replace(
-                "Server credentials retained after local reset: After local reset, server profiles and SSH credentials password and private key remained available; screenshot credential-retain-42",
+                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
                 "Server credentials retained after local reset: Credentials screenshot captured",
             )
             .replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
                 "Server profiles/SSH credentials clear confirmation: Cleanup screenshot captured",
             ),
         )
@@ -1675,39 +2197,81 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
 
+    def test_account_privacy_server_credentials_must_reference_recorded_server_profile(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server profiles; screenshot local-reset-42",
+            )
+            .replace(
+                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
+                "Server credentials retained after local reset: After local reset, server profiles and SSH credentials password and private key remained available; screenshot credential-retain-42",
+            )
+            .replace(
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key; screenshot credential-clear-42",
+            ),
+        )
+
+        self.assertIn(
+            "Account privacy server credential evidence must reference the recorded server-profile notification ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_server_credentials_retention_must_reference_secure_storage(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
+                "Server credentials retained after local reset: After local "
+                "reset, server profiles and SSH credentials password and "
+                "private key remained available for server-profile:srv-prod; "
+                "screenshot credential-retain-42",
+            ),
+        )
+
+        self.assertIn(
+            "Server credentials retained after local reset must describe server profiles and SSH credentials retained after local reset",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_ssh_smoke_fields_must_describe_expected_actions(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Host type: Linux cloud server host type recorded; screenshot ssh-host-42",
+                "Host type: Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42",
                 "Host type: QA screenshot captured",
             )
             .replace(
-                "Auth mode: Password auth mode used for QA SSH server; screenshot ssh-auth-42",
+                "Auth mode: Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42",
                 "Auth mode: QA screenshot captured",
             )
             .replace(
-                "Connect result: SSH connected successfully to QA server; screenshot ssh-connect-42",
+                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
                 "Connect result: QA screenshot captured",
             )
             .replace(
-                "Read-only command: Read-only command whoami executed; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
                 "Read-only command: QA screenshot captured",
             )
             .replace(
-                "Command output excerpt: Command output excerpt shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
                 "Command output excerpt: QA screenshot captured",
             )
             .replace(
-                "Disconnect result: SSH disconnected and terminal closed cleanly; screenshot ssh-disconnect-42",
+                "Disconnect result: SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42",
                 "Disconnect result: QA screenshot captured",
             )
             .replace(
-                "Reconnect result: SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42",
+                "Reconnect result: SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42",
                 "Reconnect result: QA screenshot captured",
             )
             .replace(
-                "Copied output evidence: Copied terminal output to clipboard; screenshot ssh-copy-42",
+                "Copied output evidence: Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42",
                 "Copied output evidence: QA screenshot captured",
             ),
         )
@@ -1726,15 +2290,69 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         ]:
             self.assertIn(expected, missing)
 
+    def test_ssh_smoke_fields_must_reference_recorded_server_profile_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Host type: Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42",
+                "Host type: Linux cloud server host type recorded; screenshot ssh-host-42",
+            )
+            .replace(
+                "Auth mode: Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42",
+                "Auth mode: Password auth mode used for QA SSH server; screenshot ssh-auth-42",
+            )
+            .replace(
+                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
+                "Connect result: SSH connected successfully to QA server; screenshot ssh-connect-42",
+            )
+            .replace(
+                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami executed; screenshot ssh-command-42",
+            )
+            .replace(
+                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt shows stdout for whoami: qa-user; screenshot ssh-output-42",
+            )
+            .replace(
+                "Disconnect result: SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42",
+                "Disconnect result: SSH disconnected and terminal closed cleanly; screenshot ssh-disconnect-42",
+            )
+            .replace(
+                "Reconnect result: SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42",
+                "Reconnect result: SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42",
+            )
+            .replace(
+                "Copied output evidence: Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42",
+                "Copied output evidence: Copied terminal output to clipboard; screenshot ssh-copy-42",
+            )
+            .replace(
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+            )
+            .replace(
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation, not auto executed; screenshot ssh-ai-result-42",
+            )
+            .replace(
+                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
+                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials from secure storage; screenshot credential-delete-42",
+            )
+        )
+
+        self.assertIn(
+            "Manual SSH smoke evidence must reference the recorded server-profile notification ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_status_polling_and_realtime_fields_must_describe_task_updates(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Status polling result: Status polling result for digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
                 "Status polling result: Service smoke screenshot captured during QA run",
             )
             .replace(
-                "Realtime update evidence: Realtime WebSocket event updated digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
                 "Realtime update evidence: Account page realtime check screenshot captured",
             ),
         )
@@ -1754,12 +2372,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Status polling result: Status polling result for digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
-                "Status polling result: Status polling result for digital employee task returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result returned parsed draft, document export returned ready, and digital employee task returned done with result message; screenshot status-polling-42",
             )
             .replace(
-                "Realtime update evidence: Realtime WebSocket event updated digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
-                "Realtime update evidence: Realtime WebSocket event updated digital employee task status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task to parsed draft, document export job to ready, and digital employee task status to done; screenshot realtime-task-update-42",
             ),
         )
 
@@ -1774,11 +2392,96 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
 
+    def test_status_and_realtime_must_reference_document_upload_task_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result for document upload task returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+            )
+            .replace(
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Status polling result must reference the recorded document upload task ID",
+            missing,
+        )
+        self.assertIn(
+            "Realtime update evidence must reference the recorded document upload task ID",
+            missing,
+        )
+
+    def test_status_and_realtime_must_reference_document_export_job_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+            )
+            .replace(
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Status polling result must reference a recorded document export job ID",
+            missing,
+        )
+        self.assertIn(
+            "Realtime update evidence must reference a recorded document export job ID",
+            missing,
+        )
+
+    def test_status_and_realtime_must_reference_digital_employee_task_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task digital-employee-task-id-12345 returned done with result message; screenshot status-polling-42",
+                "Status polling result: Status polling result for document upload task document-upload-task-id-12345 returned parsed draft, and document export job pdf-export-job-id-12345 returned ready, and digital employee task returned done with result message; screenshot status-polling-42",
+            )
+            .replace(
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task digital-employee-task-id-12345 status to done; screenshot realtime-task-update-42",
+                "Realtime update evidence: Realtime WebSocket event updated document upload task document-upload-task-id-12345 to parsed draft, document export job pdf-export-job-id-12345 to ready, and digital employee task status to done; screenshot realtime-task-update-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Status polling result must reference the recorded digital employee task ID",
+            missing,
+        )
+        self.assertIn(
+            "Realtime update evidence must reference the recorded digital employee task ID",
+            missing,
+        )
+
     def test_notification_delivery_must_cover_tasks_payload_and_ssh_abnormal(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Notification delivery evidence: Notification delivered and shown for document export completion, digital employee task completion, and SSH abnormal disconnect; tap opened typed payloads document-export:export-42, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export; screenshot notification-delivery-42",
+                "Notification delivery evidence: Notification delivered and shown for document export completion, digital employee task completion, and SSH abnormal disconnect; tap opened typed payloads document-export:pdf-export-job-id-12345, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export; notification message previews were redacted before display; screenshot notification-delivery-42",
                 "Notification delivery evidence: Notification screenshot captured during QA run",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_notification_delivery_must_describe_redacted_message_preview(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "notification message previews were redacted before display; ",
+                "",
             ),
         )
 
@@ -1790,7 +2493,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_notification_delivery_rejects_untyped_payload_evidence(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "tap opened typed payloads document-export:export-42, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export",
+                "tap opened typed payloads document-export:pdf-export-job-id-12345, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export",
                 "tap opened the payload/deep link for the matching task or export",
             ),
         )
@@ -1798,6 +2501,31 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_notification_delivery_must_reference_recorded_task_ids(self) -> None:
+        missing_document_job = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "document-export:pdf-export-job-id-12345",
+                "document-export:export-unknown-42",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must reference a recorded document export job ID",
+            validate_qa_build_record.missing_required_fields(missing_document_job),
+        )
+
+        missing_digital_employee_task = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "digital-employee-task:digital-employee-task-id-12345",
+                "digital-employee-task:unknown-task-42",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must reference a recorded digital employee task ID",
+            validate_qa_build_record.missing_required_fields(missing_digital_employee_task),
         )
 
     def test_official_connection_fields_must_describe_hub_tenant_and_bootstrap(
@@ -1814,7 +2542,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "No custom Hub URL setting found: Settings screen screenshot captured during QA run",
             )
             .replace(
-                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
+                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:+8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
                 "Bootstrap user/quota/feature flags/service status: Bootstrap smoke screenshot captured during QA run",
             ),
         )
@@ -1834,10 +2562,48 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
 
+    def test_bootstrap_evidence_must_reference_recorded_phone_and_tenant(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:+8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
+                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user for tenant tenant-b, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Bootstrap user/quota/feature flags/service status must reference the recorded MaClaw phone account",
+            missing,
+        )
+        self.assertIn(
+            "Bootstrap user/quota/feature flags/service status must reference the recorded Tenant ID",
+            missing,
+        )
+
+    def test_account_screen_hub_tenant_must_match_recorded_values(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Account screen shows selected Hub and tenant: Account screen shows selected Hub https://tenant-a.maclaw.top and tenant tenant-a; screenshot account-hub-tenant-42",
+                "Account screen shows selected Hub and tenant: Account screen shows selected Hub https://tenant-b.maclaw.top and tenant tenant-b; screenshot account-hub-tenant-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Account screen shows selected Hub and tenant must reference the recorded Discovered Hub URL",
+            missing,
+        )
+        self.assertIn(
+            "Account screen shows selected Hub and tenant must reference the recorded Tenant ID",
+            missing,
+        )
+
     def test_login_result_must_describe_official_hubcenter_login(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Login result: MaClaw official phone account phone:+8613800138000 authenticated through HubCenter after SMS verification code; mobile session opened with official credits bound to the phone account; screenshot login-result-42",
+                f"Login result: {LOGIN_RESULT_CONTEXT}",
                 "Login result: Login screenshot captured during QA run",
             ),
         )
@@ -1850,8 +2616,24 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_login_result_must_name_phone_sms_and_credits_binding(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Login result: MaClaw official phone account phone:+8613800138000 authenticated through HubCenter after SMS verification code; mobile session opened with official credits bound to the phone account; screenshot login-result-42",
+                f"Login result: {LOGIN_RESULT_CONTEXT}",
                 "Login result: MaClaw official account authenticated through HubCenter and mobile session opened; screenshot login-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "Login result must describe phone/SMS login through HubCenter and official credits binding",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_login_result_must_prove_first_llm_call_uses_phone_credits(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Login result: {LOGIN_RESULT_CONTEXT}",
+                "Login result: MaClaw official phone account phone:+8613800138000 "
+                "authenticated through HubCenter after SMS verification code; "
+                "mobile session opened with official credits bound to the phone "
+                "account; screenshot login-result-42",
             ),
         )
 
@@ -1863,7 +2645,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_network_recovery_evidence_must_describe_offline_and_recovered_services(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery HubCenter online status returned and search, document export, digital employee, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
                 "Network offline/recovery evidence: Network status screenshot captured during QA run",
             ),
         )
@@ -1871,6 +2653,35 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Network offline/recovery evidence must describe offline warning and recovered HubCenter network/service evidence",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_network_recovery_evidence_must_reference_recorded_hub_and_task(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery HubCenter online status returned and search, document export, digital employee, and realtime surfaces resumed; screenshot network-recovery-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Network offline/recovery evidence must reference the selected HubCenter URL",
+            missing,
+        )
+        self.assertIn(
+            "Network offline/recovery evidence must reference the recorded Discovered Hub URL",
+            missing,
+        )
+        self.assertIn(
+            "Network offline/recovery evidence must reference the recorded Tenant ID",
+            missing,
+        )
+        self.assertIn(
+            "Network offline/recovery evidence must reference a recorded task/job ID",
+            missing,
         )
 
     def test_device_model_os_requires_platform_and_version(self) -> None:
@@ -2141,7 +2952,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42\n",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}\n",
                 "",
             )
         )
@@ -2161,7 +2972,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "HubCenter probe result: ok",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: yes",
             ),
         )
@@ -2189,7 +3000,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Discovered Hub/tenant result: Tenant routing screenshot captured during QA run",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: LLM screenshot captured during QA run",
             ),
         )
@@ -2482,6 +3293,24 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(complete_values),
         )
 
+    def test_waiver_summary_must_include_trackable_ticket_or_approval(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            (
+                complete_record()
+                + "\nKnown issues / waivers: Manual SSH waiver recorded after release-owner approval"
+            ).replace(
+                "Manual SSH smoke passed: passed",
+                "Manual SSH smoke passed: waived with reason: QA server unavailable",
+            ),
+        )
+
+        self.assertIn(
+            "Known issues / waivers must include a trackable waiver ticket or approval reference",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_parser_accepts_utf8_bom_on_first_field(self) -> None:
         values = validate_qa_build_record.parse_record("\ufeffDate: 2026-07-02\n")
 
@@ -2641,8 +3470,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             record = Path(tmp) / "qa-record.md"
             record.write_text(
                 complete_record().replace(
-                    "Command output excerpt: Command output excerpt shows stdout for whoami: qa-user; screenshot ssh-output-42",
-                    "Command output excerpt: Command output excerpt shows stdout password=SuperSecret123; screenshot ssh-output-42",
+                    "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                    "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout password=SuperSecret123; screenshot ssh-output-42",
                 ),
                 encoding="utf-8",
             )

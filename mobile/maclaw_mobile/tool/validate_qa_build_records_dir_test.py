@@ -256,6 +256,46 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
             self.assertNotIn("QA build record directory validation failed", output.getvalue())
             self.assertNotIn("qa_build_record_report.py <failed-record>", output.getvalue())
 
+    def test_main_warns_when_valid_records_span_multiple_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            android_record = records_dir / "2026-07-02-android-1.0.0+42.md"
+            ios_record = records_dir / "2026-07-02-ios-1.0.0+43.md"
+            android_record.write_text("Date: 2026-07-02\n", encoding="utf-8")
+            ios_record.write_text("Date: 2026-07-02\n", encoding="utf-8")
+            output = StringIO()
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(
+                        path=android_record,
+                        errors=[],
+                    ),
+                    validate_qa_build_records_dir.RecordValidationResult(
+                        path=ios_record,
+                        errors=[],
+                    ),
+                ],
+            ), redirect_stdout(output):
+                exit_code = validate_qa_build_records_dir.main([tmp])
+
+            text = output.getvalue()
+            self.assertEqual(0, exit_code)
+            self.assertIn("span multiple version/build values", text)
+            self.assertIn("final evidence verification requires one version/build", text)
+            self.assertIn(
+                release_evidence_commands.qa_record_version_mismatch_hint(
+                    records_dir=str(records_dir.resolve()),
+                ),
+                text,
+            )
+            self.assertIn(
+                f"Next final evidence check: `python3 tool/verify_final_release_evidence.py {records_dir.resolve()} --scope android-ios`",
+                text,
+            )
+            self.assertNotIn("--log", text)
+
     def test_main_explicit_scope_reports_out_of_scope_only_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)

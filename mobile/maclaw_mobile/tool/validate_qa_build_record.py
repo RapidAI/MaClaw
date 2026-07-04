@@ -25,6 +25,7 @@ SHARE_EXTENSION_BUNDLE_ID = "top.mypapers.maclaw.mobile.ShareExtension"
 APP_GROUP = "group.top.mypapers.maclaw.mobile"
 OFFICIAL_LLM_QR_AUTH_ID = "not-used-official-mode"
 HTTPS_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+")
+HTTPS_URL_TOKEN_RE = re.compile(r"https://[^\s,;]+")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
@@ -37,6 +38,13 @@ MACLAW_PHONE_ACCOUNT_RE = re.compile(
 )
 VERSION_BUILD_RE = re.compile(
     r"(?i)(?:\b\d+(?:\.\d+){1,3}\+\d+\b|(?:version|v)\s*\d+(?:\.\d+){1,3}.*\bbuild\s*\d+\b)"
+)
+SERVER_PROFILE_PAYLOAD_RE = re.compile(r"(?i)\bserver-profile:([A-Za-z0-9._-]{3,128})\b")
+DIGITAL_EMPLOYEE_TASK_ID_TOKEN_RE = re.compile(
+    r"(?i)\bdigital-employee-task-id-[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+WAIVER_TRACKING_REFERENCE_RE = re.compile(
+    r"(?i)\b(?:ticket|issue|approval|waiver|exception|risk|qa)[-_: #]*[A-Z0-9][A-Z0-9._-]{1,64}\b|#[0-9]{2,}\b"
 )
 QA_BUILD_RECORD_FILENAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})-"
@@ -284,6 +292,24 @@ PERMISSION_EVIDENCE_FIELDS = {
     "Speech recognition permission": ("speech recognition", "speech", "voice"),
 }
 
+MOBILE_ASSISTANT_PERMISSION_FIELDS = {
+    "Camera permission": ("camera", "photo", "image", "picture", "screenshot"),
+    "Photo library permission": ("photo library", "photos", "gallery", "album", "image", "screenshot"),
+    "Microphone permission": ("microphone", "voice", "speech", "transcript", "transcription"),
+    "Speech recognition permission": ("speech recognition", "speech", "voice", "transcript", "transcription"),
+}
+
+TASK_NOTIFICATION_PERMISSION_FIELDS = {
+    "Notification permission": (
+        "document export",
+        "document-export:",
+        "digital employee",
+        "digital-employee-task:",
+        "ssh",
+        "server-profile:",
+    ),
+}
+
 SHARE_TEXT_EVIDENCE_FIELDS = {
     "Plain text",
 }
@@ -390,6 +416,12 @@ SERVER_CREDENTIAL_CLEAR_FIELDS = {
     "Server profiles/SSH credentials clear confirmation",
 }
 
+ACCOUNT_PRIVACY_SERVER_PROFILE_LINK_FIELDS = (
+    LOCAL_WORK_RECORDS_RESET_FIELDS
+    | SERVER_CREDENTIAL_RETENTION_FIELDS
+    | SERVER_CREDENTIAL_CLEAR_FIELDS
+)
+
 STATUS_POLLING_FIELDS = {
     "Status polling result",
 }
@@ -452,6 +484,8 @@ SSH_EVIDENCE_FIELDS = {
     "Reconnect result": ("reconnect", "reconnected", "connected again"),
     "Copied output evidence": ("copy", "copied", "clipboard", "terminal output"),
 }
+
+SSH_PROFILE_LINK_FIELDS = set(SSH_EVIDENCE_FIELDS) | SSH_AI_ANALYSIS_WARNING_FIELDS | SSH_AI_RESULT_FIELDS | CREDENTIAL_DELETION_FIELDS
 
 DOCUMENT_UPLOAD_TASK_FIELDS = {
     "Document upload task ID",
@@ -562,6 +596,11 @@ PLACEHOLDER_VALUES = {
     "n/a",
     "na",
     "none",
+    "<apple_team_id>",
+    "<runner profile; share extension profile>",
+    "<runner profile uuid/name; share extension profile uuid/name>",
+    "<xcode archive path or testflight build number>",
+    ".xcarchive path or testflight build number",
     "\u5df2\u901a\u8fc7",
     "\u901a\u8fc7",
 }
@@ -629,6 +668,14 @@ def _summarizes_waived_gate(field: str, waiver_notes: list[str]) -> bool:
     return any(marker in combined for marker in markers)
 
 
+def _has_trackable_waiver_reference(waiver_notes: list[str]) -> bool:
+    combined = "\n".join(waiver_notes).strip()
+    return any(
+        any(char.isdigit() for char in match.group(0))
+        for match in WAIVER_TRACKING_REFERENCE_RE.finditer(combined)
+    )
+
+
 def _has_waiver_reason(normalized: str, word: str) -> bool:
     if not normalized.startswith(word):
         return False
@@ -647,6 +694,21 @@ def _is_trackable_id(value: str) -> bool:
 def _mentions_any_trackable_id(value: str, task_ids: list[str]) -> bool:
     normalized = value.strip().lower()
     return any(task_id.strip().lower() in normalized for task_id in task_ids if _is_trackable_id(task_id))
+
+
+def _mentions_all_trackable_ids(value: str, task_ids: list[str]) -> bool:
+    normalized = value.strip().lower()
+    required_ids = [task_id.strip().lower() for task_id in task_ids if _is_trackable_id(task_id)]
+    return bool(required_ids) and all(task_id in normalized for task_id in required_ids)
+
+
+def _trackable_ids_from_value(value: str) -> list[str]:
+    token_ids = [match.group(0) for match in DIGITAL_EMPLOYEE_TASK_ID_TOKEN_RE.finditer(value)]
+    if token_ids:
+        return token_ids
+    if _is_trackable_id(value):
+        return [value]
+    return []
 
 
 def _is_non_placeholder(value: str, min_len: int) -> bool:
@@ -849,6 +911,48 @@ def _is_permission_evidence(value: str, scenario_markers: tuple[str, ...]) -> bo
     )
 
 
+def _is_media_file_access_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_permission_evidence(value, PERMISSION_EVIDENCE_FIELDS["Media/file access"])
+        and any(marker in normalized for marker in ("import", "upload", "share-to-app", "shared", "file picker"))
+        and "pdf" in normalized
+        and any(marker in normalized for marker in ("word", ".docx", ".doc"))
+        and any(marker in normalized for marker in ("excel", ".xlsx", ".xls", "spreadsheet"))
+        and "csv" in normalized
+        and any(marker in normalized for marker in ("image", "photo", ".jpg", ".jpeg", ".png", ".heic"))
+    )
+
+
+def _is_local_network_ssh_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_permission_evidence(value, ("local network", "ssh", "private-network", "server"))
+        and "ssh" in normalized
+        and SERVER_PROFILE_PAYLOAD_RE.search(value) is not None
+        and any(marker in normalized for marker in ("connect", "connected", "connection"))
+        and any(marker in normalized for marker in ("read-only", "readonly", "whoami", "uptime", "pwd"))
+    )
+
+
+def _is_mobile_assistant_permission_evidence(value: str, scenario_markers: tuple[str, ...]) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_permission_evidence(value, scenario_markers)
+        and "assistant" in normalized
+        and any(marker in normalized for marker in ("input", "question", "ask", "query", "capture", "import"))
+    )
+
+
+def _is_task_notification_permission_evidence(value: str, scenario_markers: tuple[str, ...]) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_permission_evidence(value, ("notification", "account screen"))
+        and any(marker in normalized for marker in scenario_markers)
+        and any(marker in normalized for marker in ("deliver", "delivered", "delivery", "tap", "tapped", "open", "opened"))
+    )
+
+
 def _contains_any(value: str, markers: tuple[str, ...]) -> bool:
     normalized = value.strip().lower()
     return any(marker in normalized for marker in markers)
@@ -908,6 +1012,10 @@ def _is_citation_evidence(value: str) -> bool:
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("citation", "citations", "source", "sources"))
+        and any(
+            marker in normalized
+            for marker in ("visible", "shown", "displayed", "answer", "result", "screenshot")
+        )
         and any(_is_https_url(url) for url in _listed_https_urls(value))
     )
 
@@ -936,6 +1044,10 @@ def _is_shared_result_evidence(value: str) -> bool:
                 "saved to",
             )
         )
+        and any(
+            marker in normalized
+            for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
+        )
     )
 
 
@@ -948,6 +1060,10 @@ def _is_document_export_share_evidence(value: str) -> bool:
         and "pdf" in normalized
         and any(marker in normalized for marker in ("word", "docx", ".doc"))
         and any(marker in normalized for marker in ("markdown", ".md"))
+        and any(
+            marker in normalized
+            for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
+        )
     )
 
 
@@ -1010,6 +1126,11 @@ def _is_ssh_ai_result_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("explanation", "explained", "analysis", "reason"))
         and any(marker in normalized for marker in ("command draft", "command drafts", "draft command", "suggested command"))
         and any(marker in normalized for marker in ("manual", "confirm", "confirmation", "copy", "not auto", "not executed"))
+        and any(marker in normalized for marker in ("ssh", "terminal", "log", "output"))
+        and any(
+            marker in normalized
+            for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
+        )
     )
 
 
@@ -1056,6 +1177,7 @@ def _is_server_credential_retention_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("remain", "retained", "still available", "preserved"))
         and any(marker in normalized for marker in ("server profile", "server profiles"))
         and any(marker in normalized for marker in ("ssh credential", "ssh credentials", "password", "private key"))
+        and any(marker in normalized for marker in ("secure storage", "secure vault", "vault"))
         and any(marker in normalized for marker in ("local reset", "local clear", "work records", "cache clear"))
     )
 
@@ -1102,6 +1224,10 @@ def _is_notification_delivery_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("document", "export"))
         and any(marker in normalized for marker in ("digital employee", "task"))
         and "ssh" in normalized
+        and any(
+            marker in normalized
+            for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
+        )
         and any(marker in normalized for marker in ("abnormal", "disconnect", "connection", "exception", "异常"))
     )
 
@@ -1119,6 +1245,14 @@ def _mentions_typed_notification_payloads(normalized: str) -> bool:
         and "digital-employee-task:" in normalized
         and "server-profile:" in normalized
     )
+
+
+def _server_profile_payload_ids(values: list[str]) -> list[str]:
+    ids: list[str] = []
+    for value in values:
+        for match in SERVER_PROFILE_PAYLOAD_RE.finditer(value):
+            ids.append(match.group(1))
+    return ids
 
 
 def _is_digital_employee_handoff_warning(value: str) -> bool:
@@ -1201,6 +1335,26 @@ def _is_discovered_hub_tenant_evidence(value: str) -> bool:
     )
 
 
+def _is_api_base_url_confirmation_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and "api" in normalized
+        and any(marker in normalized for marker in ("base url", "base_url", "client", "dio"))
+        and any(marker in normalized for marker in ("confirm", "confirmed", "uses", "using", "log", "screenshot"))
+    )
+
+
+def _is_realtime_hub_url_confirmation_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and any(marker in normalized for marker in ("realtime", "websocket", "web socket", "ws"))
+        and "hub" in normalized
+        and any(marker in normalized for marker in ("url", "origin", "connect", "connected", "log", "screenshot"))
+    )
+
+
 def _is_llm_access_evidence(value: str) -> bool:
     return _is_official_llm_access_evidence(value) or _is_desktop_qr_llm_access_evidence(value)
 
@@ -1220,7 +1374,13 @@ def _is_llm_setup_restriction_evidence(value: str) -> bool:
 
 def _is_login_result_evidence(value: str) -> bool:
     normalized = value.strip().lower()
-    return (
+    first_llm_uses_phone_credits = (
+        "llm" in normalized
+        and any(marker in normalized for marker in ("first", "initial", "after verification"))
+        and any(marker in normalized for marker in ("call", "request", "query"))
+        and any(marker in normalized for marker in ("uses", "used", "charged", "debited", "deducted"))
+    )
+    return first_llm_uses_phone_credits and (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("login", "logged in", "authenticated", "session"))
         and "maclaw" in normalized
@@ -1235,6 +1395,10 @@ def _is_login_result_evidence(value: str) -> bool:
 
 def _is_official_llm_access_evidence(value: str) -> bool:
     normalized = value.strip().lower()
+    verified_phone_context = (
+        any(marker in normalized for marker in ("verified", "verification", "sms", "验证码", "验证"))
+        and any(marker in normalized for marker in ("after", "passed", "accepted", "通过", "成功"))
+    )
     return (
         _is_auditable_note(value)
         and "llm" in normalized
@@ -1242,6 +1406,7 @@ def _is_official_llm_access_evidence(value: str) -> bool:
         and "maclaw" in normalized
         and "official" in normalized
         and bool(_phone_account_refs(value))
+        and verified_phone_context
         and any(marker in normalized for marker in ("credits", "credit", "quota", "额度"))
     )
 
@@ -1252,7 +1417,9 @@ def _is_desktop_qr_llm_access_evidence(value: str) -> bool:
         _is_auditable_note(value)
         and "llm" in normalized
         and any(marker in normalized for marker in ("available", "authorized", "access", "mode"))
+        and "maclaw" in normalized
         and "desktop" in normalized
+        and "gui" in normalized
         and "qr" in normalized
         and ("third-party" in normalized or "third party" in normalized)
     )
@@ -1287,6 +1454,28 @@ def _is_digital_employee_task_id(value: str) -> bool:
             "digital employee" in normalized
             or "digital-employee" in normalized
             or "employee" in normalized
+        )
+    )
+
+
+def _is_digital_employee_task_context_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_digital_employee_task_id(value)
+        and "hubcenter" in normalized
+        and "hub" in normalized
+        and "tenant" in normalized
+        and any(marker in normalized for marker in ("llm", "credits", "credit"))
+        and any(
+            marker in normalized
+            for marker in (
+                "manual confirmation",
+                "manual_confirmation",
+                "execution boundary",
+                "execution_boundary",
+                "draft only",
+                "draft_only",
+            )
         )
     )
 
@@ -1344,6 +1533,10 @@ def _canonical_version_build(value: str) -> str | None:
 
 def _listed_https_urls(value: str) -> list[str]:
     return HTTPS_URL_RE.findall(value.strip())
+
+
+def _listed_https_url_tokens(value: str) -> list[str]:
+    return HTTPS_URL_TOKEN_RE.findall(value.strip().rstrip("."))
 
 
 def _url_origin(value: str) -> tuple[str, str]:
@@ -1563,6 +1756,8 @@ def missing_required_fields(
     ):
         missing.append("HubCenter probe result must reference the selected HubCenter URL")
     for field in URL_FIELDS:
+        if field in {"API base URL confirmation", "Realtime Hub URL confirmation"}:
+            continue
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_https_url(value) for value in field_values):
             missing.append(f"{field} must be an HTTPS URL")
@@ -1596,22 +1791,43 @@ def missing_required_fields(
     ):
         missing.append("Discovered Hub/tenant result must reference the recorded Tenant ID")
     for field in ["API base URL confirmation", "Realtime Hub URL confirmation"]:
-        field_values = [value for value in values.get(field, []) if value and _is_https_url(value)]
-        if field_values and not all(_is_origin_url(value) for value in field_values):
+        field_values = [value for value in values.get(field, []) if value]
+        field_url_values = [
+            url
+            for value in field_values
+            for url in _listed_https_url_tokens(value)
+            if _is_https_url(url)
+        ]
+        if field_values and not field_url_values:
+            missing.append(f"{field} must be an HTTPS URL")
+        if field_url_values and not all(_is_origin_url(value) for value in field_url_values):
             missing.append(f"{field} must be the discovered Hub origin URL")
         if (
             discovered_hub_values
-            and field_values
+            and field_url_values
             and not all(
                 any(
                     value.strip().rstrip("/").lower()
                     == discovered_hub.strip().rstrip("/").lower()
                     for discovered_hub in discovered_hub_values
                 )
-                for value in field_values
+                for value in field_url_values
             )
         ):
             missing.append(f"{field} must match the recorded Discovered Hub URL")
+    api_base_values = [value for value in values.get("API base URL confirmation", []) if value]
+    if api_base_values and not all(
+        _is_api_base_url_confirmation_evidence(value) for value in api_base_values
+    ):
+        missing.append("API base URL confirmation must describe API client base URL evidence")
+    realtime_hub_values = [
+        value for value in values.get("Realtime Hub URL confirmation", []) if value
+    ]
+    if realtime_hub_values and not all(
+        _is_realtime_hub_url_confirmation_evidence(value)
+        for value in realtime_hub_values
+    ):
+        missing.append("Realtime Hub URL confirmation must describe realtime WebSocket Hub URL evidence")
     for field in sorted(MANUAL_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_auditable_note(value) for value in field_values):
@@ -1627,10 +1843,43 @@ def missing_required_fields(
             missing.append(f"{field} {FINAL_AUTOMATED_EVIDENCE_FIELDS[field]}")
     for field, markers in sorted(PERMISSION_EVIDENCE_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
+        if field in {"Local network / SSH scenario", "Local network permission", "Media/file access"}:
+            continue
         if field_values and not all(
             _is_permission_evidence(value, markers) for value in field_values
         ):
             missing.append(f"{field} must describe permission prompt/result evidence")
+    media_file_values = [value for value in values.get("Media/file access", []) if value]
+    if media_file_values and not all(
+        _is_media_file_access_evidence(value) for value in media_file_values
+    ):
+        missing.append(
+            "Media/file access must describe file/media access for PDF, Word, Excel, CSV, and image/photo imports"
+        )
+    for field in ("Local network / SSH scenario", "Local network permission"):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(_is_local_network_ssh_evidence(value) for value in field_values):
+            missing.append(
+                f"{field} must describe local-network permission evidence tied to a real SSH connection and read-only command"
+            )
+    for field, markers in sorted(MOBILE_ASSISTANT_PERMISSION_FIELDS.items()):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(
+            _is_mobile_assistant_permission_evidence(value, markers)
+            for value in field_values
+        ):
+            missing.append(
+                f"{field} must link permission evidence to voice/photo assistant input"
+            )
+    for field, markers in sorted(TASK_NOTIFICATION_PERMISSION_FIELDS.items()):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(
+            _is_task_notification_permission_evidence(value, markers)
+            for value in field_values
+        ):
+            missing.append(
+                f"{field} must link permission evidence to real task notification delivery/open"
+            )
     for field in sorted(SHARE_TEXT_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_share_text_evidence(value) for value in field_values):
@@ -1697,7 +1946,7 @@ def missing_required_fields(
             _is_ssh_ai_result_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe AI explanation, command drafts, and manual execution evidence"
+                f"{field} must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context"
             )
     for field in sorted(CREDENTIAL_DELETION_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -1909,6 +2158,20 @@ def missing_required_fields(
         _phone_account_ref_matches_login(ref, login_refs) for ref in account_refs
     ):
         missing.append("Login result must reference the recorded MaClaw phone account")
+    bootstrap_values = [
+        value for value in values.get("Bootstrap user/quota/feature flags/service status", []) if value
+    ]
+    bootstrap_phone_refs = [
+        ref
+        for value in bootstrap_values
+        for ref in _phone_account_refs(value)
+    ]
+    if account_refs and bootstrap_values and not bootstrap_phone_refs:
+        missing.append("Bootstrap user/quota/feature flags/service status must reference the recorded MaClaw phone account")
+    if account_refs and bootstrap_phone_refs and not all(
+        _phone_account_ref_matches_login(ref, bootstrap_phone_refs) for ref in account_refs
+    ):
+        missing.append("Bootstrap user/quota/feature flags/service status must reference the recorded MaClaw phone account")
     llm_phone_refs = [
         ref
         for value in values.get("LLM access evidence", [])
@@ -1925,6 +2188,34 @@ def missing_required_fields(
     tenant_ids = [value for value in values.get("Tenant ID", []) if value]
     if tenant_ids and not all(_is_tenant_id(value) for value in tenant_ids):
         missing.append("Tenant ID must be a trackable tenant identifier")
+    if tenant_ids and llm_evidence_values and not all(
+        any(
+            tenant_id.strip().lower() in evidence.strip().lower()
+            for evidence in llm_evidence_values
+        )
+        for tenant_id in tenant_ids
+    ):
+        missing.append("LLM access evidence must reference the recorded Tenant ID")
+    if tenant_ids and bootstrap_values and not all(
+        any(
+            tenant_id.strip().lower() in evidence.strip().lower()
+            for evidence in bootstrap_values
+        )
+        for tenant_id in tenant_ids
+    ):
+        missing.append("Bootstrap user/quota/feature flags/service status must reference the recorded Tenant ID")
+    account_hub_tenant_values = [
+        value for value in values.get("Account screen shows selected Hub and tenant", []) if value
+    ]
+    if discovered_hub_values and account_hub_tenant_values and not all(
+        _mentions_any_trackable_id(value, discovered_hub_values)
+        for value in account_hub_tenant_values
+    ):
+        missing.append("Account screen shows selected Hub and tenant must reference the recorded Discovered Hub URL")
+    if tenant_ids and account_hub_tenant_values and not all(
+        _mentions_any_trackable_id(value, tenant_ids) for value in account_hub_tenant_values
+    ):
+        missing.append("Account screen shows selected Hub and tenant must reference the recorded Tenant ID")
     flutter_versions = [value for value in values.get("Flutter version", []) if value]
     if flutter_versions and not all(_is_flutter_version(value) for value in flutter_versions):
         missing.append("Flutter version must contain a trackable Flutter version")
@@ -1945,6 +2236,10 @@ def missing_required_fields(
         if not qr_values or not all(_is_trackable_id(value) for value in qr_values):
             missing.append(
                 "Desktop GUI QR authorization ID must be trackable for third-party LLM access"
+            )
+        elif any(value == OFFICIAL_LLM_QR_AUTH_ID for value in qr_values):
+            missing.append(
+                "Desktop GUI QR authorization ID must be a real desktop GUI QR authorization for third-party LLM access"
             )
         elif llm_evidence_values and not all(
             any(qr_value.strip().lower() in evidence.strip().lower() for evidence in llm_evidence_values)
@@ -2047,12 +2342,93 @@ def missing_required_fields(
             _is_digital_employee_task_id(value) for value in field_values
         ):
             missing.append(f"{field} must identify a digital employee task")
+        if field_values and not all(
+            _is_digital_employee_task_context_evidence(value) for value in field_values
+        ):
+            missing.append(
+                f"{field} must describe Hub/tenant/LLM credits and manual confirmation context"
+            )
+        if selected_hubcenter_values and field_values and not all(
+            any(
+                _mentions_selected_hubcenter(value, selected_hubcenter)
+                for selected_hubcenter in selected_hubcenter_values
+            )
+            for value in field_values
+        ):
+            missing.append(f"{field} must reference the recorded selected HubCenter URL")
+        if discovered_hub_values and field_values and not all(
+            _mentions_any_trackable_id(value, discovered_hub_values)
+            for value in field_values
+        ):
+            missing.append(f"{field} must reference the recorded Discovered Hub URL")
+        if tenant_ids and field_values and not all(
+            _mentions_any_trackable_id(value, tenant_ids) for value in field_values
+        ):
+            missing.append(f"{field} must reference the recorded Tenant ID")
+        digital_employee_phone_refs = [
+            ref
+            for value in field_values
+            for ref in _phone_account_refs(value)
+        ]
+        if account_refs and field_values and not digital_employee_phone_refs:
+            missing.append(f"{field} must reference the recorded MaClaw phone account credits")
+        if account_refs and digital_employee_phone_refs and not all(
+            _phone_account_ref_matches_login(ref, digital_employee_phone_refs)
+            for ref in account_refs
+        ):
+            missing.append(f"{field} must reference the recorded MaClaw phone account credits")
     task_ids = [
-        value
+        task_id
         for field in TASK_ID_FIELDS
+        for value in values.get(field, [])
+        for task_id in _trackable_ids_from_value(value)
+        if value
+    ]
+    mobile_input_values = [
+        value for value in values.get("Voice/photo assistant input evidence", []) if value
+    ]
+    mobile_input_result_refs = [
+        url
+        for value in values.get("Visible citations / sources", [])
+        for url in _listed_https_urls(value)
+    ] + [
+        value
+        for field in DOCUMENT_UPLOAD_TASK_FIELDS
         for value in values.get(field, [])
         if value and _is_trackable_id(value)
     ]
+    if mobile_input_result_refs and mobile_input_values and not all(
+        _mentions_any_trackable_id(value, mobile_input_result_refs)
+        for value in mobile_input_values
+    ):
+        missing.append("Voice/photo assistant input evidence must reference a recorded citation URL or document upload task ID")
+    shared_result_values = [
+        value for value in values.get("Shared result", []) if value
+    ]
+    citation_urls = [
+        url
+        for value in values.get("Visible citations / sources", [])
+        for url in _listed_https_urls(value)
+    ]
+    ai_search_values = [value for value in values.get("AI search query", []) if value]
+    if citation_urls and ai_search_values and not all(
+        _mentions_any_trackable_id(value, citation_urls)
+        for value in ai_search_values
+    ):
+        missing.append("AI search query must reference a recorded citation URL")
+    if citation_urls and shared_result_values and not all(
+        _mentions_any_trackable_id(value, citation_urls)
+        for value in shared_result_values
+    ):
+        missing.append("Shared result must reference a recorded citation URL")
+    document_draft_values = [
+        value for value in values.get("Document draft created from search", []) if value
+    ]
+    if citation_urls and document_draft_values and not all(
+        _mentions_any_trackable_id(value, citation_urls)
+        for value in document_draft_values
+    ):
+        missing.append("Document draft created from search must reference a recorded citation URL")
     status_values = [value for value in values.get("Status polling result", []) if value]
     if task_ids and status_values and not all(
         _mentions_any_trackable_id(value, task_ids) for value in status_values
@@ -2063,6 +2439,132 @@ def missing_required_fields(
         _mentions_any_trackable_id(value, task_ids) for value in realtime_values
     ):
         missing.append("Realtime update evidence must reference a recorded task/job ID")
+    document_upload_task_ids = [
+        task_id
+        for field in DOCUMENT_UPLOAD_TASK_FIELDS
+        for value in values.get(field, [])
+        for task_id in _trackable_ids_from_value(value)
+        if value
+    ]
+    if document_upload_task_ids and status_values and not all(
+        _mentions_any_trackable_id(value, document_upload_task_ids)
+        for value in status_values
+    ):
+        missing.append("Status polling result must reference the recorded document upload task ID")
+    if document_upload_task_ids and realtime_values and not all(
+        _mentions_any_trackable_id(value, document_upload_task_ids)
+        for value in realtime_values
+    ):
+        missing.append("Realtime update evidence must reference the recorded document upload task ID")
+    document_export_job_ids = [
+        task_id
+        for field in DOCUMENT_EXPORT_JOB_FIELDS
+        for value in values.get(field, [])
+        for task_id in _trackable_ids_from_value(value)
+        if value
+    ]
+    if document_export_job_ids and status_values and not all(
+        _mentions_any_trackable_id(value, document_export_job_ids)
+        for value in status_values
+    ):
+        missing.append("Status polling result must reference a recorded document export job ID")
+    if document_export_job_ids and realtime_values and not all(
+        _mentions_any_trackable_id(value, document_export_job_ids)
+        for value in realtime_values
+    ):
+        missing.append("Realtime update evidence must reference a recorded document export job ID")
+    digital_employee_task_ids = [
+        task_id
+        for field in DIGITAL_EMPLOYEE_TASK_FIELDS
+        for value in values.get(field, [])
+        for task_id in _trackable_ids_from_value(value)
+        if value
+    ]
+    if digital_employee_task_ids and status_values and not all(
+        _mentions_any_trackable_id(value, digital_employee_task_ids)
+        for value in status_values
+    ):
+        missing.append("Status polling result must reference the recorded digital employee task ID")
+    if digital_employee_task_ids and realtime_values and not all(
+        _mentions_any_trackable_id(value, digital_employee_task_ids)
+        for value in realtime_values
+    ):
+        missing.append("Realtime update evidence must reference the recorded digital employee task ID")
+    notification_values = [
+        value for value in values.get("Notification delivery evidence", []) if value
+    ]
+    export_share_values = [
+        value for value in values.get("Exported document share evidence", []) if value
+    ]
+    if document_export_job_ids and export_share_values and not all(
+        _mentions_all_trackable_ids(value, document_export_job_ids)
+        for value in export_share_values
+    ):
+        missing.append("Exported document share evidence must reference recorded PDF, Word, and Markdown export job IDs")
+    if document_export_job_ids and notification_values and not all(
+        _mentions_any_trackable_id(value, document_export_job_ids)
+        for value in notification_values
+    ):
+        missing.append("Notification delivery evidence must reference a recorded document export job ID")
+    if digital_employee_task_ids and notification_values and not all(
+        _mentions_any_trackable_id(value, digital_employee_task_ids)
+        for value in notification_values
+    ):
+        missing.append("Notification delivery evidence must reference a recorded digital employee task ID")
+    server_profile_ids = _server_profile_payload_ids(notification_values)
+    if server_profile_ids:
+        ssh_profile_values = [
+            value
+            for field in SSH_PROFILE_LINK_FIELDS
+            for value in values.get(field, [])
+            if value
+        ]
+        if ssh_profile_values and not all(
+            _mentions_any_trackable_id(value, server_profile_ids)
+            for value in ssh_profile_values
+        ):
+            missing.append("Manual SSH smoke evidence must reference the recorded server-profile notification ID")
+        account_privacy_profile_values = [
+            value
+            for field in ACCOUNT_PRIVACY_SERVER_PROFILE_LINK_FIELDS
+            for value in values.get(field, [])
+            if value
+        ]
+        if account_privacy_profile_values and not all(
+            _mentions_any_trackable_id(value, server_profile_ids)
+            for value in account_privacy_profile_values
+        ):
+            missing.append(
+                "Account privacy server credential evidence must reference the recorded server-profile notification ID"
+            )
+    network_values = [
+        value for value in values.get("Network offline/recovery evidence", []) if value
+    ]
+    selected_hubcenters = [
+        value for value in values.get("Selected HubCenter URL", []) if value
+    ]
+    if selected_hubcenters and network_values and not all(
+        _mentions_any_trackable_id(value, selected_hubcenters)
+        for value in network_values
+    ):
+        missing.append("Network offline/recovery evidence must reference the selected HubCenter URL")
+    discovered_hub_urls = [
+        value for value in values.get("Discovered Hub URL", []) if value
+    ]
+    if discovered_hub_urls and network_values and not all(
+        _mentions_any_trackable_id(value, discovered_hub_urls)
+        for value in network_values
+    ):
+        missing.append("Network offline/recovery evidence must reference the recorded Discovered Hub URL")
+    tenant_ids = [value for value in values.get("Tenant ID", []) if value]
+    if tenant_ids and network_values and not all(
+        _mentions_any_trackable_id(value, tenant_ids) for value in network_values
+    ):
+        missing.append("Network offline/recovery evidence must reference the recorded Tenant ID")
+    if task_ids and network_values and not all(
+        _mentions_any_trackable_id(value, task_ids) for value in network_values
+    ):
+        missing.append("Network offline/recovery evidence must reference a recorded task/job ID")
     for field in PASS_DECISION_FIELDS:
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_positive_decision(value) for value in field_values):
@@ -2079,6 +2581,10 @@ def missing_required_fields(
         ):
             missing.append(
                 "Known issues / waivers must summarize every final gate waiver"
+            )
+        if waiver_notes and not _has_trackable_waiver_reference(waiver_notes):
+            missing.append(
+                "Known issues / waivers must include a trackable waiver ticket or approval reference"
             )
     return missing
 

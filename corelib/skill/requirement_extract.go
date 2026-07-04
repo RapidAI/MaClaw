@@ -86,8 +86,11 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 		req := Requirement{Type: "pip", Name: name, Version: version, Source: "explicit"}
 		// Carry python_path so PipFixer and PipChecker use the same Python that
 		// BuildCommandEnv will inject at runtime (fixes environment mismatch).
-		if cc != nil && cc.PythonPath != "" {
-			req.Context = map[string]string{"python_path": cc.PythonPath}
+		if cc != nil && (cc.PythonPath != "" || len(cc.PythonRuntimePackages) > 0) {
+			req.Context = map[string]string{}
+			if cc.PythonPath != "" {
+				req.Context["python_path"] = cc.PythonPath
+			}
 			if len(cc.PythonRuntimePackages) > 0 {
 				req.Context["python_runtime_packages"] = strings.Join(cc.PythonRuntimePackages, "\n")
 				req.Context["python_runtime_constraint"] = cc.PythonRuntimeConstraint
@@ -605,6 +608,8 @@ func (c *GUIChecker) Check(req Requirement) *Violation {
 
 type PipFixer struct{}
 
+var ensureSharedPythonRuntimeWithDataDir = pyenv.EnsureSharedPythonRuntimeWithDataDir
+
 func (f *PipFixer) Type() string { return "pip" }
 func (f *PipFixer) Fix(req Requirement) error {
 	// Use the python_path from Context if available — this ensures the Fixer
@@ -620,7 +625,7 @@ func (f *PipFixer) Fix(req Requirement) error {
 	}
 	if req.Context != nil && strings.TrimSpace(req.Context["python_runtime_packages"]) != "" {
 		packages := strings.Split(req.Context["python_runtime_packages"], "\n")
-		plan, err := pyenv.EnsureSharedPythonRuntimeWithDataDir(req.Context["python_runtime_data_dir"], pyenv.SharedPythonRuntimeSpec{
+		_, err := ensureSharedPythonRuntimeWithDataDir(req.Context["python_runtime_data_dir"], pyenv.SharedPythonRuntimeSpec{
 			Python:   req.Context["python_runtime_constraint"],
 			Manager:  firstNonEmptyRequirementString(req.Context["python_runtime_manager"], "uv"),
 			Packages: packages,
@@ -628,7 +633,7 @@ func (f *PipFixer) Fix(req Requirement) error {
 		if err != nil {
 			return err
 		}
-		python = plan.PythonPath
+		return nil
 	}
 	if python == "" {
 		return fmt.Errorf("python not found, cannot install %s", req.Name)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -610,6 +611,212 @@ func TestMobileDesktopQRSessionRejectsProviderOnlyPayload(t *testing.T) {
 	}
 	if got := responseErrorCode(t, resp); got != "DESKTOP_QR_SESSION_REQUIRES_SIGNED_GUI_PAYLOAD" {
 		t.Fatalf("error code = %s", got)
+	}
+}
+
+func TestMobileDesktopQRSessionProxiesSignedPayloadToRegisteredHub(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	var hubServerURL string
+	var forwardedPayload string
+	hubServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile/llm/desktop-qr-sessions/consume" {
+			t.Fatalf("unexpected hub path: %s", r.URL.Path)
+		}
+		var req MobileDesktopQRSessionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode forwarded request: %v", err)
+		}
+		forwardedPayload = req.QRPayload
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "authorized",
+			"access_token": "hub-issued-mobile-token",
+			"hub_id":       "untrusted-hub-id",
+			"hub_url":      "https://untrusted.example.com",
+			"tenant_id":    "tenant-a",
+		})
+	}))
+	defer hubServer.Close()
+	hubServerURL = hubServer.URL
+	signedPayload := fmt.Sprintf(`{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":%q}`, hubServerURL)
+	registeredHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-mobile-qr@example.com",
+		"name":            "Mobile QR Hub",
+		"base_url":        hubServerURL,
+		"visibility":      "shared",
+		"enrollment_mode": "open",
+	})
+	previousClient := mobileDesktopQRSessionHTTPClient
+	mobileDesktopQRSessionHTTPClient = hubServer.Client()
+	t.Cleanup(func() {
+		mobileDesktopQRSessionHTTPClient = previousClient
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", map[string]any{
+		"qr_payload": signedPayload,
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if forwardedPayload != signedPayload {
+		t.Fatalf("forwarded payload = %q, want original signed payload", forwardedPayload)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["access_token"] != "hub-issued-mobile-token" {
+		t.Fatalf("unexpected response: %+v", payload)
+	}
+	if payload["hub_id"] != registeredHub["hub_id"] {
+		t.Fatalf("hub_id = %v, want %v", payload["hub_id"], registeredHub["hub_id"])
+	}
+	if payload["hub_url"] != hubServerURL {
+		t.Fatalf("hub_url = %v, want %s", payload["hub_url"], hubServerURL)
+	}
+}
+
+func TestMobileDesktopQRSessionRejectsUnregisteredHubURL(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	called := false
+	hubServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		writeJSON(w, http.StatusOK, map[string]any{"status": "should-not-be-called"})
+	}))
+	defer hubServer.Close()
+	qrPayload := fmt.Sprintf(`{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":%q}`, hubServer.URL)
+	previousClient := mobileDesktopQRSessionHTTPClient
+	mobileDesktopQRSessionHTTPClient = hubServer.Client()
+	t.Cleanup(func() {
+		mobileDesktopQRSessionHTTPClient = previousClient
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", map[string]any{
+		"qr_payload": qrPayload,
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := responseErrorCode(t, resp); got != "DESKTOP_QR_SESSION_UNKNOWN_HUB" {
+		t.Fatalf("error code = %s", got)
+	}
+	if called {
+		t.Fatal("unregistered QR Hub URL was requested")
+	}
+}
+
+func TestMobileDesktopQRSessionConsumeFailureDoesNotLeakHubBody(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	var hubServerURL string
+	hubServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusBadGateway, "UPSTREAM_SECRET", "token=secret-from-hub")
+	}))
+	defer hubServer.Close()
+	hubServerURL = hubServer.URL
+	qrPayload := fmt.Sprintf(`{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":%q}`, hubServerURL)
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-mobile-qr-fail@example.com",
+		"name":            "Mobile QR Failing Hub",
+		"base_url":        hubServerURL,
+		"visibility":      "shared",
+		"enrollment_mode": "open",
+	})
+	previousClient := mobileDesktopQRSessionHTTPClient
+	mobileDesktopQRSessionHTTPClient = hubServer.Client()
+	t.Cleanup(func() {
+		mobileDesktopQRSessionHTTPClient = previousClient
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", map[string]any{
+		"qr_payload": qrPayload,
+	}, "")
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := responseErrorCode(t, resp); got != "DESKTOP_QR_SESSION_CONSUME_FAILED" {
+		t.Fatalf("error code = %s", got)
+	}
+	if strings.Contains(resp.Body.String(), "secret-from-hub") || strings.Contains(resp.Body.String(), "UPSTREAM_SECRET") {
+		t.Fatalf("Hub failure body leaked to mobile response: %s", resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "HTTP 502") {
+		t.Fatalf("response = %s, want sanitized status detail", resp.Body.String())
+	}
+}
+
+func TestMobileDesktopQRSessionRejectsRegisteredHTTPHubURL(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	called := false
+	hubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		writeJSON(w, http.StatusOK, map[string]any{"status": "should-not-be-called"})
+	}))
+	defer hubServer.Close()
+	qrPayload := fmt.Sprintf(`{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":%q}`, hubServer.URL)
+	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-mobile-qr-http@example.com",
+		"name":            "Mobile QR HTTP Hub",
+		"base_url":        hubServer.URL,
+		"visibility":      "shared",
+		"enrollment_mode": "open",
+	})
+	previousClient := mobileDesktopQRSessionHTTPClient
+	mobileDesktopQRSessionHTTPClient = hubServer.Client()
+	t.Cleanup(func() {
+		mobileDesktopQRSessionHTTPClient = previousClient
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", map[string]any{
+		"qr_payload": qrPayload,
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := responseErrorCode(t, resp); got != "DESKTOP_QR_SESSION_UNKNOWN_HUB" {
+		t.Fatalf("error code = %s", got)
+	}
+	if called {
+		t.Fatal("registered non-HTTPS QR Hub URL was requested")
+	}
+}
+
+func TestSameURLOriginHandlesDefaultPorts(t *testing.T) {
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{
+			name: "https default port",
+			a:    "https://hub.example.com",
+			b:    "https://hub.example.com:443/path",
+			want: true,
+		},
+		{
+			name: "http default port",
+			a:    "http://127.0.0.1",
+			b:    "http://127.0.0.1:80/path",
+			want: true,
+		},
+		{
+			name: "different explicit port",
+			a:    "https://hub.example.com",
+			b:    "https://hub.example.com:8443",
+			want: false,
+		},
+		{
+			name: "different scheme",
+			a:    "https://hub.example.com",
+			b:    "http://hub.example.com:443",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameURLOrigin(tt.a, tt.b); got != tt.want {
+				t.Fatalf("sameURLOrigin(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -690,6 +690,63 @@ void main() {
     expect(notifications.shown.single.payload, 'document-draft:draft-upload-1');
   });
 
+  test('document realtime upload accepts top-level task id fallback', () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    final event = MobileRealtimeEvent.tryParse({
+      'type': 'document_task',
+      'task_id': 'upload-top-1',
+      'status': 'ready',
+      'payload': {
+        'filename': 'incident.pdf',
+        'draft_id': 'draft-upload-top-1',
+        'draft': {
+          'id': 'draft-upload-top-1',
+          'title': 'field note',
+          'template': 'statement',
+          'markdown': '# field note',
+          'updated_at': '2026-07-02T00:00:00Z',
+        },
+      },
+    });
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .applyRealtimeEvent(event!);
+
+    final state = container.read(documentsControllerProvider).valueOrNull;
+    final cachedUpload = await store.loadLastDocumentUploadTask();
+    expect(state?.uploadTask?.taskId, 'upload-top-1');
+    expect(cachedUpload?.taskId, 'upload-top-1');
+    expect(notifications.shown, hasLength(1));
+    expect(
+      notifications.shown.single.payload,
+      'document-draft:draft-upload-top-1',
+    );
+  });
+
   test('document failed upload notifications redact sensitive messages',
       () async {
     final cacheDir = await Directory.systemTemp.createTemp(

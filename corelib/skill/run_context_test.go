@@ -1399,6 +1399,37 @@ func TestBuildRunCheckContextPlansSharedPythonRuntime(t *testing.T) {
 	}
 }
 
+func TestExtractRequirementsCarriesSharedPythonRuntimeWithoutPythonPath(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:           "pdf-word",
+		RequiresPython: []string{"pymupdf", "python-docx"},
+	}
+	ctx := DefaultCheckContext()
+	ctx.PythonRuntimePackages = []string{"pymupdf", "python-docx"}
+	ctx.PythonRuntimeConstraint = ">=3.10,<3.14"
+	ctx.PythonRuntimeManager = "uv"
+	ctx.PythonRuntimeDataDir = t.TempDir()
+
+	reqs := ExtractRequirements(entry, ctx)
+	if len(reqs) == 0 {
+		t.Fatal("expected pip requirements")
+	}
+	for _, req := range reqs {
+		if req.Type != "pip" {
+			continue
+		}
+		if req.Context["python_runtime_packages"] == "" {
+			t.Fatalf("pip requirement missing shared runtime context: %#v", req)
+		}
+		if _, ok := req.Context["python_path"]; ok {
+			t.Fatalf("python_path should not be synthesized when unresolved: %#v", req.Context)
+		}
+		if req.Context["python_runtime_data_dir"] != ctx.PythonRuntimeDataDir {
+			t.Fatalf("python_runtime_data_dir = %q, want %q", req.Context["python_runtime_data_dir"], ctx.PythonRuntimeDataDir)
+		}
+	}
+}
+
 func TestBuildRunCheckContextUsesDefaultDataDirForSharedPythonRuntime(t *testing.T) {
 	oldBaseDir := corelib.MaclawBaseDir()
 	baseDir := t.TempDir()

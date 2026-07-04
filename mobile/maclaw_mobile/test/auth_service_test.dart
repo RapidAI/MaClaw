@@ -285,7 +285,7 @@ void main() {
     expect(adapter.requests.single.path, '/api/mobile/service-redemptions');
   });
 
-  test('desktop GUI mobile authorization QR consumes session on discovered Hub',
+  test('desktop GUI mobile authorization QR resolves session through HubCenter',
       () async {
     const qrPayload =
         '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top"}';
@@ -308,10 +308,43 @@ void main() {
     expect(result.hubUrl, 'https://tenant-a.maclaw.top');
     expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
     expect(await vault.readToken(), 'desktop-qr-mobile-token');
-    expect(adapter.requests.single.baseUrl, 'https://tenant-a.maclaw.top');
+    expect(adapter.requests.single.baseUrl, maclawDefaultHubCenterUrl);
     expect(
       adapter.requests.single.path,
-      '/api/mobile/llm/desktop-qr-sessions/consume',
+      '/api/mobile/llm/desktop-qr-sessions',
+    );
+    expect(adapter.requests.single.data, {'qr_payload': qrPayload});
+    expect(
+      adapter.requests.single.headers['X-MaClaw-HubCenter-URL'],
+      maclawDefaultHubCenterUrl,
+    );
+  });
+
+  test('desktop GUI QR hub URL is not used as a direct mobile endpoint',
+      () async {
+    const qrPayload =
+        '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://evil.example"}';
+    final adapter = _RecordingAuthAdapter(
+      (request) => _jsonResponse({
+        'status': 'authorized',
+        'access_token': 'desktop-qr-mobile-token',
+        'hub_url': 'https://tenant-a.maclaw.top',
+        'hub_id': 'hub-a',
+        'tenant_id': 'tenant-a',
+      }),
+    );
+    const vault = SecureVault();
+    final service =
+        AuthService(vault: vault, dio: Dio()..httpClientAdapter = adapter);
+
+    final result = await service.connectWithDesktopLlmQr(qrPayload);
+
+    expect(result.accessToken, 'desktop-qr-mobile-token');
+    expect(result.hubUrl, 'https://tenant-a.maclaw.top');
+    expect(adapter.requests.single.baseUrl, maclawDefaultHubCenterUrl);
+    expect(
+      adapter.requests.single.path,
+      '/api/mobile/llm/desktop-qr-sessions',
     );
   });
 

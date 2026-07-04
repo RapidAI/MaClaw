@@ -1719,6 +1719,10 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 	if r.materializeArtifactFileFromStepOutput(expectedOutput, content) {
 		return
 	}
+	if !canMaterializePlainStdoutToOutput(expectedOutput) {
+		log.Printf("[skill-runner] materialize stdout: skip plain stdout for non-text expected output path=%q", expectedOutput)
+		return
+	}
 
 	// If the expected output format is plain text (.txt) but the content looks
 	// like a JSON response with a "text" field, extract the text value.
@@ -1742,6 +1746,15 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 		return
 	}
 	log.Printf("[skill-runner] materialized stdout to expected output: %s (%d bytes)", expectedOutput, len(content))
+}
+
+func canMaterializePlainStdoutToOutput(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(filepath.Ext(path))) {
+	case "", ".txt", ".text", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".html", ".htm", ".log", ".yaml", ".yml":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *SkillRunner) materializeArtifactFileFromStepOutput(expectedOutput, content string) bool {
@@ -2232,7 +2245,18 @@ func sameCleanPath(a, b string) bool {
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *corelib.NLSkillEntry) {
 	execStart, finishExecution := r.beginRunExecution(run, "steps")
 	finishStatus := "unknown"
-	defer func() { finishExecution(finishStatus) }()
+	defer func() {
+		if finishStatus == "unknown" {
+			r.mu.RLock()
+			if run != nil {
+				if status := run.status.LifecycleStatus(); status != skillRunStatusUnknown {
+					finishStatus = status.String()
+				}
+			}
+			r.mu.RUnlock()
+		}
+		finishExecution(finishStatus)
+	}()
 	originalSkill := skill
 	execSkill := *skill
 	skill = &execSkill
@@ -2593,13 +2617,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			for j := i + 1; j < len(skill.Steps); j++ {
 				run.status.Steps[j].Status = skillStepStatusSkipped
 			}
-			run.status.Status = skillRunStatusCancelled
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			if run.monitorCancel != nil {
 				run.monitorCancel()
 			}
 			r.mu.Unlock()
+			finishStatus = skillRunStatusCancelled.String()
+			r.finalizeRunOutcome(run, skillRunStatusCancelled, execStart)
 			return
 		}
 

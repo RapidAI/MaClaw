@@ -8368,7 +8368,7 @@ func (a *App) ShowItemInFolder(path string) error {
 		cmd = exec.Command("open", "-R", path)
 	case "windows":
 		path = filepath.FromSlash(path)
-		cmd = exec.Command("explorer", "/select,", path)
+		cmd = exec.Command(windowsSystemExecutable("explorer.exe"), "/select,", path)
 		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
@@ -8385,16 +8385,19 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 	}
 	path = filepath.Clean(path)
 	if _, err := os.Stat(path); err != nil {
+		log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
 		return err
 	}
 
 	switch goruntime.GOOS {
 	case "windows":
 		winPath := filepath.FromSlash(path)
-		openCmd := exec.Command("explorer", winPath)
+		openCmd := exec.Command(windowsSystemExecutable("rundll32.exe"), "url.dll,FileProtocolHandler", winPath)
 		if err := openCmd.Start(); err == nil {
 			go openCmd.Wait()
 			return nil
+		} else {
+			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
 		}
 		return a.ShowItemInFolder(path)
 	case "darwin":
@@ -8402,6 +8405,8 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 		if err := openCmd.Start(); err == nil {
 			go openCmd.Wait()
 			return nil
+		} else {
+			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
 		}
 		return a.ShowItemInFolder(path)
 	case "linux":
@@ -8409,11 +8414,36 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 		if err := openCmd.Start(); err == nil {
 			go openCmd.Wait()
 			return nil
+		} else {
+			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
 		}
 		return a.ShowItemInFolder(path)
 	default:
 		return fmt.Errorf("unsupported platform")
 	}
+}
+
+func windowsSystemExecutable(name string) string {
+	if goruntime.GOOS != "windows" {
+		return name
+	}
+	root := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if root == "" {
+		root = strings.TrimSpace(os.Getenv("windir"))
+	}
+	if root == "" {
+		root = `C:\Windows`
+	}
+	candidates := []string{
+		filepath.Join(root, "System32", name),
+		filepath.Join(root, name),
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return name
 }
 
 func (a *App) OpenSkillRunArtifact(runID string, artifactID string) error {

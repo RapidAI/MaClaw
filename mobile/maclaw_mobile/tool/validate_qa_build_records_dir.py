@@ -210,7 +210,20 @@ def main(argv: list[str] | None = None) -> int:
                     records_dir=str(records_dir),
                 ),
             )
-    version = _single_version_for_records(in_scope_records if args.scope else valid_records)
+    final_scope_records = in_scope_records if args.scope else valid_records
+    version = _single_version_for_records(final_scope_records)
+    if final_scope_records and version is None:
+        print(
+            "Validated in-scope QA build records span multiple version/build values; "
+            "final evidence verification requires one version/build.",
+        )
+        print("Next action:")
+        print(
+            "- "
+            + release_evidence_commands.qa_record_version_mismatch_hint(
+                records_dir=str(records_dir),
+            ),
+        )
     final_evidence_command = release_evidence_commands.verify_final_release_evidence_command(
         str(records_dir),
         scope=scope,

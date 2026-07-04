@@ -167,6 +167,28 @@ func TestMaterializeStdoutToExpectedOutputFindsTrailingJSONArtifactFile(t *testi
 	}
 }
 
+func TestMaterializeStdoutToExpectedOutputDoesNotWritePlainTextAsPDF(t *testing.T) {
+	dir := t.TempDir()
+	expectedPath := filepath.Join(dir, "paper_output.pdf")
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-plain-pdf",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "translation completed, output saved elsewhere",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	if _, err := os.Stat(expectedPath); !os.IsNotExist(err) {
+		t.Fatalf("plain stdout should not be materialized as PDF, stat err=%v", err)
+	}
+}
+
 func TestSamePathCaseSensitivityMatchesPlatform(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		if !samePath(`C:\Tmp\Out.pdf`, `c:\tmp\out.pdf`) {

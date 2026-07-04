@@ -402,12 +402,31 @@ func (a *App) CleanupSkillArtifactRegistry(maxAgeDays int, removeMissing bool) (
 	result := map[string]int64{"expired": 0, "missing": 0}
 	if maxAgeDays > 0 {
 		cutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays).Format(time.RFC3339)
+		expiredRows, err := db.QueryContext(context.Background(), `SELECT path FROM skill_run_artifacts WHERE updated_at < ?`, cutoff)
+		if err != nil {
+			return result, err
+		}
+		var expiredPaths []string
+		for expiredRows.Next() {
+			var path string
+			if err := expiredRows.Scan(&path); err == nil {
+				expiredPaths = append(expiredPaths, path)
+			}
+		}
+		if err := expiredRows.Err(); err != nil {
+			_ = expiredRows.Close()
+			return result, err
+		}
+		_ = expiredRows.Close()
 		res, err := db.ExecContext(context.Background(), `DELETE FROM skill_run_artifacts WHERE updated_at < ?`, cutoff)
 		if err != nil {
 			return result, err
 		}
 		if n, err := res.RowsAffected(); err == nil {
 			result["expired"] = n
+		}
+		for _, path := range expiredPaths {
+			a.removeExpiredSkillAppOutputFile(path)
 		}
 	}
 	if removeMissing {
@@ -439,6 +458,39 @@ func (a *App) CleanupSkillArtifactRegistry(maxAgeDays int, removeMissing bool) (
 		}
 	}
 	return result, nil
+}
+
+func (a *App) removeExpiredSkillAppOutputFile(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" || !a.isSkillAppOutputPath(path) {
+		return
+	}
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("[skill-artifacts] remove expired app output failed path=%q err=%v", path, err)
+		return
+	}
+	parent := filepath.Dir(path)
+	root := filepath.Clean(filepath.Join(a.GetDataDir(), "app-outputs"))
+	if parent != root {
+		_ = os.Remove(parent)
+	}
+}
+
+func (a *App) isSkillAppOutputPath(path string) bool {
+	if a == nil {
+		return false
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	root := filepath.Clean(filepath.Join(a.GetDataDir(), "app-outputs"))
+	cleanPath := filepath.Clean(path)
+	rel, err := filepath.Rel(root, cleanPath)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func (a *App) startSkillArtifactRegistryMaintenance(ctx context.Context) {

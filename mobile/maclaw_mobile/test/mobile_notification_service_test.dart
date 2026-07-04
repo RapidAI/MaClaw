@@ -73,6 +73,52 @@ void main() {
     expect(service.consumeLastOpenedPayload(), isNull);
   });
 
+  test('notification open ignores unroutable typed payloads', () {
+    final service = MobileNotificationService();
+
+    for (final payload in const [
+      'document-export:',
+      'document-upload:   ',
+      'digital-employee-task:',
+      'server-profile:',
+      'legacy-raw-id',
+    ]) {
+      service.handleNotificationResponse(
+        NotificationResponse(
+          notificationResponseType:
+              NotificationResponseType.selectedNotification,
+          payload: payload,
+        ),
+      );
+    }
+
+    expect(service.latestOpenedNotification, isNull);
+    expect(service.consumeLastOpenedPayload(), isNull);
+  });
+
+  test('invalid notification open does not replace valid pending payload', () {
+    final service = MobileNotificationService();
+
+    service.handleNotificationResponse(
+      const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        id: 7,
+        payload: 'document-export:job-1',
+      ),
+    );
+    service.handleNotificationResponse(
+      const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        id: 8,
+        payload: 'document-export:',
+      ),
+    );
+
+    expect(service.latestOpenedNotification?.payload, 'document-export:job-1');
+    expect(service.latestOpenedNotification?.notificationId, 7);
+    expect(service.consumeLastOpenedPayload(), 'document-export:job-1');
+  });
+
   test('notification open keeps action identity for action taps', () {
     final service = MobileNotificationService();
 

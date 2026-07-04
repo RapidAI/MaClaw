@@ -38,7 +38,7 @@ var localBgTaskMgrOnce sync.Once
 // Thread-safe via sync.Once.
 func (h *IMMessageHandler) ensureLocalBgTaskMgr() *coretool.LocalBackgroundTaskManager {
 	localBgTaskMgrOnce.Do(func() {
-		logDir := filepath.Join(corelib.MaclawBaseDir(), "data", "bg_tasks")
+		logDir := filepath.Join(corelib.MaclawDataDir(), "bg_tasks")
 		h.localBgTaskMgr = coretool.NewLocalBackgroundTaskManager(logDir)
 	})
 	return h.localBgTaskMgr

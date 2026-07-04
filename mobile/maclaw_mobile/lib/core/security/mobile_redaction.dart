@@ -40,7 +40,10 @@ String redactMobileSensitiveText(String input) {
     (match) => '${match.group(1)}[REDACTED_SECRET]',
   );
   text = text.replaceAllMapped(
-    RegExp(r'\b(https?://)([^/\s:@]+):([^@\s/]+)@', caseSensitive: false),
+    RegExp(
+      r'\b([a-z][a-z0-9+.-]*://)([^/\s:@]+|):([^@\s/]+)@',
+      caseSensitive: false,
+    ),
     (match) => '${match.group(1)}[REDACTED_CREDENTIALS]@',
   );
   return text;

@@ -95,6 +95,27 @@ void main() {
     expect(adapter.requests, isEmpty);
   });
 
+  test('desktop GUI QR LLM authorization rejects a different Hub URL',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    const qrPayload =
+        '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://other-tenant.maclaw.top"}';
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    await expectLater(
+      client.authorizeThirdPartyLlmWithDesktopQr(qrPayload),
+      throwsUnsupportedError,
+    );
+    expect(adapter.requests, isEmpty);
+  });
+
   test('LLM service status parses credits from configured path', () async {
     FlutterSecureStorage.setMockInitialValues({});
     final adapter = _RecordingApiAdapter(

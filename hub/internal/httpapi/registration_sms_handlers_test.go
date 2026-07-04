@@ -233,6 +233,16 @@ func TestRegistrationSMSVerifyAndStartWithMachineCredentialsBindsCurrentMachineU
 	if !strings.Contains(verifyRR.Body.String(), `"kind":"phone"`) {
 		t.Fatalf("verify response should be profile phone bind response, got %s", verifyRR.Body.String())
 	}
+	var verifyGot struct {
+		PhoneNumber    string `json:"phone_number"`
+		CreditsAccount string `json:"credits_account"`
+	}
+	if err := json.Unmarshal(verifyRR.Body.Bytes(), &verifyGot); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	if verifyGot.PhoneNumber != "19900001111" || verifyGot.CreditsAccount != "phone:19900001111" {
+		t.Fatalf("unexpected verify credits response: %+v body=%s", verifyGot, verifyRR.Body.String())
+	}
 	user, err := identity.LookupUserByPhone(auth.WithTenant(context.Background(), store.DefaultTenantID), "19900001111")
 	if err != nil || user == nil || user.ID != enrolled.UserID {
 		t.Fatalf("bound phone user = %#v err=%v, want user %s", user, err, enrolled.UserID)
@@ -1010,15 +1020,16 @@ func TestRegistrationSMSVerifyAndStartCreatesPhoneIdentity(t *testing.T) {
 		t.Fatalf("unexpected check request: %+v", provider.checkReq)
 	}
 	var got struct {
-		Status      string `json:"status"`
-		Email       string `json:"email"`
-		PhoneNumber string `json:"phone_number"`
-		MachineID   string `json:"machine_id"`
+		Status         string `json:"status"`
+		Email          string `json:"email"`
+		PhoneNumber    string `json:"phone_number"`
+		CreditsAccount string `json:"credits_account"`
+		MachineID      string `json:"machine_id"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got.Status != "approved" || got.Email != "phone:19900001111" || got.PhoneNumber != "19900001111" || got.MachineID == "" {
+	if got.Status != "approved" || got.Email != "phone:19900001111" || got.PhoneNumber != "19900001111" || got.CreditsAccount != "phone:19900001111" || got.MachineID == "" {
 		t.Fatalf("unexpected response: %+v body=%s", got, rr.Body.String())
 	}
 	user, err := st.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "phone:19900001111")

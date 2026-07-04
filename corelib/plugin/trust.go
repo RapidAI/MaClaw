@@ -31,7 +31,7 @@ type trustFilePayload struct {
 // NewTrustStore creates a TrustStore with the given confirmation callback and
 // loads any previously trusted plugins from ~/.maclaw/data/trusted_plugins.json.
 func NewTrustStore(confirm TrustConfirmFunc) *TrustStore {
-	fp := filepath.Join(corelib.MaclawBaseDir(), "data", "trusted_plugins.json")
+	fp := filepath.Join(corelib.MaclawDataDir(), "trusted_plugins.json")
 
 	ts := &TrustStore{
 		trusted:  make(map[string]bool),

@@ -168,7 +168,8 @@ def format_status(status: ReleaseStatus) -> str:
             "QA build records: "
             f"{len(in_scope_valid_records)} in-scope valid, "
             f"{len(out_of_scope_valid_records)} out-of-scope valid, "
-            f"{len(invalid_records)} invalid",
+            f"{len(blocking_invalid_records)} blocking invalid, "
+            f"{len(out_of_scope_invalid_records)} out-of-scope invalid",
         ],
     )
     if not valid_records and not invalid_records:
@@ -236,10 +237,19 @@ def format_status(status: ReleaseStatus) -> str:
             )
         if in_scope_valid_records and status.final_errors:
             lines.append("- Resolve final evidence blockers above:")
+            final_record_versions = sorted(
+                version
+                for version in {
+                    verify_final_release_evidence._version_for_record(path)
+                    for path in in_scope_valid_records
+                }
+                if version is not None
+            )
             for hint in verify_final_release_evidence.next_action_hints(
                 status.final_errors,
                 scope=status.scope,
                 records_dir=records_dir_label,
+                existing_versions=final_record_versions,
             ):
                 lines.append(f"  - {hint}")
         elif status.final_errors:

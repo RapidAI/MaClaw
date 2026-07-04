@@ -1,16 +1,16 @@
 // Package weixin — wxlog.go provides a structured file logger for WeChat
-// channel diagnostics. Logs are written to ~/.maclaw/logs/im_wx.log.
+// channel diagnostics. Logs are written to the effective MaClaw logs dir.
 package weixin
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 const (
@@ -63,29 +63,7 @@ func GetWxLog() *WxLog {
 }
 
 func maclawLogsDir() string {
-	return filepath.Join(maclawBaseDir(), "logs")
-}
-
-func maclawBaseDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".maclaw")
-	}
-	defaultDir := filepath.Join(home, ".maclaw")
-	data, err := os.ReadFile(filepath.Join(defaultDir, "config.json"))
-	if err != nil {
-		return defaultDir
-	}
-	var partial struct {
-		DataDir string `json:"data_dir"`
-	}
-	if json.Unmarshal(data, &partial) != nil {
-		return defaultDir
-	}
-	if dataDir := strings.TrimSpace(partial.DataDir); dataDir != "" {
-		return dataDir
-	}
-	return defaultDir
+	return maclawpath.LogsDir()
 }
 
 // Log writes a structured line: timestamp | stage | direction | uid | message

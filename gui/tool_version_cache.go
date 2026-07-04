@@ -64,7 +64,7 @@ func (c *ToolVersionCache) GetInstallStatus(name string) (installed bool, path s
 	}
 
 	// Check the private tools directory under the active data directory.
-	toolsDir := filepath.Join(corelib.MaclawBaseDir(), "data", "tools")
+	toolsDir := filepath.Join(corelib.MaclawDataDir(), "tools")
 	candidates := []string{binaryName}
 	if binaryName != name {
 		candidates = append(candidates, name)
@@ -209,7 +209,7 @@ func (c *ToolVersionCache) detectVersion(ctx context.Context, name, path string)
 
 // cacheFilePath returns the path to the JSON persistence file.
 func (c *ToolVersionCache) cacheFilePath() string {
-	return filepath.Join(corelib.MaclawBaseDir(), "data", "tool_version_cache.json")
+	return filepath.Join(corelib.MaclawDataDir(), "tool_version_cache.json")
 }
 
 // persistedCache is the JSON structure for disk persistence.

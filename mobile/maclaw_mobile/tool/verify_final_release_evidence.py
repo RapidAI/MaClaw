@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -8,6 +9,9 @@ import qa_release_evidence_links
 import release_evidence_commands
 import validate_qa_build_record
 import validate_qa_build_records_dir
+
+QA_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+\.md)\)")
+EXPECTED_LOG_FILENAME_RE = re.compile(r"expected (?P<name>final-release-evidence[^\s]+\.log)")
 
 
 def default_records_dir() -> Path:
@@ -23,6 +27,56 @@ def _version_for_record(path: Path) -> str | None:
     if match is None:
         return None
     return match.group("version")
+
+
+def _expected_log_filename(version: str, *, scope: str) -> str:
+    return Path(
+        release_evidence_commands.final_release_evidence_log_path(
+            version,
+            scope=scope,
+            records_dir=".",
+        ),
+    ).name
+
+
+def _successful_record_versions(records_dir: Path, *, scope: str) -> list[str]:
+    results = validate_qa_build_records_dir.validate_directory(records_dir)
+    valid_records = [
+        result.path
+        for result in results
+        if not result.errors
+        and validate_qa_build_records_dir.record_matches_scope(result.path, scope)
+    ]
+    return sorted(
+        version
+        for version in {_version_for_record(path) for path in valid_records}
+        if version is not None
+    )
+
+
+def _versions_from_record_error_text(errors: list[str]) -> list[str]:
+    versions = set()
+    for error in errors:
+        for raw in re.findall(r"[^,\s]+\.md", error):
+            name = Path(raw).name
+            match = validate_qa_build_record.QA_BUILD_RECORD_FILENAME_RE.fullmatch(name)
+            if match is not None:
+                versions.add(match.group("version"))
+    return sorted(versions)
+
+
+def final_log_path_errors(log_path: Path, records_dir: Path, *, scope: str) -> list[str]:
+    scope = release_evidence_commands.validate_scope(scope)
+    versions = _successful_record_versions(records_dir, scope=scope)
+    if len(versions) != 1:
+        return []
+    expected_name = _expected_log_filename(versions[0], scope=scope)
+    if log_path.name == expected_name:
+        return []
+    return [
+        "Final release evidence log filename must match the validated "
+        f"version/build: expected {expected_name}",
+    ]
 
 
 def _record_link_errors(
@@ -44,18 +98,43 @@ def _record_link_errors(
             "Release evidence document must contain the guarded QA build record link block markers.",
         ]
     link_block = text[start:end]
+    expected_targets = {
+        qa_release_evidence_links.record_link_target(path, records_dir)
+        for path in valid_records
+    }
     missing = [
         path.name
         for path in valid_records
         if f"]({qa_release_evidence_links.record_link_target(path, records_dir)})"
         not in link_block
     ]
-    if not missing:
-        return []
-    return [
-        "Release evidence document must include Markdown links for every validated QA build record: "
-        + ", ".join(missing),
-    ]
+    extra_targets = sorted(
+        target
+        for target in _qa_record_link_targets(link_block)
+        if target not in expected_targets
+    )
+    errors = []
+    if missing:
+        errors.append(
+            "Release evidence document must include Markdown links for every validated QA build record: "
+            + ", ".join(missing),
+        )
+    if extra_targets:
+        errors.append(
+            "Release evidence document guarded QA build record link block must not include stale or unvalidated QA record links: "
+            + ", ".join(extra_targets),
+        )
+    return errors
+
+
+def _qa_record_link_targets(markdown: str) -> list[str]:
+    targets: list[str] = []
+    for match in QA_MARKDOWN_LINK_RE.finditer(markdown):
+        target = match.group("target").strip()
+        name = Path(target).name
+        if validate_qa_build_record.QA_BUILD_RECORD_FILENAME_RE.fullmatch(name):
+            targets.append(target)
+    return targets
 
 
 def verify_final_release_evidence(
@@ -147,6 +226,7 @@ def next_action_hints(
     *,
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
     records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+    existing_versions: list[str] | None = None,
 ) -> list[str]:
     scope = release_evidence_commands.validate_scope(scope)
     hints: list[str] = []
@@ -167,22 +247,60 @@ def next_action_hints(
         error.startswith("Final release evidence records must use the same version/build")
         for error in errors
     )
+    expected_log_names = [
+        match.group("name")
+        for error in errors
+        for match in [EXPECTED_LOG_FILENAME_RE.search(error)]
+        if match is not None
+    ]
+    missing_platforms = []
+    if any("requires a validated Android signed-build QA record" in error for error in errors):
+        missing_platforms.append("android")
+    if any("requires a validated iOS signed-build QA record" in error for error in errors):
+        missing_platforms.append("ios")
     if invalid_records:
         hints.append(
             release_evidence_commands.qa_build_record_report_hint(invalid_records[0]),
         )
+    if expected_log_names:
+        expected_log_path = Path(records_dir) / expected_log_names[0]
+        hints.append(
+            "rerun final release evidence verification with the matching log path: "
+            + release_evidence_commands.verify_final_release_evidence_command(
+                records_dir,
+                scope=scope,
+                log=expected_log_path.as_posix(),
+            ),
+        )
     if needs_signed_record:
+        signed_scope = missing_platforms[0] if len(missing_platforms) == 1 else scope
+        versions = existing_versions
+        if versions is None:
+            versions = _successful_record_versions(Path(records_dir), scope=scope)
+        version = (
+            versions[0]
+            if len(versions) == 1
+            else release_evidence_commands.DEFAULT_VERSION
+        )
         hints.append(
             release_evidence_commands.signed_qa_record_hint(
-                scope=scope,
+                scope=signed_scope,
+                version=version,
                 records_dir=records_dir,
             ),
         )
     if needs_release_evidence_links:
+        link_versions = _versions_from_record_error_text(errors)
+        version = (
+            link_versions[0]
+            if len(link_versions) == 1
+            else release_evidence_commands.DEFAULT_VERSION
+        )
         hints.append(
             release_evidence_commands.qa_release_evidence_link_hint(
                 scope=scope,
                 records_dir=records_dir,
+                version=version,
             ),
         )
     if needs_single_version:
@@ -331,6 +449,15 @@ def main(argv: list[str] | None = None) -> int:
         args.release_evidence.resolve(),
         scope=args.scope,
     )
+    log_path_validation_errors: list[str] = []
+    if not errors:
+        if args.log:
+            log_path_validation_errors = final_log_path_errors(
+                args.log,
+                args.records_dir.resolve(),
+                scope=args.scope,
+            )
+            errors.extend(log_path_validation_errors)
     if not errors:
         output = format_verified_summary(
             args.records_dir.resolve(),
@@ -352,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
         records_dir=args.records_dir.resolve(),
         release_evidence_path=args.release_evidence.resolve(),
     )
-    if args.log:
+    if args.log and not log_path_validation_errors:
         try:
             write_log(args.log, output, force=args.force)
         except FileExistsError as exc:

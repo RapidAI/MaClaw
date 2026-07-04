@@ -242,7 +242,7 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining(_unknownTaskNotification), findsOneWidget);
+    expect(find.textContaining(_unknownTaskNotification), findsNothing);
     expect(find.text(_mainConversation), findsOneWidget);
     expect(find.text(_emergencyDocuments), findsNothing);
     expect(notifications.latestOpenedNotification, isNull);

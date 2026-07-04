@@ -175,8 +175,12 @@ void main() {
       'If a valid mobile session and LLM access are already configured',
       'opens the assistant directly',
       'MaClaw official service redemption code',
+      'followed by phone SMS verification',
+      'SMS verification succeeds',
+      'verified `phone:<number>` account',
       'provider QR code generated',
-      'from the LLM configuration screen in MaClaw desktop GUI',
+      'from the LLM configuration screen',
+      'MaClaw desktop GUI',
       'multi-tab assistant',
       'does not accept arbitrary third-party LLM endpoints',
       '`$lookupTab` tab',
@@ -363,6 +367,14 @@ void main() {
         );
         expect(command, contains('.log'), reason: entry.key);
       }
+      final normalized = entry.value.replaceAll(RegExp(r'\s+'), ' ');
+      expect(
+        normalized,
+        contains(
+          'successful final evidence logs must use that same version/build in the `final-release-evidence*.log` filename',
+        ),
+        reason: entry.key,
+      );
     }
   });
 
@@ -418,13 +430,13 @@ void main() {
         'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
         'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
         'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
-        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development',
       ],
       'docs/qa-builds/README.md': [
         'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
         'python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
         'python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
-        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development',
       ],
     };
     for (final entry in artifactSequences.entries) {
@@ -452,7 +464,8 @@ void main() {
       '--installer-channel "<internal test channel>"',
       'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
       'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
-      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development',
+      'After the signed archive/TestFlight build exists',
       'python3 tool/signed_artifact_evidence.py ios',
       '--archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
       '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"',
@@ -1271,6 +1284,8 @@ void main() {
       'Out-of-scope invalid records appear as an ignored warning',
       'do not block the current scoped Android or iOS package',
       'records whose filename scope cannot be parsed',
+      'validated in-scope records span multiple version/build values',
+      'Keep final release QA records to one version/build',
     ]) {
       expect(qaBuildsReadmeText, contains(expected));
     }

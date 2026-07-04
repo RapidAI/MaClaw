@@ -175,7 +175,7 @@ func BuildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 // SaveAttachmentToLocal saves a MessageAttachment under the active data directory
 // and returns the absolute path.
 func SaveAttachmentToLocal(att *MessageAttachment) (string, error) {
-	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "im_files")
+	dir := filepath.Join(corelib.MaclawDataDir(), "im_files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create im_files directory: %w", err)
 	}

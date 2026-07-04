@@ -136,6 +136,46 @@ void main() {
     );
   });
 
+  test('digital employee realtime accepts top-level task id fallback',
+      () async {
+    final store = _FakeMobileLocalStore();
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    final event = MobileRealtimeEvent.tryParse({
+      'type': 'digital_employee_task',
+      'task_id': 'task-top-1',
+      'status': 'done',
+      'payload': {
+        'employee_id': 'employee-1',
+        'prompt': 'check remote server',
+        'result': 'ok',
+        'message': 'done',
+        'claimed_by': 'srv-prod',
+      },
+    });
+
+    await container
+        .read(digitalEmployeeTaskProvider.notifier)
+        .applyRealtimeEvent(event!);
+
+    expect(store.lastTask?.taskId, 'task-top-1');
+    expect(store.lastTask?.status, 'done');
+    expect(notifications.shown, hasLength(1));
+    expect(
+      notifications.shown.single.payload,
+      'digital-employee-task:task-top-1',
+    );
+  });
+
   test('digital employee notifications redact sensitive task messages',
       () async {
     final store = _FakeMobileLocalStore();

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 )
 
 // --- ExtractRequirements tests ---
@@ -758,6 +759,48 @@ func TestRegistry_FixAll_AcceptsWarnings(t *testing.T) {
 	remaining := reg.FixAll(violations)
 	if len(remaining) != 0 {
 		t.Errorf("expected 0 remaining (warning should be fixable), got %d", len(remaining))
+	}
+}
+
+func TestPipFixerSharedRuntimeDoesNotRepeatSinglePackageInstall(t *testing.T) {
+	oldEnsure := ensureSharedPythonRuntimeWithDataDir
+	ensureCalls := 0
+	ensureSharedPythonRuntimeWithDataDir = func(dataDir string, spec pyenv.SharedPythonRuntimeSpec, usedBy string, emit pyenv.ProgressFunc) (pyenv.SharedPythonRuntimePlan, error) {
+		ensureCalls++
+		if dataDir != "data-dir" || usedBy != "pdf-word" {
+			t.Fatalf("ensure args dataDir=%q usedBy=%q", dataDir, usedBy)
+		}
+		if got := strings.Join(spec.Packages, ","); got != "pymupdf,python-docx" {
+			t.Fatalf("packages = %q", got)
+		}
+		return pyenv.SharedPythonRuntimePlan{PythonPath: "runtime-python"}, nil
+	}
+	oldInstall := installPipPkgScoped
+	installPipPkgScoped = func(python, pkg string) error {
+		t.Fatalf("installPipPkgScoped should not run for shared runtime package %s on %s", pkg, python)
+		return nil
+	}
+	t.Cleanup(func() {
+		ensureSharedPythonRuntimeWithDataDir = oldEnsure
+		installPipPkgScoped = oldInstall
+	})
+
+	req := Requirement{
+		Type: "pip",
+		Name: "pymupdf",
+		Context: map[string]string{
+			"python_runtime_packages":   "pymupdf\npython-docx",
+			"python_runtime_data_dir":   "data-dir",
+			"python_runtime_constraint": ">=3.10,<3.14",
+			"python_runtime_manager":    "uv",
+			"python_runtime_used_by":    "pdf-word",
+		},
+	}
+	if err := (&PipFixer{}).Fix(req); err != nil {
+		t.Fatal(err)
+	}
+	if ensureCalls != 1 {
+		t.Fatalf("ensure calls = %d, want 1", ensureCalls)
 	}
 }
 

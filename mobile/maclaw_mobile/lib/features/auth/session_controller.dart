@@ -90,8 +90,11 @@ class SessionController extends AsyncNotifier<SessionState> {
     );
     if (!result.confirmed) return false;
     final client = ApiClient(vault: vault, hubUrl: result.hubUrl);
+    final verifiedCreditsAccount = result.creditsAccount.isNotEmpty
+        ? result.creditsAccount
+        : result.phoneNumber;
     final bootstrap = (await client.bootstrap()).withVerifiedPhoneCredits(
-      result.phoneNumber,
+      verifiedCreditsAccount,
     );
     state = AsyncData(
       SessionState.signedIn(

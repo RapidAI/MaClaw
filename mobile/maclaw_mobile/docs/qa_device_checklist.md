@@ -16,7 +16,7 @@ python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-meth
 python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
@@ -60,7 +60,7 @@ commands:
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
 
@@ -86,7 +86,10 @@ Attach the passing record to `release_evidence.md` after both the individual
 record check and directory check pass. Before release approval, the final
 evidence verifier must also pass with validated Android and iOS signed-build
 records present, and its saved final-release-evidence log should be attached or
-referenced with the QA evidence.
+referenced with the QA evidence. Once validated QA records exist, replace
+`<version+build>` with the validated QA record version/build; successful final
+evidence logs must use that same version/build in the
+`final-release-evidence*.log` filename.
 The completed record's Final Release Decision must include:
 - `Release handoff result`
 - `Runtime boundary verification result`

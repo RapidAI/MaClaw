@@ -2,13 +2,13 @@ package corelib
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -136,22 +136,10 @@ func loadConfigFields() configFields {
 	}
 }
 
-var (
-	dataDirOnce    sync.Once
-	dataDirPath    string
-	dataDirMu      sync.RWMutex
-	defaultBaseDir string
-	defaultBaseMu  sync.Once
-)
-
 // MaclawDefaultBaseDir returns ~/.maclaw — the default base directory.
 // The result is cached after first call.
 func MaclawDefaultBaseDir() string {
-	defaultBaseMu.Do(func() {
-		home, _ := os.UserHomeDir()
-		defaultBaseDir = filepath.Join(home, ".maclaw")
-	})
-	return defaultBaseDir
+	return maclawpath.DefaultBaseDir()
 }
 
 // MaclawBaseDir returns the effective maclaw base directory for all data
@@ -167,58 +155,45 @@ func MaclawDefaultBaseDir() string {
 // ALL code that needs a path under the maclaw data directory MUST use this
 // function as the single source of truth. Do NOT hardcode ~/.maclaw paths.
 func MaclawBaseDir() string {
-	dataDirOnce.Do(func() {
-		dir := resolveMaclawBaseDir(loadDataDirFromConfig())
-		dataDirMu.Lock()
-		dataDirPath = dir
-		dataDirMu.Unlock()
-	})
-	dataDirMu.RLock()
-	defer dataDirMu.RUnlock()
-	return dataDirPath
-}
-
-func resolveMaclawBaseDir(configuredDir string) string {
-	dir := strings.TrimSpace(configuredDir)
-	if dir != "" {
-		// Verify the configured path is accessible.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			// Path not accessible — fall back to default.
-			// This handles removable disks, network paths, permission issues.
-			fmt.Fprintf(os.Stderr, "[MaclawBaseDir] WARNING: configured data_dir %q not accessible (%v), falling back to default\n", dir, err)
-			dir = ""
-		}
-	}
-	if dir == "" {
-		dir = MaclawDefaultBaseDir()
-	}
-	return dir
+	return maclawpath.BaseDir()
 }
 
 // SetMaclawBaseDirFromConfig refreshes the effective maclaw base directory from
 // a data_dir config value. config.json itself remains under ~/.maclaw.
 func SetMaclawBaseDirFromConfig(configuredDir string) {
-	SetMaclawBaseDir(resolveMaclawBaseDir(configuredDir))
+	maclawpath.SetBaseDirFromConfig(configuredDir)
+	SetMaclawBaseDir(maclawpath.BaseDir())
 }
 
 // SetMaclawBaseDir overrides the cached base dir at runtime (for tests).
 func SetMaclawBaseDir(dir string) {
-	dataDirOnce.Do(func() {}) // mark as done
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		dir = MaclawDefaultBaseDir()
-	}
-	dataDirMu.Lock()
-	dataDirPath = dir
-	dataDirMu.Unlock()
+	maclawpath.SetBaseDir(dir)
+	dir = maclawpath.BaseDir()
 	if customWorkspaceDir == "" {
 		workspaceDirPath = filepath.Join(dir, "workspace")
 		_ = os.MkdirAll(workspaceDirPath, 0o755)
 	}
 }
 
+// MaclawDataDir returns the data directory under the effective base dir.
+func MaclawDataDir() string {
+	return maclawpath.DataDir()
+}
+
 // MaclawLogsDir returns the logs directory under the effective base dir.
 // This is a convenience function for corelib packages that need log paths.
 func MaclawLogsDir() string {
-	return filepath.Join(MaclawBaseDir(), "logs")
+	return maclawpath.LogsDir()
+}
+
+func MaclawSkillsDir() string {
+	return maclawpath.SkillsDir()
+}
+
+func MaclawRuntimeDir() string {
+	return maclawpath.RuntimeDir()
+}
+
+func MaclawAppOutputsDir() string {
+	return maclawpath.AppOutputsDir()
 }

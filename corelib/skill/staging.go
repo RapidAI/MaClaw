@@ -18,9 +18,9 @@ import (
 )
 
 // StagingDir returns the staging directory root.
-// Path: <MaclawBaseDir>/data/skills_staging/
+// Path: <MaclawDataDir>/skills_staging/
 func StagingDir() (string, error) {
-	return filepath.Join(corelib.MaclawBaseDir(), "data", "skills_staging"), nil
+	return filepath.Join(corelib.MaclawDataDir(), "skills_staging"), nil
 }
 
 // StagedFile describes a single file in the staging directory.
@@ -60,7 +60,7 @@ func PrepareStagingDirInRoot(root, skillName string) (string, error) {
 }
 
 // CommitStaging moves a staged skill from the staging directory to the
-// final install location (<MaclawBaseDir>/data/skills/<name>/).
+// final install location (<MaclawDataDir>/skills/<name>/).
 // If a skill directory already exists at the target, it is preserved as a
 // .prev backup (cleaned up after 24h by CleanupAllStale) so users can
 // recover custom config files or scripts they added manually.

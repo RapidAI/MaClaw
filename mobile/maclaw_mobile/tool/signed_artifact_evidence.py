@@ -27,7 +27,9 @@ PLACEHOLDER_VALUES = {
     "tbd",
     "<apple_team_id>",
     "<runner profile; share extension profile>",
+    "<runner profile uuid/name; share extension profile uuid/name>",
     "<xcode archive path or testflight build number>",
+    ".xcarchive path or testflight build number",
 }
 
 

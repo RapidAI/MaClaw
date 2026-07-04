@@ -338,6 +338,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.release_gates_command(),
             release_evidence_commands.create_record_command(),
             release_evidence_commands.android_artifact_evidence_command(),
+            release_evidence_commands.ios_release_plan_command(),
             release_evidence_commands.ios_release_plan_command(
                 provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
                 record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
@@ -353,6 +354,18 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             ),
         ]:
             self.assertIn(expected, hint)
+        self.assertIn(
+            "plan iOS archive/export first with",
+            hint,
+        )
+        self.assertIn(
+            "after the signed .xcarchive/TestFlight build exists",
+            hint,
+        )
+        self.assertNotIn(
+            "generate iOS artifact evidence during archive planning",
+            hint,
+        )
         self.assertLess(
             hint.index(release_evidence_commands.release_handoff_command()),
             hint.index(release_evidence_commands.setup_android_signing_command()),
@@ -382,6 +395,15 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         self.assertLess(
             hint.index(release_evidence_commands.create_record_command()),
             hint.index(release_evidence_commands.android_artifact_evidence_command()),
+        )
+        self.assertLess(
+            hint.index(release_evidence_commands.ios_release_plan_command()),
+            hint.index(
+                release_evidence_commands.ios_release_plan_command(
+                    provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                    record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                ),
+            ),
         )
         self.assertLess(
             hint.index(
@@ -491,6 +513,13 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.ios_artifact_evidence_command(
                 archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                 team_id="ABCDE12345",
+            ),
+            ios_hint,
+        )
+        self.assertIn(
+            release_evidence_commands.ios_release_plan_command(
+                team_id="ABCDE12345",
+                export_method="<export-method>",
             ),
             ios_hint,
         )

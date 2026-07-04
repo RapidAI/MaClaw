@@ -16,28 +16,28 @@ import (
 
 // MigrateSkillsDir is a no-op kept for backward compatibility.
 // The old ~/.maclaw/skills path is no longer supported.
-// Skills live exclusively in <MaclawBaseDir>/data/skills.
+// Skills live exclusively in <MaclawDataDir>/skills.
 func MigrateSkillsDir() {}
 
 // SkillScanRoots returns all directories that should be scanned for
 // file-based skills, in priority order (first wins on name conflict):
-//  1. <MaclawBaseDir>/data/skills  (canonical location)
+//  1. <MaclawDataDir>/skills  (canonical location)
 //  2. ~/.agents/skills
 func SkillScanRoots() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return []string{filepath.Join(corelib.MaclawBaseDir(), "data", "skills")}
+		return []string{corelib.MaclawSkillsDir()}
 	}
 	return []string{
-		filepath.Join(corelib.MaclawBaseDir(), "data", "skills"),
+		corelib.MaclawSkillsDir(),
 		filepath.Join(home, ".agents", "skills"),
 	}
 }
 
-// PrimarySkillsDir returns the canonical skills directory (<MaclawBaseDir>/data/skills).
+// PrimarySkillsDir returns the canonical skills directory (<MaclawDataDir>/skills).
 // Callers that need to write new skills should use this path.
 func PrimarySkillsDir() (string, error) {
-	return filepath.Join(corelib.MaclawBaseDir(), "data", "skills"), nil
+	return corelib.MaclawSkillsDir(), nil
 }
 
 // IsUnderSkillsRoot reports whether the given path is a subdirectory of any

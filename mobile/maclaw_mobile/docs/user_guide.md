@@ -29,13 +29,17 @@ handoff.
 3. If a valid mobile session and LLM access are already configured, the app
    opens the assistant directly.
 4. If LLM access is missing, configure one of the supported access paths:
-   MaClaw official service redemption code, or the provider QR code generated
-   from the LLM configuration screen in MaClaw desktop GUI.
+   MaClaw official service redemption code followed by phone SMS verification,
+   or the provider QR code generated from the LLM configuration screen in
+   MaClaw desktop GUI.
 5. After setup succeeds, the app opens the multi-tab assistant.
 
-MaClaw official LLM access is the default. Third-party LLM access is allowed
-only when it is authorized by scanning or pasting the MaClaw GUI QR payload.
-The mobile app does not accept arbitrary third-party LLM endpoints.
+MaClaw official LLM access is the default. The redemption code can help route
+the official service setup, but it does not replace the mobile account: after
+SMS verification succeeds, official LLM calls use the credits bound to the
+verified `phone:<number>` account. Third-party LLM access is allowed only when
+it is authorized by scanning or pasting the MaClaw GUI QR payload. The mobile
+app does not accept arbitrary third-party LLM endpoints.
 
 ## Look Up Information
 

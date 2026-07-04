@@ -135,6 +135,38 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 output,
             )
 
+    def test_valid_records_are_linked_in_deterministic_filename_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = self.records_dir(Path(tmp))
+            ios = records_dir / "2026-07-02-ios-1.0.0+42.md"
+            android = records_dir / "2026-07-02-android-1.0.0+42.md"
+            ios.write_text("ios", encoding="utf-8")
+            android.write_text("android", encoding="utf-8")
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    qa_release_evidence_links.validate_qa_build_records_dir.RecordValidationResult(
+                        ios,
+                        [],
+                    ),
+                    qa_release_evidence_links.validate_qa_build_records_dir.RecordValidationResult(
+                        android,
+                        [],
+                    ),
+                ],
+            ):
+                summary = qa_release_evidence_links.summarize_records(records_dir)
+
+        self.assertEqual([android, ios], summary.valid_records)
+        self.assertEqual(
+            [
+                f"- [{android.name}](docs/qa-builds/{android.name})",
+                f"- [{ios.name}](docs/qa-builds/{ios.name})",
+            ],
+            qa_release_evidence_links.link_lines(summary),
+        )
+
     def test_custom_record_directory_formats_actual_release_evidence_link(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -250,6 +282,7 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertIn("Next action:", stderr.getvalue())
         self.assertIn(
             release_evidence_commands.release_handoff_command(
+                version="1.0.0+42",
                 scope="ios",
                 records_dir=str(records_dir),
             ),
@@ -258,6 +291,7 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.signed_qa_record_hint(
                 scope="ios",
+                version="1.0.0+42",
                 records_dir=str(records_dir),
             ),
             stderr.getvalue(),
@@ -266,6 +300,7 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
             [
                 release_evidence_commands.signed_qa_record_hint(
                     scope="ios",
+                    version="1.0.0+42",
                     records_dir=str(records_dir),
                 ),
             ],
@@ -334,6 +369,14 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn(
             "Validated records use multiple version/build values and must not be linked as one release: 1.0.0+42, 1.0.0+43",
+            stderr.getvalue(),
+        )
+        self.assertIn(
+            "Validated records found, but not ready to link from docs/release_evidence.md:",
+            stderr.getvalue(),
+        )
+        self.assertNotIn(
+            "Validated records to link from docs/release_evidence.md:",
             stderr.getvalue(),
         )
         self.assertIn("2026-07-02-android-1.0.0+42.md", stderr.getvalue())
@@ -536,6 +579,32 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 qa_release_evidence_links.update_release_evidence(summary, release_evidence)
 
             self.assertNotIn(record.name, release_evidence.read_text(encoding="utf-8"))
+
+    def test_default_scope_missing_ios_record_is_not_printed_as_ready_to_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = self.records_dir(Path(tmp))
+            record = self.write_record(
+                records_dir,
+                self.complete_record_with_local_artifact(records_dir),
+                "2026-07-02-android-1.0.0+42.md",
+            )
+
+            summary = qa_release_evidence_links.summarize_records(records_dir)
+            output = qa_release_evidence_links.format_links(summary)
+
+        self.assertEqual([record], summary.valid_records)
+        self.assertIn(
+            "Validated records are missing final release platform coverage: iOS",
+            output,
+        )
+        self.assertIn(
+            "Validated records found, but not ready to link from docs/release_evidence.md:",
+            output,
+        )
+        self.assertNotIn(
+            "Validated records to link from docs/release_evidence.md:",
+            output,
+        )
 
     def test_android_scope_accepts_android_only_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

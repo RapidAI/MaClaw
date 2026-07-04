@@ -20,7 +20,8 @@ For a single local readiness summary, run:
   resolves the phone account's Hub/tenant through HubCenter, then sends and
   verifies the code on the discovered Hub.
 - After phone verification, MaClaw official LLM calls use the credits bound to
-  that `phone:<number>` account.
+  that `phone:<number>` account. Official redemption codes may route setup, but
+  they do not replace the phone account as the MaClaw official credits owner.
 - Login starts at HubCenter; bootstrap, search, document, SSH analysis, realtime,
   and digital employee APIs use the discovered Hub/tenant.
 - LLM access defaults to MaClaw official access. Third-party LLM access is valid
@@ -103,11 +104,14 @@ For a single local readiness summary, run:
 - Then run
   `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
-  Add `--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
-  to print paste-ready iOS QA artifact evidence together with the archive/export
-  command context. Record the `.xcarchive` path or TestFlight build number,
-  Team ID, Runner and Share Extension provisioning profiles, bundle IDs, app
-  group, and URL scheme evidence in the QA build record.
+  Record the printed archive/export command context. After the signed
+  archive/TestFlight build exists, use the artifact evidence command below, or
+  rerun `plan_ios_release.py` with
+  `--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+  to print paste-ready iOS QA artifact evidence. Record the `.xcarchive` path
+  or TestFlight build number, Team ID, Runner and Share Extension provisioning
+  profiles, bundle IDs, app group, and URL scheme evidence in the QA build
+  record.
 - After the signed archive/TestFlight build exists, run
   `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   to generate paste-ready archive/build, Team ID, and provisioning-profile
@@ -237,7 +241,10 @@ Validated records must already pass `python3 tool/validate_qa_build_record.py`
 without secret redaction failures, including raw Authorization/Cookie headers,
 JWTs, API keys, cloud access key IDs, and URLs with embedded credentials.
 The final verifier writes the success or failure transcript to the log path
-above; pass `--force` only when intentionally regenerating that saved evidence.
+above. Once validated QA records exist, replace `<version+build>` with the
+validated QA record version/build; successful final evidence logs must use that
+same version/build in the `final-release-evidence*.log` filename. Pass
+`--force` only when intentionally regenerating that saved evidence.
 Each completed record must include these Final Release Decision fields before
 approval:
 - `Release handoff result`

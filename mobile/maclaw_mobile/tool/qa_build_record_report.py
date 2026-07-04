@@ -337,13 +337,12 @@ def format_report(report: QaBuildRecordReport) -> str:
         lines.append("")
         lines.append("Next action:")
         lines.append(
-            "- Run `"
-            + release_evidence_commands.qa_release_evidence_link_command(
+            "- "
+            + release_evidence_commands.qa_release_evidence_link_hint(
                 scope=_scope_for_report(report),
                 records_dir=_records_dir_for_report(report),
+                version=_version_for_report(report),
             )
-            + "` "
-            "to link validated QA records in docs/release_evidence.md."
         )
     return "\n".join(lines).rstrip() + "\n"
 

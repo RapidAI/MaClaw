@@ -234,6 +234,14 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
 
         self.assertIn("Archive/TestFlight build: TestFlight build 42", lines)
 
+    def test_ios_evidence_rejects_documented_profile_placeholder(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Provisioning profiles"):
+            signed_artifact_evidence.ios_evidence_lines(
+                archive_or_build="TestFlight build 42",
+                team_id="ABCDE12345",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+            )
+
     def test_ios_evidence_accepts_profile_files_and_names(self) -> None:
         file_lines = signed_artifact_evidence.ios_evidence_lines(
             archive_or_build="TestFlight build 42",

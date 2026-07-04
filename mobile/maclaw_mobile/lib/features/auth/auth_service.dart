@@ -189,12 +189,6 @@ class AuthService {
     String qrPayload,
   ) async {
     final payload = parseMaclawDesktopLlmQrPayload(qrPayload);
-    if (payload.hubUrl.isNotEmpty) {
-      return _consumeDesktopLlmQrOnHub(
-        hubUrl: payload.hubUrl,
-        qrPayload: payload.raw,
-      );
-    }
     return _connectWithOfficialHubCenter(
       data: {'qr_payload': payload.raw},
       path: '/api/mobile/llm/desktop-qr-sessions',
@@ -228,30 +222,6 @@ class AuthService {
         throw MobileServiceConnectionPendingException(result);
       }
       throw StateError('Official service did not return a mobile Hub session.');
-    }
-    await _vault.saveSession(
-      hubUrl: result.hubUrl,
-      token: result.accessToken,
-    );
-    return result;
-  }
-
-  Future<MobileServiceConnectResult> _consumeDesktopLlmQrOnHub({
-    required String hubUrl,
-    required String qrPayload,
-  }) async {
-    final normalizedHubUrl = normalizeDiscoveredHubUrl(hubUrl);
-    final client = _discoveredHubClient(normalizedHubUrl);
-    final response = await client.post<Map<String, dynamic>>(
-      '/api/mobile/llm/desktop-qr-sessions/consume',
-      data: {'qr_payload': qrPayload},
-    );
-    final data = response.data ?? const {};
-    final result = MobileServiceConnectResult.fromJson(data).copyWith(
-      hubUrl: normalizedHubUrl,
-    );
-    if (result.accessToken.isEmpty) {
-      throw StateError('Hub did not return a mobile token for desktop QR.');
     }
     await _vault.saveSession(
       hubUrl: result.hubUrl,

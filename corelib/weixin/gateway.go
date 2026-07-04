@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	silk "github.com/wdvxdr1123/go-silk"
 )
@@ -1802,29 +1803,7 @@ func weixinVoiceDebugDir() (string, error) {
 }
 
 func weixinMaclawBaseDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".maclaw")
-	}
-	defaultDir := filepath.Join(home, ".maclaw")
-	data, err := os.ReadFile(filepath.Join(defaultDir, "config.json"))
-	if err != nil {
-		return defaultDir
-	}
-	var partial struct {
-		DataDir string `json:"data_dir"`
-	}
-	if json.Unmarshal(data, &partial) != nil {
-		return defaultDir
-	}
-	dir := strings.TrimSpace(partial.DataDir)
-	if dir == "" {
-		return defaultDir
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return defaultDir
-	}
-	return dir
+	return maclawpath.BaseDir()
 }
 
 func cleanupDebugWeixinVoicePayloads(dir string) {

@@ -252,7 +252,7 @@ func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginMa
 		}
 
 		// 2. Build PluginConfig.
-		dataDir := filepath.Join(corelib.MaclawBaseDir(), "data", "plugins", manifest.Name)
+		dataDir := filepath.Join(corelib.MaclawDataDir(), "plugins", manifest.Name)
 		cfg := PluginConfig{
 			DataDir:  dataDir,
 			Settings: ResolveEnvVars(manifest.Settings),
