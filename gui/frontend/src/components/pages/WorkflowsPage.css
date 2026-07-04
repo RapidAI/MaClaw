@@ -103,7 +103,7 @@
     font-size: 0.76rem;
     font-weight: 700;
     color: var(--theme-text-secondary);
-    text-align: center;
+    text-align: left;
 }
 
 .workflows-page__grid {

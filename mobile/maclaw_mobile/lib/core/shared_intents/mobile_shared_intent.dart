@@ -92,21 +92,42 @@ class MobileSharedIntent {
     Iterable<MobileSharedIntentPayload> payloads, {
     DateTime? receivedAt,
   }) {
+    final intents = <MobileSharedIntent>[];
     for (final payload in payloads) {
-      final value = payload.value.trim();
-      final message = payload.message?.trim();
-      if (value.isEmpty && (message == null || message.isEmpty)) {
-        continue;
-      }
+      final intent = _fromPayload(payload, receivedAt: receivedAt);
+      if (intent != null) intents.add(intent);
+    }
+    for (final intent in intents) {
+      if (intent.opensDocuments) return intent;
+    }
+    return intents.firstOrNull;
+  }
+
+  static MobileSharedIntent? _fromPayload(
+    MobileSharedIntentPayload payload, {
+    DateTime? receivedAt,
+  }) {
+    final value = payload.value.trim();
+    final message = payload.message?.trim();
+    if (value.isEmpty && (message == null || message.isEmpty)) {
+      return null;
+    }
+    if (value.isEmpty && message != null && message.isNotEmpty) {
       return MobileSharedIntent.fromMedia(
-        value: value,
-        typeName: payload.typeName,
-        mimeType: payload.mimeType,
+        value: message,
+        typeName: 'text',
+        mimeType: 'text/plain',
         message: message,
         receivedAt: receivedAt,
       );
     }
-    return null;
+    return MobileSharedIntent.fromMedia(
+      value: value,
+      typeName: payload.typeName,
+      mimeType: payload.mimeType,
+      message: message,
+      receivedAt: receivedAt,
+    );
   }
 
   static MobileSharedIntentKind _kindFor({

@@ -14,6 +14,10 @@ python3 tool/release_handoff.py --version <version+build> --scope android-ios --
 python3 tool/setup_android_signing.py
 python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
+python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
 python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
@@ -29,6 +33,10 @@ already been saved, pass their traceable references to
 Decision section starts with those evidence links already filled.
 The handoff, runtime-boundary log, and release-gates log commands refuse to
 overwrite existing saved evidence files unless `--force` is provided.
+Release handoff outputs saved directly under `docs/qa-builds/` must use a
+`handoff-*.md` filename; other Markdown names are rejected so the directory
+validator cannot mistake the handoff plan for a completed signed-build QA
+record.
 
 Use `--scope android` or `--scope ios` when Android and iOS evidence are captured
 separately. The command starts from `qa_build_record_template.md` and saves the
@@ -41,6 +49,8 @@ need Apple Team ID or export method values:
 python3 tool/release_status_report.py --scope android
 python3 tool/release_handoff.py --version <version+build> --scope android --output docs/qa-builds/handoff-android-<version+build>.md
 python3 tool/qa_preflight.py --scope android
+python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
+python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 ```
 
 For iOS-only internal QA, keep the Apple Team ID and export method on the iOS
@@ -50,6 +60,8 @@ commands:
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
 
 After completing the record, run:
@@ -204,9 +216,9 @@ it.
   `.xcarchive` path or TestFlight build number, and Runner/Share Extension
   provisioning profile evidence.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   or pass the same provisioning profile summary to
-  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method <export-method> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method <export-method> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   and paste the generated archive/build, Team ID, and provisioning-profile
   fields into the QA build record.
 - Install via development signing or TestFlight, launch/open the app, and
@@ -277,7 +289,9 @@ it.
   ID.
 - Confirm notifications are delivered for document/export completion, digital
   employee task completion, and SSH abnormal/disconnect scenarios; record the
-  notification payload or tap/open target.
+  typed notification payloads or tap/open targets, including a document
+  `document-export:`/`document-draft:`/`document-upload:` payload, a
+  `digital-employee-task:` payload, and a `server-profile:` payload.
 - Confirm all API/service and realtime surfaces use the discovered Hub URL.
 - Toggle offline/poor-network conditions or otherwise block HubCenter access,
   record the offline warning, restore connectivity, and confirm search,

@@ -88,12 +88,29 @@ def summarize_records(
     )
 
 
-def _record_link(path: Path, records_dir: Path) -> str:
+def record_link_target(path: Path, records_dir: Path) -> str:
     try:
         rel = path.relative_to(records_dir)
-        target = f"docs/qa-builds/{rel.as_posix()}"
+        if records_dir.name == "qa-builds":
+            return f"docs/qa-builds/{rel.as_posix()}"
+        return path.as_posix()
     except ValueError:
-        target = path.as_posix()
+        pass
+    try:
+        rel = path.relative_to(validate_qa_build_records_dir.default_records_dir())
+        return f"docs/qa-builds/{rel.as_posix()}"
+    except ValueError:
+        return path.as_posix()
+
+
+def records_dir_command_arg(records_dir: Path) -> str:
+    if records_dir.name == "qa-builds":
+        return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    return records_dir.as_posix()
+
+
+def _record_link(path: Path, records_dir: Path) -> str:
+    target = record_link_target(path, records_dir)
     return f"- [{path.name}]({target})"
 
 
@@ -142,6 +159,7 @@ def format_links(summary: EvidenceLinkSummary) -> str:
             lines.append(
                 "After adding these links, run: "
                 + release_evidence_commands.verify_final_release_evidence_command(
+                    records_dir=records_dir_command_arg(summary.records_dir),
                     scope=summary.scope,
                     version=summary.versions[0],
                 ),
@@ -215,6 +233,7 @@ def release_evidence_update_errors(summary: EvidenceLinkSummary) -> list[str]:
 
 def release_evidence_update_hints(summary: EvidenceLinkSummary) -> list[str]:
     hints: list[str] = []
+    records_dir = str(summary.records_dir)
     if summary.invalid_records:
         hints.append(
             release_evidence_commands.qa_build_record_report_hint(
@@ -222,9 +241,18 @@ def release_evidence_update_hints(summary: EvidenceLinkSummary) -> list[str]:
             ),
         )
     if not summary.valid_records and not summary.invalid_records:
-        hints.append(release_evidence_commands.signed_qa_record_hint(scope=summary.scope))
+        hints.append(
+            release_evidence_commands.signed_qa_record_hint(
+                scope=summary.scope,
+                records_dir=records_dir,
+            ),
+        )
     if len(summary.versions) > 1:
-        hints.append(release_evidence_commands.qa_record_version_mismatch_hint())
+        hints.append(
+            release_evidence_commands.qa_record_version_mismatch_hint(
+                records_dir=records_dir,
+            ),
+        )
     if summary.valid_records and not has_required_platform_coverage(summary):
         missing = missing_platform_coverage(summary)
         missing_scope = summary.scope
@@ -232,7 +260,12 @@ def release_evidence_update_hints(summary: EvidenceLinkSummary) -> list[str]:
             missing_scope = "android"
         elif missing == ["iOS"]:
             missing_scope = "ios"
-        hints.append(release_evidence_commands.signed_qa_record_hint(scope=missing_scope))
+        hints.append(
+            release_evidence_commands.signed_qa_record_hint(
+                scope=missing_scope,
+                records_dir=records_dir,
+            ),
+        )
     return hints
 
 

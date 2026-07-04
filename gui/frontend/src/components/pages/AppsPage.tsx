@@ -17,6 +17,19 @@ type AppAboutInfo = {
     email?: string;
 };
 
+function normalizeAppAboutInfo(info?: AppAboutInfo): AppAboutInfo | undefined {
+    const author = String(info?.author || '').trim();
+    const copyright = String(info?.copyright || '').trim();
+    const website = String(info?.website || '').trim();
+    const email = String(info?.email || '').trim();
+    return author || copyright || website || email ? {
+        author: author || undefined,
+        copyright: copyright || undefined,
+        website: website || undefined,
+        email: email || undefined,
+    } : undefined;
+}
+
 type AppEntry = {
     id: string;
     name: string;
@@ -60,6 +73,9 @@ type AppSkillDependency = {
     source?: 'local' | 'hub' | 'market' | 'skillmarket' | 'enterprise_hub' | 'github' | 'builtin';
     install_ref?: string;
     installRef?: string;
+    canonical_id?: string;
+    canonicalID?: string;
+    aliases?: string[];
     capabilities?: string[];
 };
 type StudioLayoutTemplate = 'classic_split' | 'left_nav' | 'document_workspace' | 'dashboard';
@@ -89,6 +105,9 @@ type BackendAppInstallDependency = {
     source?: string;
     install_ref?: string;
     installRef?: string;
+    canonical_id?: string;
+    canonicalID?: string;
+    aliases?: string[];
     install_ref_kind?: string;
     install_ref_target?: string;
     install_ref_version?: string;
@@ -2440,6 +2459,8 @@ function normalizeAppDependencies(raw: unknown): AppManifestBinding['dependencie
             required: dep?.required !== false,
             source: dep?.source || 'hub',
             install_ref: appSkillDependencyInstallRef(dep) || undefined,
+            canonical_id: String(dep?.canonical_id || dep?.canonicalID || '').trim() || undefined,
+            aliases: Array.isArray(dep?.aliases) ? dep.aliases.map((alias) => String(alias || '').trim()).filter(Boolean) : undefined,
             capabilities: Array.isArray(dep?.capabilities) ? dep.capabilities.map((capability) => String(capability || '').trim()).filter(Boolean) : undefined,
         });
     });
@@ -3972,12 +3993,7 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
         source: 'skill',
         importedRunEvidence,
         workflowContract: governance?.workflowContract || governance?.workflow_contract,
-        aboutInfo: app?.aboutInfo && typeof app.aboutInfo === 'object' ? {
-            author: app.aboutInfo.author || undefined,
-            copyright: app.aboutInfo.copyright || undefined,
-            website: app.aboutInfo.website || undefined,
-            email: app.aboutInfo.email || undefined,
-        } : undefined,
+        aboutInfo: app?.aboutInfo && typeof app.aboutInfo === 'object' ? normalizeAppAboutInfo(app.aboutInfo) : undefined,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: raw.installUnit === 'skill' || raw.installUnit === 'mcp' || raw.installUnit === 'builtin' || raw.installUnit === 'enterprise_app_pack' ? raw.installUnit : (isEnterpriseAppKind(kind) ? 'enterprise_app_pack' : 'skill'),
@@ -4044,6 +4060,27 @@ function outputModeLabel(mode: string) {
         txt: 'TXT',
     };
     return labels[mode] || mode.toUpperCase();
+}
+
+function appContractTypeLabel(type: string, lang?: string) {
+    const normalized = String(type || '').trim();
+    const labels: Record<string, { zh: string; en: string }> = {
+        approval_result: { zh: '审批结果', en: 'Approval result' },
+        business_status: { zh: '业务状态', en: 'Business status' },
+        business_record: { zh: '业务记录', en: 'Business record' },
+        content: { zh: '内容', en: 'Content' },
+        text: { zh: '文本', en: 'Text' },
+        artifact: { zh: '产物', en: 'Artifact' },
+        artifacts: { zh: '产物', en: 'Artifacts' },
+        document: { zh: '文件', en: 'Document' },
+        file: { zh: '文件', en: 'File' },
+        notification: { zh: '通知', en: 'Notification' },
+        workflow_result: { zh: '工作流结果', en: 'Workflow result' },
+        approval_instance: { zh: '审批实例', en: 'Approval instance' },
+        outputs: { zh: '输出', en: 'Outputs' },
+    };
+    const label = labels[normalized];
+    return label ? label[isZh(lang) ? 'zh' : 'en'] : normalized;
 }
 
 function buildSkillFieldPayload(fields: SkillAppField[], values: Record<string, string | boolean>) {
@@ -5186,6 +5223,8 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
             required: dep.required === false || dep.Required === false ? false : true,
             source: String(dep.source || dep.Source || '').trim() || undefined,
             install_ref: String(dep.install_ref || dep.installRef || dep.InstallRef || '').trim() || undefined,
+            canonical_id: String(dep.canonical_id || dep.canonicalID || dep.CanonicalID || '').trim() || undefined,
+            aliases: parseStringList(dep.aliases || dep.Aliases),
             install_ref_kind: String(dep.install_ref_kind || dep.installRefKind || dep.InstallRefKind || '').trim() || undefined,
             install_ref_target: String(dep.install_ref_target || dep.installRefTarget || dep.InstallRefTarget || '').trim() || undefined,
             install_ref_version: String(dep.install_ref_version || dep.installRefVersion || dep.InstallRefVersion || '').trim() || undefined,
@@ -5771,6 +5810,8 @@ function appDependencyEvidence(app: AppEntry): AppDependencyEvidence[] {
         required: dep.required !== false,
         source: dep.source || 'hub',
         install_ref: appSkillDependencyInstallRef(dep) || undefined,
+        canonical_id: String(dep.canonical_id || dep.canonicalID || '').trim() || undefined,
+        aliases: Array.isArray(dep.aliases) ? dep.aliases.map((alias) => String(alias || '').trim()).filter(Boolean) : undefined,
         capabilities: dep.capabilities || [],
     }));
 }
@@ -9506,7 +9547,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 : runtimeVisibleDependencyPlan
                     ? 'ready'
                     : 'idle';
-    const runDisabled = runState === 'running' || dependencyRepairState === 'installing';
+    const showRunButton = runState === 'idle' && dependencyRepairState !== 'installing';
     const runtimeStatusMessage = runState === 'done'
         ? text.runCompleted
         : runState === 'running'
@@ -9736,7 +9777,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
-                            <button className="apps-primary-button" type="button" disabled={runDisabled} onClick={() => runApp()}>{text.run}</button>
+                            {showRunButton && <button className="apps-primary-button" type="button" onClick={() => runApp()}>{text.run}</button>}
                         </div>}
                         {showOutputRegion && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />}
                         {showOutputRegion && (isTool || isBusiness) && (
@@ -10694,7 +10735,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
                 accent: app.accent,
                 customIconDataUrl: app.customIconDataUrl,
             },
-            aboutInfo: app.aboutInfo || undefined,
+            aboutInfo: normalizeAppAboutInfo(app.aboutInfo),
             governance: appGovernanceForManifest(app, submission, governanceOverrides),
         },
     };
@@ -10860,12 +10901,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
         source: 'market',
         importedRunEvidence,
         workflowContract: governance.workflowContract || governance.workflow_contract,
-        aboutInfo: app.aboutInfo && typeof app.aboutInfo === 'object' ? {
-            author: app.aboutInfo.author || undefined,
-            copyright: app.aboutInfo.copyright || undefined,
-            website: app.aboutInfo.website || undefined,
-            email: app.aboutInfo.email || undefined,
-        } : undefined,
+        aboutInfo: app.aboutInfo && typeof app.aboutInfo === 'object' ? normalizeAppAboutInfo(app.aboutInfo) : undefined,
         manifest: {
             schema: 'maclaw.app.v1',
             installUnit: raw.installUnit === 'skill' || raw.installUnit === 'mcp' || raw.installUnit === 'builtin' ? raw.installUnit : 'enterprise_app_pack',
@@ -11569,6 +11605,11 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
             </div>
             <div className={`apps-result-panel${showRuntimeDependencyDetails || runtimeBusinessError ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
                 <span>{runtimeStatusMessage}</span>
+                {runtimeStatusState === 'running' && (
+                    <div className="apps-result-progress" role="progressbar" aria-label={runtimeStatusMessage} aria-valuetext={runtimeStatusMessage}>
+                        <span />
+                    </div>
+                )}
                 {runtimeBusinessError && <StructuredBusinessErrorDetails error={runtimeBusinessError} text={text} />}
                 {isApproval && runtimeWorkflowContractState === 'blocked' && <WorkflowContractSummary contract={runtimeWorkflowContract} state={runtimeWorkflowContractState} issue={runtimeWorkflowContractIssue} text={text} />}
                 {showRuntimeDependencyDetails && isPreRun && <InstallRecordDependencies dependencies={visibleRuntimeDependencyDetails} text={text} />}
@@ -12547,10 +12588,10 @@ const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResult
             </div>
             <div className="apps-result-contract__summary">
                 <span>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary'}</span>
-                <strong>{contract.primary}</strong>
+                <strong title={contract.primary}>{appContractTypeLabel(contract.primary, lang)}</strong>
             </div>
             <div className="apps-result-contract__chips" aria-label={zh ? '\u7ed3\u679c\u7c7b\u578b' : 'Result types'}>
-                {contract.types.map((type) => <span key={type}>{type}</span>)}
+                {contract.types.map((type) => <span key={type} title={type}>{appContractTypeLabel(type, lang)}</span>)}
             </div>
             <div className="apps-result-contract__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery'}>
                 {deliveryItems.map((item) => (
@@ -12583,7 +12624,7 @@ const ResultContractDesigner = ({ contract, onChange, lang, testIdPrefix = 'stud
                 <div className="apps-form-row">
                     <label>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary result'}</label>
                     <select data-testid={testIdPrefix + '-result-primary'} value={contract.primary} onChange={(event) => onChange({ ...contract, primary: event.target.value })}>
-                        {typeOptions.map((type) => <option value={type} key={type}>{type}</option>)}
+                        {typeOptions.map((type) => <option value={type} key={type}>{appContractTypeLabel(type, lang)}</option>)}
                     </select>
                 </div>
                 <div className="apps-result-contract-designer__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery channels'}>
@@ -12672,7 +12713,7 @@ const TestProtocolDesigner = ({ protocol, onChange, lang, testIdPrefix = 'studio
                     <input data-testid={testIdPrefix + '-test-roles'} value={protocol.requiredRoles.join(', ')} onChange={(event) => updateList('requiredRoles', event.target.value)} />
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? 'Scope' : 'Scopes'}</label>
+                    <label>{zh ? '\u6743\u9650\u8303\u56f4' : 'Scopes'}</label>
                     <input data-testid={testIdPrefix + '-test-scopes'} value={protocol.requiredScopes.join(', ')} onChange={(event) => updateList('requiredScopes', event.target.value)} />
                 </div>
             </div>
@@ -12753,6 +12794,45 @@ const WorkflowMappingDesigner = ({ value, onChange, lang, testIdPrefix = 'studio
                         <input data-testid={`${testIdPrefix}-workflow-status-${item.id}`} value={item.value} onChange={(event) => updateStatus(item.id, event.target.value)} />
                     </div>
                 ))}
+            </div>
+        </section>
+    );
+};
+
+type AppAboutInfoText = {
+    aboutInfoSection: string;
+    aboutInfoSectionDesc: string;
+    aboutAuthor: string;
+    aboutAuthorPlaceholder: string;
+    aboutCopyright: string;
+    aboutCopyrightPlaceholder: string;
+    aboutWebsite: string;
+    aboutWebsitePlaceholder: string;
+    aboutEmail: string;
+    aboutEmailPlaceholder: string;
+};
+
+const AppAboutInfoFields = ({ text, value, onChange, testIdPrefix }: { text: AppAboutInfoText; value?: AppAboutInfo; onChange: (patch: Partial<AppAboutInfo>) => void; testIdPrefix?: string }) => {
+    const testId = (field: keyof AppAboutInfo) => testIdPrefix ? { 'data-testid': `${testIdPrefix}-about-${field}` } : {};
+    return (
+        <section className="apps-about-info-section apps-form-row--wide" aria-label={text.aboutInfoSection}>
+            <div className="apps-definition__title">{text.aboutInfoSection}</div>
+            <p className="apps-about-info-section__desc">{text.aboutInfoSectionDesc}</p>
+            <div className="apps-form-row">
+                <label>{text.aboutAuthor}</label>
+                <input {...testId('author')} value={value?.author || ''} onChange={(event) => onChange({ author: event.target.value })} placeholder={text.aboutAuthorPlaceholder} />
+            </div>
+            <div className="apps-form-row">
+                <label>{text.aboutCopyright}</label>
+                <input {...testId('copyright')} value={value?.copyright || ''} onChange={(event) => onChange({ copyright: event.target.value })} placeholder={text.aboutCopyrightPlaceholder} />
+            </div>
+            <div className="apps-form-row">
+                <label>{text.aboutWebsite}</label>
+                <input {...testId('website')} type="url" value={value?.website || ''} onChange={(event) => onChange({ website: event.target.value })} placeholder={text.aboutWebsitePlaceholder} />
+            </div>
+            <div className="apps-form-row">
+                <label>{text.aboutEmail}</label>
+                <input {...testId('email')} type="email" value={value?.email || ''} onChange={(event) => onChange({ email: event.target.value })} placeholder={text.aboutEmailPlaceholder} />
             </div>
         </section>
     );
@@ -12993,12 +13073,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             version: 1,
             source: 'local',
             manifest: applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, kind, { template: layoutTemplate, density: layoutDensity, primaryRegion, outputRegion, regions: layoutRegions }), kind, workflowMapping), kind, uiNavigation, uiColumns), kind, resultContractDraft), kind, testProtocolDraft),
-            aboutInfo: (aboutAuthor.trim() || aboutCopyright.trim() || aboutWebsite.trim() || aboutEmail.trim()) ? {
-                author: aboutAuthor.trim() || undefined,
-                copyright: aboutCopyright.trim() || undefined,
-                website: aboutWebsite.trim() || undefined,
-                email: aboutEmail.trim() || undefined,
-            } : undefined,
+            aboutInfo: normalizeAppAboutInfo({
+                author: aboutAuthor,
+                copyright: aboutCopyright,
+                website: aboutWebsite,
+                email: aboutEmail,
+            }),
         };
     };
     const draftApp = buildDraftApp(
@@ -13021,6 +13101,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setOutputRegion(layout.outputRegion);
         setLayoutRegions(layout.regions);
     };
+    const updateAboutInfo = useCallback((patch: Partial<AppAboutInfo>) => {
+        if ('author' in patch) setAboutAuthor(patch.author || '');
+        if ('copyright' in patch) setAboutCopyright(patch.copyright || '');
+        if ('website' in patch) setAboutWebsite(patch.website || '');
+        if ('email' in patch) setAboutEmail(patch.email || '');
+    }, []);
     useEffect(() => {
         setCopyState((current) => current === 'copied' ? 'idle' : current);
     }, [draftManifestText]);
@@ -13429,26 +13515,11 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
                 </div>
-                <section className="apps-about-info-section" aria-label={text.aboutInfoSection}>
-                    <div className="apps-definition__title">{text.aboutInfoSection}</div>
-                    <p className="apps-about-info-section__desc">{text.aboutInfoSectionDesc}</p>
-                    <div className="apps-form-row">
-                        <label>{text.aboutAuthor}</label>
-                        <input value={aboutAuthor} onChange={(event) => setAboutAuthor(event.target.value)} placeholder={text.aboutAuthorPlaceholder} />
-                    </div>
-                    <div className="apps-form-row">
-                        <label>{text.aboutCopyright}</label>
-                        <input value={aboutCopyright} onChange={(event) => setAboutCopyright(event.target.value)} placeholder={text.aboutCopyrightPlaceholder} />
-                    </div>
-                    <div className="apps-form-row">
-                        <label>{text.aboutWebsite}</label>
-                        <input type="url" value={aboutWebsite} onChange={(event) => setAboutWebsite(event.target.value)} placeholder={text.aboutWebsitePlaceholder} />
-                    </div>
-                    <div className="apps-form-row">
-                        <label>{text.aboutEmail}</label>
-                        <input type="email" value={aboutEmail} onChange={(event) => setAboutEmail(event.target.value)} placeholder={text.aboutEmailPlaceholder} />
-                    </div>
-                </section>
+                <AppAboutInfoFields
+                    text={text}
+                    value={{ author: aboutAuthor, copyright: aboutCopyright, website: aboutWebsite, email: aboutEmail }}
+                    onChange={updateAboutInfo}
+                />
                 <div className="apps-actions">
                     {kind === 'tool_app' && canWriteSkillDefinition ? (
                         <>
@@ -14235,7 +14306,7 @@ function normalizeEditorField(field: SkillAppField): SkillAppField {
 
 type SkillInputMode = 'file' | 'form' | 'mixed';
 
-type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' | 'customIconDataUrl' | 'accent'> & {
+type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' | 'customIconDataUrl' | 'accent' | 'aboutInfo'> & {
     businessDomain: string;
     businessObjectRole: string;
     businessPreferredAction: string;
@@ -14284,7 +14355,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
-    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', workflowSkillInstallRef: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), testProtocol: buildAppTestProtocol('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
+    const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), aboutInfo: undefined, businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', workflowSkillInstallRef: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), testProtocol: buildAppTestProtocol('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
     const [editDraft, setEditDraft] = useState<AppEditDraft>(emptyEditDraft);
     const editDialogRef = useRef<HTMLDivElement | null>(null);
     const editNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -14351,6 +14422,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             icon: app.icon,
             customIconDataUrl: app.customIconDataUrl,
             accent: app.accent,
+            aboutInfo: normalizeAppAboutInfo(app.aboutInfo),
             businessDomain: app.manifest?.datasrv?.domain || 'business',
             businessObjectRole: app.manifest?.datasrv?.objectRole || app.manifest?.datasrv?.domain || 'record',
             businessPreferredAction: app.manifest?.datasrv?.preferredAction || '',
@@ -14460,6 +14532,9 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                 : 'Upload a PNG, JPEG, or WebP image under 5 MB.');
         }
     }, [lang]);
+    const updateEditAboutInfo = useCallback((patch: Partial<AppAboutInfo>) => {
+        setEditDraft((current) => ({ ...current, aboutInfo: normalizeAppAboutInfo({ ...current.aboutInfo, ...patch }) }));
+    }, []);
     const saveEdit = async (app: AppEntry) => {
         const name = editDraft.name.trim();
         if (!name || editSaveState === 'saving') return;
@@ -14536,6 +14611,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
         if (manifest) {
             manifest = applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind, editDraft.uiNavigation, editDraft.uiColumns), app.kind, editDraft.resultContract), app.kind, editDraft.testProtocol);
         }
+        const aboutInfo = normalizeAppAboutInfo(editDraft.aboutInfo);
         const updatedApp: AppEntry = {
             ...app,
             name,
@@ -14544,6 +14620,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             icon: editDraft.icon,
             customIconDataUrl: normalizeCustomIconDataUrl(editDraft.customIconDataUrl),
             accent: editDraft.accent,
+            aboutInfo,
             version: nextAppVersion(app),
             manifest,
         };
@@ -14554,6 +14631,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             icon: updatedApp.icon,
             customIconDataUrl: updatedApp.customIconDataUrl,
             accent: updatedApp.accent,
+            aboutInfo: updatedApp.aboutInfo,
             version: updatedApp.version,
             manifest: updatedApp.manifest,
             importedRunEvidence: undefined,
@@ -14803,6 +14881,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                 <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
                                 <textarea data-testid="edit-app-description" value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
+                            <AppAboutInfoFields text={text} value={editDraft.aboutInfo} onChange={updateEditAboutInfo} testIdPrefix="edit-app" />
                             </div>
                             <div className="apps-manage-edit__section">
                             <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u80fd\u529b\u7ed1\u5b9a' : 'Capability binding'}</div>

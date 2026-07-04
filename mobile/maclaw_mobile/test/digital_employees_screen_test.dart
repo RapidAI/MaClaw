@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
+import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
+import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee_prompt.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
@@ -36,20 +38,6 @@ class _TestDigitalEmployeesController extends DigitalEmployeesController {
       ];
 }
 
-class _TestDigitalEmployeeTaskController extends DigitalEmployeeTaskController {
-  @override
-  Future<MobileDigitalEmployeeTask?> build() async =>
-      const MobileDigitalEmployeeTask(
-        taskId: 'task-1',
-        employeeId: 'employee-1',
-        prompt: '检查远程服务器状态',
-        status: 'done',
-        result: '服务正常',
-        message: '远程巡检已完成',
-        claimedBy: 'srv-1',
-      );
-}
-
 class _ApprovalDigitalEmployeeTaskController
     extends DigitalEmployeeTaskController {
   @override
@@ -62,6 +50,22 @@ class _ApprovalDigitalEmployeeTaskController
         result: '',
         message: '需要远程电脑拥有者确认访问文件。',
         claimedBy: 'desktop-owner',
+      );
+}
+
+class _SecretDigitalEmployeeTaskController
+    extends DigitalEmployeeTaskController {
+  @override
+  Future<MobileDigitalEmployeeTask?> build() async =>
+      const MobileDigitalEmployeeTask(
+        taskId: 'task-secret',
+        employeeId: 'employee-1',
+        prompt: '检查远程服务器状态 token: prompt-secret',
+        status: 'done',
+        result: 'service ok\nAuthorization: Bearer remote-secret-token\n'
+            'password=prod-password',
+        message: '远程巡检已完成 token: message-secret',
+        claimedBy: 'srv-1',
       );
 }
 
@@ -199,9 +203,173 @@ class _RecordingDocumentsController extends DocumentsController {
   }
 }
 
+class _SignedInSessionController extends SessionController {
+  @override
+  Future<SessionState> build() async => SessionState.signedIn(
+        hubUrl: _signedInBootstrap.connection.hubUrl,
+        bootstrap: _signedInBootstrap,
+      );
+}
+
+final _signedInBootstrap = MobileBootstrap.fromJson({
+  'user': {
+    'user_id': 'u-mobile',
+    'phone_number': '19900001111',
+    'tenant_id': 'tenant-a',
+  },
+  'connection': {
+    'hubcenter_candidates': [
+      'https://hubs.mypapers.top',
+      'https://hubs.maclaw.top',
+      'https://hubs2.maclaw.top',
+    ],
+    'selected_hubcenter_url': 'https://hubs.maclaw.top',
+    'hub': {
+      'id': 'hub-a',
+      'base_url': 'https://tenant-a.maclaw.top',
+    },
+    'tenant_id': 'tenant-a',
+  },
+  'llm_access': {
+    'mode': 'maclaw_official',
+    'status': 'available',
+    'credits_account': 'phone:19900001111',
+  },
+});
+
 void main() {
   final copiedResults = <String>[];
   final sharedResults = <String>[];
+
+  test('digital employee mobile task types build safe handoff prompts', () {
+    expect(
+      digitalEmployeeMobileTaskTypeWireValue(
+        DigitalEmployeeMobileTaskType.serverMaintenance,
+      ),
+      'server_maintenance',
+    );
+    expect(
+      digitalEmployeeMobileTaskTypeWireValue(
+        DigitalEmployeeMobileTaskType.desktopAssist,
+      ),
+      'desktop_assist',
+    );
+    expect(
+      digitalEmployeeMobileTaskTypeWireValue(
+        DigitalEmployeeMobileTaskType.documentWork,
+      ),
+      'document_work',
+    );
+    expect(
+      digitalEmployeeMobileTaskTypeWireValue(
+        DigitalEmployeeMobileTaskType.informationCheck,
+      ),
+      'information_check',
+    );
+
+    final prompt = buildDigitalEmployeeMobilePrompt(
+      type: DigitalEmployeeMobileTaskType.serverMaintenance,
+      prompt: '检查远程服务器磁盘和应用日志。',
+    );
+
+    expect(prompt, contains('任务类型：服务器维护'));
+    expect(prompt, contains('输出适合手机快速阅读'));
+    expect(prompt, contains('避免要求长时间盯屏'));
+    expect(prompt, contains('目标、风险、验证方式和回滚方式'));
+    expect(prompt, contains('高风险命令只生成命令草案'));
+  });
+
+  test('digital employee mobile task context carries remote policy metadata',
+      () {
+    const employee = DigitalEmployee(
+      id: 'employee-remote',
+      machineId: 'desktop-42',
+      name: '远程电脑助手',
+      skillDescription: '处理电脑上的文件和桌面任务。',
+      onlineStatus: 'online',
+      accessPolicy: 'owner_confirm',
+      resident: false,
+      runtimeMissing: true,
+    );
+    const draft = DigitalEmployeeMobileTaskDraft(
+      prompt: '帮我找一下桌面上的报价单。',
+      type: DigitalEmployeeMobileTaskType.desktopAssist,
+      requireManualConfirmation: true,
+    );
+
+    expect(draft.taskTypeWireValue, 'desktop_assist');
+    expect(draft.contextFor(employee), {
+      'source': 'maclaw_mobile',
+      'handoff': 'mobile_emergency',
+      'employee_id': 'employee-remote',
+      'employee_name': '远程电脑助手',
+      'machine_id': 'desktop-42',
+      'machine_online_status': 'online',
+      'access_policy': 'owner_confirm',
+      'access_policy_label': '需拥有者确认',
+      'resident': 'false',
+      'runtime_missing': 'true',
+      'task_type_label': '远程电脑',
+      'manual_confirmation_required': 'true',
+      'execution_boundary': 'draft_only_until_mobile_user_confirms',
+      'manual_confirmation_scope':
+          'destructive_or_high_risk_server_desktop_operations',
+    });
+
+    expect(
+      draft.contextFor(
+        employee,
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: _signedInBootstrap,
+      ),
+      containsPair('tenant_id', 'tenant-a'),
+    );
+    final sessionContext = draft.contextFor(
+      employee,
+      hubUrl: 'https://tenant-a.maclaw.top',
+      bootstrap: _signedInBootstrap,
+    );
+    expect(sessionContext['hub_url'], 'https://tenant-a.maclaw.top');
+    expect(sessionContext['discovered_hub_url'], 'https://tenant-a.maclaw.top');
+    expect(sessionContext['selected_hubcenter_url'], 'https://hubs.maclaw.top');
+    expect(sessionContext['llm_access_mode'], 'maclaw_official');
+    expect(sessionContext['llm_access_status'], 'available');
+    expect(sessionContext['credits_account'], 'phone:19900001111');
+
+    final malformedLlmCreditsContext = draft.contextFor(
+      employee,
+      bootstrap: MobileBootstrap.fromJson({
+        'user': {
+          'user_id': 'u-mobile',
+          'phone_number': '19900001111',
+          'tenant_id': 'tenant-a',
+        },
+        'llm_access': {
+          'mode': 'maclaw_official',
+          'status': 'available',
+          'credits_account': 'phone:user19900001111',
+        },
+      }),
+    );
+    expect(malformedLlmCreditsContext['credits_account'], 'phone:19900001111');
+
+    final untrustedCreditsContext = draft.contextFor(
+      employee,
+      bootstrap: MobileBootstrap.fromJson({
+        'user': {
+          'user_id': 'u-mobile',
+          'credits_account': 'phone:user19900001111',
+          'tenant_id': 'tenant-a',
+        },
+        'llm_access': {
+          'mode': 'maclaw_official',
+          'status': 'available',
+          'credits_account': 'phone:user19900001111',
+        },
+      }),
+    );
+    expect(untrustedCreditsContext, isNot(contains('credits_account')));
+  });
 
   testWidgets('digital employees screen exposes remote task controls',
       (tester) async {
@@ -215,13 +383,16 @@ void main() {
             _TestDigitalEmployeesController.new,
           ),
           digitalEmployeeTaskProvider.overrideWith(
-            _TestDigitalEmployeeTaskController.new,
+            _SecretDigitalEmployeeTaskController.new,
           ),
           digitalEmployeePromptHistoryProvider.overrideWith(
             _EmptyDigitalEmployeePromptHistoryController.new,
           ),
           digitalEmployeeTaskHistoryProvider.overrideWith(
             _EmptyDigitalEmployeeTaskHistoryController.new,
+          ),
+          sessionControllerProvider.overrideWith(
+            _SignedInSessionController.new,
           ),
           documentsControllerProvider.overrideWith(
             _RecordingDocumentsController.new,
@@ -264,18 +435,32 @@ void main() {
 
     expect(find.text('最近任务'), findsOneWidget);
     expect(find.text('状态：已完成'), findsOneWidget);
-    expect(find.text('说明：远程巡检已完成'), findsOneWidget);
+    expect(find.text('说明：远程巡检已完成 token: message-secret'), findsOneWidget);
     expect(find.text('权限说明'), findsOneWidget);
     expect(find.text('整理为草稿'), findsOneWidget);
 
     await tester.tap(find.byTooltip('复制结果'));
     await tester.pumpAndSettle();
-    expect(copiedResults, ['服务正常']);
+    expect(copiedResults.single, contains('service ok'));
+    expect(
+      copiedResults.single,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(copiedResults.single, contains('password=[REDACTED_SECRET]'));
+    expect(copiedResults.single, isNot(contains('remote-secret-token')));
+    expect(copiedResults.single, isNot(contains('prod-password')));
     expect(find.text('任务结果已复制'), findsOneWidget);
 
     await tester.tap(find.byTooltip('分享结果'));
     await tester.pumpAndSettle();
-    expect(sharedResults, ['服务正常']);
+    expect(sharedResults.single, contains('service ok'));
+    expect(
+      sharedResults.single,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(sharedResults.single, contains('password=[REDACTED_SECRET]'));
+    expect(sharedResults.single, isNot(contains('remote-secret-token')));
+    expect(sharedResults.single, isNot(contains('prod-password')));
 
     await tester.tap(find.text('整理为草稿'));
     await tester.pumpAndSettle();
@@ -288,6 +473,30 @@ void main() {
     expect(
       _RecordingDocumentsController.created.single.content,
       contains('检查远程服务器状态'),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      contains('password=[REDACTED_SECRET]'),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      contains('token=[REDACTED_SECRET]'),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      isNot(contains('remote-secret-token')),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      isNot(contains('prod-password')),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      isNot(contains('message-secret')),
     );
   });
 
@@ -307,6 +516,9 @@ void main() {
           ),
           digitalEmployeeTaskHistoryProvider.overrideWith(
             _EmptyDigitalEmployeeTaskHistoryController.new,
+          ),
+          sessionControllerProvider.overrideWith(
+            _SignedInSessionController.new,
           ),
           documentsControllerProvider.overrideWith(
             _RecordingDocumentsController.new,
@@ -407,6 +619,9 @@ void main() {
           digitalEmployeeTaskHistoryProvider.overrideWith(
             _EmptyDigitalEmployeeTaskHistoryController.new,
           ),
+          sessionControllerProvider.overrideWith(
+            _SignedInSessionController.new,
+          ),
           documentsControllerProvider.overrideWith(
             _RecordingDocumentsController.new,
           ),
@@ -452,6 +667,26 @@ void main() {
     expect(created.taskType, 'information_check');
     expect(created.context['source'], 'maclaw_mobile');
     expect(created.context['machine_id'], 'srv-1');
+    expect(created.context['hub_url'], 'https://tenant-a.maclaw.top');
+    expect(
+      created.context['discovered_hub_url'],
+      'https://tenant-a.maclaw.top',
+    );
+    expect(
+      created.context['selected_hubcenter_url'],
+      'https://hubs.maclaw.top',
+    );
+    expect(created.context['tenant_id'], 'tenant-a');
+    expect(created.context['llm_access_mode'], 'maclaw_official');
+    expect(created.context['credits_account'], 'phone:19900001111');
+    expect(
+      created.context['execution_boundary'],
+      'draft_only_until_mobile_user_confirms',
+    );
+    expect(
+      created.context['manual_confirmation_scope'],
+      'destructive_or_high_risk_server_desktop_operations',
+    );
     expect(created.prompt, contains('【MaClaw Mobile 应急任务】'));
     expect(created.prompt, contains('任务类型：信息核查'));
     expect(created.prompt, contains('输出适合手机快速阅读'));

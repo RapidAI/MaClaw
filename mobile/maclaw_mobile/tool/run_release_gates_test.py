@@ -243,6 +243,10 @@ class RunReleaseGatesTest(unittest.TestCase):
                 run_release_gates.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
                 text,
             )
+            self.assertIn(
+                f"{release_evidence_commands.AUTOMATED_RELEASE_GATE_COUNT} gates passed",
+                text,
+            )
 
     def test_run_failure_writes_log_file_with_partial_output(self) -> None:
         gate = run_release_gates.ReleaseGate(

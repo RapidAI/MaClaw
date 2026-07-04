@@ -2310,6 +2310,28 @@
     overflow-wrap: anywhere;
 }
 
+.apps-result-progress {
+    position: relative;
+    flex: 1 1 160px;
+    min-width: min(120px, 100%);
+    max-width: 240px;
+    height: 5px;
+    overflow: hidden;
+    contain: paint;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+}
+
+.apps-result-progress > span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 42%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--theme-primary), var(--theme-primary-strong));
+    animation: apps-runtime-progress 1.25s ease-in-out infinite;
+    will-change: transform;
+}
+
 .apps-result-panel__action {
     min-height: 28px;
     margin-left: auto;
@@ -2324,6 +2346,31 @@
 
 .apps-result-panel--stacked > span {
     align-self: stretch;
+}
+
+.apps-result-panel--stacked .apps-result-progress {
+    align-self: stretch;
+    width: 100%;
+    max-width: none;
+}
+
+@keyframes apps-runtime-progress {
+    0% {
+        transform: translateX(-105%);
+    }
+    55% {
+        transform: translateX(80%);
+    }
+    100% {
+        transform: translateX(245%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .apps-result-progress > span {
+        width: 68%;
+        animation: none;
+    }
 }
 
 .apps-business-error {
@@ -2625,6 +2672,7 @@
 }
 
 .apps-result-panel[data-state='running'] {
+    flex-wrap: wrap;
     color: var(--theme-primary-strong);
     border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
     background: color-mix(in srgb, var(--theme-primary-soft) 62%, var(--theme-surface));
@@ -5530,6 +5578,7 @@
 
     .apps-manage-edit__section .apps-form-row--wide,
     .apps-manage-edit__section-title,
+    .apps-manage-edit__section .apps-about-info-section,
     .apps-manage-edit__section .apps-field-editor {
         grid-column: 1 / -1;
     }
@@ -6079,9 +6128,31 @@
 
 .apps-result-contract-designer__controls {
     display: grid;
-    grid-template-columns: minmax(160px, 0.7fr) minmax(240px, 1.3fr);
+    grid-template-columns: minmax(220px, 0.7fr) minmax(260px, 1.3fr);
     gap: 8px;
     align-items: stretch;
+}
+
+.apps-result-contract-designer .apps-form-row,
+.apps-test-protocol .apps-form-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 5px;
+}
+
+.apps-result-contract-designer .apps-form-row label,
+.apps-test-protocol .apps-form-row label {
+    text-align: left;
+    white-space: normal;
+}
+
+.apps-result-contract-designer .apps-form-row input,
+.apps-result-contract-designer .apps-form-row select,
+.apps-result-contract-designer .apps-form-row textarea,
+.apps-test-protocol .apps-form-row input,
+.apps-test-protocol .apps-form-row select,
+.apps-test-protocol .apps-form-row textarea {
+    width: 100%;
 }
 
 .apps-result-contract-designer__delivery {
@@ -6220,7 +6291,7 @@
 }
 
 .apps-test-protocol__grid--compact .apps-form-row {
-    grid-template-columns: minmax(54px, max-content) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .apps-test-protocol__workflow {
@@ -6290,7 +6361,7 @@
 .apps-result-contract__summary {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+    grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
     align-items: center;
     gap: 8px;
     padding: 7px 8px;

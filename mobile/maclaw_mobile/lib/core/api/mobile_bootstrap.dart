@@ -28,19 +28,21 @@ class MobileBootstrap {
   });
 
   factory MobileBootstrap.fromJson(Map<String, dynamic> json) {
+    final user = MobileUser.fromJson(
+      Map<String, dynamic>.from(json['user'] as Map? ?? const {}),
+    );
+    final llmAccess = MobileLlmAccess.fromJson(
+      Map<String, dynamic>.from(json['llm_access'] as Map? ?? const {}),
+    );
     return MobileBootstrap(
-      user: MobileUser.fromJson(
-        Map<String, dynamic>.from(json['user'] as Map? ?? const {}),
-      ),
+      user: user,
       services: MobileServices.fromJson(
         Map<String, dynamic>.from(json['services'] as Map? ?? const {}),
       ),
       connection: MobileConnection.fromJson(
         Map<String, dynamic>.from(json['connection'] as Map? ?? const {}),
       ),
-      llmAccess: MobileLlmAccess.fromJson(
-        Map<String, dynamic>.from(json['llm_access'] as Map? ?? const {}),
-      ),
+      llmAccess: llmAccess.withFallbackCreditsAccount(user.creditsAccount),
       features: MobileFeatures.fromJson(
         Map<String, dynamic>.from(json['features'] as Map? ?? const {}),
       ),
@@ -49,6 +51,59 @@ class MobileBootstrap {
       ),
     );
   }
+
+  MobileBootstrap withVerifiedPhoneCredits(String phoneNumber) {
+    final creditsAccount = _normalizeCreditsAccount('phone:$phoneNumber');
+    if (!llmAccess.official || creditsAccount == 'phone:') {
+      return this;
+    }
+    return MobileBootstrap(
+      user: user.withCreditsAccount(creditsAccount),
+      services: services,
+      connection: connection,
+      llmAccess: llmAccess.withCreditsAccount(creditsAccount),
+      features: features,
+      limits: limits,
+    );
+  }
+}
+
+String _phoneDigits(String value) {
+  final buffer = StringBuffer();
+  for (final codeUnit in value.trim().codeUnits) {
+    if (codeUnit >= 48 && codeUnit <= 57) {
+      buffer.writeCharCode(codeUnit);
+    }
+  }
+  return buffer.toString();
+}
+
+String _normalizeCreditsAccount(String value) {
+  final trimmed = value.trim();
+  if (!trimmed.toLowerCase().startsWith('phone:')) return trimmed;
+  final phone = trimmed.substring(trimmed.indexOf(':') + 1);
+  if (!_phoneAccountValueCanNormalize(phone)) return trimmed;
+  final digits = _phoneDigits(phone);
+  return digits.isEmpty ? trimmed : 'phone:$digits';
+}
+
+bool _phoneAccountValueCanNormalize(String value) {
+  var hasDigit = false;
+  for (final codeUnit in value.trim().codeUnits) {
+    if (codeUnit >= 48 && codeUnit <= 57) {
+      hasDigit = true;
+      continue;
+    }
+    if (codeUnit == 32 ||
+        codeUnit == 43 ||
+        codeUnit == 45 ||
+        codeUnit == 40 ||
+        codeUnit == 41) {
+      continue;
+    }
+    return false;
+  }
+  return hasDigit;
 }
 
 class MobileConnection {
@@ -91,6 +146,7 @@ class MobileLlmAccess {
   final String status;
   final String authorizationId;
   final String authorizedBy;
+  final String creditsAccount;
   final DateTime? authorizedAt;
 
   const MobileLlmAccess({
@@ -98,6 +154,7 @@ class MobileLlmAccess {
     required this.status,
     required this.authorizationId,
     required this.authorizedBy,
+    this.creditsAccount = '',
     required this.authorizedAt,
   });
 
@@ -111,7 +168,38 @@ class MobileLlmAccess {
       status: json['status'] as String? ?? 'available',
       authorizationId: json['authorization_id'] as String? ?? '',
       authorizedBy: json['authorized_by'] as String? ?? '',
+      creditsAccount: _normalizeCreditsAccount(
+        json['credits_account'] as String? ?? '',
+      ),
       authorizedAt: DateTime.tryParse(json['authorized_at'] as String? ?? ''),
+    );
+  }
+
+  MobileLlmAccess withFallbackCreditsAccount(String fallbackCreditsAccount) {
+    if (creditsAccount.trim().isNotEmpty ||
+        fallbackCreditsAccount.trim().isEmpty) {
+      return this;
+    }
+    return MobileLlmAccess(
+      mode: mode,
+      status: status,
+      authorizationId: authorizationId,
+      authorizedBy: authorizedBy,
+      creditsAccount: _normalizeCreditsAccount(fallbackCreditsAccount),
+      authorizedAt: authorizedAt,
+    );
+  }
+
+  MobileLlmAccess withCreditsAccount(String value) {
+    final normalized = _normalizeCreditsAccount(value);
+    if (normalized == creditsAccount) return this;
+    return MobileLlmAccess(
+      mode: mode,
+      status: status,
+      authorizationId: authorizationId,
+      authorizedBy: authorizedBy,
+      creditsAccount: normalized,
+      authorizedAt: authorizedAt,
     );
   }
 }
@@ -119,19 +207,62 @@ class MobileLlmAccess {
 class MobileUser {
   final String userId;
   final String email;
+  final String phoneNumber;
+  final String accountId;
+  final String creditsAccount;
   final String tenantId;
 
   const MobileUser({
     required this.userId,
     required this.email,
+    this.phoneNumber = '',
+    this.accountId = '',
+    this.creditsAccount = '',
     required this.tenantId,
   });
 
   factory MobileUser.fromJson(Map<String, dynamic> json) {
+    final email = json['email'] as String? ?? '';
+    final accountId = json['account_id'] as String? ?? '';
+    final phoneNumber = json['phone_number'] as String? ?? '';
     return MobileUser(
       userId: json['user_id'] as String? ?? '',
-      email: json['email'] as String? ?? '',
+      email: email,
+      phoneNumber: phoneNumber,
+      accountId: accountId,
+      creditsAccount: _normalizeCreditsAccount(
+        json['credits_account'] as String? ??
+            _defaultCreditsAccount(
+              phoneNumber: phoneNumber,
+              accountId: accountId,
+              email: email,
+            ),
+      ),
       tenantId: json['tenant_id'] as String? ?? '',
+    );
+  }
+
+  static String _defaultCreditsAccount({
+    required String phoneNumber,
+    required String accountId,
+    required String email,
+  }) {
+    final phone = _phoneDigits(phoneNumber);
+    if (phone.isNotEmpty) return 'phone:$phone';
+    if (accountId.trim().isNotEmpty) return accountId;
+    return email.trim();
+  }
+
+  MobileUser withCreditsAccount(String value) {
+    final normalized = _normalizeCreditsAccount(value);
+    if (normalized == creditsAccount) return this;
+    return MobileUser(
+      userId: userId,
+      email: email,
+      phoneNumber: phoneNumber,
+      accountId: accountId,
+      creditsAccount: normalized,
+      tenantId: tenantId,
     );
   }
 }
@@ -224,4 +355,67 @@ class MobileLimits {
       maxExportJobs: json['max_export_jobs'] as int? ?? 0,
     );
   }
+}
+
+class LlmServiceStatus {
+  final bool active;
+  final bool skipLlmConfig;
+  final String authMode;
+  final String defaultModel;
+  final List<String> availableModels;
+  final List<String> serviceGroupNames;
+  final List<String> inactiveReasons;
+  final String nearestExpiresAt;
+  final double creditsTotal;
+  final double creditsUsed;
+  final double creditsRemaining;
+  final double creditsAvailable;
+  final int tokensPerCredit;
+
+  const LlmServiceStatus({
+    required this.active,
+    required this.skipLlmConfig,
+    required this.authMode,
+    required this.defaultModel,
+    required this.availableModels,
+    required this.serviceGroupNames,
+    required this.inactiveReasons,
+    required this.nearestExpiresAt,
+    required this.creditsTotal,
+    required this.creditsUsed,
+    required this.creditsRemaining,
+    required this.creditsAvailable,
+    required this.tokensPerCredit,
+  });
+
+  factory LlmServiceStatus.fromJson(Map<String, dynamic> json) {
+    return LlmServiceStatus(
+      active: json['active'] as bool? ?? false,
+      skipLlmConfig: json['skip_llm_config'] as bool? ?? false,
+      authMode: json['auth_mode'] as String? ?? '',
+      defaultModel: json['default_model'] as String? ?? '',
+      availableModels: _stringList(json['available_models']),
+      serviceGroupNames: _stringList(json['service_group_names']),
+      inactiveReasons: _stringList(json['inactive_reasons']),
+      nearestExpiresAt: json['nearest_expires_at'] as String? ??
+          json['effective_expires_at'] as String? ??
+          '',
+      creditsTotal: _doubleValue(json['credits_total']),
+      creditsUsed: _doubleValue(json['credits_used']),
+      creditsRemaining: _doubleValue(json['credits_remaining']),
+      creditsAvailable: _doubleValue(json['credits_available']),
+      tokensPerCredit: json['tokens_per_credit'] as int? ?? 0,
+    );
+  }
+}
+
+List<String> _stringList(Object? value) {
+  return [
+    for (final item in (value as List? ?? const [])) item.toString(),
+  ];
+}
+
+double _doubleValue(Object? value) {
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? 0;
 }

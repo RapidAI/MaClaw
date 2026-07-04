@@ -6,11 +6,12 @@ DEFAULT_SCOPE = "android-ios"
 DEFAULT_TEAM_ID = "<APPLE_TEAM_ID>"
 DEFAULT_EXPORT_METHOD = "<export-method>"
 DEFAULT_QA_RECORDS_DIR = "docs/qa-builds"
+DEFAULT_IOS_ARCHIVE_OR_BUILD = "build/ios/archive/MaClawMobile.xcarchive"
 VALID_SCOPES = ("android", "ios", "android-ios")
 VALID_ANDROID_RELEASE_ARTIFACTS = ("apk", "appbundle")
 AUTOMATED_RELEASE_GATE_COUNT = 38
 AUTOMATED_RELEASE_GATE_SUCCESS_LINE = (
-    "All MaClaw Mobile automated release gates passed."
+    f"All MaClaw Mobile automated release gates passed: {AUTOMATED_RELEASE_GATE_COUNT} gates passed."
 )
 QA_RELEASE_EVIDENCE_LINK_COMMAND = (
     "python3 tool/qa_release_evidence_links.py "
@@ -56,20 +57,21 @@ def final_decision_prefills(
     version: str = DEFAULT_VERSION,
     *,
     scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> dict[str, str]:
     scope = validate_scope(scope)
     return {
         "Release handoff result": (
             "release_handoff.py output saved to "
-            f"{handoff_evidence_path(version, scope=scope)}"
+            f"{handoff_evidence_path(version, scope=scope, records_dir=records_dir)}"
         ),
         "Runtime boundary verification result": (
             "MaClaw Mobile runtime boundary verified. "
-            f"log: docs/qa-builds/runtime-boundary-{version}.log"
+            f"log: {records_dir}/runtime-boundary-{version}.log"
         ),
         "Automated release gates result": (
             f"run_release_gates.py: {AUTOMATED_RELEASE_GATE_COUNT} gates passed; "
-            f"log: docs/qa-builds/release-gates-{version}.log"
+            f"log: {records_dir}/release-gates-{version}.log"
         ),
     }
 
@@ -78,15 +80,19 @@ def create_record_command(
     *,
     scope: str = DEFAULT_SCOPE,
     version: str = DEFAULT_VERSION,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
-    prefills = final_decision_prefills(version, scope=scope)
-    return (
+    prefills = final_decision_prefills(version, scope=scope, records_dir=records_dir)
+    command = (
         f"python3 tool/create_qa_build_record.py --scope {scope} --version {version} "
         f'--release-handoff-result "{prefills["Release handoff result"]}" '
         f'--runtime-boundary-result "{prefills["Runtime boundary verification result"]}" '
         f'--automated-gates-result "{prefills["Automated release gates result"]}"'
     )
+    if records_dir != DEFAULT_QA_RECORDS_DIR:
+        command += f" --records-dir {records_dir}"
+    return command
 
 
 def release_status_report_command(
@@ -94,12 +100,15 @@ def release_status_report_command(
     scope: str = DEFAULT_SCOPE,
     team_id: str | None = DEFAULT_TEAM_ID,
     export_method: str | None = DEFAULT_EXPORT_METHOD,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
     command = f"python3 tool/release_status_report.py --scope {scope}"
     if scope_covers_ios(scope):
         command += f" --team-id {team_id or DEFAULT_TEAM_ID}"
         command += f" --export-method {export_method or DEFAULT_EXPORT_METHOD}"
+    if records_dir != DEFAULT_QA_RECORDS_DIR:
+        command += f" --records-dir {records_dir}"
     return command
 
 
@@ -110,13 +119,20 @@ def release_handoff_command(
     team_id: str | None = DEFAULT_TEAM_ID,
     export_method: str | None = DEFAULT_EXPORT_METHOD,
     output: str | None = None,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
-    output = output or handoff_evidence_path(version, scope=scope)
+    output = output or handoff_evidence_path(
+        version,
+        scope=scope,
+        records_dir=records_dir,
+    )
     command = f"python3 tool/release_handoff.py --version {version} --scope {scope}"
     if scope_covers_ios(scope):
         command += f" --team-id {team_id or DEFAULT_TEAM_ID}"
         command += f" --export-method {export_method or DEFAULT_EXPORT_METHOD}"
+    if records_dir != DEFAULT_QA_RECORDS_DIR:
+        command += f" --records-dir {records_dir}"
     command += f" --output {output}"
     return command
 
@@ -126,6 +142,7 @@ def qa_preflight_command(
     scope: str = DEFAULT_SCOPE,
     team_id: str | None = None,
     export_method: str | None = None,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
     command = f"python3 tool/qa_preflight.py --scope {scope}"
@@ -133,6 +150,8 @@ def qa_preflight_command(
         command += f" --team-id {team_id}"
     if export_method:
         command += f" --export-method {export_method}"
+    if records_dir != DEFAULT_QA_RECORDS_DIR:
+        command += f" --records-dir {records_dir}"
     return command
 
 
@@ -140,11 +159,12 @@ def handoff_evidence_path(
     version: str = DEFAULT_VERSION,
     *,
     scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
     if scope != DEFAULT_SCOPE:
-        return f"docs/qa-builds/handoff-{scope}-{version}.md"
-    return f"docs/qa-builds/handoff-{version}.md"
+        return f"{records_dir}/handoff-{scope}-{version}.md"
+    return f"{records_dir}/handoff-{version}.md"
 
 
 def qa_record_path_placeholder(
@@ -152,22 +172,31 @@ def qa_record_path_placeholder(
     scope: str = DEFAULT_SCOPE,
     version: str = DEFAULT_VERSION,
     date: str = "<YYYY-MM-DD>",
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
-    return f"docs/qa-builds/{date}-{scope}-{version}.md"
+    return f"{records_dir}/{date}-{scope}-{version}.md"
 
 
-def runtime_boundary_command(version: str = DEFAULT_VERSION) -> str:
+def runtime_boundary_command(
+    version: str = DEFAULT_VERSION,
+    *,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
+) -> str:
     return (
         "python3 tool/verify_runtime_boundary.py --log "
-        f"docs/qa-builds/runtime-boundary-{version}.log"
+        f"{records_dir}/runtime-boundary-{version}.log"
     )
 
 
-def release_gates_command(version: str = DEFAULT_VERSION) -> str:
+def release_gates_command(
+    version: str = DEFAULT_VERSION,
+    *,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
+) -> str:
     return (
         "python3 tool/run_release_gates.py --log "
-        f"docs/qa-builds/release-gates-{version}.log"
+        f"{records_dir}/release-gates-{version}.log"
     )
 
 
@@ -175,11 +204,12 @@ def final_release_evidence_log_path(
     version: str = DEFAULT_VERSION,
     *,
     scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
     if scope != DEFAULT_SCOPE:
-        return f"docs/qa-builds/final-release-evidence-{scope}-{version}.log"
-    return f"docs/qa-builds/final-release-evidence-{version}.log"
+        return f"{records_dir}/final-release-evidence-{scope}-{version}.log"
+    return f"{records_dir}/final-release-evidence-{version}.log"
 
 
 def setup_android_signing_command() -> str:
@@ -201,10 +231,23 @@ def ios_release_plan_command(
     *,
     team_id: str = DEFAULT_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
+    provisioning_profiles: str | None = None,
+    record_dir: str | None = None,
 ) -> str:
+    if (provisioning_profiles is None) != (record_dir is None):
+        raise ValueError(
+            "iOS QA artifact evidence command requires provisioning_profiles "
+            "and record_dir together",
+        )
     return (
         f"python3 tool/plan_ios_release.py --team-id {team_id} "
         f"--export-method {export_method}"
+        + (
+            f' --provisioning-profiles "{provisioning_profiles}" '
+            f"--record-dir {record_dir}"
+            if provisioning_profiles is not None and record_dir is not None
+            else ""
+        )
     )
 
 
@@ -213,11 +256,20 @@ def android_release_build_command(
     *,
     artifact: str = "apk",
     dry_run: bool = False,
+    record_dir: str | None = None,
+    signing_identity: str | None = None,
+    installer_channel: str | None = None,
 ) -> str:
     if artifact not in VALID_ANDROID_RELEASE_ARTIFACTS:
         raise ValueError(
             "unsupported Android release artifact: "
             f"{artifact}; expected one of {', '.join(VALID_ANDROID_RELEASE_ARTIFACTS)}",
+        )
+    evidence_options = [record_dir, signing_identity, installer_channel]
+    if any(option is not None for option in evidence_options) and not all(evidence_options):
+        raise ValueError(
+            "Android QA artifact evidence command requires record_dir, "
+            "signing_identity, and installer_channel together",
         )
     app_version, build_number = _version_parts(version)
     command = (
@@ -226,6 +278,12 @@ def android_release_build_command(
     )
     if dry_run:
         command += " --dry-run"
+    if record_dir is not None:
+        command += (
+            f" --record-dir {record_dir} "
+            f'--signing-identity "{signing_identity}" '
+            f'--installer-channel "{installer_channel}"'
+        )
     return command
 
 
@@ -247,7 +305,7 @@ def android_artifact_evidence_command(
 
 def ios_artifact_evidence_command(
     *,
-    archive_or_build: str = "<Xcode archive path or TestFlight build number>",
+    archive_or_build: str = DEFAULT_IOS_ARCHIVE_OR_BUILD,
     team_id: str = DEFAULT_TEAM_ID,
     provisioning_profiles: str = "<Runner profile UUID/name; Share Extension profile UUID/name>",
     record_dir: str = DEFAULT_QA_RECORDS_DIR,
@@ -304,7 +362,11 @@ def verify_final_release_evidence_command(
     command = f"python3 tool/verify_final_release_evidence.py {records_dir} --scope {scope}"
     log_path = log
     if log_path is None and version is not None:
-        log_path = final_release_evidence_log_path(version, scope=scope)
+        log_path = final_release_evidence_log_path(
+            version,
+            scope=scope,
+            records_dir=records_dir,
+        )
     if log_path:
         command += f" --log {log_path}"
     return command
@@ -316,9 +378,14 @@ def signed_qa_record_hint(
     version: str = DEFAULT_VERSION,
     team_id: str = DEFAULT_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
-    record = qa_record_path_placeholder(scope=scope, version=version)
+    record = qa_record_path_placeholder(
+        scope=scope,
+        version=version,
+        records_dir=records_dir,
+    )
     setup_hints = []
     if scope_covers_android(scope):
         setup_hints.append(f"run `{setup_android_signing_command()}`")
@@ -329,11 +396,25 @@ def signed_qa_record_hint(
     artifact_hints = []
     if scope_covers_android(scope):
         artifact_hints.append(
-            f"generate Android artifact evidence with `{android_artifact_evidence_command(version)}`"
+            "generate Android artifact evidence with "
+            f"`{android_artifact_evidence_command(version, record_dir=records_dir)}`"
         )
     if scope_covers_ios(scope):
+        ios_plan_evidence_command = ios_release_plan_command(
+            team_id=team_id,
+            export_method=export_method,
+            provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+            record_dir=records_dir,
+        )
+        ios_evidence_command = ios_artifact_evidence_command(
+            team_id=team_id,
+            record_dir=records_dir,
+        )
         artifact_hints.append(
-            f"generate iOS artifact evidence with `{ios_artifact_evidence_command(team_id=team_id)}`"
+            "generate iOS artifact evidence during archive planning with "
+            f"`{ios_plan_evidence_command}` or after the signed archive/TestFlight "
+            "build exists with "
+            f"`{ios_evidence_command}`",
         )
     artifact_hint = ""
     if artifact_hints:
@@ -343,36 +424,37 @@ def signed_qa_record_hint(
     return (
         "no completed signed-build QA records yet; release handoff is only a "
         "QA plan, not a completed QA record; run "
-        f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method)}`; "
+        f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir)}`; "
         + "; ".join(setup_hints)
         + "; "
-        f"then run `{qa_preflight_command(scope=scope, team_id=preflight_team_id, export_method=preflight_export_method)}`; "
+        f"then run `{qa_preflight_command(scope=scope, team_id=preflight_team_id, export_method=preflight_export_method, records_dir=records_dir)}`; "
         "then capture "
-        f"`{runtime_boundary_command(version)}` "
+        f"`{runtime_boundary_command(version, records_dir=records_dir)}` "
         "and "
-        f"`{release_gates_command(version)}`; "
-        f"create the record with `{create_record_command(scope=scope, version=version)}`"
+        f"`{release_gates_command(version, records_dir=records_dir)}`; "
+        f"create the record with `{create_record_command(scope=scope, version=version, records_dir=records_dir)}`"
         f"{artifact_hint}; "
         "after completing evidence validate it with "
         f"`{validate_qa_build_record_command(record)}`; "
         "if validation fails inspect gaps with "
         f"`{qa_build_record_report_command(record)}`; "
         "after records validate run "
-        f"`{qa_release_evidence_link_command(scope=scope)}`; "
+        f"`{qa_release_evidence_link_command(scope=scope, records_dir=records_dir)}`; "
         "then verify final evidence with "
-        f"`{verify_final_release_evidence_command(scope=scope, version=version)}`"
+        f"`{verify_final_release_evidence_command(records_dir, scope=scope, version=version, log=final_release_evidence_log_path(version, scope=scope, records_dir=records_dir))}`"
     )
 
 
 def qa_release_evidence_link_hint(
     *,
     scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
     return (
-        f"run `{qa_release_evidence_link_command(scope=scope)}` to write validated links "
+        f"run `{qa_release_evidence_link_command(scope=scope, records_dir=records_dir)}` to write validated links "
         "into docs/release_evidence.md, then run "
-        f"`{verify_final_release_evidence_command(scope=scope, version=DEFAULT_VERSION)}`"
+        f"`{verify_final_release_evidence_command(records_dir, scope=scope, version=DEFAULT_VERSION, log=final_release_evidence_log_path(DEFAULT_VERSION, scope=scope, records_dir=records_dir))}`"
     )
 
 
@@ -383,9 +465,11 @@ def qa_build_record_report_hint(record: str = "<record.md>") -> str:
     )
 
 
-def qa_record_version_mismatch_hint() -> str:
+def qa_record_version_mismatch_hint(
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
+) -> str:
     return (
         "keep final release QA records to one version/build; move records for "
-        "other builds out of docs/qa-builds or regenerate them with the same "
+        f"other builds out of {records_dir} or regenerate them with the same "
         "`--version <version+build>` before updating release evidence links"
     )

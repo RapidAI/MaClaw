@@ -82,17 +82,16 @@ void main() {
       pushNotifications: false,
     );
 
-    final target = sharedIntentTargetPath(
-      MobileSharedIntent(
-        id: 'share-file',
-        kind: MobileSharedIntentKind.file,
-        value: '/tmp/report.pdf',
-        receivedAt: DateTime.utc(2026, 7, 1),
-      ),
-      features,
+    final intent = MobileSharedIntent(
+      id: 'share-file',
+      kind: MobileSharedIntentKind.file,
+      value: '/tmp/report.pdf',
+      receivedAt: DateTime.utc(2026, 7, 1),
     );
+    final target = sharedIntentTargetPath(intent, features);
 
     expect(target, '/documents');
+    expect(sharedIntentCanBeConsumedAtTarget(intent, target), isTrue);
   });
 
   test('shared file intents skip assistant when documents are disabled', () {
@@ -104,17 +103,16 @@ void main() {
       pushNotifications: false,
     );
 
-    final target = sharedIntentTargetPath(
-      MobileSharedIntent(
-        id: 'share-file-docs-disabled',
-        kind: MobileSharedIntentKind.image,
-        value: '/tmp/screenshot.png',
-        receivedAt: DateTime.utc(2026, 7, 1),
-      ),
-      features,
+    final intent = MobileSharedIntent(
+      id: 'share-file-docs-disabled',
+      kind: MobileSharedIntentKind.image,
+      value: '/tmp/screenshot.png',
+      receivedAt: DateTime.utc(2026, 7, 1),
     );
+    final target = sharedIntentTargetPath(intent, features);
 
     expect(target, '/servers');
+    expect(sharedIntentCanBeConsumedAtTarget(intent, target), isFalse);
   });
 
   test('shared intents avoid disabled document and search tabs', () {
@@ -137,5 +135,23 @@ void main() {
     );
 
     expect(target, '/servers');
+  });
+
+  test('shared link intents are consumed only by the assistant tab', () {
+    final intent = MobileSharedIntent(
+      id: 'share-link',
+      kind: MobileSharedIntentKind.link,
+      value: 'https://example.com/incident',
+      receivedAt: DateTime.utc(2026, 7, 1),
+    );
+
+    expect(
+      sharedIntentCanBeConsumedAtTarget(intent, '/assistant'),
+      isTrue,
+    );
+    expect(
+      sharedIntentCanBeConsumedAtTarget(intent, '/documents'),
+      isFalse,
+    );
   });
 }

@@ -530,7 +530,11 @@ func CheckRunnerRequirements(entry *corelib.NLSkillEntry, extraEnv map[string]st
 // with progress reporting. The progress callback receives messages like
 // "📦 正在安装 Python 包 pdfplumber..." during fix operations.
 func CheckRunnerRequirementsWithProgress(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string, progress FixProgressCallback) []Violation {
-	reqs := ExtractRequirements(entry, BuildRunCheckContextForRunner(entry, extraEnv, runner))
+	return CheckRunnerRequirementsWithProgressWithDataDir("", entry, extraEnv, runner, progress)
+}
+
+func CheckRunnerRequirementsWithProgressWithDataDir(dataDir string, entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string, progress FixProgressCallback) []Violation {
+	reqs := ExtractRequirements(entry, BuildRunCheckContextForRunnerWithDataDir(dataDir, entry, extraEnv, runner))
 	if len(reqs) == 0 {
 		return nil
 	}
@@ -561,6 +565,10 @@ type PipelineRunnerPreparation struct {
 }
 
 func PreparePipelineRunnerExecution(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string) (*PipelineRunnerPreparation, error) {
+	return PreparePipelineRunnerExecutionWithDataDir("", entry, vars, runArgs, extraEnv, runner)
+}
+
+func PreparePipelineRunnerExecutionWithDataDir(dataDir string, entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string) (*PipelineRunnerPreparation, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("skill entry is nil")
 	}
@@ -578,7 +586,7 @@ func PreparePipelineRunnerExecution(entry *corelib.NLSkillEntry, vars map[string
 	}
 	checkEntry := *entry
 	checkEntry.Params = params
-	remaining := CheckRunnerRequirements(&checkEntry, extraEnv, runner)
+	remaining := CheckRunnerRequirementsWithProgressWithDataDir(dataDir, &checkEntry, extraEnv, runner, nil)
 	errors := FilterErrors(remaining)
 	if len(errors) > 0 {
 		return nil, fmt.Errorf("skill %q runner requirements not satisfied: %s", entry.Name, FormatViolations(errors))
@@ -610,6 +618,10 @@ func PrepareRunnerExecution(entry *corelib.NLSkillEntry, vars map[string]string,
 // "📦 正在安装 Python 包 pdfplumber..." so the caller can display real-time
 // status to the user.
 func PrepareRunnerExecutionWithProgress(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string, progress FixProgressCallback) (*RunnerExecutionPreparation, error) {
+	return PrepareRunnerExecutionWithProgressWithDataDir("", entry, vars, runArgs, extraEnv, runner, progress)
+}
+
+func PrepareRunnerExecutionWithProgressWithDataDir(dataDir string, entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string, progress FixProgressCallback) (*RunnerExecutionPreparation, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("skill entry is nil")
 	}
@@ -650,7 +662,7 @@ func PrepareRunnerExecutionWithProgress(entry *corelib.NLSkillEntry, vars map[st
 	fileCheckEntry := *entry
 	fileCheckEntry.Steps = resolvedPrecheckSteps
 	fileCheckEntry.Params = precheckParams
-	remaining := CheckRunnerRequirementsWithProgress(&fileCheckEntry, extraEnv, runner, progress)
+	remaining := CheckRunnerRequirementsWithProgressWithDataDir(dataDir, &fileCheckEntry, extraEnv, runner, progress)
 	errors := FilterErrors(remaining)
 	if len(errors) > 0 {
 		return nil, fmt.Errorf("skill %q runner requirements not satisfied: %s", entry.Name, FormatViolations(errors))

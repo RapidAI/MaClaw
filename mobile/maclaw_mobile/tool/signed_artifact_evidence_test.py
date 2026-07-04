@@ -326,6 +326,19 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
         self.assertIn("--signing-identity", stderr.getvalue())
         self.assertIn("--installer-channel", stderr.getvalue())
 
+    def test_cli_help_describes_record_dir_as_qa_records_directory(self) -> None:
+        stdout = StringIO()
+
+        with redirect_stdout(stdout):
+            with self.assertRaises(SystemExit) as raised:
+                signed_artifact_evidence.main(["android", "--help"])
+
+        self.assertEqual(0, raised.exception.code)
+        text = stdout.getvalue()
+        self.assertIn("Optional QA records directory", text)
+        self.assertIn("Default examples use docs/qa-builds", text)
+        self.assertNotIn("Optional docs/qa-builds directory", text)
+
     def test_ios_cli_prints_record_relative_archive_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

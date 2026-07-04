@@ -395,7 +395,98 @@ func defaultInstallNpmPkgInDir(pkg, dir string) error {
 	return nil
 }
 
-// --- Bundled Python PATH injection for skill subprocess execution ---
+// --- Stable PATH injection for skill subprocess execution ---
+
+func ensureWindowsSystemDirsInPATH(env []string) []string {
+	if runtime.GOOS != "windows" {
+		return env
+	}
+
+	root := strings.TrimSpace(envLookup("SystemRoot"))
+	if root == "" {
+		root = strings.TrimSpace(envLookup("windir"))
+	}
+	if root == "" {
+		root = `C:\Windows`
+	}
+
+	dirs := []string{
+		filepath.Join(root, "System32"),
+		root,
+		filepath.Join(root, "System32", "Wbem"),
+		filepath.Join(root, "System32", "WindowsPowerShell", "v1.0"),
+	}
+	return prependDirsToPATH(env, dirs)
+}
+
+func prependDirsToPATH(env []string, dirs []string) []string {
+	if len(dirs) == 0 {
+		return env
+	}
+
+	pathKey := "PATH"
+	if runtime.GOOS == "windows" {
+		pathKey = "Path"
+	}
+
+	pathIdx := -1
+	currentPath := ""
+	for i, item := range env {
+		name, val, ok := strings.Cut(item, "=")
+		if ok && envNameEqual(name, pathKey) {
+			pathIdx = i
+			currentPath = val
+			pathKey = name
+			break
+		}
+	}
+
+	sep := string(os.PathListSeparator)
+	currentParts := strings.Split(currentPath, sep)
+	currentSet := make(map[string]bool, len(currentParts))
+	for _, p := range currentParts {
+		norm := strings.TrimRight(p, string(os.PathSeparator))
+		if runtime.GOOS == "windows" {
+			norm = strings.ToLower(norm)
+		}
+		if norm != "" {
+			currentSet[norm] = true
+		}
+	}
+
+	var prepend []string
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		norm := strings.TrimRight(dir, string(os.PathSeparator))
+		if runtime.GOOS == "windows" {
+			norm = strings.ToLower(norm)
+		}
+		if norm == "" || currentSet[norm] {
+			continue
+		}
+		currentSet[norm] = true
+		prepend = append(prepend, dir)
+	}
+	if len(prepend) == 0 {
+		return env
+	}
+
+	newPath := strings.Join(prepend, sep)
+	if currentPath != "" {
+		newPath = newPath + sep + currentPath
+	}
+
+	assignment := pathKey + "=" + newPath
+	if pathIdx >= 0 {
+		env[pathIdx] = assignment
+	} else {
+		env = append(env, assignment)
+	}
+	return env
+}
 
 // bundledPythonPathDirs caches the directory paths that should be prepended
 // to PATH so that skill bash steps can find python/pip without requiring
@@ -464,63 +555,5 @@ func ensureBundledPythonInPATH(env []string) []string {
 	if len(bundledPythonPathDirs) == 0 {
 		return env
 	}
-
-	// Find current PATH value in env slice.
-	pathKey := "PATH"
-	if runtime.GOOS == "windows" {
-		pathKey = "Path" // Windows uses "Path" in env by convention, but match case-insensitively
-	}
-
-	pathIdx := -1
-	currentPath := ""
-	for i, item := range env {
-		name, val, ok := strings.Cut(item, "=")
-		if ok && envNameEqual(name, pathKey) {
-			pathIdx = i
-			currentPath = val
-			pathKey = name // preserve original casing
-			break
-		}
-	}
-
-	// Build prepend string: only dirs not already in PATH.
-	sep := string(os.PathListSeparator)
-	currentParts := strings.Split(currentPath, sep)
-	currentSet := make(map[string]bool, len(currentParts))
-	for _, p := range currentParts {
-		// Normalize for comparison (lowercase on Windows, trim trailing separator)
-		norm := strings.TrimRight(p, string(os.PathSeparator))
-		if runtime.GOOS == "windows" {
-			norm = strings.ToLower(norm)
-		}
-		currentSet[norm] = true
-	}
-
-	var prepend []string
-	for _, dir := range bundledPythonPathDirs {
-		norm := strings.TrimRight(dir, string(os.PathSeparator))
-		if runtime.GOOS == "windows" {
-			norm = strings.ToLower(norm)
-		}
-		if !currentSet[norm] {
-			prepend = append(prepend, dir)
-		}
-	}
-
-	if len(prepend) == 0 {
-		return env
-	}
-
-	newPath := strings.Join(prepend, sep)
-	if currentPath != "" {
-		newPath = newPath + sep + currentPath
-	}
-
-	assignment := pathKey + "=" + newPath
-	if pathIdx >= 0 {
-		env[pathIdx] = assignment
-	} else {
-		env = append(env, assignment)
-	}
-	return env
+	return prependDirsToPATH(env, bundledPythonPathDirs)
 }

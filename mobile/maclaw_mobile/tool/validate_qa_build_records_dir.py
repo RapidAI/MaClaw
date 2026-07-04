@@ -177,7 +177,13 @@ def main(argv: list[str] | None = None) -> int:
             "does not prove final release readiness.",
         )
         print("Next action:")
-        print("- " + release_evidence_commands.signed_qa_record_hint(scope=scope))
+        print(
+            "- "
+            + release_evidence_commands.signed_qa_record_hint(
+                scope=scope,
+                records_dir=str(records_dir),
+            ),
+        )
     in_scope_records = [
         path for path in valid_records if record_matches_scope(path, scope)
     ]
@@ -197,7 +203,13 @@ def main(argv: list[str] | None = None) -> int:
                 "verification will still require a matching signed-build QA record.",
             )
             print("Next action:")
-            print("- " + release_evidence_commands.signed_qa_record_hint(scope=scope))
+            print(
+                "- "
+                + release_evidence_commands.signed_qa_record_hint(
+                    scope=scope,
+                    records_dir=str(records_dir),
+                ),
+            )
     version = _single_version_for_records(in_scope_records if args.scope else valid_records)
     final_evidence_command = release_evidence_commands.verify_final_release_evidence_command(
         str(records_dir),

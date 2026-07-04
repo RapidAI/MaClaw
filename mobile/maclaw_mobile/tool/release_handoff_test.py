@@ -183,13 +183,21 @@ class ReleaseHandoffTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            release_evidence_commands.android_release_build_command("1.0.0+42"),
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
+            ),
             output,
         )
         self.assertIn(
             release_evidence_commands.android_release_build_command(
                 "1.0.0+42",
                 artifact="appbundle",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
             ),
             output,
         )
@@ -208,11 +216,21 @@ class ReleaseHandoffTest(unittest.TestCase):
         )
         self.assertIn(
             release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                 team_id="ABCDE12345",
             ),
             output,
         )
-        self.assertIn('--archive-or-build "<Xcode archive path or TestFlight build number>"', output)
+        self.assertIn(
+            release_evidence_commands.ios_release_plan_command(
+                team_id="ABCDE12345",
+                export_method="development",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+            ),
+            output,
+        )
+        self.assertIn('--archive-or-build "build/ios/archive/MaClawMobile.xcarchive"', output)
         self.assertIn('--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"', output)
         self.assertIn(
             release_evidence_commands.release_gates_command("1.0.0+42"),
@@ -385,10 +403,18 @@ class ReleaseHandoffTest(unittest.TestCase):
                     "1.0.0+42",
                     dry_run=True,
                 ),
-                release_evidence_commands.android_release_build_command("1.0.0+42"),
+                release_evidence_commands.android_release_build_command(
+                    "1.0.0+42",
+                    record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                    signing_identity="<alias or certificate fingerprint>",
+                    installer_channel="<internal test channel>",
+                ),
                 release_evidence_commands.android_release_build_command(
                     "1.0.0+42",
                     artifact="appbundle",
+                    record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                    signing_identity="<alias or certificate fingerprint>",
+                    installer_channel="<internal test channel>",
                 ),
                 release_evidence_commands.android_artifact_evidence_command(
                     "1.0.0+42",
@@ -397,7 +423,14 @@ class ReleaseHandoffTest(unittest.TestCase):
                     team_id="ABCDE12345",
                     export_method="ad-hoc",
                 ),
+                release_evidence_commands.ios_release_plan_command(
+                    team_id="ABCDE12345",
+                    export_method="ad-hoc",
+                    provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                    record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                ),
                 release_evidence_commands.ios_artifact_evidence_command(
+                    archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                     team_id="ABCDE12345",
                 ),
                 release_evidence_commands.release_gates_command("1.0.0+42"),
@@ -433,6 +466,173 @@ class ReleaseHandoffTest(unittest.TestCase):
             command_sequence(release_handoff.format_handoff(handoff)),
         )
 
+    def test_format_handoff_threads_custom_records_dir_through_commands(self) -> None:
+        root = self.make_root()
+        handoff = release_handoff.build_handoff(
+            root,
+            version="1.0.0+42",
+            scope="android",
+            records_dir="tmp/qa-builds",
+            build_status=self.blocked_status,
+        )
+
+        output = release_handoff.format_handoff(handoff)
+        commands = command_sequence(output)
+
+        self.assertIn(
+            "Missing completed signed-build QA record under tmp/qa-builds.",
+            output,
+        )
+        self.assertIn(
+            "tmp/qa-builds/<YYYY-MM-DD>-android-1.0.0+42.md",
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.signed_qa_record_hint(
+                scope="android",
+                version="1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            output,
+        )
+        self.assertNotIn(
+            release_evidence_commands.signed_qa_record_hint(
+                scope="android",
+                version="1.0.0+42",
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.release_status_report_command(
+                scope="android",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.release_handoff_command(
+                version="1.0.0+42",
+                scope="android",
+                output="tmp/qa-builds/handoff-android-1.0.0+42.md",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.runtime_boundary_command(
+                "1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_preflight_command(
+                scope="android",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir="tmp/qa-builds",
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                artifact="appbundle",
+                record_dir="tmp/qa-builds",
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.create_record_command(
+                scope="android",
+                version="1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                scope="android",
+                records_dir="tmp/qa-builds",
+            ),
+            commands,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                "tmp/qa-builds",
+                scope="android",
+                version="1.0.0+42",
+                log="tmp/qa-builds/final-release-evidence-android-1.0.0+42.log",
+            ),
+            commands,
+        )
+
+    def test_format_handoff_final_evidence_hints_use_custom_records_dir(self) -> None:
+        root = self.make_root()
+        records_dir = "tmp/qa-builds"
+
+        def status_with_custom_final_error(
+            root: Path,
+            **kwargs: object,
+        ) -> release_status_report.ReleaseStatus:
+            scope = str(kwargs.get("scope", release_evidence_commands.DEFAULT_SCOPE))
+            return release_status_report.ReleaseStatus(
+                root=root,
+                preflight_checks=[],
+                record_results=[
+                    validate_qa_build_records_dir.RecordValidationResult(
+                        path=root / records_dir / f"2026-07-02-{scope}-1.0.0+42.md",
+                        errors=[],
+                    ),
+                ],
+                final_errors=[
+                    "Release evidence document must include Markdown links for every validated QA build record: "
+                    f"2026-07-02-{scope}-1.0.0+42.md",
+                ],
+                scope=scope,
+                records_dir=root / records_dir,
+            )
+
+        handoff = release_handoff.build_handoff(
+            root,
+            version="1.0.0+42",
+            scope="android",
+            records_dir=records_dir,
+            build_status=status_with_custom_final_error,
+        )
+
+        output = release_handoff.format_handoff(handoff)
+
+        self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                scope="android",
+                records_dir=records_dir,
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                records_dir,
+                scope="android",
+                version=release_evidence_commands.DEFAULT_VERSION,
+                log=release_evidence_commands.final_release_evidence_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    scope="android",
+                    records_dir=records_dir,
+                ),
+            ),
+            output,
+        )
+
     def test_format_handoff_scopes_platform_commands_and_evidence(self) -> None:
         root = self.make_root()
         android_handoff = release_handoff.build_handoff(
@@ -456,7 +656,12 @@ class ReleaseHandoffTest(unittest.TestCase):
         ios_output = release_handoff.format_handoff(ios_handoff)
 
         self.assertIn(
-            release_evidence_commands.android_release_build_command("1.0.0+42"),
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
+            ),
             android_output,
         )
         self.assertIn(
@@ -515,11 +720,14 @@ class ReleaseHandoffTest(unittest.TestCase):
             release_evidence_commands.ios_release_plan_command(
                 team_id="ABCDE12345",
                 export_method="ad-hoc",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
             ),
             android_output,
         )
         self.assertNotIn(
             release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                 team_id="ABCDE12345",
             ),
             android_output,
@@ -530,11 +738,14 @@ class ReleaseHandoffTest(unittest.TestCase):
             release_evidence_commands.ios_release_plan_command(
                 team_id="ABCDE12345",
                 export_method="ad-hoc",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
             ),
             ios_output,
         )
         self.assertIn(
             release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                 team_id="ABCDE12345",
             ),
             ios_output,
@@ -595,7 +806,12 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("iOS export options", ios_output)
         self.assertNotIn("Android local signing inputs", ios_output)
         self.assertNotIn(
-            release_evidence_commands.android_release_build_command("1.0.0+42"),
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                signing_identity="<alias or certificate fingerprint>",
+                installer_channel="<internal test channel>",
+            ),
             ios_output,
         )
         self.assertNotIn(
@@ -695,6 +911,61 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertTrue(target.exists())
         self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
         self.assertIn("1.0.0+42", target.read_text(encoding="utf-8"))
+
+    def test_main_allows_handoff_named_output_inside_records_dir(self) -> None:
+        root = self.make_root()
+        target = root / "docs" / "qa-builds" / "handoff-1.0.0+42.md"
+        stdout = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.blocked_status
+            with redirect_stdout(stdout):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(1, exit_code)
+        self.assertTrue(target.exists())
+        self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
+
+    def test_main_rejects_non_handoff_output_inside_records_dir(self) -> None:
+        root = self.make_root()
+        target = root / "docs" / "qa-builds" / "tmp-handoff-check.md"
+        stderr = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.blocked_status
+            with redirect_stderr(stderr):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(1, exit_code)
+        self.assertFalse(target.exists())
+        self.assertIn("Release handoff output path is invalid", stderr.getvalue())
+        self.assertIn("handoff-*.md", stderr.getvalue())
 
     def test_main_refuses_to_overwrite_existing_output_without_force(self) -> None:
         root = self.make_root()

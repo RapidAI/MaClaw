@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/user"
@@ -1421,6 +1422,67 @@ func TestSetDataDirResetsPathBoundState(t *testing.T) {
 	}
 	if want := filepath.Join(dataDir, "data"); app.GetDataDir() != want {
 		t.Fatalf("GetDataDir() = %q, want %q", app.GetDataDir(), want)
+	}
+}
+
+func TestListPythonRuntimesUsesAppDataDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(filepath.Join(tmpHome, ".maclaw")) })
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	customRoot := filepath.Join(tmpHome, "custom-data")
+	if msg := app.SetDataDir(customRoot); msg != "" {
+		t.Fatalf("SetDataDir() message = %q", msg)
+	}
+
+	plan, err := pyenv.PlanSharedPythonRuntime(app.GetDataDir(), pyenv.SharedPythonRuntimeSpec{Packages: []string{"requests"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := map[string]interface{}{
+		"schema":         plan.Schema,
+		"id":             plan.ID,
+		"os":             plan.OS,
+		"arch":           plan.Arch,
+		"manager":        plan.Manager,
+		"python":         plan.Python,
+		"python_request": plan.PythonRequest,
+		"packages":       plan.Packages,
+		"root_dir":       plan.RootDir,
+		"env_dir":        plan.EnvDir,
+		"python_path":    plan.PythonPath,
+		"lock_path":      plan.LockPath,
+		"cache_dir":      plan.CacheDir,
+		"status":         "ready",
+	}
+	data, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.LockPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := app.ListPythonRuntimes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != plan.ID {
+		t.Fatalf("ListPythonRuntimes() = %#v, want runtime %s", items, plan.ID)
+	}
+	if !strings.HasPrefix(items[0].PythonPath, app.GetDataDir()) {
+		t.Fatalf("PythonPath = %q, want under app data dir %q", items[0].PythonPath, app.GetDataDir())
 	}
 }
 

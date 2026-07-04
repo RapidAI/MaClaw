@@ -22,7 +22,11 @@ class ServerProfile {
     this.note,
   });
 
-  bool get isValid => host.trim().isNotEmpty && port > 0 && username.isNotEmpty;
+  bool get isValid =>
+      host.trim().isNotEmpty &&
+      port > 0 &&
+      port <= 65535 &&
+      username.trim().isNotEmpty;
 
   factory ServerProfile.fromJson(Map<String, dynamic> json) {
     return ServerProfile(

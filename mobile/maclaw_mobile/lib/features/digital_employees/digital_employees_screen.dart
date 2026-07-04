@@ -4,7 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/mobile_bootstrap.dart';
+import '../../core/api/mobile_credits.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../shared/surface.dart';
+import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
 import 'digital_employee.dart';
@@ -37,15 +41,52 @@ class DigitalEmployeeMobileTaskDraft {
 
   String get taskTypeWireValue => digitalEmployeeMobileTaskTypeWireValue(type);
 
-  Map<String, String> contextFor(DigitalEmployee employee) {
-    return {
+  Map<String, String> contextFor(
+    DigitalEmployee employee, {
+    String hubUrl = '',
+    MobileBootstrap? bootstrap,
+  }) {
+    final context = {
       'source': 'maclaw_mobile',
+      'handoff': 'mobile_emergency',
       'employee_id': employee.id,
       'employee_name': employee.name,
       'machine_id': employee.machineId,
+      'machine_online_status': employee.onlineStatus,
+      'access_policy': employee.accessPolicy,
+      'access_policy_label': employee.accessPolicyLabel,
+      'resident': employee.resident.toString(),
+      'runtime_missing': employee.runtimeMissing.toString(),
       'task_type_label': digitalEmployeeMobileTaskTypeLabel(type),
       'manual_confirmation_required': requireManualConfirmation.toString(),
+      'execution_boundary': requireManualConfirmation
+          ? 'draft_only_until_mobile_user_confirms'
+          : 'remote_policy_default',
+      'manual_confirmation_scope':
+          'destructive_or_high_risk_server_desktop_operations',
     };
+    void putIfPresent(String key, String value) {
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty) context[key] = trimmed;
+    }
+
+    putIfPresent('hub_url', hubUrl);
+    putIfPresent('discovered_hub_url', bootstrap?.connection.hubUrl ?? '');
+    putIfPresent(
+      'selected_hubcenter_url',
+      bootstrap?.connection.selectedHubCenterUrl ?? '',
+    );
+    putIfPresent(
+      'tenant_id',
+      bootstrap?.connection.tenantId ?? bootstrap?.user.tenantId ?? '',
+    );
+    putIfPresent('llm_access_mode', bootstrap?.llmAccess.mode ?? '');
+    putIfPresent('llm_access_status', bootstrap?.llmAccess.status ?? '');
+    putIfPresent(
+      'credits_account',
+      trustedBootstrapCreditsAccount(bootstrap),
+    );
+    return context;
   }
 }
 
@@ -229,7 +270,11 @@ class _TaskStatusCard extends ConsumerWidget {
                       tooltip: '复制结果',
                       onPressed: value.result.isEmpty
                           ? null
-                          : () => _copyTaskResult(context, ref, value.result),
+                          : () => _copyTaskResult(
+                                context,
+                                ref,
+                                redactMobileSensitiveText(value.result),
+                              ),
                       icon: const Icon(Icons.content_copy_outlined),
                     ),
                     IconButton.outlined(
@@ -238,7 +283,7 @@ class _TaskStatusCard extends ConsumerWidget {
                           ? null
                           : () => ref
                               .read(digitalEmployeeResultShareProvider)
-                              .call(value.result),
+                              .call(redactMobileSensitiveText(value.result)),
                       icon: const Icon(Icons.ios_share_outlined),
                     ),
                     OutlinedButton.icon(
@@ -307,11 +352,14 @@ class _TaskStatusCard extends ConsumerWidget {
 }
 
 String digitalEmployeeTaskDocumentMarkdown(MobileDigitalEmployeeTask task) {
+  final prompt = redactMobileSensitiveText(task.prompt.trim());
+  final message = redactMobileSensitiveText(task.message.trim());
+  final result = redactMobileSensitiveText(task.result.trim());
   final buffer = StringBuffer()
     ..writeln('# 数字员工任务结果')
     ..writeln()
     ..writeln('## 任务')
-    ..writeln(task.prompt.trim().isEmpty ? '未提供任务说明。' : task.prompt.trim())
+    ..writeln(prompt.isEmpty ? '未提供任务说明。' : prompt)
     ..writeln()
     ..writeln('## 状态')
     ..writeln(digitalEmployeeTaskStatusLabel(task.status));
@@ -321,16 +369,16 @@ String digitalEmployeeTaskDocumentMarkdown(MobileDigitalEmployeeTask task) {
       ..writeln('## 领取者')
       ..writeln(task.claimedBy.trim());
   }
-  if (task.message.trim().isNotEmpty) {
+  if (message.isNotEmpty) {
     buffer
       ..writeln()
       ..writeln('## 说明')
-      ..writeln(task.message.trim());
+      ..writeln(message);
   }
   buffer
     ..writeln()
     ..writeln('## 结果')
-    ..writeln(task.result.trim().isEmpty ? '暂无结果。' : task.result.trim());
+    ..writeln(result.isEmpty ? '暂无结果。' : result);
   return buffer.toString().trim();
 }
 
@@ -538,6 +586,7 @@ class _TaskButton extends ConsumerWidget {
     if (draft == null || draft.prompt.trim().isEmpty) return;
     if (!context.mounted) return;
     final container = ProviderScope.containerOf(context, listen: false);
+    final session = await container.read(sessionControllerProvider.future);
     await container.read(digitalEmployeeTaskProvider.notifier).createTask(
           employeeId: employee.id,
           prompt: buildDigitalEmployeeMobilePrompt(
@@ -546,7 +595,11 @@ class _TaskButton extends ConsumerWidget {
             requireManualConfirmation: draft.requireManualConfirmation,
           ),
           taskType: draft.taskTypeWireValue,
-          context: draft.contextFor(employee),
+          context: draft.contextFor(
+            employee,
+            hubUrl: session.hubUrl,
+            bootstrap: session.bootstrap,
+          ),
         );
   }
 }
@@ -610,6 +663,7 @@ String buildDigitalEmployeeMobilePrompt({
     ..writeln()
     ..writeln('移动端要求：')
     ..writeln('- 请先给结论、影响范围、证据和下一步，输出适合手机快速阅读。')
+    ..writeln('- 假设用户在手机上应急处理，避免要求长时间盯屏或执行复杂连续操作。')
     ..writeln('- 如需操作远程服务器/电脑，请说明目标、风险、验证方式和回滚方式。');
   if (requireManualConfirmation) {
     buffer.writeln('- 高风险命令只生成命令草案，等待用户手动确认，不要自动执行。');

@@ -28,6 +28,9 @@ Status legend:
 | --- | --- | --- |
 | App uses exactly three preset official HubCenters and discovers the user's Hub/tenant | Automated evidence | `test/official_service_test.dart`, `test/auth_service_test.dart`, `test/session_state_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1` |
 | No custom Hub URL setting in UI, storage, or API client | Automated evidence | `test/official_service_surface_test.dart`, `test/official_service_test.dart` |
+| Mobile account login uses phone number plus SMS verification only, resolves Hub/tenant through HubCenter, and signs in with the discovered Hub token | Automated evidence | `test/auth_service_test.dart`, `test/login_screen_test.dart`, `test/llm_setup_screen_test.dart` |
+| Verified phone accounts use MaClaw official LLM credits bound to `phone:<number>` | Automated evidence | `test/auth_service_test.dart`, `test/mobile_bootstrap_test.dart`, `test/login_screen_test.dart`, `test/llm_setup_screen_test.dart`; real Hub credit balance remains part of Hub discovery smoke |
+| Account page shows official LLM credits, model, service group, and discovered Hub status path | Automated evidence | `test/api_client_test.dart`, `test/account_screen_test.dart` |
 | Login starts at HubCenter; bootstrap, search, document, SSH analysis, and digital employee APIs use the discovered Hub | Automated evidence | `test/auth_service_test.dart`, `test/mobile_api_contract_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1` |
 | Third-party LLM access requires desktop GUI QR authorization evidence | Automated evidence | `test/auth_service_test.dart`, `tool/validate_qa_build_record_test.py` |
 | Flutter app does not embed or directly call Go `corelib`; core capabilities stay behind Hub/digital employees | Automated evidence | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart`, `README.md`, `docs/user_guide.md`, `docs/release_checklist.md` |
@@ -58,17 +61,19 @@ Status legend:
 
 | Checklist item | Status | Evidence needed |
 | --- | --- | --- |
-| Login with MaClaw account through HubCenter discovery | Automated evidence | `test/auth_service_test.dart`, `test/app_smoke_test.dart`; Hub discovery smoke remains manual |
-| AI search shows citations, shares results, and turns results into each document template type | Automated evidence | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart` |
+| Login with phone number and SMS verification through HubCenter discovery | Automated evidence | `test/auth_service_test.dart`, `test/login_screen_test.dart`, `test/app_smoke_test.dart`; real SMS and Hub discovery smoke remain manual |
+| AI search shows citations, shares results, separates starred frequent questions from recent history, and turns results into each document template type | Automated evidence | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart` |
+| AI search result copy/share/draft text and citation copy/share text redact common secrets before externalizing content | Automated evidence | `test/assistant_screen_test.dart` |
+| AI search history stores locally redacted answer previews | Automated evidence | `test/assistant_screen_test.dart` |
 | Voice transcript and photo/image/screenshot assistant input produce cited answers or document tasks | Partial | `test/assistant_screen_test.dart`, `test/platform_permissions_test.dart`, `tool/validate_qa_build_record_test.py`; real-device voice/photo smoke remains manual |
 | Shared URL remains a citation fallback when search returns no extra source | Automated evidence | `test/assistant_screen_test.dart`, `test/mobile_shared_intent_test.dart` |
-| Photo or file import from assistant enters document parsing flow | Automated evidence | `test/assistant_screen_test.dart` |
-| Document create, edit, table/comment insertion, AI processing, export, and share PDF/Word/Markdown | Automated evidence | `test/documents_screen_test.dart`, `test/documents_state_test.dart` |
+| Photo, gallery screenshot/image, or file import from assistant enters document parsing flow | Automated evidence | `test/assistant_screen_test.dart` |
+| Document create, import long-running task guidance, edit, table/comment insertion, AI processing, export, and share PDF/Word/Markdown | Automated evidence | `test/documents_screen_test.dart`, `test/documents_state_test.dart` |
 | Server profile with tag/note, SSH connect, read-only command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis, and credential deletion | Partial | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/secure_vault_test.dart`, `tool/validate_qa_build_record_test.py`; real SSH connection remains manual |
-| Pasted SSH output/logs can be handed to online digital employee with Hub/tenant sensitive-data warning | Automated evidence | `test/servers_screen_test.dart`, `test/digital_employees_screen_test.dart` |
-| Typed digital employee task creates mobile emergency prompt, polls, copies/shares result, and keeps remote authorization rules | Automated evidence | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1` |
-| Document/export, digital employee, and SSH abnormal notifications are delivered with payload/open evidence | Partial | `test/mobile_notification_service_test.dart`, `tool/validate_qa_build_record_test.py`; real-device notification delivery remains manual |
-| Offline or weak-network warnings appear and Hub services recover after connectivity returns | Partial | `test/assistant_retry_test.dart`, `test/mobile_realtime_client_test.dart`, `tool/validate_qa_build_record_test.py`; real Hub/network recovery smoke remains manual |
+| Pasted SSH output/logs can be handed to online digital employee with Hub/tenant sensitive-data warning and server-profile metadata when available | Automated evidence | `test/servers_screen_test.dart`, `test/digital_employees_screen_test.dart` |
+| Typed digital employee task creates mobile emergency prompt, includes remote policy/status context, polls, copies/shares result, and keeps remote authorization rules | Automated evidence | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1` |
+| Document/export, digital employee, and SSH abnormal notifications are delivered with typed payload/open evidence, opened payloads route back to the matching mobile tab with a recovery prompt, and document/digital employee notification messages redact common secrets | Partial | `test/mobile_notification_service_test.dart`, `test/app_smoke_test.dart`, `test/documents_state_test.dart`, `test/digital_employees_controller_test.dart`, `test/servers_screen_test.dart`, `tool/validate_qa_build_record_test.py`; real-device notification delivery remains manual |
+| Offline or weak-network warnings appear and Hub services recover after connectivity returns | Partial | `test/mobile_network_status_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_realtime_client_test.dart`, `tool/validate_qa_build_record_test.py`; real Hub/network recovery smoke remains manual |
 | Theme and speech language can be changed from account screen | Automated evidence | `test/account_screen_test.dart`, `test/app_preferences_test.dart` |
 | Clear local work records without deleting saved server credentials | Automated evidence | `test/account_screen_test.dart`, `test/mobile_local_store_test.dart` |
 | Clear server profiles/SSH credentials separately | Automated evidence | `test/account_screen_test.dart`, `test/secure_vault_test.dart`, `test/servers_controller_test.dart` |
@@ -79,8 +84,16 @@ Status legend:
 | --- | --- | --- |
 | High-risk SSH commands are saved only after explicit confirmation | Automated evidence | `test/servers_screen_test.dart`, `test/ssh_risk_test.dart` |
 | AI SSH analysis returns command drafts, not auto-executed commands | Automated evidence | `test/servers_screen_test.dart`, `test/mobile_api_contract_test.dart` |
-| Terminal output is sent to AI only after confirmation, preview, and sensitive-data warning | Automated evidence | `test/servers_screen_test.dart` |
-| Terminal output is submitted to digital employees only after Hub/tenant handoff confirmation, preview, and warning | Automated evidence | `test/servers_screen_test.dart`, `test/digital_employees_screen_test.dart` |
+| Server command history preserves executable commands but redacts saved list labels/previews | Automated evidence | `test/servers_controller_test.dart` |
+| Local SQLite and legacy JSON cache migration redact preview/history fields that may contain old secrets | Automated evidence | `test/mobile_local_store_test.dart` |
+| Terminal output is sent to AI only after confirmation, preview, warning, and local redaction of common secrets | Automated evidence | `test/servers_screen_test.dart` |
+| Terminal output is submitted to digital employees only after Hub/tenant handoff confirmation, preview, warning, and local redaction of common secrets | Automated evidence | `test/servers_screen_test.dart`, `test/digital_employees_screen_test.dart` |
+| Digital employee task results are locally redacted before copy, share, or document-draft export | Automated evidence | `test/digital_employees_screen_test.dart`, `test/servers_screen_test.dart` |
+| Digital employee prompt history redacts common secrets before being stored for later reuse | Automated evidence | `test/digital_employees_controller_test.dart` |
+| Digital employee task notification messages are locally redacted before appearing in the system tray | Automated evidence | `test/digital_employees_controller_test.dart` |
+| Document task notification bodies are locally redacted before appearing in the system tray | Automated evidence | `test/documents_state_test.dart` |
+| AI search result and citation externalization redacts common secrets before copy, share, or document-draft export | Automated evidence | `test/assistant_screen_test.dart` |
+| AI search history previews redact common secrets before being stored for later reuse | Automated evidence | `test/assistant_screen_test.dart` |
 | SSH passwords, private keys, passphrases, and login tokens stay in secure storage | Automated evidence | `test/secure_vault_test.dart`, `test/server_profile_test.dart` |
 | Deleting server profiles clears secure SSH credentials | Automated evidence | `test/servers_controller_test.dart`, `test/secure_vault_test.dart` |
 | Clearing local work records does not delete saved server credentials | Automated evidence | `test/account_screen_test.dart`, `test/mobile_local_store_test.dart` |

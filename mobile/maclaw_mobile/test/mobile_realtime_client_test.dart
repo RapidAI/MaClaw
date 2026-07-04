@@ -41,6 +41,29 @@ void main() {
     expect(channel.sink.closed, isTrue);
   });
 
+  test('connect rejects external realtime paths before opening channel',
+      () async {
+    Uri? connectedUri;
+    final channel = _FakeWebSocketChannel();
+    final client = MobileRealtimeClient(
+      readToken: () async => 'token-1',
+      readHubUrl: () async => 'https://tenant-a.maclaw.top',
+      connect: (uri) {
+        connectedUri = uri;
+        return channel;
+      },
+    );
+
+    await expectLater(
+      client.connect(
+        path: 'wss://example.invalid/api/mobile/realtime',
+      ),
+      throwsUnsupportedError,
+    );
+
+    expect(connectedUri, isNull);
+  });
+
   test('parses realtime ready and task events', () {
     final ready = MobileRealtimeEvent.tryParse(
       jsonEncode({

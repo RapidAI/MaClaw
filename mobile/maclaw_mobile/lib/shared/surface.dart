@@ -47,7 +47,9 @@ class ScreenScaffold extends ConsumerWidget {
         ),
         const SizedBox(height: 20),
         _NetworkStatusBanner(status: network),
-        if (network.valueOrNull?.offline == true) const SizedBox(height: 12),
+        if (network.valueOrNull?.offline == true ||
+            network.valueOrNull?.restored == true)
+          const SizedBox(height: 12),
         ...children,
       ],
     );
@@ -62,13 +64,18 @@ class _NetworkStatusBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final snapshot = status.valueOrNull;
-    if (snapshot == null || !snapshot.offline) {
+    if (snapshot == null || (!snapshot.offline && !snapshot.restored)) {
       return const SizedBox.shrink();
     }
     final scheme = Theme.of(context).colorScheme;
+    final restored = snapshot.restored;
+    final containerColor =
+        restored ? scheme.primaryContainer : scheme.errorContainer;
+    final contentColor =
+        restored ? scheme.onPrimaryContainer : scheme.onErrorContainer;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: scheme.errorContainer,
+        color: containerColor,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
@@ -76,13 +83,16 @@ class _NetworkStatusBanner extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.wifi_off_outlined, color: scheme.onErrorContainer),
+            Icon(
+              restored ? Icons.wifi_outlined : Icons.wifi_off_outlined,
+              color: contentColor,
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 snapshot.message,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: scheme.onErrorContainer,
+                      color: contentColor,
                     ),
               ),
             ),

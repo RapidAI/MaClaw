@@ -230,6 +230,18 @@ func TestListUsersHandlerReturnsEmailAndPhoneContacts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create phone user: %v", err)
 	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        "user_phone_contact_email",
+		TenantID:  store.DefaultTenantID,
+		UserID:    "user_phone_contact",
+		Type:      "email",
+		Value:     "phone-owner@example.com",
+		Verified:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("bind phone user email identity: %v", err)
+	}
 	if err := services.store.Users.Create(ctx, &store.User{
 		ID:               "user_legacy_phone_only",
 		TenantID:         store.DefaultTenantID,
@@ -260,12 +272,13 @@ func TestListUsersHandlerReturnsEmailAndPhoneContacts(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", listResp.Code, listResp.Body.String())
 	}
 	type listUserContactPayload struct {
-		ID         string                  `json:"id"`
-		Email      string                  `json:"email"`
-		Emails     []string                `json:"emails"`
-		Phone      string                  `json:"phone"`
-		Phones     []string                `json:"phones"`
-		Identities []BoundUserIdentityView `json:"identities"`
+		ID            string                  `json:"id"`
+		Email         string                  `json:"email"`
+		Emails        []string                `json:"emails"`
+		Phone         string                  `json:"phone"`
+		Phones        []string                `json:"phones"`
+		Identities    []BoundUserIdentityView `json:"identities"`
+		EmailVerified bool                    `json:"email_verified"`
 	}
 	var payload struct {
 		Users []listUserContactPayload `json:"users"`
@@ -290,8 +303,11 @@ func TestListUsersHandlerReturnsEmailAndPhoneContacts(t *testing.T) {
 	if !ok {
 		t.Fatalf("phone user missing from response: %#v", payload.Users)
 	}
-	if len(phoneContact.Emails) != 0 || phoneContact.Phone != "19900001111" || !containsString(phoneContact.Phones, "19900001111") {
+	if !containsString(phoneContact.Emails, "phone-owner@example.com") || phoneContact.Phone != "19900001111" || !containsString(phoneContact.Phones, "19900001111") {
 		t.Fatalf("phone user contacts mismatch: %#v", phoneContact)
+	}
+	if !phoneContact.EmailVerified {
+		t.Fatalf("phone user with verified email identity should be email_verified: %#v", phoneContact)
 	}
 	legacyPhoneContact, ok := byID["user_legacy_phone_only"]
 	if !ok {
@@ -335,6 +351,37 @@ func TestBoundUserContactFieldsHandlesLegacyPhoneAccountAndDedupes(t *testing.T)
 	}
 	if len(identities) != 2 {
 		t.Fatalf("expected deduped email and phone identities, got %#v", identities)
+	}
+}
+
+func TestBoundUserEmailVerifiedIncludesVerifiedEmailIdentity(t *testing.T) {
+	user := &store.User{
+		ID:            "user_phone",
+		TenantID:      store.DefaultTenantID,
+		Email:         "phone:19900001111",
+		EmailVerified: false,
+	}
+	identities := []BoundUserIdentityView{
+		{Type: "phone", Value: "19900001111", Verified: true},
+		{Type: "email", Value: "buyer@example.com", Verified: true},
+	}
+	if !boundUserEmailVerified(user, identities) {
+		t.Fatal("verified email identity should mark bound user email_verified")
+	}
+}
+
+func TestBoundUserEmailVerifiedIgnoresUnverifiedEmailIdentity(t *testing.T) {
+	user := &store.User{
+		ID:            "user_phone",
+		TenantID:      store.DefaultTenantID,
+		Email:         "phone:19900001111",
+		EmailVerified: false,
+	}
+	identities := []BoundUserIdentityView{
+		{Type: "email", Value: "buyer@example.com", Verified: false},
+	}
+	if boundUserEmailVerified(user, identities) {
+		t.Fatal("unverified email identity should not mark bound user email_verified")
 	}
 }
 

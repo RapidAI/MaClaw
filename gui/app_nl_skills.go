@@ -1344,7 +1344,11 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	if skill.IsPipelineSkill(&preparedEntry) {
 		return e.executePipelineSkillDetailed(&preparedEntry, vars, runArgs)
 	}
-	prep, err := skill.PrepareRunnerExecution(&preparedEntry, vars, runArgs, extraEnv, skill.RunnerBackendGUI)
+	dataDir := ""
+	if e != nil && e.app != nil {
+		dataDir = e.app.GetDataDir()
+	}
+	prep, err := skill.PrepareRunnerExecutionWithProgressWithDataDir(dataDir, &preparedEntry, vars, runArgs, extraEnv, skill.RunnerBackendGUI, nil)
 	if err != nil {
 		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: err}
 	}
@@ -1406,6 +1410,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		results = append(results, "[Warning] "+warning)
 	}
 	for i, step := range executionSteps {
+		stepExtraEnv := mergeSkillRuntimeExtraEnv(extraEnv, skill.SharedPythonRuntimeExtraEnvWithDataDir(dataDir, &preparedEntry, os.Environ()))
 		condition := normalizeSkillStepConditionKind(step.Condition)
 		onError := normalizeSkillStepOnErrorKind(step.OnError)
 		if condition == skillStepConditionOnFailure && !hasFailure {
@@ -1445,11 +1450,11 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			break
 		}
 		stepCopy = resolvedStep
-		if classifySkillStepAction(stepCopy.Action).IsCraftTool() && len(extraEnv) > 0 {
+		if classifySkillStepAction(stepCopy.Action).IsCraftTool() && len(stepExtraEnv) > 0 {
 			if stepCopy.Params == nil {
 				stepCopy.Params = map[string]interface{}{}
 			}
-			skill.MergeExtraEnvParam(stepCopy.Params, extraEnv)
+			skill.MergeExtraEnvParam(stepCopy.Params, stepExtraEnv)
 		}
 		if classifySkillStepAction(stepCopy.Action).IsCraftTool() {
 			if stepCopy.Params == nil {
@@ -1461,14 +1466,14 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 				}
 			}
 		}
-		stepCopy = skill.PrepareResolvedStepEnv(stepCopy, preparedEntry.RequiredEnv, extraEnv)
+		stepCopy = skill.PrepareResolvedStepEnv(stepCopy, preparedEntry.RequiredEnv, stepExtraEnv)
 		stepCopy = remapSkillRunStepToWorkspace(stepCopy, sourceSkillDir, preparedEntry.SkillDir)
 		if stepCopy.Params == nil {
 			stepCopy.Params = map[string]interface{}{}
 		}
 		stepCopy.Params["_skill_run_id"] = "sync"
 		stepCopy.Params["_skill_owner_id"] = ownerID
-		restoreEnv := installSkillStepProcessEnv(stepCopy.Action, extraEnv)
+		restoreEnv := installSkillStepProcessEnv(stepCopy.Action, stepExtraEnv)
 		result, err := func() (string, error) {
 			defer restoreEnv()
 			return e.executeStep(stepCopy, preparedEntry.Description)
@@ -1692,7 +1697,11 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 		vars = map[string]string{}
 	}
 	extraEnv := skill.ExtractRunExtraEnvFromArgs(runArgs)
-	prep, err := skill.PreparePipelineRunnerExecution(entry, vars, runArgs, extraEnv, skill.RunnerBackendGUI)
+	dataDir := ""
+	if e != nil && e.app != nil {
+		dataDir = e.app.GetDataDir()
+	}
+	prep, err := skill.PreparePipelineRunnerExecutionWithDataDir(dataDir, entry, vars, runArgs, extraEnv, skill.RunnerBackendGUI)
 	if err != nil {
 		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: err}
 	}
@@ -3478,10 +3487,10 @@ func normalizeSkillAppFieldOptions(options []interface{}, fieldType string, defa
 	return out
 }
 
-// DiagnoseSkillFiles scans ~/.maclaw/data/skills/ and reports load status for each
+// DiagnoseSkillFiles scans the app data skills directory and reports load status for each
 // subdirectory, including the reason if a skill failed to load (Wails binding).
 func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
-	skillsRoot, err := skill.PrimarySkillsDir()
+	skillsRoot, err := a.primarySkillsDir()
 	if err != nil {
 		return []SkillDiagEntry{{Dir: "~", Reason: "cannot resolve user skills directory: " + err.Error()}}
 	}

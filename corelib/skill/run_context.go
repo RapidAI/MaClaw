@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 )
 
 func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
@@ -494,6 +496,11 @@ func CollectSkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
 }
 
 func BuildRunCheckContext(entry *corelib.NLSkillEntry, extraEnv map[string]string) *CheckContext {
+	return BuildRunCheckContextWithDataDir(defaultRunCheckDataDir(), entry, extraEnv)
+}
+
+func BuildRunCheckContextWithDataDir(dataDir string, entry *corelib.NLSkillEntry, extraEnv map[string]string) *CheckContext {
+	dataDir = normalizeRunCheckDataDir(dataDir)
 	ctx := DefaultCheckContext()
 	if ctx.ProvidedEnvVars == nil {
 		ctx.ProvidedEnvVars = map[string]bool{}
@@ -508,6 +515,19 @@ func BuildRunCheckContext(entry *corelib.NLSkillEntry, extraEnv map[string]strin
 	// findPythonExecutable / ensureBundledPythonInPATH). This ensures PipFixer
 	// installs into the same environment that bash steps will execute in.
 	ctx.PythonPath = findPythonExecutable()
+	if entry != nil && len(entry.RequiresPython) > 0 {
+		if plan, err := pyenv.PlanSharedPythonRuntime(dataDir, pyenv.SharedPythonRuntimeSpec{
+			Python:   ">=3.10,<3.14",
+			Manager:  "uv",
+			Packages: entry.RequiresPython,
+		}); err == nil {
+			ctx.PythonPath = plan.PythonPath
+			ctx.PythonRuntimePackages = append([]string(nil), plan.Packages...)
+			ctx.PythonRuntimeConstraint = plan.PythonRequest
+			ctx.PythonRuntimeManager = plan.Manager
+			ctx.PythonRuntimeDataDir = strings.TrimSpace(dataDir)
+		}
+	}
 	for name := range CollectSkillProvidedEnv(entry) {
 		markProvidedEnvVar(ctx, name)
 	}
@@ -521,7 +541,12 @@ func BuildRunCheckContext(entry *corelib.NLSkillEntry, extraEnv map[string]strin
 }
 
 func BuildRunCheckContextForRunner(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string) *CheckContext {
-	ctx := BuildRunCheckContext(entry, extraEnv)
+	return BuildRunCheckContextForRunnerWithDataDir(defaultRunCheckDataDir(), entry, extraEnv, runner)
+}
+
+func BuildRunCheckContextForRunnerWithDataDir(dataDir string, entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string) *CheckContext {
+	dataDir = normalizeRunCheckDataDir(dataDir)
+	ctx := BuildRunCheckContextWithDataDir(dataDir, entry, extraEnv)
 	if normalizeRunnerBackend(runner) == RunnerBackendGUI && entry != nil {
 		proxyProbeSteps := PrecheckExecutableSteps(entry.Steps, nil)
 		proxyRequiredEnv := entry.RequiredEnv
@@ -535,6 +560,18 @@ func BuildRunCheckContextForRunner(entry *corelib.NLSkillEntry, extraEnv map[str
 		}
 	}
 	return ctx
+}
+
+func normalizeRunCheckDataDir(dataDir string) string {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir != "" {
+		return dataDir
+	}
+	return defaultRunCheckDataDir()
+}
+
+func defaultRunCheckDataDir() string {
+	return filepath.Join(corelib.MaclawBaseDir(), "data")
 }
 
 func markProvidedEnvVar(ctx *CheckContext, name string) {
@@ -1138,6 +1175,39 @@ func PrepareResolvedStepEnv(step corelib.NLSkillStep, requiredEnv []string, extr
 	return step
 }
 
+func SharedPythonRuntimeExtraEnv(entry *corelib.NLSkillEntry, base []string) map[string]string {
+	return SharedPythonRuntimeExtraEnvWithDataDir(defaultRunCheckDataDir(), entry, base)
+}
+
+func SharedPythonRuntimeExtraEnvWithDataDir(dataDir string, entry *corelib.NLSkillEntry, base []string) map[string]string {
+	if entry == nil || len(entry.RequiresPython) == 0 {
+		return nil
+	}
+	dataDir = normalizeRunCheckDataDir(dataDir)
+	plan, err := pyenv.PlanSharedPythonRuntime(dataDir, pyenv.SharedPythonRuntimeSpec{
+		Python:   ">=3.10,<3.14",
+		Manager:  "uv",
+		Packages: entry.RequiresPython,
+	})
+	if err != nil || strings.TrimSpace(plan.PythonPath) == "" {
+		return nil
+	}
+	pythonDir := filepath.Dir(plan.PythonPath)
+	pathValue := commandEnvValue(base, "PATH")
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	if pythonDir != "" {
+		pathValue = pythonDir + string(os.PathListSeparator) + pathValue
+	}
+	return map[string]string{
+		"PATH":                      pathValue,
+		"VIRTUAL_ENV":               plan.EnvDir,
+		"MACLAW_PYTHON":             plan.PythonPath,
+		"MACLAW_PYTHON_RUNTIME_REF": plan.ID,
+	}
+}
+
 func stepCanReceiveCommandEnv(step corelib.NLSkillStep) bool {
 	action := NormalizeStepActionName(step.Action)
 	switch action {
@@ -1152,6 +1222,11 @@ func stepCanReceiveCommandEnv(step corelib.NLSkillStep) bool {
 
 func BuildCommandEnv(base []string, params map[string]interface{}) []string {
 	env := append([]string(nil), base...)
+
+	// Skill subprocesses may be launched from stripped desktop environments.
+	// Keep core Windows tools such as cmd helpers, chcp, where, and PowerShell
+	// resolvable even when the inherited PATH omits System32.
+	env = ensureWindowsSystemDirsInPATH(env)
 
 	// Ensure the bundled Python/pip is reachable in PATH for skill bash steps.
 	// This is the single integration point between BuildCommandEnv and the
@@ -1194,6 +1269,16 @@ func upsertCommandEnv(env []string, key, value string) []string {
 		}
 	}
 	return append(env, assignment)
+}
+
+func commandEnvValue(env []string, key string) string {
+	for _, item := range env {
+		name, value, ok := strings.Cut(item, "=")
+		if ok && envNameEqual(name, key) {
+			return value
+		}
+	}
+	return ""
 }
 
 func envNameEqual(a, b string) bool {

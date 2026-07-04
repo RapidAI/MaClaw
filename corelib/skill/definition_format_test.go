@@ -32,6 +32,19 @@ func TestSkillYAMLFileRoundTripsCapabilities(t *testing.T) {
 	}
 }
 
+func TestFormatSkillYAMLFileReturnsErrorForUnsupportedValue(t *testing.T) {
+	_, err := FormatSkillYAMLFile(&SkillYAMLFile{
+		Name: "bad-value",
+		Steps: []SkillYAMLStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"bad": func() {}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("FormatSkillYAMLFile() error = nil, want unsupported value error")
+	}
+}
+
 func TestParseSkillYAMLFileAcceptsCSVCapabilities(t *testing.T) {
 	parsed, err := ParseSkillYAMLFile([]byte("name: weather-query\ncapabilities: current_data, weather\n"))
 	if err != nil {

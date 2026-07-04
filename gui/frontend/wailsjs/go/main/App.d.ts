@@ -267,6 +267,8 @@ export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,ar
 
 export function ListPythonEnvironments():Promise<Array<main.PythonEnvironment>>;
 
+export function ListPythonRuntimes():Promise<Array<main.SharedPythonRuntimeStatus>>;
+
 export function ListRemoteHubs(arg1:string,arg2:string):Promise<Array<any>>;
 
 export function ListRemoteSessions():Promise<Array<any>>;

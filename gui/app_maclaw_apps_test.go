@@ -5986,6 +5986,268 @@ func TestInstallMaclawAppDependenciesMatchesInstalledSkillByInstallRefTarget(t *
 	}
 }
 
+func TestInstallMaclawAppDependenciesResolvesKnownRuntimeDependencyAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillhub" || id != "RapidOCR" || installRef != "rapidocr" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "rapidocr-runtime")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "rapidocr-runtime",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillhub",
+			HubSkillID: "rapidocr",
+			HubVersion: "v1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "RapidOCR", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
+	if dep == nil || dep.InstallRefKind != "hub" || dep.InstallRefTarget != "rapidocr" || dep.InstallRefStatus != "ok" {
+		t.Fatalf("dependency should resolve RapidOCR alias to rapidocr: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "rapidocr-runtime" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should be installed through known runtime alias: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("known runtime alias install should clear blocking flags: %#v", plan)
+	}
+}
+
+func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalDependencyTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillhub" || id != "OCR Runtime" || installRef != "rapidocr" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "rapidocr-runtime")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "rapidocr-runtime",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillhub",
+			HubSkillID: "rapidocr",
+			HubVersion: "v1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "OCR Runtime", "canonical_id": "rapidocr", "aliases": ["RapidOCR", "rapidocr-runtime"], "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "OCR Runtime")
+	if dep == nil || dep.CanonicalID != "rapidocr" || dep.InstallRefTarget != "rapidocr" || dep.InstallRefStatus != "ok" {
+		t.Fatalf("dependency should use declared canonical target: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "rapidocr-runtime" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should install through declared canonical target: %#v", dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalWorkflowDependencyTarget(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillhub" || id != "Approval Workflow" || installRef != "approval-flow" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "approval-flow")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "approval-flow",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillhub",
+			HubSkillID: "approval-flow",
+			HubVersion: "v2.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "approval-app",
+			"name": "Approval App",
+			"kind": "enterprise_approval_app",
+			"dependencies": { "skills": [
+				{ "id": "Approval Workflow", "canonical_id": "approval-flow", "aliases": ["ApprovalFlow"], "version": "2.0.0", "kind": "workflow_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "Approval Workflow")
+	if dep == nil || dep.CanonicalID != "approval-flow" || dep.InstallRefTarget != "approval-flow" || dep.InstallRefStatus != "ok" {
+		t.Fatalf("workflow dependency should use declared canonical target: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "approval-flow" || dep.VersionStatus != "matched" {
+		t.Fatalf("workflow dependency should install through declared canonical target: %#v", dep)
+	}
+	for _, candidate := range maclawAppInstalledSkillCandidateIDs(*dep) {
+		if candidate == "approval-flow-runtime" {
+			t.Fatalf("workflow canonical target should not add runtime-only local candidate: %#v", maclawAppInstalledSkillCandidateIDs(*dep))
+		}
+	}
+}
+
+func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
+	enriched := []maclawAppInstallPlanDependency{{
+		ID:          "Approval Workflow",
+		InstallRef:  "approval-flow",
+		Source:      "hub",
+		Kind:        "workflow_skill",
+		Required:    true,
+		Version:     "2.0.0",
+		CanonicalID: "approval-flow",
+		Aliases:     []string{"ApprovalFlow", "approval-flow-local"},
+	}}
+	serialized := maclawAppSerializableResolvedDeps(enriched)
+	if len(serialized) != 1 || serialized[0]["canonical_id"] != "approval-flow" {
+		t.Fatalf("resolved dependency should serialize canonical_id: %#v", serialized)
+	}
+	aliases, ok := serialized[0]["aliases"].([]string)
+	if !ok || len(aliases) != 2 || aliases[0] != "ApprovalFlow" || aliases[1] != "approval-flow-local" {
+		t.Fatalf("resolved dependency should serialize aliases: %#v", serialized)
+	}
+
+	deps := []maclawAppInstallPlanDependency{{
+		ID:       "Approval Workflow",
+		Kind:     "workflow_skill",
+		Required: true,
+		Source:   "local",
+	}}
+	applyResolvedDependenciesToPlan(deps, map[string]any{"resolved_dependencies": []interface{}{
+		map[string]interface{}{
+			"id":           "Approval Workflow",
+			"install_ref":  "approval-flow",
+			"source":       "hub",
+			"version":      "2.0.0",
+			"canonical_id": "approval-flow",
+			"aliases":      []interface{}{"ApprovalFlow", "approval-flow-local"},
+		},
+	}})
+	if deps[0].InstallRef != "approval-flow" || deps[0].Source != "hub" || deps[0].Version != "2.0.0" || deps[0].CanonicalID != "approval-flow" {
+		t.Fatalf("resolved dependency should apply install and canonical metadata: %#v", deps[0])
+	}
+	if len(deps[0].Aliases) != 2 || deps[0].Aliases[0] != "ApprovalFlow" || deps[0].Aliases[1] != "approval-flow-local" {
+		t.Fatalf("resolved dependency should apply aliases: %#v", deps[0])
+	}
+}
+
+func TestPlanMaclawAppInstallMatchesKnownRuntimeDependencyAliasByLocalName(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "rapidocr-runtime")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+		Name:     "rapidocr-runtime",
+		SkillDir: skillDir,
+		Status:   "active",
+		Source:   "skillhub",
+	})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "RapidOCR", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
+	if dep == nil || !dep.Installed || dep.Health != "ready" || dep.Action != "skip" || dep.InstalledName != "rapidocr-runtime" {
+		t.Fatalf("dependency should match local rapidocr-runtime alias: %#v", dep)
+	}
+	if dep.InstallRefTarget != "rapidocr" || dep.PreflightCode != "installed_ready" {
+		t.Fatalf("dependency should resolve alias and report installed_ready: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("local runtime alias should clear blocking flags: %#v", plan)
+	}
+}
+
 func TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

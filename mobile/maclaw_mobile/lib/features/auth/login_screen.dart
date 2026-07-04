@@ -1,9 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/official_service.dart';
+import 'auth_service.dart';
 import 'session_controller.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -14,85 +13,85 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _emailController = TextEditingController();
-  Timer? _pollTimer;
-  String? _pollId;
+  final _phoneController = TextEditingController();
+  final _codeController = TextEditingController();
+  PhoneLoginRequestResult? _pendingLogin;
   String? _message;
   String? _selectedHubCenterUrl;
   String? _discoveredHubUrl;
-  bool _loading = false;
+  bool _sendingCode = false;
+  bool _verifying = false;
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
-    _emailController.dispose();
+    _phoneController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
-  Future<void> _startLogin() async {
-    final email = _emailController.text.trim();
-    if (email.isEmpty) return;
+  Future<void> _sendCode() async {
+    final phone = _phoneController.text.trim();
+    if (phone.isEmpty || _sendingCode) return;
     setState(() {
-      _loading = true;
+      _sendingCode = true;
       _message = '正在连接 MaClaw 官方 HubCenter...';
       _selectedHubCenterUrl = null;
       _discoveredHubUrl = null;
+      _pendingLogin = null;
     });
     try {
       final result = await ref
           .read(sessionControllerProvider.notifier)
-          .requestEmailLogin(email: email);
-      if (result.pollId.isEmpty) {
-        setState(() {
-          _loading = false;
-          _message =
-              result.message.isEmpty ? '登录请求未返回 poll_id。' : result.message;
-        });
-        return;
-      }
-      _pollId = result.pollId;
+          .requestPhoneLogin(phoneNumber: phone);
+      if (!mounted) return;
       setState(() {
-        _loading = false;
+        _sendingCode = false;
+        _pendingLogin = result;
         _selectedHubCenterUrl = result.hubCenterUrl;
-        final confirmationMessage =
-            result.message.isEmpty ? '请在邮件或 IM 中确认登录。' : result.message;
-        _message = result.hubCenterUrl.isEmpty
-            ? confirmationMessage
-            : '$confirmationMessage\n已选中 HubCenter：${result.hubCenterUrl}';
+        _discoveredHubUrl = result.hubUrl;
+        final ttl =
+            result.expiresMinutes > 0 ? '${result.expiresMinutes} 分钟内' : '';
+        _message =
+            result.message.isEmpty ? '验证码已发送，请在$ttl输入短信验证码。' : result.message;
       });
-      _pollTimer?.cancel();
-      _pollTimer = Timer.periodic(
-        const Duration(seconds: 3),
-        (_) => _pollLogin(),
-      );
     } catch (error) {
+      if (!mounted) return;
       setState(() {
-        _loading = false;
-        _message = '登录请求失败：$error';
+        _sendingCode = false;
+        _message = '验证码发送失败：$error';
       });
     }
   }
 
-  Future<void> _pollLogin() async {
-    final pollId = _pollId;
-    if (pollId == null || pollId.isEmpty) return;
+  Future<void> _verifyCode() async {
+    final pending = _pendingLogin;
+    final code = _codeController.text.trim();
+    if (pending == null || code.isEmpty || _verifying) return;
+    setState(() {
+      _verifying = true;
+      _message = '正在验证手机号并进入 MaClaw Mobile...';
+    });
     try {
-      final controller = ref.read(sessionControllerProvider.notifier);
-      final ok = await controller.pollEmailLogin(pollId: pollId);
-      if (ok) {
-        _pollTimer?.cancel();
-        final hubUrl = controller.currentHubUrl;
-        if (mounted) {
-          setState(() {
-            _discoveredHubUrl = hubUrl;
-            _message = hubUrl.isEmpty
-                ? '登录已确认，正在进入 MaClaw Mobile。'
-                : '登录已确认，已接入 Hub：$hubUrl';
-          });
-        }
-      }
-    } catch (_) {
-      // Keep polling; transient network failures should not force restart.
+      final ok = await ref
+          .read(sessionControllerProvider.notifier)
+          .verifyPhoneLoginOnHub(
+            hubUrl: pending.hubUrl,
+            phoneNumber: pending.phoneNumber,
+            verifyCode: code,
+            tenantId: pending.tenantId,
+            hubCenterUrl: pending.hubCenterUrl,
+          );
+      if (!mounted) return;
+      setState(() {
+        _verifying = false;
+        _message = ok ? '登录成功，已接入手机号账户的官方服务 credits。' : '验证码尚未确认，请重试。';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _verifying = false;
+        _message = '验证码验证失败：$error';
+      });
     }
   }
 
@@ -106,7 +105,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           children: [
             const SizedBox(height: 36),
             Icon(
-              Icons.emergency_share_outlined,
+              Icons.phone_android_outlined,
               size: 56,
               color: scheme.primary,
             ),
@@ -117,7 +116,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '通过官方 HubCenter 发现你的 Hub 和租户后，即可查信息、处理文档，并接入远程数字员工。',
+              '使用手机号注册或登录。验证通过后，将使用该手机号账户绑定的 MaClaw 官方服务 credits 调用 LLM。',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -141,8 +140,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            if (_selectedHubCenterUrl != null ||
-                _discoveredHubUrl != null) ...[
+            if (_selectedHubCenterUrl != null || _discoveredHubUrl != null) ...[
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -170,6 +168,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           label: 'Hub',
                           value: _discoveredHubUrl!,
                         ),
+                      if ((_pendingLogin?.tenantId ?? '').isNotEmpty)
+                        _LoginInfoRow(
+                          label: '租户',
+                          value: _pendingLogin!.tenantId,
+                        ),
                     ],
                   ),
                 ),
@@ -177,25 +180,51 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               const SizedBox(height: 12),
             ],
             TextField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              autofillHints: const [AutofillHints.telephoneNumber],
               decoration: const InputDecoration(
-                labelText: '邮箱',
-                prefixIcon: Icon(Icons.mail_outline),
+                labelText: '手机号',
+                prefixIcon: Icon(Icons.phone_outlined),
               ),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: _loading ? null : _startLogin,
-              icon: _loading
+              onPressed: _sendingCode ? null : _sendCode,
+              icon: _sendingCode
                   ? const SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.login),
-              label: Text(_pollId == null ? '发送登录确认' : '重新发送'),
+                  : const Icon(Icons.sms_outlined),
+              label: Text(_pendingLogin == null ? '发送验证码' : '重新发送验证码'),
             ),
+            if (_pendingLogin != null) ...[
+              const SizedBox(height: 18),
+              TextField(
+                controller: _codeController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: _pendingLogin!.codeLength > 0
+                      ? '${_pendingLogin!.codeLength} 位验证码'
+                      : '验证码',
+                  prefixIcon: const Icon(Icons.pin_outlined),
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _verifying ? null : _verifyCode,
+                icon: _verifying
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.login),
+                label: const Text('验证并登录'),
+              ),
+            ],
             if (_message != null) ...[
               const SizedBox(height: 14),
               Text(_message!, style: TextStyle(color: scheme.onSurfaceVariant)),

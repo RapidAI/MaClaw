@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,108 @@ func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
 	}
 	if status.Summary.NeedsArtifactVerification {
 		t.Fatalf("expected no pending verification, got %#v", status.Summary)
+	}
+}
+
+func TestMaterializeStdoutToExpectedOutputCopiesJSONArtifactFile(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	expectedPath := filepath.Join(dir, "paper_output.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-json-artifact",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "shell: cmd.exe\nelapsed: 1s\n───────────────\n" +
+				"{\"ok\":true,\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	got, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("ReadFile(expected) error = %v", err)
+	}
+	if string(got) != "%PDF translated" {
+		t.Fatalf("expected copied artifact bytes, got %q", string(got))
+	}
+}
+
+func TestMaterializeStdoutToExpectedOutputFindsTrailingJSONArtifactFile(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	expectedPath := filepath.Join(dir, "paper_output.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated after logs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-json-artifact-with-logs",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "shell: cmd.exe\nelapsed: 1s\n───────────────\n" +
+				"translating page 1/2\ntranslating page 2/2\n" +
+				"{\"ok\":true,\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	got, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("ReadFile(expected) error = %v", err)
+	}
+	if string(got) != "%PDF translated after logs" {
+		t.Fatalf("expected copied artifact bytes, got %q", string(got))
+	}
+}
+
+func TestSamePathCaseSensitivityMatchesPlatform(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		if !samePath(`C:\Tmp\Out.pdf`, `c:\tmp\out.pdf`) {
+			t.Fatal("expected Windows paths to compare case-insensitively")
+		}
+		return
+	}
+	if samePath("/tmp/Out.pdf", "/tmp/out.pdf") {
+		t.Fatal("expected non-Windows paths to compare case-sensitively")
+	}
+}
+
+func TestMergeSkillRuntimeExtraEnvPathOverridesCaseEquivalentKey(t *testing.T) {
+	basePathKey := "PATH"
+	if runtime.GOOS == "windows" {
+		basePathKey = "Path"
+	}
+	got := mergeSkillRuntimeExtraEnv(
+		map[string]string{basePathKey: "base", "API_KEY": "user-value"},
+		map[string]string{"PATH": "runtime", "API_KEY": "runtime-value"},
+	)
+
+	if got["PATH"] != "runtime" {
+		t.Fatalf("PATH = %q, want runtime", got["PATH"])
+	}
+	if got["API_KEY"] != "user-value" {
+		t.Fatalf("API_KEY = %q, want user-value", got["API_KEY"])
+	}
+	pathKeys := 0
+	for key := range got {
+		if strings.EqualFold(key, "PATH") {
+			pathKeys++
+		}
+	}
+	if pathKeys != 1 {
+		t.Fatalf("merged env has %d PATH-like keys: %#v", pathKeys, got)
 	}
 }
 

@@ -51,13 +51,14 @@
 .about-page {
     height: 100%;
     overflow-y: auto;
-    padding: 20px;
+    padding: clamp(16px, 1.8vw, 32px) clamp(20px, 3.4vw, 56px);
     box-sizing: border-box;
     background: linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-surface-muted) 100%);
 }
 
 .about-page__container {
-    max-width: 980px;
+    width: min(100%, 1180px);
+    max-width: calc(100vw - 40px);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -658,6 +659,10 @@
         padding: 14px;
     }
 
+    .about-page__container {
+        max-width: none;
+    }
+
     .about-hero-card {
         grid-template-columns: 1fr;
     }
@@ -687,6 +692,45 @@
 
     .about-kv-value {
         text-align: left;
+    }
+}
+
+@media (min-width: 1500px) {
+    .about-page {
+        padding-top: 28px;
+    }
+
+    .about-page__container {
+        width: min(100%, 1320px);
+        display: grid;
+        grid-template-columns: minmax(380px, 0.82fr) minmax(640px, 1.18fr);
+        align-items: start;
+        gap: 16px;
+    }
+
+    .about-hero-card,
+    .about-actions-card:not(.about-thanks-card) {
+        grid-column: 1;
+    }
+
+    .about-identity-card,
+    .about-thanks-card {
+        grid-column: 2;
+    }
+
+    .about-identity-card {
+        min-width: 0;
+    }
+
+    .about-thanks-card {
+        align-self: start;
+    }
+}
+
+@media (min-width: 1800px) {
+    .about-page__container {
+        width: min(100%, 1440px);
+        grid-template-columns: minmax(400px, 0.86fr) minmax(700px, 1.14fr);
     }
 }
 

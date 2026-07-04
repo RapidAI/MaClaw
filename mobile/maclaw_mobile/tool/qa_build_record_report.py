@@ -18,13 +18,11 @@ EVIDENCE_FIELD_HINTS = {
     ),
     "Runtime boundary verification result": (
         f"Use `{_DEFAULT_FINAL_PREFILLS['Runtime boundary verification result']}` after running "
-        "`python3 tool/verify_runtime_boundary.py --log "
-        "docs/qa-builds/runtime-boundary-<version+build>.log`."
+        f"`{release_evidence_commands.runtime_boundary_command()}`."
     ),
     "Automated release gates result": (
         f"Use `{_DEFAULT_FINAL_PREFILLS['Automated release gates result']}` after running "
-        "`python3 tool/run_release_gates.py --log "
-        "docs/qa-builds/release-gates-<version+build>.log`."
+        f"`{release_evidence_commands.release_gates_command()}`."
     ),
 }
 
@@ -33,20 +31,31 @@ def _evidence_field_hints(
     version: str = release_evidence_commands.DEFAULT_VERSION,
     *,
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
 ) -> dict[str, str]:
-    prefills = release_evidence_commands.final_decision_prefills(version)
+    prefills = release_evidence_commands.final_decision_prefills(
+        version,
+        scope=scope,
+        records_dir=records_dir,
+    )
     return {
         "Release handoff result": (
             f"Use `{prefills['Release handoff result']}` "
-            f"after running `{release_evidence_commands.release_handoff_command(version=version, scope=scope)}`."
+            "after running `"
+            + release_evidence_commands.release_handoff_command(
+                version=version,
+                scope=scope,
+                records_dir=records_dir,
+            )
+            + "`."
         ),
         "Runtime boundary verification result": (
             f"Use `{prefills['Runtime boundary verification result']}` after running "
-            f"`{release_evidence_commands.runtime_boundary_command(version)}`."
+            f"`{release_evidence_commands.runtime_boundary_command(version, records_dir=records_dir)}`."
         ),
         "Automated release gates result": (
             f"Use `{prefills['Automated release gates result']}` after running "
-            f"`{release_evidence_commands.release_gates_command(version)}`."
+            f"`{release_evidence_commands.release_gates_command(version, records_dir=records_dir)}`."
         ),
     }
 
@@ -108,6 +117,10 @@ def _path_validation_errors(path: Path) -> list[str]:
         return [f"QA build record path must be a markdown file: {path}"]
     if path.name.lower() == "readme.md":
         return ["QA build record path must point to a completed record, not README.md"]
+    if path.name.lower().startswith("handoff-") and path.suffix.lower() == ".md":
+        return [
+            "QA build record path must point to a completed record, not release handoff evidence",
+        ]
     if path.name == "qa_build_record_template.md":
         return ["QA build record path must point to a completed record, not the template"]
     return []
@@ -125,9 +138,7 @@ def generate_report(path: Path) -> QaBuildRecordReport:
             secret_errors=[],
             evidence_errors=[],
             artifact_errors=[],
-            unknown_errors=[
-                error for error in validation_errors if error not in path_errors
-            ],
+            unknown_errors=[],
         )
 
     text = path.read_text(encoding="utf-8")
@@ -183,8 +194,13 @@ def _evidence_hints_for_version(
     version: str,
     *,
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
 ) -> list[str]:
-    hints_by_field = _evidence_field_hints(version, scope=scope)
+    hints_by_field = _evidence_field_hints(
+        version,
+        scope=scope,
+        records_dir=records_dir,
+    )
     hints = []
     for field, hint in hints_by_field.items():
         if any(error == field or error.startswith(f"{field} ") for error in errors):
@@ -211,29 +227,39 @@ def _matches_field_error(error: str, fields: set[str]) -> bool:
     return any(error == field or error.startswith(f"{field} ") for field in fields)
 
 
-def _artifact_hints_for_version(errors: list[str], version: str) -> list[str]:
+def _artifact_hints_for_version(
+    errors: list[str],
+    version: str,
+    *,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+) -> list[str]:
     hints: list[str] = []
     if any(_matches_field_error(error, ANDROID_ARTIFACT_FIELDS) for error in errors):
         hints.append(
             "- Android signed artifact: run `"
-            + release_evidence_commands.android_artifact_evidence_command(version)
+            + release_evidence_commands.android_artifact_evidence_command(
+                version,
+                record_dir=records_dir,
+            )
             + "` and paste the generated fields into the QA record."
         )
     if any(_matches_field_error(error, IOS_ARTIFACT_FIELDS) for error in errors):
         hints.append(
             "- iOS archive/TestFlight artifact: run `"
-            + release_evidence_commands.ios_artifact_evidence_command()
+            + release_evidence_commands.ios_artifact_evidence_command(
+                record_dir=records_dir,
+            )
             + "` and paste the generated fields into the QA record."
         )
     return hints
 
 
-def _secret_redaction_hints(errors: list[str]) -> list[str]:
+def _secret_redaction_hints(errors: list[str], *, record_path: str) -> list[str]:
     if not errors:
         return []
     return [
         "- Remove raw secrets from the QA record, then replace them with redacted evidence, attachment IDs, task IDs, artifact hashes, or reviewer notes.",
-        "- Re-run `python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md` before linking the record from docs/release_evidence.md.",
+        f"- Re-run `python3 tool/validate_qa_build_record.py {record_path}` before linking the record from docs/release_evidence.md.",
     ]
 
 
@@ -246,6 +272,13 @@ def _version_for_report(report: QaBuildRecordReport) -> str:
 
 def _scope_for_report(report: QaBuildRecordReport) -> str:
     return validate_qa_build_record.record_scope_from_path(report.path)
+
+
+def _records_dir_for_report(report: QaBuildRecordReport) -> str:
+    default_dir = Path(__file__).resolve().parents[1] / release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    if report.path.parent.resolve() == default_dir.resolve():
+        return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    return str(report.path.parent)
 
 
 def format_report(report: QaBuildRecordReport) -> str:
@@ -271,10 +304,12 @@ def format_report(report: QaBuildRecordReport) -> str:
         lines.extend(sections)
         version = _version_for_report(report)
         scope = _scope_for_report(report)
+        records_dir = _records_dir_for_report(report)
         hints = _evidence_hints_for_version(
             report.evidence_errors,
             version,
             scope=scope,
+            records_dir=records_dir,
         )
         if hints:
             lines.append("")
@@ -283,12 +318,16 @@ def format_report(report: QaBuildRecordReport) -> str:
         artifact_hints = _artifact_hints_for_version(
             report.evidence_errors + report.artifact_errors,
             version,
+            records_dir=records_dir,
         )
         if artifact_hints:
             lines.append("")
             lines.append("How to fill signed artifact evidence:")
             lines.extend(artifact_hints)
-        secret_hints = _secret_redaction_hints(report.secret_errors)
+        secret_hints = _secret_redaction_hints(
+            report.secret_errors,
+            record_path=str(report.path),
+        )
         if secret_hints:
             lines.append("")
             lines.append("How to fix secret redaction failures:")
@@ -298,7 +337,12 @@ def format_report(report: QaBuildRecordReport) -> str:
         lines.append("")
         lines.append("Next action:")
         lines.append(
-            f"- Run `{release_evidence_commands.qa_release_evidence_link_command(scope=_scope_for_report(report))}` "
+            "- Run `"
+            + release_evidence_commands.qa_release_evidence_link_command(
+                scope=_scope_for_report(report),
+                records_dir=_records_dir_for_report(report),
+            )
+            + "` "
             "to link validated QA records in docs/release_evidence.md."
         )
     return "\n".join(lines).rstrip() + "\n"

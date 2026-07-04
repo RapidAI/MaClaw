@@ -47,65 +47,52 @@ class SessionController extends AsyncNotifier<SessionState> {
     }
   }
 
-  Future<EmailLoginRequestResult> requestEmailLogin({
-    required String email,
+  Future<PhoneLoginRequestResult> requestPhoneLogin({
+    required String phoneNumber,
   }) {
     final service = AuthService(vault: ref.watch(secureVaultProvider));
     _authService = service;
-    return service.requestEmailLogin(email);
+    return service.requestPhoneLogin(phoneNumber);
   }
 
-  Future<EmailLoginRequestResult> requestEmailLoginOnHub({
+  Future<PhoneLoginRequestResult> requestPhoneLoginOnHub({
     required String hubUrl,
-    required String email,
+    required String phoneNumber,
+    String tenantId = '',
     String hubCenterUrl = '',
   }) {
     final service = AuthService(vault: ref.watch(secureVaultProvider));
     _authService = service;
-    return service.requestEmailLoginOnHub(
+    return service.requestPhoneLoginOnHub(
       hubUrl: hubUrl,
-      email: email,
+      phoneNumber: phoneNumber,
+      tenantId: tenantId,
       hubCenterUrl: hubCenterUrl,
     );
   }
 
-  Future<bool> pollEmailLogin({
-    required String pollId,
-  }) async {
-    final vault = ref.watch(secureVaultProvider);
-    final service = _authService ?? AuthService(vault: vault);
-    _authService = service;
-    final result = await service.pollEmailLogin(pollId);
-    if (!result.confirmed) return false;
-    if (result.hubUrl.isEmpty) return false;
-    final client = ApiClient(vault: vault, hubUrl: result.hubUrl);
-    final bootstrap = await client.bootstrap();
-    state = AsyncData(
-      SessionState.signedIn(
-        hubUrl: result.hubUrl,
-        bootstrap: bootstrap,
-      ),
-    );
-    _authService = null;
-    return true;
-  }
-
-  Future<bool> pollEmailLoginOnHub({
+  Future<bool> verifyPhoneLoginOnHub({
     required String hubUrl,
-    required String pollId,
+    required String phoneNumber,
+    required String verifyCode,
+    String tenantId = '',
     String hubCenterUrl = '',
   }) async {
     final vault = ref.watch(secureVaultProvider);
     final service = _authService ?? AuthService(vault: vault);
     _authService = service;
-    final result = await service.pollEmailLoginOnHub(
+    final result = await service.verifyPhoneLoginOnHub(
       hubUrl: hubUrl,
-      pollId: pollId,
+      phoneNumber: phoneNumber,
+      verifyCode: verifyCode,
+      tenantId: tenantId,
       hubCenterUrl: hubCenterUrl,
     );
     if (!result.confirmed) return false;
     final client = ApiClient(vault: vault, hubUrl: result.hubUrl);
-    final bootstrap = await client.bootstrap();
+    final bootstrap = (await client.bootstrap()).withVerifiedPhoneCredits(
+      result.phoneNumber,
+    );
     state = AsyncData(
       SessionState.signedIn(
         hubUrl: result.hubUrl,

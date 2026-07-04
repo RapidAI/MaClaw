@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/mobile_bootstrap.dart';
+import '../../core/api/mobile_credits.dart';
 import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/settings/app_preferences.dart';
@@ -13,6 +14,16 @@ import '../digital_employees/digital_employees_controller.dart';
 import '../documents/documents_controller.dart';
 import '../servers/servers_controller.dart';
 import 'llm_qr_authorization_screen.dart';
+
+final mobileLlmServiceStatusProvider =
+    FutureProvider.autoDispose<LlmServiceStatus?>((ref) async {
+  final session = ref.watch(sessionControllerProvider).valueOrNull;
+  final client = ref.watch(apiClientProvider);
+  if (session == null || client == null || session.bootstrap == null) {
+    return null;
+  }
+  return client.llmServiceStatus(session.bootstrap!.services.llmStatusPath);
+});
 
 class AccountScreen extends ConsumerWidget {
   const AccountScreen({super.key});
@@ -123,12 +134,20 @@ class AccountScreen extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
   ) async {
-    final result =
-        await ref.read(mobileNotificationServiceProvider).requestPermissions();
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.message)),
-    );
+    try {
+      final result = await ref
+          .read(mobileNotificationServiceProvider)
+          .requestPermissions();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.message)),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('通知权限请求失败：$error')),
+      );
+    }
   }
 
   Future<void> _refreshOfficialService(
@@ -190,6 +209,7 @@ class AccountScreen extends ConsumerWidget {
     final session = ref.watch(sessionControllerProvider).valueOrNull;
     final bootstrap = session?.bootstrap;
     final preferences = ref.watch(appPreferencesProvider);
+    final llmServiceStatus = ref.watch(mobileLlmServiceStatusProvider);
     return ScreenScaffold(
       title: '我的',
       subtitle: '官方服务绑定、额度、模型/搜索状态、凭据和本地隐私数据。',
@@ -217,6 +237,7 @@ class AccountScreen extends ConsumerWidget {
           _HubConnectionCard(
             bootstrap: bootstrap,
             sessionHubUrl: session?.hubUrl ?? '',
+            llmServiceStatus: llmServiceStatus,
           ),
           const SizedBox(height: 12),
           ActionTile(
@@ -387,9 +408,7 @@ class _AccountSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final identity = bootstrap.user.email.isEmpty
-        ? bootstrap.user.userId
-        : bootstrap.user.email;
+    final identity = _mobileAccountIdentity(bootstrap.user);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -407,7 +426,9 @@ class _AccountSummaryCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            _InfoRow(label: '用户', value: identity),
+            _InfoRow(label: identity.label, value: identity.value),
+            if (identity.creditsHint.isNotEmpty)
+              _InfoRow(label: '额度账户', value: identity.creditsHint),
             _InfoRow(label: '租户', value: bootstrap.user.tenantId),
             _InfoRow(label: '官方服务', value: serviceUrl),
           ],
@@ -415,6 +436,63 @@ class _AccountSummaryCard extends StatelessWidget {
       ),
     );
   }
+
+  _MobileAccountIdentity _mobileAccountIdentity(MobileUser user) {
+    final explicitPhone = user.phoneNumber.trim();
+    final creditsAccount = trustedPhoneCreditsAccount(user.creditsAccount);
+    if (explicitPhone.isNotEmpty) {
+      return _MobileAccountIdentity(
+        label: '手机号',
+        value: 'phone:${_maskPhoneNumber(explicitPhone)}',
+        creditsHint: _creditsHint(creditsAccount),
+      );
+    }
+    final rawIdentity = [
+      user.accountId,
+      user.email,
+      user.userId,
+    ].map((value) => value.trim()).firstWhere(
+          (value) => value.isNotEmpty,
+          orElse: () => '',
+        );
+    final lower = rawIdentity.toLowerCase();
+    if (lower.startsWith('phone:')) {
+      final phone = rawIdentity.substring(rawIdentity.indexOf(':') + 1);
+      return _MobileAccountIdentity(
+        label: '手机号',
+        value: 'phone:${_maskPhoneNumber(phone)}',
+        creditsHint: _creditsHint(
+          creditsAccount.isEmpty ? rawIdentity : creditsAccount,
+        ),
+      );
+    }
+    return _MobileAccountIdentity(
+      label: '账号',
+      value: rawIdentity,
+      creditsHint: creditsAccount.isEmpty
+          ? ''
+          : 'MaClaw 官方 credits: ${_maskCreditsAccount(creditsAccount)}',
+    );
+  }
+
+  String _creditsHint(String creditsAccount) {
+    if (creditsAccount.trim().isEmpty) {
+      return 'MaClaw 官方 credits 使用该手机号账户';
+    }
+    return 'MaClaw 官方 credits 使用 ${_maskCreditsAccount(creditsAccount)}';
+  }
+}
+
+class _MobileAccountIdentity {
+  final String label;
+  final String value;
+  final String creditsHint;
+
+  const _MobileAccountIdentity({
+    required this.label,
+    required this.value,
+    required this.creditsHint,
+  });
 }
 
 class _ServiceStatusCard extends StatelessWidget {
@@ -486,10 +564,12 @@ class _ServiceStatusCard extends StatelessWidget {
 class _HubConnectionCard extends StatelessWidget {
   final MobileBootstrap bootstrap;
   final String sessionHubUrl;
+  final AsyncValue<LlmServiceStatus?> llmServiceStatus;
 
   const _HubConnectionCard({
     required this.bootstrap,
     required this.sessionHubUrl,
+    required this.llmServiceStatus,
   });
 
   @override
@@ -538,11 +618,99 @@ class _HubConnectionCard extends StatelessWidget {
             ),
             if (llmAccess.desktopQrDelegated)
               _InfoRow(label: '授权', value: _llmAuthorizationLabel(llmAccess)),
+            const Divider(height: 24),
+            Text('官方 credits', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            _LlmCreditsStatusRows(
+              status: llmServiceStatus,
+              fallbackAccount: trustedBootstrapCreditsAccount(bootstrap),
+            ),
           ],
         ),
       ),
     );
   }
+}
+
+class _LlmCreditsStatusRows extends StatelessWidget {
+  final AsyncValue<LlmServiceStatus?> status;
+  final String fallbackAccount;
+
+  const _LlmCreditsStatusRows({
+    required this.status,
+    required this.fallbackAccount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return status.when(
+      data: (value) {
+        if (value == null) {
+          return _InfoRow(
+            label: '额度',
+            value: fallbackAccount.isEmpty
+                ? '未下发'
+                : _maskCreditsAccount(fallbackAccount),
+          );
+        }
+        final inactive = value.inactiveReasons.join('；');
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _InfoRow(label: '服务', value: value.active ? '可用' : '不可用'),
+            if (fallbackAccount.isNotEmpty)
+              _InfoRow(
+                label: '额度账户',
+                value: _maskCreditsAccount(fallbackAccount),
+              ),
+            _InfoRow(
+              label: '可用额度',
+              value: _formatCredits(value.creditsAvailable),
+            ),
+            _InfoRow(
+              label: '剩余额度',
+              value: _formatCredits(value.creditsRemaining),
+            ),
+            _InfoRow(label: '已用额度', value: _formatCredits(value.creditsUsed)),
+            if (value.creditsTotal > 0)
+              _InfoRow(label: '总额度', value: _formatCredits(value.creditsTotal)),
+            if (value.defaultModel.isNotEmpty)
+              _InfoRow(label: '默认模型', value: value.defaultModel),
+            if (value.serviceGroupNames.isNotEmpty)
+              _InfoRow(
+                label: '服务组',
+                value: value.serviceGroupNames.join(' / '),
+              ),
+            if (value.nearestExpiresAt.isNotEmpty)
+              _InfoRow(label: '到期', value: value.nearestExpiresAt),
+            if (inactive.isNotEmpty) _InfoRow(label: '提示', value: inactive),
+          ],
+        );
+      },
+      error: (error, _) => _InfoRow(label: '额度', value: '读取失败：$error'),
+      loading: () => const _InfoRow(label: '额度', value: '正在读取...'),
+    );
+  }
+}
+
+String _maskCreditsAccount(String account) {
+  final value = account.trim();
+  if (!value.toLowerCase().startsWith('phone:')) return value;
+  final phone = value.substring(value.indexOf(':') + 1);
+  return 'phone:${_maskPhoneNumber(phone)}';
+}
+
+String _maskPhoneNumber(String phone) {
+  final digits = phone.replaceAll(RegExp(r'\D'), '');
+  if (digits.length <= 7) return digits;
+  return '${digits.substring(0, 3)}****${digits.substring(digits.length - 4)}';
+}
+
+String _formatCredits(double value) {
+  if (value == value.roundToDouble()) {
+    return value.toStringAsFixed(0);
+  }
+  return value.toStringAsFixed(2);
 }
 
 String _llmAuthorizationLabel(MobileLlmAccess access) {

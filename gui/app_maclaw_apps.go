@@ -162,6 +162,8 @@ type maclawAppInstallPlanDependency struct {
 	Required           bool     `json:"required"`
 	Source             string   `json:"source,omitempty"`
 	InstallRef         string   `json:"install_ref,omitempty"`
+	CanonicalID        string   `json:"canonical_id,omitempty"`
+	Aliases            []string `json:"aliases,omitempty"`
 	InstallRefKind     string   `json:"install_ref_kind,omitempty"`
 	InstallRefTarget   string   `json:"install_ref_target,omitempty"`
 	InstallRefVersion  string   `json:"install_ref_version,omitempty"`
@@ -3890,11 +3892,18 @@ func maclawAppInstalledSkillMatch(index map[string]NLSkillDefinition, dep maclaw
 
 func maclawAppInstalledSkillCandidateIDs(dep maclawAppInstallPlanDependency) []string {
 	candidates := []string{dep.ID, dep.InstallRefTarget}
-	if strings.TrimSpace(dep.InstallRefTarget) == "" && strings.TrimSpace(dep.InstallRef) != "" {
+	if strings.TrimSpace(dep.InstallRefTarget) == "" {
 		_, target, _, status, _ := maclawAppParseDependencyInstallRef(dep)
 		if status == "ok" && target != "" {
 			candidates = append(candidates, target)
 		}
+	}
+	candidates = append(candidates, dep.CanonicalID)
+	candidates = append(candidates, dep.Aliases...)
+	if resolved, ok := maclawAppImplicitHubSkillResolution(dep); ok {
+		candidates = append(candidates, resolved.Target)
+		candidates = append(candidates, resolved.LocalNames...)
+		candidates = append(candidates, resolved.Aliases...)
 	}
 	if ref := strings.TrimSpace(dep.InstallRef); ref != "" && !strings.Contains(ref, "://") && !strings.HasPrefix(ref, "{") {
 		candidates = append(candidates, ref)
@@ -3990,10 +3999,35 @@ func maclawAppDependencyVersionStatus(dep maclawAppInstallPlanDependency) string
 	if installed == "" {
 		return "unknown"
 	}
+	if maclawAppDependencyUsesSourceVersionKey(dep, required, installed) {
+		if maclawAppNormalizeSourceVersionKey(required) == maclawAppNormalizeSourceVersionKey(installed) {
+			return "matched"
+		}
+		return "mismatch"
+	}
 	if maclawAppDependencyVersionSatisfied(required, installed) {
 		return "matched"
 	}
 	return "mismatch"
+}
+
+func maclawAppDependencyUsesSourceVersionKey(dep maclawAppInstallPlanDependency, required, installed string) bool {
+	if maclawAppLooksLikeSourceVersionKey(required) || maclawAppLooksLikeSourceVersionKey(installed) {
+		return true
+	}
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	kind := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
+	return (source == "enterprise_hub" || source == "skillmarket" || source == "market" || kind == "enterprise_hub" || kind == "skillmarket") &&
+		(strings.Contains(required, ":") || strings.Contains(installed, ":"))
+}
+
+func maclawAppLooksLikeSourceVersionKey(v string) bool {
+	v = strings.TrimSpace(strings.ToLower(v))
+	return strings.Contains(v, ":skill:") || strings.Contains(v, "enterprise_hub:") || strings.Contains(v, "skillmarket:") || strings.Contains(v, "hubcenter:")
+}
+
+func maclawAppNormalizeSourceVersionKey(v string) string {
+	return strings.TrimSpace(strings.ToLower(v))
 }
 
 // maclawAppDependencyVersionSatisfied reports whether an installed dependency
@@ -4101,6 +4135,7 @@ func maclawAppInstallPlanDependencyMergeKey(dep maclawAppInstallPlanDependency) 
 		strings.ToLower(strings.TrimSpace(dep.Version)),
 		strings.ToLower(strings.TrimSpace(dep.Source)),
 		strings.ToLower(strings.TrimSpace(dep.InstallRef)),
+		strings.ToLower(strings.TrimSpace(dep.CanonicalID)),
 		strconv.FormatBool(dep.Required),
 	}, "\x1f")
 }
@@ -5221,6 +5256,12 @@ func maclawAppMergedDependencyVerificationItems(existing []any, appDependencies 
 		if dep.InstallRef != "" {
 			item["install_ref"] = dep.InstallRef
 		}
+		if dep.CanonicalID != "" {
+			item["canonical_id"] = dep.CanonicalID
+		}
+		if len(dep.Aliases) > 0 {
+			item["aliases"] = append([]string(nil), dep.Aliases...)
+		}
 		if dep.InstallRefKind != "" {
 			item["install_ref_kind"] = dep.InstallRefKind
 		}
@@ -6185,6 +6226,10 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 			if deps[idx].InstallRef == "" {
 				deps[idx].InstallRef = dep.InstallRef
 			}
+			if deps[idx].CanonicalID == "" {
+				deps[idx].CanonicalID = dep.CanonicalID
+			}
+			deps[idx].Aliases = appendMaclawAppUniqueStrings(deps[idx].Aliases, dep.Aliases...)
 			return
 		}
 		seen[key] = len(deps)
@@ -6196,12 +6241,14 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 		}
 		if skill := anyMap(holder["skill"]); skill != nil {
 			add(maclawAppInstallPlanDependency{
-				ID:         stringMapValue(skill, "id"),
-				Version:    stringMapValue(skill, "version"),
-				Kind:       "runtime_skill",
-				Required:   true,
-				Source:     stringMapValue(skill, "source"),
-				InstallRef: maclawAppDependencyInstallRef(skill),
+				ID:          stringMapValue(skill, "id"),
+				Version:     stringMapValue(skill, "version"),
+				Kind:        "runtime_skill",
+				Required:    true,
+				Source:      stringMapValue(skill, "source"),
+				InstallRef:  maclawAppDependencyInstallRef(skill),
+				CanonicalID: maclawAppDependencyCanonicalID(skill),
+				Aliases:     maclawAppDependencyAliases(skill),
 			})
 		}
 		for _, appSkill := range []map[string]any{anyMap(holder["appSkill"]), anyMap(holder["app_skill"])} {
@@ -6209,12 +6256,14 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 				continue
 			}
 			add(maclawAppInstallPlanDependency{
-				ID:         stringMapValue(appSkill, "id"),
-				Version:    stringMapValue(appSkill, "version"),
-				Kind:       "app_skill",
-				Required:   true,
-				Source:     stringMapValue(appSkill, "source"),
-				InstallRef: maclawAppDependencyInstallRef(appSkill),
+				ID:          stringMapValue(appSkill, "id"),
+				Version:     stringMapValue(appSkill, "version"),
+				Kind:        "app_skill",
+				Required:    true,
+				Source:      stringMapValue(appSkill, "source"),
+				InstallRef:  maclawAppDependencyInstallRef(appSkill),
+				CanonicalID: maclawAppDependencyCanonicalID(appSkill),
+				Aliases:     maclawAppDependencyAliases(appSkill),
 			})
 		}
 		if misBlock := anyMap(holder["mis"]); misBlock != nil {
@@ -6228,12 +6277,14 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 					continue
 				}
 				add(maclawAppInstallPlanDependency{
-					ID:         firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowSkillId"), stringMapValue(bindingMap, "workflow_skill_id"), stringMapValue(bindingMap, "workflowId"), stringMapValue(bindingMap, "workflow_id")),
-					Version:    firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowVersion"), stringMapValue(bindingMap, "workflow_version")),
-					Kind:       "workflow_skill",
-					Required:   true,
-					Source:     "hub",
-					InstallRef: maclawAppDependencyInstallRef(bindingMap),
+					ID:          firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowSkillId"), stringMapValue(bindingMap, "workflow_skill_id"), stringMapValue(bindingMap, "workflowId"), stringMapValue(bindingMap, "workflow_id")),
+					Version:     firstNonEmptyMISAgentView(stringMapValue(bindingMap, "workflowVersion"), stringMapValue(bindingMap, "workflow_version")),
+					Kind:        "workflow_skill",
+					Required:    true,
+					Source:      "hub",
+					InstallRef:  maclawAppDependencyInstallRef(bindingMap),
+					CanonicalID: maclawAppDependencyCanonicalID(bindingMap),
+					Aliases:     maclawAppDependencyAliases(bindingMap),
 				})
 			}
 		}
@@ -6248,12 +6299,14 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 					required = rawRequired
 				}
 				add(maclawAppInstallPlanDependency{
-					ID:         stringMapValue(depMap, "id"),
-					Version:    stringMapValue(depMap, "version"),
-					Kind:       stringMapValue(depMap, "kind"),
-					Required:   required,
-					Source:     stringMapValue(depMap, "source"),
-					InstallRef: maclawAppDependencyInstallRef(depMap),
+					ID:          stringMapValue(depMap, "id"),
+					Version:     stringMapValue(depMap, "version"),
+					Kind:        stringMapValue(depMap, "kind"),
+					Required:    required,
+					Source:      stringMapValue(depMap, "source"),
+					InstallRef:  maclawAppDependencyInstallRef(depMap),
+					CanonicalID: maclawAppDependencyCanonicalID(depMap),
+					Aliases:     maclawAppDependencyAliases(depMap),
 				})
 			}
 		}
@@ -6271,6 +6324,28 @@ func maclawAppDependencyInstallRef(values map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func maclawAppDependencyCanonicalID(values map[string]any) string {
+	if values == nil {
+		return ""
+	}
+	for _, key := range []string{"canonical_id", "canonicalID", "install_target", "installTarget", "target_id", "targetID"} {
+		if value := stringMapValue(values, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func maclawAppDependencyAliases(values map[string]any) []string {
+	if values == nil {
+		return nil
+	}
+	aliases := append([]string{}, maclawAppStringSliceFromAny(values["aliases"])...)
+	aliases = append(aliases, maclawAppStringSliceFromAny(values["install_aliases"])...)
+	aliases = append(aliases, maclawAppStringSliceFromAny(values["installAliases"])...)
+	return appendMaclawAppUniqueStrings(nil, aliases...)
 }
 
 func maclawAppNumberFromAny(value any) (float64, bool) {
@@ -7706,6 +7781,12 @@ func maclawAppSerializableResolvedDeps(deps []maclawAppInstallPlanDependency) []
 		if dep.Version != "" {
 			entry["version"] = dep.Version
 		}
+		if dep.CanonicalID != "" {
+			entry["canonical_id"] = dep.CanonicalID
+		}
+		if len(dep.Aliases) > 0 {
+			entry["aliases"] = append([]string(nil), dep.Aliases...)
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -8162,6 +8243,9 @@ func maclawAppParseDependencyInstallRef(dep maclawAppInstallPlanDependency) (kin
 	ref := strings.TrimSpace(dep.InstallRef)
 	source := strings.ToLower(strings.TrimSpace(dep.Source))
 	if ref == "" {
+		if resolved, ok := maclawAppImplicitHubSkillResolution(dep); ok {
+			return "hub", resolved.Target, strings.TrimSpace(dep.Version), "ok", resolved.Message
+		}
 		switch source {
 		case "enterprise", "enterprise_hub", "github":
 			return "", "", "", "missing", fmt.Sprintf("required skill dependency %q from %s must include install_ref", dep.ID, dep.Source)
@@ -8231,6 +8315,123 @@ func maclawAppParseDependencyInstallRef(dep maclawAppInstallPlanDependency) (kin
 	return "id", ref, "", "ok", "install_ref resolved"
 }
 
+type maclawAppDependencyImplicitResolution struct {
+	Target     string
+	Aliases    []string
+	LocalNames []string
+	Message    string
+}
+
+type maclawAppDependencyAliasRegistryEntry struct {
+	Target     string
+	Aliases    []string
+	LocalNames []string
+	Sources    []string
+	Kinds      []string
+}
+
+var maclawAppDependencyAliasRegistry = []maclawAppDependencyAliasRegistryEntry{
+	{
+		Target:     "rapidocr",
+		Aliases:    []string{"RapidOCR", "rapidocr-runtime"},
+		LocalNames: []string{"rapidocr-runtime"},
+		Sources:    []string{"", "hub", "skillhub"},
+		Kinds:      []string{"", "runtime_skill", "app_skill", "skill"},
+	},
+}
+
+func maclawAppImplicitHubSkillResolution(dep maclawAppInstallPlanDependency) (maclawAppDependencyImplicitResolution, bool) {
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	if source != "" && source != "hub" && source != "skillhub" {
+		return maclawAppDependencyImplicitResolution{}, false
+	}
+	kind := strings.ToLower(strings.TrimSpace(dep.Kind))
+	if !maclawAppDependencyKindAllowsImplicitHubTarget(kind) {
+		return maclawAppDependencyImplicitResolution{}, false
+	}
+	if target := strings.TrimSpace(dep.CanonicalID); target != "" {
+		return maclawAppDependencyImplicitResolution{
+			Target:     target,
+			Aliases:    appendMaclawAppUniqueStrings([]string{dep.ID}, dep.Aliases...),
+			LocalNames: maclawAppImplicitHubLocalNames(target, kind),
+			Message:    "declared dependency canonical target resolved",
+		}, true
+	}
+	values := append([]string{dep.ID}, dep.Aliases...)
+	for _, entry := range maclawAppDependencyAliasRegistry {
+		if !maclawAppDependencyAliasRegistryAllows(entry.Sources, source) || !maclawAppDependencyAliasRegistryAllows(entry.Kinds, kind) {
+			continue
+		}
+		for _, value := range values {
+			if maclawAppDependencyAliasMatches(value, entry.Target, entry.Aliases, entry.LocalNames) {
+				return maclawAppDependencyImplicitResolution{
+					Target:     entry.Target,
+					Aliases:    appendMaclawAppUniqueStrings(append([]string{}, entry.Aliases...), dep.Aliases...),
+					LocalNames: append([]string{}, entry.LocalNames...),
+					Message:    "known dependency alias target resolved",
+				}, true
+			}
+		}
+	}
+	return maclawAppDependencyImplicitResolution{}, false
+}
+
+func maclawAppDependencyKindAllowsImplicitHubTarget(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "runtime_skill", "app_skill", "skill", "workflow_skill", "connector_skill", "data_skill", "tool_skill":
+		return true
+	default:
+		return false
+	}
+}
+
+func maclawAppImplicitHubLocalNames(target, kind string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	names := []string{target}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "runtime_skill":
+		names = append(names, target+"-runtime")
+	}
+	return appendMaclawAppUniqueStrings(nil, names...)
+}
+
+func maclawAppDependencyAliasRegistryAllows(allowed []string, value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, item := range allowed {
+		if strings.ToLower(strings.TrimSpace(item)) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppDependencyAliasMatches(value, target string, aliases, localNames []string) bool {
+	key := maclawAppNormalizeDependencyAlias(value)
+	if key == "" {
+		return false
+	}
+	for _, candidate := range append(append([]string{target}, aliases...), localNames...) {
+		if key == maclawAppNormalizeDependencyAlias(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppNormalizeDependencyAlias(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func maclawAppInstallRefSourceMatches(source, kind string) bool {
 	source = strings.ToLower(strings.TrimSpace(source))
 	kind = strings.ToLower(strings.TrimSpace(kind))
@@ -8269,9 +8470,11 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	}
 	// Build a lookup from resolved entries: id → {install_ref, source, version}
 	type resolvedEntry struct {
-		InstallRef string
-		Source     string
-		Version    string
+		InstallRef  string
+		Source      string
+		Version     string
+		CanonicalID string
+		Aliases     []string
 	}
 	lookup := make(map[string]resolvedEntry, len(allResolved))
 	for _, item := range allResolved {
@@ -8287,9 +8490,11 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 		key := strings.ToLower(id)
 		if _, exists := lookup[key]; !exists {
 			lookup[key] = resolvedEntry{
-				InstallRef: ref,
-				Source:     stringFromMapSafe(resMap, "source"),
-				Version:    stringFromMapSafe(resMap, "version"),
+				InstallRef:  ref,
+				Source:      stringFromMapSafe(resMap, "source"),
+				Version:     stringFromMapSafe(resMap, "version"),
+				CanonicalID: firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "canonical_id"), stringFromMapSafe(resMap, "canonicalID")),
+				Aliases:     maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(resMap["aliases"], resMap["install_aliases"], resMap["installAliases"])),
 			}
 		}
 	}
@@ -8313,6 +8518,12 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 		}
 		if entry.Version != "" && deps[i].Version == "" {
 			deps[i].Version = entry.Version
+		}
+		if entry.CanonicalID != "" && strings.TrimSpace(deps[i].CanonicalID) == "" {
+			deps[i].CanonicalID = entry.CanonicalID
+		}
+		if len(entry.Aliases) > 0 {
+			deps[i].Aliases = appendMaclawAppUniqueStrings(deps[i].Aliases, entry.Aliases...)
 		}
 	}
 }

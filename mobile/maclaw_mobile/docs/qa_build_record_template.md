@@ -18,7 +18,7 @@ Git commit: 7-40 character hexadecimal commit SHA
 Branch: git branch name
 Tester:
 Flutter version: Flutter x.y.z
-MaClaw account: email or account ID
+MaClaw account: phone:<number> or masked phone:<last-digits>
 HubCenter candidates: https://hubs.mypapers.top, https://hubs.maclaw.top, https://hubs2.maclaw.top
 Selected HubCenter URL:
 Discovered Hub URL:
@@ -44,7 +44,10 @@ No custom Hub URL setting found:
 
 If the artifact path is available on the validation machine, the QA validator
 checks that the recorded SHA256 matches the local `.apk` or `.aab` file.
-Use `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
+Use `python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
+or `python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
+to build and print paste-ready signed artifact evidence immediately. For an
+already-built artifact, use `python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"`
 to generate paste-ready `Artifact path`, `SHA256`, byte-size, version/build,
 signing identity, and installer channel evidence.
 
@@ -91,7 +94,10 @@ URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER):
 profiles` must mention both Runner and Share Extension profiles.
 Do not write only `UUID`; include the actual profile UUID value,
 `.mobileprovision` file, or explicit profile name for each target.
-Use `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+Use `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+to print archive/export context and paste-ready iOS evidence during signed
+archive planning. For an already-built archive or TestFlight build, use
+`python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
 to generate paste-ready archive/build, Team ID, and provisioning-profile
 evidence.
 
@@ -123,12 +129,20 @@ Screenshots / recordings:
 ## Hub Discovery And Service Smoke Test
 
 ```text
-# Include MaClaw official account login through HubCenter and the resulting
-# authenticated mobile session.
+# Include phone-number-only MaClaw official login through HubCenter: SMS
+# verification code accepted, new/returning phone account behavior if observed,
+# authenticated mobile session, the same phone account recorded above, and
+# official credits bound to that phone account.
 Login result:
 Bootstrap user/quota/feature flags/service status:
+# Include the selected HubCenter URL recorded above in the probe evidence.
 HubCenter probe result:
+# Include the Discovered Hub URL and Tenant ID recorded above.
 Discovered Hub/tenant result:
+# For maclaw_official mode, include the same phone:<number> account recorded
+# above and prove LLM calls use that phone account's MaClaw official
+# credits/quota. For desktop_qr_third_party, include desktop GUI QR proof and
+# the matching Desktop GUI QR authorization ID recorded above.
 LLM access evidence:
 LLM setup surface restriction:
 AI search query:
@@ -153,7 +167,11 @@ Digital employee task ID:
 # in status polling and realtime evidence so the status can be traced.
 Status polling result:
 Realtime update evidence:
+# Include typed payloads opened from real notifications:
+# document-export:/document-draft:/document-upload:, digital-employee-task:,
+# and server-profile:.
 Notification delivery evidence:
+# Record the discovered Hub origin URL only; do not paste endpoint paths.
 API base URL confirmation:
 Realtime Hub URL confirmation:
 Network offline/recovery evidence:
@@ -179,6 +197,8 @@ Command output excerpt:
 Disconnect result:
 Reconnect result:
 Copied output evidence:
+# Include the SSH terminal/log output preview, the sensitive-data warning, and
+# proof that the output was redacted/masked/sanitized before AI analysis.
 AI analysis confirmation and sensitive-data warning:
 # Include AI explanation, command drafts, and manual/not-auto-executed evidence.
 AI explanation / command draft result:

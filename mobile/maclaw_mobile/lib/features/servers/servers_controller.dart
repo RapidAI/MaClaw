@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
 import 'server_command.dart';
@@ -33,7 +34,13 @@ class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
     String privateKey = '',
     String privateKeyPassphrase = '',
   }) async {
-    if (!profile.isValid) return;
+    if (!profile.isValid) {
+      throw ArgumentError.value(
+        profile,
+        'profile',
+        'Server profile requires host, port, and username.',
+      );
+    }
     final current = state.valueOrNull ?? await future;
     final next = [
       ...current.where((item) => item.id != profile.id),
@@ -97,6 +104,7 @@ class ServerCommandsController extends AsyncNotifier<List<ServerCommandEntry>> {
             lastUsedAt: now,
           )
         : existing.copyWith(
+            label: _labelFor(text),
             favorite: existing.favorite || favorite,
             lastUsedAt: now,
           );
@@ -127,8 +135,9 @@ class ServerCommandsController extends AsyncNotifier<List<ServerCommandEntry>> {
   }
 
   String _labelFor(String command) {
-    final first = command.split(RegExp(r'\s+')).take(3).join(' ');
-    return first.length > 32 ? '${first.substring(0, 32)}...' : first;
+    final redacted = redactMobileSensitiveText(command);
+    final first = redacted.split(RegExp(r'\s+')).take(3).join(' ');
+    return first.length > 64 ? '${first.substring(0, 64)}...' : first;
   }
 }
 
@@ -139,12 +148,14 @@ class SSHAnalysisController extends AsyncNotifier<MobileSSHAnalysis?> {
   Future<void> analyze(String output) async {
     final text = output.trim();
     if (text.isEmpty) return;
+    await ref.read(sessionControllerProvider.future);
     final client = ref.read(apiClientProvider);
     if (client == null) {
       state = AsyncError(StateError('请先登录官方服务。'), StackTrace.current);
       return;
     }
+    final redacted = redactMobileSensitiveText(text);
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() => client.analyzeSSHOutput(text));
+    state = await AsyncValue.guard(() => client.analyzeSSHOutput(redacted));
   }
 }

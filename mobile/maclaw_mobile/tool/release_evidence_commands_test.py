@@ -74,6 +74,93 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             command,
         )
 
+    def test_custom_records_dir_flows_through_record_prefills_and_logs(self) -> None:
+        records_dir = "tmp/qa-builds"
+
+        self.assertEqual(
+            {
+                "Release handoff result": (
+                    "release_handoff.py output saved to "
+                    "tmp/qa-builds/handoff-android-1.0.0+42.md"
+                ),
+                "Runtime boundary verification result": (
+                    "MaClaw Mobile runtime boundary verified. "
+                    "log: tmp/qa-builds/runtime-boundary-1.0.0+42.log"
+                ),
+                "Automated release gates result": (
+                    "run_release_gates.py: 38 gates passed; "
+                    "log: tmp/qa-builds/release-gates-1.0.0+42.log"
+                ),
+            },
+            release_evidence_commands.final_decision_prefills(
+                "1.0.0+42",
+                scope="android",
+                records_dir=records_dir,
+            ),
+        )
+        self.assertEqual(
+            'python3 tool/create_qa_build_record.py --scope android --version 1.0.0+42 '
+            '--release-handoff-result "release_handoff.py output saved to tmp/qa-builds/handoff-android-1.0.0+42.md" '
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: tmp/qa-builds/runtime-boundary-1.0.0+42.log" '
+            '--automated-gates-result "run_release_gates.py: 38 gates passed; log: tmp/qa-builds/release-gates-1.0.0+42.log" '
+            "--records-dir tmp/qa-builds",
+            release_evidence_commands.create_record_command(
+                scope="android",
+                version="1.0.0+42",
+                records_dir=records_dir,
+            ),
+        )
+
+    def test_custom_records_dir_flows_through_signed_qa_record_hint(self) -> None:
+        hint = release_evidence_commands.signed_qa_record_hint(
+            scope="android",
+            version="1.0.0+42",
+            records_dir="tmp/qa-builds",
+        )
+
+        for expected in [
+            release_evidence_commands.release_handoff_command(
+                scope="android",
+                version="1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.runtime_boundary_command(
+                "1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.release_gates_command(
+                "1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.create_record_command(
+                scope="android",
+                version="1.0.0+42",
+                records_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.android_artifact_evidence_command(
+                "1.0.0+42",
+                record_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.validate_qa_build_record_command(
+                "tmp/qa-builds/<YYYY-MM-DD>-android-1.0.0+42.md",
+            ),
+            release_evidence_commands.qa_build_record_report_command(
+                "tmp/qa-builds/<YYYY-MM-DD>-android-1.0.0+42.md",
+            ),
+            release_evidence_commands.qa_release_evidence_link_command(
+                scope="android",
+                records_dir="tmp/qa-builds",
+            ),
+            release_evidence_commands.verify_final_release_evidence_command(
+                "tmp/qa-builds",
+                scope="android",
+                version="1.0.0+42",
+                log="tmp/qa-builds/final-release-evidence-android-1.0.0+42.log",
+            ),
+        ]:
+            self.assertIn(expected, hint)
+        self.assertNotIn("--record-dir docs/qa-builds", hint)
+
     def test_handoff_evidence_path_is_shared(self) -> None:
         self.assertEqual(
             "docs/qa-builds/handoff-1.0.0+42.md",
@@ -251,7 +338,13 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.release_gates_command(),
             release_evidence_commands.create_record_command(),
             release_evidence_commands.android_artifact_evidence_command(),
-            release_evidence_commands.ios_artifact_evidence_command(),
+            release_evidence_commands.ios_release_plan_command(
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+            ),
+            release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+            ),
             release_evidence_commands.validate_qa_build_record_command(),
             release_evidence_commands.qa_build_record_report_command(),
             release_evidence_commands.qa_release_evidence_link_command(),
@@ -291,7 +384,24 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             hint.index(release_evidence_commands.android_artifact_evidence_command()),
         )
         self.assertLess(
-            hint.index(release_evidence_commands.ios_artifact_evidence_command()),
+            hint.index(
+                release_evidence_commands.ios_release_plan_command(
+                    provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                    record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+                ),
+            ),
+            hint.index(
+                release_evidence_commands.ios_artifact_evidence_command(
+                    archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+                ),
+            ),
+        )
+        self.assertLess(
+            hint.index(
+                release_evidence_commands.ios_artifact_evidence_command(
+                    archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+                ),
+            ),
             hint.index(release_evidence_commands.validate_qa_build_record_command()),
         )
 
@@ -362,6 +472,14 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             ),
             android_hint,
         )
+        self.assertNotIn(
+            release_evidence_commands.ios_release_plan_command(
+                team_id="ABCDE12345",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+            ),
+            android_hint,
+        )
 
         ios_hint = release_evidence_commands.signed_qa_record_hint(
             scope="ios",
@@ -371,7 +489,17 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
 
         self.assertIn(
             release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
                 team_id="ABCDE12345",
+            ),
+            ios_hint,
+        )
+        self.assertIn(
+            release_evidence_commands.ios_release_plan_command(
+                team_id="ABCDE12345",
+                export_method="<export-method>",
+                provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+                record_dir=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
             ),
             ios_hint,
         )
@@ -506,6 +634,13 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 export_method="ad-hoc",
             ),
         )
+        self.assertEqual(
+            "python3 tool/qa_preflight.py --scope android --records-dir custom-records",
+            release_evidence_commands.qa_preflight_command(
+                scope="android",
+                records_dir="custom-records",
+            ),
+        )
 
     def test_runtime_boundary_and_release_gate_commands_are_shared(self) -> None:
         self.assertEqual(
@@ -546,6 +681,33 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             "python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method <export-method>",
             release_evidence_commands.ios_release_plan_command(),
         )
+        self.assertEqual(
+            'python3 tool/plan_ios_release.py --team-id ABCDE12345 --export-method ad-hoc '
+            '--provisioning-profiles "Runner profile; Share profile" '
+            "--record-dir custom-records",
+            release_evidence_commands.ios_release_plan_command(
+                team_id="ABCDE12345",
+                export_method="ad-hoc",
+                provisioning_profiles="Runner profile; Share profile",
+                record_dir="custom-records",
+            ),
+        )
+
+    def test_ios_release_plan_command_requires_complete_evidence_options(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires provisioning_profiles and record_dir together",
+        ):
+            release_evidence_commands.ios_release_plan_command(
+                provisioning_profiles="Runner profile; Share profile",
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires provisioning_profiles and record_dir together",
+        ):
+            release_evidence_commands.ios_release_plan_command(
+                record_dir="custom-records",
+            )
 
     def test_android_release_build_command_splits_version_build(self) -> None:
         self.assertEqual(
@@ -570,6 +732,17 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 artifact="appbundle",
             ),
         )
+        self.assertEqual(
+            'python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 '
+            '--record-dir custom-records --signing-identity "release alias SHA256:AA" '
+            '--installer-channel "Firebase App Distribution internal track"',
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir="custom-records",
+                signing_identity="release alias SHA256:AA",
+                installer_channel="Firebase App Distribution internal track",
+            ),
+        )
 
     def test_android_release_build_command_rejects_malformed_version(self) -> None:
         with self.assertRaisesRegex(ValueError, r"<app-version>\+<build-number>"):
@@ -584,6 +757,13 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.android_release_build_command(
                 "1.0.0+42",
                 artifact="aab",
+            )
+
+    def test_android_release_build_command_requires_complete_evidence_options(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires record_dir"):
+            release_evidence_commands.android_release_build_command(
+                "1.0.0+42",
+                record_dir="custom-records",
             )
 
     def test_android_artifact_evidence_command_is_shared(self) -> None:
@@ -611,7 +791,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
     def test_ios_artifact_evidence_command_is_shared(self) -> None:
         self.assertEqual(
             'python3 tool/signed_artifact_evidence.py ios '
-            '--archive-or-build "<Xcode archive path or TestFlight build number>" '
+            '--archive-or-build "build/ios/archive/MaClawMobile.xcarchive" '
             '--team-id ABCDE12345 '
             '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" '
             "--record-dir docs/qa-builds",
@@ -632,6 +812,153 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 record_dir="custom-records",
             ),
         )
+
+    def test_release_docs_use_shared_android_artifact_evidence_command(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        command = release_evidence_commands.android_artifact_evidence_command()
+
+        for relative_path in [
+            "docs/qa_build_record_template.md",
+            "docs/qa_device_checklist.md",
+            "docs/release_checklist.md",
+        ]:
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn(command, text, relative_path)
+
+    def test_release_docs_use_shared_ios_artifact_evidence_command(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        command = release_evidence_commands.ios_artifact_evidence_command()
+
+        for relative_path in [
+            "docs/qa_build_record_template.md",
+            "docs/qa_device_checklist.md",
+            "docs/release_checklist.md",
+            "docs/qa-builds/README.md",
+        ]:
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn(command, text, relative_path)
+
+    def test_release_docs_use_shared_final_evidence_commands(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        default_link_command = release_evidence_commands.qa_release_evidence_link_command()
+        default_final_command = (
+            release_evidence_commands.verify_final_release_evidence_command(
+                version=release_evidence_commands.DEFAULT_VERSION,
+            )
+        )
+        android_link_command = release_evidence_commands.qa_release_evidence_link_command(
+            scope="android",
+        )
+        android_final_command = (
+            release_evidence_commands.verify_final_release_evidence_command(
+                scope="android",
+                version=release_evidence_commands.DEFAULT_VERSION,
+            )
+        )
+
+        for relative_path in [
+            "docs/qa_device_checklist.md",
+            "docs/release_checklist.md",
+            "docs/release_evidence.md",
+            "docs/qa-builds/README.md",
+        ]:
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn(default_link_command, text, relative_path)
+            self.assertIn(default_final_command, text, relative_path)
+        for relative_path in [
+            "docs/qa_device_checklist.md",
+            "docs/release_checklist.md",
+            "docs/qa-builds/README.md",
+        ]:
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            self.assertIn(android_link_command, text, relative_path)
+            self.assertIn(android_final_command, text, relative_path)
+
+    def test_release_docs_use_shared_preflight_and_log_commands(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        cases = {
+            "docs/qa_device_checklist.md": "<version+build>",
+            "docs/qa-builds/README.md": "1.0.0+42",
+        }
+
+        for relative_path, version in cases.items():
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            for command in [
+                release_evidence_commands.release_status_report_command(
+                    export_method="development",
+                ),
+                release_evidence_commands.qa_preflight_command(
+                    scope="android-ios",
+                    team_id="<APPLE_TEAM_ID>",
+                    export_method="development",
+                ),
+                release_evidence_commands.runtime_boundary_command(version),
+                release_evidence_commands.release_gates_command(version),
+            ]:
+                self.assertIn(command, text, relative_path)
+        scoped_text = (mobile_root / "docs/qa-builds/README.md").read_text(
+            encoding="utf-8",
+        )
+        for command in [
+            release_evidence_commands.release_status_report_command(scope="android"),
+            release_evidence_commands.qa_preflight_command(scope="android"),
+            release_evidence_commands.release_status_report_command(
+                scope="ios",
+                export_method="development",
+            ),
+            release_evidence_commands.qa_preflight_command(
+                scope="ios",
+                team_id="<APPLE_TEAM_ID>",
+                export_method="development",
+            ),
+        ]:
+            self.assertIn(command, scoped_text)
+
+    def test_release_docs_use_shared_handoff_commands(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        cases = {
+            "docs/qa_device_checklist.md": "<version+build>",
+            "docs/qa-builds/README.md": "1.0.0+42",
+        }
+
+        for relative_path, version in cases.items():
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            for command in [
+                release_evidence_commands.release_handoff_command(
+                    version=version,
+                    export_method="development",
+                ),
+                release_evidence_commands.release_handoff_command(
+                    version=version,
+                    scope="android",
+                    export_method="development",
+                ),
+                release_evidence_commands.release_handoff_command(
+                    version=version,
+                    scope="ios",
+                    export_method="development",
+                ),
+            ]:
+                self.assertIn(command, text, relative_path)
+
+    def test_release_docs_use_shared_record_prefill_fragments(self) -> None:
+        mobile_root = Path(__file__).resolve().parents[1]
+        cases = {
+            "docs/qa_device_checklist.md": "<version+build>",
+            "docs/qa-builds/README.md": "1.0.0+42",
+        }
+
+        for relative_path, version in cases.items():
+            command = release_evidence_commands.create_record_command(version=version)
+            text = (mobile_root / relative_path).read_text(encoding="utf-8")
+            for fragment in [
+                f"--scope android-ios --version {version}",
+                f'--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-{version}.md"',
+                f'--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-{version}.log"',
+                f'--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-{version}.log"',
+            ]:
+                self.assertIn(fragment, command)
+                self.assertIn(fragment, text, relative_path)
 
     def test_qa_build_record_validate_and_report_commands_are_shared(self) -> None:
         record = "docs/qa-builds/2026-07-02-android-ios-1.0.0+42.md"
@@ -716,14 +1043,27 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 "custom-records",
             ),
         )
+        self.assertEqual(
+            "python3 tool/verify_final_release_evidence.py custom-records "
+            "--scope ios --log custom-records/final-release-evidence-ios-1.0.0+42.log",
+            release_evidence_commands.verify_final_release_evidence_command(
+                "custom-records",
+                scope="ios",
+                version="1.0.0+42",
+            ),
+        )
 
     def test_automated_release_gate_success_line_is_exact_runner_evidence(self) -> None:
         self.assertEqual(
-            "All MaClaw Mobile automated release gates passed.",
+            "All MaClaw Mobile automated release gates passed: 38 gates passed.",
             release_evidence_commands.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
         )
         self.assertIn(
             "MaClaw Mobile",
+            release_evidence_commands.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
+        )
+        self.assertIn(
+            f"{release_evidence_commands.AUTOMATED_RELEASE_GATE_COUNT} gates passed",
             release_evidence_commands.AUTOMATED_RELEASE_GATE_SUCCESS_LINE,
         )
 
@@ -760,10 +1100,32 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.qa_release_evidence_link_hint(scope="android"),
         )
         self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                records_dir="custom-records",
+                scope="ios",
+            ),
+            release_evidence_commands.qa_release_evidence_link_hint(
+                records_dir="custom-records",
+                scope="ios",
+            ),
+        )
+        self.assertIn(
             release_evidence_commands.verify_final_release_evidence_command(
                 version="<version+build>",
             ),
             release_evidence_commands.qa_release_evidence_link_hint(),
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                "custom-records",
+                scope="ios",
+                version="<version+build>",
+                log="custom-records/final-release-evidence-ios-<version+build>.log",
+            ),
+            release_evidence_commands.qa_release_evidence_link_hint(
+                records_dir="custom-records",
+                scope="ios",
+            ),
         )
         self.assertIn(
             release_evidence_commands.verify_final_release_evidence_command(
@@ -794,6 +1156,12 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         self.assertIn("one version/build", hint)
         self.assertIn("docs/qa-builds", hint)
         self.assertIn("--version <version+build>", hint)
+        self.assertIn(
+            "custom-records",
+            release_evidence_commands.qa_record_version_mismatch_hint(
+                records_dir="custom-records",
+            ),
+        )
 
 
 if __name__ == "__main__":

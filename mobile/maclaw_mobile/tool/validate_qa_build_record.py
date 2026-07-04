@@ -32,8 +32,8 @@ BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]{3,128}$")
 APPLE_TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 TENANT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 FLUTTER_VERSION_RE = re.compile(r"(?i)\bflutter\s+\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?\b")
-MACLAW_ACCOUNT_RE = re.compile(
-    r"(?i)(?:^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$|(?:account|user|id)[:#=\s-]*[A-Z0-9._@+-]{4,})"
+MACLAW_PHONE_ACCOUNT_RE = re.compile(
+    r"(?i)\bphone:\s*(?P<phone>\+?\d[\d .-]{5,20}|\*{2,}\d{2,6})\b"
 )
 VERSION_BUILD_RE = re.compile(
     r"(?i)(?:\b\d+(?:\.\d+){1,3}\+\d+\b|(?:version|v)\s*\d+(?:\.\d+){1,3}.*\bbuild\s*\d+\b)"
@@ -691,8 +691,33 @@ def _is_maclaw_account(value: str) -> bool:
     return (
         len(normalized) >= 6
         and normalized not in PLACEHOLDER_VALUES
-        and MACLAW_ACCOUNT_RE.search(value.strip()) is not None
+        and MACLAW_PHONE_ACCOUNT_RE.search(value.strip()) is not None
     )
+
+
+def _phone_account_refs(value: str) -> list[str]:
+    return [
+        _normalize_phone_account_ref(match.group("phone"))
+        for match in MACLAW_PHONE_ACCOUNT_RE.finditer(value)
+    ]
+
+
+def _normalize_phone_account_ref(value: str) -> str:
+    return re.sub(r"[\s.-]+", "", value.strip().lower())
+
+
+def _phone_digits(value: str) -> str:
+    return re.sub(r"\D+", "", value)
+
+
+def _phone_account_ref_matches_login(account_ref: str, login_refs: list[str]) -> bool:
+    if account_ref.startswith("*"):
+        account_tail = _phone_digits(account_ref)
+        return bool(account_tail) and any(
+            login_ref == account_ref or _phone_digits(login_ref).endswith(account_tail)
+            for login_ref in login_refs
+        )
+    return account_ref in login_refs
 
 
 def _is_tenant_id(value: str) -> bool:
@@ -969,6 +994,11 @@ def _is_ssh_ai_analysis_warning_evidence(value: str) -> bool:
         and "analysis" in normalized
         and "sensitive" in normalized
         and any(marker in normalized for marker in ("preview", "confirm", "confirmation"))
+        and any(marker in normalized for marker in ("ssh", "terminal", "log", "output"))
+        and any(
+            marker in normalized
+            for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
+        )
     )
 
 
@@ -1068,10 +1098,26 @@ def _is_notification_delivery_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("notification", "notify", "提醒"))
         and any(marker in normalized for marker in ("delivered", "shown", "received", "displayed", "appeared"))
         and any(marker in normalized for marker in ("payload", "tap", "clicked", "opened", "deep link"))
+        and _mentions_typed_notification_payloads(normalized)
         and any(marker in normalized for marker in ("document", "export"))
         and any(marker in normalized for marker in ("digital employee", "task"))
         and "ssh" in normalized
         and any(marker in normalized for marker in ("abnormal", "disconnect", "connection", "exception", "异常"))
+    )
+
+
+def _mentions_typed_notification_payloads(normalized: str) -> bool:
+    return (
+        any(
+            marker in normalized
+            for marker in (
+                "document-export:",
+                "document-draft:",
+                "document-upload:",
+            )
+        )
+        and "digital-employee-task:" in normalized
+        and "server-profile:" in normalized
     )
 
 
@@ -1178,7 +1224,11 @@ def _is_login_result_evidence(value: str) -> bool:
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("login", "logged in", "authenticated", "session"))
         and "maclaw" in normalized
-        and any(marker in normalized for marker in ("official", "account"))
+        and "official" in normalized
+        and bool(_phone_account_refs(value))
+        and "phone" in normalized
+        and any(marker in normalized for marker in ("sms", "verification code", "验证码"))
+        and any(marker in normalized for marker in ("credits", "credit", "额度"))
         and "hubcenter" in normalized
     )
 
@@ -1191,6 +1241,8 @@ def _is_official_llm_access_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("available", "authorized", "access", "mode"))
         and "maclaw" in normalized
         and "official" in normalized
+        and bool(_phone_account_refs(value))
+        and any(marker in normalized for marker in ("credits", "credit", "quota", "额度"))
     )
 
 
@@ -1299,8 +1351,26 @@ def _url_origin(value: str) -> tuple[str, str]:
     return parsed.scheme.lower(), parsed.netloc.lower()
 
 
+def _is_origin_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return (
+        parsed.scheme.lower() == "https"
+        and bool(parsed.netloc)
+        and parsed.path in ("", "/")
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
 def _same_origin(left: str, right: str) -> bool:
     return _url_origin(left) == _url_origin(right)
+
+
+def _mentions_selected_hubcenter(value: str, selected_hubcenter: str) -> bool:
+    normalized = value.strip().lower()
+    selected = re.escape(selected_hubcenter.strip().lower())
+    return re.search(rf"\bselected\b[^\n;,.]{{0,80}}{selected}", normalized) is not None
 
 
 def _is_trackable_android_artifact_path(value: str) -> bool:
@@ -1481,6 +1551,17 @@ def missing_required_fields(
         value in OFFICIAL_HUBCENTER_URLS for value in selected_hubcenter_values
     ):
         missing.append("Selected HubCenter URL must be one of the preset official HubCenters")
+    hubcenter_probe_values = [
+        value for value in values.get("HubCenter probe result", []) if value
+    ]
+    if selected_hubcenter_values and hubcenter_probe_values and not all(
+        any(
+            _mentions_selected_hubcenter(probe, selected)
+            for probe in hubcenter_probe_values
+        )
+        for selected in selected_hubcenter_values
+    ):
+        missing.append("HubCenter probe result must reference the selected HubCenter URL")
     for field in URL_FIELDS:
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_https_url(value) for value in field_values):
@@ -1488,22 +1569,49 @@ def missing_required_fields(
     discovered_hub_values = [
         value for value in values.get("Discovered Hub URL", []) if value and _is_https_url(value)
     ]
+    if discovered_hub_values and not all(_is_origin_url(value) for value in discovered_hub_values):
+        missing.append("Discovered Hub URL must be the tenant Hub origin URL")
     if discovered_hub_values and not all(
         value not in OFFICIAL_HUBCENTER_URLS for value in discovered_hub_values
     ):
         missing.append("Discovered Hub URL must be a tenant Hub, not a HubCenter URL")
+    discovered_hub_tenant_values = [
+        value for value in values.get("Discovered Hub/tenant result", []) if value
+    ]
+    tenant_ids_for_discovery = [value for value in values.get("Tenant ID", []) if value]
+    if discovered_hub_values and discovered_hub_tenant_values and not all(
+        any(
+            discovered_hub.strip().lower() in evidence.strip().lower()
+            for evidence in discovered_hub_tenant_values
+        )
+        for discovered_hub in discovered_hub_values
+    ):
+        missing.append("Discovered Hub/tenant result must reference the recorded Discovered Hub URL")
+    if tenant_ids_for_discovery and discovered_hub_tenant_values and not all(
+        any(
+            tenant_id.strip().lower() in evidence.strip().lower()
+            for evidence in discovered_hub_tenant_values
+        )
+        for tenant_id in tenant_ids_for_discovery
+    ):
+        missing.append("Discovered Hub/tenant result must reference the recorded Tenant ID")
     for field in ["API base URL confirmation", "Realtime Hub URL confirmation"]:
         field_values = [value for value in values.get(field, []) if value and _is_https_url(value)]
+        if field_values and not all(_is_origin_url(value) for value in field_values):
+            missing.append(f"{field} must be the discovered Hub origin URL")
         if (
             discovered_hub_values
             and field_values
-            and not any(
-                _same_origin(value, discovered_hub)
+            and not all(
+                any(
+                    value.strip().rstrip("/").lower()
+                    == discovered_hub.strip().rstrip("/").lower()
+                    for discovered_hub in discovered_hub_values
+                )
                 for value in field_values
-                for discovered_hub in discovered_hub_values
             )
         ):
-            missing.append(f"{field} must use the discovered Hub origin")
+            missing.append(f"{field} must match the recorded Discovered Hub URL")
     for field in sorted(MANUAL_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_auditable_note(value) for value in field_values):
@@ -1647,7 +1755,7 @@ def missing_required_fields(
             _is_notification_delivery_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe delivered document, digital employee, and SSH abnormal notifications with payload/open evidence"
+                f"{field} must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence"
             )
     for field in sorted(IOS_URL_SCHEME_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -1719,7 +1827,9 @@ def missing_required_fields(
         if field_values and not all(
             _is_login_result_evidence(value) for value in field_values
         ):
-            missing.append(f"{field} must describe MaClaw official account login through HubCenter")
+            missing.append(
+                f"{field} must describe phone/SMS login through HubCenter and official credits binding"
+            )
     llm_evidence_values = [value for value in values.get("LLM access evidence", []) if value]
     if llm_evidence_values and all(value == "maclaw_official" for value in llm_modes):
         if not all(_is_official_llm_access_evidence(value) for value in llm_evidence_values):
@@ -1787,7 +1897,31 @@ def missing_required_fields(
         missing.append("Branch must be a trackable git branch name")
     maclaw_accounts = [value for value in values.get("MaClaw account", []) if value]
     if maclaw_accounts and not all(_is_maclaw_account(value) for value in maclaw_accounts):
-        missing.append("MaClaw account must identify a trackable MaClaw account email or account ID")
+        missing.append("MaClaw account must identify a trackable phone:<number> MaClaw Mobile account")
+    account_refs = [ref for value in maclaw_accounts for ref in _phone_account_refs(value)]
+    login_refs = [
+        ref
+        for value in values.get("Login result", [])
+        if value
+        for ref in _phone_account_refs(value)
+    ]
+    if account_refs and login_refs and not all(
+        _phone_account_ref_matches_login(ref, login_refs) for ref in account_refs
+    ):
+        missing.append("Login result must reference the recorded MaClaw phone account")
+    llm_phone_refs = [
+        ref
+        for value in values.get("LLM access evidence", [])
+        if value
+        for ref in _phone_account_refs(value)
+    ]
+    if (
+        account_refs
+        and llm_phone_refs
+        and all(value == "maclaw_official" for value in llm_modes)
+        and not all(_phone_account_ref_matches_login(ref, llm_phone_refs) for ref in account_refs)
+    ):
+        missing.append("LLM access evidence must reference the recorded MaClaw phone account")
     tenant_ids = [value for value in values.get("Tenant ID", []) if value]
     if tenant_ids and not all(_is_tenant_id(value) for value in tenant_ids):
         missing.append("Tenant ID must be a trackable tenant identifier")
@@ -1811,6 +1945,13 @@ def missing_required_fields(
         if not qr_values or not all(_is_trackable_id(value) for value in qr_values):
             missing.append(
                 "Desktop GUI QR authorization ID must be trackable for third-party LLM access"
+            )
+        elif llm_evidence_values and not all(
+            any(qr_value.strip().lower() in evidence.strip().lower() for evidence in llm_evidence_values)
+            for qr_value in qr_values
+        ):
+            missing.append(
+                "LLM access evidence must reference the Desktop GUI QR authorization ID"
             )
     sha_values = [value for value in values.get("SHA256", []) if value]
     if sha_values and not all(SHA256_RE.fullmatch(value) for value in sha_values):

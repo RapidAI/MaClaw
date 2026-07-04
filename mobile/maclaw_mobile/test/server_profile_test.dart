@@ -22,6 +22,16 @@ void main() {
       authMode: serverAuthModePassword,
     );
     expect(invalid.isValid, isFalse);
+
+    const invalidHighPort = ServerProfile(
+      id: 'srv-3',
+      name: 'broken-high-port',
+      host: '10.0.0.8',
+      port: 70000,
+      username: 'ops',
+      authMode: serverAuthModePassword,
+    );
+    expect(invalidHighPort.isValid, isFalse);
   });
 
   test('round trips server profile json without secrets', () {

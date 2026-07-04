@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../../features/digital_employees/digital_employee.dart';
 import '../../features/documents/document_draft.dart';
+import 'desktop_llm_qr.dart';
 import 'official_service.dart';
 import '../storage/secure_vault.dart';
 import 'mobile_bootstrap.dart';
@@ -40,12 +41,29 @@ class ApiClient {
     return MobileBootstrap.fromJson(response.data ?? const {});
   }
 
+  Future<LlmServiceStatus> llmServiceStatus([String path = '']) async {
+    final statusPath = _hubScopedPath(
+      path: path,
+      fallbackPath: '/api/llm/service/status',
+    );
+    final response = await _dio.get<Map<String, dynamic>>(
+      statusPath,
+    );
+    final data = response.data ?? const {};
+    return LlmServiceStatus.fromJson(
+      Map<String, dynamic>.from(
+        data['service_status'] as Map? ?? data['status'] as Map? ?? data,
+      ),
+    );
+  }
+
   Future<MobileBootstrap> authorizeThirdPartyLlmWithDesktopQr(
     String qrPayload,
   ) async {
+    final payload = parseMaclawDesktopLlmQrPayload(qrPayload);
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/mobile/llm/desktop-qr-authorizations',
-      data: {'qr_payload': qrPayload.trim()},
+      data: {'qr_payload': payload.raw},
     );
     final data = response.data ?? const {};
     return MobileBootstrap.fromJson(
@@ -164,6 +182,18 @@ class ApiClient {
 
   String absoluteUrl(String path) {
     return maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: path);
+  }
+
+  String _hubScopedPath({
+    required String path,
+    required String fallbackPath,
+  }) {
+    final value = path.trim();
+    if (value.isEmpty) return fallbackPath;
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      return maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: value);
+    }
+    return value;
   }
 
   Future<MobileDocumentUploadTask> uploadDocument(String path) async {

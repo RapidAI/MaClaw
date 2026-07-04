@@ -95,9 +95,12 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
                 output.getvalue(),
             )
             self.assertIn(
-                release_evidence_commands.create_record_command(),
+                release_evidence_commands.create_record_command(
+                    records_dir=str(Path(tmp).resolve()),
+                ),
                 output.getvalue(),
             )
+            self.assertNotIn("--records-dir docs/qa-builds", output.getvalue())
             self.assertIn(
                 f"python3 tool/verify_final_release_evidence.py {Path(tmp).resolve()}",
                 output.getvalue(),
@@ -134,9 +137,14 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
             )
             self.assertIn("--scope android-ios", output.getvalue())
             self.assertIn(
-                "--log docs/qa-builds/final-release-evidence-1.0.0+42.log",
+                f"--log {records_dir.resolve()}",
                 output.getvalue(),
             )
+            self.assertIn(
+                "final-release-evidence-1.0.0+42.log",
+                output.getvalue(),
+            )
+            self.assertNotIn("--log docs/qa-builds", output.getvalue())
 
     def test_main_points_scoped_valid_directory_to_scoped_final_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,9 +167,14 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
             self.assertEqual(0, exit_code)
             self.assertIn("--scope android", output.getvalue())
             self.assertIn(
-                "--log docs/qa-builds/final-release-evidence-android-1.0.0+42.log",
+                f"--log {records_dir.resolve()}",
                 output.getvalue(),
             )
+            self.assertIn(
+                "final-release-evidence-android-1.0.0+42.log",
+                output.getvalue(),
+            )
+            self.assertNotIn("--log docs/qa-builds", output.getvalue())
 
     def test_main_explicit_scope_uses_only_in_scope_records_for_final_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,9 +244,14 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
             self.assertIn("Missing iOS TestFlight evidence", output.getvalue())
             self.assertIn("--scope android", output.getvalue())
             self.assertIn(
-                "--log docs/qa-builds/final-release-evidence-android-1.0.0+42.log",
+                f"--log {records_dir.resolve()}",
                 output.getvalue(),
             )
+            self.assertIn(
+                "final-release-evidence-android-1.0.0+42.log",
+                output.getvalue(),
+            )
+            self.assertNotIn("--log docs/qa-builds", output.getvalue())
             self.assertNotIn("1.0.0+43.log", output.getvalue())
             self.assertNotIn("QA build record directory validation failed", output.getvalue())
             self.assertNotIn("qa_build_record_report.py <failed-record>", output.getvalue())
@@ -273,7 +291,10 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
             )
             self.assertIn("Next action:", output.getvalue())
             self.assertIn(
-                release_evidence_commands.signed_qa_record_hint(scope="android"),
+                release_evidence_commands.signed_qa_record_hint(
+                    scope="android",
+                    records_dir=str(records_dir.resolve()),
+                ),
                 output.getvalue(),
             )
             self.assertIn(

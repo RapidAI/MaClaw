@@ -6,7 +6,10 @@ void main() {
     final bootstrap = MobileBootstrap.fromJson({
       'user': {
         'user_id': 'u1',
-        'email': 'u1@example.com',
+        'email': 'phone:19900001111',
+        'phone_number': '19900001111',
+        'account_id': 'phone:19900001111',
+        'credits_account': ' phone:199 0000-1111 ',
         'tenant_id': 'tenant_a',
       },
       'services': {
@@ -39,6 +42,7 @@ void main() {
         'status': 'available',
         'authorization_id': 'llm-auth-1',
         'authorized_by': 'maclaw-gui',
+        'credits_account': 'phone:199 0000-1111',
         'authorized_at': '2026-07-02T00:00:00Z',
       },
       'limits': {
@@ -47,7 +51,10 @@ void main() {
       },
     });
 
-    expect(bootstrap.user.email, 'u1@example.com');
+    expect(bootstrap.user.email, 'phone:19900001111');
+    expect(bootstrap.user.phoneNumber, '19900001111');
+    expect(bootstrap.user.accountId, 'phone:19900001111');
+    expect(bootstrap.user.creditsAccount, 'phone:19900001111');
     expect(bootstrap.services.hubStatus, 'online');
     expect(bootstrap.services.llmStatus, 'available');
     expect(bootstrap.services.searchStatus, 'available');
@@ -68,6 +75,7 @@ void main() {
     expect(bootstrap.connection.tenantId, 'tenant_a');
     expect(bootstrap.llmAccess.desktopQrDelegated, isTrue);
     expect(bootstrap.llmAccess.authorizationId, 'llm-auth-1');
+    expect(bootstrap.llmAccess.creditsAccount, 'phone:19900001111');
     expect(
       bootstrap.services.digitalEmployeesPath,
       '/api/mobile/digital-employees',
@@ -88,5 +96,59 @@ void main() {
     expect(bootstrap.services.realtimeConfigured, isFalse);
     expect(bootstrap.services.llmStatus, 'unknown');
     expect(bootstrap.services.searchStatus, 'unknown');
+  });
+
+  test('defaults official LLM credits to verified phone account', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'user': {
+        'user_id': 'u-phone',
+        'phone_number': '199 0000-1111',
+        'tenant_id': 'tenant_a',
+      },
+      'llm_access': {
+        'mode': 'maclaw_official',
+        'status': 'available',
+      },
+    });
+
+    expect(bootstrap.user.creditsAccount, 'phone:19900001111');
+    expect(bootstrap.llmAccess.official, isTrue);
+    expect(bootstrap.llmAccess.creditsAccount, 'phone:19900001111');
+  });
+
+  test('verified phone login can supply official credits after bootstrap', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'user': {
+        'user_id': 'u-phone',
+        'tenant_id': 'tenant_a',
+      },
+      'llm_access': {
+        'mode': 'maclaw_official',
+        'status': 'available',
+      },
+    }).withVerifiedPhoneCredits('199 0000-1111');
+
+    expect(bootstrap.user.creditsAccount, 'phone:19900001111');
+    expect(bootstrap.llmAccess.official, isTrue);
+    expect(bootstrap.llmAccess.creditsAccount, 'phone:19900001111');
+  });
+
+  test('does not normalize malformed phone credits with letters', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'user': {
+        'user_id': 'u-phone',
+        'phone_number': '19900001111',
+        'credits_account': 'phone:user19900001111',
+        'tenant_id': 'tenant_a',
+      },
+      'llm_access': {
+        'mode': 'maclaw_official',
+        'status': 'available',
+        'credits_account': 'phone:user19900001111',
+      },
+    });
+
+    expect(bootstrap.user.creditsAccount, 'phone:user19900001111');
+    expect(bootstrap.llmAccess.creditsAccount, 'phone:user19900001111');
   });
 }

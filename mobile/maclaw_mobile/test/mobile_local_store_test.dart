@@ -64,15 +64,15 @@ void main() {
       SearchHistoryEntry(
         id: 'search-1',
         query: 'status',
-        answerPreview: 'ok',
+        answerPreview: 'ok token=search-secret',
         createdAt: now,
       ),
     ]);
     await store.saveServerCommands([
       ServerCommandEntry(
         id: 'cmd-1',
-        command: 'df -h',
-        label: 'df',
+        command: 'deploy password=command-secret',
+        label: 'deploy password=command-secret',
         favorite: true,
         createdAt: now,
         lastUsedAt: now,
@@ -82,7 +82,7 @@ void main() {
       DigitalEmployeePromptEntry(
         id: 'prompt-1',
         employeeId: 'employee-1',
-        prompt: 'check logs',
+        prompt: 'check logs token=prompt-secret',
         createdAt: now,
       ),
     ]);
@@ -90,11 +90,15 @@ void main() {
       const MobileDigitalEmployeeTask(
         taskId: 'task-1',
         employeeId: 'employee-1',
-        prompt: 'check remote host',
+        prompt: 'check remote host token=task-prompt-secret',
+        context: {
+          'source': 'maclaw_mobile',
+          'error': 'db password=context-secret',
+        },
         status: 'queued',
-        result: '',
-        message: 'waiting for remote worker',
-        claimedBy: '',
+        result: 'result api_key=task-result-secret',
+        message: 'waiting token=task-message-secret',
+        claimedBy: 'runner password=task-runner-secret',
       ),
     );
     await store.saveLastDocumentDraft(
@@ -139,12 +143,55 @@ void main() {
       isTrue,
     );
     expect(await store.loadServerProfiles(), isNotEmpty);
-    expect(await store.loadSearchHistory(), isNotEmpty);
-    expect(await store.loadServerCommands(), isNotEmpty);
-    expect(await store.loadDigitalEmployeePrompts(), isNotEmpty);
+    final searchHistory = await store.loadSearchHistory();
+    expect(searchHistory.single.answerPreview, 'ok token=[REDACTED_SECRET]');
+    expect(
+      searchHistory.single.answerPreview,
+      isNot(contains('search-secret')),
+    );
+    final commands = await store.loadServerCommands();
+    expect(commands.single.command, contains('command-secret'));
+    expect(commands.single.label, 'deploy password=[REDACTED_SECRET]');
+    expect(commands.single.label, isNot(contains('command-secret')));
+    final prompts = await store.loadDigitalEmployeePrompts();
+    expect(prompts.single.prompt, 'check logs token=[REDACTED_SECRET]');
+    expect(prompts.single.prompt, isNot(contains('prompt-secret')));
     final digitalEmployeeTask = await store.loadLastDigitalEmployeeTask();
     expect(digitalEmployeeTask?.taskId, 'task-1');
-    expect(digitalEmployeeTask?.message, 'waiting for remote worker');
+    expect(
+      digitalEmployeeTask?.prompt,
+      'check remote host token=[REDACTED_SECRET]',
+    );
+    expect(
+      digitalEmployeeTask?.context['error'],
+      'db password=[REDACTED_SECRET]',
+    );
+    expect(
+      digitalEmployeeTask?.result,
+      'result api_key=[REDACTED_SECRET]',
+    );
+    expect(
+      digitalEmployeeTask?.message,
+      'waiting token=[REDACTED_SECRET]',
+    );
+    expect(
+      digitalEmployeeTask?.claimedBy,
+      'runner password=[REDACTED_SECRET]',
+    );
+    expect(
+      jsonEncode(digitalEmployeeTask?.context),
+      isNot(contains('context-secret')),
+    );
+    expect(digitalEmployeeTask?.prompt, isNot(contains('task-prompt-secret')));
+    expect(digitalEmployeeTask?.result, isNot(contains('task-result-secret')));
+    expect(
+      digitalEmployeeTask?.message,
+      isNot(contains('task-message-secret')),
+    );
+    expect(
+      digitalEmployeeTask?.claimedBy,
+      isNot(contains('task-runner-secret')),
+    );
     expect(await store.loadLastDocumentDraft(), isNotNull);
     expect((await store.loadLastDocumentUploadTask())?.taskId, 'upload-1');
     expect(await store.loadLastDocumentUploadPath(), '/tmp/incident.pdf');
@@ -387,9 +434,31 @@ void main() {
         SearchHistoryEntry(
           id: 'search-json',
           query: 'incident',
-          answerPreview: 'legacy result',
+          answerPreview: 'legacy result token=legacy-search-secret',
           createdAt: now,
           favorite: true,
+        ).toJson(),
+      ]),
+    );
+    await File('${cacheDir.path}/server_commands.json').writeAsString(
+      jsonEncode([
+        ServerCommandEntry(
+          id: 'cmd-json',
+          command: 'deploy password=legacy-command-secret',
+          label: 'deploy password=legacy-command-secret',
+          favorite: true,
+          createdAt: now,
+          lastUsedAt: now,
+        ).toJson(),
+      ]),
+    );
+    await File('${cacheDir.path}/digital_employee_prompts.json').writeAsString(
+      jsonEncode([
+        DigitalEmployeePromptEntry(
+          id: 'prompt-json',
+          employeeId: 'employee-1',
+          prompt: 'check server token=legacy-prompt-secret',
+          createdAt: now,
         ).toJson(),
       ]),
     );
@@ -408,7 +477,23 @@ void main() {
     final store = MobileLocalStore(documentsDirectory: () async => dir);
 
     expect((await store.loadServerProfiles()).single.id, 'srv-json');
-    expect((await store.loadSearchHistory()).single.favorite, isTrue);
+    final migratedSearch = (await store.loadSearchHistory()).single;
+    expect(migratedSearch.favorite, isTrue);
+    expect(
+      migratedSearch.answerPreview,
+      'legacy result token=[REDACTED_SECRET]',
+    );
+    expect(
+      migratedSearch.answerPreview,
+      isNot(contains('legacy-search-secret')),
+    );
+    final migratedCommand = (await store.loadServerCommands()).single;
+    expect(migratedCommand.command, contains('legacy-command-secret'));
+    expect(migratedCommand.label, 'deploy password=[REDACTED_SECRET]');
+    expect(migratedCommand.label, isNot(contains('legacy-command-secret')));
+    final migratedPrompt = (await store.loadDigitalEmployeePrompts()).single;
+    expect(migratedPrompt.prompt, 'check server token=[REDACTED_SECRET]');
+    expect(migratedPrompt.prompt, isNot(contains('legacy-prompt-secret')));
     expect((await store.loadLastDocumentDraft())?.title, 'Legacy Draft');
     expect(
       await File('${cacheDir.path}/maclaw_mobile.sqlite').exists(),

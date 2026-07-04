@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import sys
@@ -36,7 +36,7 @@ def complete_record() -> str:
         if field == "Flutter version":
             value = "Flutter 3.41.5"
         if field == "MaClaw account":
-            value = "qa.mobile@example.test"
+            value = "phone:+8613800138000"
         if field == "Approved by":
             value = "release-owner"
         if field in validate_qa_build_record.TASK_ID_FIELDS:
@@ -59,8 +59,10 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.LOGIN_RESULT_FIELDS:
             value = (
-                "MaClaw official account login authenticated through HubCenter "
-                "and mobile session opened; screenshot login-result-42"
+                "MaClaw official phone account phone:+8613800138000 "
+                "authenticated through HubCenter after SMS verification code; "
+                "mobile session opened with official credits bound to the phone "
+                "account; screenshot login-result-42"
             )
         if field in validate_qa_build_record.SHARE_TEXT_EVIDENCE_FIELDS:
             value = f"{platform} Assistant opened from shared text for {field}; screenshot share-text-{field.lower().replace(' ', '-')}-{platform.lower()}"
@@ -115,8 +117,9 @@ def complete_record() -> str:
             value = "Copied terminal output to clipboard; screenshot ssh-copy-42"
         if field in validate_qa_build_record.SSH_AI_ANALYSIS_WARNING_FIELDS:
             value = (
-                "AI analysis preview confirmation accepted after sensitive-data "
-                "warning; screenshot ssh-ai-analysis-warning-42"
+                "SSH terminal output preview was redacted before AI analysis "
+                "confirmation after sensitive-data warning; screenshot "
+                "ssh-ai-analysis-warning-42"
             )
         if field in validate_qa_build_record.SSH_AI_RESULT_FIELDS:
             value = (
@@ -165,7 +168,9 @@ def complete_record() -> str:
             value = (
                 "Notification delivered and shown for document export completion, "
                 "digital employee task completion, and SSH abnormal disconnect; "
-                "tap opened the payload/deep link for the matching task or export; "
+                "tap opened typed payloads document-export:export-42, "
+                "digital-employee-task:digital-employee-task-id-12345, "
+                "and server-profile:srv-prod for the matching task or export; "
                 "screenshot notification-delivery-42"
             )
         if field in validate_qa_build_record.ACCOUNT_HUB_TENANT_FIELDS:
@@ -204,7 +209,8 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.LLM_ACCESS_EVIDENCE_FIELDS:
             value = (
-                "MaClaw official LLM access mode available for tenant tenant-a; "
+                "MaClaw official LLM access mode available using phone account "
+                "phone:+8613800138000 official credits for tenant tenant-a; "
                 "screenshot llm-access-42"
             )
         if field in validate_qa_build_record.LLM_SETUP_RESTRICTION_FIELDS:
@@ -548,15 +554,51 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_maclaw_account_must_be_trackable_account_identity(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "MaClaw account: qa.mobile@example.test",
+                "MaClaw account: phone:+8613800138000",
                 "MaClaw account: release tester",
             ),
         )
 
         self.assertIn(
-            "MaClaw account must identify a trackable MaClaw account email or account ID",
+            "MaClaw account must identify a trackable phone:<number> MaClaw Mobile account",
             validate_qa_build_record.missing_required_fields(values),
         )
+
+    def test_maclaw_account_rejects_desktop_email_identity(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: qa.mobile@example.test",
+            ),
+        )
+
+        self.assertIn(
+            "MaClaw account must identify a trackable phone:<number> MaClaw Mobile account",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_maclaw_account_must_match_login_result_phone_account(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: phone:+8613900139000",
+            ),
+        )
+
+        self.assertIn(
+            "Login result must reference the recorded MaClaw phone account",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_maclaw_account_accepts_masked_phone_matching_login_tail(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: phone:***8000",
+            ),
+        )
+
+        self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
 
     def test_tenant_id_must_be_trackable_identifier(self) -> None:
         values = validate_qa_build_record.parse_record(
@@ -647,6 +689,21 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_hubcenter_probe_result_must_reference_selected_hubcenter(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "HubCenter probe result: HubCenter probe candidates https://hubs.mypapers.top, https://hubs.maclaw.top, https://hubs2.maclaw.top selected https://hubs.maclaw.top; screenshot hubcenter-probe-42",
+                "HubCenter probe result: HubCenter probe candidates https://hubs.mypapers.top, https://hubs.maclaw.top, https://hubs2.maclaw.top selected https://hubs2.maclaw.top; screenshot hubcenter-probe-42",
+            ),
+        )
+
+        self.assertIn(
+            "HubCenter probe result must reference the selected HubCenter URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_api_and_realtime_urls_must_use_discovered_hub_origin(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
@@ -663,11 +720,43 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         missing = validate_qa_build_record.missing_required_fields(values)
 
         self.assertIn(
-            "API base URL confirmation must use the discovered Hub origin",
+            "API base URL confirmation must match the recorded Discovered Hub URL",
             missing,
         )
         self.assertIn(
-            "Realtime Hub URL confirmation must use the discovered Hub origin",
+            "Realtime Hub URL confirmation must match the recorded Discovered Hub URL",
+            missing,
+        )
+
+    def test_hub_base_urls_must_be_origin_urls(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Discovered Hub URL: https://tenant-a.maclaw.top",
+                "Discovered Hub URL: https://tenant-a.maclaw.top/api/mobile/bootstrap",
+            )
+            .replace(
+                "API base URL confirmation: https://tenant-a.maclaw.top",
+                "API base URL confirmation: https://tenant-a.maclaw.top/api/mobile/search",
+            )
+            .replace(
+                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top",
+                "Realtime Hub URL confirmation: https://tenant-a.maclaw.top/api/mobile/realtime?token=redacted",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Discovered Hub URL must be the tenant Hub origin URL",
+            missing,
+        )
+        self.assertIn(
+            "API base URL confirmation must be the discovered Hub origin URL",
+            missing,
+        )
+        self.assertIn(
+            "Realtime Hub URL confirmation must be the discovered Hub origin URL",
             missing,
         )
 
@@ -682,6 +771,25 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Discovered Hub URL must be a tenant Hub, not a HubCenter URL",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_discovered_hub_tenant_result_must_match_recorded_values(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Discovered Hub/tenant result: Discovered Hub https://tenant-a.maclaw.top for tenant tenant-a; screenshot discovered-hub-tenant-42",
+                "Discovered Hub/tenant result: Discovered Hub https://tenant-b.maclaw.top for tenant tenant-b; screenshot discovered-hub-tenant-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Discovered Hub/tenant result must reference the recorded Discovered Hub URL",
+            missing,
+        )
+        self.assertIn(
+            "Discovered Hub/tenant result must reference the recorded Tenant ID",
+            missing,
         )
 
     def test_third_party_llm_requires_desktop_gui_qr_authorization(self) -> None:
@@ -729,17 +837,41 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Desktop GUI QR authorization ID: qr-auth-20260702",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
-                "LLM access evidence: Desktop GUI QR third-party LLM access authorized for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: Desktop GUI QR third-party LLM access authorized by qr-auth-20260702 for tenant tenant-a; screenshot llm-access-42",
             ),
         )
 
         self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
 
+    def test_third_party_llm_evidence_must_reference_qr_authorization_id(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "LLM access mode: maclaw_official",
+                "LLM access mode: desktop_qr_third_party",
+            )
+            .replace(
+                "Desktop GUI QR authorization ID: not-used-official-mode",
+                "Desktop GUI QR authorization ID: qr-auth-20260702",
+            )
+            .replace(
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: Desktop GUI QR third-party LLM access authorized for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must reference the Desktop GUI QR authorization ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_llm_access_evidence_must_match_selected_mode(self) -> None:
         official_values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
                 "LLM access evidence: Desktop GUI QR third-party LLM access authorized for tenant tenant-a; screenshot llm-access-42",
             ),
         )
@@ -764,6 +896,36 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "LLM access evidence must match desktop_qr_third_party mode",
             validate_qa_build_record.missing_required_fields(third_party_values),
+        )
+
+    def test_official_llm_access_evidence_must_name_phone_account_credits(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must match maclaw_official mode",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_official_llm_access_evidence_must_match_recorded_phone_account(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613900139000 official credits for tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must reference the recorded MaClaw phone account",
+            validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_llm_setup_surface_restriction_must_exclude_arbitrary_endpoints(self) -> None:
@@ -1432,7 +1594,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "AI analysis confirmation and sensitive-data warning: AI analysis preview confirmation accepted after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: SSH analysis completed with screenshot/log reference",
             )
             .replace(
@@ -1458,6 +1620,19 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Credential deletion confirmation must describe cleared SSH credential storage evidence",
             missing,
+        )
+
+    def test_ssh_ai_analysis_warning_must_include_redacted_output_preview(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: AI analysis preview confirmation accepted after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI analysis confirmation and sensitive-data warning must describe preview confirmation and sensitive-data warning evidence",
+            validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_account_privacy_and_local_data_fields_must_be_specific(self) -> None:
@@ -1602,13 +1777,26 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_notification_delivery_must_cover_tasks_payload_and_ssh_abnormal(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Notification delivery evidence: Notification delivered and shown for document export completion, digital employee task completion, and SSH abnormal disconnect; tap opened the payload/deep link for the matching task or export; screenshot notification-delivery-42",
+                "Notification delivery evidence: Notification delivered and shown for document export completion, digital employee task completion, and SSH abnormal disconnect; tap opened typed payloads document-export:export-42, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export; screenshot notification-delivery-42",
                 "Notification delivery evidence: Notification screenshot captured during QA run",
             ),
         )
 
         self.assertIn(
-            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with payload/open evidence",
+            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_notification_delivery_rejects_untyped_payload_evidence(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "tap opened typed payloads document-export:export-42, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export",
+                "tap opened the payload/deep link for the matching task or export",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -1649,13 +1837,26 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_login_result_must_describe_official_hubcenter_login(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Login result: MaClaw official account login authenticated through HubCenter and mobile session opened; screenshot login-result-42",
+                "Login result: MaClaw official phone account phone:+8613800138000 authenticated through HubCenter after SMS verification code; mobile session opened with official credits bound to the phone account; screenshot login-result-42",
                 "Login result: Login screenshot captured during QA run",
             ),
         )
 
         self.assertIn(
-            "Login result must describe MaClaw official account login through HubCenter",
+            "Login result must describe phone/SMS login through HubCenter and official credits binding",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_login_result_must_name_phone_sms_and_credits_binding(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Login result: MaClaw official phone account phone:+8613800138000 authenticated through HubCenter after SMS verification code; mobile session opened with official credits bound to the phone account; screenshot login-result-42",
+                "Login result: MaClaw official account authenticated through HubCenter and mobile session opened; screenshot login-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "Login result must describe phone/SMS login through HubCenter and official credits binding",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -1836,7 +2037,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             .replace("Tester: qa-operator", "Tester: ok")
             .replace("Branch: codex/mobile-release", "Branch: ok")
             .replace("Flutter version: Flutter 3.41.5", "Flutter version: soon")
-            .replace("MaClaw account: qa.mobile@example.test", "MaClaw account: yes")
+            .replace("MaClaw account: phone:+8613800138000", "MaClaw account: yes")
             .replace("Tenant ID: tenant-a", "Tenant ID: ok")
             .replace("Version/build number: 1.0.0+42", "Version/build number: ok")
             .replace(
@@ -1940,7 +2141,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42\n",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42\n",
                 "",
             )
         )
@@ -1960,7 +2161,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "HubCenter probe result: ok",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
                 "LLM access evidence: yes",
             ),
         )
@@ -1988,7 +2189,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Discovered Hub/tenant result: Tenant routing screenshot captured during QA run",
             )
             .replace(
-                "LLM access evidence: MaClaw official LLM access mode available for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-a; screenshot llm-access-42",
                 "LLM access evidence: LLM screenshot captured during QA run",
             ),
         )
@@ -2092,6 +2293,20 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         )
 
         self.assertNotIn(
+            "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_automated_gate_evidence_rejects_legacy_uncounted_success_line(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: run_release_gates.py log docs/qa-builds/release-gates-1.0.0+42.log includes "
+                "All MaClaw Mobile automated release gates passed.",
+            ),
+        )
+
+        self.assertIn(
             "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
             validate_qa_build_record.missing_required_fields(values),
         )

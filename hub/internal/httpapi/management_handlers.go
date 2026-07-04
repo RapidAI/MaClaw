@@ -272,6 +272,21 @@ func boundUserContactFields(user *store.User, identityRows []*store.UserIdentity
 	return emails, primaryPhone, phones, identityViews
 }
 
+func boundUserEmailVerified(user *store.User, identities []BoundUserIdentityView) bool {
+	if user != nil && user.EmailVerified {
+		return true
+	}
+	for _, identity := range identities {
+		if !identity.Verified {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(identity.Type), "email") && strings.Contains(strings.TrimSpace(identity.Value), "@") {
+			return true
+		}
+	}
+	return false
+}
+
 type BoundUserRouteDeleter interface {
 	DeleteUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
 }
@@ -730,7 +745,8 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			}
 			emailKey := strings.TrimSpace(strings.ToLower(user.Email))
 			tenantID := store.NormalizeTenantID(user.TenantID)
-			emails, primaryPhone, phones, identities := boundUserContactFields(user, identityRows[boundUserIdentityKey(tenantID, user.ID)])
+			userIdentityRows := identityRows[boundUserIdentityKey(tenantID, user.ID)]
+			emails, primaryPhone, phones, identities := boundUserContactFields(user, userIdentityRows)
 			if emailKey == "" && len(emails) == 0 && len(phones) == 0 {
 				continue
 			}
@@ -774,7 +790,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				AccountType:       accountType,
 				IsVirtualEmployee: isVirtualEmployee,
 				SmartRoute:        user.SmartRoute,
-				EmailVerified:     user.EmailVerified,
+				EmailVerified:     boundUserEmailVerified(user, identities),
 				HasServiceAccess:  serviceStatus != nil && serviceStatus.Active,
 				ServiceStatus:     serviceStatus,
 			})

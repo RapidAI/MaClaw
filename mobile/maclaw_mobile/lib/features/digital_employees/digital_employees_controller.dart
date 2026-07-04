@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
 import 'digital_employee.dart';
@@ -75,18 +76,19 @@ class DigitalEmployeePromptHistoryController
   }) async {
     final text = prompt.trim();
     if (text.isEmpty) return;
+    final historyText = redactMobileSensitiveText(text);
     final current = state.valueOrNull ?? await future;
     final now = DateTime.now().toUtc();
     final entry = DigitalEmployeePromptEntry(
       id: now.microsecondsSinceEpoch.toString(),
       employeeId: employeeId,
-      prompt: text,
+      prompt: historyText,
       createdAt: now,
     );
     final next = [
       entry,
       ...current.where(
-        (item) => item.employeeId != employeeId || item.prompt != text,
+        (item) => item.employeeId != employeeId || item.prompt != historyText,
       ),
     ].take(50).toList();
     await ref.read(mobileLocalStoreProvider).saveDigitalEmployeePrompts(next);
@@ -145,7 +147,7 @@ class DigitalEmployeeTaskController
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: '数字员工任务已提交',
             body: _taskNotificationBody(task),
-            payload: task.taskId,
+            payload: mobileDigitalEmployeeTaskNotificationPayload(task.taskId),
           );
       return task;
     });
@@ -233,12 +235,12 @@ class DigitalEmployeeTaskController
     await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
           title: task.status == 'failed' ? '数字员工任务失败' : '数字员工任务完成',
           body: _taskNotificationBody(task),
-          payload: task.taskId,
+          payload: mobileDigitalEmployeeTaskNotificationPayload(task.taskId),
         );
   }
 
   String _taskNotificationBody(MobileDigitalEmployeeTask task) {
-    final message = task.message.trim();
+    final message = redactMobileSensitiveText(task.message.trim());
     if (message.isEmpty) {
       return '任务 ${task.taskId} 状态：${task.status}';
     }

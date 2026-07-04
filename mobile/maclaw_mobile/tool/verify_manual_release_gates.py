@@ -64,7 +64,14 @@ CANONICAL_MANUAL_GATES = (
     ManualGate(
         "Hub discovery smoke test",
         ("Hub discovery smoke test", "selected HubCenter", "realtime Hub URL"),
-        ("Hub Discovery And Service Smoke Test", "selected HubCenter", "realtime"),
+        (
+            "Hub Discovery And Service Smoke Test",
+            "selected HubCenter",
+            "realtime",
+            "typed notification payloads",
+            "digital-employee-task:",
+            "server-profile:",
+        ),
         "Hub discovery smoke passed",
     ),
 )

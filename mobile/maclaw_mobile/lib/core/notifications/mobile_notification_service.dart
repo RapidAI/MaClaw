@@ -4,6 +4,54 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 final mobileNotificationServiceProvider =
     Provider<MobileNotificationService>((ref) => MobileNotificationService());
 
+const mobileDocumentDraftNotificationPrefix = 'document-draft:';
+const mobileDocumentUploadNotificationPrefix = 'document-upload:';
+const mobileDocumentExportNotificationPrefix = 'document-export:';
+const mobileDigitalEmployeeTaskNotificationPrefix = 'digital-employee-task:';
+const mobileServerProfileNotificationPrefix = 'server-profile:';
+
+String mobileDocumentDraftNotificationPayload(String draftId) =>
+    '$mobileDocumentDraftNotificationPrefix${draftId.trim()}';
+
+String mobileDocumentUploadNotificationPayload(String taskId) =>
+    '$mobileDocumentUploadNotificationPrefix${taskId.trim()}';
+
+String mobileDocumentExportNotificationPayload(String jobId) =>
+    '$mobileDocumentExportNotificationPrefix${jobId.trim()}';
+
+String mobileDigitalEmployeeTaskNotificationPayload(String taskId) =>
+    '$mobileDigitalEmployeeTaskNotificationPrefix${taskId.trim()}';
+
+String mobileServerProfileNotificationPayload(String profileId) =>
+    '$mobileServerProfileNotificationPrefix${profileId.trim()}';
+
+String? mobileNotificationPayloadBasePath(String payload) {
+  final value = payload.trim();
+  if (_hasTypedNotificationId(value, mobileDocumentDraftNotificationPrefix) ||
+      _hasTypedNotificationId(value, mobileDocumentUploadNotificationPrefix) ||
+      _hasTypedNotificationId(value, mobileDocumentExportNotificationPrefix)) {
+    return '/documents';
+  }
+  if (_hasTypedNotificationId(
+    value,
+    mobileDigitalEmployeeTaskNotificationPrefix,
+  )) {
+    return '/employees';
+  }
+  if (_hasTypedNotificationId(value, mobileServerProfileNotificationPrefix)) {
+    return '/servers';
+  }
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return '/documents';
+  }
+  return null;
+}
+
+bool _hasTypedNotificationId(String value, String prefix) {
+  if (!value.startsWith(prefix)) return false;
+  return value.substring(prefix.length).trim().isNotEmpty;
+}
+
 class MobileNotificationPermissionResult {
   final bool? androidGranted;
   final bool? iosGranted;
@@ -29,9 +77,24 @@ class MobileNotificationPermissionResult {
   }
 }
 
+class MobileNotificationOpen {
+  final String payload;
+  final int? notificationId;
+  final String actionId;
+  final DateTime openedAt;
+
+  const MobileNotificationOpen({
+    required this.payload,
+    required this.notificationId,
+    required this.actionId,
+    required this.openedAt,
+  });
+}
+
 class MobileNotificationService {
   final FlutterLocalNotificationsPlugin _plugin;
   bool _initialized = false;
+  MobileNotificationOpen? _latestOpenedNotification;
 
   MobileNotificationService({
     FlutterLocalNotificationsPlugin? plugin,
@@ -46,9 +109,32 @@ class MobileNotificationService {
       requestSoundPermission: true,
     );
     const settings = InitializationSettings(android: android, iOS: darwin);
-    await _plugin.initialize(settings: settings);
+    await _plugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: handleNotificationResponse,
+    );
     await requestPermissions();
     _initialized = true;
+  }
+
+  MobileNotificationOpen? get latestOpenedNotification =>
+      _latestOpenedNotification;
+
+  String? consumeLastOpenedPayload() {
+    final payload = _latestOpenedNotification?.payload;
+    _latestOpenedNotification = null;
+    return payload;
+  }
+
+  void handleNotificationResponse(NotificationResponse response) {
+    final payload = response.payload?.trim() ?? '';
+    if (payload.isEmpty) return;
+    _latestOpenedNotification = MobileNotificationOpen(
+      payload: payload,
+      notificationId: response.id,
+      actionId: response.actionId?.trim() ?? '',
+      openedAt: DateTime.now().toUtc(),
+    );
   }
 
   Future<MobileNotificationPermissionResult> requestPermissions() async {

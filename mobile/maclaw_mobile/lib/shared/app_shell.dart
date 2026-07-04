@@ -32,6 +32,9 @@ class AppShell extends ConsumerWidget {
             ),
           ),
         );
+        if (!sharedIntentCanBeConsumedAtTarget(next, target)) {
+          ref.read(mobileSharedIntentProvider.notifier).clear(next.id);
+        }
       });
     });
 
@@ -134,6 +137,19 @@ String sharedIntentTargetPath(
     return '/assistant';
   }
   return mobileInitialPathForFeatures(features);
+}
+
+bool sharedIntentCanBeConsumedAtTarget(
+  MobileSharedIntent intent,
+  String targetPath,
+) {
+  if (intent.opensDocuments) {
+    return targetPath.startsWith('/documents');
+  }
+  if (intent.opensAssistant) {
+    return targetPath.startsWith('/assistant');
+  }
+  return false;
 }
 
 String _firstEnabledPathExcept(MobileFeatures features, Set<String> excluded) {

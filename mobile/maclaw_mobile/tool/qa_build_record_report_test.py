@@ -66,7 +66,9 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("Required evidence: 103/103 occurrences filled", output)
             self.assertIn("No gaps found", output)
             self.assertIn(
-                release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND,
+                release_evidence_commands.qa_release_evidence_link_command(
+                    records_dir=str(record.parent),
+                ),
                 output,
             )
 
@@ -106,6 +108,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn(
                 release_evidence_commands.qa_release_evidence_link_command(
                     scope="android",
+                    records_dir=str(record.parent),
                 ),
                 output,
             )
@@ -134,6 +137,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 release_evidence_commands.release_handoff_command(
                     version="1.0.0+42",
                     scope="android",
+                    records_dir=str(record.parent),
                 ),
                 output,
             )
@@ -194,19 +198,28 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("- Automated release gates result", output)
             self.assertIn("How to fill release decision evidence:", output)
             self.assertIn(
-                "- Release handoff result: Use `release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md`",
+                "- Release handoff result: Use `release_handoff.py output saved to "
+                + str(record.parent)
+                + "/handoff-1.0.0+42.md`",
                 output,
             )
             self.assertIn(
-                "- Runtime boundary verification result: Use `MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log`",
+                "- Runtime boundary verification result: Use `MaClaw Mobile runtime boundary verified. log: "
+                + str(record.parent)
+                + "/runtime-boundary-1.0.0+42.log`",
                 output,
             )
             self.assertIn(
-                "- Automated release gates result: Use `run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log`",
+                "- Automated release gates result: Use `run_release_gates.py: 38 gates passed; log: "
+                + str(record.parent)
+                + "/release-gates-1.0.0+42.log`",
                 output,
             )
             self.assertIn(
-                release_evidence_commands.release_handoff_command(version="1.0.0+42"),
+                release_evidence_commands.release_handoff_command(
+                    version="1.0.0+42",
+                    records_dir=str(record.parent),
+                ),
                 output,
             )
 
@@ -231,11 +244,16 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertIn("How to fill signed artifact evidence:", output)
             self.assertIn(
-                release_evidence_commands.android_artifact_evidence_command("1.0.0+42"),
+                release_evidence_commands.android_artifact_evidence_command(
+                    "1.0.0+42",
+                    record_dir=str(record.parent),
+                ),
                 output,
             )
             self.assertIn(
-                release_evidence_commands.ios_artifact_evidence_command(),
+                release_evidence_commands.ios_artifact_evidence_command(
+                    record_dir=str(record.parent),
+                ),
                 output,
             )
 
@@ -267,6 +285,27 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 "- QA build record filename must be YYYY-MM-DD-<android|ios|android-ios>-<version+build>.md",
                 output,
             )
+
+    def test_report_rejects_handoff_evidence_path_without_field_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = self.write_record(
+                root,
+                "# MaClaw Mobile Release Handoff\n",
+                name="handoff-1.0.0+42.md",
+            )
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("Path / filename:", output)
+            self.assertIn(
+                "- QA build record path must point to a completed record, not release handoff evidence",
+                output,
+            )
+            self.assertNotIn("Evidence fields and values:", output)
+            self.assertNotIn("Release handoff result", output)
 
     def test_report_groups_local_artifact_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,7 +354,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("How to fix secret redaction failures:", output)
             self.assertIn("redacted evidence, attachment IDs, task IDs", output)
             self.assertIn(
-                "python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md",
+                f"python3 tool/validate_qa_build_record.py {record}",
                 output,
             )
 

@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
+import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
+import 'package:maclaw_mobile/core/security/mobile_redaction.dart';
 import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
@@ -15,6 +17,22 @@ import 'package:maclaw_mobile/features/servers/servers_screen.dart';
 class _TestServerProfilesController extends ServerProfilesController {
   @override
   Future<List<ServerProfile>> build() async => const [];
+}
+
+class _OneServerProfileController extends ServerProfilesController {
+  @override
+  Future<List<ServerProfile>> build() async => const [
+        ServerProfile(
+          id: 'srv-prod',
+          name: 'prod-api',
+          host: '10.0.0.8',
+          port: 2222,
+          username: 'ops',
+          authMode: serverAuthModePassword,
+          tag: 'prod',
+          note: 'primary API node',
+        ),
+      ];
 }
 
 class _RecordingServerProfilesController extends ServerProfilesController {
@@ -107,6 +125,19 @@ class _RecordingSSHAnalysisController extends SSHAnalysisController {
   }
 }
 
+class _RecordingNotificationService extends MobileNotificationService {
+  final shown = <({String title, String body, String? payload})>[];
+
+  @override
+  Future<void> showTaskCompleted({
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    shown.add((title: title, body: body, payload: payload));
+  }
+}
+
 class _ServerDigitalEmployeesController extends DigitalEmployeesController {
   @override
   Future<List<DigitalEmployee>> build() async => const [
@@ -176,14 +207,104 @@ void main() {
     expect(summary.preview.length, 423);
   });
 
+  test('mobile SSH output redaction removes common secrets', () {
+    final redacted = redactMobileSensitiveText(
+      'Authorization: Bearer secret-token\n'
+      'password=super-secret token: abc123 api_key=key-1\n'
+      'password="quoted password" API_KEY=\'quoted api key\'\n'
+      'MYSQL_PWD=mysql-secret AWS_SECRET_ACCESS_KEY=aws-secret\n'
+      'mysql --password cli-secret --token \'quoted cli token\' -e "select 1"\n'
+      'https://admin:pass@example.com/logs\n'
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n'
+      '-----END OPENSSH PRIVATE KEY-----',
+    );
+
+    expect(redacted, contains('Authorization: Bearer [REDACTED_TOKEN]'));
+    expect(redacted, contains('password=[REDACTED_SECRET]'));
+    expect(redacted, contains('token=[REDACTED_SECRET]'));
+    expect(redacted, contains('api_key=[REDACTED_SECRET]'));
+    expect(redacted, contains('API_KEY=[REDACTED_SECRET]'));
+    expect(redacted, contains('MYSQL_PWD=[REDACTED_SECRET]'));
+    expect(redacted, contains('AWS_SECRET_ACCESS_KEY=[REDACTED_SECRET]'));
+    expect(redacted, contains('--password [REDACTED_SECRET]'));
+    expect(redacted, contains('--token [REDACTED_SECRET]'));
+    expect(redacted, contains('https://[REDACTED_CREDENTIALS]@example.com'));
+    expect(redacted, contains('[REDACTED_PRIVATE_KEY]'));
+    expect(redacted, isNot(contains('secret-token')));
+    expect(redacted, isNot(contains('super-secret')));
+    expect(redacted, isNot(contains('quoted password')));
+    expect(redacted, isNot(contains('quoted api key')));
+    expect(redacted, isNot(contains('mysql-secret')));
+    expect(redacted, isNot(contains('aws-secret')));
+    expect(redacted, isNot(contains('cli-secret')));
+    expect(redacted, isNot(contains('quoted cli token')));
+    expect(redacted, isNot(contains('admin:pass')));
+  });
+
   test('mobile SSH output handoff context marks server maintenance source', () {
-    final context = mobileSSHOutputTaskContext('first line\nsecond line');
+    final context = mobileSSHOutputTaskContext(
+      'first line\nsecond line',
+      profile: const ServerProfile(
+        id: 'srv-prod',
+        name: 'prod-api',
+        host: '10.0.0.8',
+        port: 2222,
+        username: 'ops',
+        authMode: serverAuthModePrivateKey,
+        tag: 'prod',
+        note: 'primary API node',
+      ),
+    );
 
     expect(context, containsPair('source', 'maclaw_mobile'));
     expect(context, containsPair('handoff', 'ssh_output'));
     expect(context, containsPair('task_surface', 'servers'));
     expect(context, containsPair('line_count', '2'));
     expect(context, containsPair('char_count', '22'));
+    expect(context, containsPair('server_profile_id', 'srv-prod'));
+    expect(context, containsPair('server_name', 'prod-api'));
+    expect(context, containsPair('server_host', '10.0.0.8'));
+    expect(context, containsPair('server_port', '2222'));
+    expect(context, containsPair('server_username', 'ops'));
+    expect(context, containsPair('server_auth_mode', serverAuthModePrivateKey));
+    expect(context, containsPair('server_tag', 'prod'));
+    expect(context, containsPair('server_note', 'primary API node'));
+  });
+
+  test('mobile SSH output handoff context redacts profile metadata secrets',
+      () {
+    final context = mobileSSHOutputTaskContext(
+      'service failed',
+      profile: const ServerProfile(
+        id: 'srv-prod',
+        name: 'prod-api token: name-secret',
+        host: 'https://root:host-pass@example.com',
+        port: 2222,
+        username: 'ops password=user-secret',
+        authMode: serverAuthModePassword,
+        tag: 'prod token: tag-secret',
+        note: 'jump https://admin:pass@example.com password=note-secret',
+      ),
+    );
+
+    expect(context['server_name'], 'prod-api token=[REDACTED_SECRET]');
+    expect(
+      context['server_host'],
+      'https://[REDACTED_CREDENTIALS]@example.com',
+    );
+    expect(context['server_username'], 'ops password=[REDACTED_SECRET]');
+    expect(context['server_tag'], 'prod token=[REDACTED_SECRET]');
+    expect(
+      context['server_note'],
+      'jump https://[REDACTED_CREDENTIALS]@example.com '
+      'password=[REDACTED_SECRET]',
+    );
+    expect(context['server_name'], isNot(contains('name-secret')));
+    expect(context['server_host'], isNot(contains('root:host-pass')));
+    expect(context['server_username'], isNot(contains('user-secret')));
+    expect(context['server_tag'], isNot(contains('tag-secret')));
+    expect(context['server_note'], isNot(contains('admin:pass')));
+    expect(context['server_note'], isNot(contains('note-secret')));
   });
 
   testWidgets('servers screen exposes emergency maintenance controls',
@@ -308,6 +429,104 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 
+  testWidgets('servers screen rejects invalid port before saving profile',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    _RecordingServerProfilesController.added.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          serverProfilesProvider.overrideWith(
+            _RecordingServerProfilesController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Host'),
+      '10.0.0.7',
+    );
+    await tester.enterText(find.widgetWithText(TextField, '端口'), '70000');
+    await tester.enterText(find.widgetWithText(TextField, '用户名'), 'ops');
+    await tester.tap(find.text('添加服务器'));
+    await tester.pump();
+
+    expect(_RecordingServerProfilesController.added, isEmpty);
+    expect(find.text('请输入 1-65535 范围内的 SSH 端口。'), findsOneWidget);
+  });
+
+  testWidgets('servers screen requires private key in private-key mode',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    _RecordingServerProfilesController.added.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          serverProfilesProvider.overrideWith(
+            _RecordingServerProfilesController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Host'),
+      '10.0.0.7',
+    );
+    await tester.enterText(find.widgetWithText(TextField, '端口'), '22');
+    await tester.enterText(find.widgetWithText(TextField, '用户名'), 'ops');
+    await tester.tap(find.text('私钥'));
+    await tester.pump();
+    await tester.scrollUntilVisible(
+      find.text('添加服务器'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('添加服务器'));
+    await tester.pumpAndSettle();
+
+    expect(_RecordingServerProfilesController.added, isEmpty);
+    expect(find.text('私钥登录需要填写或导入私钥。'), findsOneWidget);
+  });
+
   testWidgets('servers screen copies captured terminal output', (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     final copied = <String>[];
@@ -359,6 +578,62 @@ void main() {
       'nginx[1]: upstream timed out\nsystemd[1]: app.service failed',
     );
     expect(find.text('终端输出已复制'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('servers screen notifies when SSH connection fails',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final notifications = _RecordingNotificationService();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          mobileNotificationServiceProvider.overrideWithValue(notifications),
+          mobileSshSocketConnectorProvider.overrideWithValue(
+            (host, port) async => throw StateError(
+              'network unreachable for $host:$port',
+            ),
+          ),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final connectButton = find.text('连接 SSH');
+    await tester.ensureVisible(connectButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connectButton);
+    await tester.pumpAndSettle();
+
+    expect(notifications.shown, hasLength(1));
+    expect(notifications.shown.single.title, contains('SSH'));
+    expect(notifications.shown.single.body, contains('prod-api'));
+    expect(notifications.shown.single.payload, 'server-profile:srv-prod');
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 50));
@@ -575,7 +850,7 @@ void main() {
 
     expect(
       _RecordingSSHAnalysisController.outputs.single,
-      'nginx[1]: upstream timed out\nAuthorization: Bearer secret-token',
+      'nginx[1]: upstream timed out\nAuthorization: Bearer [REDACTED_TOKEN]',
     );
     expect(find.text('发现 502 错误'), findsOneWidget);
   });
@@ -625,7 +900,8 @@ void main() {
 
     await tester.enterText(
       find.byType(TextField).last,
-      'systemd[1]: app.service failed with exit-code',
+      'systemd[1]: app.service failed with exit-code\n'
+      'Authorization: Bearer employee-secret-token',
     );
     final handoffButton = find.text('交给数字员工');
     await tester.ensureVisible(handoffButton);
@@ -663,6 +939,14 @@ void main() {
       contains('systemd[1]: app.service failed with exit-code'),
     );
     expect(
+      _RecordingDigitalEmployeeTaskController.created.single.prompt,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(
+      _RecordingDigitalEmployeeTaskController.created.single.prompt,
+      isNot(contains('employee-secret-token')),
+    );
+    expect(
       _RecordingDigitalEmployeeTaskController.created.single.taskType,
       'server_maintenance',
     );
@@ -680,7 +964,7 @@ void main() {
     );
     expect(
       _RecordingDigitalEmployeeTaskController.created.single.context,
-      containsPair('line_count', '1'),
+      containsPair('line_count', '2'),
     );
     expect(
       _RecordingDigitalEmployeeTaskController.created.single.prompt,

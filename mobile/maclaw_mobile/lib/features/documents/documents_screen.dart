@@ -680,6 +680,7 @@ class _UploadStatus extends ConsumerWidget {
     if (upload == null) return const SizedBox.shrink();
     final statusLabel = _uploadStatusLabel(upload.status);
     final failed = upload.status == 'failed';
+    final inProgress = _uploadInProgress(upload.status);
     final scheme = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
@@ -715,6 +716,15 @@ class _UploadStatus extends ConsumerWidget {
                     const SizedBox(height: 4),
                     Text(
                       '可重试导入，或改用文本、PDF、Word、图片截图等移动端更稳定的格式。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                  if (inProgress) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '这是官方服务长任务，可以先离开页面；完成后会通过通知或回到文档页继续处理。',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -760,6 +770,13 @@ String _uploadStatusLabel(String status) {
     'ready' => '已生成草稿',
     'failed' => '解析失败',
     _ => status,
+  };
+}
+
+bool _uploadInProgress(String status) {
+  return switch (status) {
+    'queued' || 'in_progress' || 'needs_ocr' => true,
+    _ => false,
   };
 }
 

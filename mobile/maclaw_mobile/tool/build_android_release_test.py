@@ -252,6 +252,55 @@ class BuildAndroidReleaseTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("requires --record-dir", error.getvalue())
 
+    def test_main_rejects_missing_record_dir_before_flutter_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            error = StringIO()
+
+            with patch(
+                "verify_android_release_signing.verify_android_release_signing",
+                return_value=[],
+            ) as signing_check, patch(
+                "build_android_release.subprocess.run",
+            ) as run, redirect_stderr(error):
+                exit_code = build_android_release.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--artifact",
+                        "apk",
+                        "--build-name",
+                        "1.0.0",
+                        "--build-number",
+                        "42",
+                        "--record-dir",
+                        str(root / "docs" / "missing-qa-builds"),
+                        "--signing-identity",
+                        "Android release keystore alias maclaw-mobile",
+                        "--installer-channel",
+                        "internal app sharing",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        signing_check.assert_not_called()
+        run.assert_not_called()
+        self.assertIn("QA record directory does not exist", error.getvalue())
+
+    def test_help_describes_record_dir_as_qa_records_directory(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                build_android_release.main(["--help"])
+
+        self.assertEqual(0, raised.exception.code)
+        text = output.getvalue()
+        self.assertIn("Optional QA records directory", text)
+        self.assertIn("examples use docs/qa-builds", text)
+        self.assertNotIn("Optional docs/qa-builds directory", text)
+
     def test_main_reports_flutter_build_failure_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1148,7 +1148,13 @@ func isSkillYAMLStepField(key string) bool {
 	}
 }
 
-func FormatSkillYAMLFile(sf *SkillYAMLFile) ([]byte, error) {
+func FormatSkillYAMLFile(sf *SkillYAMLFile) (out []byte, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			out = nil
+			err = fmt.Errorf("YAML format error: %v", rec)
+		}
+	}()
 	data, err := yaml.Marshal(sf)
 	if err != nil {
 		return nil, fmt.Errorf("YAML format error: %w", err)

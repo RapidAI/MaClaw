@@ -699,9 +699,9 @@ func MobileServiceRedemptionHandler(service *entry.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status":      "requires_email_login",
-			"next_action": "email_login",
-			"message":     "Service code resolved. Continue with Hub email login so the Hub can issue a mobile viewer token.",
+			"status":      "requires_phone_login",
+			"next_action": "phone_login",
+			"message":     "Service code resolved. Continue with Hub phone verification so the Hub can issue a mobile viewer token.",
 			"code":        result.Code,
 			"hub": map[string]any{
 				"id":       result.HubID,

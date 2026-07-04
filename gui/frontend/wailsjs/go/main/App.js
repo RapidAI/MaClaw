@@ -543,6 +543,10 @@ export function ListPythonEnvironments() {
   return window['go']['main']['App']['ListPythonEnvironments']();
 }
 
+export function ListPythonRuntimes() {
+  return window['go']['main']['App']['ListPythonRuntimes']();
+}
+
 export function ListRemoteHubs(arg1, arg2) {
   return window['go']['main']['App']['ListRemoteHubs'](arg1, arg2);
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1282,6 +1283,175 @@ func TestBuildCommandEnvDoesNotOverrideRequiredEnvWithPlaceholders(t *testing.T)
 	}
 }
 
+func TestFoldUnconsumedArgsToInputSkipsAppFileCarriers(t *testing.T) {
+	vars := NormalizeRunVars(map[string]interface{}{
+		"input":              `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`,
+		"app_id":             "skill-app-paper_pdf_translator-app-pdf",
+		"app_kind":           "tool_app",
+		"app_name":           "PDF翻译工具",
+		"file":               map[string]interface{}{"name": "paper.pdf", "staged_path": `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`},
+		"file_name":          "paper.pdf",
+		"file_path":          `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`,
+		"file_paths":         []interface{}{`C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`},
+		"files":              []interface{}{map[string]interface{}{"name": "paper.pdf"}},
+		"fields":             map[string]interface{}{},
+		"file_text":          "",
+		"input_file_path":    `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`,
+		"input_mode":         "file",
+		"local_file_path":    `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`,
+		"_maclaw_app":        "true",
+		"output":             `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper_output.pdf`,
+		"output_mode":        "pdf",
+		"params":             map[string]interface{}{},
+		"prompt":             "Run MaClaw tool app: PDF translator",
+		"uploaded_file_path": `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`,
+	})
+
+	FoldUnconsumedArgsToInput(vars, nil)
+
+	if got, want := vars["input"], `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`; got != want {
+		t.Fatalf("input = %q, want only uploaded file path %q", got, want)
+	}
+}
+
+func TestResolveStepAppFileRunDoesNotAppendAppMetadata(t *testing.T) {
+	pdfPath := `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper.pdf`
+	vars := NormalizeRunVars(map[string]interface{}{
+		"input":              pdfPath,
+		"app_id":             "skill-app-paper_pdf_translator-app-pdf",
+		"app_kind":           "tool_app",
+		"app_name":           "PDF翻译工具",
+		"file_path":          pdfPath,
+		"input_file_path":    pdfPath,
+		"input_mode":         "file",
+		"output":             `C:\Users\me\.maclaw\temp\app-inputs\input-1\paper_output.pdf`,
+		"output_mode":        "pdf",
+		"params":             map[string]interface{}{},
+		"prompt":             "Run MaClaw tool app: PDF翻译工具",
+		"uploaded_file_path": pdfPath,
+	})
+	FoldUnconsumedArgsToInput(vars, nil)
+
+	resolved, err := ResolveStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{"command": `"C:/Python/python.exe" "C:/skill/run.py"`},
+	}, vars, "", nil, func(s string) string { return `"` + s + `"` })
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	command, _ := resolved.Step.Params["command"].(string)
+	for _, forbidden := range []string{"app_id:", "prompt:", "input_mode:", "params:", "\n"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("command contains folded app metadata %q: %q", forbidden, command)
+		}
+	}
+	if !strings.Contains(command, `"`+pdfPath+`"`) {
+		t.Fatalf("command = %q, want quoted pdf path", command)
+	}
+}
+
+func TestBuildCommandEnvPrependsWindowsSystemDirs(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PATH repair is only active on Windows")
+	}
+	t.Setenv("SystemRoot", `C:\Windows`)
+
+	got := BuildCommandEnv([]string{"Path=base"}, nil)
+	pathValue := commandEnvValue(got, "PATH")
+
+	for _, want := range []string{
+		`C:\Windows\System32`,
+		`C:\Windows`,
+		`C:\Windows\System32\Wbem`,
+		`C:\Windows\System32\WindowsPowerShell\v1.0`,
+	} {
+		if !pathHasDir(pathValue, want) {
+			t.Fatalf("PATH = %q, missing %q", pathValue, want)
+		}
+	}
+}
+
+func TestBuildRunCheckContextPlansSharedPythonRuntime(t *testing.T) {
+	dataDir := t.TempDir()
+	entry := &corelib.NLSkillEntry{
+		Name:           "paper_pdf_translator",
+		RequiresPython: []string{"requests", "babeldoc==0.6.3"},
+	}
+	ctx := BuildRunCheckContextWithDataDir(dataDir, entry, nil)
+	if ctx.PythonPath == "" || !strings.Contains(ctx.PythonPath, filepath.Join("runtimes", "python", "envs")) {
+		t.Fatalf("PythonPath = %q, want shared runtime path", ctx.PythonPath)
+	}
+	if !strings.HasPrefix(ctx.PythonPath, dataDir) {
+		t.Fatalf("PythonPath = %q, want under data dir %q", ctx.PythonPath, dataDir)
+	}
+	if ctx.PythonRuntimeDataDir != dataDir {
+		t.Fatalf("PythonRuntimeDataDir = %q, want %q", ctx.PythonRuntimeDataDir, dataDir)
+	}
+	if len(ctx.PythonRuntimePackages) != 2 || ctx.PythonRuntimePackages[0] != "babeldoc==0.6.3" || ctx.PythonRuntimePackages[1] != "requests" {
+		t.Fatalf("PythonRuntimePackages = %#v", ctx.PythonRuntimePackages)
+	}
+	reqs := ExtractRequirements(entry, ctx)
+	if len(reqs) == 0 || reqs[0].Context["python_runtime_packages"] == "" || reqs[0].Context["python_path"] != ctx.PythonPath {
+		t.Fatalf("pip requirement missing shared runtime context: %#v", reqs)
+	}
+	if reqs[0].Context["python_runtime_data_dir"] != dataDir {
+		t.Fatalf("pip requirement data dir = %q, want %q", reqs[0].Context["python_runtime_data_dir"], dataDir)
+	}
+}
+
+func TestBuildRunCheckContextUsesDefaultDataDirForSharedPythonRuntime(t *testing.T) {
+	oldBaseDir := corelib.MaclawBaseDir()
+	baseDir := t.TempDir()
+	corelib.SetMaclawBaseDir(baseDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+
+	entry := &corelib.NLSkillEntry{
+		Name:           "ocr_runtime",
+		RequiresPython: []string{"rapidocr-onnxruntime==1.4.4"},
+	}
+	ctx := BuildRunCheckContext(entry, nil)
+	wantDataDir := filepath.Join(baseDir, "data")
+	if ctx.PythonRuntimeDataDir != wantDataDir {
+		t.Fatalf("PythonRuntimeDataDir = %q, want %q", ctx.PythonRuntimeDataDir, wantDataDir)
+	}
+	if !strings.HasPrefix(ctx.PythonPath, wantDataDir) {
+		t.Fatalf("PythonPath = %q, want under default data dir %q", ctx.PythonPath, wantDataDir)
+	}
+}
+
+func TestSharedPythonRuntimeExtraEnvPrependsRuntimePath(t *testing.T) {
+	dataDir := t.TempDir()
+	entry := &corelib.NLSkillEntry{Name: "demo", RequiresPython: []string{"requests"}}
+	env := SharedPythonRuntimeExtraEnvWithDataDir(dataDir, entry, []string{"PATH=base"})
+	if env["MACLAW_PYTHON"] == "" || env["MACLAW_PYTHON_RUNTIME_REF"] == "" || env["VIRTUAL_ENV"] == "" {
+		t.Fatalf("runtime env missing metadata: %#v", env)
+	}
+	if !strings.HasPrefix(env["MACLAW_PYTHON"], dataDir) || !strings.HasPrefix(env["VIRTUAL_ENV"], dataDir) {
+		t.Fatalf("runtime env should use data dir %q: %#v", dataDir, env)
+	}
+	pythonDir := filepath.Dir(env["MACLAW_PYTHON"])
+	if !strings.HasPrefix(env["PATH"], pythonDir+string(os.PathListSeparator)) {
+		t.Fatalf("PATH = %q, want prefix %q", env["PATH"], pythonDir)
+	}
+}
+
+func TestSharedPythonRuntimeExtraEnvUsesDefaultDataDir(t *testing.T) {
+	oldBaseDir := corelib.MaclawBaseDir()
+	baseDir := t.TempDir()
+	corelib.SetMaclawBaseDir(baseDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+
+	entry := &corelib.NLSkillEntry{Name: "ocr-runtime", RequiresPython: []string{"rapidocr-onnxruntime==1.4.4"}}
+	env := SharedPythonRuntimeExtraEnv(entry, []string{"PATH=base"})
+	wantDataDir := filepath.Join(baseDir, "data")
+	if env["MACLAW_PYTHON"] == "" || env["VIRTUAL_ENV"] == "" || env["MACLAW_PYTHON_RUNTIME_REF"] == "" {
+		t.Fatalf("runtime env missing shared Python metadata: %#v", env)
+	}
+	if !strings.HasPrefix(env["MACLAW_PYTHON"], wantDataDir) || !strings.HasPrefix(env["VIRTUAL_ENV"], wantDataDir) {
+		t.Fatalf("runtime env should use default data dir %q: %#v", wantDataDir, env)
+	}
+}
+
 func TestRunnerStepTimeoutSecondsParsesAndCapsTimeout(t *testing.T) {
 	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "1200"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 	if got != 900 {
@@ -1332,6 +1502,23 @@ func containsEnv(values []string, want string) bool {
 func containsEnvPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathHasDir(pathValue, want string) bool {
+	want = strings.TrimRight(filepath.Clean(want), `\/`)
+	if runtime.GOOS == "windows" {
+		want = strings.ToLower(want)
+	}
+	for _, part := range strings.Split(pathValue, string(os.PathListSeparator)) {
+		part = strings.TrimRight(filepath.Clean(part), `\/`)
+		if runtime.GOOS == "windows" {
+			part = strings.ToLower(part)
+		}
+		if part == want {
 			return true
 		}
 	}

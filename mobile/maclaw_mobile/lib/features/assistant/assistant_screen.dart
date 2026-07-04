@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/mobile_shared_intent.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
@@ -34,6 +35,14 @@ final assistantCameraImagePathPickerProvider =
     Provider<AssistantDocumentPathPicker>(
   (ref) => () async {
     final image = await ImagePicker().pickImage(source: ImageSource.camera);
+    return image?.path;
+  },
+);
+
+final assistantGalleryImagePathPickerProvider =
+    Provider<AssistantDocumentPathPicker>(
+  (ref) => () async {
+    final image = await ImagePicker().pickImage(source: ImageSource.gallery);
     return image?.path;
   },
 );
@@ -148,6 +157,16 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     await _uploadToDocuments(
       path,
       successMessage: '图片已提交文档解析，完成后可在“文档”页继续处理。',
+    );
+  }
+
+  Future<void> _pickGalleryImage() async {
+    final path = await ref.read(assistantGalleryImagePathPickerProvider)();
+    if (path == null || path.isEmpty) return;
+    _setQuery('请分析这张截图或相册图片，提取关键信息并给出下一步。');
+    await _uploadToDocuments(
+      path,
+      successMessage: '截图/图片已提交文档解析，完成后可在“文档”页继续处理。',
     );
   }
 
@@ -309,6 +328,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             ),
             const SizedBox(width: 8),
             IconButton.outlined(
+              tooltip: '从相册选择截图',
+              onPressed: _pickGalleryImage,
+              icon: const Icon(Icons.photo_library_outlined),
+            ),
+            const SizedBox(width: 8),
+            IconButton.outlined(
               tooltip: '导入截图或文件',
               onPressed: _pickFile,
               icon: const Icon(Icons.attach_file),
@@ -457,63 +482,7 @@ class _SearchHistoryCard extends ConsumerWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: history.when(
-          data: (items) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.history,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text('搜索历史', style: Theme.of(context).textTheme.titleMedium),
-                  const Spacer(),
-                  if (items.any((item) => !item.favorite))
-                    TextButton.icon(
-                      onPressed: () => _confirmClearNonFavorites(context, ref),
-                      icon: const Icon(Icons.cleaning_services_outlined),
-                      label: const Text('清理'),
-                    ),
-                ],
-              ),
-              if (items.isEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  '完成一次联网查询后会保存在这里。',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                ),
-              ] else ...[
-                const SizedBox(height: 8),
-                for (final item in _orderedItems(items).take(8))
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: IconButton(
-                      tooltip: item.favorite ? '取消收藏' : '收藏',
-                      onPressed: () => ref
-                          .read(searchHistoryProvider.notifier)
-                          .toggleFavorite(item.id),
-                      icon: Icon(
-                        item.favorite ? Icons.star : Icons.star_border,
-                      ),
-                    ),
-                    title: Text(item.query),
-                    subtitle: Text(item.answerPreview),
-                    trailing: IconButton(
-                      tooltip: '删除',
-                      onPressed: () => ref
-                          .read(searchHistoryProvider.notifier)
-                          .remove(item.id),
-                      icon: const Icon(Icons.delete_outline),
-                    ),
-                    onTap: () => onSelect(item.query),
-                  ),
-              ],
-            ],
-          ),
+          data: (items) => _buildHistory(context, ref, items),
           error: (error, _) => Text('搜索历史加载失败：$error'),
           loading: () => const LinearProgressIndicator(),
         ),
@@ -521,11 +490,65 @@ class _SearchHistoryCard extends ConsumerWidget {
     );
   }
 
-  List<SearchHistoryEntry> _orderedItems(List<SearchHistoryEntry> items) {
-    return [
-      ...items.where((item) => item.favorite),
-      ...items.where((item) => !item.favorite),
-    ];
+  Widget _buildHistory(
+    BuildContext context,
+    WidgetRef ref,
+    List<SearchHistoryEntry> items,
+  ) {
+    final favorites = items.where((item) => item.favorite).take(4).toList();
+    final recent = items.where((item) => !item.favorite).take(6).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.history,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 8),
+            Text('搜索历史', style: Theme.of(context).textTheme.titleMedium),
+            const Spacer(),
+            if (items.any((item) => !item.favorite))
+              TextButton.icon(
+                onPressed: () => _confirmClearNonFavorites(context, ref),
+                icon: const Icon(Icons.cleaning_services_outlined),
+                label: const Text('清理'),
+              ),
+          ],
+        ),
+        if (items.isEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            '完成一次联网查询后会保存在这里。',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ] else ...[
+          if (favorites.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _HistorySectionTitle(
+              icon: Icons.star,
+              label: '常用问题',
+              count: favorites.length,
+            ),
+            for (final item in favorites)
+              _HistoryItem(item: item, onSelect: onSelect),
+          ],
+          if (recent.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _HistorySectionTitle(
+              icon: Icons.schedule,
+              label: '最近查询',
+              count: recent.length,
+            ),
+            for (final item in recent)
+              _HistoryItem(item: item, onSelect: onSelect),
+          ],
+        ],
+      ],
+    );
   }
 
   Future<void> _confirmClearNonFavorites(
@@ -556,6 +579,70 @@ class _SearchHistoryCard extends ConsumerWidget {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('已清理未收藏历史，常用问题已保留')),
+    );
+  }
+}
+
+class _HistorySectionTitle extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final int count;
+
+  const _HistorySectionTitle({
+    required this.icon,
+    required this.label,
+    required this.count,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: scheme.primary),
+        const SizedBox(width: 6),
+        Text(label, style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(width: 6),
+        Text(
+          '$count',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HistoryItem extends ConsumerWidget {
+  final SearchHistoryEntry item;
+  final ValueChanged<String> onSelect;
+
+  const _HistoryItem({
+    required this.item,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      leading: IconButton(
+        tooltip: item.favorite ? '取消收藏' : '收藏',
+        onPressed: () =>
+            ref.read(searchHistoryProvider.notifier).toggleFavorite(item.id),
+        icon: Icon(item.favorite ? Icons.star : Icons.star_border),
+      ),
+      title: Text(item.query),
+      subtitle: Text(item.answerPreview),
+      trailing: IconButton(
+        tooltip: '删除',
+        onPressed: () =>
+            ref.read(searchHistoryProvider.notifier).remove(item.id),
+        icon: const Icon(Icons.delete_outline),
+      ),
+      onTap: () => onSelect(item.query),
     );
   }
 }
@@ -702,13 +789,13 @@ String assistantSearchResultMarkdown({
     buffer
       ..writeln('## 问题')
       ..writeln()
-      ..writeln(normalizedQuery)
+      ..writeln(redactMobileSensitiveText(normalizedQuery))
       ..writeln();
   }
   buffer
     ..writeln('## 结论')
     ..writeln()
-    ..writeln(answer.trim());
+    ..writeln(redactMobileSensitiveText(answer.trim()));
   if (citations.isNotEmpty) {
     buffer
       ..writeln()
@@ -771,7 +858,12 @@ class _CitationTile extends ConsumerWidget {
                 OutlinedButton.icon(
                   onPressed: citation.url.isEmpty
                       ? null
-                      : () => _copyText(context, ref, citation.url, '来源链接已复制'),
+                      : () => _copyText(
+                            context,
+                            ref,
+                            redactMobileSensitiveText(citation.url),
+                            '来源链接已复制',
+                          ),
                   icon: const Icon(Icons.link),
                   label: const Text('复制链接'),
                 ),
@@ -810,9 +902,9 @@ class _CitationTile extends ConsumerWidget {
 }
 
 String assistantCitationMarkdown(SearchCitation citation) {
-  final title = citation.title.trim();
-  final url = citation.url.trim();
-  final snippet = citation.snippet.trim();
+  final title = redactMobileSensitiveText(citation.title.trim());
+  final url = redactMobileSensitiveText(citation.url.trim());
+  final snippet = redactMobileSensitiveText(citation.snippet.trim());
   final buffer = StringBuffer();
   if (title.isNotEmpty && url.isNotEmpty) {
     buffer.write('- $title $url');

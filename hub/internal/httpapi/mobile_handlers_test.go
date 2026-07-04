@@ -166,6 +166,30 @@ func TestMobileBootstrapPayloadIncludesServiceStatuses(t *testing.T) {
 	}
 }
 
+func TestMobileBootstrapPayloadIncludesPhoneCreditsAccount(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	payload := mobileBootstrapPayload(&auth.ViewerPrincipal{
+		UserID:   "user-phone-1",
+		Email:    "phone:19900001111",
+		TenantID: "tenant-1",
+	})
+
+	user, ok := payload["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("user payload = %#v, want map", payload["user"])
+	}
+	if user["phone_number"] != "19900001111" || user["credits_account"] != "phone:19900001111" {
+		t.Fatalf("user payload = %#v, want phone credits account", user)
+	}
+	llmAccess, ok := payload["llm_access"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm_access = %#v, want map", payload["llm_access"])
+	}
+	if llmAccess["mode"] != "maclaw_official" || llmAccess["credits_account"] != "phone:19900001111" {
+		t.Fatalf("llm_access = %#v, want official phone credits account", llmAccess)
+	}
+}
+
 func TestMobileLLMDesktopQRAuthorizationUpdatesBootstrap(t *testing.T) {
 	clearMobileLLMAuthorizationsForTest(t)
 	identity, _, _ := newHTTPAPITestServices(t)

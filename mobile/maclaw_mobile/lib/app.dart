@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/api/mobile_bootstrap.dart';
+import 'core/api/mobile_credits.dart';
 import 'core/api/mobile_realtime_bridge.dart';
+import 'core/notifications/mobile_notification_service.dart';
+import 'core/security/mobile_redaction.dart';
 import 'core/settings/app_preferences.dart';
 import 'features/account/account_screen.dart';
 import 'features/assistant/assistant_screen.dart';
@@ -65,13 +68,33 @@ GoRouter mobileRouterForFeatures(MobileFeatures features) => GoRouter(
 bool mobileLlmConfigured(MobileBootstrap? bootstrap) {
   if (bootstrap == null) return false;
   final status = bootstrap.llmAccess.status.toLowerCase().trim();
-  if (status == 'missing' ||
-      status == 'disabled' ||
-      status == 'unavailable' ||
-      status == 'not_configured') {
+  if (!_mobileLlmStatusAvailable(status)) {
     return false;
   }
-  return bootstrap.llmAccess.official || bootstrap.llmAccess.desktopQrDelegated;
+  if (bootstrap.llmAccess.official) {
+    return isTrustedPhoneCreditsAccount(bootstrap.llmAccess.creditsAccount);
+  }
+  if (bootstrap.llmAccess.desktopQrDelegated) {
+    return bootstrap.llmAccess.authorizationId.trim().isNotEmpty;
+  }
+  return false;
+}
+
+bool _mobileLlmStatusAvailable(String status) {
+  return switch (status) {
+    'available' || 'authorized' || 'active' || 'ready' || 'configured' => true,
+    _ => false,
+  };
+}
+
+String? mobileNotificationTargetPath(
+  String payload,
+  MobileFeatures features,
+) {
+  final path = mobileNotificationPayloadBasePath(payload);
+  if (path == null) return null;
+  if (mobilePathEnabledForFeatures(path, features)) return path;
+  return mobileInitialPathForFeatures(features);
 }
 
 class MaClawMobileApp extends ConsumerWidget {
@@ -83,20 +106,69 @@ class MaClawMobileApp extends ConsumerWidget {
     ref.watch(mobileRealtimeBridgeProvider);
     final preferences =
         ref.watch(appPreferencesProvider).valueOrNull ?? const AppPreferences();
+    final routerConfig = session.maybeWhen(
+      data: (state) =>
+          state.authenticated && mobileLlmConfigured(state.bootstrap)
+              ? mobileRouterForFeatures(state.bootstrap!.features)
+              : _setupRouter,
+      orElse: () => _loadingRouter,
+    );
+    final canRouteNotifications = session.valueOrNull?.authenticated == true &&
+        mobileLlmConfigured(session.valueOrNull?.bootstrap);
     return MaterialApp.router(
       title: 'MaClaw Mobile',
       debugShowCheckedModeBanner: false,
       theme: buildMaClawTheme(Brightness.light),
       darkTheme: buildMaClawTheme(Brightness.dark),
       themeMode: preferences.themeMode,
-      routerConfig: session.maybeWhen(
-        data: (state) =>
-            state.authenticated && mobileLlmConfigured(state.bootstrap)
-                ? mobileRouterForFeatures(state.bootstrap!.features)
-                : _setupRouter,
-        orElse: () => _loadingRouter,
+      builder: (context, child) => _NotificationOpenBridge(
+        router: routerConfig,
+        canRoute: canRouteNotifications,
+        child: child ?? const SizedBox.shrink(),
       ),
+      routerConfig: routerConfig,
     );
+  }
+}
+
+class _NotificationOpenBridge extends ConsumerWidget {
+  final GoRouter router;
+  final bool canRoute;
+  final Widget child;
+
+  const _NotificationOpenBridge({
+    required this.router,
+    required this.canRoute,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!canRoute) return child;
+    final payload =
+        ref.read(mobileNotificationServiceProvider).consumeLastOpenedPayload();
+    if (payload != null && payload.isNotEmpty) {
+      final features = ref
+              .read(sessionControllerProvider)
+              .valueOrNull
+              ?.bootstrap
+              ?.features ??
+          defaultMobileFeatures;
+      final targetPath = mobileNotificationTargetPath(payload, features);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        if (canRoute && targetPath != null) {
+          router.go(targetPath);
+        }
+        final message = targetPath == null ? '无法识别任务提醒' : '已打开任务提醒';
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(
+            content: Text('$message：${redactMobileSensitiveText(payload)}'),
+          ),
+        );
+      });
+    }
+    return child;
   }
 }
 

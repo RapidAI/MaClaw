@@ -792,6 +792,60 @@ export namespace main {
 	        this.type = source["type"];
 	    }
 	}
+	export class SharedPythonRuntimeStatus {
+	    schema: string;
+	    id: string;
+	    os: string;
+	    arch: string;
+	    manager: string;
+	    python: string;
+	    python_request: string;
+	    packages: string[];
+	    index_urls?: string[];
+	    root_dir: string;
+	    env_dir: string;
+	    python_path: string;
+	    lock_path: string;
+	    cache_dir: string;
+	    status: string;
+	    used_by?: string[];
+	    created_at?: string;
+	    updated_at?: string;
+	    last_used_at?: string;
+	    has_lock: boolean;
+	    has_python: boolean;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SharedPythonRuntimeStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema = source["schema"];
+	        this.id = source["id"];
+	        this.os = source["os"];
+	        this.arch = source["arch"];
+	        this.manager = source["manager"];
+	        this.python = source["python"];
+	        this.python_request = source["python_request"];
+	        this.packages = source["packages"];
+	        this.index_urls = source["index_urls"];
+	        this.root_dir = source["root_dir"];
+	        this.env_dir = source["env_dir"];
+	        this.python_path = source["python_path"];
+	        this.lock_path = source["lock_path"];
+	        this.cache_dir = source["cache_dir"];
+	        this.status = source["status"];
+	        this.used_by = source["used_by"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.last_used_at = source["last_used_at"];
+	        this.has_lock = source["has_lock"];
+	        this.has_python = source["has_python"];
+	        this.error = source["error"];
+	    }
+	}
 	export class Skill {
 	    name: string;
 	    description: string;

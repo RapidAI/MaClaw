@@ -574,8 +574,8 @@ func TestMobileServiceRedemptionResolvesHubWithoutIssuingToken(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode redemption response: %v", err)
 	}
-	if payload["status"] != "requires_email_login" || payload["next_action"] != "email_login" {
-		t.Fatalf("expected pending email login response, got %+v", payload)
+	if payload["status"] != "requires_phone_login" || payload["next_action"] != "phone_login" {
+		t.Fatalf("expected pending phone login response, got %+v", payload)
 	}
 	if payload["access_token"] != nil {
 		t.Fatalf("HubCenter must not issue Hub viewer tokens, got %+v", payload)

@@ -16,6 +16,11 @@ For a single local readiness summary, run:
 - The app probes the preset HubCenters, discovers the user's Hub/tenant through
   the selected HubCenter, and stores only that discovered Hub endpoint.
 - There is no custom Hub URL setting in UI, storage, or API client code.
+- Mobile account login supports phone number plus SMS verification only. The app
+  resolves the phone account's Hub/tenant through HubCenter, then sends and
+  verifies the code on the discovered Hub.
+- After phone verification, MaClaw official LLM calls use the credits bound to
+  that `phone:<number>` account.
 - Login starts at HubCenter; bootstrap, search, document, SSH analysis, realtime,
   and digital employee APIs use the discovered Hub/tenant.
 - LLM access defaults to MaClaw official access. Third-party LLM access is valid
@@ -98,19 +103,21 @@ For a single local readiness summary, run:
 - Then run
   `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
-  Add `--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  Add `--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   to print paste-ready iOS QA artifact evidence together with the archive/export
   command context. Record the `.xcarchive` path or TestFlight build number,
   Team ID, Runner and Share Extension provisioning profiles, bundle IDs, app
   group, and URL scheme evidence in the QA build record.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "<Xcode archive path or TestFlight build number>" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   to generate paste-ready archive/build, Team ID, and provisioning-profile
   evidence for the QA build record.
 
 ## User Workflows
 
-- Login with a MaClaw account through HubCenter discovery.
+- Login with phone number and SMS verification through HubCenter discovery;
+  confirm the resulting account can use the phone account's MaClaw official
+  service credits.
 - Ask an AI search question, inspect citations with at least one visible HTTPS
   source URL, share the result to a named target or output, and turn it into
   each document template type.
@@ -133,7 +140,8 @@ For a single local readiness summary, run:
   rules, poll status, copy/share the result, and verify remote-side
   authorization rules are still enforced.
 - Confirm document/export, digital employee, and SSH abnormal notifications are
-  delivered with payload or tap/open evidence.
+  delivered with typed payload or tap/open evidence, including document,
+  `digital-employee-task:`, and `server-profile:` payload targets.
 - Confirm offline/weak-network warnings appear and that search, document,
   digital employee, or realtime status recovers after connectivity returns.
 - Change theme and speech language from the account screen.

@@ -12,17 +12,41 @@ final mobileSharedIntentProvider =
 );
 
 class MobileSharedIntentController extends Notifier<MobileSharedIntent?> {
+  static const duplicateWindow = Duration(seconds: 3);
+
+  String? _lastAcceptedSignature;
+  DateTime? _lastAcceptedAt;
+
   @override
   MobileSharedIntent? build() => null;
 
-  void accept(MobileSharedIntent intent) {
+  bool accept(MobileSharedIntent intent) {
+    final signature = _signatureFor(intent);
+    final lastAt = _lastAcceptedAt;
+    if (_lastAcceptedSignature == signature &&
+        lastAt != null &&
+        intent.receivedAt.difference(lastAt).abs() <= duplicateWindow) {
+      return false;
+    }
+    _lastAcceptedSignature = signature;
+    _lastAcceptedAt = intent.receivedAt;
     state = intent;
+    return true;
   }
 
   void clear(String id) {
     if (state?.id == id) {
       state = null;
     }
+  }
+
+  String _signatureFor(MobileSharedIntent intent) {
+    return [
+      intent.kind.name,
+      intent.value.trim(),
+      intent.mimeType?.trim() ?? '',
+      intent.message?.trim() ?? '',
+    ].join('\n');
   }
 }
 

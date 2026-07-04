@@ -457,11 +457,16 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 	}
 	hubURL := mobileRequestBaseURL(r)
 	llmAccess := mobileLlmAccessPayload(principal)
+	phoneNumber := mobilePrincipalPhoneNumber(email)
+	creditsAccount := mobilePrincipalCreditsAccount(email, userID)
 	return map[string]any{
 		"user": map[string]any{
-			"user_id":   userID,
-			"email":     email,
-			"tenant_id": tenantID,
+			"user_id":         userID,
+			"email":           email,
+			"phone_number":    phoneNumber,
+			"account_id":      firstNonEmpty(email, userID),
+			"credits_account": creditsAccount,
+			"tenant_id":       tenantID,
 		},
 		"connection": map[string]any{
 			"hubcenter_candidates":   append([]string(nil), mobileOfficialHubCenterCandidates...),
@@ -550,7 +555,38 @@ func mobileLlmAccessPayload(principal *auth.ViewerPrincipal) map[string]any {
 		"status":           "available",
 		"authorization_id": "",
 		"authorized_by":    "maclaw-official",
+		"credits_account":  mobilePrincipalCreditsAccount(mobilePrincipalEmail(principal), mobilePrincipalUserID(principal)),
 	}
+}
+
+func mobilePrincipalEmail(principal *auth.ViewerPrincipal) string {
+	if principal == nil {
+		return ""
+	}
+	return principal.Email
+}
+
+func mobilePrincipalUserID(principal *auth.ViewerPrincipal) string {
+	if principal == nil {
+		return ""
+	}
+	return principal.UserID
+}
+
+func mobilePrincipalPhoneNumber(account string) string {
+	account = strings.TrimSpace(account)
+	if strings.HasPrefix(strings.ToLower(account), "phone:") {
+		return strings.TrimSpace(account[len("phone:"):])
+	}
+	return ""
+}
+
+func mobilePrincipalCreditsAccount(account, userID string) string {
+	account = strings.TrimSpace(account)
+	if account != "" {
+		return account
+	}
+	return strings.TrimSpace(userID)
 }
 
 func mobileLlmAuthorizationKey(tenantID, userID string) string {

@@ -267,7 +267,10 @@ def main(argv: list[str] | None = None) -> int:
         "--record-dir",
         type=Path,
         default=None,
-        help="Optional docs/qa-builds directory; prints Artifact path relative to it.",
+        help=(
+            "Optional QA records directory; prints Artifact path relative to it. "
+            "Default examples use docs/qa-builds."
+        ),
     )
     android.add_argument("--version", required=True)
     android.add_argument("--signing-identity", required=True)
@@ -281,7 +284,10 @@ def main(argv: list[str] | None = None) -> int:
         "--record-dir",
         type=Path,
         default=None,
-        help="Optional docs/qa-builds directory; validates local .xcarchive paths and prints them relative to it.",
+        help=(
+            "Optional QA records directory; validates local .xcarchive paths "
+            "and prints them relative to it. Default examples use docs/qa-builds."
+        ),
     )
 
     args = parser.parse_args(argv)

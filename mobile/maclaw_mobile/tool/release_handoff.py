@@ -29,6 +29,7 @@ class ReleaseHandoff:
     scope: str
     team_id: str | None
     export_method: str
+    records_dir: str
 
 
 def mobile_root() -> Path:
@@ -60,6 +61,7 @@ def build_handoff(
     scope: str = DEFAULT_SCOPE,
     team_id: str = DEFAULT_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
     build_status: Callable[..., release_status_report.ReleaseStatus] | None = None,
 ) -> ReleaseHandoff:
     root = root.resolve()
@@ -72,18 +74,47 @@ def build_handoff(
             scope=scope,
             ios_team_id=team_id,
             ios_export_method=export_method,
+            records_dir=Path(records_dir),
         ),
         version=version,
         scope=scope,
         team_id=team_id,
         export_method=export_method,
+        records_dir=records_dir,
     )
+
+
+def _resolved_records_dir(root: Path, records_dir: str) -> Path:
+    path = Path(records_dir)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def validate_output_path(root: Path, output: Path, records_dir: str) -> list[str]:
+    records_path = _resolved_records_dir(root.resolve(), records_dir)
+    output_path = output if output.is_absolute() else root.resolve() / output
+    try:
+        output_parent = output_path.parent.resolve()
+    except OSError:
+        output_parent = output_path.parent.absolute()
+    if output_parent != records_path:
+        return []
+    name = output_path.name.lower()
+    if name.startswith("handoff-") and name.endswith(".md"):
+        return []
+    return [
+        "Release handoff output inside the QA build records directory must use "
+        "a handoff-*.md filename so record validators do not treat it as a "
+        "completed signed-build QA record.",
+    ]
 
 
 def final_decision_prefills(handoff: ReleaseHandoff) -> dict[str, str]:
     return release_evidence_commands.final_decision_prefills(
         handoff.version,
         scope=handoff.scope,
+        records_dir=handoff.records_dir,
     )
 
 
@@ -93,6 +124,7 @@ def _status_lines(
     version: str = DEFAULT_VERSION,
     team_id: str = DEFAULT_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
 ) -> list[str]:
     blocker_checks = [check for check in status.preflight_checks if check.is_blocker]
     invalid_records = [result for result in status.record_results if result.errors]
@@ -120,7 +152,9 @@ def _status_lines(
             ),
         )
     if not valid_records:
-        lines.append("- Missing completed signed-build QA record under docs/qa-builds/.")
+        lines.append(
+            f"- Missing completed signed-build QA record under {records_dir}.",
+        )
         lines.append(
             "  - "
             + release_evidence_commands.signed_qa_record_hint(
@@ -128,6 +162,7 @@ def _status_lines(
                 version=version,
                 team_id=team_id,
                 export_method=export_method,
+                records_dir=records_dir,
             ),
         )
     if status.final_errors:
@@ -140,6 +175,7 @@ def _status_lines(
                 for hint in verify_final_release_evidence.next_action_hints(
                     status.final_errors,
                     scope=status.scope,
+                    records_dir=records_dir,
                 )
             )
     return lines
@@ -149,16 +185,20 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
     record_path = release_evidence_commands.qa_record_path_placeholder(
         scope=handoff.scope,
         version=handoff.version,
+        records_dir=handoff.records_dir,
     )
     handoff_evidence_path = release_evidence_commands.handoff_evidence_path(
         handoff.version,
         scope=handoff.scope,
+        records_dir=handoff.records_dir,
     )
     runtime_boundary_command = release_evidence_commands.runtime_boundary_command(
         handoff.version,
+        records_dir=handoff.records_dir,
     )
     release_gates_command = release_evidence_commands.release_gates_command(
         handoff.version,
+        records_dir=handoff.records_dir,
     )
     ios_team_id = handoff.team_id or release_evidence_commands.DEFAULT_TEAM_ID
     setup_android_signing_command = (
@@ -173,6 +213,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
     create_record_command = release_evidence_commands.create_record_command(
         scope=handoff.scope,
         version=handoff.version,
+        records_dir=handoff.records_dir,
     )
     validate_record_command = release_evidence_commands.validate_qa_build_record_command(
         record_path,
@@ -183,17 +224,25 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
     qa_release_evidence_link_command = (
         release_evidence_commands.qa_release_evidence_link_command(
             scope=handoff.scope,
+            records_dir=handoff.records_dir,
         )
     )
     validate_records_dir_command = (
         release_evidence_commands.validate_qa_build_records_dir_command(
             scope=handoff.scope,
+            records_dir=handoff.records_dir,
         )
     )
     verify_final_evidence_command = (
         release_evidence_commands.verify_final_release_evidence_command(
+            handoff.records_dir,
             scope=handoff.scope,
             version=handoff.version,
+            log=release_evidence_commands.final_release_evidence_log_path(
+                handoff.version,
+                scope=handoff.scope,
+                records_dir=handoff.records_dir,
+            ),
         )
     )
     release_status_report_command = (
@@ -201,6 +250,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
             scope=handoff.scope,
             team_id=ios_team_id,
             export_method=handoff.export_method,
+            records_dir=handoff.records_dir,
         )
     )
     release_handoff_command = release_evidence_commands.release_handoff_command(
@@ -209,11 +259,13 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         team_id=ios_team_id,
         export_method=handoff.export_method,
         output=handoff_evidence_path,
+        records_dir=handoff.records_dir,
     )
     qa_preflight_command = release_evidence_commands.qa_preflight_command(
         scope=handoff.scope,
         team_id=handoff.team_id if release_evidence_commands.scope_covers_ios(handoff.scope) else None,
         export_method=handoff.export_method if release_evidence_commands.scope_covers_ios(handoff.scope) else None,
+        records_dir=handoff.records_dir,
     )
     android_build_dry_run_command = release_evidence_commands.android_release_build_command(
         handoff.version,
@@ -221,21 +273,38 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
     )
     android_build_command = release_evidence_commands.android_release_build_command(
         handoff.version,
+        record_dir=handoff.records_dir,
+        signing_identity="<alias or certificate fingerprint>",
+        installer_channel="<internal test channel>",
     )
     android_appbundle_build_command = release_evidence_commands.android_release_build_command(
         handoff.version,
         artifact="appbundle",
+        record_dir=handoff.records_dir,
+        signing_identity="<alias or certificate fingerprint>",
+        installer_channel="<internal test channel>",
     )
     android_artifact_evidence_command = (
-        release_evidence_commands.android_artifact_evidence_command(handoff.version)
+        release_evidence_commands.android_artifact_evidence_command(
+            handoff.version,
+            record_dir=handoff.records_dir,
+        )
     )
     ios_plan_command = release_evidence_commands.ios_release_plan_command(
         team_id=ios_team_id,
         export_method=handoff.export_method,
     )
+    ios_plan_evidence_command = release_evidence_commands.ios_release_plan_command(
+        team_id=ios_team_id,
+        export_method=handoff.export_method,
+        provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
+        record_dir=handoff.records_dir,
+    )
     ios_artifact_evidence_command = (
         release_evidence_commands.ios_artifact_evidence_command(
+            archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
             team_id=ios_team_id,
+            record_dir=handoff.records_dir,
         )
     )
     platform_setup_commands: list[str] = []
@@ -265,6 +334,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         platform_artifact_commands.extend(
             [
                 ios_plan_command,
+                ios_plan_evidence_command,
                 ios_artifact_evidence_command,
             ],
         )
@@ -286,6 +356,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
             version=handoff.version,
             team_id=ios_team_id,
             export_method=handoff.export_method,
+            records_dir=handoff.records_dir,
         ),
         "",
         "## Operator Inputs",
@@ -359,6 +430,11 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_EXPORT_METHOD,
         choices=plan_ios_release.VALID_EXPORT_METHODS,
     )
+    parser.add_argument(
+        "--records-dir",
+        default=release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
+        help="QA build records directory. Defaults to docs/qa-builds.",
+    )
     parser.add_argument("--output", type=Path, help="Optional Markdown output path.")
     parser.add_argument(
         "--force",
@@ -375,9 +451,20 @@ def main(argv: list[str] | None = None) -> int:
         scope=args.scope,
         team_id=args.team_id,
         export_method=args.export_method,
+        records_dir=args.records_dir,
     )
     output = format_handoff(handoff)
     if args.output:
+        output_errors = validate_output_path(
+            args.root.resolve(),
+            args.output,
+            args.records_dir,
+        )
+        if output_errors:
+            print("Release handoff output path is invalid:", file=sys.stderr)
+            for error in output_errors:
+                print(f"- {error}", file=sys.stderr)
+            return 1
         if args.output.exists() and not args.force:
             print(
                 f"Release handoff output already exists: {args.output}; pass --force to overwrite.",

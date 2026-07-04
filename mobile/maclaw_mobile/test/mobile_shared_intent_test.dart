@@ -1,5 +1,7 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
+import 'package:maclaw_mobile/core/shared_intents/shared_intent_bootstrap.dart';
 
 const _keepSourceCitation = '\u4fdd\u7559\u6765\u6e90\u5f15\u7528';
 const _sharedMessageLabel = '\u5206\u4eab\u9644\u5e26\u8bf4\u660e';
@@ -148,6 +150,51 @@ void main() {
     expect(intent.mimeType, contains('spreadsheetml'));
   });
 
+  test('prefers shared files over leading text captions from plugin media', () {
+    final intent = MobileSharedIntent.fromPayloads(
+      const [
+        MobileSharedIntentPayload(
+          value: _fileMessageWithUrl,
+          typeName: 'text',
+          mimeType: 'text/plain',
+        ),
+        MobileSharedIntentPayload(
+          value: '/tmp/incident.pdf',
+          typeName: 'file',
+          mimeType: 'application/pdf',
+          message: _fileMessageWithUrl,
+        ),
+      ],
+    );
+
+    expect(intent, isNotNull);
+    expect(intent!.kind, MobileSharedIntentKind.file);
+    expect(intent.opensDocuments, isTrue);
+    expect(intent.opensAssistant, isFalse);
+    expect(intent.value, '/tmp/incident.pdf');
+    expect(intent.sharedUrl, 'https://example.com/context');
+  });
+
+  test('treats empty file payload paths with message as assistant text', () {
+    final intent = MobileSharedIntent.fromPayloads(
+      const [
+        MobileSharedIntentPayload(
+          value: '',
+          typeName: 'file',
+          mimeType: 'application/pdf',
+          message: _runbookMessage,
+        ),
+      ],
+    );
+
+    expect(intent, isNotNull);
+    expect(intent!.kind, MobileSharedIntentKind.link);
+    expect(intent.opensAssistant, isTrue);
+    expect(intent.opensDocuments, isFalse);
+    expect(intent.value, _runbookMessage);
+    expect(intent.sharedUrl, 'https://example.com/runbook');
+  });
+
   test('uses shared message when plugin path is empty', () {
     final intent = MobileSharedIntent.fromPayloads(
       const [
@@ -175,5 +222,58 @@ void main() {
     );
 
     expect(intent, isNull);
+  });
+
+  test('shared intent controller suppresses immediate duplicate payloads', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(mobileSharedIntentProvider.notifier);
+    final first = MobileSharedIntent(
+      id: 'initial-media',
+      kind: MobileSharedIntentKind.file,
+      value: '/tmp/incident.pdf',
+      mimeType: 'application/pdf',
+      message: _fileMessageWithUrl,
+      receivedAt: DateTime.utc(2026, 7, 2, 8),
+    );
+    final duplicateFromStream = MobileSharedIntent(
+      id: 'stream-media',
+      kind: MobileSharedIntentKind.file,
+      value: ' /tmp/incident.pdf ',
+      mimeType: 'application/pdf',
+      message: _fileMessageWithUrl,
+      receivedAt: DateTime.utc(2026, 7, 2, 8, 0, 2),
+    );
+
+    expect(controller.accept(first), isTrue);
+    controller.clear(first.id);
+    expect(controller.accept(duplicateFromStream), isFalse);
+
+    expect(container.read(mobileSharedIntentProvider), isNull);
+  });
+
+  test('shared intent controller allows same payload after duplicate window',
+      () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(mobileSharedIntentProvider.notifier);
+    final first = MobileSharedIntent(
+      id: 'first-share',
+      kind: MobileSharedIntentKind.link,
+      value: 'https://example.com/runbook',
+      receivedAt: DateTime.utc(2026, 7, 2, 8),
+    );
+    final later = MobileSharedIntent(
+      id: 'later-share',
+      kind: MobileSharedIntentKind.link,
+      value: 'https://example.com/runbook',
+      receivedAt: DateTime.utc(2026, 7, 2, 8, 0, 4),
+    );
+
+    expect(controller.accept(first), isTrue);
+    controller.clear(first.id);
+    expect(controller.accept(later), isTrue);
+
+    expect(container.read(mobileSharedIntentProvider)?.id, 'later-share');
   });
 }

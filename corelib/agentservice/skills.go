@@ -16,6 +16,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -808,9 +809,16 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 	if err != nil {
 		return nil, err
 	}
+	type stagedInstall struct {
+		entry    corelib.NLSkillEntry
+		stageDir string
+		finalDir string
+		backup   string
+	}
 	installed := make([]corelib.NLSkillEntry, 0, len(entries))
 	scanned := make([]corelib.NLSkillEntry, 0, len(entries))
 	seenNames := make(map[string]struct{}, len(entries))
+	seenDirs := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
@@ -819,27 +827,108 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 			s.recordSkillScanRejection(p, &entry, report, err)
 			return nil, err
 		}
-		if _, ok := seenNames[entry.Name]; ok {
+		nameKey := strings.ToLower(strings.TrimSpace(entry.Name))
+		if _, ok := seenNames[nameKey]; ok {
 			return nil, fmt.Errorf("duplicate skill %q in import", entry.Name)
 		}
-		seenNames[entry.Name] = struct{}{}
+		seenNames[nameKey] = struct{}{}
 		if _, _, err := s.findSkill(p, entry.Name); err == nil && !overwrite {
 			return nil, fmt.Errorf("skill %q already exists", entry.Name)
 		}
 		scanned = append(scanned, entry)
 	}
+	staged := make([]stagedInstall, 0, len(scanned))
+	defer func() {
+		for _, item := range staged {
+			if strings.TrimSpace(item.stageDir) != "" {
+				_ = os.RemoveAll(item.stageDir)
+			}
+			if strings.TrimSpace(item.backup) != "" {
+				_ = os.RemoveAll(item.backup)
+			}
+		}
+	}()
 	for _, entry := range scanned {
 		dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
+		cleanDir := filepath.Clean(dir)
+		dirKey := cleanDir
+		if runtime.GOOS == "windows" {
+			dirKey = strings.ToLower(dirKey)
+		}
+		if _, ok := seenDirs[dirKey]; ok {
+			return nil, fmt.Errorf("duplicate skill directory %q in import", filepath.Base(cleanDir))
+		}
+		seenDirs[dirKey] = struct{}{}
+		if _, statErr := os.Stat(cleanDir); statErr == nil && !overwrite {
+			return nil, fmt.Errorf("skill directory %q already exists", filepath.Base(cleanDir))
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
+		stageDir, err := os.MkdirTemp(root, ".skill-install-*")
+		if err != nil {
+			return nil, err
+		}
+		staged = append(staged, stagedInstall{entry: entry, stageDir: stageDir, finalDir: cleanDir})
+		item := &staged[len(staged)-1]
+		if err := writeEntryToSkillDir(stageDir, entry); err != nil {
+			return nil, err
+		}
+		loaded, err := loadImportedSkillEntry(stageDir)
+		if err != nil {
+			return nil, fmt.Errorf("validate staged skill %q: %w", entry.Name, err)
+		}
+		if !loaded.MatchesName(entry.Name) {
+			return nil, fmt.Errorf("validate staged skill %q: parsed name %q does not match", entry.Name, loaded.Name)
+		}
+		item.stageDir = stageDir
+	}
+	committed := make([]int, 0, len(staged))
+	rollbackCommitted := func() {
+		for i := len(committed) - 1; i >= 0; i-- {
+			item := &staged[committed[i]]
+			if item.backup != "" {
+				_ = os.RemoveAll(item.finalDir)
+				_ = os.Rename(item.backup, item.finalDir)
+				item.backup = ""
+				continue
+			}
+			_ = os.RemoveAll(item.finalDir)
+		}
+	}
+	for i := range staged {
+		item := &staged[i]
 		if overwrite {
-			_ = os.RemoveAll(dir)
+			if _, statErr := os.Stat(item.finalDir); statErr == nil {
+				backup := filepath.Join(root, ".skill-backup-"+filepath.Base(item.finalDir)+"-"+strings.ReplaceAll(NewID("backup"), "-", ""))
+				if err := os.Rename(item.finalDir, backup); err != nil {
+					rollbackCommitted()
+					return nil, err
+				}
+				item.backup = backup
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				rollbackCommitted()
+				return nil, statErr
+			}
 		}
-		if err := secureMkdirAll(dir); err != nil {
+		if err := os.Rename(item.stageDir, item.finalDir); err != nil {
+			if item.backup != "" {
+				_ = os.Rename(item.backup, item.finalDir)
+				item.backup = ""
+			}
+			rollbackCommitted()
 			return nil, err
 		}
-		if err := writeEntryToSkillDir(dir, entry); err != nil {
-			return nil, err
+		item.stageDir = ""
+		committed = append(committed, i)
+	}
+	for i := range staged {
+		item := &staged[i]
+		if item.backup != "" {
+			_ = os.RemoveAll(item.backup)
+			item.backup = ""
 		}
-		entry.SkillDir = dir
+		entry := item.entry
+		entry.SkillDir = item.finalDir
 		entry.Source = firstNonEmpty(entry.Source, "file")
 		installed = append(installed, entry)
 		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.installed", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})

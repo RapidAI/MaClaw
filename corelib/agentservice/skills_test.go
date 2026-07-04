@@ -1174,6 +1174,59 @@ func TestPersistImportedEntriesScansAllBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestPersistImportedEntriesRejectsCaseOnlyDuplicateNamesBeforeWriting(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	safeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(safeDir, "skill.md"), []byte("# safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{
+		{Name: "case-skill", SkillDir: safeDir, Source: "test"},
+		{Name: "CASE-SKILL", SkillDir: safeDir, Source: "test"},
+	}, false)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "duplicate skill") {
+		t.Fatalf("persistImportedEntries() error = %v, want duplicate skill", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(svc.userSkillsRoot(tenant.ID, user.ID), "case-skill")); !os.IsNotExist(statErr) {
+		t.Fatalf("duplicate import should not persist skill, stat err = %v", statErr)
+	}
+}
+
+func TestPersistImportedEntriesCleansStagingOnWriteFailure(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	safeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(safeDir, "skill.md"), []byte("# safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{{
+		Name:     "bad-yaml-skill",
+		SkillDir: safeDir,
+		Source:   "test",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"bad": func() {}},
+		}},
+	}}, false)
+	if err == nil {
+		t.Fatalf("persistImportedEntries() error = nil, want YAML write failure")
+	}
+	entries, readErr := os.ReadDir(svc.userSkillsRoot(tenant.ID, user.ID))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".skill-install-") {
+			t.Fatalf("staging directory was not cleaned up: %s", entry.Name())
+		}
+	}
+}
+
 func TestInstallSkillHonorsCanceledContextBeforePersist(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)

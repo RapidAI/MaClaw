@@ -13,287 +13,256 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({});
   });
 
-  test('requestEmailLogin posts trimmed email to selected HubCenter', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'status': 'sent',
-        'message': 'check inbox',
-        'poll_id': 'poll-1',
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final service = AuthService(dio: dio);
+  test('requestPhoneLogin resolves Hub through HubCenter and sends SMS on Hub',
+      () async {
+    final adapter = _RecordingAuthAdapter((request) {
+      if (request.path == '/api/entry/probe') {
+        return _jsonResponse({
+          'mode': 'matched',
+          'hubs': [
+            {
+              'hub_id': 'hub-a',
+              'tenant_id': 'tenant-a',
+              'tenant_name': 'Tenant A',
+              'base_url': 'https://tenant-a.maclaw.top',
+              'status': 'online',
+            }
+          ],
+        });
+      }
+      return _jsonResponse({
+        'ok': true,
+        'tenant_id': 'tenant-a',
+        'expires_min': 5,
+        'code_length': 6,
+      });
+    });
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
 
-    final result = await service.requestEmailLogin(' user@example.com ');
+    final result = await service.requestPhoneLogin(' 199 0000 1111 ');
 
     expect(result.status, 'sent');
-    expect(result.message, 'check inbox');
-    expect(result.pollId, 'poll-1');
-    expect(result.hubCenterUrl, maclawDefaultHubCenterUrl);
-    expect(adapter.requests, hasLength(1));
-    expect(adapter.requests.single.method, 'POST');
-    expect(adapter.requests.single.baseUrl, maclawDefaultHubCenterUrl);
-    expect(adapter.requests.single.path, '/api/auth/email-request');
-    expect(adapter.requests.single.data, {'email': 'user@example.com'});
-    expect(
-      adapter.requests.single.headers['X-MaClaw-HubCenter-URL'],
-      maclawDefaultHubCenterUrl,
-    );
-  });
-
-  test('confirmed email poll stores discovered Hub session token', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'status': 'confirmed',
-        'access_token': 'mobile-access-token',
-        'user': {
-          'email': 'user@example.com',
-          'tenant_id': 'tenant-a',
-        },
-        'hub': {
-          'id': 'hub-a',
-          'base_url': 'https://tenant-a.maclaw.top',
-        },
-        'hubcenter_url': 'https://hubs.maclaw.top',
-        'llm': {
-          'mode': 'desktop_qr_third_party',
-          'authorization_id': 'llm-auth-1',
-        },
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
-
-    final result = await service.pollEmailLogin('poll-confirmed');
-
-    expect(result.confirmed, isTrue);
-    expect(result.accessToken, 'mobile-access-token');
-    expect(result.email, 'user@example.com');
-    expect(result.tenantId, 'tenant-a');
+    expect(result.phoneNumber, '19900001111');
     expect(result.hubUrl, 'https://tenant-a.maclaw.top');
     expect(result.hubId, 'hub-a');
+    expect(result.tenantId, 'tenant-a');
     expect(result.hubCenterUrl, maclawDefaultHubCenterUrl);
-    expect(result.llmMode, 'desktop_qr_third_party');
-    expect(result.llmAuthorizationId, 'llm-auth-1');
-    expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
-    expect(await vault.readToken(), 'mobile-access-token');
-    expect(adapter.requests.single.path, '/api/auth/email-poll');
-    expect(adapter.requests.single.data, {'poll_id': 'poll-confirmed'});
-    expect(
-      adapter.requests.single.headers['X-MaClaw-HubCenter-URL'],
-      maclawDefaultHubCenterUrl,
-    );
+    expect(result.expiresMinutes, 5);
+    expect(result.codeLength, 6);
+    expect(adapter.requests, hasLength(2));
+    expect(adapter.requests.first.baseUrl, maclawDefaultHubCenterUrl);
+    expect(adapter.requests.first.path, '/api/entry/probe');
+    expect(adapter.requests.first.data, {'phone_number': '19900001111'});
+    expect(adapter.requests.last.baseUrl, 'https://tenant-a.maclaw.top');
+    expect(adapter.requests.last.path, '/api/enroll/sms/send-code');
+    expect(adapter.requests.last.data, {
+      'phone_number': '19900001111',
+      'tenant_id': 'tenant-a',
+    });
   });
 
-  test('email login falls back to the next official HubCenter on 5xx',
+  test('phone login falls back to the next official HubCenter on 5xx',
       () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) {
-        if (request.baseUrl == maclawDefaultHubCenterUrl) {
-          return _jsonResponse({'error': 'temporarily unavailable'}, 503);
-        }
+    final adapter = _RecordingAuthAdapter((request) {
+      if (request.baseUrl == maclawDefaultHubCenterUrl) {
+        return _jsonResponse({'error': 'temporarily unavailable'}, 503);
+      }
+      if (request.path == '/api/entry/probe') {
         return _jsonResponse({
-          'status': 'sent',
-          'message': 'check inbox',
-          'poll_id': 'poll-2',
+          'hubs': [
+            {
+              'hub_id': 'hub-a',
+              'tenant_id': 'tenant-a',
+              'base_url': 'https://tenant-a.maclaw.top',
+              'status': 'online',
+            }
+          ],
         });
-      },
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final service = AuthService(dio: dio);
+      }
+      return _jsonResponse({'ok': true, 'tenant_id': 'tenant-a'});
+    });
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
 
-    final result = await service.requestEmailLogin('user@example.com');
+    final result = await service.requestPhoneLogin('19900001111');
 
-    expect(result.status, 'sent');
-    expect(result.pollId, 'poll-2');
     expect(result.hubCenterUrl, 'https://hubs.maclaw.top');
     expect(
       adapter.requests.map((request) => request.baseUrl),
-      [maclawDefaultHubCenterUrl, 'https://hubs.maclaw.top'],
+      [
+        maclawDefaultHubCenterUrl,
+        'https://hubs.maclaw.top',
+        'https://tenant-a.maclaw.top',
+      ],
     );
   });
 
-  test('email poll uses the HubCenter selected during login request', () async {
+  test('phone login rejects invalid phone numbers before HubCenter probe',
+      () async {
     final adapter = _RecordingAuthAdapter(
-      (request) {
-        if (request.path == '/api/auth/email-request' &&
-            request.baseUrl == maclawDefaultHubCenterUrl) {
-          return _jsonResponse({'error': 'temporarily unavailable'}, 503);
-        }
-        if (request.path == '/api/auth/email-request') {
-          return _jsonResponse({
-            'status': 'sent',
-            'message': 'check inbox',
-            'poll_id': 'poll-3',
-          });
-        }
-        return _jsonResponse({
-          'status': 'confirmed',
-          'access_token': 'mobile-access-token',
-          'hub': {
-            'id': 'hub-a',
-            'base_url': 'https://tenant-a.maclaw.top',
-          },
-        });
-      },
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final service = AuthService(dio: dio);
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
 
-    await service.requestEmailLogin('user@example.com');
-    final result = await service.pollEmailLogin('poll-3');
+    for (final value in const ['', 'abc', '1234567', '1234567890123456']) {
+      await expectLater(
+        service.requestPhoneLogin(value),
+        throwsA(isA<ArgumentError>()),
+      );
+    }
 
-    expect(result.confirmed, isTrue);
-    expect(result.hubCenterUrl, 'https://hubs.maclaw.top');
-    expect(adapter.requests.last.path, '/api/auth/email-poll');
-    expect(adapter.requests.last.baseUrl, 'https://hubs.maclaw.top');
-    expect(
-      adapter.requests.last.headers['X-MaClaw-HubCenter-URL'],
-      'https://hubs.maclaw.top',
-    );
+    expect(adapter.requests, isEmpty);
   });
 
-  test('email login does not fallback on client validation errors', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({'error': 'invalid email'}, 400),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final service = AuthService(dio: dio);
-
-    await expectLater(
-      service.requestEmailLogin('not-an-email'),
-      throwsA(isA<DioException>()),
-    );
-    expect(adapter.requests, hasLength(1));
-    expect(adapter.requests.single.baseUrl, maclawDefaultHubCenterUrl);
-  });
-
-  test('pending email poll does not store a session token', () async {
+  test('verifyPhoneLoginOnHub stores viewer token issued by Hub', () async {
     final adapter = _RecordingAuthAdapter(
       (request) => _jsonResponse({
-        'status': 'pending',
+        'status': 'approved',
+        'viewer_token': 'hub-issued-token',
+        'email': 'phone:19900001111',
+        'phone_number': '19900001111',
+        'tenant_id': 'tenant-a',
+        'machine_id': 'machine-a',
       }),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
     const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
+    final service =
+        AuthService(vault: vault, dio: Dio()..httpClientAdapter = adapter);
 
-    final result = await service.pollEmailLogin('poll-pending');
-
-    expect(result.confirmed, isFalse);
-    expect(await vault.readHubUrl(), isNull);
-    expect(await vault.readToken(), isNull);
-  });
-
-  test('targeted Hub email request posts to discovered Hub', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'status': 'sent',
-        'message': 'check inbox',
-        'poll_id': 'hub-poll-1',
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final service = AuthService(dio: dio);
-
-    final result = await service.requestEmailLoginOnHub(
+    final result = await service.verifyPhoneLoginOnHub(
       hubUrl: 'https://tenant-a.maclaw.top/path',
       hubCenterUrl: 'https://hubs.maclaw.top',
-      email: ' user@example.com ',
-    );
-
-    expect(result.status, 'sent');
-    expect(result.pollId, 'hub-poll-1');
-    expect(result.hubCenterUrl, 'https://hubs.maclaw.top');
-    expect(adapter.requests, hasLength(1));
-    expect(adapter.requests.single.baseUrl, 'https://tenant-a.maclaw.top');
-    expect(adapter.requests.single.path, '/api/auth/email-request');
-    expect(adapter.requests.single.data, {'email': 'user@example.com'});
-    expect(
-      adapter.requests.single.headers['X-MaClaw-HubCenter-URL'],
-      'https://hubs.maclaw.top',
-    );
-  });
-
-  test('targeted Hub email poll stores token issued by Hub', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'status': 'confirmed',
-        'access_token': 'hub-issued-token',
-        'user': {
-          'email': 'user@example.com',
-          'tenant_id': 'tenant-a',
-        },
-        'hub': {
-          'id': 'hub-a',
-          'base_url': 'https://tenant-a.maclaw.top',
-        },
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
-
-    final result = await service.pollEmailLoginOnHub(
-      hubUrl: 'https://tenant-a.maclaw.top',
-      hubCenterUrl: 'https://hubs.maclaw.top',
-      pollId: 'hub-poll-1',
+      tenantId: 'tenant-a',
+      phoneNumber: '199 0000 1111',
+      verifyCode: '303246',
     );
 
     expect(result.confirmed, isTrue);
     expect(result.accessToken, 'hub-issued-token');
+    expect(result.account, 'phone:19900001111');
+    expect(result.creditsAccount, 'phone:19900001111');
+    expect(result.phoneNumber, '19900001111');
     expect(result.hubUrl, 'https://tenant-a.maclaw.top');
-    expect(result.hubCenterUrl, 'https://hubs.maclaw.top');
+    expect(result.tenantId, 'tenant-a');
     expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
     expect(await vault.readToken(), 'hub-issued-token');
-    expect(adapter.requests.single.baseUrl, 'https://tenant-a.maclaw.top');
-    expect(adapter.requests.single.path, '/api/auth/email-poll');
-    expect(adapter.requests.single.data, {'poll_id': 'hub-poll-1'});
+    expect(adapter.requests.single.path, '/api/enroll/sms/verify-and-start');
+    expect(adapter.requests.single.data, {
+      'phone_number': '19900001111',
+      'verify_code': '303246',
+      'machine_name': 'MaClaw Mobile',
+      'platform': 'mobile',
+      'client_id': 'maclaw-mobile',
+      'tenant_id': 'tenant-a',
+    });
   });
 
-  test('official redemption stores discovered Hub session token', () async {
+  test('phone login verify rejects invalid phone before Hub request', () async {
     final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'access_token': 'redeemed-token',
-        'hub': {
-          'id': 'hub-a',
-          'base_url': 'https://tenant-a.maclaw.top',
-        },
-        'user': {
-          'tenant_id': 'tenant-a',
-        },
-      }),
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
 
-    final result = await service.redeemOfficialServiceCode(' CODE-123 ');
+    await expectLater(
+      service.verifyPhoneLoginOnHub(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        phoneNumber: '123',
+        verifyCode: '303246',
+      ),
+      throwsA(isA<ArgumentError>()),
+    );
 
-    expect(result.accessToken, 'redeemed-token');
+    expect(adapter.requests, isEmpty);
+  });
+
+  test('phone login verify defaults account to nested user phone credits',
+      () async {
+    final result = PhoneLoginVerifyResult.fromJson({
+      'status': 'approved',
+      'viewer_token': 'hub-issued-token',
+      'user': {
+        'phone_number': '19900001111',
+        'tenant_id': 'tenant-a',
+      },
+      'hub': {
+        'base_url': 'https://tenant-a.maclaw.top',
+        'id': 'hub-a',
+      },
+      'llm': {'mode': 'maclaw_official'},
+    });
+
+    expect(result.confirmed, isTrue);
+    expect(result.phoneNumber, '19900001111');
+    expect(result.account, 'phone:19900001111');
+    expect(result.creditsAccount, 'phone:19900001111');
+    expect(result.llmMode, 'maclaw_official');
     expect(result.hubUrl, 'https://tenant-a.maclaw.top');
-    expect(result.hubId, 'hub-a');
-    expect(result.tenantId, 'tenant-a');
-    expect(result.hubCenterUrl, maclawDefaultHubCenterUrl);
-    expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
-    expect(await vault.readToken(), 'redeemed-token');
-    expect(adapter.requests.single.path, '/api/mobile/service-redemptions');
-    expect(adapter.requests.single.data, {'code': 'CODE-123'});
+  });
+
+  test('phone login verify keeps official credits bound to phone account',
+      () async {
+    final result = PhoneLoginVerifyResult.fromJson({
+      'status': 'approved',
+      'viewer_token': 'hub-issued-token',
+      'email': 'user@example.com',
+      'user': {
+        'email': 'user@example.com',
+        'phone_number': '19900001111',
+        'credits_account': 'phone:19900001111',
+      },
+      'llm': {
+        'mode': 'maclaw_official',
+        'credits_account': 'legacy-llm-account',
+      },
+    });
+
+    expect(result.account, 'phone:19900001111');
+    expect(result.creditsAccount, 'phone:19900001111');
+    expect(result.llmMode, 'maclaw_official');
+  });
+
+  test('phone login verify normalizes formatted phone credits', () async {
+    final result = PhoneLoginVerifyResult.fromJson({
+      'status': 'approved',
+      'viewer_token': 'hub-issued-token',
+      'phone_number': '199 0000-1111',
+      'account': 'phone:199 0000-1111',
+      'credits_account': ' phone:199 0000-1111 ',
+      'llm': {'mode': 'maclaw_official'},
+    });
+
+    expect(result.phoneNumber, '19900001111');
+    expect(result.account, 'phone:19900001111');
+    expect(result.creditsAccount, 'phone:19900001111');
     expect(
-      adapter.requests.single.headers['X-MaClaw-HubCenter-URL'],
-      maclawDefaultHubCenterUrl,
+      result.copyWith(creditsAccount: 'phone:199 0000-1111').creditsAccount,
+      'phone:19900001111',
     );
   });
 
-  test('official redemption pending email login does not store session',
+  test('phone login verify keeps malformed phone credits unnormalized', () {
+    final result = PhoneLoginVerifyResult.fromJson({
+      'status': 'approved',
+      'viewer_token': 'hub-issued-token',
+      'phone_number': '19900001111',
+      'credits_account': 'phone:user19900001111',
+    });
+
+    expect(result.phoneNumber, '19900001111');
+    expect(result.creditsAccount, 'phone:user19900001111');
+    expect(
+      result.copyWith(creditsAccount: 'phone:user19900001111').creditsAccount,
+      'phone:user19900001111',
+    );
+  });
+
+  test('official redemption pending phone login does not store session',
       () async {
     final adapter = _RecordingAuthAdapter(
       (request) => _jsonResponse(
         {
-          'status': 'requires_email_login',
-          'next_action': 'email_login',
-          'message': 'continue with email login',
+          'status': 'requires_phone_login',
+          'next_action': 'phone_login',
+          'message': 'continue with phone login',
           'hub': {
             'id': 'hub-a',
             'base_url': 'https://tenant-a.maclaw.top',
@@ -303,9 +272,9 @@ void main() {
         202,
       ),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
     const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
+    final service =
+        AuthService(vault: vault, dio: Dio()..httpClientAdapter = adapter);
 
     await expectLater(
       service.redeemOfficialServiceCode('CODE-123'),
@@ -314,31 +283,6 @@ void main() {
     expect(await vault.readHubUrl(), isNull);
     expect(await vault.readToken(), isNull);
     expect(adapter.requests.single.path, '/api/mobile/service-redemptions');
-  });
-
-  test('desktop GUI QR session stores discovered Hub session token', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'access_token': 'desktop-qr-token',
-        'hub_url': 'https://tenant-b.maclaw.top',
-        'hub_id': 'hub-b',
-        'tenant_id': 'tenant-b',
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
-
-    final result = await service.connectWithDesktopLlmQr(' qr-payload ');
-
-    expect(result.accessToken, 'desktop-qr-token');
-    expect(result.hubUrl, 'https://tenant-b.maclaw.top');
-    expect(result.hubId, 'hub-b');
-    expect(result.tenantId, 'tenant-b');
-    expect(await vault.readHubUrl(), 'https://tenant-b.maclaw.top');
-    expect(await vault.readToken(), 'desktop-qr-token');
-    expect(adapter.requests.single.path, '/api/mobile/llm/desktop-qr-sessions');
-    expect(adapter.requests.single.data, {'qr_payload': 'qr-payload'});
   });
 
   test('desktop GUI mobile authorization QR consumes session on discovered Hub',
@@ -352,70 +296,45 @@ void main() {
         'hub_url': 'https://tenant-a.maclaw.top',
         'hub_id': 'hub-a',
         'tenant_id': 'tenant-a',
-        'bootstrap': {
-          'llm_access': {
-            'mode': 'desktop_qr_third_party',
-            'authorization_id': 'mllm_1',
-          },
-        },
       }),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
     const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
+    final service =
+        AuthService(vault: vault, dio: Dio()..httpClientAdapter = adapter);
 
     final result = await service.connectWithDesktopLlmQr(qrPayload);
 
     expect(result.accessToken, 'desktop-qr-mobile-token');
     expect(result.hubUrl, 'https://tenant-a.maclaw.top');
-    expect(result.hubId, 'hub-a');
-    expect(result.tenantId, 'tenant-a');
     expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
     expect(await vault.readToken(), 'desktop-qr-mobile-token');
-    expect(adapter.requests, hasLength(1));
     expect(adapter.requests.single.baseUrl, 'https://tenant-a.maclaw.top');
     expect(
       adapter.requests.single.path,
       '/api/mobile/llm/desktop-qr-sessions/consume',
     );
-    expect(adapter.requests.single.data, {'qr_payload': qrPayload});
   });
 
-  test('official service connection requires a Hub URL and token', () async {
+  test('desktop GUI QR rejects arbitrary third-party payloads before request',
+      () async {
     final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'access_token': 'missing-hub',
-      }),
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
     );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
+    final invalidPayloads = [
+      'https://llm.example.com/v1',
+      'sk-test-secret',
+      '{"v":1,"type":"maclaw_llm","url":"https://llm.example.com/v1","key":"sk-test"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","hub_url":"https://tenant-a.maclaw.top"}',
+    ];
 
-    await expectLater(
-      service.redeemOfficialServiceCode('CODE-123'),
-      throwsA(isA<StateError>()),
-    );
-    expect(await vault.readHubUrl(), isNull);
-    expect(await vault.readToken(), isNull);
-  });
-
-  test('confirmed email poll requires Hub URL and token', () async {
-    final adapter = _RecordingAuthAdapter(
-      (request) => _jsonResponse({
-        'status': 'confirmed',
-        'access_token': 'mobile-access-token',
-      }),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    const vault = SecureVault();
-    final service = AuthService(vault: vault, dio: dio);
-
-    await expectLater(
-      service.pollEmailLogin('poll-confirmed'),
-      throwsA(isA<StateError>()),
-    );
-    expect(await vault.readHubUrl(), isNull);
-    expect(await vault.readToken(), isNull);
+    for (final payload in invalidPayloads) {
+      await expectLater(
+        service.connectWithDesktopLlmQr(payload),
+        throwsA(isA<FormatException>()),
+      );
+    }
+    expect(adapter.requests, isEmpty);
   });
 }
 

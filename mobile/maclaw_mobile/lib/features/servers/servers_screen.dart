@@ -10,6 +10,7 @@ import 'package:xterm/xterm.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../shared/surface.dart';
 import '../auth/session_controller.dart';
 import '../digital_employees/digital_employee.dart';
@@ -41,6 +42,18 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   final _privateKeyPassphraseController = TextEditingController();
   final _terminalKey = GlobalKey<_SSHTerminalCardState>();
   String _authMode = serverAuthModePassword;
+  ServerProfile? _analysisProfile;
+  var _settingLogFromTerminal = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _logController.addListener(() {
+      if (!_settingLogFromTerminal) {
+        _analysisProfile = null;
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -72,15 +85,33 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     }
   }
 
-  void _addServer() {
+  Future<void> _addServer() async {
     final privateKey = _privateKeyController.text.trim();
+    final portText = _portController.text.trim();
+    final port = int.tryParse(portText);
+    if (_hostController.text.trim().isEmpty) {
+      _showServerProfileError('请输入服务器 Host。');
+      return;
+    }
+    if (port == null || port <= 0 || port > 65535) {
+      _showServerProfileError('请输入 1-65535 范围内的 SSH 端口。');
+      return;
+    }
+    if (_usernameController.text.trim().isEmpty) {
+      _showServerProfileError('请输入 SSH 用户名。');
+      return;
+    }
+    if (_authMode == serverAuthModePrivateKey && privateKey.isEmpty) {
+      _showServerProfileError('私钥登录需要填写或导入私钥。');
+      return;
+    }
     final profile = ServerProfile(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: _nameController.text.trim().isEmpty
           ? _hostController.text.trim()
           : _nameController.text.trim(),
       host: _hostController.text.trim(),
-      port: int.tryParse(_portController.text.trim()) ?? 22,
+      port: port,
       username: _usernameController.text.trim(),
       authMode: _authMode,
       tag: _tagController.text.trim().isEmpty
@@ -90,18 +121,28 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           ? null
           : _noteController.text.trim(),
     );
-    if (!profile.isValid) return;
-    if (_authMode == serverAuthModePrivateKey && privateKey.isEmpty) return;
-    ref.read(serverProfilesProvider.notifier).addProfile(
-          profile,
-          password: _passwordController.text,
-          privateKey: privateKey,
-          privateKeyPassphrase: _privateKeyPassphraseController.text,
-        );
+    try {
+      await ref.read(serverProfilesProvider.notifier).addProfile(
+            profile,
+            password: _passwordController.text,
+            privateKey: privateKey,
+            privateKeyPassphrase: _privateKeyPassphraseController.text,
+          );
+    } catch (error) {
+      _showServerProfileError('服务器配置保存失败：$error');
+      return;
+    }
     _passwordController.clear();
     _privateKeyController.clear();
     _privateKeyPassphraseController.clear();
     _noteController.clear();
+  }
+
+  void _showServerProfileError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   Future<void> _deleteServer(ServerProfile profile) async {
@@ -144,7 +185,9 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       source: 'manual',
     );
     if (!confirmed || !mounted) return;
-    await ref.read(sshAnalysisProvider.notifier).analyze(output);
+    await ref
+        .read(sshAnalysisProvider.notifier)
+        .analyze(redactMobileSensitiveText(output));
   }
 
   @override
@@ -183,8 +226,13 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           key: _terminalKey,
           profiles: profiles,
           onAnalyzeOutput: (output) {
+            _settingLogFromTerminal = true;
             _logController.text = output;
-            ref.read(sshAnalysisProvider.notifier).analyze(output);
+            _analysisProfile = _terminalKey.currentState?.activeProfile;
+            _settingLogFromTerminal = false;
+            ref
+                .read(sshAnalysisProvider.notifier)
+                .analyze(redactMobileSensitiveText(output));
           },
         ),
         const SizedBox(height: 12),
@@ -202,6 +250,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
         _SSHAnalysisCard(
           controller: _logController,
           analysis: analysis,
+          serverProfile: _analysisProfile,
           onAnalyze: _analyzeManualLog,
           onUseCommand: (command) {
             _commandController.text = command;
@@ -438,6 +487,17 @@ enum _MobileSSHConnectionState { disconnected, connecting, connected }
 @visibleForTesting
 final mobileSshTerminalInitialOutputProvider = Provider<String>((ref) => '');
 
+typedef MobileSshSocketConnector = Future<SSHSocket> Function(
+  String host,
+  int port,
+);
+
+@visibleForTesting
+final mobileSshSocketConnectorProvider = Provider<MobileSshSocketConnector>(
+  (ref) => (host, port) =>
+      SSHSocket.connect(host, port).timeout(const Duration(seconds: 15)),
+);
+
 typedef MobileClipboardWriter = Future<void> Function(String text);
 
 @visibleForTesting
@@ -487,7 +547,7 @@ const _terminalOutputSummaryPrefix = '\u5171\u7ea6';
 const _lineCountUnit = '\u884c\u3001';
 const _charCountUnit = '\u4e2a\u5b57\u7b26\u3002';
 const _sensitiveDataWarning =
-    '\u53d1\u9001\u524d\u8bf7\u5220\u9664\u5bc6\u7801\u3001Token\u3001\u79c1\u94a5\u3001\u8fde\u63a5\u4e32\u548c\u5ba2\u6237\u6570\u636e\u7b49\u654f\u611f\u5185\u5bb9\u3002';
+    '\u5e38\u89c1\u5bc6\u7801\u3001Token\u3001\u79c1\u94a5\u548c\u5e26\u51ed\u636e URL \u4f1a\u5148\u672c\u5730\u8131\u654f\uff1b\u53d1\u9001\u524d\u4ecd\u8bf7\u68c0\u67e5\u5ba2\u6237\u6570\u636e\u7b49\u654f\u611f\u5185\u5bb9\u3002';
 
 Future<bool> confirmMobileHighRiskCommand(
   BuildContext context,
@@ -593,6 +653,8 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
   bool get _connected =>
       _connectionState == _MobileSSHConnectionState.connected;
 
+  ServerProfile? get activeProfile => _activeProfile;
+
   @override
   void initState() {
     super.initState();
@@ -623,6 +685,9 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
         break;
       }
     }
+    if (selected == null && profiles.length == 1) {
+      selected = profiles.single;
+    }
     if (selected == null || _connecting) return;
     final selectedProfile = selected;
     await _closeActiveConnection(manual: true);
@@ -634,10 +699,10 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       _lastError = null;
     });
     try {
-      final socket = await SSHSocket.connect(
+      final socket = await ref.read(mobileSshSocketConnectorProvider)(
         selectedProfile.host,
         selectedProfile.port,
-      ).timeout(const Duration(seconds: 15));
+      );
       final client = await _buildClient(socket, selectedProfile);
       final session = await client.shell(
         pty: SSHPtyConfig(
@@ -684,7 +749,9 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: 'SSH 连接异常',
             body: '${selectedProfile.name} 连接失败',
-            payload: selectedProfile.id,
+            payload: mobileServerProfileNotificationPayload(
+              selectedProfile.id,
+            ),
           );
     }
   }
@@ -753,7 +820,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: 'SSH 连接已断开',
             body: profile.name,
-            payload: profile.id,
+            payload: mobileServerProfileNotificationPayload(profile.id),
           );
     }
   }
@@ -1211,12 +1278,14 @@ class _SavedCommandsList extends ConsumerWidget {
 class _SSHAnalysisCard extends ConsumerWidget {
   final TextEditingController controller;
   final AsyncValue<MobileSSHAnalysis?> analysis;
+  final ServerProfile? serverProfile;
   final VoidCallback onAnalyze;
   final ValueChanged<String> onUseCommand;
 
   const _SSHAnalysisCard({
     required this.controller,
     required this.analysis,
+    required this.serverProfile,
     required this.onAnalyze,
     required this.onUseCommand,
   });
@@ -1236,13 +1305,14 @@ class _SSHAnalysisCard extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
   ) async {
-    final output = controller.text.trim();
-    if (output.isEmpty) {
+    final rawOutput = controller.text.trim();
+    if (rawOutput.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('请先粘贴终端输出或错误日志。')),
       );
       return;
     }
+    final output = redactMobileSensitiveText(rawOutput);
     final employees = await _loadAvailableDigitalEmployees(ref);
     if (!context.mounted) return;
     if (employees.isEmpty) {
@@ -1261,7 +1331,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
           employeeId: request.employeeId,
           prompt: request.prompt,
           taskType: 'server_maintenance',
-          context: mobileSSHOutputTaskContext(output),
+          context: mobileSSHOutputTaskContext(output, profile: serverProfile),
         );
     if (!context.mounted) return;
     final taskState = ref.read(digitalEmployeeTaskProvider);
@@ -1323,7 +1393,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  '将提交约 ${summary.lineCount} 行、${summary.charCount} 个字符到 MaClaw 官方服务。提交前请确认已删除密码、Token、私钥、连接串和客户数据等敏感内容。',
+                  '将提交约 ${summary.lineCount} 行、${summary.charCount} 个字符到 MaClaw 官方服务。常见密码、Token、私钥和带凭据 URL 会先本地脱敏；提交前仍请检查客户数据等敏感内容。',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
@@ -1477,14 +1547,45 @@ MobileSSHOutputSubmissionSummary mobileSSHOutputSubmissionSummary(
   );
 }
 
-Map<String, String> mobileSSHOutputTaskContext(String output) {
+Map<String, String> mobileSSHOutputTaskContext(
+  String output, {
+  ServerProfile? profile,
+}) {
   final summary = mobileSSHOutputSubmissionSummary(output);
+  return mobileSSHOutputTaskContextForSummary(summary, profile: profile);
+}
+
+Map<String, String> mobileSSHOutputTaskContextForSummary(
+  MobileSSHOutputSubmissionSummary summary, {
+  ServerProfile? profile,
+}) {
+  String? sanitizedMetadata(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) return null;
+    return redactMobileSensitiveText(text);
+  }
+
+  final serverTag = sanitizedMetadata(profile?.tag);
+  final serverNote = sanitizedMetadata(profile?.note);
+  final serverName = sanitizedMetadata(profile?.name);
+  final serverHost = sanitizedMetadata(profile?.host);
+  final serverUsername = sanitizedMetadata(profile?.username);
   return {
     'source': 'maclaw_mobile',
     'handoff': 'ssh_output',
     'task_surface': 'servers',
     'line_count': summary.lineCount.toString(),
     'char_count': summary.charCount.toString(),
+    if (profile != null) ...{
+      'server_profile_id': profile.id,
+      if (serverName != null) 'server_name': serverName,
+      if (serverHost != null) 'server_host': serverHost,
+      'server_port': profile.port.toString(),
+      if (serverUsername != null) 'server_username': serverUsername,
+      'server_auth_mode': profile.authMode,
+      if (serverTag != null) 'server_tag': serverTag,
+      if (serverNote != null) 'server_note': serverNote,
+    },
   };
 }
 

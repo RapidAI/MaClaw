@@ -88,6 +88,24 @@ func TestMaclawAppDependencyVersionStatus(t *testing.T) {
 			dep:  maclawAppInstallPlanDependency{RequiredVersion: "2.0.0", InstalledVersion: "1.0.0"},
 			want: "mismatch",
 		},
+		{
+			name: "enterprise_version_key_matches_case_insensitively",
+			dep: maclawAppInstallPlanDependency{
+				Source:           "enterprise_hub",
+				RequiredVersion:  "enterprise_hub:skill:paper_pdf_translator@D1CB0335A151",
+				InstalledVersion: "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151",
+			},
+			want: "matched",
+		},
+		{
+			name: "enterprise_version_key_does_not_match_semver",
+			dep: maclawAppInstallPlanDependency{
+				Source:           "enterprise_hub",
+				RequiredVersion:  "1.0.0",
+				InstalledVersion: "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151",
+			},
+			want: "mismatch",
+		},
 	}
 
 	for _, tc := range cases {

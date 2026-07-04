@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 )
 
 // CheckContext carries execution-environment information that affects how
@@ -37,6 +38,14 @@ type CheckContext struct {
 	// land in the same environment the skill will execute in.
 	// If empty, PipFixer falls back to findPythonExecutable().
 	PythonPath string
+
+	// PythonRuntimePackages/Constraint/Manager describe a shared managed Python
+	// runtime. When set, PipFixer prepares that shared runtime before installing
+	// individual pip requirements, so Python skills reuse envs by dependency hash.
+	PythonRuntimePackages   []string
+	PythonRuntimeConstraint string
+	PythonRuntimeManager    string
+	PythonRuntimeDataDir    string
 }
 
 // DefaultCheckContext returns an empty execution context. Runner-specific
@@ -79,6 +88,13 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 		// BuildCommandEnv will inject at runtime (fixes environment mismatch).
 		if cc != nil && cc.PythonPath != "" {
 			req.Context = map[string]string{"python_path": cc.PythonPath}
+			if len(cc.PythonRuntimePackages) > 0 {
+				req.Context["python_runtime_packages"] = strings.Join(cc.PythonRuntimePackages, "\n")
+				req.Context["python_runtime_constraint"] = cc.PythonRuntimeConstraint
+				req.Context["python_runtime_manager"] = cc.PythonRuntimeManager
+				req.Context["python_runtime_data_dir"] = cc.PythonRuntimeDataDir
+				req.Context["python_runtime_used_by"] = skill.Name
+			}
 		}
 		reqs = append(reqs, req)
 	}
@@ -602,10 +618,31 @@ func (f *PipFixer) Fix(req Requirement) error {
 	if python == "" {
 		python = findPythonExecutable()
 	}
+	if req.Context != nil && strings.TrimSpace(req.Context["python_runtime_packages"]) != "" {
+		packages := strings.Split(req.Context["python_runtime_packages"], "\n")
+		plan, err := pyenv.EnsureSharedPythonRuntimeWithDataDir(req.Context["python_runtime_data_dir"], pyenv.SharedPythonRuntimeSpec{
+			Python:   req.Context["python_runtime_constraint"],
+			Manager:  firstNonEmptyRequirementString(req.Context["python_runtime_manager"], "uv"),
+			Packages: packages,
+		}, req.Context["python_runtime_used_by"], nil)
+		if err != nil {
+			return err
+		}
+		python = plan.PythonPath
+	}
 	if python == "" {
 		return fmt.Errorf("python not found, cannot install %s", req.Name)
 	}
 	return installPipPkgScoped(python, req.Name+req.Version)
+}
+
+func firstNonEmptyRequirementString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // NpmFixer installs npm packages. It reads req.Context["skill_dir"] to

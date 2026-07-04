@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
 import 'search_history.dart';
@@ -231,18 +232,21 @@ class SearchHistoryController extends AsyncNotifier<List<SearchHistoryEntry>> {
 
   Future<void> record(String query, String answer) async {
     final current = state.valueOrNull ?? await future;
-    final preview =
-        answer.length > 140 ? '${answer.substring(0, 140)}...' : answer;
+    final historyQuery = redactMobileSensitiveText(query);
+    final redactedAnswer = redactMobileSensitiveText(answer);
+    final preview = redactedAnswer.length > 140
+        ? '${redactedAnswer.substring(0, 140)}...'
+        : redactedAnswer;
     SearchHistoryEntry? existing;
     for (final item in current) {
-      if (item.query == query) {
+      if (item.query == historyQuery) {
         existing = item;
         break;
       }
     }
     final entry = SearchHistoryEntry(
       id: existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
-      query: query,
+      query: historyQuery,
       answerPreview: preview,
       createdAt: DateTime.now().toUtc(),
       favorite: existing?.favorite ?? false,

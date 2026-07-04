@@ -179,7 +179,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--record-dir",
         type=Path,
-        help="Optional docs/qa-builds directory used to print QA artifact evidence after a successful build.",
+        help=(
+            "Optional QA records directory used to print QA artifact evidence "
+            "after a successful build; default examples use docs/qa-builds."
+        ),
     )
     parser.add_argument(
         "--signing-identity",
@@ -200,6 +203,12 @@ def main(argv: list[str] | None = None) -> int:
     if evidence_error:
         print(f"Android release build cannot start: {evidence_error}", file=sys.stderr)
         return 1
+    if args.record_dir is not None:
+        try:
+            signed_artifact_evidence.validate_record_dir(args.record_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Android release build cannot start: {exc}", file=sys.stderr)
+            return 1
 
     config_errors = verify_android_release_signing.verify_android_release_signing(root)
     if config_errors:

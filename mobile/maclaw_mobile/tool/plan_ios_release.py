@@ -156,13 +156,20 @@ def main(argv: list[str] | None = None) -> int:
         "--record-dir",
         type=Path,
         help=(
-            "Optional docs/qa-builds directory; validates local .xcarchive paths "
+            "Optional QA records directory; validates local .xcarchive paths "
             "and prints them relative to the QA record location when artifact "
-            "evidence is generated."
+            "evidence is generated. Default examples use docs/qa-builds."
         ),
     )
     args = parser.parse_args(argv)
     root = args.root.resolve()
+    if args.record_dir is not None and not args.provisioning_profiles:
+        print(
+            "iOS release plan cannot generate QA artifact evidence: "
+            "--record-dir requires --provisioning-profiles.",
+            file=sys.stderr,
+        )
+        return 1
 
     wrapper_errors = verify_ios_wrapper.verify_ios_wrapper(root)
     if wrapper_errors:

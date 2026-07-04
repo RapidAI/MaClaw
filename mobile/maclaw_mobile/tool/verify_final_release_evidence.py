@@ -25,7 +25,11 @@ def _version_for_record(path: Path) -> str | None:
     return match.group("version")
 
 
-def _record_link_errors(valid_records: list[Path], release_evidence_path: Path) -> list[str]:
+def _record_link_errors(
+    valid_records: list[Path],
+    records_dir: Path,
+    release_evidence_path: Path,
+) -> list[str]:
     if not valid_records:
         return []
     if not release_evidence_path.exists():
@@ -43,7 +47,8 @@ def _record_link_errors(valid_records: list[Path], release_evidence_path: Path) 
     missing = [
         path.name
         for path in valid_records
-        if f"](docs/qa-builds/{path.name})" not in link_block
+        if f"]({qa_release_evidence_links.record_link_target(path, records_dir)})"
+        not in link_block
     ]
     if not missing:
         return []
@@ -97,6 +102,11 @@ def verify_final_release_evidence(
                 "Final release evidence requires at least one completed "
                 f"{release_evidence_commands.scope_label(scope)} signed-build QA record.",
             )
+    elif not relevant_records:
+        errors.append(
+            "Final release evidence requires at least one completed "
+            f"{release_evidence_commands.scope_label(scope)} signed-build QA record.",
+        )
 
     platform_scopes = {
         validate_qa_build_records_dir.scope_for_record(path)
@@ -128,7 +138,7 @@ def verify_final_release_evidence(
             + ", ".join(versions),
         )
 
-    errors.extend(_record_link_errors(relevant_records, release_evidence_path))
+    errors.extend(_record_link_errors(relevant_records, records_dir, release_evidence_path))
     return errors
 
 
@@ -136,6 +146,7 @@ def next_action_hints(
     errors: list[str],
     *,
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
+    records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
 ) -> list[str]:
     scope = release_evidence_commands.validate_scope(scope)
     hints: list[str] = []
@@ -161,13 +172,32 @@ def next_action_hints(
             release_evidence_commands.qa_build_record_report_hint(invalid_records[0]),
         )
     if needs_signed_record:
-        hints.append(release_evidence_commands.signed_qa_record_hint(scope=scope))
+        hints.append(
+            release_evidence_commands.signed_qa_record_hint(
+                scope=scope,
+                records_dir=records_dir,
+            ),
+        )
     if needs_release_evidence_links:
-        hints.append(release_evidence_commands.qa_release_evidence_link_hint(scope=scope))
+        hints.append(
+            release_evidence_commands.qa_release_evidence_link_hint(
+                scope=scope,
+                records_dir=records_dir,
+            ),
+        )
     if needs_single_version:
-        hints.append(release_evidence_commands.qa_record_version_mismatch_hint())
+        hints.append(
+            release_evidence_commands.qa_record_version_mismatch_hint(
+                records_dir=records_dir,
+            ),
+        )
     if not hints:
-        hints.append(release_evidence_commands.signed_qa_record_hint(scope=scope))
+        hints.append(
+            release_evidence_commands.signed_qa_record_hint(
+                scope=scope,
+                records_dir=records_dir,
+            ),
+        )
     return hints
 
 
@@ -235,7 +265,17 @@ def format_failure(
         lines.append(f"- Release evidence: {release_evidence_path}")
     lines.extend(f"- {error}" for error in errors)
     lines.append("Next action:")
-    lines.extend(f"- {hint}" for hint in next_action_hints(errors, scope=scope))
+    records_dir_arg = (
+        str(records_dir) if records_dir is not None else release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    )
+    lines.extend(
+        f"- {hint}"
+        for hint in next_action_hints(
+            errors,
+            scope=scope,
+            records_dir=records_dir_arg,
+        )
+    )
     return "\n".join(lines) + "\n"
 
 

@@ -75,11 +75,17 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 stderr.getvalue(),
             )
             self.assertIn(
-                release_evidence_commands.create_record_command(),
+                release_evidence_commands.create_record_command(
+                    records_dir=str(records_dir),
+                ),
                 stderr.getvalue(),
             )
             self.assertEqual(
-                [release_evidence_commands.signed_qa_record_hint()],
+                [
+                    release_evidence_commands.signed_qa_record_hint(
+                        records_dir=str(records_dir),
+                    ),
+                ],
                 qa_release_evidence_links.release_evidence_update_hints(summary),
             )
 
@@ -128,6 +134,34 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 "- [2026-07-02-android-ios-1.0.0+42.md](docs/qa-builds/2026-07-02-android-ios-1.0.0+42.md)",
                 output,
             )
+
+    def test_custom_record_directory_formats_actual_release_evidence_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            records_dir = root / "custom-records"
+            records_dir.mkdir()
+            record = self.write_record(
+                records_dir,
+                self.complete_record_with_local_artifact(records_dir),
+                "2026-07-02-android-ios-1.0.0+42.md",
+            )
+
+            output = qa_release_evidence_links.format_links(
+                qa_release_evidence_links.summarize_records(records_dir),
+            )
+
+            self.assertIn(
+                f"- [{record.name}]({record.as_posix()})",
+                output,
+            )
+            self.assertIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    records_dir=records_dir.as_posix(),
+                    version="1.0.0+42",
+                ),
+                output,
+            )
+            self.assertNotIn(f"](docs/qa-builds/{record.name})", output)
 
     def test_invalid_record_is_reported_but_not_linked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -215,15 +249,26 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertIn("2026-07-02-android-1.0.0+42.md", stderr.getvalue())
         self.assertIn("Next action:", stderr.getvalue())
         self.assertIn(
-            release_evidence_commands.release_handoff_command(scope="ios"),
+            release_evidence_commands.release_handoff_command(
+                scope="ios",
+                records_dir=str(records_dir),
+            ),
             stderr.getvalue(),
         )
         self.assertIn(
-            release_evidence_commands.signed_qa_record_hint(scope="ios"),
+            release_evidence_commands.signed_qa_record_hint(
+                scope="ios",
+                records_dir=str(records_dir),
+            ),
             stderr.getvalue(),
         )
         self.assertEqual(
-            [release_evidence_commands.signed_qa_record_hint(scope="ios")],
+            [
+                release_evidence_commands.signed_qa_record_hint(
+                    scope="ios",
+                    records_dir=str(records_dir),
+                ),
+            ],
             qa_release_evidence_links.release_evidence_update_hints(summary_for_hints),
         )
         self.assertNotIn("setup_android_signing.py", stderr.getvalue())
@@ -295,11 +340,17 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertIn("2026-07-02-ios-1.0.0+43.md", stderr.getvalue())
         self.assertIn("Next action:", stderr.getvalue())
         self.assertIn(
-            release_evidence_commands.qa_record_version_mismatch_hint(),
+            release_evidence_commands.qa_record_version_mismatch_hint(
+                records_dir=str(records_dir),
+            ),
             stderr.getvalue(),
         )
         self.assertEqual(
-            [release_evidence_commands.qa_record_version_mismatch_hint()],
+            [
+                release_evidence_commands.qa_record_version_mismatch_hint(
+                    records_dir=str(records_dir),
+                ),
+            ],
             qa_release_evidence_links.release_evidence_update_hints(summary_for_hints),
         )
         self.assertNotIn(

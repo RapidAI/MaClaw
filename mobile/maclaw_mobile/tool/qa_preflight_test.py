@@ -35,6 +35,10 @@ def ok_manual_gates(_: Path) -> list[str]:
     return []
 
 
+def ok_automated_gates(_: Path) -> list[str]:
+    return []
+
+
 def write_export_options(
     root: Path,
     *,
@@ -68,6 +72,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -75,6 +80,8 @@ class QaPreflightTest(unittest.TestCase):
         self.assertFalse(any(check.is_blocker for check in checks))
         self.assertIn("[OK] Android local signing inputs", output)
         self.assertIn("[OK] Manual release gate documentation", output)
+        self.assertIn("[OK] Automated release gate documentation", output)
+        self.assertIn("38 automated release gates in runner order", output)
         self.assertIn("QA record validation/redaction rules", output)
         self.assertIn("scoped internal QA commands", output)
         self.assertIn("without secret redaction failures", output)
@@ -109,10 +116,71 @@ class QaPreflightTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            release_evidence_commands.ios_artifact_evidence_command(),
+            release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+            ),
             output,
         )
         self.assertIn("Result: READY", output)
+
+    def test_custom_records_dir_controls_existing_record_checks_and_hints(self) -> None:
+        root = self.make_root()
+        records_dir = root / "custom-records"
+        records_dir.mkdir()
+        seen: dict[str, Path] = {}
+
+        def validate_records(path: Path) -> list[validate_qa_build_records_dir.RecordValidationResult]:
+            seen["records_dir"] = path
+            return []
+
+        checks = qa_preflight.run_preflight(
+            root,
+            scope="android",
+            records_dir=records_dir,
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            records_dir_validator=validate_records,
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        self.assertEqual(records_dir.resolve(), seen["records_dir"])
+        self.assertIn(
+            release_evidence_commands.qa_preflight_command(
+                scope="android",
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.create_record_command(
+                scope="android",
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                scope="android",
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                str(records_dir.resolve()),
+                scope="android",
+                version=release_evidence_commands.DEFAULT_VERSION,
+                log=release_evidence_commands.final_release_evidence_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    scope="android",
+                    records_dir=str(records_dir.resolve()),
+                ),
+            ),
+            output,
+        )
+        self.assertNotIn("--records-dir docs/qa-builds", output)
 
     def test_signed_qa_record_hint_uses_shared_release_evidence_command(self) -> None:
         self.assertEqual(
@@ -134,6 +202,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -151,6 +220,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=lambda _: ["Missing iOS wrapper file"],
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -186,6 +256,7 @@ class QaPreflightTest(unittest.TestCase):
                 "unexpected iOS export check",
             ],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -208,6 +279,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=ok_android_key,
             records_dir_validator=lambda _: [ios_record],
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -240,6 +312,7 @@ class QaPreflightTest(unittest.TestCase):
             android_config_validator=ok_android_config,
             android_key_validator=ok_android_key,
             records_dir_validator=lambda _: [android_record, ios_record],
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -264,6 +337,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -281,6 +355,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=lambda _: [
                 "qa_device_checklist.md must include final release evidence verifier log command",
             ],
@@ -296,6 +371,31 @@ class QaPreflightTest(unittest.TestCase):
         self.assertIn("[BLOCKER] Manual release gate documentation", output)
         self.assertIn("final release evidence verifier log command", output)
 
+    def test_automated_release_gate_doc_errors_are_blockers(self) -> None:
+        checks = qa_preflight.run_preflight(
+            self.make_root(),
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            ios_wrapper_validator=ok_ios,
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
+            records_dir_validator=empty_records,
+            automated_gate_validator=lambda _: [
+                "release evidence automated gate order mismatch",
+            ],
+            manual_gate_validator=ok_manual_gates,
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        self.assertTrue(
+            any(
+                check.name == "Automated release gate documentation"
+                and check.is_blocker
+                for check in checks
+            )
+        )
+        self.assertIn("[BLOCKER] Automated release gate documentation", output)
+        self.assertIn("automated gate order mismatch", output)
+
     def test_invalid_existing_records_are_blockers(self) -> None:
         bad_result = validate_qa_build_records_dir.RecordValidationResult(
             path=self.make_root() / "docs" / "qa-builds" / "bad.md",
@@ -309,6 +409,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=lambda _: [bad_result],
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -326,6 +427,7 @@ class QaPreflightTest(unittest.TestCase):
             ios_wrapper_validator=ok_ios,
             ios_export_options_validator=lambda *_args, **_kwargs: [],
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
 
@@ -341,6 +443,7 @@ class QaPreflightTest(unittest.TestCase):
             android_key_validator=ok_android_key,
             ios_wrapper_validator=ok_ios,
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -362,6 +465,7 @@ class QaPreflightTest(unittest.TestCase):
             android_key_validator=ok_android_key,
             ios_wrapper_validator=ok_ios,
             records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
         )
         output = qa_preflight.format_preflight(checks)
@@ -423,6 +527,40 @@ class QaPreflightTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("teamID must match ZZZZ123456", stderr.getvalue())
         self.assertIn("method must match ad-hoc", stderr.getvalue())
+
+    def test_main_passes_custom_records_dir_to_preflight(self) -> None:
+        root = self.make_root()
+        records_dir = root / "custom-records"
+        records_dir.mkdir()
+        seen: dict[str, object] = {}
+        stdout = StringIO()
+
+        original_run_preflight = qa_preflight.run_preflight
+        try:
+            def fake_run_preflight(*args: object, **kwargs: object) -> list[qa_preflight.PreflightCheck]:
+                seen["args"] = args
+                seen["kwargs"] = kwargs
+                return [qa_preflight.PreflightCheck("Stub", "ok", ["ready"])]
+
+            qa_preflight.run_preflight = fake_run_preflight
+            with redirect_stdout(stdout):
+                exit_code = qa_preflight.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--scope",
+                        "android",
+                        "--records-dir",
+                        str(records_dir),
+                    ],
+                )
+        finally:
+            qa_preflight.run_preflight = original_run_preflight
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual((root,), seen["args"])
+        self.assertEqual("android", seen["kwargs"]["scope"])
+        self.assertEqual(records_dir, seen["kwargs"]["records_dir"])
 
     def test_main_prints_ready_to_stdout_with_stubbed_checks(self) -> None:
         root = self.make_root()

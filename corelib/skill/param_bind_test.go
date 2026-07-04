@@ -151,6 +151,28 @@ func TestBindParams_CLIArgs(t *testing.T) {
 	}
 }
 
+func TestBindParams_DeclaredCarrierStillBinds(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "output", CLIFlag: "--output", Required: true},
+	}
+	vars := map[string]string{"output": "out.pdf"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", result.Warnings)
+	}
+	if result.ResolvedVars["output"] != "out.pdf" {
+		t.Fatalf("resolved output = %q, want out.pdf", result.ResolvedVars["output"])
+	}
+	if len(result.CLIArgs) != 2 || result.CLIArgs[0] != "--output" || result.CLIArgs[1] != "out.pdf" {
+		t.Fatalf("CLIArgs = %#v, want --output out.pdf", result.CLIArgs)
+	}
+}
+
 func TestBindParams_SyntheticParamsNoCLI(t *testing.T) {
 	// Synthetic params (from template) should NOT generate CLI args.
 	params := []corelib.NLSkillParam{

@@ -221,6 +221,94 @@ void main() {
     expect(merged.single.title, '后端来源');
   });
 
+  test('assistant export markdown redacts common secrets', () {
+    final markdown = assistantSearchResultMarkdown(
+      query: 'check outage token: query-secret',
+      answer: 'service ok\nAuthorization: Bearer answer-secret',
+      citations: const [
+        SearchCitation(
+          title: 'source api_key=source-key',
+          url: 'https://user:pass@example.com/status',
+          snippet: 'snippet password=snippet-password',
+        ),
+      ],
+    );
+
+    expect(markdown, contains('token=[REDACTED_SECRET]'));
+    expect(markdown, contains('Authorization: Bearer [REDACTED_TOKEN]'));
+    expect(markdown, contains('api_key=[REDACTED_SECRET]'));
+    expect(markdown, contains('https://[REDACTED_CREDENTIALS]@example.com'));
+    expect(markdown, contains('password=[REDACTED_SECRET]'));
+    expect(markdown, isNot(contains('query-secret')));
+    expect(markdown, isNot(contains('answer-secret')));
+    expect(markdown, isNot(contains('source-key')));
+    expect(markdown, isNot(contains('user:pass')));
+    expect(markdown, isNot(contains('snippet-password')));
+  });
+
+  test('assistant citation markdown redacts copied source secrets', () {
+    final citation = assistantCitationMarkdown(
+      const SearchCitation(
+        title: 'status token: citation-token',
+        url: 'https://ops:secret@example.com/logs',
+        snippet: 'Authorization: Bearer citation-secret',
+      ),
+    );
+
+    expect(citation, contains('token=[REDACTED_SECRET]'));
+    expect(citation, contains('https://[REDACTED_CREDENTIALS]@example.com'));
+    expect(citation, contains('Authorization: Bearer [REDACTED_TOKEN]'));
+    expect(citation, isNot(contains('citation-token')));
+    expect(citation, isNot(contains('ops:secret')));
+    expect(citation, isNot(contains('citation-secret')));
+  });
+
+  test('assistant search history redacts query and answer secrets', () async {
+    final store = _FakeHistoryStore([]);
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(searchHistoryProvider.future);
+    await container.read(searchHistoryProvider.notifier).record(
+          'check production incident token: query-secret '
+              'password="query password"',
+          'service ok\nAuthorization: Bearer history-token\n'
+              'password=history-password',
+        );
+
+    expect(store.entries, hasLength(1));
+    expect(
+      store.entries.single.query,
+      contains('token=[REDACTED_SECRET]'),
+    );
+    expect(
+      store.entries.single.query,
+      contains('password=[REDACTED_SECRET]'),
+    );
+    expect(store.entries.single.query, isNot(contains('query-secret')));
+    expect(store.entries.single.query, isNot(contains('query password')));
+    expect(
+      store.entries.single.answerPreview,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(
+      store.entries.single.answerPreview,
+      contains('password=[REDACTED_SECRET]'),
+    );
+    expect(
+      store.entries.single.answerPreview,
+      isNot(contains('history-token')),
+    );
+    expect(
+      store.entries.single.answerPreview,
+      isNot(contains('history-password')),
+    );
+  });
+
   testWidgets('assistant screen searches shared links automatically',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
@@ -712,6 +800,58 @@ void main() {
     );
   });
 
+  testWidgets('assistant gallery screenshot enters document parsing flow',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    _RecordingDocumentsController.uploaded.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          documentsControllerProvider.overrideWith(
+            _RecordingDocumentsController.new,
+          ),
+          assistantGalleryImagePathPickerProvider.overrideWithValue(
+            () async => '/tmp/mobile-screenshot.png',
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('从相册选择截图'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      _RecordingDocumentsController.uploaded,
+      ['/tmp/mobile-screenshot.png'],
+    );
+    expect(
+      find.text('请分析这张截图或相册图片，提取关键信息并给出下一步。'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('截图/图片已提交文档解析，完成后可在“文档”页继续处理。'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('assistant result exposes citation copy and share actions',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
@@ -933,6 +1073,11 @@ void main() {
       ),
     );
     await tester.pump();
+
+    expect(find.text('常用问题'), findsOneWidget);
+    expect(find.text('最近查询'), findsOneWidget);
+    expect(find.text('常用：排查 502'), findsOneWidget);
+    expect(find.text('临时：天气'), findsOneWidget);
 
     await tester.tap(find.byIcon(Icons.cleaning_services_outlined));
     await tester.pump();

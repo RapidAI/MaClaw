@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
+import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
 import 'document_draft.dart';
@@ -22,6 +23,23 @@ final documentDraftHistoryProvider =
     AsyncNotifierProvider<DocumentDraftHistoryController, List<DocumentDraft>>(
   DocumentDraftHistoryController.new,
 );
+
+const mobileDocumentImportExtensions = [
+  'docx',
+  'doc',
+  'pdf',
+  'xlsx',
+  'xls',
+  'txt',
+  'md',
+  'markdown',
+  'log',
+  'csv',
+  'json',
+  'png',
+  'jpg',
+  'jpeg',
+];
 
 class DocumentDraftHistoryController
     extends AsyncNotifier<List<DocumentDraft>> {
@@ -204,8 +222,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       await _cacheDraft(updated);
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: '文档处理完成',
-            body: '${draft.title} 已完成 $action。',
-            payload: updated.id,
+            body: _documentNotificationBody('${draft.title} 已完成 $action。'),
+            payload: mobileDocumentDraftNotificationPayload(updated.id),
           );
       return DocumentsState(
         draft: updated,
@@ -354,22 +372,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   Future<void> pickAndUploadDocument() async {
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const [
-        'docx',
-        'doc',
-        'pdf',
-        'xlsx',
-        'xls',
-        'txt',
-        'md',
-        'markdown',
-        'log',
-        'csv',
-        'json',
-        'png',
-        'jpg',
-        'jpeg',
-      ],
+      allowedExtensions: mobileDocumentImportExtensions,
     );
     final path = picked?.files.single.path;
     if (path == null || path.isEmpty) return;
@@ -384,12 +387,18 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   Future<void> uploadSharedDocument(String path) async {
+    await ref.read(sessionControllerProvider.future);
     final client = ref.read(apiClientProvider);
     if (client == null) {
       state = AsyncError(
         StateError('请先登录 MaClaw 官方服务。'),
         StackTrace.current,
       );
+      return;
+    }
+    final typeError = validateMobileDocumentImportPath(path);
+    if (typeError != null) {
+      state = AsyncError(StateError(typeError), StackTrace.current);
       return;
     }
     final sizeError = await _validateUploadSize(path);
@@ -401,10 +410,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   Future<void> retryLastUpload() async {
-    final path = state.valueOrNull?.lastUploadPath;
-    if (path == null || path.trim().isEmpty) {
+    final current = state.valueOrNull;
+    final path = current?.lastUploadPath;
+    if (current == null || !current.canRetryLastUpload || path == null) {
       state = AsyncError(
-        StateError('没有可重试的导入文件。'),
+        StateError('没有失败的导入任务可重试。'),
         StackTrace.current,
       );
       return;
@@ -443,13 +453,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   Future<String?> _validateUploadSize(String path) async {
-    final maxUploadBytes = ref
-            .read(sessionControllerProvider)
-            .valueOrNull
-            ?.bootstrap
-            ?.limits
-            .maxUploadBytes ??
-        0;
+    final session = await ref.read(sessionControllerProvider.future);
+    final maxUploadBytes = session.bootstrap?.limits.maxUploadBytes ?? 0;
     if (maxUploadBytes <= 0) return null;
     final file = File(path);
     if (!await file.exists()) return null;
@@ -464,10 +469,14 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     if (!_notifiedUploadTasks.add(upload.taskId)) return;
     await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
           title: upload.status == 'failed' ? '文档解析失败' : '文档解析完成',
-          body: upload.status == 'failed'
-              ? '${upload.filename} 解析失败：${upload.message.isEmpty ? '请重新导入或改用文本/文档格式。' : upload.message}'
-              : '${upload.filename} 已生成移动草稿。',
-          payload: upload.draftId.isEmpty ? upload.taskId : upload.draftId,
+          body: _documentNotificationBody(
+            upload.status == 'failed'
+                ? '${upload.filename} 解析失败：${upload.message.isEmpty ? '请重新导入或改用文本/文档格式。' : upload.message}'
+                : '${upload.filename} 已生成移动草稿。',
+          ),
+          payload: upload.draftId.isEmpty
+              ? mobileDocumentUploadNotificationPayload(upload.taskId)
+              : mobileDocumentDraftNotificationPayload(upload.draftId),
         );
   }
 
@@ -480,20 +489,21 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final payload = _exportNotificationPayload(job);
     await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
           title: job.status == 'failed' ? '文档导出失败' : '文档导出完成',
-          body: job.status == 'failed'
-              ? '$draftTitle 导出失败：${job.message.isEmpty ? '请重试或改用其他格式。' : job.message}'
-              : '$draftTitle 已生成 ${documentExportFormatWireValue(job.format)}。',
+          body: _documentNotificationBody(
+            job.status == 'failed'
+                ? '$draftTitle 导出失败：${job.message.isEmpty ? '请重试或改用其他格式。' : job.message}'
+                : '$draftTitle 已生成 ${documentExportFormatWireValue(job.format)}。',
+          ),
           payload: payload,
         );
   }
 
+  String _documentNotificationBody(String body) {
+    return redactMobileSensitiveText(body);
+  }
+
   String _exportNotificationPayload(DocumentExportJob job) {
-    if (job.downloadUrl.isEmpty) return job.jobId;
-    try {
-      return exportDownloadUrl(job) ?? job.jobId;
-    } on UnsupportedError {
-      return job.jobId;
-    }
+    return mobileDocumentExportNotificationPayload(job.jobId);
   }
 
   Future<void> _cacheDraft(DocumentDraft draft) {
@@ -618,4 +628,24 @@ String formatMobileFileSize(int bytes) {
       ? value.toStringAsFixed(0)
       : value.toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '');
   return '$text ${units[unitIndex]}';
+}
+
+String? validateMobileDocumentImportPath(String path) {
+  final extension = _mobileDocumentExtension(path);
+  if (extension == null ||
+      !mobileDocumentImportExtensions.contains(extension.toLowerCase())) {
+    return '暂不支持该文件类型。请导入 Word、PDF、Excel、图片、Markdown、'
+        'CSV、JSON、TXT 或日志文件。';
+  }
+  return null;
+}
+
+String? _mobileDocumentExtension(String path) {
+  final withoutQuery = path.split('?').first.split('#').first.trim();
+  final parts = withoutQuery.split(RegExp(r'[\\/]'));
+  final filename = parts.where((part) => part.isNotEmpty).lastOrNull;
+  if (filename == null) return null;
+  final dot = filename.lastIndexOf('.');
+  if (dot <= 0 || dot == filename.length - 1) return null;
+  return filename.substring(dot + 1);
 }

@@ -7,8 +7,8 @@ import 'package:maclaw_mobile/features/auth/login_screen.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 
 class _HubDiscoverySessionController extends SessionController {
-  int pollCalls = 0;
   String _hubUrl = '';
+  String? verifiedCode;
 
   @override
   String get currentHubUrl => _hubUrl;
@@ -17,21 +17,33 @@ class _HubDiscoverySessionController extends SessionController {
   Future<SessionState> build() async => const SessionState.signedOut();
 
   @override
-  Future<EmailLoginRequestResult> requestEmailLogin({
-    required String email,
+  Future<PhoneLoginRequestResult> requestPhoneLogin({
+    required String phoneNumber,
   }) async {
-    return const EmailLoginRequestResult(
+    return PhoneLoginRequestResult(
       status: 'sent',
-      message: 'check login',
-      pollId: 'poll-1',
+      message: 'code sent',
+      phoneNumber: phoneNumber,
+      hubUrl: 'https://tenant-a.maclaw.top',
+      hubId: 'hub-a',
+      tenantId: 'tenant-a',
+      tenantName: 'Tenant A',
       hubCenterUrl: 'https://hubs.maclaw.top',
+      expiresMinutes: 5,
+      codeLength: 6,
     );
   }
 
   @override
-  Future<bool> pollEmailLogin({required String pollId}) async {
-    pollCalls += 1;
-    _hubUrl = 'https://tenant-a.maclaw.top';
+  Future<bool> verifyPhoneLoginOnHub({
+    required String hubUrl,
+    required String phoneNumber,
+    required String verifyCode,
+    String tenantId = '',
+    String hubCenterUrl = '',
+  }) async {
+    verifiedCode = verifyCode;
+    _hubUrl = hubUrl;
     state = AsyncData(
       SessionState.signedIn(
         hubUrl: _hubUrl,
@@ -43,32 +55,35 @@ class _HubDiscoverySessionController extends SessionController {
 }
 
 void main() {
-  testWidgets('shows selected HubCenter and discovered Hub during login',
+  testWidgets('shows selected HubCenter and discovered Hub during phone login',
       (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = _HubDiscoverySessionController();
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          sessionControllerProvider.overrideWith(
-            () => controller,
-          ),
+          sessionControllerProvider.overrideWith(() => controller),
         ],
         child: const MaterialApp(home: LoginScreen()),
       ),
     );
 
-    await tester.enterText(find.byType(TextField), 'user@example.com');
-    await tester.tap(find.byType(FilledButton));
+    await tester.enterText(find.byType(TextField).first, '19900001111');
+    await tester.tap(find.text('发送验证码'));
     await tester.pump();
 
     expect(find.text('https://hubs.maclaw.top'), findsOneWidget);
+    expect(find.text('https://tenant-a.maclaw.top'), findsOneWidget);
     expect(find.byIcon(Icons.verified_outlined), findsOneWidget);
 
-    await tester.pump(const Duration(milliseconds: 3100));
+    await tester.enterText(find.byType(TextField).last, '303246');
+    await tester.ensureVisible(find.text('验证并登录'));
+    await tester.tap(find.text('验证并登录'));
     await tester.pump();
 
-    expect(controller.pollCalls, 1);
-    expect(find.text('https://tenant-a.maclaw.top'), findsOneWidget);
+    expect(controller.verifiedCode, '303246');
+    expect(find.text('登录成功，已接入手机号账户的官方服务 credits。'), findsOneWidget);
   });
 }
 
@@ -76,7 +91,7 @@ MobileBootstrap _bootstrap() {
   return const MobileBootstrap(
     user: MobileUser(
       userId: 'u1',
-      email: 'user@example.com',
+      email: 'phone:19900001111',
       tenantId: 'tenant-a',
     ),
     services: MobileServices(

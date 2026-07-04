@@ -22,6 +22,7 @@ class ReleaseStatus:
     scope: str = release_evidence_commands.DEFAULT_SCOPE
     ios_team_id: str | None = None
     ios_export_method: str | None = None
+    records_dir: Path | None = None
 
     @property
     def ready(self) -> bool:
@@ -50,6 +51,7 @@ def build_status(
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
     ios_team_id: str | None = None,
     ios_export_method: str | None = None,
+    records_dir: Path | None = None,
     preflight: Callable[..., list[qa_preflight.PreflightCheck]] = qa_preflight.run_preflight,
     validate_records: Callable[
         [Path],
@@ -59,7 +61,14 @@ def build_status(
 ) -> ReleaseStatus:
     root = root.resolve()
     scope = release_evidence_commands.validate_scope(scope)
-    records_dir = root / "docs" / "qa-builds"
+    resolved_records_dir = (
+        records_dir if records_dir is not None else root / "docs" / "qa-builds"
+    )
+    resolved_records_dir = (
+        resolved_records_dir
+        if resolved_records_dir.is_absolute()
+        else root / resolved_records_dir
+    ).resolve()
     return ReleaseStatus(
         root=root,
         preflight_checks=preflight(
@@ -67,12 +76,14 @@ def build_status(
             scope=scope,
             ios_team_id=ios_team_id,
             ios_export_method=ios_export_method,
+            records_dir=resolved_records_dir,
         ),
-        record_results=validate_records(records_dir),
-        final_errors=verify_final(records_dir, scope=scope),
+        record_results=validate_records(resolved_records_dir),
+        final_errors=verify_final(resolved_records_dir, scope=scope),
         scope=scope,
         ios_team_id=ios_team_id,
         ios_export_method=ios_export_method,
+        records_dir=resolved_records_dir,
     )
 
 
@@ -101,10 +112,24 @@ def _preflight_command(status: ReleaseStatus) -> str:
         scope=status.scope,
         team_id=team_id,
         export_method=export_method,
+        records_dir=_records_dir_label(status),
     )
 
 
+def _records_dir(status: ReleaseStatus) -> Path:
+    return status.records_dir or status.root / "docs" / "qa-builds"
+
+
+def _records_dir_label(status: ReleaseStatus) -> str:
+    records_dir = _records_dir(status).resolve()
+    default_records_dir = (status.root / "docs" / "qa-builds").resolve()
+    if records_dir == default_records_dir:
+        return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+    return str(records_dir)
+
+
 def format_status(status: ReleaseStatus) -> str:
+    records_dir_label = _records_dir_label(status)
     lines = [
         f"MaClaw Mobile release status: {status.root}",
         "",
@@ -185,7 +210,9 @@ def format_status(status: ReleaseStatus) -> str:
                 f"- Re-run `{_preflight_command(status)}` after fixing the blockers.",
             )
         if blocking_invalid_records:
-            lines.append("- Fix invalid signed-build QA records under docs/qa-builds/.")
+            lines.append(
+                f"- Fix invalid signed-build QA records under {records_dir_label}.",
+            )
             lines.append(
                 "- "
                 + release_evidence_commands.qa_build_record_report_hint(
@@ -194,7 +221,7 @@ def format_status(status: ReleaseStatus) -> str:
             )
         elif not in_scope_valid_records and not preflight_blockers:
             lines.append(
-                "- Create and validate in-scope signed-build QA records under docs/qa-builds/.",
+                f"- Create and validate in-scope signed-build QA records under {records_dir_label}/.",
             )
             lines.append(
                 "- "
@@ -204,6 +231,7 @@ def format_status(status: ReleaseStatus) -> str:
                     or release_evidence_commands.DEFAULT_TEAM_ID,
                     export_method=status.ios_export_method
                     or release_evidence_commands.DEFAULT_EXPORT_METHOD,
+                    records_dir=records_dir_label,
                 ),
             )
         if in_scope_valid_records and status.final_errors:
@@ -211,6 +239,7 @@ def format_status(status: ReleaseStatus) -> str:
             for hint in verify_final_release_evidence.next_action_hints(
                 status.final_errors,
                 scope=status.scope,
+                records_dir=records_dir_label,
             ):
                 lines.append(f"  - {hint}")
         elif status.final_errors:
@@ -244,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=plan_ios_release.VALID_EXPORT_METHODS,
         help="Optional Xcode export method to verify against ios/ExportOptions.plist.",
     )
+    parser.add_argument(
+        "--records-dir",
+        type=Path,
+        help="QA build records directory. Defaults to docs/qa-builds under root.",
+    )
     args = parser.parse_args(argv)
 
     status = build_status(
@@ -251,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         scope=args.scope,
         ios_team_id=args.team_id,
         ios_export_method=args.export_method,
+        records_dir=args.records_dir,
     )
     output = format_status(status)
     if status.ready:

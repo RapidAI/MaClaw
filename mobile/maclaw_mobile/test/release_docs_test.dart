@@ -50,10 +50,7 @@ void main() {
     final commands = RegExp(
       r'^python3 tool/release_handoff\.py --version .*$',
       multiLine: true,
-    )
-        .allMatches(docText)
-        .map((match) => match.group(0)!)
-        .toList();
+    ).allMatches(docText).map((match) => match.group(0)!).toList();
     expect(commands, isNotEmpty);
     for (final command in commands) {
       expect(command, contains('--output docs/qa-builds/handoff-'));
@@ -146,6 +143,18 @@ void main() {
         'python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md',
       ),
     );
+    expect(
+      qa,
+      contains(
+        'Release handoff outputs saved directly under `docs/qa-builds/` must use a',
+      ),
+    );
+    expect(qa, contains('`handoff-*.md` filename'));
+    expect(
+      qa,
+      contains('validator cannot mistake the handoff plan'),
+    );
+    expect(qa, contains('completed signed-build QA'));
     expectHandoffCommandsWriteEvidence(qa);
     expect(releaseDocCorpus(), contains('tool/create_qa_build_record.py'));
     expect(qa, contains('tool/validate_qa_build_records_dir.py'));
@@ -207,6 +216,27 @@ void main() {
       '\ufffd',
     ]) {
       expect(docs, isNot(contains(mojibake)));
+    }
+  });
+
+  test('release tooling sources do not contain replacement markers', () {
+    final toolSources = [
+      'tool/validate_qa_build_record.py',
+      'tool/qa_build_record_report.py',
+      'tool/qa_preflight.py',
+      'tool/release_status_report.py',
+      'tool/release_handoff.py',
+      'tool/run_release_gates.py',
+      'tool/verify_manual_release_gates.py',
+      'tool/verify_final_release_evidence.py',
+    ];
+
+    for (final sourcePath in toolSources) {
+      expect(
+        readDoc(sourcePath),
+        isNot(contains('\ufffd')),
+        reason: '$sourcePath must stay UTF-8 clean for QA evidence parsing.',
+      );
     }
   });
 
@@ -362,7 +392,8 @@ void main() {
     }
   });
 
-  test('signed QA evidence command examples keep setup and preflight before saved logs',
+  test(
+      'signed QA evidence command examples keep setup and preflight before saved logs',
       () {
     final docs = {
       'docs/qa_device_checklist.md': readDoc('docs/qa_device_checklist.md'),
@@ -381,6 +412,28 @@ void main() {
         'python3 tool/create_qa_build_record.py',
       ]);
     }
+
+    final artifactSequences = {
+      'docs/qa_device_checklist.md': [
+        'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+        'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+        'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+      ],
+      'docs/qa-builds/README.md': [
+        'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+        'python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
+        'python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
+        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+      ],
+    };
+    for (final entry in artifactSequences.entries) {
+      expectInOrder(docs[entry.key]!, [
+        ...entry.value,
+        'python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
+        'python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-',
+      ]);
+    }
   });
 
   test('QA checklist covers signed build manual gates', () {
@@ -394,9 +447,16 @@ void main() {
       'Team ID',
       'Provisioning profiles: Runner and Share Extension profile UUID/file/name',
       'ios/ExportOptions.plist.example',
+      'python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build>',
+      '--signing-identity "<alias or certificate fingerprint>"',
+      '--installer-channel "<internal test channel>"',
+      'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+      'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
       'python3 tool/signed_artifact_evidence.py ios',
-      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
       '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"',
+      '--record-dir docs/qa-builds',
       'android/key.properties.example',
       'MACLAW_ANDROID_STORE_FILE',
       'MACLAW_ANDROID_STORE_PASSWORD',
@@ -451,15 +511,19 @@ void main() {
       'storeFile',
       'keyAlias',
       'does not fall back to the debug',
+      'python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build>',
+      '--signing-identity "<alias or certificate fingerprint>"',
+      '--installer-channel "<internal test channel>"',
       'Install a signed development/TestFlight build',
       'python3 tool/signed_artifact_evidence.py ios',
-      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
       '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"',
+      '--record-dir docs/qa-builds',
       'text, URLs, images, PDFs, Word, Excel, and CSV files',
       'Ask one assistant question by voice',
       'photo/image/screenshot question',
       'document/export, digital employee, and SSH abnormal notifications',
-      'payload or tap/open evidence',
+      'typed payload or tap/open evidence',
       'offline/weak-network warnings',
       'visible HTTPS',
       'named target or output',
@@ -498,7 +562,7 @@ void main() {
       'Confirm realtime updates',
       'matching task or job',
       'notifications are delivered',
-      'notification payload or tap/open target',
+      'typed notification payloads or tap/open targets',
       'offline warning',
       'restore connectivity',
       'visible HTTPS source URL',
@@ -596,7 +660,7 @@ void main() {
       'realtime Hub URL confirmation',
       'Voice transcript and photo/image/screenshot assistant input produce cited answers or document tasks',
       'real-device voice/photo smoke remains manual',
-      'Document/export, digital employee, and SSH abnormal notifications are delivered with payload/open evidence',
+      'Document/export, digital employee, and SSH abnormal notifications are delivered with typed payload/open evidence',
       'real-device notification delivery remains manual',
       'Offline or weak-network warnings appear and Hub services recover after connectivity returns',
       'real Hub/network recovery smoke remains manual',
@@ -654,11 +718,13 @@ void main() {
       'Git commit: 7-40 character hexadecimal commit SHA',
       'Branch: git branch name',
       'Flutter version: Flutter x.y.z',
-      'MaClaw account: email or account ID',
+      'MaClaw account: phone:<number> or masked phone:<last-digits>',
       'Artifact path',
       'SHA256',
       'Version/build number: app version + build number, such as 1.0.0+42',
       'Signing identity: release alias, SHA fingerprint, upload key, or certificate ID',
+      'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+      'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
       'python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build>',
       '--signing-identity "<alias or certificate fingerprint>"',
       '--installer-channel "<internal test channel>"',
@@ -683,16 +749,20 @@ void main() {
       'Team ID',
       'Provisioning profiles',
       'Do not write only `UUID`; include the actual profile UUID value',
+      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
       'python3 tool/signed_artifact_evidence.py ios',
-      '--archive-or-build "<Xcode archive path or TestFlight build number>"',
+      '--archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
       '--provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>"',
+      '--record-dir docs/qa-builds',
       'App group: group.top.mypapers.maclaw.mobile',
       'iOS signed install result',
       'Speech recognition permission',
       'Photo library permission',
       'Local network permission',
       'Bootstrap user/quota/feature flags/service status',
-      'MaClaw official account login through HubCenter',
+      'phone-number-only MaClaw official login through HubCenter',
+      'SMS',
+      'official credits bound to that phone account',
       'authenticated mobile session',
       'HubCenter probe result',
       'Discovered Hub/tenant result',
@@ -746,6 +816,17 @@ void main() {
     ]) {
       expect(template, contains(expected));
     }
+    expectInOrder(template, [
+      'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+      'python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
+      'already-built artifact',
+      'python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build>',
+    ]);
+    expectInOrder(template, [
+      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+      'already-built archive or TestFlight build',
+      'python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
+    ]);
   });
 
   test('mobile CI can be manually triggered and watches its own gate file', () {
@@ -768,11 +849,15 @@ void main() {
       'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
+      'python3 -m unittest tool/release_handoff_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
       'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/update_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/signed_artifact_evidence_test.py',
       'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 tool/verify_manual_release_gates.py',
       'python3 -m unittest tool/verify_final_release_evidence_test.py',
       'python3 -m unittest tool/verify_android_release_signing_test.py',
       'python3 -m unittest tool/build_android_release_test.py',
@@ -849,15 +934,28 @@ void main() {
     expect(checklist, contains('tool/verify_final_release_evidence_test.py'));
     expect(checklist, contains('tool/verify_android_release_signing_test.py'));
     expect(checklist, contains('tool/build_android_release_test.py'));
-    expect(checklist, contains('python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --dry-run'));
+    expect(
+      checklist,
+      contains(
+        'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --dry-run',
+      ),
+    );
     expect(checklist, contains('--artifact appbundle'));
     expect(checklist, contains('tool/verify_ios_wrapper_test.py'));
     expect(checklist, contains('tool/plan_ios_release_test.py'));
     expect(checklist, contains('tool/setup_ios_export_options_test.py'));
     expect(checklist, contains('tool/setup_ios_export_options.py'));
-    expect(checklist, contains('python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development'));
+    expect(
+      checklist,
+      contains(
+        'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development',
+      ),
+    );
     expect(checklist, contains('--export-method app-store'));
-    expect(checklist, contains('python3 tool/verify_android_release_signing.py'));
+    expect(
+      checklist,
+      contains('python3 tool/verify_android_release_signing.py'),
+    );
     expect(checklist, contains('python3 tool/verify_ios_wrapper.py'));
     expect(
       checklist,
@@ -898,6 +996,11 @@ void main() {
     expect(evidence, contains('tool/create_qa_build_record_test.py'));
     expect(evidence, contains('tool/qa_build_record_report.py'));
     expect(evidence, contains('tool/qa_build_record_report_test.py'));
+    expect(evidence, contains('handoff evidence paths being rejected'));
+    expect(
+      evidence,
+      contains('without mixing in missing evidence-field noise'),
+    );
     expect(evidence, contains('tool/qa_release_evidence_links.py'));
     expect(evidence, contains('tool/qa_release_evidence_links_test.py'));
     expect(evidence, contains('deferred final verifier messaging'));
@@ -973,11 +1076,15 @@ void main() {
       'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
+      'python3 -m unittest tool/release_handoff_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
       'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/update_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/signed_artifact_evidence_test.py',
       'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 tool/verify_manual_release_gates.py',
       'python3 -m unittest tool/verify_final_release_evidence_test.py',
       'python3 -m unittest tool/verify_android_release_signing_test.py',
       'python3 -m unittest tool/build_android_release_test.py',
@@ -1016,11 +1123,15 @@ void main() {
       'python3 -m unittest tool/release_evidence_commands_test.py',
       'python3 -m unittest tool/setup_android_signing_test.py',
       'python3 -m unittest tool/release_status_report_test.py',
+      'python3 -m unittest tool/release_handoff_test.py',
       'python3 tool/validate_qa_build_records_dir.py docs/qa-builds',
       'python3 -m unittest tool/verify_runtime_boundary_test.py',
       'python3 -m unittest tool/run_release_gates_test.py',
       'python3 -m unittest tool/verify_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/update_debug_apk_evidence_test.py',
+      'python3 -m unittest tool/signed_artifact_evidence_test.py',
       'python3 -m unittest tool/verify_manual_release_gates_test.py',
+      'python3 tool/verify_manual_release_gates.py',
       'python3 -m unittest tool/verify_final_release_evidence_test.py',
       'python3 -m unittest tool/verify_android_release_signing_test.py',
       'python3 -m unittest tool/build_android_release_test.py',
@@ -1093,6 +1204,10 @@ void main() {
       'python3 tool/setup_android_signing.py',
       'python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development',
       'python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
+      'python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
+      'python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
+      'python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
       'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
       'python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md',
       'python3 tool/release_status_report.py --scope android',
@@ -1112,6 +1227,9 @@ void main() {
       'Automated release gates result',
       'runtime-boundary log, and release-gates log commands refuse to',
       'overwrite existing saved evidence files unless `--force` is provided',
+      'Release handoff outputs saved directly under `docs/qa-builds/` must use a',
+      '`handoff-*.md` filename',
+      'cannot be mistaken for completed signed-build QA records',
       'Use `--scope android` or `--scope ios`',
       'refuses to overwrite an existing',
       'python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md',
@@ -1260,8 +1378,7 @@ void main() {
           'Passed: {count} QA build record report tests.',
       'tool/qa_release_evidence_links_test.py':
           'Passed: {count} QA release evidence link helper tests.',
-      'tool/qa_preflight_test.py':
-          'Passed: {count} QA preflight helper tests.',
+      'tool/qa_preflight_test.py': 'Passed: {count} QA preflight helper tests.',
       'tool/release_evidence_commands_test.py':
           'Passed: {count} release evidence command helper tests.',
       'tool/setup_android_signing_test.py':
@@ -1359,9 +1476,11 @@ void main() {
         .listSync()
         .whereType<File>()
         .where((file) => file.path.endsWith('_test.py'))
-        .map((file) => RegExp(r'^\s*def test_', multiLine: true)
-            .allMatches(file.readAsStringSync())
-            .length)
+        .map(
+          (file) => RegExp(r'^\s*def test_', multiLine: true)
+              .allMatches(file.readAsStringSync())
+              .length,
+        )
         .fold<int>(0, (sum, count) => sum + count);
 
     expect(

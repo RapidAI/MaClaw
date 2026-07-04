@@ -110,6 +110,27 @@ void main() {
       'wss://tenant-a.maclaw.top/api/mobile/realtime',
     );
     expect(
+      maclawHubWebSocketUrl(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        path: 'wss://tenant-a.maclaw.top/api/mobile/realtime',
+      ),
+      'wss://tenant-a.maclaw.top/api/mobile/realtime',
+    );
+    expect(
+      () => maclawHubWebSocketUrl(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        path: 'wss://example.invalid/api/mobile/realtime',
+      ),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => maclawHubWebSocketUrl(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        path: 'https://example.invalid/api/mobile/realtime',
+      ),
+      throwsUnsupportedError,
+    );
+    expect(
       isMaclawHubWebSocketUrl(
         'wss://tenant-a.maclaw.top/api/mobile/realtime',
         'https://tenant-a.maclaw.top',

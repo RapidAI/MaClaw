@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -312,6 +313,13 @@ func (r *SkillRunner) defaultTimeoutSec() int {
 	return corelib.DefaultSkillRunnerTimeoutSec
 }
 
+func (r *SkillRunner) dataDir() string {
+	if r != nil && r.executor != nil && r.executor.app != nil {
+		return r.executor.app.GetDataDir()
+	}
+	return ""
+}
+
 func (r *SkillRunner) runDefaultTimeoutSec(run *skillRun) int {
 	if run != nil && run.timeoutSec > 0 {
 		return corelib.NormalizeSkillRunnerTimeoutSec(run.timeoutSec)
@@ -520,7 +528,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	if cb, ok := r.prepProgressByOwner.Load(policyOwnerID); ok {
 		prepProgress, _ = cb.(cskill.FixProgressCallback)
 	}
-	prep, err := cskill.PrepareRunnerExecutionWithProgress(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI, prepProgress)
+	prep, err := cskill.PrepareRunnerExecutionWithProgressWithDataDir(r.dataDir(), target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI, prepProgress)
 	if err != nil {
 		log.Printf("[skill-runner] start_run prepare_failed owner=%q skill=%q elapsed=%s err=%v", policyOwnerID, skillName, time.Since(prepStart).Round(time.Millisecond), err)
 		// Detailed diagnostic dump for AI debugging tools
@@ -674,7 +682,7 @@ func (r *SkillRunner) startPipelineRun(policyOwnerID, skillName string, target *
 	if templateVars == nil {
 		templateVars = map[string]string{}
 	}
-	prep, err := cskill.PreparePipelineRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
+	prep, err := cskill.PreparePipelineRunnerExecutionWithDataDir(r.dataDir(), target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
 	if err != nil {
 		return "", err
 	}
@@ -1708,6 +1716,10 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 		return
 	}
 
+	if r.materializeArtifactFileFromStepOutput(expectedOutput, content) {
+		return
+	}
+
 	// If the expected output format is plain text (.txt) but the content looks
 	// like a JSON response with a "text" field, extract the text value.
 	// This handles OCR-type skills that output structured JSON to stdout while
@@ -1730,6 +1742,126 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 		return
 	}
 	log.Printf("[skill-runner] materialized stdout to expected output: %s (%d bytes)", expectedOutput, len(content))
+}
+
+func (r *SkillRunner) materializeArtifactFileFromStepOutput(expectedOutput, content string) bool {
+	expectedOutput = strings.TrimSpace(expectedOutput)
+	if expectedOutput == "" {
+		return false
+	}
+	sourcePath := selectArtifactFileFromJSONOutput(content, filepath.Ext(expectedOutput))
+	if sourcePath == "" {
+		return false
+	}
+	if samePath(sourcePath, expectedOutput) || !artifactExists(sourcePath) {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(expectedOutput), 0o755); err != nil {
+		log.Printf("[skill-runner] materialize artifact: mkdir failed path=%q err=%v", filepath.Dir(expectedOutput), err)
+		return false
+	}
+	in, err := os.Open(sourcePath)
+	if err != nil {
+		log.Printf("[skill-runner] materialize artifact: open failed path=%q err=%v", sourcePath, err)
+		return false
+	}
+	defer in.Close()
+	out, err := os.Create(expectedOutput)
+	if err != nil {
+		log.Printf("[skill-runner] materialize artifact: create failed path=%q err=%v", expectedOutput, err)
+		return false
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(expectedOutput)
+		log.Printf("[skill-runner] materialize artifact: copy failed src=%q dst=%q err=%v", sourcePath, expectedOutput, err)
+		return false
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(expectedOutput)
+		log.Printf("[skill-runner] materialize artifact: close failed path=%q err=%v", expectedOutput, err)
+		return false
+	}
+	log.Printf("[skill-runner] materialized artifact file to expected output: %s -> %s", sourcePath, expectedOutput)
+	return true
+}
+
+func selectArtifactFileFromJSONOutput(content, expectedExt string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	for _, jsonContent := range artifactJSONPayloadCandidates(content) {
+		if sourcePath := selectArtifactFileFromJSONPayload(jsonContent, expectedExt); sourcePath != "" {
+			return sourcePath
+		}
+	}
+	return ""
+}
+
+func artifactJSONPayloadCandidates(content string) []string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	candidates := []string{content}
+	for idx := strings.LastIndex(content, "{"); idx >= 0; {
+		candidate := strings.TrimSpace(content[idx:])
+		if candidate != content {
+			candidates = append(candidates, candidate)
+		}
+		if idx == 0 {
+			break
+		}
+		idx = strings.LastIndex(content[:idx], "{")
+	}
+	return candidates
+}
+
+func selectArtifactFileFromJSONPayload(content, expectedExt string) string {
+	var payload struct {
+		Files []string `json:"files"`
+		File  string   `json:"file"`
+		Path  string   `json:"path"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := decoder.Decode(&payload); err != nil {
+		return ""
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return ""
+	}
+	candidates := append([]string(nil), payload.Files...)
+	candidates = append(candidates, payload.File, payload.Path)
+	expectedExt = strings.ToLower(strings.TrimSpace(expectedExt))
+	var fallback string
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || !filepath.IsAbs(candidate) || !artifactExists(candidate) {
+			continue
+		}
+		if fallback == "" {
+			fallback = candidate
+		}
+		if expectedExt != "" && strings.EqualFold(filepath.Ext(candidate), expectedExt) {
+			return candidate
+		}
+	}
+	return fallback
+}
+
+func samePath(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // stripSkillRunnerMetadataFromOutput removes the runner-injected metadata
@@ -2390,6 +2522,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// Propagate skill-level preferred_shell to bash steps so the shell
 		// selection logic can respect it.
 		resolvedStepAction := classifySkillStepAction(resolvedStep.Action)
+		stepExtraEnv := mergeSkillRuntimeExtraEnv(run.extraEnv, cskill.SharedPythonRuntimeExtraEnvWithDataDir(r.dataDir(), skill, os.Environ()))
 		if resolvedStepAction.IsBash() && skill.PreferredShell != "" {
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
@@ -2411,8 +2544,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 					resolvedStep.Params["user_prompt"] = prompt
 				}
 			}
-			if len(run.extraEnv) > 0 {
-				cskill.MergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
+			if len(stepExtraEnv) > 0 {
+				cskill.MergeExtraEnvParam(resolvedStep.Params, stepExtraEnv)
 			}
 		}
 		// Poll steps run bash subprocesses internally via runBashStepWithContext,
@@ -2427,12 +2560,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			if len(skill.RequiredEnv) > 0 {
 				cskill.MergeRequiredEnvParam(resolvedStep.Params, skill.RequiredEnv)
 			}
-			if len(run.extraEnv) > 0 {
-				cskill.MergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
+			if len(stepExtraEnv) > 0 {
+				cskill.MergeExtraEnvParam(resolvedStep.Params, stepExtraEnv)
 			}
 		}
 		// Propagate skill-level required_env to bash steps for auto-injection.
-		resolvedStep = cskill.PrepareResolvedStepEnv(resolvedStep, skill.RequiredEnv, run.extraEnv)
+		resolvedStep = cskill.PrepareResolvedStepEnv(resolvedStep, skill.RequiredEnv, stepExtraEnv)
 		resolvedStep = remapSkillRunStepToWorkspace(resolvedStep, sourceSkillDir, run.workspaceDir)
 		if resolvedStep.Params == nil {
 			resolvedStep.Params = map[string]interface{}{}
@@ -2440,7 +2573,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		resolvedStep.Params["_skill_run_id"] = run.status.RunID
 		resolvedStep.Params["_skill_owner_id"] = run.status.OwnerID
 		resolvedStep.Params["_live_output"] = run.liveOutput
-		restoreEnv := installSkillStepProcessEnvForRun(run.status.RunID, run.status.OwnerID, resolvedStep.Action, run.extraEnv)
+		restoreEnv := installSkillStepProcessEnvForRun(run.status.RunID, run.status.OwnerID, resolvedStep.Action, stepExtraEnv)
 		stepStart := time.Now()
 		log.Printf("[skill-runner] run=%s owner=%q step %d/%d: action=%s command=%q", run.status.RunID, run.status.OwnerID, i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
 		result, stepErr := func() (string, error) {
@@ -3403,6 +3536,47 @@ func mergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]strin
 	cskill.MergeExtraEnvParam(params, extraEnv)
 }
 
+func mergeSkillRuntimeExtraEnv(base, runtimeEnv map[string]string) map[string]string {
+	if len(base) == 0 && len(runtimeEnv) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(runtimeEnv))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range runtimeEnv {
+		if strings.EqualFold(k, "PATH") {
+			for existing := range out {
+				if envMapKeyEqual(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+			continue
+		}
+		if _, exists := lookupEnvMapKey(out, k); !exists {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func lookupEnvMapKey(values map[string]string, key string) (string, bool) {
+	for existing := range values {
+		if envMapKeyEqual(existing, key) {
+			return existing, true
+		}
+	}
+	return "", false
+}
+
+func envMapKeyEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {
 	return cskill.SkillParamSeconds(params, key)
 }
@@ -3611,7 +3785,9 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			// BOM-based approach does NOT work: cmd.exe on CP936 treats the
 			// BOM bytes as part of the first command, turning "@echo off" into
 			// "'@echo" is not recognized as an internal or external command.
-			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + cmdSafeCommand + "\r\n"
+			scriptContent := "@echo off\r\n" +
+				`if exist "%SystemRoot%\System32\chcp.com" ("%SystemRoot%\System32\chcp.com" 65001 >nul 2>nul) else (chcp 65001 >nul 2>nul)` + "\r\n" +
+				cmdSafeCommand + "\r\n"
 			if _, err := scriptFile.WriteString(scriptContent); err != nil {
 				scriptFile.Close()
 				os.Remove(tmpScript)

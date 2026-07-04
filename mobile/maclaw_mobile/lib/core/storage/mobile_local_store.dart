@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../settings/app_preferences_model.dart';
 import '../api/api_client.dart';
+import '../security/mobile_redaction.dart';
 import '../../features/assistant/search_history.dart';
 import '../../features/digital_employees/digital_employee_prompt.dart';
 import '../../features/documents/document_draft.dart';
@@ -36,6 +37,13 @@ Map<String, String> _stringMapFromJson(String raw) {
 
 String _stringMapToJson(Map<String, String> value) {
   return jsonEncode(value);
+}
+
+Map<String, String> _redactStringMapValues(Map<String, String> value) {
+  return {
+    for (final entry in value.entries)
+      entry.key: redactMobileSensitiveText(entry.value),
+  };
 }
 
 class MobileLocalStore {
@@ -455,6 +463,7 @@ class MobileLocalStore {
     if (_migrateLegacyFiles) {
       await _migrateLegacyJsonCache(db);
     }
+    await _sanitizeSensitivePreviewCaches(db);
     return db;
   }
 
@@ -668,7 +677,7 @@ class MobileLocalStore {
       [
         entry.id,
         entry.query,
-        entry.answerPreview,
+        redactMobileSensitiveText(entry.answerPreview),
         _dateWireValue(entry.createdAt),
         entry.favorite ? 1 : 0,
       ],
@@ -777,7 +786,7 @@ class MobileLocalStore {
       [
         entry.id,
         entry.command,
-        entry.label,
+        redactMobileSensitiveText(entry.label),
         entry.favorite ? 1 : 0,
         _dateWireValue(entry.createdAt),
         _dateWireValue(entry.lastUsedAt),
@@ -799,16 +808,95 @@ class MobileLocalStore {
       [
         entry.id,
         entry.employeeId,
-        entry.prompt,
+        redactMobileSensitiveText(entry.prompt),
         _dateWireValue(entry.createdAt),
       ],
     );
+  }
+
+  Future<void> _sanitizeSensitivePreviewCaches(_MobileSqliteDatabase db) async {
+    await _sanitizeTextColumn(
+      db,
+      table: 'search_history',
+      idColumn: 'id',
+      textColumn: 'answer_preview',
+    );
+    await _sanitizeTextColumn(
+      db,
+      table: 'server_commands',
+      idColumn: 'id',
+      textColumn: 'label',
+    );
+    await _sanitizeTextColumn(
+      db,
+      table: 'digital_employee_prompts',
+      idColumn: 'id',
+      textColumn: 'prompt',
+    );
+    await _sanitizeDigitalEmployeeTaskCaches(db);
+  }
+
+  Future<void> _sanitizeTextColumn(
+    _MobileSqliteDatabase db, {
+    required String table,
+    required String idColumn,
+    required String textColumn,
+  }) async {
+    final rows = await db
+        .customSelect('SELECT $idColumn, $textColumn FROM $table')
+        .get();
+    for (final row in rows) {
+      final id = row.read<String>(idColumn);
+      final value = row.read<String>(textColumn);
+      final redacted = redactMobileSensitiveText(value);
+      if (redacted == value) continue;
+      await db.customStatement(
+        'UPDATE $table SET $textColumn = ? WHERE $idColumn = ?',
+        [redacted, id],
+      );
+    }
+  }
+
+  Future<void> _sanitizeDigitalEmployeeTaskCaches(
+    _MobileSqliteDatabase db,
+  ) async {
+    for (final column in const [
+      'prompt',
+      'result',
+      'message',
+      'claimed_by',
+    ]) {
+      await _sanitizeTextColumn(
+        db,
+        table: 'digital_employee_tasks',
+        idColumn: 'task_id',
+        textColumn: column,
+      );
+    }
+    final rows = await db
+        .customSelect(
+          'SELECT task_id, context_json FROM digital_employee_tasks',
+        )
+        .get();
+    for (final row in rows) {
+      final taskId = row.read<String>('task_id');
+      final rawContext = row.read<String>('context_json');
+      final context = _stringMapFromJson(rawContext);
+      final redacted = _stringMapToJson(_redactStringMapValues(context));
+      if (redacted == rawContext) continue;
+      await db.customStatement(
+        'UPDATE digital_employee_tasks SET context_json = ? '
+        'WHERE task_id = ?',
+        [redacted, taskId],
+      );
+    }
   }
 
   Future<void> _upsertDigitalEmployeeTask(
     _MobileSqliteDatabase db,
     MobileDigitalEmployeeTask task,
   ) {
+    final safeContext = _redactStringMapValues(task.context);
     return db.customStatement(
       'INSERT INTO digital_employee_tasks '
       '(task_id, employee_id, prompt, task_type, context_json, status, result, message, claimed_by, updated_at) '
@@ -822,13 +910,13 @@ class MobileLocalStore {
       [
         task.taskId,
         task.employeeId,
-        task.prompt,
+        redactMobileSensitiveText(task.prompt),
         task.taskType,
-        _stringMapToJson(task.context),
+        _stringMapToJson(safeContext),
         task.status,
-        task.result,
-        task.message,
-        task.claimedBy,
+        redactMobileSensitiveText(task.result),
+        redactMobileSensitiveText(task.message),
+        redactMobileSensitiveText(task.claimedBy),
         _dateWireValue(DateTime.now()),
       ],
     );

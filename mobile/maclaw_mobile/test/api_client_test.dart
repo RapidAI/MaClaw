@@ -12,6 +12,8 @@ void main() {
 
   test('desktop GUI QR LLM authorization posts to discovered Hub', () async {
     FlutterSecureStorage.setMockInitialValues({});
+    const qrPayload =
+        '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top"}';
     final adapter = _RecordingApiAdapter(
       (request) => _jsonResponse({
         'bootstrap': {
@@ -45,7 +47,7 @@ void main() {
     );
 
     final bootstrap = await client.authorizeThirdPartyLlmWithDesktopQr(
-      ' maclaw-gui-qr-payload ',
+      ' $qrPayload ',
     );
 
     expect(adapter.requests, hasLength(1));
@@ -55,7 +57,7 @@ void main() {
       '/api/mobile/llm/desktop-qr-authorizations',
     );
     expect(adapter.requests.single.data, {
-      'qr_payload': 'maclaw-gui-qr-payload',
+      'qr_payload': qrPayload,
     });
     expect(
       bootstrap.connection.selectedHubCenterUrl,
@@ -64,6 +66,120 @@ void main() {
     expect(bootstrap.connection.hubUrl, 'https://tenant-a.maclaw.top');
     expect(bootstrap.llmAccess.desktopQrDelegated, isTrue);
     expect(bootstrap.llmAccess.authorizationId, 'qr-auth-1');
+  });
+
+  test('desktop GUI QR LLM authorization rejects non MaClaw GUI payloads',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+    final invalidPayloads = [
+      'https://llm.example.com/v1',
+      'sk-test-secret',
+      '{"v":1,"type":"maclaw_llm","url":"https://llm.example.com/v1","key":"sk-test"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","hub_url":"https://tenant-a.maclaw.top"}',
+    ];
+
+    for (final payload in invalidPayloads) {
+      await expectLater(
+        client.authorizeThirdPartyLlmWithDesktopQr(payload),
+        throwsA(isA<FormatException>()),
+      );
+    }
+    expect(adapter.requests, isEmpty);
+  });
+
+  test('LLM service status parses credits from configured path', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'service_status': {
+          'active': true,
+          'auth_mode': 'grant_required',
+          'default_model': 'maclaw-chat',
+          'available_models': ['maclaw-chat', 'maclaw-fast'],
+          'service_group_names': ['Official'],
+          'credits_total': 100,
+          'credits_used': 12.5,
+          'credits_remaining': 87.5,
+          'credits_available': 80,
+          'tokens_per_credit': 1000,
+        },
+      }),
+    );
+    final dio = Dio()..httpClientAdapter = adapter;
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: dio,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final status = await client.llmServiceStatus('/api/llm/service/status');
+
+    expect(adapter.requests.single.path, '/api/llm/service/status');
+    expect(status.active, isTrue);
+    expect(status.defaultModel, 'maclaw-chat');
+    expect(status.availableModels, ['maclaw-chat', 'maclaw-fast']);
+    expect(status.serviceGroupNames, ['Official']);
+    expect(status.creditsTotal, 100);
+    expect(status.creditsUsed, 12.5);
+    expect(status.creditsRemaining, 87.5);
+    expect(status.creditsAvailable, 80);
+    expect(status.tokensPerCredit, 1000);
+  });
+
+  test('LLM service status accepts same discovered Hub absolute path',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'service_status': {
+          'active': true,
+          'credits_available': 8,
+        },
+      }),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final status = await client.llmServiceStatus(
+      'https://tenant-a.maclaw.top/api/llm/service/status',
+    );
+
+    expect(status.active, isTrue);
+    expect(status.creditsAvailable, 8);
+    expect(
+      adapter.requests.single.path,
+      'https://tenant-a.maclaw.top/api/llm/service/status',
+    );
+  });
+
+  test('LLM service status rejects external absolute path before request',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    await expectLater(
+      client.llmServiceStatus('https://example.invalid/api/llm/service/status'),
+      throwsUnsupportedError,
+    );
+    expect(adapter.requests, isEmpty);
   });
 
   test('digital employee task posts mobile task type and context', () async {

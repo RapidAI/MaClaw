@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:maclaw_mobile/core/api/api_client.dart';
 import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
@@ -21,7 +22,10 @@ class _SignedInSessionController extends SessionController {
         bootstrap: MobileBootstrap(
           user: MobileUser(
             userId: 'user-1',
-            email: 'mobile@example.com',
+            email: 'phone:19900001111',
+            phoneNumber: '19900001111',
+            accountId: 'phone:19900001111',
+            creditsAccount: 'phone:19900001111',
             tenantId: 'tenant-1',
           ),
           services: MobileServices(
@@ -53,6 +57,67 @@ class _SignedInSessionController extends SessionController {
             status: 'available',
             authorizationId: 'llm-auth-1',
             authorizedBy: 'maclaw-gui',
+            creditsAccount: 'phone:19900001111',
+            authorizedAt: null,
+          ),
+          features: MobileFeatures(
+            search: true,
+            documents: true,
+            localSsh: true,
+            digitalEmployees: true,
+            pushNotifications: false,
+          ),
+          limits: MobileLimits(
+            maxUploadBytes: 25 * 1024 * 1024,
+            maxExportJobs: 3,
+          ),
+        ),
+      );
+}
+
+class _MalformedCreditsSessionController extends SessionController {
+  @override
+  Future<SessionState> build() async => const SessionState.signedIn(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: MobileBootstrap(
+          user: MobileUser(
+            userId: 'user-1',
+            email: 'phone:19900001111',
+            phoneNumber: '19900001111',
+            accountId: 'phone:19900001111',
+            creditsAccount: 'phone:user19900001111',
+            tenantId: 'tenant-1',
+          ),
+          services: MobileServices(
+            hubStatus: 'online',
+            llmStatus: 'available',
+            searchStatus: 'available',
+            documentsStatus: 'available',
+            digitalEmployeesStatus: 'available',
+            llmStatusPath: '/api/llm/service/status',
+            modelsPath: '/api/llm/v1/models',
+            searchPath: '/api/mobile/search',
+            documentsPath: '/api/mobile/documents',
+            digitalEmployeesPath: '/api/mobile/digital-employees',
+            realtimePath: '/api/mobile/realtime',
+          ),
+          connection: MobileConnection(
+            hubCenterCandidates: [
+              'https://hubs.mypapers.top',
+              'https://hubs.maclaw.top',
+              'https://hubs2.maclaw.top',
+            ],
+            selectedHubCenterUrl: 'https://hubs.maclaw.top',
+            hubUrl: 'https://tenant-a.maclaw.top',
+            hubId: 'hub-a',
+            tenantId: 'tenant-1',
+          ),
+          llmAccess: MobileLlmAccess(
+            mode: 'maclaw_official',
+            status: 'available',
+            authorizationId: '',
+            authorizedBy: '',
+            creditsAccount: 'phone:user19900001111',
             authorizedAt: null,
           ),
           features: MobileFeatures(
@@ -150,11 +215,21 @@ class _FakeMobileLocalStore extends MobileLocalStore {
 
 class _FakeNotificationService extends MobileNotificationService {
   var requested = 0;
+  final MobileNotificationPermissionResult result;
+  final Object? error;
+
+  _FakeNotificationService({
+    this.result =
+        const MobileNotificationPermissionResult(androidGranted: true),
+    this.error,
+  });
 
   @override
   Future<MobileNotificationPermissionResult> requestPermissions() async {
     requested += 1;
-    return const MobileNotificationPermissionResult(androidGranted: true);
+    final failure = error;
+    if (failure != null) throw failure;
+    return result;
   }
 }
 
@@ -173,12 +248,47 @@ class _FakeSecureVault extends SecureVault {
   }
 }
 
+class _FakeApiClient extends ApiClient {
+  final LlmServiceStatus status;
+  String requestedStatusPath = '';
+
+  _FakeApiClient(this.status) : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<LlmServiceStatus> llmServiceStatus([String path = '']) async {
+    requestedStatusPath = path;
+    return status;
+  }
+}
+
 void main() {
   testWidgets('account screen shows Hub discovery and LLM access',
       (tester) async {
-    await _pumpAccount(tester);
+    final apiClient = _FakeApiClient(
+      const LlmServiceStatus(
+        active: true,
+        skipLlmConfig: true,
+        authMode: 'grant_required',
+        defaultModel: 'maclaw-chat',
+        availableModels: ['maclaw-chat'],
+        serviceGroupNames: ['Official'],
+        inactiveReasons: [],
+        nearestExpiresAt: '2026-08-01T00:00:00Z',
+        creditsTotal: 100,
+        creditsUsed: 12.5,
+        creditsRemaining: 87.5,
+        creditsAvailable: 80,
+        tokensPerCredit: 1000,
+      ),
+    );
+    await _pumpAccount(tester, apiClient: apiClient);
+    await tester.pumpAndSettle();
 
-    expect(find.text('mobile@example.com'), findsOneWidget);
+    expect(find.text('手机号'), findsOneWidget);
+    expect(find.text('phone:199****1111'), findsWidgets);
+    expect(find.text('MaClaw 官方 credits 使用 phone:199****1111'), findsOneWidget);
+    expect(find.text('phone:19900001111'), findsNothing);
+    expect(find.text('MaClaw 官方 credits 使用 phone:19900001111'), findsNothing);
     expect(find.text('Hub 接入'), findsOneWidget);
     expect(find.text('https://hubs.maclaw.top'), findsOneWidget);
     expect(find.text('https://tenant-a.maclaw.top'), findsWidgets);
@@ -186,6 +296,12 @@ void main() {
     expect(find.text('桌面 GUI 二维码授权的第三方 LLM（llm-auth-1）'), findsOneWidget);
     expect(find.text('可用'), findsWidgets);
     expect(find.text('llm-auth-1 · 来自 maclaw-gui'), findsOneWidget);
+    expect(apiClient.requestedStatusPath, '/api/llm/service/status');
+    expect(find.text('官方 credits'), findsOneWidget);
+    expect(find.text('80'), findsOneWidget);
+    expect(find.text('87.50'), findsOneWidget);
+    expect(find.text('12.50'), findsOneWidget);
+    expect(find.text('maclaw-chat'), findsOneWidget);
 
     await tester.scrollUntilVisible(
       find.text('25 MB'),
@@ -194,6 +310,38 @@ void main() {
     );
     expect(find.text('25 MB'), findsOneWidget);
     expect(find.text('3'), findsOneWidget);
+  });
+
+  testWidgets('account screen does not show malformed phone credits',
+      (tester) async {
+    final apiClient = _FakeApiClient(
+      const LlmServiceStatus(
+        active: true,
+        skipLlmConfig: true,
+        authMode: 'grant_required',
+        defaultModel: 'maclaw-chat',
+        availableModels: ['maclaw-chat'],
+        serviceGroupNames: ['Official'],
+        inactiveReasons: [],
+        nearestExpiresAt: '',
+        creditsTotal: 0,
+        creditsUsed: 0,
+        creditsRemaining: 0,
+        creditsAvailable: 0,
+        tokensPerCredit: 1000,
+      ),
+    );
+
+    await _pumpAccount(
+      tester,
+      apiClient: apiClient,
+      sessionControllerBuilder: _MalformedCreditsSessionController.new,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('phone:user19900001111'), findsNothing);
+    expect(find.text('MaClaw 瀹樻柟 credits 浣跨敤 phone:199****1111'), findsNothing);
+    expect(find.text('phone:199****1111'), findsOneWidget);
   });
 
   testWidgets('clears local work records without deleting server access data',
@@ -291,6 +439,50 @@ void main() {
     await tester.pump();
 
     expect(notifications.requested, 1);
+    expect(find.text('通知权限已开启，长任务和 SSH 异常会提醒你'), findsOneWidget);
+  });
+
+  testWidgets('shows denied notification permission result from account screen',
+      (tester) async {
+    final notifications = _FakeNotificationService(
+      result: const MobileNotificationPermissionResult(androidGranted: false),
+    );
+    await _pumpAccount(tester, notifications: notifications);
+
+    await tester.scrollUntilVisible(
+      find.byIcon(Icons.notifications_active_outlined),
+      320,
+      scrollable: find.byType(Scrollable),
+    );
+    await _tapActionTileButton(tester, Icons.notifications_active_outlined);
+    await tester.pump();
+
+    expect(notifications.requested, 1);
+    expect(
+      find.text('系统未授予通知权限，请在系统设置中开启 MaClaw Mobile 通知'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('shows notification permission request failures', (tester) async {
+    final notifications = _FakeNotificationService(
+      error: StateError('permission API unavailable'),
+    );
+    await _pumpAccount(tester, notifications: notifications);
+
+    await tester.scrollUntilVisible(
+      find.byIcon(Icons.notifications_active_outlined),
+      320,
+      scrollable: find.byType(Scrollable),
+    );
+    await _tapActionTileButton(tester, Icons.notifications_active_outlined);
+    await tester.pump();
+
+    expect(notifications.requested, 1);
+    expect(
+      find.textContaining('通知权限请求失败：Bad state: permission API unavailable'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('submits desktop GUI QR payload from authorization screen',
@@ -381,12 +573,14 @@ Future<void> _pumpAccount(
   _FakeMobileLocalStore? store,
   _FakeNotificationService? notifications,
   _FakeSecureVault? vault,
+  ApiClient? apiClient,
+  SessionController Function()? sessionControllerBuilder,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
         sessionControllerProvider.overrideWith(
-          _SignedInSessionController.new,
+          sessionControllerBuilder ?? _SignedInSessionController.new,
         ),
         appPreferencesProvider.overrideWith(
           _TestAppPreferencesController.new,
@@ -395,6 +589,7 @@ Future<void> _pumpAccount(
         if (notifications != null)
           mobileNotificationServiceProvider.overrideWithValue(notifications),
         if (vault != null) secureVaultProvider.overrideWithValue(vault),
+        if (apiClient != null) apiClientProvider.overrideWithValue(apiClient),
         mobileNetworkStatusProvider.overrideWith(
           (ref) => Stream.value(
             MobileNetworkSnapshot(

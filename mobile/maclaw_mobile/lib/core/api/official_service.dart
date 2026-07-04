@@ -238,6 +238,20 @@ String maclawHubWebSocketUrl({
   final normalizedHubUri = Uri.parse(normalizeDiscoveredHubUrl(hubUrl));
   final normalizedPath =
       path.trim().isEmpty ? maclawMobileRealtimePath : path.trim();
+  if (_isAbsoluteRealtimeUrl(normalizedPath)) {
+    if (!isMaclawHubWebSocketUrl(normalizedPath, hubUrl)) {
+      throw UnsupportedError(
+        'MaClaw Mobile realtime only supports the discovered Hub.',
+      );
+    }
+    return normalizedPath;
+  }
+  if (normalizedPath.startsWith('http://') ||
+      normalizedPath.startsWith('https://')) {
+    throw UnsupportedError(
+      'MaClaw Mobile realtime paths must stay on the discovered Hub.',
+    );
+  }
   final uri = normalizedHubUri.replace(
     scheme: normalizedHubUri.scheme == 'https' ? 'wss' : 'ws',
     path: normalizedPath.startsWith('/') ? normalizedPath : '/$normalizedPath',
@@ -260,6 +274,10 @@ bool sameOrigin(String url, String expectedOrigin) {
   return uri.scheme == expected.scheme &&
       uri.host == expected.host &&
       _effectivePort(uri) == _effectivePort(expected);
+}
+
+bool _isAbsoluteRealtimeUrl(String value) {
+  return value.startsWith('ws://') || value.startsWith('wss://');
 }
 
 bool isMaclawHubWebSocketUrl(String url, String hubUrl) {

@@ -131,6 +131,7 @@ def valid_checklist() -> str:
             "Speech recognition and Notification permission prompts must be recorded.",
             "## Hub Discovery And Service Smoke Test",
             "Record selected HubCenter, discovered Hub, tenant, API base URL, and realtime Hub URL evidence.",
+            "Record typed notification payloads for document-export:, digital-employee-task:, and server-profile: targets.",
             "## Manual SSH Smoke Test",
             "Connect to the QA host, run a read-only command, copy output, and delete credentials.",
             verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND,
@@ -252,6 +253,28 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
 
         self.assertIn(
             "qa_device_checklist.md must include executable QA steps for iOS share-to-app",
+            "\n".join(errors),
+        )
+
+    def test_rejects_missing_typed_notification_payload_checklist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checklist = valid_checklist().replace(
+                "Record typed notification payloads for document-export:, digital-employee-task:, and server-profile: targets.\n",
+                "",
+            )
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=checklist,
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "qa_device_checklist.md must include executable QA steps for Hub discovery smoke test",
             "\n".join(errors),
         )
 

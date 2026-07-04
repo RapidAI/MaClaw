@@ -4941,16 +4941,17 @@ describe('AppsPage', () => {
 
         fireEvent.click(getStudioButton());
         expect(within(screen.getByTestId('studio-result-contract')).getByText('Result contract')).not.toBeNull();
-        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('artifact').length).toBeGreaterThan(0);
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('Artifact').length).toBeGreaterThan(0);
         expect(screen.getByText(/"resultContract"/)).not.toBeNull();
         expect(screen.getByText(/"schema": "maclaw.app.result.v1"/)).not.toBeNull();
+        expect(screen.getAllByText(/"primary": "artifact"/).length).toBeGreaterThan(0);
         expect(screen.getByTestId('studio-test-protocol')).not.toBeNull();
         expect(screen.getByText(/"testProtocol"/)).not.toBeNull();
         expect(screen.getByText(/"schema": "maclaw.app.test_protocol.v1"/)).not.toBeNull();
         fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用?/ }));
-        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('business_status').length).toBeGreaterThan(0);
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('Business status').length).toBeGreaterThan(0);
         fireEvent.click(screen.getByRole('button', { name: /^Approval app$|^企业审批型?/ }));
-        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('approval_result').length).toBeGreaterThan(0);
+        expect(within(screen.getByTestId('studio-result-contract')).getAllByText('Approval result').length).toBeGreaterThan(0);
         expect(within(screen.getByTestId('studio-result-contract')).getByText(/approved \/ rejected/)).not.toBeNull();
     });
 
@@ -6257,7 +6258,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(listMaclawAppApprovalInstancesMock).toHaveBeenCalledWith('expense', 'pending_my_approval', 50));
         await waitFor(() => expect(within(workspace).getAllByText('Lane refreshed expense').length).toBeGreaterThan(0));
         expect(within(workspace).getByText('结果契约')).not.toBeNull();
-        expect(within(workspace).getAllByText('approval_result').length).toBeGreaterThan(0);
+        expect(within(workspace).getAllByText('审批结果').length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText(/finance_queue/).length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText(/request_only_applicant/).length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText(/submitted -> approval_pending/).length).toBeGreaterThan(0);
@@ -7094,6 +7095,40 @@ describe('AppsPage', () => {
                 transfer: 'staged_file',
             }),
         })));
+    });
+
+    it('keeps the run button hidden after a skill app run completes', async () => {
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
+        fireEvent.change(fileInput, { target: { files: [file] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-to-word', expect.any(Object)));
+        await waitFor(() => expect(document.querySelector('.apps-result-panel[data-state="done"]')).not.toBeNull());
+        const actions = document.querySelector('.apps-runtime-actions') as HTMLElement;
+        expect(within(actions).queryByText('执行')).toBeNull();
+        expect(screen.queryByRole('progressbar')).toBeNull();
+    });
+
+    it('hides the run button and shows running progress while a skill app is executing', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({ run_id: 'run-test-1', status: 'running', summary: { progress_text: '正在处理文件' } });
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
+        fireEvent.change(fileInput, { target: { files: [file] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-to-word', expect.any(Object)));
+        const actions = document.querySelector('.apps-runtime-actions') as HTMLElement;
+        expect(within(actions).queryByText('执行')).toBeNull();
+        expect(within(actions).getByText('取消执行')).not.toBeNull();
+        expect(document.querySelector('.apps-result-panel[data-state="running"] .apps-result-progress')).not.toBeNull();
+        expect(screen.getByRole('progressbar')).not.toBeNull();
     });
 
     it('treats empty skill run ids as failed starts', async () => {
@@ -8063,6 +8098,10 @@ describe('AppsPage', () => {
         fireEvent.change(within(editPanel).getByTestId('edit-app-name'), { target: { value: '费用报销' } });
         fireEvent.change(within(editPanel).getByTestId('edit-app-category'), { target: { value: '财务' } });
         fireEvent.change(within(editPanel).getByTestId('edit-app-description'), { target: { value: 'updated built-in description' } });
+        fireEvent.change(within(editPanel).getByTestId('edit-app-about-author'), { target: { value: 'MaClaw Team' } });
+        fireEvent.change(within(editPanel).getByTestId('edit-app-about-copyright'), { target: { value: 'Copyright 2026 MaClaw' } });
+        fireEvent.change(within(editPanel).getByTestId('edit-app-about-website'), { target: { value: 'https://maclaw.example.com' } });
+        fireEvent.change(within(editPanel).getByTestId('edit-app-about-email'), { target: { value: 'support@maclaw.example.com' } });
         expect(screen.getByRole('button', { name: '表格/数据 (sheet)' })).not.toBeNull();
         fireEvent.click(screen.getByTitle('表格/数据 (sheet)'));
         fireEvent.click(screen.getByTitle('琥珀 #b45309'));
@@ -8078,12 +8117,24 @@ describe('AppsPage', () => {
         expect(manifest).toContain('"category": "财务"');
         expect(manifest).toContain('"icon": "sheet"');
         expect(manifest).toContain('"accent": "#b45309"');
+        expect(manifest).toContain('"aboutInfo"');
+        expect(manifest).toContain('"author": "MaClaw Team"');
+        expect(manifest).toContain('"copyright": "Copyright 2026 MaClaw"');
+        expect(manifest).toContain('"website": "https://maclaw.example.com"');
+        expect(manifest).toContain('"email": "support@maclaw.example.com"');
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
 
         expect(screen.getAllByText('费用报销').length).toBeGreaterThan(0);
         expect(screen.queryByText('报销申请')).toBeNull();
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getManageTab());
+        const reloadedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('费用报销')) as HTMLElement;
+        fireEvent.click(within(reloadedRow).getByTitle(manageManifestTitle));
+        const reloadedManifest = document.querySelector('.apps-manage-manifest')?.textContent || '';
+        expect(reloadedManifest).toContain('"author": "MaClaw Team"');
+        expect(reloadedManifest).toContain('"email": "support@maclaw.example.com"');
     });
 
     it('duplicates an app from app studio management and keeps the source skill binding', () => {

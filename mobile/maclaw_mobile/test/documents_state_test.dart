@@ -63,6 +63,73 @@ class _RecordingNotificationService extends MobileNotificationService {
   }
 }
 
+class _UploadReadyApiClient extends ApiClient {
+  _UploadReadyApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<MobileDocumentUploadTask> getDocumentUploadTask(String taskId) async {
+    return MobileDocumentUploadTask(
+      taskId: taskId,
+      filename: 'incident.pdf',
+      status: 'ready',
+      draftId: 'draft-upload-refresh',
+      draft: DocumentDraft(
+        id: 'draft-upload-refresh',
+        title: '现场说明',
+        template: DocumentTemplate.statement,
+        markdown: '# 现场说明',
+        updatedAt: DateTime.utc(2026, 7, 2),
+      ),
+    );
+  }
+}
+
+class _RecordingUploadApiClient extends ApiClient {
+  final uploadedPaths = <String>[];
+
+  _RecordingUploadApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<MobileDocumentUploadTask> uploadDocument(String path) async {
+    uploadedPaths.add(path);
+    return MobileDocumentUploadTask(
+      taskId: 'upload-${uploadedPaths.length}',
+      filename: path.split(Platform.pathSeparator).last,
+      status: 'queued',
+    );
+  }
+}
+
+class _QueuedUploadDocumentsController extends DocumentsController {
+  @override
+  Future<DocumentsState> build() async => const DocumentsState(
+        uploadTask: MobileDocumentUploadTask(
+          taskId: 'upload-queued',
+          filename: 'incident.pdf',
+          status: 'in_progress',
+        ),
+        lastUploadPath: '/tmp/incident.pdf',
+      );
+}
+
+class _ProcessDraftApiClient extends ApiClient {
+  _ProcessDraftApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<DocumentDraft> processDocumentDraft({
+    required String draftId,
+    required String action,
+  }) async {
+    return DocumentDraft(
+      id: '$draftId-processed',
+      title: 'incident summary',
+      template: DocumentTemplate.report,
+      markdown: '# incident summary\n\nProcessed with $action.',
+      updatedAt: DateTime.utc(2026, 7, 2),
+    );
+  }
+}
+
 void main() {
   test(
     'document upload retry is available only for failed imports with source path',
@@ -97,6 +164,27 @@ void main() {
       );
     },
   );
+
+  test('document upload retry rejects non-failed imports even with source path',
+      () async {
+    final container = ProviderContainer(
+      overrides: [
+        documentsControllerProvider.overrideWith(
+          _QueuedUploadDocumentsController.new,
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .retryLastUpload();
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isTrue);
+    expect(state.error.toString(), contains('没有失败的导入任务可重试'));
+  });
 
   test('document export retry is available only for failed exports with draft',
       () {
@@ -146,7 +234,166 @@ void main() {
     expect(formatMobileFileSize(12 * 1024 * 1024), '12 MB');
   });
 
-  test('document upload rejects files above official mobile limit', () async {
+  test('validates mobile document import extensions', () {
+    expect(validateMobileDocumentImportPath('/tmp/incident.PDF'), isNull);
+    expect(
+      validateMobileDocumentImportPath('/tmp/notice.docx?shared=true'),
+      isNull,
+    );
+    expect(validateMobileDocumentImportPath('/tmp/table.csv'), isNull);
+    expect(validateMobileDocumentImportPath('/tmp/photo.jpeg'), isNull);
+    expect(
+      validateMobileDocumentImportPath('/tmp/archive.zip'),
+      contains('暂不支持该文件类型'),
+    );
+    expect(
+      validateMobileDocumentImportPath('/tmp/README'),
+      contains('暂不支持该文件类型'),
+    );
+  });
+
+  test('shared document upload rejects unsupported files before uploading',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    final client = _RecordingUploadApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .uploadSharedDocument('/tmp/server-backup.zip');
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isTrue);
+    expect(state.error.toString(), contains('暂不支持该文件类型'));
+    expect(client.uploadedPaths, isEmpty);
+  });
+
+  test('shared document upload accepts supported emergency file types',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    final client = _RecordingUploadApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    for (final path in [
+      '/tmp/incident.pdf',
+      '/tmp/notice.docx',
+      '/tmp/table.xlsx',
+      '/tmp/export.csv',
+      '/tmp/photo.jpg',
+    ]) {
+      await container
+          .read(documentsControllerProvider.notifier)
+          .uploadSharedDocument(path);
+    }
+
+    expect(client.uploadedPaths, [
+      '/tmp/incident.pdf',
+      '/tmp/notice.docx',
+      '/tmp/table.xlsx',
+      '/tmp/export.csv',
+      '/tmp/photo.jpg',
+    ]);
+    expect(
+      container.read(documentsControllerProvider).valueOrNull?.lastUploadPath,
+      '/tmp/photo.jpg',
+    );
+  });
+
+  test('document process completion caches draft and uses typed payload',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    await store.saveLastDocumentDraft(
+      DocumentDraft(
+        id: 'draft-process',
+        title: 'incident summary',
+        template: DocumentTemplate.report,
+        markdown: '# incident summary',
+        updatedAt: DateTime.utc(2026, 7, 2),
+      ),
+    );
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(_ProcessDraftApiClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .processDraft('summarize');
+
+    final state = container.read(documentsControllerProvider).valueOrNull;
+    final cachedDraft = await store.loadLastDocumentDraft();
+    expect(state?.draft?.id, 'draft-process-processed');
+    expect(cachedDraft?.id, 'draft-process-processed');
+    expect(notifications.shown, hasLength(1));
+    expect(notifications.shown.single.title, '文档处理完成');
+    expect(
+      notifications.shown.single.payload,
+      'document-draft:draft-process-processed',
+    );
+  });
+
+  test(
+      'document upload waits for session before enforcing official mobile limit',
+      () async {
     final cacheDir = await Directory.systemTemp.createTemp(
       'maclaw_mobile_store_',
     );
@@ -175,7 +422,6 @@ void main() {
       ],
     );
     addTearDown(container.dispose);
-    await container.read(sessionControllerProvider.future);
     await container.read(documentsControllerProvider.future);
 
     await container
@@ -250,7 +496,7 @@ void main() {
     expect(notifications.shown.single.body, contains('应急报告 已生成 pdf'));
     expect(
       notifications.shown.single.payload,
-      'https://tenant-a.maclaw.top/api/mobile/documents/exports/export-1/download',
+      'document-export:export-1',
     );
   });
 
@@ -306,7 +552,81 @@ void main() {
 
     expect(notifications.shown, hasLength(1));
     expect(notifications.shown.single.title, '文档导出完成');
-    expect(notifications.shown.single.payload, 'export-external');
+    expect(
+      notifications.shown.single.payload,
+      'document-export:export-external',
+    );
+  });
+
+  test('document failed export notifications redact sensitive messages',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    final notifications = _RecordingNotificationService();
+    await store.saveLastDocumentDraft(
+      DocumentDraft(
+        id: 'draft-secret',
+        title: 'incident token: draft-secret-token',
+        template: DocumentTemplate.report,
+        markdown: '# incident',
+        updatedAt: DateTime.utc(2026, 7, 2),
+      ),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    const event = MobileRealtimeEvent(
+      type: 'document_task',
+      payload: {
+        'job_id': 'export-secret',
+        'draft_id': 'draft-secret',
+        'format': 'pdf',
+        'status': 'failed',
+        'message': 'export failed password=export-password',
+        'created_at': '2026-07-02T00:00:00Z',
+      },
+    );
+    await container
+        .read(documentsControllerProvider.notifier)
+        .applyRealtimeEvent(event);
+
+    expect(notifications.shown, hasLength(1));
+    expect(notifications.shown.single.title, '文档导出失败');
+    expect(
+      notifications.shown.single.body,
+      contains('token=[REDACTED_SECRET]'),
+    );
+    expect(
+      notifications.shown.single.body,
+      contains('password=[REDACTED_SECRET]'),
+    );
+    expect(
+      notifications.shown.single.body,
+      isNot(contains('draft-secret-token')),
+    );
+    expect(
+      notifications.shown.single.body,
+      isNot(contains('export-password')),
+    );
+    expect(notifications.shown.single.payload, 'document-export:export-secret');
   });
 
   test('document realtime upload completion caches draft and notifies once',
@@ -367,6 +687,123 @@ void main() {
     expect(notifications.shown, hasLength(1));
     expect(notifications.shown.single.title, '文档解析完成');
     expect(notifications.shown.single.body, contains('incident.pdf 已生成移动草稿'));
-    expect(notifications.shown.single.payload, 'draft-upload-1');
+    expect(notifications.shown.single.payload, 'document-draft:draft-upload-1');
+  });
+
+  test('document failed upload notifications redact sensitive messages',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    const event = MobileRealtimeEvent(
+      type: 'document_task',
+      payload: {
+        'task_id': 'upload-secret',
+        'filename': 'token=filename-secret.pdf',
+        'status': 'failed',
+        'message': 'ocr failed api_key=upload-api-key',
+      },
+    );
+    await container
+        .read(documentsControllerProvider.notifier)
+        .applyRealtimeEvent(event);
+
+    expect(notifications.shown, hasLength(1));
+    expect(notifications.shown.single.title, '文档解析失败');
+    expect(
+      notifications.shown.single.body,
+      contains('token=[REDACTED_SECRET]'),
+    );
+    expect(
+      notifications.shown.single.body,
+      contains('api_key=[REDACTED_SECRET]'),
+    );
+    expect(
+      notifications.shown.single.body,
+      isNot(contains('filename-secret')),
+    );
+    expect(
+      notifications.shown.single.body,
+      isNot(contains('upload-api-key')),
+    );
+    expect(notifications.shown.single.payload, 'document-upload:upload-secret');
+  });
+
+  test('document upload refresh completion caches draft and notifies once',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    addTearDown(store.close);
+    await store.saveLastDocumentUploadTask(
+      const MobileDocumentUploadTask(
+        taskId: 'upload-refresh',
+        filename: 'incident.pdf',
+        status: 'in_progress',
+      ),
+      sourcePath: '/tmp/incident.pdf',
+    );
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(_UploadReadyApiClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .refreshUploadTask();
+    await container
+        .read(documentsControllerProvider.notifier)
+        .refreshUploadTask();
+
+    final state = container.read(documentsControllerProvider).valueOrNull;
+    final cachedDraft = await store.loadLastDocumentDraft();
+    final cachedUpload = await store.loadLastDocumentUploadTask();
+    expect(state?.draft?.id, 'draft-upload-refresh');
+    expect(cachedDraft?.title, '现场说明');
+    expect(cachedUpload?.status, 'ready');
+    expect(notifications.shown, hasLength(1));
+    expect(notifications.shown.single.title, '文档解析完成');
+    expect(notifications.shown.single.body, contains('incident.pdf 已生成移动草稿'));
+    expect(
+      notifications.shown.single.payload,
+      'document-draft:draft-upload-refresh',
+    );
   });
 }

@@ -10,6 +10,7 @@ from typing import Callable
 import build_android_release
 import plan_ios_release
 import release_evidence_commands
+import run_release_gates
 import validate_qa_build_records_dir
 import verify_android_release_signing
 import verify_ios_wrapper
@@ -98,12 +99,52 @@ def validate_ios_export_options(
     return errors
 
 
+def _find_in_order(text: str, expected_parts: list[str]) -> str | None:
+    cursor = -1
+    for part in expected_parts:
+        index = text.find(part, cursor + 1)
+        if index == -1:
+            return f"{part!r} should appear after index {cursor}"
+        cursor = index
+    return None
+
+
+def validate_automated_release_gates(root: Path) -> list[str]:
+    commands = run_release_gates.documented_commands()
+    repo = root.resolve().parents[1]
+    targets = (
+        ("GitHub mobile CI workflow", repo / ".github" / "workflows" / "maclaw-mobile.yml"),
+        ("release checklist CI section", root / "docs" / "release_checklist.md"),
+        ("release evidence automated gates", root / "docs" / "release_evidence.md"),
+    )
+
+    errors: list[str] = []
+    for label, path in targets:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{label} cannot be read: {path}: {exc}")
+            continue
+        missing = [command for command in commands if command not in text]
+        if missing:
+            errors.append(
+                f"{label} is missing automated release gate command(s): "
+                + "; ".join(missing),
+            )
+            continue
+        order_error = _find_in_order(text, commands)
+        if order_error:
+            errors.append(f"{label} automated release gate order mismatch: {order_error}")
+    return errors
+
+
 def run_preflight(
     root: Path,
     *,
     scope: str = release_evidence_commands.DEFAULT_SCOPE,
     ios_team_id: str | None = None,
     ios_export_method: str | None = None,
+    records_dir: Path | None = None,
     android_config_validator: Callable[[Path], list[str]] = verify_android_release_signing.verify_android_release_signing,
     android_key_validator: Callable[[Path], tuple[dict[str, str], list[str]]] = build_android_release.validate_key_properties,
     ios_wrapper_validator: Callable[[Path], list[str]] = verify_ios_wrapper.verify_ios_wrapper,
@@ -112,6 +153,10 @@ def run_preflight(
         [Path],
         list[validate_qa_build_records_dir.RecordValidationResult],
     ] = validate_qa_build_records_dir.validate_directory,
+    automated_gate_validator: Callable[
+        [Path],
+        list[str],
+    ] = validate_automated_release_gates,
     manual_gate_validator: Callable[
         [Path],
         list[str],
@@ -119,11 +164,25 @@ def run_preflight(
 ) -> list[PreflightCheck]:
     root = root.resolve()
     scope = release_evidence_commands.validate_scope(scope)
+    resolved_records_dir = (
+        records_dir if records_dir is not None else root / "docs" / "qa-builds"
+    )
+    resolved_records_dir = (
+        resolved_records_dir
+        if resolved_records_dir.is_absolute()
+        else root / resolved_records_dir
+    ).resolve()
+    records_dir_label = (
+        release_evidence_commands.DEFAULT_QA_RECORDS_DIR
+        if resolved_records_dir == (root / "docs" / "qa-builds").resolve()
+        else str(resolved_records_dir)
+    )
     checks: list[PreflightCheck] = []
     signed_record_hint = release_evidence_commands.signed_qa_record_hint(
         scope=scope,
         team_id=ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID,
         export_method=ios_export_method or release_evidence_commands.DEFAULT_EXPORT_METHOD,
+        records_dir=records_dir_label,
     )
 
     if release_evidence_commands.scope_covers_android(scope):
@@ -186,14 +245,30 @@ def run_preflight(
         )
     )
 
+    try:
+        automated_gate_errors = automated_gate_validator(root)
+    except (OSError, ValueError) as exc:
+        automated_gate_errors = [
+            f"Automated release gate documentation cannot be verified: {exc}",
+        ]
+    checks.append(
+        _blocker("Automated release gate documentation", automated_gate_errors)
+        if automated_gate_errors
+        else _ok(
+            "Automated release gate documentation",
+            "GitHub workflow, release checklist, and release evidence list the "
+            f"{len(run_release_gates.release_gates())} automated release gates "
+            "in runner order",
+        )
+    )
+
     has_preflight_blockers = any(check.is_blocker for check in checks)
-    records_dir = root / "docs" / "qa-builds"
-    if not records_dir.exists():
-        checks.append(_blocker("QA build record directory", [f"Missing QA build record directory: {records_dir}"]))
-    elif not records_dir.is_dir():
-        checks.append(_blocker("QA build record directory", [f"QA build record path is not a directory: {records_dir}"]))
+    if not resolved_records_dir.exists():
+        checks.append(_blocker("QA build record directory", [f"Missing QA build record directory: {resolved_records_dir}"]))
+    elif not resolved_records_dir.is_dir():
+        checks.append(_blocker("QA build record directory", [f"QA build record path is not a directory: {resolved_records_dir}"]))
     else:
-        results = records_dir_validator(records_dir)
+        results = records_dir_validator(resolved_records_dir)
         invalid = [result for result in results if result.errors]
         valid = [result.path for result in results if not result.errors]
         in_scope_valid = [
@@ -230,6 +305,7 @@ def run_preflight(
                         or release_evidence_commands.DEFAULT_EXPORT_METHOD
                         if release_evidence_commands.scope_covers_ios(scope)
                         else None,
+                        records_dir=records_dir_label,
                     )
                     + "` after fixing blockers"
                 )
@@ -252,7 +328,10 @@ def run_preflight(
         _info(
             "Release evidence link step",
             "after QA records validate, "
-            + release_evidence_commands.qa_release_evidence_link_hint(scope=scope),
+            + release_evidence_commands.qa_release_evidence_link_hint(
+                scope=scope,
+                records_dir=records_dir_label,
+            ),
         ),
     )
     return checks
@@ -298,6 +377,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=plan_ios_release.VALID_EXPORT_METHODS,
         help="Optional Xcode export method to verify against ios/ExportOptions.plist.",
     )
+    parser.add_argument(
+        "--records-dir",
+        type=Path,
+        help="QA build records directory. Defaults to docs/qa-builds under root.",
+    )
     args = parser.parse_args(argv)
 
     checks = run_preflight(
@@ -305,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         scope=args.scope,
         ios_team_id=args.team_id,
         ios_export_method=args.export_method,
+        records_dir=args.records_dir,
     )
     output = format_preflight(checks)
     if any(check.is_blocker for check in checks):

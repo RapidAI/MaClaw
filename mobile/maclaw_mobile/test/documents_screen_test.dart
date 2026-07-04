@@ -67,6 +67,8 @@ class _RecordingSharedUploadDocumentsController extends DocumentsController {
 }
 
 class _FailedExportDocumentsController extends DocumentsController {
+  static var retryCount = 0;
+
   @override
   Future<DocumentsState> build() async => DocumentsState(
         draft: DocumentDraft(
@@ -86,6 +88,11 @@ class _FailedExportDocumentsController extends DocumentsController {
           createdAt: DateTime.utc(2026, 7, 1),
         ),
       );
+
+  @override
+  Future<void> retryLastExport() async {
+    retryCount += 1;
+  }
 }
 
 class _ReadyExportDocumentsController extends DocumentsController {
@@ -271,6 +278,8 @@ class _HistoryDocumentDraftHistoryController
 }
 
 class _FailedUploadDocumentsController extends DocumentsController {
+  static var retryCount = 0;
+
   @override
   Future<DocumentsState> build() async => const DocumentsState(
         uploadTask: MobileDocumentUploadTask(
@@ -281,6 +290,31 @@ class _FailedUploadDocumentsController extends DocumentsController {
         ),
         lastUploadPath: '/tmp/site.heic',
       );
+
+  @override
+  Future<void> retryLastUpload() async {
+    retryCount += 1;
+  }
+}
+
+class _QueuedUploadDocumentsController extends DocumentsController {
+  static var refreshCount = 0;
+
+  @override
+  Future<DocumentsState> build() async => const DocumentsState(
+        uploadTask: MobileDocumentUploadTask(
+          taskId: 'upload-queued',
+          filename: '现场通知.pdf',
+          status: 'in_progress',
+          message: '正在解析 PDF 并提取正文。',
+        ),
+        lastUploadPath: '/tmp/notice.pdf',
+      );
+
+  @override
+  Future<void> refreshUploadTask({bool silent = false}) async {
+    refreshCount += 1;
+  }
 }
 
 void main() {
@@ -414,6 +448,7 @@ void main() {
   });
 
   testWidgets('documents screen explains failed export reason', (tester) async {
+    _FailedExportDocumentsController.retryCount = 0;
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -447,6 +482,9 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('重试导出'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.replay_outlined));
+    await tester.pump();
+    expect(_FailedExportDocumentsController.retryCount, 1);
   });
 
   testWidgets('documents screen explains ready export sharing', (tester) async {
@@ -742,8 +780,50 @@ void main() {
     expect(saved.markdown, contains('批注'));
   });
 
+  testWidgets('documents screen explains long running import tasks',
+      (tester) async {
+    _QueuedUploadDocumentsController.refreshCount = 0;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          documentsControllerProvider.overrideWith(
+            _QueuedUploadDocumentsController.new,
+          ),
+          documentDraftHistoryProvider.overrideWith(
+            _EmptyDocumentDraftHistoryController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: DocumentsScreen()),
+      ),
+    );
+    await tester.pump();
+    await tester.drag(find.byType(ListView), const Offset(0, -500));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('导入任务 upload-queued：远程解析中'), findsOneWidget);
+    expect(find.text('正在解析 PDF 并提取正文。'), findsOneWidget);
+    expect(
+      find.text('这是官方服务长任务，可以先离开页面；完成后会通过通知或回到文档页继续处理。'),
+      findsOneWidget,
+    );
+    expect(find.text('刷新状态'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.pump();
+    expect(_QueuedUploadDocumentsController.refreshCount, 1);
+  });
+
   testWidgets('documents screen gives failed import retry guidance',
       (tester) async {
+    _FailedUploadDocumentsController.retryCount = 0;
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -780,5 +860,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('重试导入'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.replay_outlined));
+    await tester.pump();
+    expect(_FailedUploadDocumentsController.retryCount, 1);
   });
 }

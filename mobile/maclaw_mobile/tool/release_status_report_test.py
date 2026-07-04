@@ -113,7 +113,77 @@ class ReleaseStatusReportTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            release_evidence_commands.ios_artifact_evidence_command(),
+            release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+            ),
+            output,
+        )
+
+    def test_build_status_uses_custom_records_dir(self) -> None:
+        root = self.make_root()
+        records_dir = root / "tmp-qa"
+        seen: dict[str, Path] = {}
+
+        def validate_records(path: Path) -> list[validate_qa_build_records_dir.RecordValidationResult]:
+            seen["validate"] = path
+            return []
+
+        def verify_final(path: Path, **_kwargs: object) -> list[str]:
+            seen["verify"] = path
+            return [
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ]
+
+        def preflight(*_args: object, **kwargs: object) -> list[qa_preflight.PreflightCheck]:
+            seen["preflight"] = kwargs["records_dir"]  # type: ignore[assignment]
+            return []
+
+        status = release_status_report.build_status(
+            root,
+            records_dir=records_dir,
+            preflight=preflight,
+            validate_records=validate_records,
+            verify_final=verify_final,
+        )
+        output = release_status_report.format_status(status)
+
+        self.assertEqual(records_dir.resolve(), seen["preflight"])
+        self.assertEqual(records_dir.resolve(), seen["validate"])
+        self.assertEqual(records_dir.resolve(), seen["verify"])
+        self.assertEqual(records_dir.resolve(), status.records_dir)
+        self.assertIn(
+            f"Create and validate in-scope signed-build QA records under {records_dir.resolve()}/.",
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.create_record_command(
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_preflight_command(
+                team_id=release_evidence_commands.DEFAULT_TEAM_ID,
+                export_method=release_evidence_commands.DEFAULT_EXPORT_METHOD,
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                str(records_dir.resolve()),
+                version=release_evidence_commands.DEFAULT_VERSION,
+                log=release_evidence_commands.final_release_evidence_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    records_dir=str(records_dir.resolve()),
+                ),
+            ),
             output,
         )
 
@@ -227,6 +297,44 @@ class ReleaseStatusReportTest(unittest.TestCase):
         )
         self.assertNotIn(
             "Link validated QA records in docs/release_evidence.md and rerun final verification.",
+            output,
+        )
+
+    def test_final_evidence_next_actions_use_custom_records_dir(self) -> None:
+        root = self.make_root()
+        records_dir = root / "custom-records"
+        valid_record = validate_qa_build_records_dir.RecordValidationResult(
+            path=records_dir / "2026-07-02-android-ios-1.0.0+42.md",
+            errors=[],
+        )
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[valid_record],
+            final_errors=[
+                "Release evidence document must include Markdown links for every validated QA build record: "
+                "2026-07-02-android-ios-1.0.0+42.md",
+            ],
+            records_dir=records_dir,
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn(
+            release_evidence_commands.qa_release_evidence_link_command(
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                str(records_dir.resolve()),
+                version=release_evidence_commands.DEFAULT_VERSION,
+                log=release_evidence_commands.final_release_evidence_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    records_dir=str(records_dir.resolve()),
+                ),
+            ),
             output,
         )
 
@@ -446,6 +554,74 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertEqual((root,), seen["args"])
         self.assertEqual("ABCDE12345", seen["kwargs"]["ios_team_id"])
         self.assertEqual("ad-hoc", seen["kwargs"]["ios_export_method"])
+
+    def test_main_passes_records_dir_and_scope_to_status_builder(self) -> None:
+        root = self.make_root()
+        records_dir = root / "tmp" / "qa-builds"
+        seen: dict[str, object] = {}
+        stderr = StringIO()
+        original_build_status = release_status_report.build_status
+        try:
+            def fake_build_status(*args: object, **kwargs: object) -> release_status_report.ReleaseStatus:
+                seen["args"] = args
+                seen["kwargs"] = kwargs
+                return release_status_report.ReleaseStatus(
+                    root=root,
+                    preflight_checks=[
+                        qa_preflight.PreflightCheck("Stub", "ok", ["ready"]),
+                    ],
+                    record_results=[],
+                    final_errors=[
+                        "Final release evidence requires at least one completed Android signed-build QA record.",
+                    ],
+                    scope=str(kwargs["scope"]),
+                    records_dir=Path(kwargs["records_dir"]),  # type: ignore[arg-type]
+                )
+
+            release_status_report.build_status = fake_build_status
+            with redirect_stderr(stderr):
+                exit_code = release_status_report.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--scope",
+                        "android",
+                        "--records-dir",
+                        str(records_dir),
+                    ],
+                )
+        finally:
+            release_status_report.build_status = original_build_status
+
+        self.assertEqual(1, exit_code)
+        self.assertEqual((root,), seen["args"])
+        self.assertEqual("android", seen["kwargs"]["scope"])
+        self.assertEqual(records_dir, seen["kwargs"]["records_dir"])
+        output = stderr.getvalue()
+        self.assertIn(
+            f"Create and validate in-scope signed-build QA records under {records_dir.resolve()}/.",
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.qa_preflight_command(
+                scope="android",
+                records_dir=str(records_dir.resolve()),
+            ),
+            output,
+        )
+        self.assertIn(
+            release_evidence_commands.verify_final_release_evidence_command(
+                str(records_dir.resolve()),
+                scope="android",
+                version=release_evidence_commands.DEFAULT_VERSION,
+                log=release_evidence_commands.final_release_evidence_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    scope="android",
+                    records_dir=str(records_dir.resolve()),
+                ),
+            ),
+            output,
+        )
 
 
 if __name__ == "__main__":

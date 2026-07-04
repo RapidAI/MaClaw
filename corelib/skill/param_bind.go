@@ -124,7 +124,12 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 
 func isUndeclaredRunCarrierKey(key string) bool {
 	switch canonicalRunVarKey(key) {
-	case "input", "user_prompt":
+	case "input", "user_prompt",
+		"app_id", "app_kind", "app_name", "maclaw_app",
+		"fields", "file", "files", "file_name", "file_path", "file_paths", "file_text",
+		"input_file_path", "local_file_path", "uploaded_file_path",
+		"input_mode", "output", "output_mode", "output_format",
+		"params", "prompt":
 		return true
 	default:
 		return false

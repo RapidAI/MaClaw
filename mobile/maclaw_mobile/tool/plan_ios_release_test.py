@@ -171,6 +171,42 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertIn("iOS archive does not exist", error.getvalue())
         self.assertNotIn("Traceback", error.getvalue())
 
+    def test_main_requires_profiles_when_record_dir_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            error = StringIO()
+
+            with patch(
+                "verify_ios_wrapper.verify_ios_wrapper",
+                return_value=[],
+            ) as wrapper_check, redirect_stderr(error):
+                exit_code = plan_ios_release.main(
+                    [
+                        "--root",
+                        tmp,
+                        "--team-id",
+                        "ABCD123456",
+                        "--record-dir",
+                        "docs/qa-builds",
+                    ],
+                )
+
+        self.assertEqual(1, exit_code)
+        wrapper_check.assert_not_called()
+        self.assertIn("--record-dir requires --provisioning-profiles", error.getvalue())
+
+    def test_help_describes_record_dir_as_qa_records_directory(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                plan_ios_release.main(["--help"])
+
+        self.assertEqual(0, raised.exception.code)
+        text = output.getvalue()
+        self.assertIn("Optional QA records directory", text)
+        self.assertIn("Default examples use docs/qa-builds", text)
+        self.assertNotIn("Optional docs/qa-builds directory", text)
+
     def test_main_reports_wrapper_errors_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             error = StringIO()
