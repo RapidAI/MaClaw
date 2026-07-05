@@ -463,12 +463,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
     const [sending, setSending] = useState(false);
     const [awaitingReplyVisible, setAwaitingReplyVisible] = useState(false);
-    const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
     const [queuedEditingEntryId, setQueuedEditingEntryId] = useState<string | null>(null);
     const [promptHistoryState, setPromptHistoryState] = useState(() => ({ veId, history: loadVEPromptHistory(veId) }));
     // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
+    const { handlePaste, handleDragOver, handleDrop, pendingAttachments, setPendingAttachments } = usePastedImageAttachments(undefined, { disabled: !veOnline || readOnly || sending });
     const [responseWatchdogTimeoutSec, setResponseWatchdogTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
     const [historyLoadSettledSessionId, setHistoryLoadSettledSessionId] = useState("");
     const [historyLoadSucceededSessionId, setHistoryLoadSucceededSessionId] = useState("");
@@ -1589,6 +1589,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     return (
         <div
             data-testid="ve-conversation-view"
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
             style={{
                 display: "flex",
                 flexDirection: "column",
@@ -1701,6 +1703,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 handleCancel={() => {}}
                 handleCancelEdit={handleQueuedCancelEdit}
                 handleClearInput={handleClearInput}
+                handleDragOver={handleDragOver}
+                handleDrop={handleDrop}
                 handleEditEntry={handleQueuedEdit}
                 handleFireEntry={handleQueuedFire}
                 handlePaste={handlePaste}

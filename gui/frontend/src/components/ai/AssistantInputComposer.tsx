@@ -6,7 +6,7 @@ import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
-    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaAriaLabel, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
+    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaAriaLabel, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
     const textComposition = useTextCompositionGuard();
     const isExpandedInput = inputAreaHeight !== null;
     const { inputBarStyle, inputRowStyle, textareaStyle, toolbarStyle, toolbarLeftStyle, toolbarRightStyle } = getAssistantInputComposerStyles({
@@ -19,7 +19,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     });
 
     return (
-        <div data-testid={inputBarTestId} style={inputBarStyle}>
+        <div data-testid={inputBarTestId} style={inputBarStyle} onDragOver={handleDragOver} onDrop={handleDrop}>
             <AssistantAttachmentsStrip cancelPending={cancelPending} clearSelectedFile={clearSelectedFile} lang={lang} pendingAttachments={pendingAttachments} pendingAttachmentsTestId={pendingAttachmentsTestId} removeSelectedFile={removeSelectedFile} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} theme={t} />
             {/* Textarea area */}
             <div data-testid={inputRowTestId} style={{ ...inputRowStyle, position: "relative" }}>

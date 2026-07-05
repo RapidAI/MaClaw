@@ -175,10 +175,11 @@ func RunMigrations(db *sql.DB) error {
 			PRIMARY KEY (tenant_id, session_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS user_usage_daily (
-			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
-			user_email TEXT NOT NULL,
-			day TEXT NOT NULL,
-			input_tokens INTEGER NOT NULL DEFAULT 0,
+				tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+				user_id TEXT NOT NULL DEFAULT '',
+				user_email TEXT NOT NULL,
+				day TEXT NOT NULL,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
@@ -893,6 +894,8 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified_at TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE knowledge_shares ADD COLUMN expires_at TEXT`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_usage_daily ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_user_usage_daily_tenant_user_day ON user_usage_daily(tenant_id, user_id, day)`)
 
 	// machine_heartbeat_log: stores timestamped heartbeats for accurate
 	// usage-duration calculation. SummarizeUserDurations merges consecutive
@@ -963,6 +966,23 @@ func RunMigrations(db *sql.DB) error {
 		FROM users
 		WHERE lower(trim(email)) LIKE 'phone:%' AND length(substr(lower(trim(email)), 7)) >= 6`); err != nil {
 		return fmt.Errorf("backfill phone user identities: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE user_usage_daily
+		SET user_id = IFNULL(COALESCE(
+			(SELECT ui.user_id
+			   FROM user_identities ui
+			  WHERE ui.tenant_id = user_usage_daily.tenant_id
+			    AND ui.type = CASE WHEN lower(user_usage_daily.user_email) LIKE 'phone:%' THEN 'phone' ELSE 'email' END
+			    AND lower(ui.value) = CASE WHEN lower(user_usage_daily.user_email) LIKE 'phone:%' THEN lower(substr(user_usage_daily.user_email, 7)) ELSE lower(user_usage_daily.user_email) END
+			  LIMIT 1),
+			(SELECT u.id
+			   FROM users u
+			  WHERE u.tenant_id = user_usage_daily.tenant_id
+			    AND lower(u.email) = lower(user_usage_daily.user_email)
+			  LIMIT 1)
+		), '')
+		WHERE trim(user_id) = ''`); err != nil {
+		return fmt.Errorf("backfill user usage user ids: %w", err)
 	}
 
 	return nil

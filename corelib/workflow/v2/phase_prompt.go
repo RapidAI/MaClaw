@@ -236,10 +236,13 @@ func RenderFormDataFields(phase *Phase, boldLabels bool) string {
 	}
 	var sb strings.Builder
 
-	renderField := func(label string, value interface{}) {
+	renderField := func(label string, value interface{}, sensitive bool) {
 		s := fmt.Sprintf("%v", value)
 		if s == "" || s == "<nil>" {
 			return
+		}
+		if sensitive {
+			s = "已填写（敏感信息已隐藏）"
 		}
 		if boldLabels {
 			sb.WriteString(fmt.Sprintf("- **%s**：", label))
@@ -287,14 +290,14 @@ func RenderFormDataFields(phase *Phase, boldLabels bool) string {
 			if label == "" {
 				label = f.Name
 			}
-			renderField(label, value)
+			renderField(label, value, f.Sensitive)
 		}
 	} else {
 		for key, value := range phase.FormData {
 			if key == "" || strings.HasPrefix(key, "_") {
 				continue
 			}
-			renderField(key, value)
+			renderField(key, value, false)
 		}
 	}
 	return sb.String()
@@ -474,6 +477,26 @@ func phaseInstruction(workflowType WorkflowType, phaseID string) string {
 	}
 
 	switch phaseID {
+	case "direct_coding":
+		return `## 阶段指令
+
+这是简化编程执行阶段。根据用户在表单中提交的工作目录和项目描述，直接完成代码修改、补充必要测试，并给出执行摘要。
+
+要求：
+- 只在用户指定的工作目录内操作。
+- 优先做最小必要修改，避免无关重构。
+- 完成后给出完整执行摘要，包含修改文件、验证结果和剩余风险。
+`
+	case "remote_direct_coding":
+		return `## 阶段指令
+
+这是远程编程执行阶段。根据用户在表单中提交的 SSH 信息、默认工作目录和项目描述，在远程项目中完成代码修改和验证。
+
+要求：
+- 只在用户指定的远程默认工作目录内操作。
+- SSH 密码仅用于建立连接，不得写入输出、日志摘要或任务描述。
+- 完成后给出完整执行摘要，包含远程项目目录、修改内容、验证命令与结果。
+`
 	case "requirements":
 		return `## 阶段指令
 

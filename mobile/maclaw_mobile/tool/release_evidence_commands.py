@@ -6,6 +6,7 @@ import signed_artifact_evidence
 DEFAULT_VERSION = "<version+build>"
 DEFAULT_SCOPE = "android-ios"
 DEFAULT_TEAM_ID = "<APPLE_TEAM_ID>"
+DEFAULT_SIGNING_TEAM_ID = "<REAL_APPLE_TEAM_ID>"
 DEFAULT_EXPORT_METHOD = "<export-method>"
 DEFAULT_QA_RECORDS_DIR = "docs/qa-builds"
 DEFAULT_IOS_ARCHIVE_OR_BUILD = "build/ios/archive/MaClawMobile.xcarchive"
@@ -225,7 +226,7 @@ def setup_android_signing_command() -> str:
 
 def setup_ios_export_options_command(
     *,
-    team_id: str = DEFAULT_TEAM_ID,
+    team_id: str = DEFAULT_SIGNING_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
 ) -> str:
     return (
@@ -236,7 +237,7 @@ def setup_ios_export_options_command(
 
 def ios_release_plan_command(
     *,
-    team_id: str = DEFAULT_TEAM_ID,
+    team_id: str = DEFAULT_SIGNING_TEAM_ID,
     export_method: str = DEFAULT_EXPORT_METHOD,
     provisioning_profiles: str | None = None,
     record_dir: str | None = None,
@@ -332,7 +333,7 @@ def android_artifact_evidence_command(
 def ios_artifact_evidence_command(
     *,
     archive_or_build: str = DEFAULT_IOS_ARCHIVE_OR_BUILD,
-    team_id: str = DEFAULT_TEAM_ID,
+    team_id: str = DEFAULT_SIGNING_TEAM_ID,
     provisioning_profiles: str = "<Runner profile UUID/name; Share Extension profile UUID/name>",
     record_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
@@ -421,10 +422,14 @@ def signed_qa_record_hint(
     scope: str = DEFAULT_SCOPE,
     version: str = DEFAULT_VERSION,
     team_id: str = DEFAULT_TEAM_ID,
+    signing_team_id: str | None = None,
     export_method: str = DEFAULT_EXPORT_METHOD,
     records_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
     scope = validate_scope(scope)
+    signing_team_id = signing_team_id or (
+        DEFAULT_SIGNING_TEAM_ID if team_id == DEFAULT_TEAM_ID else team_id
+    )
     record = qa_record_path_placeholder(
         scope=scope,
         version=version,
@@ -435,7 +440,7 @@ def signed_qa_record_hint(
         setup_hints.append(f"run `{setup_android_signing_command()}`")
     if scope_covers_ios(scope):
         setup_hints.append(
-            f"run `{setup_ios_export_options_command(team_id=team_id, export_method=export_method)}`"
+            f"run `{setup_ios_export_options_command(team_id=signing_team_id, export_method=export_method)}`"
         )
     artifact_hints = []
     if scope_covers_android(scope):
@@ -445,17 +450,17 @@ def signed_qa_record_hint(
         )
     if scope_covers_ios(scope):
         ios_plan_command = ios_release_plan_command(
-            team_id=team_id,
+            team_id=signing_team_id,
             export_method=export_method,
         )
         ios_plan_evidence_command = ios_release_plan_command(
-            team_id=team_id,
+            team_id=signing_team_id,
             export_method=export_method,
             provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
             record_dir=records_dir,
         )
         ios_evidence_command = ios_artifact_evidence_command(
-            team_id=team_id,
+            team_id=signing_team_id,
             record_dir=records_dir,
         )
         artifact_hints.append(

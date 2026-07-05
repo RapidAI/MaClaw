@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../core/api/desktop_llm_qr.dart';
 import '../auth/session_controller.dart';
 
 typedef LlmQrPayloadScannerBuilder = Widget Function(
@@ -38,6 +39,14 @@ class _LlmQrAuthorizationScreenState
   Future<void> _submit(String payload) async {
     final text = payload.trim();
     if (text.isEmpty || _submitting) return;
+    try {
+      parseMaclawDesktopLlmQrPayload(text);
+    } on FormatException catch (error) {
+      setState(() {
+        _message = '授权失败：${error.message}';
+      });
+      return;
+    }
     setState(() {
       _submitting = true;
       _message = null;

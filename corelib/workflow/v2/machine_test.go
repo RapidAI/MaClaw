@@ -74,6 +74,7 @@ func TestSubmitForm_ValidatesGaokaoProvinceSelectOptions(t *testing.T) {
 		"subject_type":         "物化生",
 		"gender":               "女",
 		"rank":                 float64(32000),
+		"education_level":      "仅本科",
 		"accept_joint_program": "可作为备选",
 	}
 	if err := m.SubmitForm("user1", validForm); err != nil {
@@ -93,6 +94,7 @@ func TestSubmitForm_ValidatesGaokaoProvinceSelectOptions(t *testing.T) {
 		"subject_type":         "物化生",
 		"gender":               "女",
 		"rank":                 float64(32000),
+		"education_level":      "仅本科",
 		"accept_joint_program": "可作为备选",
 	}
 	err := m.SubmitForm("user2", invalidForm)

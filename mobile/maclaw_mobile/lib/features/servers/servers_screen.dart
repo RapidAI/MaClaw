@@ -1,7 +1,5 @@
-import 'dart:async';
 import 'dart:convert';
 
-import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -197,7 +195,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     final profiles = ref.watch(serverProfilesProvider);
     return ScreenScaffold(
       title: '应急服务器',
-      subtitle: '手动 SSH 维护，AI 只解释日志和生成命令草案。',
+      subtitle: '后台 SSH 会话管理，AI 只解释日志和生成命令草案。',
       trailing: IconButton.filledTonal(
         tooltip: '新增服务器',
         onPressed: _addServer,
@@ -487,17 +485,6 @@ enum _MobileSSHConnectionState { disconnected, connecting, connected }
 @visibleForTesting
 final mobileSshTerminalInitialOutputProvider = Provider<String>((ref) => '');
 
-typedef MobileSshSocketConnector = Future<SSHSocket> Function(
-  String host,
-  int port,
-);
-
-@visibleForTesting
-final mobileSshSocketConnectorProvider = Provider<MobileSshSocketConnector>(
-  (ref) => (host, port) =>
-      SSHSocket.connect(host, port).timeout(const Duration(seconds: 15)),
-);
-
 typedef MobileClipboardWriter = Future<void> Function(String text);
 
 @visibleForTesting
@@ -531,7 +518,7 @@ const _confirmSendHighRiskTitle =
 const _confirmSaveHighRiskTitle =
     '\u786e\u8ba4\u4fdd\u5b58\u9ad8\u98ce\u9669\u547d\u4ee4\uff1f';
 const _confirmSendHighRiskBody =
-    '\u8be5\u547d\u4ee4\u53ef\u80fd\u91cd\u542f\u670d\u52a1\u3001\u5220\u9664\u6570\u636e\u6216\u5f71\u54cd\u7cfb\u7edf\u53ef\u7528\u6027\u3002\u53d1\u9001\u540e\u4f1a\u8fdb\u5165\u5f53\u524d SSH \u7ec8\u7aef\u6267\u884c\uff0c\u8bf7\u786e\u8ba4\u4f60\u7406\u89e3\u98ce\u9669\u3002';
+    '\u8be5\u547d\u4ee4\u53ef\u80fd\u91cd\u542f\u670d\u52a1\u3001\u5220\u9664\u6570\u636e\u6216\u5f71\u54cd\u7cfb\u7edf\u53ef\u7528\u6027\u3002\u53d1\u9001\u540e\u4f1a\u8fdb\u5165\u5f53\u524d\u540e\u53f0 SSH \u4f1a\u8bdd\uff0c\u8bf7\u786e\u8ba4\u4f60\u7406\u89e3\u98ce\u9669\u3002';
 const _confirmSaveHighRiskBody =
     '\u8be5\u547d\u4ee4\u53ef\u80fd\u91cd\u542f\u670d\u52a1\u3001\u5220\u9664\u6570\u636e\u6216\u5f71\u54cd\u7cfb\u7edf\u53ef\u7528\u6027\u3002\u4fdd\u5b58\u540e\u4ecd\u9700\u624b\u52a8\u590d\u5236/\u6267\u884c\uff0c\u8bf7\u786e\u8ba4\u4f60\u7406\u89e3\u98ce\u9669\u3002';
 const _cancelLabel = '\u53d6\u6d88';
@@ -638,11 +625,8 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
 
   final _terminal = Terminal(maxLines: 1000);
   final _capturedOutput = StringBuffer();
-  SSHClient? _client;
-  StreamSubscription<String>? _stdoutSub;
-  StreamSubscription<String>? _stderrSub;
   String? _selectedId;
-  String? _lastConnectedProfileId;
+  String? _lastBackendSessionId;
   ServerProfile? _activeProfile;
   _MobileSSHConnectionState _connectionState =
       _MobileSSHConnectionState.disconnected;
@@ -658,19 +642,11 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
   @override
   void initState() {
     super.initState();
-    _writeTerminal('选择服务器后连接 SSH。\r\n', capture: false);
+    _writeTerminal('选择服务器后创建或附着后台 SSH 会话。\r\n', capture: false);
     final initialOutput = ref.read(mobileSshTerminalInitialOutputProvider);
     if (initialOutput.trim().isNotEmpty) {
       _writeTerminal(initialOutput);
     }
-  }
-
-  @override
-  void dispose() {
-    _stdoutSub?.cancel();
-    _stderrSub?.cancel();
-    _client?.close();
-    super.dispose();
   }
 
   Future<void> _connect(
@@ -690,7 +666,6 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     }
     if (selected == null || _connecting) return;
     final selectedProfile = selected;
-    await _closeActiveConnection(manual: true);
     _capturedOutput.clear();
     setState(() {
       _connectionState = _MobileSSHConnectionState.connecting;
@@ -699,47 +674,25 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       _lastError = null;
     });
     try {
-      final socket = await ref.read(mobileSshSocketConnectorProvider)(
-        selectedProfile.host,
-        selectedProfile.port,
+      final client = await _requireApiClient();
+      final session =
+          preferredProfileId == null || _lastBackendSessionId == null
+              ? await client.createBackendSSHSession(
+                  serverProfileId: selectedProfile.id,
+                )
+              : await client.reconnectBackendSSHSession(_lastBackendSessionId!);
+      _lastBackendSessionId = session.sessionId;
+      _writeTerminal(
+        '已创建/附着后台 SSH 会话 ${session.sessionId} · ${selectedProfile.name}\r\n',
       );
-      final client = await _buildClient(socket, selectedProfile);
-      final session = await client.shell(
-        pty: SSHPtyConfig(
-          width: _terminal.viewWidth,
-          height: _terminal.viewHeight,
-        ),
-      );
-      _client = client;
-      _lastConnectedProfileId = selectedProfile.id;
-      _writeTerminal('已连接 ${selectedProfile.name}\r\n');
-      _terminal.onOutput = (data) {
-        session.write(utf8.encode(data));
-      };
-      _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-        session.resizeTerminal(width, height, pixelWidth, pixelHeight);
-      };
-      _stdoutSub = session.stdout
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(
-            _handleTerminalData,
-            onError: _handleStreamError,
-            onDone: _handleStreamDone,
-          );
-      _stderrSub = session.stderr
-          .cast<List<int>>()
-          .transform(const Utf8Decoder())
-          .listen(
-            _handleTerminalData,
-            onError: _handleStreamError,
-            onDone: _handleStreamDone,
-          );
+      if (session.recentOutput.trim().isNotEmpty) {
+        _writeTerminal(session.recentOutput);
+      }
       if (mounted) {
         setState(() => _connectionState = _MobileSSHConnectionState.connected);
       }
     } catch (error) {
-      _writeTerminal('连接失败：$error\r\n');
+      _writeTerminal('后台 SSH 会话创建失败：$error\r\n');
       if (mounted) {
         setState(() {
           _connectionState = _MobileSSHConnectionState.disconnected;
@@ -747,8 +700,8 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
         });
       }
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: 'SSH 连接异常',
-            body: '${selectedProfile.name} 连接失败',
+            title: 'SSH 后台会话异常',
+            body: '${selectedProfile.name} 后台会话创建失败',
             payload: mobileServerProfileNotificationPayload(
               selectedProfile.id,
             ),
@@ -756,72 +709,34 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     }
   }
 
-  Future<SSHClient> _buildClient(
-    SSHSocket socket,
-    ServerProfile profile,
-  ) async {
-    if (profile.authMode == serverAuthModePrivateKey) {
-      final vault = ref.read(secureVaultProvider);
-      final privateKey = await vault.readServerPrivateKey(profile.id);
-      if (privateKey == null || privateKey.trim().isEmpty) {
-        throw StateError('未保存 SSH 私钥。');
-      }
-      final passphrase =
-          await vault.readServerPrivateKeyPassphrase(profile.id) ?? '';
-      return SSHClient(
-        socket,
-        username: profile.username,
-        identities: SSHKeyPair.fromPem(privateKey, passphrase).toList(),
-      );
+  Future<ApiClient> _requireApiClient() async {
+    final existing = ref.read(apiClientProvider);
+    if (existing != null) return existing;
+    await ref.read(sessionControllerProvider.future);
+    final client = ref.read(apiClientProvider);
+    if (client == null) {
+      throw StateError('请先登录 MaClaw 官方服务。');
     }
-    final password =
-        await ref.read(secureVaultProvider).readServerPassword(profile.id);
-    return SSHClient(
-      socket,
-      username: profile.username,
-      onPasswordRequest: () => password ?? '',
-    );
+    return client;
   }
 
   Future<void> _closeActiveConnection({required bool manual}) async {
     final wasConnected = _connected;
-    await _stdoutSub?.cancel();
-    await _stderrSub?.cancel();
-    _stdoutSub = null;
-    _stderrSub = null;
-    _client?.close();
-    _client = null;
-    if (manual && wasConnected) {
-      _writeTerminal('已断开 SSH 连接。\r\n');
+    final sessionId = _lastBackendSessionId;
+    if (manual && wasConnected && sessionId != null) {
+      try {
+        await (await _requireApiClient()).closeBackendSSHSession(sessionId);
+        _writeTerminal('已关闭后台 SSH 会话 $sessionId。\r\n');
+      } catch (error) {
+        _writeTerminal('后台 SSH 会话关闭失败：$error\r\n');
+        if (mounted) {
+          setState(() => _lastError = error.toString());
+        }
+        return;
+      }
     }
     if (mounted) {
       setState(() => _connectionState = _MobileSSHConnectionState.disconnected);
-    }
-  }
-
-  void _handleStreamError(Object error, StackTrace stackTrace) {
-    unawaited(_markDisconnected(error: error));
-  }
-
-  void _handleStreamDone() {
-    unawaited(_markDisconnected());
-  }
-
-  Future<void> _markDisconnected({Object? error}) async {
-    if (!_connected && !_connecting) return;
-    final profile = _activeProfile;
-    await _closeActiveConnection(manual: false);
-    final message = error == null ? 'SSH 连接已断开。' : 'SSH 连接已断开：$error';
-    _writeTerminal('$message\r\n');
-    if (mounted) {
-      setState(() => _lastError = error?.toString());
-    }
-    if (profile != null) {
-      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: 'SSH 连接已断开',
-            body: profile.name,
-            payload: mobileServerProfileNotificationPayload(profile.id),
-          );
     }
   }
 
@@ -836,7 +751,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
   String? _reconnectProfileId(List<ServerProfile> profiles) {
     return mobileSshReconnectProfileId(
       selectedId: _selectedId,
-      activeProfileId: _lastConnectedProfileId ?? _activeProfile?.id,
+      activeProfileId: _activeProfile?.id,
       availableProfileIds: profiles.map((profile) => profile.id),
     );
   }
@@ -847,10 +762,6 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       _MobileSSHConnectionState.connected => scheme.primary,
       _MobileSSHConnectionState.disconnected => scheme.onSurfaceVariant,
     };
-  }
-
-  void _handleTerminalData(String data) {
-    _writeTerminal(data);
   }
 
   void _writeTerminal(String data, {bool capture = true}) {
@@ -873,10 +784,19 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     return _capturedOutput.toString().trim();
   }
 
-  bool sendCommand(String command) {
+  Future<bool> sendCommand(String command) async {
     final payload = mobileTerminalCommandPayload(command);
-    if (!_connected || payload == null) return false;
-    _terminal.onOutput?.call(payload);
+    final sessionId = _lastBackendSessionId;
+    if (!_connected || payload == null || sessionId == null) return false;
+    final result = await (await _requireApiClient()).sendBackendSSHSessionInput(
+      sessionId: sessionId,
+      input: payload,
+    );
+    if (result.output.trim().isNotEmpty) {
+      _writeTerminal(result.output);
+    } else {
+      _writeTerminal('命令已提交到后台 SSH 会话 $sessionId。\r\n');
+    }
     return true;
   }
 
@@ -930,7 +850,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                     Icon(Icons.terminal_outlined, color: scheme.primary),
                     const SizedBox(width: 8),
                     Text(
-                      '手动 SSH 终端',
+                      '后台 SSH 会话',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const Spacer(),
@@ -975,7 +895,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                     FilledButton.icon(
                       onPressed: _connecting ? null : () => _connect(profiles),
                       icon: const Icon(Icons.power_settings_new),
-                      label: Text(_connected ? '重连 SSH' : '连接 SSH'),
+                      label: Text(_connected ? '重连会话' : '创建/附着会话'),
                     ),
                     if (!_connected && reconnectId != null)
                       OutlinedButton.icon(
@@ -993,7 +913,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                           ? () => _closeActiveConnection(manual: true)
                           : null,
                       icon: const Icon(Icons.link_off_outlined),
-                      label: const Text('断开'),
+                      label: const Text('关闭会话'),
                     ),
                     OutlinedButton.icon(
                       onPressed:
@@ -1148,7 +1068,7 @@ class _CommandActionBar extends ConsumerWidget {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(sent ? '命令已发送到 SSH 终端' : '请先连接 SSH 终端'),
+        content: Text(sent ? '命令已发送到后台 SSH 会话' : '请先连接后台 SSH 会话'),
       ),
     );
   }
@@ -1190,7 +1110,7 @@ class _CommandActionBar extends ConsumerWidget {
                   ? null
                   : () => _sendCommand(context, ref),
               icon: const Icon(Icons.send_outlined),
-              label: const Text('发送到终端'),
+              label: const Text('发送到会话'),
             ),
           ],
         ),
@@ -1576,6 +1496,9 @@ Map<String, String> mobileSSHOutputTaskContextForSummary(
     'task_surface': 'servers',
     'line_count': summary.lineCount.toString(),
     'char_count': summary.charCount.toString(),
+    'manual_confirmation_required': 'true',
+    'execution_boundary': 'draft_only_until_mobile_user_confirms',
+    'manual_confirmation_scope': 'destructive_or_high_risk_server_operations',
     if (profile != null) ...{
       'server_profile_id': profile.id,
       if (serverName != null) 'server_name': serverName,

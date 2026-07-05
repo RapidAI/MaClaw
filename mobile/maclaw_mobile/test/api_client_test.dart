@@ -84,6 +84,8 @@ void main() {
       'sk-test-secret',
       '{"v":1,"type":"maclaw_llm","url":"https://llm.example.com/v1","key":"sk-test"}',
       '{"v":2,"type":"maclaw_mobile_llm_authorization","hub_url":"https://tenant-a.maclaw.top"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"http://tenant-a.maclaw.top"}',
     ];
 
     for (final payload in invalidPayloads) {
@@ -263,6 +265,74 @@ void main() {
     });
     expect(task.taskType, 'server_maintenance');
     expect(task.context['source'], 'maclaw_mobile');
+  });
+
+  test('backend SSH sessions use tenant Hub session APIs', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) {
+        if (request.path == '/api/mobile/ssh/sessions') {
+          return _jsonResponse({
+            'session': {
+              'session_id': 'ssh-session-1',
+              'server_profile_id': 'srv-prod',
+              'status': 'connected',
+              'recent_output': 'ready\n',
+            },
+          });
+        }
+        if (request.path == '/api/mobile/ssh/sessions/ssh-session-1/input') {
+          return _jsonResponse({
+            'session_id': 'ssh-session-1',
+            'output': 'ran uptime\n',
+            'status': 'accepted',
+          });
+        }
+        if (request.path ==
+            '/api/mobile/ssh/sessions/ssh-session-1/reconnect') {
+          return _jsonResponse({
+            'session': {
+              'session_id': 'ssh-session-1',
+              'server_profile_id': 'srv-prod',
+              'status': 'connected',
+            },
+          });
+        }
+        return _jsonResponse({'ok': true});
+      },
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final session = await client.createBackendSSHSession(
+      serverProfileId: 'srv-prod',
+    );
+    final input = await client.sendBackendSSHSessionInput(
+      sessionId: session.sessionId,
+      input: 'uptime\r',
+    );
+    final reconnected = await client.reconnectBackendSSHSession(
+      session.sessionId,
+    );
+    await client.closeBackendSSHSession(session.sessionId);
+
+    expect(session.sessionId, 'ssh-session-1');
+    expect(session.serverProfileId, 'srv-prod');
+    expect(session.connected, isTrue);
+    expect(session.recentOutput, 'ready\n');
+    expect(input.output, 'ran uptime\n');
+    expect(reconnected.connected, isTrue);
+    expect(adapter.requests.map((request) => request.path), [
+      '/api/mobile/ssh/sessions',
+      '/api/mobile/ssh/sessions/ssh-session-1/input',
+      '/api/mobile/ssh/sessions/ssh-session-1/reconnect',
+      '/api/mobile/ssh/sessions/ssh-session-1',
+    ]);
+    expect(adapter.requests.first.data, {'server_profile_id': 'srv-prod'});
+    expect(adapter.requests[1].data, {'input': 'uptime\r'});
   });
 
   test('document export download requests relative paths from discovered Hub',

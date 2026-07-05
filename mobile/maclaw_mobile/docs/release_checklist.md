@@ -2,8 +2,8 @@
 
 MaClaw Mobile is an emergency mobile AI app. Release validation must keep the
 first version focused on a MaClaw GUI-like AI assistant with voice input,
-HubCenter-discovered official service access, urgent documents, manual SSH, and
-digital employee task access.
+HubCenter-discovered official service access, urgent documents, backend SSH
+session management, and digital employee task access.
 
 For a single local readiness summary, run:
 
@@ -93,17 +93,21 @@ For a single local readiness summary, run:
 - Confirm `Info.plist` contains camera, microphone, speech recognition, photo
   library, and local network usage descriptions.
 - Verify camera, microphone, speech recognition, photo library, local network,
-  and notification permission prompts. Local network access is for manual SSH
-  maintenance of local or private-network servers only.
+  and notification permission prompts. Local network access is for backend SSH
+  session management of local or private-network servers only.
 - Install a signed development/TestFlight build and verify share-to-app for
   text, URLs, images, PDFs, Word, Excel, and CSV files.
 - On macOS, run
-  `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`
+  `python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   to create local `ios/ExportOptions.plist` from
   `ios/ExportOptions.plist.example`; use `--export-method app-store` for
-  TestFlight/App Store Connect planning.
+  TestFlight/App Store Connect planning. `<APPLE_TEAM_ID>` is allowed only for
+  planning/status commands (`release_status_report.py`, `release_handoff.py`,
+  and `qa_preflight.py`). Replace it with the real 10-character Apple Team ID
+  before running `setup_ios_export_options.py`, `plan_ios_release.py`, or
+  `signed_artifact_evidence.py`.
 - Then run
-  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+  `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
   Record the printed archive/export command context. After the signed
   archive/TestFlight build exists, use the artifact evidence command below, or
@@ -114,7 +118,7 @@ For a single local readiness summary, run:
   profiles, bundle IDs, app group, and URL scheme evidence in the QA build
   record.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   to generate paste-ready archive/build, Team ID, and provisioning-profile
   evidence for the QA build record.
 
@@ -135,8 +139,9 @@ For a single local readiness summary, run:
   the document parsing flow.
 - Create, edit, insert a table, add a comment, run AI processing, export, and
   share PDF, Word, and Markdown.
-- Add a server profile with tag and note, connect SSH, copy output, send output
-  to AI analysis, and delete the profile to clear stored credentials.
+- Add a server profile with tag and note, create or attach a backend SSH
+  session, copy output, send output to AI analysis, and delete the profile to
+  clear stored credentials.
 - Paste SSH output or logs, hand them to an online digital employee, confirm the
   Hub/tenant handoff and sensitive-data warning, and verify the task is created
   without bypassing remote authorization.
@@ -221,7 +226,7 @@ For a local end-to-end run, use:
 Before creating signed QA packages on a local machine, run:
 
 - `python3 tool/setup_android_signing.py`
-- `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`
+- `python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
 - `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`
 
 Before approving a release candidate with completed signed-build QA records, run:

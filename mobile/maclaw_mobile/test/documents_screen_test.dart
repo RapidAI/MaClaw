@@ -317,6 +317,13 @@ class _QueuedUploadDocumentsController extends DocumentsController {
   }
 }
 
+void _useLargeDocumentViewport(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1200, 2400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
 void main() {
   testWidgets('documents screen uploads shared files automatically',
       (tester) async {
@@ -357,6 +364,7 @@ void main() {
   });
 
   testWidgets('documents screen exposes mobile import actions', (tester) async {
+    _useLargeDocumentViewport(tester);
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -506,6 +514,7 @@ void main() {
   });
 
   testWidgets('documents screen explains failed export reason', (tester) async {
+    _useLargeDocumentViewport(tester);
     _FailedExportDocumentsController.retryCount = 0;
     await tester.pumpWidget(
       ProviderScope(
@@ -546,6 +555,7 @@ void main() {
   });
 
   testWidgets('documents screen explains ready export sharing', (tester) async {
+    _useLargeDocumentViewport(tester);
     _ReadyExportDocumentsController.downloadedJobs.clear();
     _ReadyExportDocumentsController.exportedPath = null;
     final sharedFiles = <String>[];
@@ -605,6 +615,8 @@ void main() {
 
   testWidgets('documents screen can copy and share draft text quickly',
       (tester) async {
+    _useLargeDocumentViewport(tester);
+
     String? clipboardText;
     String? sharedText;
     String? sharedSubject;
@@ -656,8 +668,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.drag(find.byType(ListView), const Offset(0, -900));
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
 
     expect(find.text('复制草稿'), findsOneWidget);
     expect(find.text('分享文本'), findsOneWidget);
@@ -672,6 +683,7 @@ void main() {
 
     await tester.tap(find.text('分享文本'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(sharedText, contains('应急说明'));
     expect(sharedText, contains('请现场负责人确认恢复时间。'));
@@ -681,6 +693,7 @@ void main() {
 
   testWidgets('documents screen exports PDF Word and Markdown formats',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _RecordingExportDocumentsController.formats.clear();
     await tester.pumpWidget(
       ProviderScope(
@@ -724,6 +737,7 @@ void main() {
 
   testWidgets('documents screen can restore recent draft history',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _HistoryDocumentsController.selected.clear();
     await tester.pumpWidget(
       ProviderScope(
@@ -764,6 +778,7 @@ void main() {
 
   testWidgets('documents screen runs all mobile AI document actions',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _RecordingProcessDocumentsController.actions.clear();
     await tester.pumpWidget(
       ProviderScope(
@@ -810,6 +825,7 @@ void main() {
 
   testWidgets('documents screen inserts table and comment snippets before save',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _EditableDraftDocumentsController.saved.clear();
     await tester.pumpWidget(
       ProviderScope(
@@ -857,6 +873,7 @@ void main() {
 
   testWidgets('documents screen explains long running import tasks',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _QueuedUploadDocumentsController.refreshCount = 0;
     await tester.pumpWidget(
       ProviderScope(
@@ -898,6 +915,7 @@ void main() {
 
   testWidgets('documents screen gives failed import retry guidance',
       (tester) async {
+    _useLargeDocumentViewport(tester);
     _FailedUploadDocumentsController.retryCount = 0;
     await tester.pumpWidget(
       ProviderScope(

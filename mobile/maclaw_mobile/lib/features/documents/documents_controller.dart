@@ -579,12 +579,21 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   String _exportFilename(String title, DocumentExportJob job) {
-    final base = title
+    final base = _exportFilenameBase(title, fallback: job.jobId);
+    return '$base.${_exportExtension(job.format)}';
+  }
+
+  String _exportFilenameBase(String title, {required String fallback}) {
+    final normalized = title
         .trim()
         .replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_')
-        .replaceAll(RegExp(r'\s+'), '_');
-    final safeBase = base.isEmpty ? job.jobId : base;
-    return '$safeBase.${_exportExtension(job.format)}';
+        .replaceAll(RegExp(r'\s+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    final safeBase = normalized.isEmpty ? fallback : normalized;
+    if (safeBase.length <= 72) return safeBase;
+    final shortened = safeBase.substring(0, 72).replaceAll(RegExp(r'_+$'), '');
+    return shortened.isEmpty ? fallback : shortened;
   }
 
   String _exportExtension(DocumentExportFormat format) {

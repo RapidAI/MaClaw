@@ -97,6 +97,33 @@ String? mobileNotificationTargetPath(
   return mobileInitialPathForFeatures(features);
 }
 
+String mobileNotificationRecoveryMessage(String payload, String? targetPath) {
+  if (targetPath == null) return '无法识别任务提醒';
+  final value = payload.trim();
+  final detail = switch (targetPath) {
+    '/documents' => '已打开任务提醒：请在文档页查看导入、导出或草稿状态',
+    '/employees' => '已打开任务提醒：请在数字员工页查看远程任务状态',
+    '/servers' => '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
+    _ => '已打开任务提醒',
+  };
+  if (value.startsWith(mobileDocumentExportNotificationPrefix)) {
+    return '已打开任务提醒：请在文档页查看导出任务状态';
+  }
+  if (value.startsWith(mobileDocumentUploadNotificationPrefix)) {
+    return '已打开任务提醒：请在文档页查看导入任务状态';
+  }
+  if (value.startsWith(mobileDocumentDraftNotificationPrefix)) {
+    return '已打开任务提醒：请在文档页查看草稿';
+  }
+  if (value.startsWith(mobileDigitalEmployeeTaskNotificationPrefix)) {
+    return '已打开任务提醒：请在数字员工页查看远程任务状态';
+  }
+  if (value.startsWith(mobileServerProfileNotificationPrefix)) {
+    return '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料';
+  }
+  return detail;
+}
+
 class MaClawMobileApp extends ConsumerWidget {
   const MaClawMobileApp({super.key});
 
@@ -159,7 +186,7 @@ class _NotificationOpenBridge extends ConsumerWidget {
         if (canRoute && targetPath != null) {
           router.go(targetPath);
         }
-        final message = targetPath == null ? '无法识别任务提醒' : '已打开任务提醒';
+        final message = mobileNotificationRecoveryMessage(payload, targetPath);
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
           SnackBar(
             content: Text('$message：${redactMobileSensitiveText(payload)}'),

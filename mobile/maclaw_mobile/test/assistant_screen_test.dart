@@ -138,9 +138,10 @@ class _AssistantDisabledSessionController extends SessionController {
             tenantId: 'tenant-a',
           ),
           features: MobileFeatures(
+            assistant: false,
             search: false,
             documents: true,
-            localSsh: true,
+            backendSshSessions: true,
             digitalEmployees: true,
             pushNotifications: false,
           ),
@@ -191,7 +192,7 @@ MobileBootstrap _assistantTestBootstrap({required bool searchEnabled}) {
     features: MobileFeatures(
       search: searchEnabled,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: false,
     ),
@@ -358,6 +359,28 @@ void main() {
     expect(citation, isNot(contains('citation-token')));
     expect(citation, isNot(contains('ops:secret')));
     expect(citation, isNot(contains('citation-secret')));
+  });
+
+  test('assistant voice transcript appends without losing typed context', () {
+    expect(
+      assistantQueryWithVoiceTranscript(
+        '先按生产事故处理',
+        '请 AI 助手分析今天的服务器告警',
+      ),
+      '先按生产事故处理\n请 AI 助手分析今天的服务器告警',
+    );
+    expect(
+      assistantQueryWithVoiceTranscript(
+        '先按生产事故处理\n请 AI 助手分析',
+        '请 AI 助手分析今天的服务器告警',
+        previousTranscript: '请 AI 助手分析',
+      ),
+      '先按生产事故处理\n请 AI 助手分析今天的服务器告警',
+    );
+    expect(
+      assistantQueryWithVoiceTranscript('已有内容', '  '),
+      '已有内容',
+    );
   });
 
   test('assistant history redacts query and answer secrets', () async {
@@ -564,6 +587,7 @@ void main() {
     );
     expect(find.byTooltip('开始语音输入'), findsOneWidget);
     expect(find.byTooltip('语音输入'), findsOneWidget);
+    expect(find.text('查信息'), findsNothing);
     expect(find.text('问 MaClaw AI 助手'), findsOneWidget);
     expect(
       find.text('支持普通对话、助手联网、文档处理、日志排障和应急操作草案。'),
@@ -661,7 +685,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.textContaining('当前 Hub 未启用助手联网能力'), findsOneWidget);
+    expect(find.textContaining('当前 Hub 未启用 AI 助手服务能力'), findsOneWidget);
     final sendButton = tester.widget<FilledButton>(
       find.widgetWithText(FilledButton, '发送给 AI 助手'),
     );
@@ -705,7 +729,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_FakeSearchApiClient.queries, isEmpty);
-    expect(find.textContaining('当前 Hub 未启用助手联网能力'), findsWidgets);
+    expect(find.textContaining('当前 Hub 未启用 AI 助手服务能力'), findsWidgets);
     expect(find.textContaining('https://example.com/incident'), findsWidgets);
   });
 
@@ -921,6 +945,48 @@ void main() {
     expect(voice.localeId, 'zh_CN');
     expect(find.text('请 AI 助手分析今天的服务器告警'), findsOneWidget);
     expect(find.text('正在听写，识别结果会填入 AI 助手输入框'), findsOneWidget);
+  });
+
+  testWidgets('assistant voice input preserves typed prompt context',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(text: '补充最近十分钟日志');
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      '按服务器应急排障格式回答',
+    );
+    await tester.tap(find.byTooltip('开始语音输入'));
+    await tester.pump();
+
+    expect(
+      find.text('按服务器应急排障格式回答\n补充最近十分钟日志'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('assistant voice input explains unavailable microphone',

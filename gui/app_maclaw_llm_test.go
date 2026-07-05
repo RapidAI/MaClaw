@@ -156,6 +156,29 @@ func TestCodeGenClientNameForModelConfigPrefersModelAgentType(t *testing.T) {
 	}
 }
 
+func TestShouldPatchRemoteEmailFromLogin(t *testing.T) {
+	tests := []struct {
+		name         string
+		currentEmail string
+		loginEmail   string
+		want         bool
+	}{
+		{name: "empty login email", currentEmail: "", loginEmail: "", want: false},
+		{name: "login phone placeholder", currentEmail: "", loginEmail: "phone:17090134628", want: false},
+		{name: "empty current email", currentEmail: "", loginEmail: "user@example.com", want: true},
+		{name: "phone placeholder", currentEmail: "phone:17090134628", loginEmail: "user@example.com", want: true},
+		{name: "phone placeholder uppercase", currentEmail: " PHONE:17090134628 ", loginEmail: " user@example.com ", want: true},
+		{name: "existing real email", currentEmail: "owner@example.com", loginEmail: "user@example.com", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldPatchRemoteEmailFromLogin(tt.currentEmail, tt.loginEmail); got != tt.want {
+				t.Fatalf("shouldPatchRemoteEmailFromLogin(%q, %q) = %v, want %v", tt.currentEmail, tt.loginEmail, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTestOpenAILLM_UsesReasoningFallbackAndStripsTags(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

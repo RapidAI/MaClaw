@@ -223,7 +223,7 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	if len(queue.Submissions[0].Dependencies) != 2 || queue.Submissions[0].Dependencies[0].ID != "contract-super-app" || queue.Submissions[0].Dependencies[1].ID != "contract-workflow" {
 		t.Fatalf("expected dependency audit metadata: %#v", queue.Submissions[0].Dependencies)
 	}
-	if queue.Submissions[0].Dependencies[1].Kind != "workflow_skill" || queue.Submissions[0].Dependencies[1].Source != "market" || queue.Submissions[0].Dependencies[1].AppIDs[0] != "local-contract" {
+	if queue.Submissions[0].Dependencies[1].Kind != "workflow_skill" || queue.Submissions[0].Dependencies[1].Source != "skillmarket" || queue.Submissions[0].Dependencies[1].AppIDs[0] != "local-contract" {
 		t.Fatalf("expected workflow dependency audit detail: %#v", queue.Submissions[0].Dependencies[1])
 	}
 
@@ -253,6 +253,120 @@ func TestSubmitMaclawAppPackageQueuesLocalSubmission(t *testing.T) {
 	}
 	if len(summaries[0].Dependencies) != 2 || summaries[0].Dependencies[1].ID != "contract-workflow" {
 		t.Fatalf("expected summary dependency audit metadata: %#v", summaries[0].Dependencies)
+	}
+}
+
+func TestSubmitMaclawAppPackagePersistsSourceVersionKeyInstallRefs(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# paper_pdf_translator\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, ".env"), []byte("TOKEN=secret\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile .env: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	versionKey := "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151"
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:       "paper_pdf_translator",
+		SkillDir:   skillDir,
+		Status:     "active",
+		Source:     "enterprise_hub",
+		HubSkillID: "paper_pdf_translator",
+		HubVersion: versionKey,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	pkg := fmt.Sprintf(`{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "paper_pdf_translator",
+				"name": "PDF翻译工具",
+				"kind": "tool_app",
+				"binding": {
+					"appSkill": {"id": "paper_pdf_translator", "version": %q}
+				},
+				"dependencies": {"skills": [
+					{"id": "paper_pdf_translator", "version": %q, "kind": "app_skill", "required": true, "source": "local"}
+				]},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":2, "regions":[{"id":"input", "role":"input", "placement":"left"}, {"id":"output", "role":"output", "placement":"right"}]},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencyCount":1, "hasMissingRequired":false, "hasBlockingDependency":false, "dependencies":[{"id":"paper_pdf_translator", "version":%q, "kind":"app_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-paper-pdf","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-paper-pdf", "runId":"run-paper-pdf", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+				}
+			}
+		}]
+	}`, versionKey, versionKey, versionKey)
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["dependency_count"] != 1 {
+		t.Fatalf("expected dependency count in result: %#v", result)
+	}
+
+	data, err := os.ReadFile(app.maclawAppSubmissionQueuePath())
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var queue maclawAppSubmissionQueue
+	if err := json.Unmarshal(data, &queue); err != nil {
+		t.Fatalf("decode queue: %v", err)
+	}
+	if len(queue.Submissions) != 1 {
+		t.Fatalf("unexpected queue: %#v", queue)
+	}
+	resolved := anySlice(queue.Submissions[0].Package["resolved_dependencies"])
+	if len(resolved) != 1 {
+		t.Fatalf("submitted package should persist resolved dependency refs: %#v", queue.Submissions[0].Package)
+	}
+	dep := anyMap(resolved[0])
+	if dep["source"] != "enterprise_hub" || dep["install_ref"] != "enterprise_hub://capabilities/paper_pdf_translator@d1cb0335a151" || dep["canonical_id"] != "paper_pdf_translator" {
+		t.Fatalf("submitted package dependency should be installable from enterprise Hub: %#v", dep)
+	}
+	apps := anySlice(queue.Submissions[0].Package["apps"])
+	entryResolved := anySlice(anyMap(apps[0])["resolved_dependencies"])
+	if len(entryResolved) != 1 || anyMap(entryResolved[0])["install_ref"] != dep["install_ref"] {
+		t.Fatalf("submitted app entry should persist resolved dependency refs: %#v", apps[0])
+	}
+	bundled := anyMap(queue.Submissions[0].Package["bundled_dependencies"])
+	bundledSkills := anySlice(bundled["skills"])
+	if len(bundledSkills) != 1 {
+		t.Fatalf("submitted package should bundle installed dependency skill: %#v", queue.Submissions[0].Package["bundled_dependencies"])
+	}
+	bundledSkill := anyMap(bundledSkills[0])
+	if bundledSkill["stable_id"] != "hub_skill:paper_pdf_translator" || bundledSkill["name"] != "paper_pdf_translator" || bundledSkill["sha256"] == "" {
+		t.Fatalf("bundled dependency should carry stable identity and checksum: %#v", bundledSkill)
+	}
+	bundledFiles := anyMap(bundledSkill["files"])
+	if bundledFiles["skill.md"] == "" {
+		t.Fatalf("bundled dependency should include package files: %#v", bundledSkill)
+	}
+	if bundledFiles[".env"] != nil {
+		t.Fatalf("bundled dependency should not include sensitive dotfiles: %#v", bundledFiles)
+	}
+	entryBundled := anyMap(anyMap(apps[0])["bundled_dependencies"])
+	if len(anySlice(entryBundled["skills"])) != 1 {
+		t.Fatalf("submitted app entry should persist bundled dependency refs: %#v", apps[0])
 	}
 }
 func TestMaclawAppSubmissionSummaryIncludesReviewEvidence(t *testing.T) {
@@ -6042,6 +6156,767 @@ func TestInstallMaclawAppDependenciesResolvesKnownRuntimeDependencyAlias(t *test
 	}
 }
 
+func TestInstallMaclawAppDependenciesResolvesHubAliasThroughSkillMarketSearch(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const rapidOCRMarketID = "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			if query := r.URL.Query().Get("q"); query != "rapidocr" {
+				t.Fatalf("unexpected search query %q", query)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{
+				ID: rapidOCRMarketID, Name: "RapidOCR", Version: "10",
+			}}})
+		case "/api/v1/skills/" + rapidOCRMarketID + "/download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          rapidOCRMarketID,
+				"name":        "rapidocr-runtime",
+				"description": "RapidOCR runtime",
+				"version":     "1.0.0",
+				"trust_level": "trusted",
+				"triggers":    []string{"rapidocr"},
+				"steps": []map[string]any{{
+					"action": "bash",
+					"params": map[string]any{"command": "echo rapidocr"},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "RapidOCR", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
+	if dep == nil || dep.InstallRefTarget != rapidOCRMarketID || dep.PreflightStatus != "ready" || dep.PreflightCode != "skillmarket_target_ready" {
+		t.Fatalf("dependency should resolve RapidOCR alias through SkillMarket search: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "rapidocr-runtime" {
+		t.Fatalf("dependency should install and match local runtime: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("resolved hub alias install should clear blocking flags: %#v", plan)
+	}
+}
+
+func TestPlanMaclawAppInstallKeepsHubDirectDownloadWhenHubCenterLookupMisses(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			if query := r.URL.Query().Get("q"); query != "direct-only-runtime" {
+				t.Fatalf("unexpected search query %q", query)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "direct-download-app",
+			"name": "Direct Download App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "direct-only-runtime", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub", "install_ref": "hub://skills/direct-only-runtime@1.0.0" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "direct-only-runtime")
+	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "target_resolved" || dep.PreflightStage != "install_ref" || dep.InstallRefTarget != "direct-only-runtime" {
+		t.Fatalf("hub direct download dependency should not be blocked by a SkillMarket lookup miss: %#v", dep)
+	}
+	if !plan.HasMissingRequired || !plan.HasBlockingDependency {
+		t.Fatalf("missing dependency should still report blocking install state until installed: %#v", plan)
+	}
+}
+
+func TestMaclawAppHubCenterLookupPreflightChoosesExactAliasMatch(t *testing.T) {
+	dep := maclawAppInstallPlanDependency{
+		ID:               "RapidOCR",
+		Version:          "10",
+		Kind:             "runtime_skill",
+		Required:         true,
+		Source:           "hub",
+		InstallRefTarget: "rapidocr",
+		InstallRefStatus: "ok",
+	}
+	matched := maclawAppApplyHubCenterLookupPreflight(&dep, []SkillSearchResult{
+		{ID: "unrelated-id", Name: "rapidocr-tools", InstallRef: "unrelated-id", Version: "10"},
+		{ID: "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b", Name: "RapidOCR", InstallRef: "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b", Version: "10"},
+	})
+	if !matched || dep.PreflightStatus != "ready" || dep.InstallRefTarget != "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b" {
+		t.Fatalf("HubCenter lookup should choose the exact RapidOCR alias match: matched=%v dep=%#v", matched, dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesResolvesPaperPDFTranslatorAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillhub" || id != "pdf-paper-translator" || installRef != "paper_pdf_translator" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "paper_pdf_translator",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillhub",
+			HubSkillID: "paper_pdf_translator",
+			HubVersion: "v1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "pdf-translator-app",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "pdf-paper-translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "pdf-paper-translator")
+	if dep == nil || dep.InstallRefKind != "hub" || dep.InstallRefTarget != "paper_pdf_translator" || dep.InstallRefStatus != "ok" {
+		t.Fatalf("dependency should resolve PDF translator alias to paper_pdf_translator: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.InstalledName != "paper_pdf_translator" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should be installed through PDF translator alias: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("PDF translator alias install should clear blocking flags: %#v", plan)
+	}
+}
+
+func TestInstallMaclawAppDependenciesUsesSkillMarketForMarketAppDependency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "skillmarket" || id != "pdf-paper-translator" || strings.TrimSpace(installRef) == "" {
+			t.Fatalf("market app dependency should install from SkillMarket target, got source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "paper_pdf_translator",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillmarket",
+			HubSkillID: "paper_pdf_translator",
+			HubVersion: "v1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "market-pdf-translator-app",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"source": "market",
+			"dependencies": { "skills": [
+				{ "id": "pdf-paper-translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "pdf-paper-translator")
+	if dep == nil || dep.Source != "skillmarket" || strings.TrimSpace(dep.InstallRefTarget) == "" || !dep.Installed || dep.Health != "ready" {
+		t.Fatalf("market app dependency should resolve and install through SkillMarket: %#v", dep)
+	}
+}
+
+func TestInstallMixedSkillUsesHubCenterDownloadLocator(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var locatorHits, fallbackHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"urls":[],"nodes":[]}`))
+		case "/custom/skill-package":
+			locatorHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"locator_dep","name":"locator_dep","description":"downloaded from locator","version":"1.0.0","trust_level":"trusted","triggers":["locator"],"steps":[{"action":"bash","params":{"command":"echo locator"},"on_error":"stop"}]}`))
+		case "/api/v1/skills/wrong-id/download":
+			fallbackHits++
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.installMixedSkillWithIntegrityAndLocator("skillmarket", "locator_dep", "wrong-id", "/custom/skill-package", "", ""); err != nil {
+		t.Fatalf("installMixedSkillWithIntegrityAndLocator() error = %v", err)
+	}
+	if locatorHits != 1 || fallbackHits != 0 {
+		t.Fatalf("install should use download locator before fallback path, locatorHits=%d fallbackHits=%d", locatorHits, fallbackHits)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Name != "locator_dep" {
+		t.Fatalf("locator-installed skill should be registered: %#v", cfg.NLSkills)
+	}
+}
+
+func TestInstallMixedSkillAllowsConfiguredHubDownloadLocator(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var hubLocatorHits int
+	hubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hub/skill-package" {
+			http.NotFound(w, r)
+			return
+		}
+		hubLocatorHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"hub_locator_dep","name":"hub_locator_dep","description":"downloaded from hub locator","version":"1.0.0","trust_level":"trusted","triggers":["hub"],"steps":[{"action":"bash","params":{"command":"echo hub"},"on_error":"stop"}]}`))
+	}))
+	defer hubServer.Close()
+	hubCenterServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"urls":[],"nodes":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hubCenterServer.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:        hubServer.URL,
+		RemoteHubCenterURL:  hubCenterServer.URL,
+		RemoteHubCenterURLs: []string{hubCenterServer.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.installMixedSkillWithIntegrityAndLocator("skillmarket", "hub_locator_dep", "wrong-id", hubServer.URL+"/hub/skill-package", "", ""); err != nil {
+		t.Fatalf("installMixedSkillWithIntegrityAndLocator() error = %v", err)
+	}
+	if hubLocatorHits != 1 {
+		t.Fatalf("expected configured Hub download locator to be used, hits=%d", hubLocatorHits)
+	}
+}
+
+func TestInstallMixedSkillFallsBackWhenDownloadLocatorFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var locatorHits, fallbackHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"urls":[],"nodes":[]}`))
+		case "/broken/skill-package":
+			locatorHits++
+			http.NotFound(w, r)
+		case "/api/v1/skills/fallback_dep/download":
+			fallbackHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"fallback_dep","name":"fallback_dep","description":"downloaded from fallback","version":"1.0.0","trust_level":"trusted","triggers":["fallback"],"steps":[{"action":"bash","params":{"command":"echo fallback"},"on_error":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.installMixedSkillWithIntegrityAndLocator("skillmarket", "fallback_dep", "fallback_dep", server.URL+"/broken/skill-package", "", ""); err != nil {
+		t.Fatalf("installMixedSkillWithIntegrityAndLocator() error = %v", err)
+	}
+	if locatorHits != 1 || fallbackHits != 1 {
+		t.Fatalf("expected locator failure to fall back to standard skill download, locatorHits=%d fallbackHits=%d", locatorHits, fallbackHits)
+	}
+}
+
+func TestInstallMixedSkillFallsBackWhenDownloadLocatorChecksumMismatches(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	fallbackPackage := []byte(`{"id":"checksum_fallback_dep","name":"checksum_fallback_dep","description":"downloaded from verified fallback","version":"1.0.0","trust_level":"trusted","triggers":["checksum"],"steps":[{"action":"bash","params":{"command":"echo checksum"},"on_error":"stop"}]}`)
+	var locatorHits, fallbackHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"urls":[],"nodes":[]}`))
+		case "/stale/skill-package":
+			locatorHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"stale_dep","name":"stale_dep","description":"stale package","version":"0.1.0","trust_level":"trusted","triggers":["stale"],"steps":[{"action":"bash","params":{"command":"echo stale"},"on_error":"stop"}]}`))
+		case "/api/v1/skills/checksum_fallback_dep/download":
+			fallbackHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(fallbackPackage)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.installMixedSkillWithIntegrityAndLocator("skillmarket", "checksum_fallback_dep", "checksum_fallback_dep", server.URL+"/stale/skill-package", sha256HexForTest(fallbackPackage), ""); err != nil {
+		t.Fatalf("installMixedSkillWithIntegrityAndLocator() error = %v", err)
+	}
+	if locatorHits != 1 || fallbackHits != 1 {
+		t.Fatalf("expected checksum mismatch to fall back to verified standard download, locatorHits=%d fallbackHits=%d", locatorHits, fallbackHits)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Name != "checksum_fallback_dep" {
+		t.Fatalf("fallback skill should be registered after checksum mismatch: %#v", cfg.NLSkills)
+	}
+}
+
+func TestPlanMaclawAppInstallKeepsExplicitHubDependencyForMarketApp(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "market-with-hub-runtime",
+			"name": "Market With Hub Runtime",
+			"kind": "tool_app",
+			"source": "market",
+			"dependencies": { "skills": [
+				{ "id": "legacy-hub-runtime", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "legacy-hub-runtime")
+	if dep == nil || dep.Source != "hub" {
+		t.Fatalf("explicit non-alias Hub dependency should stay Hub even for market app: %#v", dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesInfersEnterpriseHubRefFromVersionKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		if source != "enterprise_hub" || id != "paper_pdf_translator" || installRef != "paper_pdf_translator" {
+			t.Fatalf("unexpected dependency install call: source=%s id=%s installRef=%s", source, id, installRef)
+		}
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "paper_pdf_translator",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "enterprise_hub",
+			HubSkillID: "paper_pdf_translator",
+			HubVersion: "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "paper_pdf_translator",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"binding": {
+				"appSkill": {
+					"id": "paper_pdf_translator",
+					"version": "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151"
+				}
+			},
+			"dependencies": { "skills": [
+				{ "id": "paper_pdf_translator", "version": "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151", "kind": "app_skill", "required": true, "source": "local" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || dep.Source != "enterprise_hub" || dep.InstallRefKind != "enterprise_hub" || dep.InstallRefTarget != "paper_pdf_translator" || dep.InstallRefVersion != "d1cb0335a151" {
+		t.Fatalf("dependency should infer enterprise Hub install ref from version key: %#v", dep)
+	}
+	if dep == nil || !dep.Installed || dep.Action != "installed" || dep.Health != "ready" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should install through inferred enterprise Hub ref: %#v", dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesFallsBackToBundledSkill(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	sourceDir := filepath.Join(t.TempDir(), "bundled_dep")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sourceDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "skill.yaml"), []byte("name: bundled_dep\ndescription: bundled fallback\nsteps:\n  - action: bash\n    params:\n      command: echo bundled\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "SKILL.md"), []byte("# bundled_dep\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile SKILL.md: %v", err)
+	}
+	dep := maclawAppInstallPlanDependency{
+		ID:               "bundled_dep",
+		Version:          "1.0.0",
+		Kind:             "runtime_skill",
+		Required:         true,
+		Source:           "hub",
+		CanonicalID:      "bundled_dep",
+		InstallRefTarget: "bundled_dep",
+		AppIDs:           []string{"bundle-app"},
+	}
+	bundled, err := maclawAppBundleInstalledSkill(NLSkillDefinition{
+		Name:       "bundled_dep",
+		SkillDir:   sourceDir,
+		Source:     "local",
+		HubSkillID: "bundled_dep",
+		HubVersion: "1.0.0",
+	}, dep)
+	if err != nil {
+		t.Fatalf("maclawAppBundleInstalledSkill() error = %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		return fmt.Errorf("remote skill unavailable")
+	}
+	pkgDoc := map[string]any{
+		"schema":        "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": map[string]any{
+			"id":   "bundle-app",
+			"name": "Bundled App",
+			"kind": "tool_app",
+			"dependencies": map[string]any{"skills": []any{map[string]any{
+				"id":          "bundled_dep",
+				"version":     "1.0.0",
+				"kind":        "runtime_skill",
+				"required":    true,
+				"source":      "hub",
+				"install_ref": "bundled_dep",
+			}}},
+		},
+		"bundled_dependencies": maclawAppBundledDependencies{
+			Schema: "maclaw.app.bundled_dependencies.v1",
+			Skills: []maclawAppBundledSkillEntry{bundled},
+		},
+	}
+	pkgBytes, err := json.Marshal(pkgDoc)
+	if err != nil {
+		t.Fatalf("Marshal package: %v", err)
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(string(pkgBytes))
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	installed := maclawAppPlanDepForTest(plan, "bundled_dep")
+	if installed == nil || !installed.Installed || installed.Health != "ready" || installed.InstalledName != "bundled_dep" {
+		t.Fatalf("dependency should install from bundled fallback after remote failure: %#v", installed)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Name != "bundled_dep" || cfg.NLSkills[0].Source != "hub" || cfg.NLSkills[0].HubSkillID != "bundled_dep" {
+		t.Fatalf("bundled skill should be registered with stable identity metadata: %#v", cfg.NLSkills)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".maclaw", "data", "skills", "bundled_dep", "skill.yaml")); err != nil {
+		t.Fatalf("bundled skill files should be installed: %v", err)
+	}
+}
+
+func TestMaclawAppBundleInstalledSkillChecksumIsDeterministic(t *testing.T) {
+	makeSkill := func(files []string) string {
+		dir := t.TempDir()
+		for _, rel := range files {
+			path := filepath.Join(dir, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("MkdirAll %s: %v", rel, err)
+			}
+			if err := os.WriteFile(path, []byte("content:"+rel+"\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile %s: %v", rel, err)
+			}
+		}
+		return dir
+	}
+	dep := maclawAppInstallPlanDependency{ID: "stable_dep", Version: "1.0.0", InstalledVersion: "1.0.0"}
+	first, err := maclawAppBundleInstalledSkill(NLSkillDefinition{Name: "stable_dep", SkillDir: makeSkill([]string{"skill.yaml", "nested/tool.py", "SKILL.md"})}, dep)
+	if err != nil {
+		t.Fatalf("maclawAppBundleInstalledSkill(first) error = %v", err)
+	}
+	second, err := maclawAppBundleInstalledSkill(NLSkillDefinition{Name: "stable_dep", SkillDir: makeSkill([]string{"nested/tool.py", "SKILL.md", "skill.yaml"})}, dep)
+	if err != nil {
+		t.Fatalf("maclawAppBundleInstalledSkill(second) error = %v", err)
+	}
+	if first.SHA256 != second.SHA256 {
+		t.Fatalf("bundle checksum should not depend on file creation order: first=%s second=%s", first.SHA256, second.SHA256)
+	}
+}
+
+func TestInstallMaclawAppDependenciesUpdatesInstalledHubSkillWhenRemoteIsNewer(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var metadataHits, downloadHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"urls":[],"nodes":[]}`))
+		case "/api/v1/skills/remote_dep":
+			metadataHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"remote_dep","name":"remote_dep","version":"2.0.0","trust_level":"trusted"}`))
+		case "/api/v1/skills/remote_dep/download":
+			downloadHits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"remote_dep","name":"remote_dep","description":"new remote dep","version":"2.0.0","trust_level":"trusted","triggers":["remote"],"steps":[{"action":"bash","params":{"command":"echo remote"},"on_error":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "remote_dep")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# remote_dep\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "stale.txt"), []byte("old file should be removed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale.txt: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+		NLSkills: []corelib.NLSkillEntry{{
+			Name:       "remote_dep",
+			SkillDir:   skillDir,
+			Steps:      []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo old"}}},
+			Status:     "active",
+			Source:     "hub",
+			HubSkillID: "remote_dep",
+			HubVersion: "1.0.0",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	packageJSON := `{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "remote-update-app",
+			"name": "Remote Update App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "remote_dep", "version": "2.0.0", "kind": "runtime_skill", "required": true, "source": "hub", "install_ref": "remote_dep" }
+			] }
+		}
+	}`
+	plan, err := app.InstallMaclawAppDependencies(packageJSON)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "remote_dep")
+	if dep == nil || !dep.Installed || dep.Health != "ready" || dep.InstalledVersion != "2.0.0" || dep.VersionStatus != "matched" {
+		t.Fatalf("dependency should update installed Hub skill to remote version: metadata=%d download=%d dep=%#v", metadataHits, downloadHits, dep)
+	}
+	if downloadHits == 0 {
+		t.Fatalf("expected update download call, metadata=%d download=%d", metadataHits, downloadHits)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].HubVersion != "2.0.0" || cfg.NLSkills[0].Description != "new remote dep" {
+		t.Fatalf("installed skill should be updated from remote: %#v", cfg.NLSkills)
+	}
+	if cfg.NLSkills[0].SkillDir != skillDir {
+		t.Fatalf("updated skill should stay registered at final target dir: got %q want %q", cfg.NLSkills[0].SkillDir, skillDir)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("remote update should replace old skill dir and remove stale files, stat err=%v", err)
+	}
+	if _, err := readSkillScanCache(skillDir, "remote_dep"); err != nil {
+		t.Fatalf("remote update should persist scan cache in final skill dir: %v", err)
+	}
+}
+
 func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalDependencyTarget(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -6194,6 +7069,88 @@ func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
 	}
 	if len(deps[0].Aliases) != 2 || deps[0].Aliases[0] != "ApprovalFlow" || deps[0].Aliases[1] != "approval-flow-local" {
 		t.Fatalf("resolved dependency should apply aliases: %#v", deps[0])
+	}
+}
+
+func TestMaclawAppSourceVersionKeyDependenciesSerializeInstallRefs(t *testing.T) {
+	deps := []maclawAppInstallPlanDependency{
+		{
+			ID:       "paper_pdf_translator",
+			Version:  "enterprise_hub:skill:paper_pdf_translator@d1cb0335a151",
+			Kind:     "app_skill",
+			Required: true,
+			Source:   "local",
+		},
+		{
+			ID:       "hubcenter-paper",
+			Version:  "hubcenter:skill:hubcenter-paper@v2",
+			Kind:     "runtime_skill",
+			Required: true,
+			Source:   "local",
+		},
+	}
+	maclawAppApplySourceVersionKeyDependencyRefs(deps)
+	serialized := maclawAppSerializableResolvedDeps(deps)
+	if len(serialized) != 2 {
+		t.Fatalf("source version keys should serialize resolved dependencies: %#v", serialized)
+	}
+	if serialized[0]["source"] != "enterprise_hub" || serialized[0]["install_ref"] != "enterprise_hub://capabilities/paper_pdf_translator@d1cb0335a151" || serialized[0]["canonical_id"] != "paper_pdf_translator" {
+		t.Fatalf("enterprise dependency should carry installable resolved ref: %#v", serialized[0])
+	}
+	if serialized[1]["source"] != "skillmarket" || serialized[1]["install_ref"] != "skillmarket://skills/hubcenter-paper@v2" || serialized[1]["canonical_id"] != "hubcenter-paper" {
+		t.Fatalf("hubcenter dependency should carry SkillMarket resolved ref: %#v", serialized[1])
+	}
+}
+
+func TestMaclawAppHubCenterDependencySourceUsesSkillMarketInstaller(t *testing.T) {
+	source, ok := maclawAppInstallSkillSource("hubcenter")
+	if !ok || source != "skillmarket" {
+		t.Fatalf("hubcenter dependency source should use SkillMarket installer, got source=%q ok=%v", source, ok)
+	}
+	source, ok = maclawAppDependencyInstallerSource(maclawAppInstallPlanDependency{ID: "rapidocr", Source: "hub", InstallRefKind: "skillmarket"})
+	if !ok || source != "skillmarket" {
+		t.Fatalf("SkillMarket install_ref should override declared hub source for installer, got source=%q ok=%v", source, ok)
+	}
+	if stage := maclawAppDependencyInstallStage("hubcenter"); stage != "skillmarket_download" {
+		t.Fatalf("hubcenter dependency install stage should be SkillMarket, got %q", stage)
+	}
+	dep := maclawAppInstallPlanDependency{
+		ID:         "hubcenter-paper",
+		Source:     "hubcenter",
+		InstallRef: "hubcenter://skills/hubcenter-paper@v2",
+	}
+	kind, target, version, status, message := maclawAppParseDependencyInstallRef(dep)
+	if kind != "hubcenter" || target != "hubcenter-paper" || version != "v2" || status != "ok" {
+		t.Fatalf("hubcenter install_ref should resolve, got kind=%q target=%q version=%q status=%q message=%q", kind, target, version, status, message)
+	}
+	dep.InstallRefKind = kind
+	if !maclawAppDependencySupportsPublicMarketPreflight(dep) {
+		t.Fatalf("hubcenter dependency should use public SkillMarket preflight: %#v", dep)
+	}
+	if !maclawAppDependencySupportsPublicMarketPreflight(maclawAppInstallPlanDependency{ID: "hubcenter-paper", InstallRefKind: "hubcenter"}) {
+		t.Fatalf("hubcenter install_ref kind should use public SkillMarket preflight")
+	}
+}
+
+func TestMaclawAppSkillMarketPreflightPersistsInstallRef(t *testing.T) {
+	dep := maclawAppInstallPlanDependency{
+		ID:               "paper_pdf_translator",
+		Kind:             "runtime_skill",
+		Required:         true,
+		Source:           "skillmarket",
+		InstallRefKind:   "skillmarket",
+		InstallRefTarget: "paper_pdf_translator",
+		InstallRefStatus: "ok",
+		Version:          "1.0.0",
+	}
+	maclawAppApplyPublicSkillMarketPreflight(&dep, []SkillSearchResult{{
+		ID:         "8d597bd7-c33f-44e8-bd70-21d28805770b",
+		Name:       "paper_pdf_translator",
+		InstallRef: "8d597bd7-c33f-44e8-bd70-21d28805770b",
+		Version:    "1.0.0",
+	}})
+	if dep.PreflightStatus != "ready" || dep.InstallRef != "8d597bd7-c33f-44e8-bd70-21d28805770b" || dep.InstallRefTarget != "8d597bd7-c33f-44e8-bd70-21d28805770b" {
+		t.Fatalf("SkillMarket preflight should persist concrete install_ref for download: %#v", dep)
 	}
 }
 
@@ -7163,11 +8120,14 @@ func TestPlanMaclawAppInstallHonorsBindingSkillSourcesAndSnakeCaseAppSkill(t *te
 	if err != nil {
 		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
 	}
-	if dep := maclawAppPlanDepForTest(plan, "doc-archive"); dep == nil || dep.Source != "market" || dep.Version != "1.0.0" || dep.Kind != "runtime_skill" || !dep.Required {
+	if dep := maclawAppPlanDepForTest(plan, "doc-archive"); dep == nil || dep.Source != "skillmarket" || dep.Version != "1.0.0" || dep.Kind != "runtime_skill" || !dep.Required {
 		t.Fatalf("binding.skill source/version should be preserved: %#v", dep)
 	}
 	if dep := maclawAppPlanDepForTest(plan, "source-aware-super-skill"); dep == nil || dep.Source != "local" || dep.Version != "2.0.0" || dep.Kind != "app_skill" || !dep.Required {
 		t.Fatalf("binding.app_skill should be a source-aware app dependency: %#v", dep)
+	}
+	if maclawAppDependencySupportsHubCenterLookup(maclawAppInstallPlanDependency{ID: "source-aware-super-skill", Source: "local", InstallRefStatus: "not_required"}) {
+		t.Fatalf("explicit local dependency should not be rewritten through HubCenter lookup")
 	}
 }
 

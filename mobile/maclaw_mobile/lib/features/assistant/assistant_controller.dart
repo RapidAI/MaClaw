@@ -44,9 +44,9 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       return;
     }
     final session = ref.read(sessionControllerProvider).valueOrNull;
-    if (session?.bootstrap?.features.search == false) {
+    if (session?.bootstrap?.features.assistant == false) {
       state = AsyncError(
-        StateError('当前 Hub 未启用助手联网能力，仍可使用语音输入、图片/文件导入和文档草稿。'),
+        StateError('当前 Hub 未启用 AI 助手服务能力，仍可使用语音输入、图片/文件导入和文档草稿。'),
         StackTrace.current,
       );
       ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);

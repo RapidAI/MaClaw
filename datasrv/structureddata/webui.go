@@ -156,6 +156,27 @@ const webConsoleHTML = `<!doctype html>
     .overview-card h3 { margin: 0; font-size: 15px; }
     .overview-card p { margin: 0; color: var(--muted); }
     .overview-card .row { margin-top: 2px; }
+    .quickstart-entry { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid #bfe2dc; border-radius: 8px; background: #f7fcf9; }
+    .quickstart-entry strong { display: block; margin-bottom: 2px; font-size: 14px; }
+    .quickstart-entry p { margin: 0; color: var(--muted); font-size: 12px; }
+    .quickstart-entry svg { width: 44px; height: 44px; padding: 8px; border-radius: 8px; background: #fff; color: var(--brand-2); border: 1px solid #bfe2dc; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .quickstart-guide { display: grid; gap: 12px; }
+    .quickstart-hero { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: center; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .quickstart-hero h2 { margin: 0 0 8px; font-size: 20px; }
+    .quickstart-hero p { margin: 0; color: var(--muted); max-width: 72ch; }
+    .quickstart-map { min-height: 116px; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: 8px; background: linear-gradient(180deg, #fbfcfe, #f4f8fb); }
+    .quickstart-map svg { width: min(100%, 260px); height: auto; display: block; }
+    .quickstart-flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .quickstart-step { display: grid; gap: 8px; align-content: start; min-height: 210px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .quickstart-step span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 999px; background: var(--brand-soft); color: var(--brand-2); font-weight: 760; }
+    .quickstart-step strong, .quickstart-card h3 { color: var(--text); font-size: 14px; line-height: 1.3; }
+    .quickstart-step p, .quickstart-card p { margin: 0; color: var(--muted); font-size: 12px; }
+    .quickstart-step button, .quickstart-card button { justify-self: start; min-height: 34px; margin-top: auto; white-space: normal; text-align: left; }
+    .quickstart-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .quickstart-card { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 7px 10px; align-content: start; min-height: 178px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .quickstart-card h3, .quickstart-card p, .quickstart-card button { grid-column: 2; }
+    .quickstart-icon { width: 38px; height: 38px; grid-row: 1 / span 3; display: grid; place-items: center; border: 1px solid #bfe2dc; border-radius: 8px; background: var(--brand-soft); color: var(--brand-2); }
+    .quickstart-icon svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .health-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
     .health-item { border: 1px solid var(--line-2); border-radius: 8px; background: #fff; padding: 10px 12px; }
     .health-label { color: var(--muted); font-size: 12px; }
@@ -262,6 +283,13 @@ const webConsoleHTML = `<!doctype html>
     .dataset-workbench { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, .82fr); gap: 12px; align-items: start; }
     .dataset-create-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
     .dataset-create-panel h3 { margin: 0; }
+    .record-editor { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
+    .record-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .record-editor-header h3 { margin: 0; font-size: 14px; }
+    .record-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .record-field-grid input { min-height: 36px; }
+    .record-json-toggle { align-items: start; }
+    .record-json-toggle textarea { min-height: 160px; }
     .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
@@ -359,9 +387,14 @@ const webConsoleHTML = `<!doctype html>
       .domain-strip { grid-template-columns: 1fr 1fr; }
       .capability-grid { grid-template-columns: 1fr 1fr; }
       .intent-row, .intent-card { grid-template-columns: 1fr; }
+      .quickstart-entry { grid-template-columns: 44px minmax(0, 1fr); }
+      .quickstart-entry button { grid-column: 2; justify-self: start; }
       .readiness-grid { grid-template-columns: 1fr 1fr; }
       .activity-row { grid-template-columns: 1fr; gap: 3px; }
       .overview-grid { grid-template-columns: 1fr; }
+      .quickstart-hero { grid-template-columns: 1fr; }
+      .quickstart-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quickstart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .dataset-list { max-height: 280px; }
     }
     @media (max-width: 640px) {
@@ -385,6 +418,11 @@ const webConsoleHTML = `<!doctype html>
       .toolbar-cluster-actions { display: grid; grid-template-columns: 1fr; }
       .admin-panel-header { align-items: flex-start; flex-direction: column; }
       .summary-bar, .health-grid, .risk-grid, .queue-grid, .integration-grid, .coverage-grid, .domain-strip, .capability-grid, .readiness-grid, .access-summary-grid, .evidence-summary-grid { grid-template-columns: 1fr; }
+      .quickstart-entry { grid-template-columns: 1fr; }
+      .quickstart-entry button { grid-column: auto; width: 100%; }
+      .quickstart-flow, .quickstart-grid { grid-template-columns: 1fr; }
+      .quickstart-card { grid-template-columns: 34px minmax(0, 1fr); }
+      .quickstart-icon { width: 34px; height: 34px; }
       .workspace-body { padding: 14px; }
       .checklist-item { grid-template-columns: 26px minmax(0, 1fr); }
       .checklist-item .row { grid-column: 1 / -1; }
@@ -637,8 +675,9 @@ const webConsoleHTML = `<!doctype html>
           <div class="dataset-list" id="datasetList" data-testid="dataset-list"></div>
         </div>
         <div class="tablist" id="tabs" role="tablist" aria-label="Administration modules">
-          <div class="nav-group" role="presentation" data-count="7">Operations</div>
+          <div class="nav-group" role="presentation" data-count="8">Operations</div>
           <button class="tab active" data-tab="overview" data-testid="tab-overview">Overview</button>
+          <button class="tab" data-tab="quickstart" data-testid="tab-quickstart">Quick Start Manual</button>
           <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
           <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
           <button class="tab" data-tab="domains" data-testid="tab-domains">Domains</button>
@@ -684,6 +723,14 @@ const webConsoleHTML = `<!doctype html>
       </div>
       <div class="status-history hide" id="statusHistory" aria-label="Recent status"></div>
       <div id="overview" class="tab-panel stack">
+        <section class="quickstart-entry" data-testid="quickstart-entry">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 7h18v18H7z"/><path d="M11 13h10M11 18h7M22 7v18"/><path d="M7 11H4m3 6H4m3 6H4"/></svg>
+          <div>
+            <strong>maclaw data srv 快速操作手册 / Quick Start Manual</strong>
+            <p>先看概念、步骤和安全检查，再进入数据集、记录、业务动作、集成与治理模块。 Start here for concepts, first steps, and safe operating order.</p>
+          </div>
+          <button class="primary quick-action" data-target-tab="quickstart" data-testid="open-quickstart-manual">打开手册 / Open manual</button>
+        </section>
         <section class="checklist" aria-label="Setup checklist">
           <div class="checklist-head">
             <div>
@@ -722,9 +769,9 @@ const webConsoleHTML = `<!doctype html>
           <p>Business-first operations exposed to MaClaw agents and human operators.</p>
           <div class="capability-grid" id="overviewCapabilities" data-testid="overview-capabilities"></div>
           <div class="row">
-            <button class="primary quick-action" data-target-tab="actions">Run actions</button>
-            <button class="quick-action" data-target-tab="views">Query views</button>
-            <button class="quick-action" data-target-tab="reports">Run reports</button>
+            <button class="primary quick-action" data-target-tab="actions">Open actions</button>
+            <button class="quick-action" data-target-tab="views">Open views</button>
+            <button class="quick-action" data-target-tab="reports">Open reports</button>
           </div>
         </section>
         <section class="overview-card">
@@ -768,7 +815,7 @@ const webConsoleHTML = `<!doctype html>
           <p>Managed API key risk summary from the authorization review API.</p>
           <div class="risk-grid" id="overviewAccessRisk" data-testid="overview-access-risk"></div>
           <div class="row">
-            <button class="primary quick-action" data-target-tab="access">Review access</button>
+            <button class="primary quick-action" data-target-tab="access">Open access</button>
             <button id="refreshOverviewAccessRisk" data-testid="refresh-overview-access-risk">Refresh risk</button>
           </div>
         </section>
@@ -778,8 +825,8 @@ const webConsoleHTML = `<!doctype html>
           <div class="readiness-grid" id="overviewReadiness" data-testid="overview-readiness"></div>
           <div class="recommendation-list" id="overviewRecommendations" data-testid="overview-recommendations"></div>
           <div class="row">
-            <button class="primary quick-action" data-target-tab="backups">Create backup</button>
-            <button class="quick-action" data-target-tab="quality">Check quality</button>
+            <button class="primary quick-action" data-target-tab="backups">Open backups</button>
+            <button class="quick-action" data-target-tab="quality">Open quality</button>
             <button class="quick-action" data-target-tab="audit">Open audit</button>
           </div>
         </section>
@@ -796,35 +843,175 @@ const webConsoleHTML = `<!doctype html>
         <div class="overview-grid">
           <section class="overview-card">
             <h3>Daily Operations</h3>
-            <p>Search records, run business actions, and handle pending MIS work from one place.</p>
+            <p>Open record CRUD, governed business actions, and pending MIS work from one place.</p>
             <div class="row">
-              <button class="primary quick-action" data-target-tab="records">Query records</button>
-              <button class="quick-action" data-target-tab="actions">Run actions</button>
+              <button class="primary quick-action" data-target-tab="records">Open records</button>
+              <button class="quick-action" data-target-tab="actions">Open actions</button>
               <button class="quick-action" data-target-tab="inbox">Open inbox</button>
             </div>
           </section>
           <section class="overview-card">
             <h3>Analytics</h3>
-            <p>Use reports, dashboards, and curated views before asking for raw dataset access.</p>
+            <p>Use reports, dashboards, and curated views for routine analysis; reserve raw dataset access for admin and test workflows.</p>
             <div class="row">
-              <button class="primary quick-action" data-target-tab="reports">Run reports</button>
+              <button class="primary quick-action" data-target-tab="reports">Open reports</button>
               <button class="quick-action" data-target-tab="dashboards">Open dashboards</button>
-              <button class="quick-action" data-target-tab="views">Query views</button>
+              <button class="quick-action" data-target-tab="views">Open views</button>
             </div>
           </section>
           <section class="overview-card">
             <h3>Governance</h3>
-            <p>Review access, inspect audit trails, run quality checks, and create backups before risky changes.</p>
+            <p>Open access review, audit trails, quality checks, and backups before risky changes.</p>
             <div class="row">
-              <button class="primary quick-action" data-target-tab="access">Review access</button>
-              <button class="quick-action" data-target-tab="quality">Check quality</button>
-              <button class="quick-action" data-target-tab="backups">Create backup</button>
+              <button class="primary quick-action" data-target-tab="access">Open access</button>
+              <button class="quick-action" data-target-tab="quality">Open quality</button>
+              <button class="quick-action" data-target-tab="backups">Open backups</button>
             </div>
           </section>
         </div>
       </div>
 
+      <div id="quickstart" class="tab-panel stack hide" data-testid="quickstart-panel">
+        <section class="quickstart-guide" aria-label="MaClawDataSrv quick start manual">
+          <div class="quickstart-hero">
+            <div>
+              <h2>maclaw data srv 快速操作手册 / Quick Start Manual</h2>
+              <p>面向管理员的第一屏指南：先理解核心概念，再按安全顺序完成数据集、记录、业务动作、集成和治理检查。 For administrators: understand the core concepts first, then operate datasets, records, business actions, integrations, and governance checks in a controlled order.</p>
+            </div>
+            <div class="quickstart-map" aria-hidden="true">
+              <svg viewBox="0 0 260 116" role="img" aria-label="Data service flow">
+                <defs>
+                  <linearGradient id="quickstartLine" x1="0" x2="1" y1="0" y2="1">
+                    <stop offset="0" stop-color="#0f766e"/>
+                    <stop offset="1" stop-color="#4f46e5"/>
+                  </linearGradient>
+                </defs>
+                <path d="M42 58h176" fill="none" stroke="url(#quickstartLine)" stroke-width="4" stroke-linecap="round"/>
+                <circle cx="42" cy="58" r="24" fill="#e6f5f2" stroke="#0f766e" stroke-width="2"/>
+                <path d="M30 49h24v22H30zM35 43h14v6H35z" fill="none" stroke="#0b5f59" stroke-width="3" stroke-linejoin="round"/>
+                <circle cx="130" cy="58" r="24" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+                <path d="M118 49h24M118 58h24M118 67h15" fill="none" stroke="#3730a3" stroke-width="3" stroke-linecap="round"/>
+                <circle cx="218" cy="58" r="24" fill="#f7fcf9" stroke="#047857" stroke-width="2"/>
+                <path d="M207 59l8 8 16-18" fill="none" stroke="#047857" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="quickstart-flow" aria-label="Quick start steps">
+            <div class="quickstart-step">
+              <span>1</span>
+              <strong>看总览 / Check Overview</strong>
+              <p>确认服务在线、模板和数据集状态，再决定下一步。 Confirm health, templates, and datasets before changing data.</p>
+              <button class="quick-action" data-target-tab="overview">打开总览 / Open overview</button>
+            </div>
+            <div class="quickstart-step">
+              <span>2</span>
+              <strong>建数据集 / Prepare Datasets</strong>
+              <p>用模板 Bootstrap 业务域，或创建自定义数据集。 Bootstrap business domains from templates or create a custom dataset.</p>
+              <button class="quick-action" data-target-tab="dataset">打开数据集 / Open dataset</button>
+            </div>
+            <div class="quickstart-step">
+              <span>3</span>
+              <strong>记录管理 / Records</strong>
+              <p>选择数据集后新增、编辑、删除、查询、导出和检查业务记录。 Select a dataset, then add, edit, delete, query, export, and inspect records.</p>
+              <button class="quick-action" data-target-tab="records">打开记录 / Open records</button>
+            </div>
+            <div class="quickstart-step">
+              <span>4</span>
+              <strong>业务动作 / Business Actions</strong>
+              <p>生产写入优先使用业务动作和规则预检；原始记录编辑仅用于受控管理和测试。 Prefer business actions and rule checks for production writes; use raw record editing only for controlled admin and test changes.</p>
+              <button class="quick-action" data-target-tab="actions">打开业务动作 / Open actions</button>
+            </div>
+            <div class="quickstart-step">
+              <span>5</span>
+              <strong>做治理 / Govern Safely</strong>
+              <p>高风险操作前检查质量、审计、访问权限并创建备份。 Before risky work, check quality, audit, access, and backups.</p>
+              <button class="quick-action" data-target-tab="access">打开访问控制 / Open access</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="quickstart-grid" aria-label="Core concepts">
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 8c0-2 4-4 9-4s9 2 9 4v16c0 2-4 4-9 4s-9-2-9-4z"/><path d="M7 8c0 2 4 4 9 4s9-2 9-4M7 16c0 2 4 4 9 4s9-2 9-4"/></svg></div>
+            <h3>数据集 / Dataset</h3>
+            <p>一类业务对象的受控存储，例如客户、订单、费用或库存。 A controlled store for one business object type.</p>
+            <button class="quick-action" data-target-tab="dataset">管理数据集 / Manage dataset</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 5h12l4 4v18H8z"/><path d="M20 5v5h5M12 15h10M12 20h8"/></svg></div>
+            <h3>记录 / Record</h3>
+            <p>数据集中的一条业务事实，可查询、导入、审批、恢复和关联。 A business fact inside a dataset.</p>
+            <button class="quick-action" data-target-tab="records">打开记录 / Open records</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M5 24V10l11-6 11 6v14"/><path d="M10 24v-8h12v8M13 12h6"/></svg></div>
+            <h3>业务域 / Business Domain</h3>
+            <p>销售、财务、HR、法务、采购等能力分组。 A business capability group such as sales, finance, HR, legal, or procurement.</p>
+            <button class="quick-action" data-target-tab="domains">打开业务域 / Open domains</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 17h10M17 17l-4-4M17 17l-4 4"/><path d="M17 8h8v18h-8zM7 8h6"/></svg></div>
+            <h3>业务动作 / Business Action</h3>
+            <p>面向业务的安全操作入口，通常带规则检查和幂等键。 A safe operation entry with rule checks and idempotency.</p>
+            <button class="quick-action" data-target-tab="actions">打开业务动作 / Open actions</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M5 9h22v14H5z"/><path d="M9 19l4-4 4 3 5-6"/></svg></div>
+            <h3>视图/报表/仪表盘 / Views, Reports, Dashboards</h3>
+            <p>优先用受控分析入口看数据，减少原始数据访问。 Prefer curated analytics over raw dataset access.</p>
+            <button class="quick-action" data-target-tab="views">打开视图 / Open views</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 9h20v14H6z"/><path d="M6 17h6l3 4h2l3-4h6"/></svg></div>
+            <h3>收件箱 / Inbox</h3>
+            <p>集中处理审批、失败任务、质量问题和待办事项。 Central place for approvals, failures, quality issues, and pending work.</p>
+            <button class="quick-action" data-target-tab="inbox">打开收件箱 / Open inbox</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M10 16H5M27 16h-5M13 8h6v16h-6z"/><path d="M10 10l3 3M10 22l3-3M22 10l-3 3M22 22l-3-3"/></svg></div>
+            <h3>连接器 / Connector</h3>
+            <p>连接 CRM、ERP、HR、财务或库存系统，并检查同步健康。 Connect CRM, ERP, HR, finance, or inventory systems.</p>
+            <button class="quick-action" data-target-tab="connectors">打开连接器 / Open connectors</button>
+          </article>
+          <article class="quickstart-card">
+            <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 4l10 4v7c0 6-4 10-10 13C10 25 6 21 6 15V8z"/><path d="M12 16l3 3 6-7"/></svg></div>
+            <h3>访问/审计/备份 / Access, Audit, Backup</h3>
+            <p>真实业务数据上线前必须配置权限、保留证据并准备恢复点。 Configure permissions, evidence, and recovery before production use.</p>
+            <button class="quick-action" data-target-tab="backups">打开备份 / Open backups</button>
+          </article>
+        </section>
+      </div>
+
       <div id="records" class="tab-panel stack hide">
+        <section class="record-editor" aria-label="Record table editor">
+          <div class="record-editor-header">
+            <h3>Record table editor</h3>
+            <span class="status" id="recordEditorMode">New record</span>
+          </div>
+          <div class="grid-2">
+            <label class="label">Record ID<input id="recordId" data-testid="record-id" placeholder="Leave blank to create"></label>
+            <label class="label">Title<input id="recordTitle" data-testid="record-title"></label>
+          </div>
+          <label class="label">Tags, comma separated<input id="recordTags" data-testid="record-tags" placeholder="q1, imported"></label>
+          <div id="recordFieldGrid" class="record-field-grid" data-testid="record-field-grid"></div>
+          <label class="label record-json-toggle">Data JSON<textarea id="recordData" data-testid="record-data" spellcheck="false">{
+  "customer": "Acme",
+  "amount": 8800
+}</textarea></label>
+          <div class="row">
+            <button id="syncRecordFields" data-testid="sync-record-fields">Sync table from JSON</button>
+            <button id="validateRecord" data-testid="validate-record">Validate</button>
+            <button class="primary" id="saveRecord" data-testid="save-record">Save record</button>
+            <button id="newRecord" data-testid="new-record">New record</button>
+            <button id="loadRecordRevisions" data-testid="load-record-revisions">Load revisions</button>
+            <button id="loadRelatedRecords" data-testid="load-related-records">Load related</button>
+            <button id="loadRecordTimeline" data-testid="load-record-timeline">Load timeline</button>
+            <button id="restoreRecord" data-testid="restore-record">Restore deleted</button>
+            <button class="danger" id="deleteRecord" data-testid="delete-record">Delete record</button>
+          </div>
+          <div id="revisionTable" class="table-wrap" data-testid="revision-table"></div>
+        </section>
         <div class="grid-3">
           <label class="label">Keyword<input id="queryText" data-testid="query-text" placeholder="customer, amount, name"></label>
           <label class="label">Tag<input id="queryTag" data-testid="query-tag" placeholder="q1"></label>
@@ -1102,7 +1289,7 @@ const webConsoleHTML = `<!doctype html>
         <section class="dataset-workbench" aria-label="Dataset creation workbench">
           <div class="dataset-create-panel">
             <div class="row section-title-row">
-              <h3>Create from Template</h3>
+              <h3>Create Dataset from Template</h3>
             </div>
             <div class="grid-3">
               <label class="label">Template<select id="templateSelect" data-testid="template-select"></select></label>
@@ -1110,7 +1297,7 @@ const webConsoleHTML = `<!doctype html>
               <label class="label">Bootstrap domains<input id="bootstrapDomains" data-testid="bootstrap-domains" placeholder="optional, e.g. sales,finance"></label>
             </div>
             <div class="action-toolbar">
-              <button class="primary" id="createFromTemplate" data-testid="create-from-template">Create template</button>
+              <button class="primary" id="createFromTemplate" data-testid="create-from-template">Create dataset from template</button>
               <button id="loadMoreTemplates" data-testid="load-more-templates">Load more templates</button>
               <button id="previewBootstrapTemplates" data-testid="preview-bootstrap-templates">Preview Bootstrap</button>
               <button id="bootstrapTemplates" data-testid="bootstrap-templates">Bootstrap MIS</button>
@@ -1180,26 +1367,12 @@ const webConsoleHTML = `<!doctype html>
           <button class="sub-tab" data-subtab="write-import">Import</button>
         </div>
         <div class="sub-panel active" id="write-record">
-          <div class="grid-2">
-            <label class="label">Record ID<input id="recordId" data-testid="record-id" placeholder="Leave blank to create"></label>
-            <label class="label">Title<input id="recordTitle" data-testid="record-title"></label>
+          <div class="empty">
+            Record CRUD is now in the Records page.
+            <div class="row" style="justify-content:center; margin-top:10px;">
+              <button class="primary quick-action" data-target-tab="records">Open record editor</button>
+            </div>
           </div>
-          <label class="label">Tags, comma separated<input id="recordTags" data-testid="record-tags" placeholder="q1, imported"></label>
-          <label class="label">Data JSON<textarea id="recordData" data-testid="record-data" spellcheck="false">{
-  "customer": "Acme",
-  "amount": 8800
-}</textarea></label>
-          <div class="row">
-            <button id="validateRecord" data-testid="validate-record">Validate</button>
-            <button class="primary" id="saveRecord" data-testid="save-record">Save record</button>
-            <button id="newRecord" data-testid="new-record">New record</button>
-            <button id="loadRecordRevisions" data-testid="load-record-revisions">Load revisions</button>
-            <button id="loadRelatedRecords" data-testid="load-related-records">Load related</button>
-            <button id="loadRecordTimeline" data-testid="load-record-timeline">Load timeline</button>
-            <button id="restoreRecord" data-testid="restore-record">Restore deleted</button>
-            <button class="danger" id="deleteRecord" data-testid="delete-record">Delete record</button>
-          </div>
-          <div id="revisionTable" class="table-wrap" data-testid="revision-table"></div>
         </div>
         <div class="sub-panel" id="write-approvals">
           <label class="label">Approval JSON<textarea id="approvalJson" data-testid="approval-json" spellcheck="false">{
@@ -1702,17 +1875,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     state.connectorNextBefore = "";
     state.connectorNextBeforeID = "";
     state.connectorHasMore = false;
+    state.recordFields = [];
+    state.recordFieldsDataset = "";
+    state.recordEditorRecordID = "";
     const storageKey = "maclaw-data-console";
     const i18nSource = new WeakMap();
     let i18nApplying = false;
     let i18nMutationSuppressed = false;
     const moduleMeta = {
       overview: ["Operations", "Overview", "Start from common MIS workflows and service health."],
-      records: ["Operations", "Records", "Search, export, and inspect structured business records."],
+      quickstart: ["Operations", "Quick Start Manual", "Concepts and first steps for using MaClawDataSrv safely."],
+      records: ["Operations", "Records", "Search, add, edit, delete, export, and inspect structured business records."],
       inbox: ["Operations", "Inbox", "Review pending approvals, failed jobs, quality issues, and operational work."],
       domains: ["Operations", "Business Domains", "Discover business capabilities by domain or natural-language intent."],
       relationships: ["Operations", "Relationships", "Inspect controlled links between business datasets and records."],
-      actions: ["Operations", "Business Actions", "Run business-level operations without editing raw tables."],
+      actions: ["Operations", "Business Actions", "Run governed business actions for production writes; use raw record editing only for controlled admin and test changes."],
       rules: ["Operations", "Rules", "Evaluate business rules and preflight checks before operational writes."],
       connectors: ["Integration", "Connectors", "Manage external CRM, ERP, HR, finance, and inventory integrations."],
       views: ["Integration", "Views", "Query curated business views without exposing raw dataset internals."],
@@ -1766,6 +1943,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Governance": "治理",
       "System": "系统",
       "Overview": "总览",
+      "Quick Start Manual": "快速操作手册",
+      "Concepts and first steps for using MaClawDataSrv safely.": "安全使用 MaClawDataSrv 的核心概念和快速步骤。",
       "Records": "记录",
       "Inbox": "收件箱",
       "Business Domains": "业务域",
@@ -1789,10 +1968,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Response": "响应",
       "Start from common MIS workflows and service health.": "从常用 MIS 工作流和服务健康开始。",
       "Search, export, and inspect structured business records.": "搜索、导出并检查结构化业务记录。",
+      "Search, add, edit, delete, export, and inspect structured business records.": "搜索、新增、编辑、删除、导出并检查结构化业务记录。",
       "Review pending approvals, failed jobs, quality issues, and operational work.": "查看待审批、失败任务、质量问题和运营事项。",
       "Discover business capabilities by domain or natural-language intent.": "按业务域或自然语言意图发现业务能力。",
       "Inspect controlled links between business datasets and records.": "检查业务数据集和记录之间的受控关联。",
-      "Run business-level operations without editing raw tables.": "在不直接编辑原始表的情况下执行业务操作。",
+      "Run governed business actions for production writes; use raw record editing only for controlled admin and test changes.": "生产写入使用受控业务动作；原始记录编辑仅用于受控管理和测试变更。",
       "Evaluate business rules and preflight checks before operational writes.": "在运营写入前评估业务规则和预检查。",
       "Manage external CRM, ERP, HR, finance, and inventory integrations.": "管理 CRM、ERP、HR、财务和库存等外部集成。",
       "Query curated business views without exposing raw dataset internals.": "查询受控业务视图，不暴露原始数据集内部结构。",
@@ -1836,11 +2016,11 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Business Domain Readiness": "业务域就绪度",
       "Current service counters from the controlled stats API.": "来自受控统计 API 的当前服务计数。",
       "Dataset creation workbench": "数据集创建工作台",
-      "Create from Template": "从模板创建",
+      "Create Dataset from Template": "从模板创建数据集",
       "Template": "模板",
       "Dataset ID override": "数据集 ID 覆盖",
       "Bootstrap domains": "Bootstrap 业务域",
-      "Create template": "创建模板",
+      "Create dataset from template": "从模板创建数据集",
       "Load more templates": "加载更多模板",
       "Preview Bootstrap": "预览 Bootstrap",
       "Bootstrap MIS": "Bootstrap MIS",
@@ -1859,18 +2039,27 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Refresh overview": "刷新总览",
       "Daily Operations": "日常运营",
       "Search records, run business actions, and handle pending MIS work from one place.": "在一个工作台中搜索记录、执行业务动作并处理待办 MIS 工作。",
+      "Open record CRUD, governed business actions, and pending MIS work from one place.": "在一个工作台中打开记录增删改查、受控业务动作和待办 MIS 工作。",
       "Query records": "查询记录",
+      "Open records": "打开记录",
       "Run actions": "执行业务动作",
+      "Open actions": "打开业务动作",
       "Open inbox": "打开收件箱",
       "Analytics": "分析",
-      "Use reports, dashboards, and curated views before asking for raw dataset access.": "优先使用报表、仪表盘和受控视图，再考虑原始数据集访问。",
+      "Use reports, dashboards, and curated views for routine analysis; reserve raw dataset access for admin and test workflows.": "日常分析优先使用报表、仪表盘和受控视图；原始数据集访问保留给管理和测试流程。",
       "Run reports": "运行报表",
+      "Open reports": "打开报表",
       "Open dashboards": "打开仪表盘",
       "Query views": "查询视图",
+      "Open views": "打开视图",
       "Review access, inspect audit trails, run quality checks, and create backups before risky changes.": "在高风险变更前复核访问权限、审计轨迹、质量检查并创建备份。",
+      "Open access review, audit trails, quality checks, and backups before risky changes.": "高风险变更前打开访问复核、审计轨迹、质量检查和备份入口。",
       "Review access": "复核访问",
+      "Open access": "打开访问控制",
       "Check quality": "检查质量",
+      "Open quality": "打开质量",
       "Create backup": "创建备份",
+      "Open backups": "打开备份",
       "Operational Health": "运营健康",
       "Access": "访问控制",
       "Governance evidence summary refreshed": "治理证据摘要已刷新",
@@ -2169,6 +2358,24 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       ,"Dataset loaded": "数据集已加载"
       ,"Dataset updated": "数据集已更新"
       ,"Dataset deleted": "数据集已删除"
+      ,"Record table editor": "记录表格编辑器"
+      ,"New record": "新建记录"
+      ,"Editing": "正在编辑"
+      ,"Record ID": "记录 ID"
+      ,"Leave blank to create": "留空则自动创建"
+      ,"Tags, comma separated": "标签，逗号分隔"
+      ,"Data JSON": "数据 JSON"
+      ,"Sync table from JSON": "从 JSON 同步表格"
+      ,"Validate": "校验"
+      ,"Save record": "保存记录"
+      ,"Load revisions": "加载修订"
+      ,"Load related": "加载关联"
+      ,"Load timeline": "加载时间线"
+      ,"Restore deleted": "恢复已删除"
+      ,"Record CRUD is now in the Records page.": "单条记录 CRUD 现在位于记录页。"
+      ,"Open record editor": "打开记录编辑器"
+      ,"No fields loaded. Use JSON or define fields first.": "尚未加载字段。可先使用 JSON，或先定义字段。"
+      ,"Record table refreshed from JSON": "记录表格已从 JSON 刷新"
       ,"Export jobs loaded": "导出任务已加载"
       ,"Export job downloaded": "导出任务已下载"
       ,"More authorization presets loaded": "更多授权预设已加载"
@@ -2295,7 +2502,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       ,"Business view loaded:": "业务视图已加载："
       ,"Quality check scanned": "质量检查已扫描"
       ,"Relationships loaded:": "关系已加载："
-      ,"Created from template": "已从模板创建"
+      ,"Dataset created from template": "已从模板创建数据集"
       ,"Bootstrap preview: would create": "初始化预览：将创建"
       ,"Bootstrap complete: created": "初始化完成：已创建"
       ,"Query complete:": "查询完成："
@@ -2511,7 +2718,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         "Business view loaded: ",
         "Quality check scanned ",
         "Relationships loaded: ",
-        "Created from template ",
+        "Dataset created from template ",
         "Bootstrap preview: would create ",
         "Bootstrap complete: created ",
         "Created ",
@@ -2939,6 +3146,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         saveSettings();
         setStatus("Administrator login succeeded. Token saved.", "ok");
         showAppShell();
+        switchTab("quickstart");
         await checkConnection();
       } catch (err) { notifyError(err); } });
     }
@@ -5159,7 +5367,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         fillDatasetForm(result.dataset);
         $("fieldsJson").value = JSON.stringify({ fields: result.fields || [] }, null, 2);
         await loadDatasets();
-        setStatus("Created from template " + templateID, "ok");
+        setStatus("Dataset created from template " + templateID, "ok");
       } catch (err) { notifyError(err); }
     }
 
@@ -5243,6 +5451,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     async function queryRecords(loadMore = false) {
       try {
         const dataset = requireDataset();
+        await ensureRecordFields(dataset);
         const body = queryBody();
         const pageKey = JSON.stringify({ dataset, q: body.q, tag: body.tag, filter: body.filter || null, limit: body.limit });
         loadMore = loadMore === true && state.recordPageKey === pageKey;
@@ -5431,6 +5640,116 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (value === null || value === undefined) return "";
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
+    }
+
+    async function ensureRecordFields(dataset) {
+      dataset = dataset || state.selectedDataset || "";
+      if (!dataset) return [];
+      if (state.recordFieldsDataset === dataset && Array.isArray(state.recordFields)) return state.recordFields;
+      const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/fields", { method: "GET" });
+      const fields = Array.isArray(result) ? result : (Array.isArray(result?.items) ? result.items : []);
+      state.recordFieldsDataset = dataset;
+      state.recordFields = fields;
+      renderRecordFieldEditor(parseJSONField("recordData", {}));
+      return fields;
+    }
+
+    function recordFieldKeys(data) {
+      const schemaKeys = (state.recordFields || []).map(field => String(field.key || "").trim()).filter(Boolean);
+      const dataKeys = Object.keys(data || {});
+      return Array.from(new Set(schemaKeys.concat(dataKeys))).slice(0, 24);
+    }
+
+    function recordFieldMeta(key) {
+      return (state.recordFields || []).find(field => field.key === key) || { key };
+    }
+
+    function renderRecordFieldEditor(data) {
+      const root = $("recordFieldGrid");
+      if (!root) return;
+      data = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      const keys = recordFieldKeys(data);
+      if (!keys.length) {
+        root.innerHTML = '<div class="empty">' + translateText("No fields loaded. Use JSON or define fields first.") + '</div>';
+        return;
+      }
+      root.innerHTML = "";
+      keys.forEach(key => {
+        const meta = recordFieldMeta(key);
+        const label = document.createElement("label");
+        label.className = "label";
+        label.textContent = (meta.title || key) + (meta.type ? " (" + meta.type + ")" : "");
+        const input = document.createElement("input");
+        input.dataset.recordField = key;
+        input.dataset.recordType = String(meta.type || "");
+        input.placeholder = key;
+        input.value = formatFieldInputValue(data[key]);
+        input.oninput = syncRecordJSONFromFields;
+        label.appendChild(input);
+        root.appendChild(label);
+      });
+    }
+
+    function formatFieldInputValue(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+
+    function parseFieldInputValue(raw, type, key) {
+      raw = String(raw || "").trim();
+      if (raw === "") return undefined;
+      type = String(type || "").toLowerCase();
+      if (["number", "integer", "int", "float", "decimal"].includes(type)) {
+        const value = Number(raw);
+        if (Number.isNaN(value)) throw new Error("Field " + key + " must be a number");
+        return value;
+      }
+      if (["boolean", "bool"].includes(type)) {
+        const normalized = raw.toLowerCase();
+        if (["true", "1", "yes", "y"].includes(normalized)) return true;
+        if (["false", "0", "no", "n"].includes(normalized)) return false;
+        throw new Error("Field " + key + " must be true or false");
+      }
+      if (["object", "array", "json"].includes(type) || raw.startsWith("{") || raw.startsWith("[")) {
+        try { return JSON.parse(raw); } catch (err) {
+          throw new Error("Field " + key + " must be valid JSON");
+        }
+      }
+      return raw;
+    }
+
+    function recordDataFromFields() {
+      const data = {};
+      document.querySelectorAll("[data-record-field]").forEach(input => {
+        const key = input.dataset.recordField || "";
+        if (!key) return;
+        const value = parseFieldInputValue(input.value, input.dataset.recordType, key);
+        if (value !== undefined) data[key] = value;
+      });
+      return data;
+    }
+
+    function syncRecordJSONFromFields() {
+      try {
+        $("recordData").value = JSON.stringify(recordDataFromFields(), null, 2);
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    }
+
+    function syncRecordFieldsFromJSON() {
+      const data = parseJSONField("recordData", {});
+      renderRecordFieldEditor(data);
+      setStatus("Record table refreshed from JSON", "ok");
+    }
+
+    function currentRecordData() {
+      const fieldInputs = document.querySelectorAll("[data-record-field]");
+      if (!fieldInputs.length) return parseJSONField("recordData", {});
+      const data = recordDataFromFields();
+      $("recordData").value = JSON.stringify(data, null, 2);
+      return data;
     }
 
     function escapeHTML(value) {
@@ -7196,14 +7515,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       }
     }
 
-    function loadRecordToEditor(item) {
-      switchTab("write");
-      // Ensure Record sub-tab is visible
-      activateWriteSubTab("write-record");
-      $("recordId").value = item.id || "";
-      $("recordTitle").value = item.title || "";
-      $("recordTags").value = (item.tags || []).join(", ");
-      $("recordData").value = JSON.stringify(item.data || {}, null, 2);
+    async function loadRecordToEditor(item) {
+      try {
+        switchTab("records");
+        await ensureRecordFields(state.selectedDataset || item.dataset_id || "");
+        $("recordId").value = item.id || "";
+        $("recordTitle").value = item.title || "";
+        $("recordTags").value = (item.tags || []).join(", ");
+        $("recordData").value = JSON.stringify(item.data || {}, null, 2);
+        state.recordEditorRecordID = item.id || "";
+        if ($("recordEditorMode")) $("recordEditorMode").textContent = item.id ? translateText("Editing") + " " + item.id : translateText("New record");
+        renderRecordFieldEditor(item.data || {});
+      } catch (err) { notifyError(err); }
     }
 
     function activateWriteSubTab(panelId) {
@@ -7220,13 +7543,20 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       $("recordTitle").value = "";
       $("recordTags").value = "";
       $("recordData").value = JSON.stringify({ customer: "Acme", amount: 8800 }, null, 2);
+      state.recordEditorRecordID = "";
+      if ($("recordEditorMode")) $("recordEditorMode").textContent = translateText("New record");
+      renderRecordFieldEditor(parseJSONField("recordData", {}));
     }
 
     async function loadFields() {
       try {
         const dataset = requireDataset();
         const fields = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/fields", { method: "GET" });
-        $("fieldsJson").value = JSON.stringify({ fields: Array.isArray(fields) ? fields : (Array.isArray(fields?.items) ? fields.items : []) }, null, 2);
+        const items = Array.isArray(fields) ? fields : (Array.isArray(fields?.items) ? fields.items : []);
+        state.recordFieldsDataset = dataset;
+        state.recordFields = items;
+        $("fieldsJson").value = JSON.stringify({ fields: items }, null, 2);
+        renderRecordFieldEditor(parseJSONField("recordData", {}));
         setStatus("Fields loaded", "ok");
       } catch (err) { notifyError(err); }
     }
@@ -7509,7 +7839,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     async function validateRecordEditor() {
       try {
         const dataset = requireDataset();
-        const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/validate", { method: "POST", body: JSON.stringify({ data: parseJSONField("recordData", {}) }) });
+        await ensureRecordFields(dataset);
+        const result = await api("/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records/validate", { method: "POST", body: JSON.stringify({ data: currentRecordData() }) });
         setStatus(result.valid ? "Record validation passed" : "Record validation failed", result.valid ? "ok" : "err");
       } catch (err) { notifyError(err); }
     }
@@ -7789,17 +8120,21 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     async function saveRecord() {
       try {
         const dataset = requireDataset();
+        await ensureRecordFields(dataset);
         const id = $("recordId").value.trim();
         const body = {
           title: $("recordTitle").value.trim(),
           tags: $("recordTags").value.split(",").map(x => x.trim()).filter(Boolean),
-          data: parseJSONField("recordData", {})
+          data: currentRecordData()
         };
         if (id) body.id = id;
         const path = "/api/v1/data/datasets/" + encodeURIComponent(dataset) + "/records" + (id ? "/" + encodeURIComponent(id) : "");
         const method = id ? "PATCH" : "POST";
         const saved = await api(path, { method, body: JSON.stringify(body) });
         $("recordId").value = saved.id || id;
+        state.recordEditorRecordID = saved.id || id;
+        if ($("recordEditorMode")) $("recordEditorMode").textContent = translateText("Editing") + " " + (saved.id || id);
+        renderRecordFieldEditor(saved.data || body.data || {});
         setStatus("Record saved", "ok");
         await queryRecords();
       } catch (err) { notifyError(err); }
@@ -8410,6 +8745,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (name === "quality") { loadQualityChecks(); if (state.selectedDataset) listQualityRuns(false); }
       if (name === "dataset" && state.selectedDataset) loadDatasetDetail(false);
       if (name === "fields" && state.selectedDataset) { loadFields(); loadSchemaProposals(false); }
+      if (name === "records" && state.selectedDataset) { ensureRecordFields(state.selectedDataset).catch(notifyError); }
       if (name === "backups") listBackups();
       if (name === "events") listDataEvents();
       if (name === "audit") listAuditLogs();
@@ -8502,6 +8838,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     $("refreshSchemaProposals").onclick = () => loadSchemaProposals(true);
     $("proposeSchema").onclick = proposeSchema;
     $("applySchemaProposal").onclick = applySchemaProposal;
+    $("syncRecordFields").onclick = syncRecordFieldsFromJSON;
     $("validateRecord").onclick = validateRecordEditor;
     $("dryRunBatchImport").onclick = () => batchImportRecords(true);
     $("runBatchImport").onclick = () => batchImportRecords(false);
@@ -8628,7 +8965,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     if ($("token").value.trim()) {
       showAppShell();
       if (savedSettings.active_tab && moduleMeta[savedSettings.active_tab]) switchTab(savedSettings.active_tab);
-      else { syncTabAccessibility("overview"); updateModuleHeader("overview"); }
+      else switchTab("quickstart");
     } else {
       showAuthShell();
       syncTabAccessibility("overview");

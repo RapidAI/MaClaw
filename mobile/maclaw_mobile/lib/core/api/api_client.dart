@@ -232,6 +232,76 @@ class ApiClient {
     return MobileSSHAnalysis.fromJson(response.data ?? const {});
   }
 
+  Future<MobileBackendSSHSession> createBackendSSHSession({
+    required String serverProfileId,
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions',
+      data: {'server_profile_id': serverProfileId},
+    );
+    return MobileBackendSSHSession.fromJson(
+      _sessionPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<List<MobileBackendSSHSession>> listBackendSSHSessions() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions',
+    );
+    final data = response.data ?? const {};
+    return [
+      for (final item in (data['sessions'] as List? ?? const []))
+        MobileBackendSSHSession.fromJson(
+          Map<String, dynamic>.from(item as Map),
+        ),
+    ];
+  }
+
+  Future<MobileBackendSSHSession> attachBackendSSHSession(
+    String sessionId,
+  ) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/attach',
+    );
+    return MobileBackendSSHSession.fromJson(
+      _sessionPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<MobileBackendSSHSession> reconnectBackendSSHSession(
+    String sessionId,
+  ) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/reconnect',
+    );
+    return MobileBackendSSHSession.fromJson(
+      _sessionPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
+    required String sessionId,
+    required String input,
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/input',
+      data: {'input': input},
+    );
+    return MobileBackendSSHSessionInputResult.fromJson(
+      response.data ?? const {},
+    );
+  }
+
+  Future<void> closeBackendSSHSession(String sessionId) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    await _dio.delete<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId',
+    );
+  }
+
   Future<MobileDigitalEmployeeTask> createDigitalEmployeeTask({
     required String employeeId,
     required String prompt,
@@ -259,6 +329,10 @@ class ApiClient {
     );
     return MobileDigitalEmployeeTask.fromJson(response.data ?? const {});
   }
+}
+
+Map<String, dynamic> _sessionPayload(Map<String, dynamic> data) {
+  return Map<String, dynamic>.from(data['session'] as Map? ?? data);
 }
 
 class SearchAnswer {
@@ -346,6 +420,93 @@ class MobileSSHAnalysis {
       summary: json['summary'] as String? ?? '',
       recommendation: json['recommendation'] as String? ?? '',
       commandDraft: json['command_draft'] as String? ?? '',
+    );
+  }
+}
+
+class MobileBackendSSHSession {
+  final String sessionId;
+  final String serverProfileId;
+  final String status;
+  final String state;
+  final String message;
+  final String recentOutput;
+  final DateTime? lastActivityAt;
+
+  const MobileBackendSSHSession({
+    required this.sessionId,
+    required this.serverProfileId,
+    required this.status,
+    this.state = '',
+    this.message = '',
+    this.recentOutput = '',
+    this.lastActivityAt,
+  });
+
+  bool get connected =>
+      status == 'connected' ||
+      status == 'running' ||
+      status == 'attached' ||
+      state == 'connected' ||
+      state == 'running' ||
+      state == 'attached';
+
+  factory MobileBackendSSHSession.fromJson(Map<String, dynamic> json) {
+    return MobileBackendSSHSession(
+      sessionId: json['session_id'] as String? ??
+          json['id'] as String? ??
+          json['ssh_session_id'] as String? ??
+          '',
+      serverProfileId: json['server_profile_id'] as String? ??
+          json['profile_id'] as String? ??
+          '',
+      status:
+          json['status'] as String? ?? json['state'] as String? ?? 'unknown',
+      state: json['state'] as String? ?? '',
+      message: json['message'] as String? ?? json['error'] as String? ?? '',
+      recentOutput: json['recent_output'] as String? ??
+          json['output'] as String? ??
+          json['output_chunk'] as String? ??
+          '',
+      lastActivityAt: DateTime.tryParse(
+        json['last_activity_at'] as String? ??
+            json['updated_at'] as String? ??
+            '',
+      ),
+    );
+  }
+}
+
+class MobileBackendSSHSessionInputResult {
+  final String sessionId;
+  final String output;
+  final String status;
+  final String message;
+
+  const MobileBackendSSHSessionInputResult({
+    required this.sessionId,
+    this.output = '',
+    this.status = '',
+    this.message = '',
+  });
+
+  factory MobileBackendSSHSessionInputResult.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final session =
+        Map<String, dynamic>.from(json['session'] as Map? ?? const {});
+    return MobileBackendSSHSessionInputResult(
+      sessionId: json['session_id'] as String? ??
+          session['session_id'] as String? ??
+          session['id'] as String? ??
+          '',
+      output: json['output'] as String? ??
+          json['output_chunk'] as String? ??
+          json['recent_output'] as String? ??
+          session['recent_output'] as String? ??
+          '',
+      status: json['status'] as String? ?? session['status'] as String? ?? '',
+      message: json['message'] as String? ?? json['error'] as String? ?? '',
     );
   }
 }

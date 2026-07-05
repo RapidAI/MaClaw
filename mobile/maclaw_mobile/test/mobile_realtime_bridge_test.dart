@@ -37,7 +37,7 @@ class _SignedInSessionController extends SessionController {
           features: MobileFeatures(
             search: true,
             documents: true,
-            localSsh: true,
+            backendSshSessions: true,
             digitalEmployees: true,
             pushNotifications: true,
           ),

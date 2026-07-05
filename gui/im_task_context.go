@@ -40,24 +40,47 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
 		return "", true, len(entries) > 0
 	case agent.TaskRecall:
-		if len(entries) >= 2 {
-			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusSwitched)
-		}
 		if h.restoreRecalledTask(msg.UserID, tcDecision.RecallTaskID) {
+			if len(entries) >= 2 {
+				h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusSwitched)
+			}
 			if unfinishedSlot != nil {
 				*unfinishedSlot = nil
 			}
 			log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
 			return "", false, true
 		}
-		if h.memory != nil {
-			h.memory.ClearConversationAndDismissSlot(msg.UserID)
-		}
-		h.clearPerUserSessionState(msg.UserID)
-		log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
-		return askUserContext, true, len(entries) > 0
+		log.Printf("[TaskContext] recall failed for user %s, preserving current task context", msg.UserID)
+		return askUserContext, freshTask, false
 	case agent.TaskContinue:
+		if isConfirmedSemanticContinuation(tcDecision) {
+			h.bindSemanticContinuationSlot(msg.UserID, unfinishedSlot)
+		}
 		log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 	}
 	return askUserContext, freshTask, false
+}
+
+func isConfirmedSemanticContinuation(decision agent.TaskContextDecision) bool {
+	return decision.Action == agent.TaskContinue &&
+		decision.Source == "llm" &&
+		decision.ConfirmedContinuation
+}
+
+func (h *IMMessageHandler) bindSemanticContinuationSlot(userID string, unfinishedSlot **agent.UnfinishedTaskSlot) {
+	if h == nil || h.memory == nil || unfinishedSlot == nil || *unfinishedSlot == nil {
+		return
+	}
+	if (*unfinishedSlot).Source.IsSessionExit() {
+		return
+	}
+	if !unfinishedSlotProjectMatchesCurrent(*unfinishedSlot, h.getCurrentProjectPath()) {
+		log.Printf("[TaskContext] skipped unfinished slot %s for semantic continuation: project mismatch", (*unfinishedSlot).SlotID)
+		return
+	}
+	slotID := (*unfinishedSlot).SlotID
+	if h.memory.BindUnfinishedSlot(userID, slotID) {
+		*unfinishedSlot = nil
+		log.Printf("[TaskContext] bound unfinished slot %s as semantic continuation for user %s", slotID, userID)
+	}
 }

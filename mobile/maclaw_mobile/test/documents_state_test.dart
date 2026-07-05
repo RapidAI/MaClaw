@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +12,7 @@ import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/documents/document_draft.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
 class _SignedInSessionController extends SessionController {
   @override
@@ -38,7 +40,7 @@ class _SignedInSessionController extends SessionController {
           features: MobileFeatures(
             search: true,
             documents: true,
-            localSsh: true,
+            backendSshSessions: true,
             digitalEmployees: true,
             pushNotifications: false,
           ),
@@ -130,7 +132,35 @@ class _ProcessDraftApiClient extends ApiClient {
   }
 }
 
+class _DownloadExportApiClient extends ApiClient {
+  _DownloadExportApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<Uint8List> downloadDocumentExport(DocumentExportJob job) async {
+    return Uint8List.fromList('export ${job.jobId}'.codeUnits);
+  }
+}
+
+class _FakePathProvider extends PathProviderPlatform {
+  final String temporaryPath;
+
+  _FakePathProvider(this.temporaryPath);
+
+  @override
+  Future<String?> getTemporaryPath() async => temporaryPath;
+}
+
+void _useFakeTemporaryPath(String path) {
+  final previous = PathProviderPlatform.instance;
+  PathProviderPlatform.instance = _FakePathProvider(path);
+  addTearDown(() {
+    PathProviderPlatform.instance = previous;
+  });
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test(
     'document upload retry is available only for failed imports with source path',
     () {
@@ -504,6 +534,60 @@ void main() {
       notifications.shown.single.payload,
       'document-export:export-1',
     );
+  });
+
+  test('document export download uses phone-friendly safe filenames', () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    _useFakeTemporaryPath(cacheDir.path);
+    addTearDown(store.close);
+    await store.saveLastDocumentDraft(
+      DocumentDraft(
+        id: 'draft-long',
+        title: '现场/应急:报告?需要 很 长 很 长 很 长 很 长 很 长 很 长 很 长 很 长 很 长 很 长 的标题<>',
+        template: DocumentTemplate.report,
+        markdown: '# report',
+        updatedAt: DateTime.utc(2026, 7, 2),
+      ),
+    );
+    final job = DocumentExportJob(
+      jobId: 'export-long',
+      draftId: 'draft-long',
+      format: DocumentExportFormat.word,
+      status: 'ready',
+      downloadUrl: '/api/mobile/documents/exports/export-long/download',
+      createdAt: DateTime.utc(2026, 7, 2),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(_DownloadExportApiClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    final file = await container
+        .read(documentsControllerProvider.notifier)
+        .downloadExportFile(job);
+
+    final filename = file.path.split(RegExp(r'[\\/]')).last;
+    expect(filename, endsWith('.docx'));
+    expect(filename.length, lessThanOrEqualTo(77));
+    expect(filename, isNot(contains(RegExp(r'[\\/:*?"<>|]'))));
+    expect(filename, isNot(contains('__')));
+    expect(await file.readAsString(), 'export export-long');
   });
 
   test('document export notification falls back when download URL is external',

@@ -147,6 +147,9 @@ func TestResolve_ShortHistory_UsesLLM(t *testing.T) {
 	if d.Source != "llm" {
 		t.Fatalf("expected source=llm, got %s", d.Source)
 	}
+	if !d.ConfirmedContinuation {
+		t.Fatal("expected ConfirmedContinuation for explicit LLM continue response")
+	}
 	if llm.calls != 1 {
 		t.Fatalf("expected LLM to be called for short history, got %d calls", llm.calls)
 	}
@@ -270,6 +273,24 @@ func TestResolve_LLM_Continue(t *testing.T) {
 	}
 }
 
+func TestResolve_LLM_ContinueCaseInsensitive(t *testing.T) {
+	llm := &mockLLMClassifier{response: "CONTINUE"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "把上面的内容转成markdown",
+		History: []ConversationEntry{
+			{Role: "user", Content: "帮我安装并评估所有skill"},
+			{Role: "assistant", Content: "已完成skill评估，以下是报告..."},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue, got %s", d.Action)
+	}
+	if !d.ConfirmedContinuation {
+		t.Fatal("expected uppercase continue response to confirm continuation")
+	}
+}
+
 func TestResolve_LLM_New(t *testing.T) {
 	llm := &mockLLMClassifier{response: "new"}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
@@ -314,6 +335,28 @@ func TestResolve_LLM_Recall(t *testing.T) {
 	}
 }
 
+func TestResolve_LLM_RecallPreservesTaskIDCase(t *testing.T) {
+	llm := &mockLLMClassifier{response: "RECALL:Task-ABC123"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "继续处理上次那个部署的事",
+		History: []ConversationEntry{
+			{Role: "user", Content: "当前任务"},
+			{Role: "assistant", Content: "好的"},
+		},
+		ArchivedTasks: []ArchivedTask{
+			{ID: "Task-ABC123", Summary: "部署到生产环境", Status: "abandoned"},
+		},
+		LastAccess: time.Now().Add(-10 * time.Minute),
+	})
+	if d.Action != TaskRecall {
+		t.Fatalf("expected TaskRecall, got %s", d.Action)
+	}
+	if d.RecallTaskID != "Task-ABC123" {
+		t.Fatalf("expected RecallTaskID case to be preserved, got %s", d.RecallTaskID)
+	}
+}
+
 func TestResolve_LLM_RecallInvalidID(t *testing.T) {
 	llm := &mockLLMClassifier{response: "recall:nonexistent"}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
@@ -331,8 +374,11 @@ func TestResolve_LLM_RecallInvalidID(t *testing.T) {
 		},
 		LastAccess: time.Now().Add(-10 * time.Minute),
 	})
-	if d.Action != TaskNew {
-		t.Fatalf("expected TaskNew for invalid recall ID, got %s", d.Action)
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for invalid recall ID, got %s", d.Action)
+	}
+	if d.ConfirmedContinuation {
+		t.Fatal("invalid recall ID should not confirm semantic continuation")
 	}
 }
 
@@ -351,6 +397,114 @@ func TestResolve_LLM_InvalidResponseFallsBackToContinue(t *testing.T) {
 	}
 	if d.Source != "llm" {
 		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+	if d.ConfirmedContinuation {
+		t.Fatal("invalid classifier response should not confirm continuation")
+	}
+}
+
+func TestResolve_LLM_ContinuationPrefixIsNotConfirmedContinuation(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continued"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "可以给一份更详细的材料大纲吗",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected conservative TaskContinue for invalid continuation prefix, got %s", d.Action)
+	}
+	if d.ConfirmedContinuation {
+		t.Fatal("invalid continuation prefix should not confirm continuation")
+	}
+}
+
+func TestResolve_LLM_FencedContinueIsConfirmedContinuation(t *testing.T) {
+	llm := &mockLLMClassifier{response: "```text\n\"continue\"\n```"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "可以给一份更详细的材料大纲吗",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for fenced continue response, got %s", d.Action)
+	}
+	if !d.ConfirmedContinuation {
+		t.Fatal("fenced exact continue response should confirm continuation")
+	}
+}
+
+func TestResolve_LLM_FencedContinueLanguageIsCaseInsensitive(t *testing.T) {
+	llm := &mockLLMClassifier{response: "```TEXT\ncontinue\n```"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "可以给一份更详细的材料大纲吗",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for uppercase fenced language response, got %s", d.Action)
+	}
+	if !d.ConfirmedContinuation {
+		t.Fatal("uppercase fenced language response should confirm continuation")
+	}
+}
+
+func TestResolve_LLM_FencedNonLanguageHeaderIsNotDropped(t *testing.T) {
+	llm := &mockLLMClassifier{response: "```continue\nnew\n```"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "可以给一份更详细的材料大纲吗",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected conservative TaskContinue for malformed fenced response, got %s", d.Action)
+	}
+	if d.ConfirmedContinuation {
+		t.Fatal("malformed fenced response should not confirm continuation")
+	}
+}
+
+func TestResolve_LLM_ExplainedContinueIsNotConfirmedContinuation(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue because it references the prior answer"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "可以给一份更详细的材料大纲吗",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected conservative TaskContinue for explained continue response, got %s", d.Action)
+	}
+	if d.ConfirmedContinuation {
+		t.Fatal("explained continue response should not confirm continuation")
+	}
+}
+
+func TestResolve_LLM_NewPrefixIsNotTaskNew(t *testing.T) {
+	llm := &mockLLMClassifier{response: "news"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "看看这个新闻",
+		History: []ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected conservative TaskContinue for invalid new prefix, got %s", d.Action)
 	}
 }
 

@@ -2016,27 +2016,31 @@ func (s *Service) syncUserUsage(ctx context.Context, baseURL string, record regi
 				if !isCenterUsageAccount(account) {
 					continue
 				}
-				item := byAccount[account]
+				key := centerUsageSummaryKey(row.UserID, account)
+				item := byAccount[key]
 				if item == nil {
 					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: account, Day: dayStart.Format("2006-01-02")}
-					byAccount[account] = item
+					byAccount[key] = item
 				}
-				item.InputTokens = row.Usage.InputTokens
-				item.OutputTokens = row.Usage.OutputTokens
-				item.CachedInputTokens = row.Usage.CachedInputTokens
-				item.CacheWriteTokens = row.Usage.CacheWriteTokens
+				item.UserEmail = preferredCenterUsageAccount(item.UserEmail, account)
+				item.InputTokens += row.Usage.InputTokens
+				item.OutputTokens += row.Usage.OutputTokens
+				item.CachedInputTokens += row.Usage.CachedInputTokens
+				item.CacheWriteTokens += row.Usage.CacheWriteTokens
 			}
 			for _, row := range durationRows {
 				account := strings.ToLower(strings.TrimSpace(row.UserEmail))
 				if !isCenterUsageAccount(account) {
 					continue
 				}
-				item := byAccount[account]
+				key := centerUsageSummaryKey(row.UserID, account)
+				item := byAccount[key]
 				if item == nil {
 					item = &syncUserUsagePayload{TenantID: centerSyncTenantID(tenantID), UserEmail: account, Day: dayStart.Format("2006-01-02")}
-					byAccount[account] = item
+					byAccount[key] = item
 				}
-				item.DurationSeconds = row.DurationSeconds
+				item.UserEmail = preferredCenterUsageAccount(item.UserEmail, account)
+				item.DurationSeconds += row.DurationSeconds
 			}
 			for _, item := range byAccount {
 				if item.InputTokens+item.OutputTokens+item.CachedInputTokens+item.CacheWriteTokens+item.DurationSeconds > 0 {
@@ -2157,6 +2161,29 @@ func isCenterUsageAccount(account string) bool {
 		}
 	}
 	return true
+}
+
+func centerUsageSummaryKey(userID, account string) string {
+	userID = strings.TrimSpace(userID)
+	if userID != "" {
+		return "user:" + userID
+	}
+	return "account:" + normalizeEmail(account)
+}
+
+func preferredCenterUsageAccount(current, candidate string) string {
+	current = normalizeEmail(current)
+	candidate = normalizeEmail(candidate)
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	if isCenterUsageEmail(candidate) && !isCenterUsageEmail(current) {
+		return candidate
+	}
+	return current
 }
 
 // shouldAcceptAuthorizationUpdate decides whether a new authorization from

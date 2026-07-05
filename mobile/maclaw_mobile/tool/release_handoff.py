@@ -47,9 +47,11 @@ def validate_version_build(value: str) -> str:
 
 def validate_team_id(value: str) -> str:
     normalized = value.strip().upper()
+    if normalized == release_evidence_commands.DEFAULT_TEAM_ID:
+        return release_evidence_commands.DEFAULT_TEAM_ID
     if APPLE_TEAM_ID_RE.fullmatch(normalized) is None:
         raise argparse.ArgumentTypeError(
-            "team id must be a 10-character Apple team identifier",
+            "team id must be a 10-character Apple team identifier or <APPLE_TEAM_ID>",
         )
     return normalized
 
@@ -208,12 +210,17 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         records_dir=handoff.records_dir,
     )
     ios_team_id = handoff.team_id or release_evidence_commands.DEFAULT_TEAM_ID
+    ios_signing_team_id = (
+        release_evidence_commands.DEFAULT_SIGNING_TEAM_ID
+        if ios_team_id == release_evidence_commands.DEFAULT_TEAM_ID
+        else ios_team_id
+    )
     setup_android_signing_command = (
         release_evidence_commands.setup_android_signing_command()
     )
     setup_ios_export_options_command = (
         release_evidence_commands.setup_ios_export_options_command(
-            team_id=ios_team_id,
+            team_id=ios_signing_team_id,
             export_method=handoff.export_method,
         )
     )
@@ -298,11 +305,11 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         )
     )
     ios_plan_command = release_evidence_commands.ios_release_plan_command(
-        team_id=ios_team_id,
+        team_id=ios_signing_team_id,
         export_method=handoff.export_method,
     )
     ios_plan_evidence_command = release_evidence_commands.ios_release_plan_command(
-        team_id=ios_team_id,
+        team_id=ios_signing_team_id,
         export_method=handoff.export_method,
         provisioning_profiles="<Runner profile UUID/name; Share Extension profile UUID/name>",
         record_dir=handoff.records_dir,
@@ -310,7 +317,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
     ios_artifact_evidence_command = (
         release_evidence_commands.ios_artifact_evidence_command(
             archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
-            team_id=ios_team_id,
+            team_id=ios_signing_team_id,
             record_dir=handoff.records_dir,
         )
     )
@@ -347,6 +354,18 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         )
         platform_evidence.append(
             "- iOS archive/export path, Team ID, provisioning profile names or UUIDs, install/TestFlight result, and Share Extension result.",
+        )
+    placeholder_notes: list[str] = []
+    if (
+        release_evidence_commands.scope_covers_ios(handoff.scope)
+        and ios_team_id == release_evidence_commands.DEFAULT_TEAM_ID
+    ):
+        placeholder_notes.append(
+            "- `<APPLE_TEAM_ID>` is allowed only for planning/status commands "
+            "(`release_status_report.py`, `release_handoff.py`, and `qa_preflight.py`). "
+            "Replace it with the real 10-character Apple Team ID before running "
+            "`setup_ios_export_options.py`, `plan_ios_release.py`, or "
+            "`signed_artifact_evidence.py`.",
         )
 
     lines = [
@@ -406,6 +425,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         "",
         "## Notes",
         "",
+        *placeholder_notes,
         "- Do not store signing secrets, SSH passwords, private keys, access tokens, or private customer content in QA records.",
         "- Use redacted screenshots, artifact hashes, task IDs, and attachment IDs for traceable evidence.",
         "- Completed QA records must pass `python3 tool/validate_qa_build_record.py` without secret redaction failures; use `python3 tool/qa_build_record_report.py` to fix gaps before linking them.",
@@ -450,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if release_evidence_commands.scope_covers_ios(args.scope) and not args.team_id:
-        parser.error("--team-id is required for iOS release handoff scopes")
+        args.team_id = release_evidence_commands.DEFAULT_TEAM_ID
 
     handoff = build_handoff(
         args.root,

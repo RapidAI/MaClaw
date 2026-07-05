@@ -15,6 +15,7 @@ type InvitationCodeChecker interface {
 
 type ProbeResult struct {
 	Email                  string `json:"email"`
+	PhoneNumber            string `json:"phone_number,omitempty"`
 	TenantID               string `json:"tenant_id,omitempty"`
 	TenantName             string `json:"tenant_name,omitempty"`
 	Status                 string `json:"status"`
@@ -135,8 +136,10 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		}, nil
 	}
 
+	phoneNumber, _ := s.identity.BoundPhoneNumberForUser(ctx, user)
 	return &ProbeResult{
 		Email:                  email,
+		PhoneNumber:            phoneNumber,
 		TenantID:               user.TenantID,
 		TenantName:             s.identity.TenantDisplayName(ctx, user.TenantID),
 		Status:                 "bound",

@@ -43,7 +43,7 @@ MobileBootstrap _bootstrap({required String email}) {
     features: const MobileFeatures(
       search: true,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: true,
     ),

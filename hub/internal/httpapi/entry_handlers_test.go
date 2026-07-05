@@ -1,13 +1,18 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestEntryProbeHandlerReturnsBoundUser(t *testing.T) {
-	router, _ := newAdminRouterTestServices(t)
+	services := newAdminRouterTestContext(t)
+	router := services.handler
 	token := issueHubAdminToken(t, router)
 
 	bindResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/users/manual-bind", map[string]any{
@@ -15,6 +20,27 @@ func TestEntryProbeHandlerReturnsBoundUser(t *testing.T) {
 	}, token)
 	if bindResp.Code != http.StatusOK {
 		t.Fatalf("manual bind status = %d body=%s", bindResp.Code, bindResp.Body.String())
+	}
+	user, err := services.store.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "bound@example.com")
+	if err != nil {
+		t.Fatalf("GetByTenantEmail: %v", err)
+	}
+	if user == nil {
+		t.Fatal("bound user not found")
+	}
+	now := time.Now().UTC()
+	if err := services.store.Users.UpsertIdentity(context.Background(), &store.UserIdentity{
+		ID:         user.ID + "_phone",
+		TenantID:   user.TenantID,
+		UserID:     user.ID,
+		Type:       "phone",
+		Value:      "17090134628",
+		Verified:   true,
+		VerifiedAt: &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("UpsertIdentity phone: %v", err)
 	}
 
 	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/entry/probe", map[string]any{
@@ -24,7 +50,7 @@ func TestEntryProbeHandlerReturnsBoundUser(t *testing.T) {
 		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !containsAll(body, "\"status\":\"bound\"", "\"bound\":true", "\"can_login\":true", "\"pwa_url\":\"http://127.0.0.1:8080/app?email=bound%40example.com", "entry=app", "autologin=1") {
+	if !containsAll(body, "\"status\":\"bound\"", "\"phone_number\":\"17090134628\"", "\"bound\":true", "\"can_login\":true", "\"pwa_url\":\"http://127.0.0.1:8080/app?email=bound%40example.com", "entry=app", "autologin=1") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }

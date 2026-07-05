@@ -64,6 +64,21 @@ func TestMobileRealtimeDocumentTaskEventShape(t *testing.T) {
 	}
 }
 
+func TestMobileRealtimeBackendSSHSessionEventShape(t *testing.T) {
+	event := mobileRealtimeBackendSSHSessionEvent(map[string]any{
+		"session_id":        "mobssh_1",
+		"status":            "input_queued",
+		"server_profile_id": "prod",
+	})
+
+	if event["type"] != "ssh_session" || event["session_id"] != "mobssh_1" || event["status"] != "input_queued" {
+		t.Fatalf("event = %#v, want backend ssh session fields", event)
+	}
+	if session, ok := event["session"].(map[string]any); !ok || session["server_profile_id"] != "prod" {
+		t.Fatalf("session payload = %#v, want nested session", event["session"])
+	}
+}
+
 func TestMobileRealtimeBroadcastTargetsUserAndCleansFailedWriters(t *testing.T) {
 	mobileRealtimeClients.Lock()
 	previous := mobileRealtimeClients.clients
@@ -591,6 +606,230 @@ func TestMobileSSHAnalyzeHandlerRequiresViewerToken(t *testing.T) {
 	}
 }
 
+func TestMobileBackendSSHSessionHandlersRequireViewerToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		body    string
+		handler http.HandlerFunc
+	}{
+		{
+			name:    "list",
+			method:  http.MethodGet,
+			path:    "/api/mobile/ssh/sessions",
+			handler: MobileBackendSSHSessionsHandler(nil),
+		},
+		{
+			name:    "create",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions",
+			body:    `{"server_profile_id":"prod"}`,
+			handler: MobileBackendSSHSessionsHandler(nil),
+		},
+		{
+			name:    "attach",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions/mobssh_1/attach",
+			handler: MobileBackendSSHSessionAttachHandler(nil),
+		},
+		{
+			name:    "input",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions/mobssh_1/input",
+			body:    `{"input":"uptime"}`,
+			handler: MobileBackendSSHSessionInputHandler(nil),
+		},
+		{
+			name:    "reconnect",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions/mobssh_1/reconnect",
+			handler: MobileBackendSSHSessionReconnectHandler(nil),
+		},
+		{
+			name:    "close",
+			method:  http.MethodDelete,
+			path:    "/api/mobile/ssh/sessions/mobssh_1",
+			handler: MobileBackendSSHSessionCloseHandler(nil),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req.SetPathValue("sessionId", "mobssh_1")
+			rec := httptest.NewRecorder()
+
+			tt.handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestMobileBackendSSHSessionLifecycleQueuesBackendControl(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-backend-ssh@example.com")
+	clearMobileBackendSSHSessionsForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions", strings.NewReader(`{"server_profile_id":"prod-root"}`))
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Session struct {
+			SessionID       string `json:"session_id"`
+			ServerProfileID string `json:"server_profile_id"`
+			Status          string `json:"status"`
+			State           string `json:"state"`
+			Message         string `json:"message"`
+			RecentOutput    string `json:"recent_output"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := created.Session.SessionID
+	if sessionID == "" || created.Session.ServerProfileID != "prod-root" {
+		t.Fatalf("created session = %+v, want backend session id and profile", created.Session)
+	}
+	if created.Session.Status != "queued" || created.Session.State != "pending_agent" {
+		t.Fatalf("created state = %+v, want queued pending_agent", created.Session)
+	}
+
+	inputReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/input", strings.NewReader(`{"input":"sudo systemctl restart app"}`))
+	inputReq.SetPathValue("sessionId", sessionID)
+	inputReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	inputRec := httptest.NewRecorder()
+	MobileBackendSSHSessionInputHandler(identity).ServeHTTP(inputRec, inputReq)
+	if inputRec.Code != http.StatusAccepted {
+		t.Fatalf("input status = %d body=%s", inputRec.Code, inputRec.Body.String())
+	}
+	var inputBody struct {
+		SessionID string `json:"session_id"`
+		Status    string `json:"status"`
+		Message   string `json:"message"`
+		Session   struct {
+			PendingInputCount int `json:"pending_input_count"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(inputRec.Body.Bytes(), &inputBody); err != nil {
+		t.Fatalf("decode input response: %v", err)
+	}
+	if inputBody.SessionID != sessionID || inputBody.Status != "input_queued" || inputBody.Session.PendingInputCount != 1 {
+		t.Fatalf("input response = %+v, want queued backend input", inputBody)
+	}
+	mobileBackendSSHSessions.Lock()
+	record := mobileBackendSSHSessions.sessions[sessionID]
+	mobileBackendSSHSessions.Unlock()
+	if len(record.PendingInput) != 1 || record.PendingInput[0] != "sudo systemctl restart app" {
+		t.Fatalf("pending input = %#v, want command recorded for worker", record.PendingInput)
+	}
+	if !strings.Contains(record.RecentOutput, "did not execute") {
+		t.Fatalf("recent output = %q, want no local execution marker", record.RecentOutput)
+	}
+
+	attachReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/attach", nil)
+	attachReq.SetPathValue("sessionId", sessionID)
+	attachReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	attachRec := httptest.NewRecorder()
+	MobileBackendSSHSessionAttachHandler(identity).ServeHTTP(attachRec, attachReq)
+	if attachRec.Code != http.StatusOK {
+		t.Fatalf("attach status = %d body=%s", attachRec.Code, attachRec.Body.String())
+	}
+
+	reconnectReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/reconnect", nil)
+	reconnectReq.SetPathValue("sessionId", sessionID)
+	reconnectReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	reconnectRec := httptest.NewRecorder()
+	MobileBackendSSHSessionReconnectHandler(identity).ServeHTTP(reconnectRec, reconnectReq)
+	if reconnectRec.Code != http.StatusOK {
+		t.Fatalf("reconnect status = %d body=%s", reconnectRec.Code, reconnectRec.Body.String())
+	}
+	var reconnected struct {
+		Session struct {
+			Status string `json:"status"`
+			State  string `json:"state"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(reconnectRec.Body.Bytes(), &reconnected); err != nil {
+		t.Fatalf("decode reconnect response: %v", err)
+	}
+	if reconnected.Session.Status != "reconnect_requested" || reconnected.Session.State != "reconnecting" {
+		t.Fatalf("reconnected session = %+v, want reconnect requested", reconnected.Session)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/ssh/sessions", nil)
+	listReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	listRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].SessionID != sessionID {
+		t.Fatalf("listed sessions = %+v, want owned session", listed.Sessions)
+	}
+
+	closeReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/ssh/sessions/"+sessionID, nil)
+	closeReq.SetPathValue("sessionId", sessionID)
+	closeReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	closeRec := httptest.NewRecorder()
+	MobileBackendSSHSessionCloseHandler(identity).ServeHTTP(closeRec, closeReq)
+	if closeRec.Code != http.StatusNoContent {
+		t.Fatalf("close status = %d body=%s", closeRec.Code, closeRec.Body.String())
+	}
+	mobileBackendSSHSessions.Lock()
+	_, exists := mobileBackendSSHSessions.sessions[sessionID]
+	mobileBackendSSHSessions.Unlock()
+	if exists {
+		t.Fatalf("session still exists after close")
+	}
+}
+
+func TestMobileBackendSSHSessionListIsOwnerScoped(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "mobile-ssh-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "mobile-ssh-other@example.com")
+	clearMobileBackendSSHSessionsForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions", strings.NewReader(`{"server_profile_id":"owner-prod"}`))
+	createReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	createRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/ssh/sessions", nil)
+	listReq.Header.Set("Authorization", "Bearer "+otherToken)
+	listRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Sessions) != 0 {
+		t.Fatalf("other user sessions = %#v, want none", listed.Sessions)
+	}
+}
+
 func TestMobileDigitalEmployeesHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/digital-employees", nil)
 	rec := httptest.NewRecorder()
@@ -904,6 +1143,19 @@ func clearMobileDigitalEmployeeTasksForTest(t *testing.T) {
 		mobileDigitalEmployeeTasks.Lock()
 		mobileDigitalEmployeeTasks.tasks = previous
 		mobileDigitalEmployeeTasks.Unlock()
+	})
+}
+
+func clearMobileBackendSSHSessionsForTest(t *testing.T) {
+	t.Helper()
+	mobileBackendSSHSessions.Lock()
+	previous := mobileBackendSSHSessions.sessions
+	mobileBackendSSHSessions.sessions = make(map[string]mobileBackendSSHSessionRecord)
+	mobileBackendSSHSessions.Unlock()
+	t.Cleanup(func() {
+		mobileBackendSSHSessions.Lock()
+		mobileBackendSSHSessions.sessions = previous
+		mobileBackendSSHSessions.Unlock()
 	})
 }
 

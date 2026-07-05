@@ -305,6 +305,39 @@ class ConfigurePlatformsTest(unittest.TestCase):
                 target.read_text(encoding="utf-8"),
             )
 
+    def test_android_main_activity_removes_flutter_create_legacy_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "android/app/src/main/kotlin/top/mypapers/maclaw/mobile/MainActivity.kt"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "package top.mypapers.maclaw.mobile\n\n"
+                "import io.flutter.embedding.android.FlutterActivity\n\n"
+                "class MainActivity : FlutterActivity()\n",
+                encoding="utf-8",
+            )
+            legacy = root / "android/app/src/main/kotlin/top/mypapers/maclaw/maclaw_mobile/MainActivity.kt"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(
+                "package top.mypapers.maclaw.maclaw_mobile\n\n"
+                "import io.flutter.embedding.android.FlutterActivity\n\n"
+                "class MainActivity : FlutterActivity()\n",
+                encoding="utf-8",
+            )
+            old_root = configure_platforms.ROOT
+            configure_platforms.ROOT = root
+            try:
+                configure_platforms.configure_android_main_activity()
+            finally:
+                configure_platforms.ROOT = old_root
+
+            self.assertTrue(target.exists())
+            self.assertFalse(legacy.exists())
+            self.assertIn(
+                "package top.mypapers.maclaw.mobile",
+                target.read_text(encoding="utf-8"),
+            )
+
     def test_removes_generated_flutter_template_widget_test(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

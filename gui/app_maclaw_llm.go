@@ -1778,6 +1778,21 @@ type CodeGenSSOInfo struct {
 	ModelID string `json:"model_id"`
 }
 
+func shouldPatchRemoteEmailFromLogin(currentEmail, loginEmail string) bool {
+	loginEmail = strings.TrimSpace(loginEmail)
+	if loginEmail == "" {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(loginEmail), "phone:") {
+		return false
+	}
+	currentEmail = strings.TrimSpace(currentEmail)
+	if currentEmail == "" {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(currentEmail), "phone:")
+}
+
 // StartCodeGenSSO 执行企业 SSO 扫码登录流程，成功后：
 //  1. 将 "CodeGen" 服务商 upsert 到 MaClaw LLM providers 列表并设为当前服务商
 //  2. 将认证信息写入 ~/.claude/settings.json 供 TigerClaw Code 使用
@@ -1803,7 +1818,7 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	// 4. 如果拿到了 email，顺手存入配置，供后续自动注册 Hub 使用
 	if result.Email != "" {
 		if appCfg, err := a.LoadConfig(); err == nil {
-			if appCfg.RemoteEmail == "" {
+			if shouldPatchRemoteEmailFromLogin(appCfg.RemoteEmail, result.Email) {
 				_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
 			}
 		}
@@ -2313,7 +2328,7 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 
 		if result.Email != "" {
 			if appCfg, err := a.LoadConfig(); err == nil {
-				if appCfg.RemoteEmail == "" {
+				if shouldPatchRemoteEmailFromLogin(appCfg.RemoteEmail, result.Email) {
 					_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
 				}
 			}

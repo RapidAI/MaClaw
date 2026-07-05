@@ -112,6 +112,27 @@ describe("AgentTaskPanel", () => {
         expect(onSubmit).toHaveBeenCalledWith("format-test", { email: "ops@example.com" });
     });
 
+    it("renders sensitive fields as password inputs while preserving submitted value", () => {
+        const onSubmit = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "sensitive-test",
+            title: "Remote",
+            fields: [{ name: "ssh_password", label: "Password", type: "text", sensitive: true, value: "secret" }],
+            submitLabel: "Connect",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} />);
+
+        const input = screen.getByLabelText("Password") as HTMLInputElement;
+        expect(input.type).toBe("password");
+        expect(input.value).toBe("secret");
+
+        fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+        expect(onSubmit).toHaveBeenCalledWith("sensitive-test", { ssh_password: "secret" });
+    });
+
     it("lets directory fields use the native directory picker", async () => {
         const onSubmit = vi.fn();
         SelectWorkingDirMock.mockResolvedValue("D:\\workprj\\demo");

@@ -58,43 +58,22 @@ func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSumma
 			return
 		}
 
-		// Merge token and duration data by account (same logic as admin rankings).
-		byAccount := map[string]*userRankingRow{}
-		for _, t := range tokenRows {
-			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			byAccount[account] = &userRankingRow{UserEmail: account, TotalTokens: t.Usage.TotalTokens()}
+		var users store.UserRepository
+		if identity != nil {
+			users = identity.UsersRepo()
 		}
-		for _, d := range durationRows {
-			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			row := byAccount[account]
-			if row == nil {
-				row = &userRankingRow{UserEmail: account}
-				byAccount[account] = row
-			}
-			row.DurationSeconds += d.DurationSeconds
-			row.OnlineSeconds += d.OnlineSeconds
-		}
-
-		merged := make([]userRankingRow, 0, len(byAccount))
-		for _, row := range byAccount {
-			merged = append(merged, *row)
-		}
+		merged := mergeUserRankingRows(rankingCtx, tenantID, users, tokenRows, durationRows)
 		assignUserRankingRanks(merged)
 
 		// Find current user's row.
 		myAccount := strings.ToLower(strings.TrimSpace(principal.Email))
+		myUserID := strings.TrimSpace(principal.UserID)
 		resp := myRankingResponse{
 			Period:     period,
 			TotalUsers: len(merged),
 		}
 		for _, row := range merged {
-			if row.UserEmail == myAccount {
+			if (myUserID != "" && row.UserID == myUserID) || (myUserID == "" && row.UserEmail == myAccount) {
 				resp.TotalTokens = row.TotalTokens
 				resp.DurationSeconds = row.DurationSeconds
 				resp.TokenRank = row.TokenRank

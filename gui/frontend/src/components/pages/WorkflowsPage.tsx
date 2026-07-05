@@ -41,21 +41,17 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
 
     const handleClick = useCallback((workflowType: string) => {
         if (startingType) return;
-        setStartingType(workflowType);
 
-        // Find the label for this workflow type to show in the status message
         const item = allGroups.flatMap(g => g.items).find(i => i.type === workflowType);
         const label = item?.label || workflowType;
+        setStartingType(workflowType);
 
-        // Store starting state so the AI assistant panel can pick it up on mount/render.
         sessionStorage.setItem('maclaw:workflow-starting', JSON.stringify({
             workflowType, label, ts: Date.now(), activateLocal: true,
         }));
 
-        // Switch to AI assistant panel and activate the local tab.
         if (switchToAI) switchToAI();
 
-        // Nudge the panel to consume sessionStorage (for the already-mounted case)
         setTimeout(() => window.dispatchEvent(new Event('maclaw:workflow-starting-nudge')), 0);
         setTimeout(() => {
             StartWorkflowDirect(workflowType, '')

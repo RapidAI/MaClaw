@@ -221,6 +221,73 @@ IOS_ARTIFACT_FIELDS = {
     "Team ID",
     "Provisioning profiles",
 }
+SIGNED_INSTALL_FIELDS = {
+    "Android signed install result",
+    "iOS signed install result",
+}
+ASSISTANT_INPUT_FIELDS = {
+    "Voice/photo assistant input evidence",
+}
+PERMISSION_EVIDENCE_FIELDS = {
+    "Camera permission",
+    "Local network / SSH scenario",
+    "Local network permission",
+    "Media/file access",
+    "Microphone permission",
+    "Notification permission",
+    "Photo library permission",
+    "Speech recognition permission",
+}
+SHARE_TO_APP_FIELDS = {
+    "CSV",
+    "Excel .xlsx or .xls",
+    "Image/photo",
+    "PDF",
+    "Plain text",
+    "URL",
+    "Word .docx or .doc",
+}
+TASK_CHAIN_FIELDS = {
+    "Digital employee task ID",
+    "Document upload task ID",
+    "Exported document share evidence",
+    "Markdown export job ID",
+    "Notification delivery evidence",
+    "PDF export job ID",
+    "Realtime update evidence",
+    "Status polling result",
+    "Word export job ID",
+}
+SSH_SMOKE_FIELDS = {
+    "AI analysis confirmation and sensitive-data warning",
+    "AI explanation / command draft result",
+    "Auth mode",
+    "Command output excerpt",
+    "Connect result",
+    "Copied output evidence",
+    "Credential deletion confirmation",
+    "Disconnect result",
+    "Host type",
+    "Read-only command",
+    "Reconnect result",
+}
+HUB_LLM_SETUP_FIELDS = {
+    "Account screen shows selected Hub and tenant",
+    "Bootstrap user/quota/feature flags/service status",
+    "Desktop GUI QR authorization ID",
+    "Discovered Hub URL",
+    "Discovered Hub/tenant result",
+    "HubCenter candidates",
+    "HubCenter probe result",
+    "LLM access evidence",
+    "LLM access mode",
+    "LLM setup surface restriction",
+    "Login result",
+    "MaClaw account",
+    "No custom Hub URL setting found",
+    "Selected HubCenter URL",
+    "Tenant ID",
+}
 
 
 def _matches_field_error(error: str, fields: set[str]) -> bool:
@@ -263,6 +330,62 @@ def _artifact_hints_for_version(
             + "` and paste the generated fields into the QA record."
         )
     return hints
+
+
+def _signed_install_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, SIGNED_INSTALL_FIELDS) for error in errors):
+        return []
+    return [
+        "- Signed install/app launch: add QA-device evidence that the signed build installed and opened, including a traceable screenshot/recording ID such as `screenshot install-launch-android-42` or `recording install-launch-ios-42`.",
+    ]
+
+
+def _assistant_input_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, ASSISTANT_INPUT_FIELDS) for error in errors):
+        return []
+    return [
+        "- AI助手 voice/photo input: record the recognized voice transcript filling or being sent from the AI助手 composer, the photo/image/screenshot assistant input, a resulting citation URL or document upload task ID, and a traceable screenshot/recording ID such as `screenshot mobile-input-42`.",
+    ]
+
+
+def _permission_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, PERMISSION_EVIDENCE_FIELDS) for error in errors):
+        return []
+    return [
+        "- Runtime permissions: capture the real permission prompt/result in the workflow that needs it, include a `permission-grant:<id>` token, and tie microphone/speech/camera/photo-library evidence to AI助手 voice/photo input, notification evidence to real task notification open, and local-network evidence to a real SSH read-only command.",
+    ]
+
+
+def _share_to_app_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, SHARE_TO_APP_FIELDS) for error in errors):
+        return []
+    return [
+        "- Share-to-app payloads: record each payload entering MaClaw Mobile from the OS share sheet; plain text and URL should land in AI助手 with URL/citation evidence, while image/PDF/Word/Excel/CSV should create document import/upload task evidence.",
+    ]
+
+
+def _task_chain_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, TASK_CHAIN_FIELDS) for error in errors):
+        return []
+    return [
+        "- Task chain evidence: keep the same document upload task ID, PDF/Word/Markdown export job IDs, and digital employee task ID threaded through status polling, realtime updates, notification delivery/open evidence, and exported-document sharing.",
+    ]
+
+
+def _ssh_smoke_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, SSH_SMOKE_FIELDS) for error in errors):
+        return []
+    return [
+        "- Backend SSH session smoke: record the server profile ID, backend session ID or attach/create evidence, host/auth mode, connect result, read-only command and output, disconnect/reconnect, copied session output, redacted AI analysis with sensitive-data warning, manual command draft ID, and credential deletion confirmation.",
+    ]
+
+
+def _hub_llm_setup_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, HUB_LLM_SETUP_FIELDS) for error in errors):
+        return []
+    return [
+        "- Hub/account/LLM setup: record exactly the three preset HubCenter URLs, the selected HubCenter, discovered tenant Hub URL, tenant ID, phone:<digits> login/credits account, bootstrap quota/features/service status, and LLM access mode; third-party LLM evidence must come only from the desktop GUI QR authorization path, with no redemption-code login or arbitrary provider/base URL/API-key fields.",
+    ]
 
 
 def _secret_redaction_hints(errors: list[str], *, record_path: str) -> list[str]:
@@ -335,6 +458,41 @@ def format_report(report: QaBuildRecordReport) -> str:
             lines.append("")
             lines.append("How to fill signed artifact evidence:")
             lines.extend(artifact_hints)
+        signed_install_hints = _signed_install_hints(report.evidence_errors)
+        if signed_install_hints:
+            lines.append("")
+            lines.append("How to fill signed install evidence:")
+            lines.extend(signed_install_hints)
+        assistant_input_hints = _assistant_input_hints(report.evidence_errors)
+        if assistant_input_hints:
+            lines.append("")
+            lines.append("How to fill AI助手 voice/photo evidence:")
+            lines.extend(assistant_input_hints)
+        permission_hints = _permission_hints(report.evidence_errors)
+        if permission_hints:
+            lines.append("")
+            lines.append("How to fill runtime permission evidence:")
+            lines.extend(permission_hints)
+        share_to_app_hints = _share_to_app_hints(report.evidence_errors)
+        if share_to_app_hints:
+            lines.append("")
+            lines.append("How to fill share-to-app evidence:")
+            lines.extend(share_to_app_hints)
+        task_chain_hints = _task_chain_hints(report.evidence_errors)
+        if task_chain_hints:
+            lines.append("")
+            lines.append("How to fill task chain evidence:")
+            lines.extend(task_chain_hints)
+        ssh_smoke_hints = _ssh_smoke_hints(report.evidence_errors)
+        if ssh_smoke_hints:
+            lines.append("")
+            lines.append("How to fill backend SSH session smoke evidence:")
+            lines.extend(ssh_smoke_hints)
+        hub_llm_setup_hints = _hub_llm_setup_hints(report.evidence_errors)
+        if hub_llm_setup_hints:
+            lines.append("")
+            lines.append("How to fill Hub/account/LLM setup evidence:")
+            lines.extend(hub_llm_setup_hints)
         secret_hints = _secret_redaction_hints(
             report.secret_errors,
             record_path=str(report.path),

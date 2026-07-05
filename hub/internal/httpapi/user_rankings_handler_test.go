@@ -100,7 +100,7 @@ func TestPublicUserRankingsHandlerIncludesPhoneAccounts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/public/user-rankings?period=monthly&dimension=tokens", nil)
 	rec := httptest.NewRecorder()
 
-	GetPublicUserRankingsHandler(sessions).ServeHTTP(rec, req)
+	GetPublicUserRankingsHandler(sessions, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -115,6 +115,57 @@ func TestPublicUserRankingsHandlerIncludesPhoneAccounts(t *testing.T) {
 	row := resp.Rows[0]
 	if row.MaskedEmail != "phone:199****1111" || row.TotalTokens != 25 || row.DurationSeconds != 240 || row.OnlineSeconds != 300 {
 		t.Fatalf("unexpected public row: %#v", row)
+	}
+}
+
+func TestPublicUserRankingsHandlerMergesBoundEmailAndPhoneByUserID(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	ctx := context.Background()
+	user, err := identity.ManualBindForTenant(ctx, store.DefaultTenantID, "phone:17090134628")
+	if err != nil {
+		t.Fatalf("ManualBindForTenant: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := identity.UsersRepo().UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        user.ID + "_email",
+		TenantID:  store.DefaultTenantID,
+		UserID:    user.ID,
+		Type:      "email",
+		Value:     "ztest@163.com",
+		Verified:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertIdentity: %v", err)
+	}
+	sessions := fakeRankingUsageSummarizer{
+		tokenRows: []store.UserTokenSummary{
+			{UserEmail: "phone:17090134628", Usage: store.UserTokenUsage{InputTokens: 20, OutputTokens: 5}},
+			{UserEmail: "ztest@163.com", Usage: store.UserTokenUsage{InputTokens: 100, OutputTokens: 10}},
+		},
+		durationRows: []store.UserDurationSummary{
+			{UserEmail: "phone:17090134628", DurationSeconds: 240, OnlineSeconds: 300},
+			{UserEmail: "ztest@163.com", DurationSeconds: 60, OnlineSeconds: 80},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/public/user-rankings?period=monthly&dimension=tokens", nil)
+	rec := httptest.NewRecorder()
+
+	GetPublicUserRankingsHandler(sessions, identity.UsersRepo()).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp publicUserRankingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Rows) != 1 {
+		t.Fatalf("public rows = total:%d rows:%#v, want one bound account", resp.Total, resp.Rows)
+	}
+	row := resp.Rows[0]
+	if row.MaskedEmail != "z***t@163.com" || row.TotalTokens != 135 || row.DurationSeconds != 300 || row.OnlineSeconds != 380 {
+		t.Fatalf("unexpected merged public row: %#v", row)
 	}
 }
 
@@ -253,6 +304,34 @@ func TestSortUserRankingRowsByDuration(t *testing.T) {
 		t.Fatalf("unexpected second row: %#v", rows[1])
 	}
 }
+
+func TestAssignUserRankingRanksUsesUserIDKey(t *testing.T) {
+	rows := []userRankingRow{
+		{UserID: "u_one", UserEmail: "shared@example.com", TotalTokens: 100, DurationSeconds: 60},
+		{UserID: "u_two", UserEmail: "shared@example.com", TotalTokens: 10, DurationSeconds: 600},
+	}
+	assignUserRankingRanks(rows)
+
+	if rows[0].TokenRank != 1 || rows[0].DurationRank != 2 {
+		t.Fatalf("first row ranks = token:%d duration:%d", rows[0].TokenRank, rows[0].DurationRank)
+	}
+	if rows[1].TokenRank != 2 || rows[1].DurationRank != 1 {
+		t.Fatalf("second row ranks = token:%d duration:%d", rows[1].TokenRank, rows[1].DurationRank)
+	}
+}
+
+func TestSortUserRankingRowsUsesUserIDTieBreaker(t *testing.T) {
+	rows := []userRankingRow{
+		{UserID: "u_two", UserEmail: "shared@example.com", TotalTokens: 100, DurationSeconds: 60},
+		{UserID: "u_one", UserEmail: "shared@example.com", TotalTokens: 100, DurationSeconds: 60},
+	}
+	sortUserRankingRows(rows, "tokens")
+
+	if rows[0].UserID != "u_one" || rows[1].UserID != "u_two" {
+		t.Fatalf("sorted rows = %#v, want stable user_id tie-breaker", rows)
+	}
+}
+
 func TestUserRankingEmailFilterRejectsMalformedEmails(t *testing.T) {
 	for _, email := range []string{"foo@", "@example.com", "foo @example.com", "foo@@example.com"} {
 		if isUserRankingEmail(email) {

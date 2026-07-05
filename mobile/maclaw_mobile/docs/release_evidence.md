@@ -92,7 +92,7 @@ verifier tests, manual release gate verification, Android release signing
 verification, Android release build helper tests, iOS wrapper verification, iOS
 release plan helper tests, iOS export options setup helper tests, and Android
 debug APK build. The local transcript was saved under `docs/qa-builds/` as
-`release-gates-local-20260705.log`, which is ignored by default;
+`release-gates-continuation6-20260705.log`, which is ignored by default;
 attach the versioned `release-gates-<version+build>.log`
 from signed-build QA as external evidence when preparing a release package.
 After a local debug APK build, run `python3 tool/update_debug_apk_evidence.py`
@@ -109,6 +109,11 @@ success or failure transcript as release evidence; successful final
 evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename, and existing logs require `--force`
 before they can be overwritten.
+The current continuation run is intentionally still blocked before signed-build
+QA records exist; the verifier failure transcript was saved as
+`docs/qa-builds/final-release-evidence-continuation3-20260705.log` and confirms
+that final release evidence still requires at least one completed signed-build
+QA record.
 
 ## Resolved Automated Test Residuals
 
@@ -140,7 +145,7 @@ before they can be overwritten.
 | GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, shared links, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Emergency document templates, import, AI actions, edit helpers, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
-| Manual SSH profiles, terminal output copy, AI analysis confirmation, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart` |
+| Backend SSH session profiles, session output copy, AI analysis confirmation, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart` |
 | Digital employee task submission, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown"` |
 | Account settings, notification request entry, cache clearing, credential separation | `test/account_screen_test.dart`, `test/app_preferences_test.dart`, `test/mobile_notification_service_test.dart`, `test/mobile_local_store_test.dart`, `test/secure_vault_test.dart` |
 | Realtime document/digital employee updates | `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart` |
@@ -217,15 +222,15 @@ before they can be overwritten.
     exist in the current workspace.
 - `docs/qa_device_checklist.md`
   - Added signed Android/iOS, share-to-app, runtime permissions, official
-    service smoke, manual SSH smoke, and evidence-package steps for QA.
+    service smoke, backend SSH session smoke, and evidence-package steps for QA.
   - Checked that the checklist includes text, URL, image, PDF, Word, Excel,
-    CSV, runtime permissions, Hub discovery smoke, manual SSH smoke,
+    CSV, runtime permissions, Hub discovery smoke, backend SSH session smoke,
     selected HubCenter, discovered Hub, tenant, LLM mode, Share Extension
     bundle ID, and app group.
 - `docs/qa_build_record_template.md`
   - Added a per-build evidence template for signed Android/iOS artifacts,
     share-to-app payloads, runtime permissions, Hub discovery smoke,
-    realtime status, manual SSH smoke, credential deletion, and final release
+    realtime status, backend SSH session smoke, credential deletion, and final release
     approval.
   - Documents the `docs/qa-builds/` storage location and validator-enforced
     record filename format so copied QA templates keep the same directory
@@ -312,25 +317,26 @@ before they can be overwritten.
     `not-used-official-mode` sentinel, and the LLM access evidence must match
     the selected mode and recorded Tenant ID.
   - Requires manual device evidence fields, including install results, share
-    payloads, permissions, Hub smoke, and SSH smoke results, to contain
+    payloads, permissions, Hub smoke, and backend SSH session smoke results, to contain
     auditable notes instead of placeholders such as `ok`, `yes`, or `done`.
-  - Requires manual SSH smoke fields to describe the specific tested action:
-    host type, auth mode, connect result, read-only command, command output
+  - Requires backend SSH session smoke fields to describe the specific tested
+    action: host type, auth mode, session creation/attach, connect result,
+    read-only command, command output
     excerpt, disconnect result, reconnect result, and copied output evidence.
-  - Requires manual SSH smoke evidence to reference the recorded
+  - Requires backend SSH session smoke evidence to reference the recorded
     `server-profile:<id>` notification payload when server abnormal
     notification evidence is present.
   - Requires SSH AI analysis evidence to mention preview confirmation, the
     sensitive-data warning, and redacted/masked/sanitized terminal or log
     output before AI analysis; requires AI result evidence to include
     explanation, `command-draft:<id>`, manual/not-auto-executed proof, and
-    redacted SSH terminal/log output context; and
+    redacted backend SSH session terminal/log output context; and
     requires credential deletion evidence to mention cleared
     password/private-key or secure-storage state.
   - Requires status polling and realtime update evidence to identify task/job or
     document status changes and reference a recorded task/job ID, and requires
     digital employee handoff warnings to mention Hub/tenant confirmation plus
-    SSH terminal or pasted/copied output context when recorded.
+    backend SSH session or pasted/copied output context when recorded.
   - Requires notification delivery evidence for document/export completion,
     digital employee task completion, and SSH abnormal/disconnect scenarios,
     including typed payload or tap/open target proof for document,
@@ -411,7 +417,7 @@ before they can be overwritten.
     the second entry to be the iOS QA device, matching the QA template sections.
   - Validates optional attachment, known issue/waiver, and digital employee
     handoff warning evidence when those optional QA fields are used; handoff
-    warnings must identify Hub/tenant confirmation and SSH terminal or
+    warnings must identify Hub/tenant confirmation and backend SSH session or
     pasted/copied output context, while attachment evidence fields must
     reference a traceable evidence file or attachment ID.
   - Requires `Date` and `Approval date` to be valid `YYYY-MM-DD` calendar
@@ -551,7 +557,7 @@ before they can be overwritten.
 - `flutter test test/release_docs_test.dart --concurrency=1 --reporter expanded`
   - Passed: 32 release documentation integrity tests.
   - Covers release doc cross-links, signed-build manual gates, required
-    share/permission payloads, service/SSH smoke steps, and explicit remaining
+    share/permission payloads, service/backend SSH session smoke steps, and explicit remaining
     blockers.
   - Covers signed-QA command examples keeping local preflight before saved
     runtime-boundary and release-gates logs, matching the shared release
@@ -562,8 +568,9 @@ before they can be overwritten.
   - Requires every Python unittest gate in `tool/run_release_gates.py` to have a
     matching release-evidence test-count entry, so gate additions cannot silently
     drift away from this document.
-  - Locks manual SSH smoke documentation to action-specific evidence fields:
-    host type, auth mode, connect result, read-only command, command output
+  - Locks backend SSH session smoke documentation to action-specific evidence
+    fields: host type, auth mode, session creation/attach, connect result,
+    read-only command, command output
     excerpt, disconnect result, reconnect result, and copied output evidence.
   - Covers the user guide's mobile product decisions: MaClaw logo startup,
     phone registration/login as the first unauthenticated screen, configured
@@ -608,7 +615,7 @@ before they can be overwritten.
   - Covers ready document export download, generated local file path handoff,
     and system file-share invocation with the draft title.
 - `flutter test test/official_service_test.dart test/official_service_surface_test.dart test/api_client_test.dart test/documents_state_test.dart --concurrency=1 --reporter compact`
-  - Passed: 30 official service, API client, document state, and service
+  - Passed: 31 official service, API client, document state, and service
     surface tests.
   - Covers document export download URL safety: relative paths resolve against
     the discovered Hub, same-Hub absolute URLs are accepted, external absolute
@@ -624,8 +631,10 @@ before they can be overwritten.
     actually failed and has a recoverable source path.
   - Covers absence of custom Hub URL configuration and redemption-code login
     surfaces in the mobile runtime.
+  - Covers backend SSH session API requests for tenant-Hub session creation,
+    command input, reconnect, and close operations.
 - `flutter test test/auth_service_test.dart test/api_client_test.dart test/login_screen_test.dart test/account_screen_test.dart --concurrency=1 --reporter compact`
-  - Passed: 30 phone login, desktop GUI QR settings, API client, and account
+  - Passed: 31 phone login, desktop GUI QR settings, API client, and account
     settings tests.
   - Covers phone-number login through HubCenter discovery, phone-account
     official credits identity, verified phone accounts using the official
@@ -680,13 +689,13 @@ before they can be overwritten.
     rejects known mojibake/replacement markers, and verifies the iOS Runner
     bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 554 Python release tool tests.
+  - Passed: 571 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
     release gate runner guard tests.
 - `python tool\configure_platforms_test.py`
-  - Passed: 16 platform configuration tests.
+  - Passed: 17 platform configuration tests.
   - Covers cleanup of Flutter's generated widget-test template so
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures, and cleanup of Flutter Android Gradle template comments after
@@ -694,7 +703,7 @@ before they can be overwritten.
   - Covers iOS Runner bundle display/name regeneration as `MaClaw Mobile`
     instead of the Flutter template name.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 198 QA record validator tests.
+  - Passed: 203 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
     tenant Hub versus HubCenter URL separation,
@@ -702,7 +711,8 @@ before they can be overwritten.
     required field overfill rejection,
     duplicate formatted-field rejection,
     fixed identity validation, LLM mode/QR/evidence consistency, Android artifact path validation, signed install/launch/platform evidence, debug artifact/signing/installer rejection, trackable signing alias/certificate evidence, local artifact
-    SHA256 matching, iOS archive/TestFlight build identity, Team ID, and provisioning profile
+    SHA256 matching, signed install/app launch traceable visual evidence,
+    iOS archive/TestFlight build identity, Team ID, and provisioning profile
     auditability including rejection of bare `UUID` words without actual profile
     IDs/files/names and acceptance of trackable UUID, `.mobileprovision`, or
     profile-name evidence, rejection of documented iOS archive/profile
@@ -731,11 +741,12 @@ before they can be overwritten.
     discovered Hub, Tenant ID, and MaClaw phone-account credits,
     AI assistant query evidence linked to recorded citation URLs, shared-result
     citation linkage and externalized-result redaction proof, voice-photo input
-    result linkage, document-draft citation and `document-draft:<id>` linkage
+    result linkage plus recognized transcript composer/send linkage,
+    document-draft citation and `document-draft:<id>` linkage
     smoke evidence semantics, manual and optional evidence placeholder rejection,
     rejection of legacy redemption-code LLM setup evidence,
-    SSH smoke action-specific evidence validation, recorded server-profile ID
-    linkage for manual SSH smoke and account privacy server credential evidence,
+    backend SSH session smoke action-specific evidence validation, recorded
+    server-profile ID linkage for backend SSH session smoke and account privacy server credential evidence,
     `credential-clear:<id>` linkage for separate server/SSH credential clearing,
     SSH AI analysis preview/sensitive-data warning/redacted-output evidence, `command-draft:<id>`/manual execution with redacted SSH output context, and credential deletion evidence,
     status polling/realtime task update ID linkage, typed notification payload
@@ -793,7 +804,7 @@ before they can be overwritten.
     record directory, while the default directory still prints short
     `docs/qa-builds` commands.
 - `python -m unittest tool\validate_qa_build_records_dir_test.py`
-  - Passed: 14 QA build records directory validator tests.
+  - Passed: 15 QA build records directory validator tests.
   - Covers scanning completed Markdown records under `docs/qa-builds/`,
     skipping `README.md`, ignoring non-Markdown evidence attachments, empty
     directories before signed QA records exist, missing/non-directory path
@@ -824,11 +835,15 @@ before they can be overwritten.
     `qa_build_record_report.py <failed-record>` for grouped gaps, redaction
     remediation, and signed artifact hints.
 - `python -m unittest tool\qa_build_record_report_test.py`
-  - Passed: 15 QA build record report tests.
+  - Passed: 21 QA build record report tests.
   - Covers passing completed records, missing evidence summaries, invalid
     HubCenter values, filename errors, missing handoff/runtime-boundary/release
     gate evidence, local artifact SHA256 mismatches, missing local iOS
-    archives, and CLI stdout/stderr behavior.
+    archives, signed install traceable screenshot/recording hints, AI助手
+    voice/photo composer, citation/upload, traceable visual evidence hints,
+    runtime permission workflow hints, share-to-app payload hints, task-chain
+    correlation hints for polling/realtime/notification evidence, backend SSH
+    session smoke evidence hints, Hub/account/LLM setup hints, and CLI stdout/stderr behavior.
   - Covers release handoff evidence hints that include the required
     `--version <version+build>`, `--team-id <APPLE_TEAM_ID>`, and
     `--export-method <export-method>` inputs.
@@ -919,7 +934,7 @@ before they can be overwritten.
     record as `docs/qa-builds/...`, and so follow-up final verifier commands
     use the same custom QA record directory.
 - `python -m unittest tool\qa_preflight_test.py`
-  - Passed: 22 QA preflight helper tests.
+  - Passed: 23 QA preflight helper tests.
   - Covers ready summaries, Android signing input blockers, iOS wrapper
     blockers, missing or invalid iOS export options blockers, invalid existing
     QA records, missing QA record directories, and CLI stdout/stderr behavior.
@@ -1075,7 +1090,7 @@ before they can be overwritten.
     errors, and refusing to write `key.properties` when placeholders are still
     present.
 - `python -m unittest tool\release_status_report_test.py`
-  - Passed: 18 release status report helper tests.
+  - Passed: 19 release status report helper tests.
   - Covers grouped not-ready output, ready output, current empty-fixture CLI
     failure, and ready CLI stdout behavior.
   - Covers passing the requested platform scope into final release evidence
@@ -1117,7 +1132,7 @@ before they can be overwritten.
     generation, including copyable custom-directory Android final-verifier
     rerun commands.
 - `python -m unittest tool\release_handoff_test.py`
-  - Passed: 21 release handoff helper tests.
+  - Passed: 23 release handoff helper tests.
   - Covers blocker summaries, ready output, operator command generation, output
     file writing, and blocked/ready CLI exit codes.
   - Covers real release version/build, Apple Team ID, and iOS export method CLI
@@ -1382,7 +1397,7 @@ before they can be overwritten.
   - Confirms the current generated iOS wrapper exposes readable privacy
     prompts, `maclaw` and share URL schemes, Runner and Share Extension
     app-group wiring, and Share Extension import activation rules.
-- `python tool\plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+- `python tool\plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   - Manual macOS signed-build preparation command.
   - Validates generated iOS wrapper readiness and local `ios/ExportOptions.plist`
     readiness, then prints Xcode archive/export commands plus Runner bundle ID,
@@ -1414,9 +1429,9 @@ before they can be overwritten.
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
 - `python -m unittest tool\configure_platforms_test.py`
-  - Passed: 16 platform configuration tests.
+  - Passed: 17 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 198 QA record validator tests.
+  - Passed: 203 QA record validator tests.
 - `python -m unittest tool\create_qa_build_record_test.py`
   - Passed: 15 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
@@ -1432,6 +1447,8 @@ before they can be overwritten.
   - Passed.
   - Confirms current mobile runtime source under `lib`, `android`, `ios`, and
     `pubspec.yaml` does not embed or bridge Go `corelib`.
+  - Saved continuation evidence:
+    `docs/qa-builds/runtime-boundary-continuation3-20260705.log`.
 - `flutter test test/mobile_local_store_test.dart test/assistant_screen_test.dart test/digital_employees_screen_test.dart --concurrency=1 --reporter compact`
   - Passed: 34 focused storage, assistant, and digital employee widget/model
     tests.
@@ -1448,14 +1465,18 @@ before they can be overwritten.
     metadata while retaining task IDs, employee IDs, task type, status, and
     recent-history ordering for mobile recovery.
 - `flutter test test/mobile_bootstrap_test.dart --concurrency=1 --reporter compact`
-  - Passed: 7 bootstrap parsing tests.
+  - Passed: 10 bootstrap parsing tests.
   - Covers verified phone accounts defaulting the mobile official LLM credits
     account to `phone:<digits>` when Hub bootstrap returns official LLM access
     without a separate `credits_account`, including formatted phone-number
     input and verified `phone:<digits>` credits accounts being normalized to the
     digits-only credits account, SMS-verified phone login supplying the official
     credits fallback after bootstrap, and malformed `phone:` credits with
-    letters remaining untrusted instead of being coerced.
+    letters remaining untrusted instead of being coerced. Also covers the
+    mobile `assistant` feature flag being independent from the optional
+    `search` feature flag, and the backend SSH session feature preferring the
+    new `backend_ssh_sessions` bootstrap field while accepting legacy
+    `local_ssh` from older Hub responses.
 - `flutter test test/mobile_credits_test.dart --concurrency=1 --reporter compact`
   - Passed: 2 shared mobile credits helper tests.
   - Covers the common trusted credits rule used by startup routing, account
@@ -1474,16 +1495,16 @@ before they can be overwritten.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 267 tests.
+  - Passed: 278 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
 - `flutter build apk --debug`
   - Passed.
   - Artifact: `build\app\outputs\flutter-apk\app-debug.apk`.
-  - Size: `182128306` bytes.
-  - SHA256: `03739ABFD43A3E1773564314AD7F58A8F75BD37F35B8F799B07D690936277F9B`.
-  - Refreshed after the 2026-07-05 full automated release gate run.
+  - Size: `207869054` bytes.
+  - SHA256: `DED02B715DEF9356AE1CB5A9564BBD838EFF69292FE506DF74A07B60C99D7692`.
+  - Refreshed after the 2026-07-05 continuation automated release gate run.
   - CI artifact name: `maclaw-mobile-debug-apk`.
 - `python3 tool/verify_debug_apk_evidence.py`
   - Passed.
@@ -1499,10 +1520,11 @@ before they can be overwritten.
     release or internal builds require local `android/key.properties` with
     `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`.
 - `flutter test test/mobile_feature_flags_test.dart test/app_smoke_test.dart test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
-  - Passed: 25 app shell, startup, feature flag, and shared-intent tests.
+  - Passed: 35 app shell, startup, feature flag, and shared-intent tests.
   - Covers readable bottom navigation labels for `AI助手`, `文档`, `远程`,
     `员工`, and `我的`; configured sessions opening the assistant; feature
-    flags never removing the primary `AI助手` workspace; missing LLM
+    flags keeping the primary `AI助手` workspace when optional search is
+    disabled, while honoring an explicit `assistant:false`; missing LLM
     access opening the mobile workspace while third-party LLM authorization
     remains optional in account/settings; official LLM sessions accepting
     normalized `phone:<digits>` credits from bootstrap JSON, keeping the
@@ -1605,8 +1627,8 @@ These cannot be proven by local unit tests or the unsigned debug APK:
 | iOS Share Extension target | Xcode project with `top.mypapers.maclaw.mobile.ShareExtension`, official Team ID, provisioning profile, and `group.top.mypapers.maclaw.mobile` enabled for Runner and Share Extension |
 | iOS share-to-app | TestFlight or development install notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
 | iOS runtime permissions | QA notes/screenshots for camera, microphone, speech recognition, photo library, local network, and notifications, with `permission-grant:<id>` evidence |
-| Manual SSH against real server | Host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation |
-| Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
+| Backend SSH session against real server | Host type, auth mode, session creation/attach, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation |
+| Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, cold-start MaClaw logo splash evidence with no Flutter placeholder/template branding, signed-in `AI助手` first-screen evidence with visible `主对话`/secondary-tab controls, microphone/voice input, and no legacy `查信息` entry, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
 
 ## Build Record Template
 

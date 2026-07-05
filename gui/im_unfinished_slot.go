@@ -270,16 +270,11 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		return nil, false
 	}
 
-	// Project path check: don't show an unfinished slot from a different
-	// project. The slot is preserved in memory; switching back to the original
-	// project will surface it again.
 	currentProjectPath := h.getCurrentProjectPath()
-	if unfinishedSlot.ProjectPath != "" && currentProjectPath != "" {
-		if !strings.EqualFold(filepath.Clean(unfinishedSlot.ProjectPath), filepath.Clean(currentProjectPath)) {
-			log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current project=%q",
-				unfinishedSlot.ProjectPath, currentProjectPath)
-			return nil, false
-		}
+	if !unfinishedSlotProjectMatchesCurrent(unfinishedSlot, currentProjectPath) {
+		log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current project=%q",
+			unfinishedSlot.ProjectPath, currentProjectPath)
+		return nil, false
 	}
 
 	hint := buildUnfinishedSlotHintWithLang(unfinishedSlot, msg.Lang)
@@ -322,6 +317,18 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 	lang, _ := agentViewCurrentLang.Load().(string)
 	return buildUnfinishedSlotResumeContextWithLang(slot, lang)
+}
+
+func unfinishedSlotProjectMatchesCurrent(slot *agent.UnfinishedTaskSlot, currentProjectPath string) bool {
+	if slot == nil {
+		return false
+	}
+	slotProjectPath := strings.TrimSpace(slot.ProjectPath)
+	currentProjectPath = strings.TrimSpace(currentProjectPath)
+	if slotProjectPath == "" || currentProjectPath == "" {
+		return true
+	}
+	return strings.EqualFold(filepath.Clean(slotProjectPath), filepath.Clean(currentProjectPath))
 }
 
 func buildUnfinishedSlotResumeContextWithLang(slot *agent.UnfinishedTaskSlot, lang string) string {

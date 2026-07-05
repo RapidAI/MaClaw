@@ -36,4 +36,3 @@ ThemeData buildMaClawTheme(Brightness brightness) {
     ),
   );
 }
-

@@ -43,12 +43,13 @@ accept arbitrary third-party LLM endpoints, provider base URLs, or API keys.
 ## AI Assistant
 
 Use the `AI助手` tab as the mobile MaClaw assistant, similar to the MaClaw GUI
-assistant but adapted for short mobile sessions. It supports typed or voice
-questions, current-information checking, source citations, and quick handoff
-into document drafts.
+assistant but adapted for short mobile sessions. It is not a search-only page:
+current-information checking is one assistant capability alongside normal
+conversation, voice input, screenshot/photo questions, document handoff,
+server-log analysis, and digital employee task handoff.
 
 The assistant is the primary signed-in workspace. Optional bootstrap feature
-flags can hide documents, local SSH, digital employees, or push notification
+flags can hide documents, backend SSH session management, digital employees, or push notification
 capabilities, but they do not remove the `AI助手` entry or make digital
 employees the default landing page.
 If the current Hub disables assistant online access, the assistant keeps the
@@ -56,7 +57,8 @@ workspace open, disables `发送给 AI 助手`, and explains that voice input, i
 handoff, and document drafting remain available.
 
 - Type a question and tap `发送给 AI 助手`.
-- Tap the microphone to dictate a question.
+- Tap the microphone to dictate a question; recognized speech fills the same
+  assistant input box and can be edited before sending.
 - Tap a quick prompt such as `助手联网`, `文档草稿`, or `日志排障` to fill a
   phone-friendly emergency question, then review or edit it before querying.
 - Tap the camera, gallery screenshot/image, or attachment buttons to send a
@@ -103,11 +105,18 @@ Complex desktop-grade Office layout editing is intentionally out of scope.
 
 ## Maintain Servers
 
-Use the `远程` tab for manual SSH maintenance.
+Use the `远程` tab for GUI-like backend SSH session management. Mobile should
+control sessions created and managed by an agent/backend session manager, not
+only a simple phone-local SSH terminal client.
+
+Implementation details and the GUI reference model are tracked in
+`docs/backend_ssh_session_design.md`.
 
 - Add server profiles with host, port, username, auth mode, tag, and note.
+- Create or attach a backend SSH session that can be listed, reconnected,
+  checked for shell responsiveness, and reused across agent actions.
 - Store SSH passwords and private-key passphrases in system secure storage.
-- Connect manually, copy terminal output, or send recent output to AI analysis.
+- Copy backend session output, or send recent output to AI analysis.
 - Paste terminal output or logs into the analysis panel and hand them to an
   online digital employee when remote server/desktop capabilities are needed.
 - When terminal output comes from a saved server profile, digital employee
@@ -120,7 +129,8 @@ Use the `远程` tab for manual SSH maintenance.
 - Deleting a server profile clears its saved SSH credentials.
 
 AI provides explanations and command drafts; it does not automatically execute
-commands.
+commands. High-risk operations remain draft/manual-confirm even when an agent
+created the backend SSH session.
 
 Before terminal output is sent to AI or submitted as a digital employee task,
 MaClaw Mobile shows a confirmation with line/character counts, a preview, and a

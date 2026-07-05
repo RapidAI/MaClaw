@@ -47,6 +47,13 @@ def _blocker(name: str, details: list[str]) -> PreflightCheck:
     return PreflightCheck(name=name, status="blocker", details=details)
 
 
+def validate_team_id_or_placeholder(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized == release_evidence_commands.DEFAULT_TEAM_ID:
+        return release_evidence_commands.DEFAULT_TEAM_ID
+    return plan_ios_release.validate_team_id(normalized)
+
+
 def _scope_label(scope: str) -> str:
     return release_evidence_commands.scope_label(scope)
 
@@ -59,7 +66,11 @@ def validate_ios_export_options(
 ) -> list[str]:
     export_options = root / "ios" / "ExportOptions.plist"
     if not export_options.exists():
-        setup_team_id = team_id or "<APPLE_TEAM_ID>"
+        setup_team_id = (
+            release_evidence_commands.DEFAULT_SIGNING_TEAM_ID
+            if team_id in (None, release_evidence_commands.DEFAULT_TEAM_ID)
+            else team_id
+        )
         setup_export_method = export_method or "development"
         return [
             f"Missing iOS export options plist: {export_options}",
@@ -88,9 +99,12 @@ def validate_ios_export_options(
             "iOS export options method must be one of: "
             + ", ".join(plan_ios_release.VALID_EXPORT_METHODS),
         )
-    if team_id and actual_team_id != team_id:
+    expected_team_id = (
+        None if team_id == release_evidence_commands.DEFAULT_TEAM_ID else team_id
+    )
+    if expected_team_id and actual_team_id != expected_team_id:
         errors.append(
-            f"iOS export options teamID must match {team_id}: found {actual_team_id!r}",
+            f"iOS export options teamID must match {expected_team_id}: found {actual_team_id!r}",
         )
     if export_method and actual_method != export_method:
         errors.append(
@@ -389,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--team-id",
-        type=plan_ios_release.validate_team_id,
+        type=validate_team_id_or_placeholder,
         help="Optional Apple Team ID to verify against ios/ExportOptions.plist.",
     )
     parser.add_argument(

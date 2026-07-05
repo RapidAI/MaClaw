@@ -1,11 +1,14 @@
 # MaClaw Mobile
 
-An Android/iOS Flutter app for the MaClaw mobile AI assistant:
+An Android/iOS Flutter app for the MaClaw mobile AI assistant, shaped as a
+MaClaw GUI-like assistant workspace:
 
-- a MaClaw GUI-like multi-tab AI assistant with typed or voice input,
-  assistant online answers with citations, and document handoff;
+- a MaClaw GUI-like multi-tab AI assistant that opens as the signed-in first
+  workspace, with typed or voice input as primary interaction modes;
+- assistant online answers with citations, shareable results, screenshot/photo
+  questions, and document handoff;
 - urgent document drafting, editing, and export;
-- manual SSH server maintenance with AI-assisted log explanation;
+- backend SSH session management with AI-assisted log explanation;
 - digital employee access for remote server or desktop capabilities;
 - Hub account, quota, service status, cache, and credential management.
 
@@ -24,8 +27,8 @@ Sensitive tokens and SSH credentials stay in secure storage.
 ## Runtime boundary
 
 MaClaw Mobile does not embed or directly call the Go `corelib` package. The
-Flutter app keeps only mobile-local capabilities such as UI, cache, sharing,
-document handoff, secure credential storage, and manual SSH. Core MaClaw
+Flutter app keeps only mobile-facing capabilities such as UI, cache, sharing,
+document handoff, secure credential storage, and remote session controls. Core MaClaw
 capabilities run behind the official Hub or on authorized remote desktop/server
 digital employees, and the phone reaches them through the discovered Hub APIs
 and realtime channel.
@@ -68,9 +71,9 @@ provisioning profiles are official release settings.
 
 The same script also maintains iOS usage descriptions for camera, microphone,
 speech recognition, photo library, and local network access. Local network
-permission exists only for manual SSH maintenance of local or private-network
-servers; the app's Hub/API traffic uses the Hub discovered through official
-HubCenter.
+permission exists only when signed-build QA exercises backend SSH session
+management against a local or private-network server; the app's Hub/API traffic
+uses the Hub discovered through official HubCenter.
 
 ## Hub persistence
 
@@ -97,5 +100,9 @@ Store completed records under `docs/qa-builds/`; see
 ## User guide
 
 Use `docs/user_guide.md` for the first-version mobile flows: AI assistant,
-emergency documents, manual SSH, digital employees, and account privacy
-settings.
+emergency documents, backend SSH session management, digital employees, and
+account privacy settings.
+
+See `docs/backend_ssh_session_design.md` for the corrected GUI-like backend SSH
+session model, the mobile Hub API shape, and the remaining Hub/agent work needed
+for realtime managed-session output.

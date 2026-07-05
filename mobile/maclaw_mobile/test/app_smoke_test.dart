@@ -48,7 +48,6 @@ const _phoneRegistrationLogin = '\u624b\u673a\u53f7\u6ce8\u518c/\u767b\u5f55';
 const _sendVerificationCode = '\u53d1\u9001\u9a8c\u8bc1\u7801';
 const _assistantTab = 'AI助手';
 const _mainConversation = '\u4e3b\u5bf9\u8bdd';
-const _webLookup = '\u8054\u7f51\u67e5\u8be2';
 const _emergencyDocuments = '\u5e94\u6025\u6587\u6863';
 const _openedTaskNotification = '\u5df2\u6253\u5f00\u4efb\u52a1\u63d0\u9192';
 const _unknownTaskNotification =
@@ -142,7 +141,8 @@ void main() {
 
     expect(find.text(_assistantTab), findsWidgets);
     expect(find.text(_mainConversation), findsOneWidget);
-    expect(find.text(_webLookup), findsOneWidget);
+    expect(find.byTooltip('开始语音输入'), findsOneWidget);
+    expect(find.text('查信息'), findsNothing);
   });
 
   testWidgets('opened notification payload is consumed by app shell',
@@ -542,7 +542,7 @@ void main() {
     const features = MobileFeatures(
       search: true,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: true,
     );
@@ -566,12 +566,40 @@ void main() {
         const MobileFeatures(
           search: true,
           documents: true,
-          localSsh: false,
+          backendSshSessions: false,
           digitalEmployees: true,
           pushNotifications: true,
         ),
       ),
       '/assistant',
+    );
+  });
+
+  test('mobile notification recovery messages name the target workflow', () {
+    expect(
+      mobileNotificationRecoveryMessage(
+        'document-export:job-1',
+        '/documents',
+      ),
+      '已打开任务提醒：请在文档页查看导出任务状态',
+    );
+    expect(
+      mobileNotificationRecoveryMessage(
+        'digital-employee-task:task-1',
+        '/employees',
+      ),
+      '已打开任务提醒：请在数字员工页查看远程任务状态',
+    );
+    expect(
+      mobileNotificationRecoveryMessage(
+        'server-profile:srv-prod',
+        '/servers',
+      ),
+      '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
+    );
+    expect(
+      mobileNotificationRecoveryMessage('raw-id', null),
+      _unknownTaskNotification,
     );
   });
 }
@@ -611,7 +639,7 @@ MobileBootstrap _bootstrap({required MobileLlmAccess llmAccess}) {
     features: const MobileFeatures(
       search: true,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: true,
     ),

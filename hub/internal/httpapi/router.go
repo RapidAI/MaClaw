@@ -406,6 +406,12 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/documents/export/{jobId}", MobileDocumentExportStatusHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/export/{jobId}/download", MobileDocumentExportDownloadHandler(identity))
 	mux.HandleFunc("POST /api/mobile/ssh/analyze", MobileSSHAnalyzeHandler(identity))
+	mux.HandleFunc("GET /api/mobile/ssh/sessions", MobileBackendSSHSessionsHandler(identity))
+	mux.HandleFunc("POST /api/mobile/ssh/sessions", MobileBackendSSHSessionsHandler(identity))
+	mux.HandleFunc("POST /api/mobile/ssh/sessions/{sessionId}/attach", MobileBackendSSHSessionAttachHandler(identity))
+	mux.HandleFunc("POST /api/mobile/ssh/sessions/{sessionId}/input", MobileBackendSSHSessionInputHandler(identity))
+	mux.HandleFunc("POST /api/mobile/ssh/sessions/{sessionId}/reconnect", MobileBackendSSHSessionReconnectHandler(identity))
+	mux.HandleFunc("DELETE /api/mobile/ssh/sessions/{sessionId}", MobileBackendSSHSessionCloseHandler(identity))
 	mux.HandleFunc("GET /api/mobile/digital-employees", MobileDigitalEmployeesHandler(identity, system))
 	mux.HandleFunc("POST /api/mobile/digital-employees/{employeeId}/tasks", MobileDigitalEmployeeTaskHandler(identity))
 	mux.HandleFunc("POST /api/mobile/digital-employees/{employeeId}/tasks/claim", MobileDigitalEmployeeTaskClaimHandler(identity))
@@ -589,7 +595,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/capabilities/mcp-hub-secrets", MCPHubSecretUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/admin/billing/customer-account", requireTenantAdmin(AdminBillingCustomerAccountHandler(system, centerSvc)))
 	mux.HandleFunc("GET /api/admin/billing/licenses", requireTenantAdmin(AdminBillingLicensesHandler(system, centerSvc)))
-	mux.HandleFunc("GET /api/admin/user-rankings", requireTenantAdmin(GetUserRankingsHandler(sessionSvc)))
+	mux.HandleFunc("GET /api/admin/user-rankings", requireTenantAdmin(GetUserRankingsHandler(sessionSvc, platformUsers)))
 	mux.HandleFunc("GET /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyGetHandler(system)))
 	mux.HandleFunc("PUT /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyUpdateHandler(system)))
 	mux.HandleFunc("GET /api/admin/capability-market/acquisition-requests", requireTenantAdmin(AdminCapabilityAcquisitionRequestsHandler(capabilitySvc)))
@@ -833,7 +839,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/public/model_download/status", PublicModelDownloadStatusHandler(configPath))
 
 	// Public user ranking leaderboard (no auth, masked emails)
-	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc))
+	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc, platformUsers))
 
 	// ---------------------------------------------------------------------------
 	// Dynamic Notification System endpoints

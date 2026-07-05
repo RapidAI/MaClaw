@@ -49,6 +49,13 @@ var mobileDigitalEmployeeTasks = struct {
 	tasks: make(map[string]mobileDigitalEmployeeTaskRecord),
 }
 
+var mobileBackendSSHSessions = struct {
+	sync.Mutex
+	sessions map[string]mobileBackendSSHSessionRecord
+}{
+	sessions: make(map[string]mobileBackendSSHSessionRecord),
+}
+
 var mobileLlmAuthorizations = struct {
 	sync.Mutex
 	authorizations map[string]mobileLlmAuthorizationRecord
@@ -128,6 +135,22 @@ type mobileDigitalEmployeeTaskRecord struct {
 	ClaimedBy  string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type mobileBackendSSHSessionRecord struct {
+	SessionID       string
+	TenantID        string
+	OwnerID         string
+	ServerProfileID string
+	BackendSessionID string
+	Status          string
+	State           string
+	Message         string
+	RecentOutput    string
+	PendingInput    []string
+	ClaimedBy       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type mobileLlmAuthorizationRecord struct {
@@ -1229,6 +1252,25 @@ type mobileSSHAnalyzeRequest struct {
 	Output string `json:"output"`
 }
 
+type mobileBackendSSHSessionRequest struct {
+	ServerProfileID string `json:"server_profile_id"`
+}
+
+type mobileBackendSSHInputRequest struct {
+	Input string `json:"input"`
+}
+
+type mobileBackendSSHSessionUpdateRequest struct {
+	Status             string `json:"status"`
+	State              string `json:"state,omitempty"`
+	Message            string `json:"message,omitempty"`
+	Error              string `json:"error,omitempty"`
+	RecentOutput       string `json:"recent_output,omitempty"`
+	BackendSessionID   string `json:"backend_session_id,omitempty"`
+	ClearPendingInput  bool   `json:"clear_pending_input,omitempty"`
+	AppliedInputCount  int    `json:"applied_input_count,omitempty"`
+}
+
 type mobileDigitalEmployeeTaskRequest struct {
 	Prompt   string            `json:"prompt"`
 	TaskType string            `json:"task_type,omitempty"`
@@ -1256,6 +1298,45 @@ func mobileDigitalEmployeeTaskPayload(record mobileDigitalEmployeeTaskRecord) ma
 		"created_at":  record.CreatedAt.Format(time.RFC3339),
 		"updated_at":  record.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+func mobileBackendSSHSessionPayload(record mobileBackendSSHSessionRecord) map[string]any {
+	return map[string]any{
+		"session_id":          record.SessionID,
+		"server_profile_id":   record.ServerProfileID,
+		"backend_session_id":  record.BackendSessionID,
+		"status":              record.Status,
+		"state":               record.State,
+		"message":             record.Message,
+		"recent_output":       record.RecentOutput,
+		"pending_input_count": len(record.PendingInput),
+		"claimed_by":          record.ClaimedBy,
+		"created_at":          record.CreatedAt.Format(time.RFC3339),
+		"updated_at":          record.UpdatedAt.Format(time.RFC3339),
+		"last_activity_at":    record.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func mobileBackendSSHWorkerSessionPayload(record mobileBackendSSHSessionRecord) map[string]any {
+	payload := mobileBackendSSHSessionPayload(record)
+	pending := make([]string, len(record.PendingInput))
+	copy(pending, record.PendingInput)
+	payload["pending_input"] = pending
+	return payload
+}
+
+func mobileRealtimeBackendSSHSessionEvent(payload map[string]any) map[string]any {
+	event := map[string]any{
+		"type":    "ssh_session",
+		"session": payload,
+	}
+	if sessionID, _ := payload["session_id"].(string); sessionID != "" {
+		event["session_id"] = sessionID
+	}
+	if status, _ := payload["status"].(string); status != "" {
+		event["status"] = status
+	}
+	return event
 }
 
 func normalizeMobileDigitalEmployeeTaskType(value string) string {
@@ -2957,6 +3038,221 @@ func MobileSSHAnalyzeHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, mobileSSHAnalysisPayload(output))
+	}
+}
+
+// MobileBackendSSHSessionsHandler lists or creates backend-managed SSH
+// sessions. Mobile submits control intent; an authorized remote agent is
+// responsible for attaching this record to corelib/remote.SSHSessionManager.
+func MobileBackendSSHSessionsHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			sessions := make([]map[string]any, 0)
+			mobileBackendSSHSessions.Lock()
+			for _, record := range mobileBackendSSHSessions.sessions {
+				if record.OwnerID != principal.UserID || record.TenantID != principal.TenantID {
+					continue
+				}
+				sessions = append(sessions, mobileBackendSSHSessionPayload(record))
+			}
+			mobileBackendSSHSessions.Unlock()
+			sort.Slice(sessions, func(i, j int) bool {
+				left, _ := sessions[i]["updated_at"].(string)
+				right, _ := sessions[j]["updated_at"].(string)
+				return left > right
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+		case http.MethodPost:
+			var req mobileBackendSSHSessionRequest
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+				return
+			}
+			serverProfileID := strings.TrimSpace(req.ServerProfileID)
+			if serverProfileID == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "server_profile_id is required")
+				return
+			}
+			now := time.Now().UTC()
+			record := mobileBackendSSHSessionRecord{
+				SessionID:       fmt.Sprintf("mobssh_%d", now.UnixNano()),
+				TenantID:        principal.TenantID,
+				OwnerID:         principal.UserID,
+				ServerProfileID: serverProfileID,
+				Status:          "queued",
+				State:           "pending_agent",
+				Message:         "Backend SSH session request queued for an authorized MaClaw agent.",
+				RecentOutput:    "Waiting for remote MaClaw agent to create or attach the SSH session.",
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			mobileBackendSSHSessions.Lock()
+			mobileBackendSSHSessions.sessions[record.SessionID] = record
+			mobileBackendSSHSessions.Unlock()
+			payload := mobileBackendSSHSessionPayload(record)
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+			writeJSON(w, http.StatusAccepted, map[string]any{"session": payload})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
+		}
+	}
+}
+
+func MobileBackendSSHSessionAttachHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "attach_requested", "attaching", "Attach request queued for the backend SSH session.")
+}
+
+func MobileBackendSSHSessionReconnectHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "reconnect_requested", "reconnecting", "Reconnect request queued for the backend SSH session.")
+}
+
+func mobileBackendSSHSessionTransitionHandler(identity *auth.IdentityService, method, status, state, message string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use "+method)
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		now := time.Now().UTC()
+		mobileBackendSSHSessions.Lock()
+		record, ok := mobileBackendSSHSessions.sessions[sessionID]
+		if ok && (record.OwnerID != principal.UserID || record.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if ok {
+			record.Status = status
+			record.State = state
+			record.Message = message
+			record.UpdatedAt = now
+			mobileBackendSSHSessions.sessions[sessionID] = record
+		}
+		mobileBackendSSHSessions.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		payload := mobileBackendSSHSessionPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"session": payload})
+	}
+}
+
+// MobileBackendSSHSessionInputHandler records mobile input for a backend SSH
+// session. It deliberately does not execute the input in the HTTP handler.
+func MobileBackendSSHSessionInputHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		var req mobileBackendSSHInputRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		input := strings.TrimSpace(req.Input)
+		if input == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "input is required")
+			return
+		}
+		now := time.Now().UTC()
+		mobileBackendSSHSessions.Lock()
+		record, ok := mobileBackendSSHSessions.sessions[sessionID]
+		if ok && (record.OwnerID != principal.UserID || record.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if ok {
+			record.PendingInput = append(record.PendingInput, input)
+			if len(record.PendingInput) > 50 {
+				record.PendingInput = record.PendingInput[len(record.PendingInput)-50:]
+			}
+			record.Status = "input_queued"
+			record.State = "pending_agent"
+			record.Message = "Input queued for authorized backend SSH session handling."
+			record.RecentOutput = "Input queued. The mobile app did not execute this command locally."
+			record.UpdatedAt = now
+			mobileBackendSSHSessions.sessions[sessionID] = record
+		}
+		mobileBackendSSHSessions.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		payload := mobileBackendSSHSessionPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"session_id": sessionID,
+			"status":     record.Status,
+			"message":    record.Message,
+			"session":    payload,
+		})
+	}
+}
+
+func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use DELETE")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		now := time.Now().UTC()
+		var record mobileBackendSSHSessionRecord
+		mobileBackendSSHSessions.Lock()
+		existing, ok := mobileBackendSSHSessions.sessions[sessionID]
+		if ok && (existing.OwnerID != principal.UserID || existing.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if ok {
+			existing.Status = "closed"
+			existing.State = "closed"
+			existing.Message = "Close request recorded for the backend SSH session."
+			existing.UpdatedAt = now
+			record = existing
+			delete(mobileBackendSSHSessions.sessions, sessionID)
+		}
+		mobileBackendSSHSessions.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(mobileBackendSSHSessionPayload(record)))
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

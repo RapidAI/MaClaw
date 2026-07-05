@@ -1075,6 +1075,68 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("--team-id ABCDE12345", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_main_uses_placeholder_team_id_for_ios_handoff_plan(self) -> None:
+        root = self.make_root()
+        target = root / "docs" / "qa-builds" / "handoff-1.0.0+42.md"
+        stdout = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.blocked_status
+            with redirect_stdout(stdout):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--output",
+                        str(target),
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(1, exit_code)
+        text = target.read_text(encoding="utf-8")
+        self.assertIn("--team-id <APPLE_TEAM_ID>", text)
+        self.assertIn(
+            "setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID>",
+            text,
+        )
+        self.assertIn(
+            "plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID>",
+            text,
+        )
+        self.assertIn(
+            "signed_artifact_evidence.py ios --archive-or-build "
+            '"build/ios/archive/MaClawMobile.xcarchive" '
+            "--team-id <REAL_APPLE_TEAM_ID>",
+            text,
+        )
+        self.assertNotIn("--team-id ABCD123456", text)
+        self.assertIn(
+            "<APPLE_TEAM_ID>` is allowed only for planning/status commands",
+            text,
+        )
+        self.assertIn("Replace it with the real 10-character Apple Team ID", text)
+        self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
+
+    def test_format_handoff_omits_placeholder_note_when_team_id_is_concrete(self) -> None:
+        root = self.make_root()
+        handoff = release_handoff.build_handoff(
+            root,
+            version="1.0.0+42",
+            team_id="ABCDE12345",
+            build_status=self.blocked_status,
+        )
+
+        output = release_handoff.format_handoff(handoff)
+
+        self.assertNotIn(
+            "<APPLE_TEAM_ID>` is allowed only for planning/status commands",
+            output,
+        )
+
     def test_main_allows_android_handoff_without_team_id(self) -> None:
         root = self.make_root()
         target = root / "android-handoff.md"
@@ -1104,27 +1166,12 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertNotIn("--team-id", text)
         self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
 
-    def test_main_requires_real_version_and_ios_team_id(self) -> None:
+    def test_main_requires_real_version_and_valid_ios_team_id(self) -> None:
         root = self.make_root()
         stderr = StringIO()
 
         with redirect_stderr(stderr), self.assertRaises(SystemExit):
             release_handoff.main(["--root", str(root), "--team-id", "ABCDE12345"])
-
-        with redirect_stderr(stderr), self.assertRaises(SystemExit):
-            release_handoff.main(["--root", str(root), "--version", "1.0.0+42"])
-
-        with redirect_stderr(stderr), self.assertRaises(SystemExit):
-            release_handoff.main(
-                [
-                    "--root",
-                    str(root),
-                    "--version",
-                    "1.0.0+42",
-                    "--scope",
-                    "ios",
-                ],
-            )
 
         with redirect_stderr(stderr), self.assertRaises(SystemExit):
             release_handoff.main(
@@ -1146,9 +1193,10 @@ class ReleaseHandoffTest(unittest.TestCase):
                     "--version",
                     "1.0.0+42",
                     "--team-id",
-                    "<APPLE_TEAM_ID>",
+                    "BAD",
                 ],
             )
+
         with redirect_stderr(stderr), self.assertRaises(SystemExit):
             release_handoff.main(
                 [
@@ -1176,8 +1224,10 @@ class ReleaseHandoffTest(unittest.TestCase):
                 ],
             )
         self.assertIn("version must use app-version+build", stderr.getvalue())
-        self.assertIn("--team-id is required for iOS release handoff scopes", stderr.getvalue())
-        self.assertIn("team id must be a 10-character Apple team identifier", stderr.getvalue())
+        self.assertIn(
+            "team id must be a 10-character Apple team identifier or <APPLE_TEAM_ID>",
+            stderr.getvalue(),
+        )
         self.assertIn("invalid choice: 'beta-channel'", stderr.getvalue())
         self.assertIn("invalid choice: 'ios-android'", stderr.getvalue())
 

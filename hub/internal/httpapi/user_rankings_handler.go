@@ -12,6 +12,7 @@ import (
 )
 
 type userRankingRow struct {
+	UserID          string `json:"user_id,omitempty"`
 	UserEmail       string `json:"user_email"`
 	UserName        string `json:"user_name"`
 	TotalTokens     int64  `json:"total_tokens"`
@@ -47,7 +48,7 @@ type userUsageSummarizer interface {
 	userTokenSummarizer
 }
 
-func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
+func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
 			writeError(w, http.StatusServiceUnavailable, "USER_RANKINGS_UNAVAILABLE", "session repository is unavailable")
@@ -71,31 +72,7 @@ func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "USER_RANKINGS_DURATION_LOAD_FAILED", err.Error())
 			return
 		}
-		byAccount := map[string]*userRankingRow{}
-		for _, t := range tokenRows {
-			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			byAccount[account] = &userRankingRow{UserEmail: account, UserName: account, TotalTokens: t.Usage.TotalTokens()}
-		}
-		for _, d := range durationRows {
-			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			row := byAccount[account]
-			if row == nil {
-				row = &userRankingRow{UserEmail: account, UserName: account}
-				byAccount[account] = row
-			}
-			row.DurationSeconds += d.DurationSeconds
-			row.OnlineSeconds += d.OnlineSeconds
-		}
-		merged := make([]userRankingRow, 0, len(byAccount))
-		for _, row := range byAccount {
-			merged = append(merged, *row)
-		}
+		merged := mergeUserRankingRows(store.WithTenant(r.Context(), tenantID), tenantID, users, tokenRows, durationRows)
 		assignUserRankingRanks(merged)
 		sortUserRankingRows(merged, dimension)
 		total := len(merged)
@@ -127,12 +104,147 @@ func GetUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
 	}
 }
 
+func mergeUserRankingRows(ctx context.Context, tenantID string, users store.UserRepository, tokenRows []store.UserTokenSummary, durationRows []store.UserDurationSummary) []userRankingRow {
+	type rankingIdentity struct {
+		key     string
+		userID  string
+		account string
+	}
+	displayAccountByUserID := map[string]string{}
+	resolve := func(userID, account string) rankingIdentity {
+		userID = strings.TrimSpace(userID)
+		account = strings.ToLower(strings.TrimSpace(account))
+		if userID != "" {
+			display := displayAccountByUserID[userID]
+			if display == "" {
+				display = rankingDisplayAccountForUser(ctx, tenantID, users, userID, account)
+				displayAccountByUserID[userID] = display
+			}
+			return rankingIdentity{key: "user:" + userID, userID: userID, account: display}
+		}
+		if !isUserRankingAccount(account) {
+			return rankingIdentity{}
+		}
+		if users != nil {
+			identityType := "email"
+			identityValue := account
+			if isUserRankingPhone(account) {
+				identityType = "phone"
+				identityValue = strings.TrimPrefix(account, "phone:")
+			}
+			if user, err := users.GetByTenantIdentity(ctx, tenantID, identityType, identityValue); err == nil && user != nil && strings.TrimSpace(user.ID) != "" {
+				userID = strings.TrimSpace(user.ID)
+				display := displayAccountByUserID[userID]
+				if display == "" {
+					display = rankingDisplayAccountForUser(ctx, tenantID, users, userID, account)
+					displayAccountByUserID[userID] = display
+				}
+				return rankingIdentity{key: "user:" + userID, userID: userID, account: display}
+			}
+		}
+		return rankingIdentity{key: "account:" + account, account: account}
+	}
+
+	byKey := map[string]*userRankingRow{}
+	upsert := func(identity rankingIdentity) *userRankingRow {
+		if identity.key == "" || identity.account == "" || !isUserRankingAccount(identity.account) {
+			return nil
+		}
+		row := byKey[identity.key]
+		if row == nil {
+			row = &userRankingRow{UserID: identity.userID, UserEmail: identity.account, UserName: identity.account}
+			byKey[identity.key] = row
+			return row
+		}
+		row.UserID = preferNonEmpty(row.UserID, identity.userID)
+		row.UserEmail = preferredUserRankingAccount(row.UserEmail, identity.account)
+		row.UserName = row.UserEmail
+		return row
+	}
+
+	for _, t := range tokenRows {
+		row := upsert(resolve(t.UserID, t.UserEmail))
+		if row != nil {
+			row.TotalTokens += t.Usage.TotalTokens()
+		}
+	}
+	for _, d := range durationRows {
+		row := upsert(resolve(d.UserID, d.UserEmail))
+		if row != nil {
+			row.DurationSeconds += d.DurationSeconds
+			row.OnlineSeconds += d.OnlineSeconds
+		}
+	}
+	merged := make([]userRankingRow, 0, len(byKey))
+	for _, row := range byKey {
+		merged = append(merged, *row)
+	}
+	return merged
+}
+
+func rankingDisplayAccountForUser(ctx context.Context, tenantID string, users store.UserRepository, userID, fallback string) string {
+	fallback = strings.ToLower(strings.TrimSpace(fallback))
+	if users == nil || strings.TrimSpace(userID) == "" {
+		return fallback
+	}
+	identities, err := users.ListIdentitiesByUser(ctx, tenantID, userID)
+	if err == nil {
+		for _, identity := range identities {
+			if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "email") {
+				continue
+			}
+			value := strings.ToLower(strings.TrimSpace(identity.Value))
+			if isUserRankingEmail(value) {
+				return value
+			}
+		}
+		for _, identity := range identities {
+			if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "phone") {
+				continue
+			}
+			value := strings.TrimSpace(identity.Value)
+			if value != "" && isUserRankingPhone("phone:"+value) {
+				return "phone:" + value
+			}
+		}
+	}
+	if user, err := users.GetByID(ctx, userID); err == nil && user != nil {
+		account := strings.ToLower(strings.TrimSpace(user.Email))
+		if isUserRankingAccount(account) {
+			return preferredUserRankingAccount(account, fallback)
+		}
+	}
+	return fallback
+}
+
+func preferredUserRankingAccount(current, candidate string) string {
+	current = strings.ToLower(strings.TrimSpace(current))
+	candidate = strings.ToLower(strings.TrimSpace(candidate))
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	if isUserRankingEmail(candidate) && !isUserRankingEmail(current) {
+		return candidate
+	}
+	return current
+}
+
+func preferNonEmpty(current, candidate string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	return strings.TrimSpace(candidate)
+}
+
 func assignUserRankingRanks(rows []userRankingRow) {
 	tokenOrder := append([]userRankingRow(nil), rows...)
 	sort.Slice(tokenOrder, func(i, j int) bool {
 		if tokenOrder[i].TotalTokens == tokenOrder[j].TotalTokens {
 			if tokenOrder[i].OnlineSeconds == tokenOrder[j].OnlineSeconds {
-				return tokenOrder[i].UserEmail < tokenOrder[j].UserEmail
+				return userRankingLessByIdentity(tokenOrder[i], tokenOrder[j])
 			}
 			return tokenOrder[i].OnlineSeconds > tokenOrder[j].OnlineSeconds
 		}
@@ -140,13 +252,13 @@ func assignUserRankingRanks(rows []userRankingRow) {
 	})
 	tokenRanks := map[string]int{}
 	for i, row := range tokenOrder {
-		tokenRanks[row.UserEmail] = i + 1
+		tokenRanks[userRankingRowKey(row)] = i + 1
 	}
 	durationOrder := append([]userRankingRow(nil), rows...)
 	sort.Slice(durationOrder, func(i, j int) bool {
 		if durationOrder[i].DurationSeconds == durationOrder[j].DurationSeconds {
 			if durationOrder[i].OnlineSeconds == durationOrder[j].OnlineSeconds {
-				return durationOrder[i].UserEmail < durationOrder[j].UserEmail
+				return userRankingLessByIdentity(durationOrder[i], durationOrder[j])
 			}
 			return durationOrder[i].OnlineSeconds > durationOrder[j].OnlineSeconds
 		}
@@ -154,12 +266,30 @@ func assignUserRankingRanks(rows []userRankingRow) {
 	})
 	durationRanks := map[string]int{}
 	for i, row := range durationOrder {
-		durationRanks[row.UserEmail] = i + 1
+		durationRanks[userRankingRowKey(row)] = i + 1
 	}
 	for i := range rows {
-		rows[i].TokenRank = tokenRanks[rows[i].UserEmail]
-		rows[i].DurationRank = durationRanks[rows[i].UserEmail]
+		key := userRankingRowKey(rows[i])
+		rows[i].TokenRank = tokenRanks[key]
+		rows[i].DurationRank = durationRanks[key]
 	}
+}
+
+func userRankingRowKey(row userRankingRow) string {
+	userID := strings.TrimSpace(row.UserID)
+	if userID != "" {
+		return "user:" + userID
+	}
+	return "account:" + strings.ToLower(strings.TrimSpace(row.UserEmail))
+}
+
+func userRankingLessByIdentity(a, b userRankingRow) bool {
+	aEmail := strings.ToLower(strings.TrimSpace(a.UserEmail))
+	bEmail := strings.ToLower(strings.TrimSpace(b.UserEmail))
+	if aEmail != bEmail {
+		return aEmail < bEmail
+	}
+	return strings.TrimSpace(a.UserID) < strings.TrimSpace(b.UserID)
 }
 
 func sortUserRankingRows(rows []userRankingRow, dimension string) {
@@ -167,7 +297,7 @@ func sortUserRankingRows(rows []userRankingRow, dimension string) {
 		if dimension == "duration" {
 			if rows[i].DurationSeconds == rows[j].DurationSeconds {
 				if rows[i].OnlineSeconds == rows[j].OnlineSeconds {
-					return rows[i].UserEmail < rows[j].UserEmail
+					return userRankingLessByIdentity(rows[i], rows[j])
 				}
 				return rows[i].OnlineSeconds > rows[j].OnlineSeconds
 			}
@@ -176,7 +306,7 @@ func sortUserRankingRows(rows []userRankingRow, dimension string) {
 		if rows[i].TotalTokens == rows[j].TotalTokens {
 			if rows[i].DurationSeconds == rows[j].DurationSeconds {
 				if rows[i].OnlineSeconds == rows[j].OnlineSeconds {
-					return rows[i].UserEmail < rows[j].UserEmail
+					return userRankingLessByIdentity(rows[i], rows[j])
 				}
 				return rows[i].OnlineSeconds > rows[j].OnlineSeconds
 			}

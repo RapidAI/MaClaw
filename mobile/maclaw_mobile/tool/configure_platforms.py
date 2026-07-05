@@ -355,6 +355,7 @@ def configure_android_main_activity() -> None:
     target = package_dir / "MainActivity.kt"
     candidates = [
         kotlin_root / "com/example/maclaw_mobile/MainActivity.kt",
+        kotlin_root / "top/mypapers/maclaw/maclaw_mobile/MainActivity.kt",
         target,
     ]
     source = next((item for item in candidates if item.exists()), None)
@@ -369,9 +370,10 @@ def configure_android_main_activity() -> None:
         flags=re.MULTILINE,
     )
     target.write_text(body, encoding="utf-8")
-    if source != target:
-        source.unlink()
-        prune_empty_dirs(source.parent, kotlin_root)
+    for candidate in candidates:
+        if candidate != target and candidate.exists():
+            candidate.unlink()
+            prune_empty_dirs(candidate.parent, kotlin_root)
 
 
 def prune_empty_dirs(path: Path, stop: Path) -> None:

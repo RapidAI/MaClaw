@@ -718,6 +718,7 @@ type PhaseInputFieldSpec struct {
 	Label           string                 `json:"label"`
 	Type            string                 `json:"type"`
 	Required        bool                   `json:"required,omitempty"`
+	Sensitive       bool                   `json:"sensitive,omitempty"`
 	Description     string                 `json:"description,omitempty"`
 	Placeholder     string                 `json:"placeholder,omitempty"`
 	LabelI18N       map[string]string      `json:"label_i18n,omitempty"`

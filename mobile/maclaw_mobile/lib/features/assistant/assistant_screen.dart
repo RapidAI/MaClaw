@@ -22,6 +22,24 @@ import 'search_history.dart';
 
 bool canRetryAssistantQuery(String query) => query.trim().isNotEmpty;
 
+String assistantQueryWithVoiceTranscript(
+  String currentQuery,
+  String transcript, {
+  String previousTranscript = '',
+}) {
+  final recognized = transcript.trim();
+  if (recognized.isEmpty) return currentQuery;
+
+  var base = currentQuery.trimRight();
+  final previous = previousTranscript.trim();
+  if (previous.isNotEmpty && base.endsWith(previous)) {
+    base = base.substring(0, base.length - previous.length).trimRight();
+  }
+  if (base.isEmpty) return recognized;
+  if (base == recognized || base.endsWith(recognized)) return base;
+  return '$base\n$recognized';
+}
+
 typedef AssistantDocumentPathPicker = Future<String?> Function();
 typedef AssistantTextAction = Future<void> Function(String text);
 
@@ -88,6 +106,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   bool _listening = false;
   String? _voiceStatus;
   String? _handledSharedIntentId;
+  String _lastVoiceTranscript = '';
 
   @override
   void initState() {
@@ -126,11 +145,18 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final language = ref.read(appPreferencesProvider).valueOrNull?.language ??
         appLanguageChinese;
     final localeId = assistantSpeechLocaleForLanguage(language);
+    _lastVoiceTranscript = '';
     final ready = await _voiceInput.start(
       localeId: localeId,
       onText: (text) {
         if (!mounted) return;
-        _setQuery(text);
+        final merged = assistantQueryWithVoiceTranscript(
+          _queryController.text,
+          text,
+          previousTranscript: _lastVoiceTranscript,
+        );
+        _lastVoiceTranscript = text.trim();
+        _setQuery(merged);
         setState(() => _voiceStatus = '已识别语音，检查后可发送给 AI 助手');
       },
     );
@@ -210,8 +236,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       return;
     }
     if (session.isLoading) return;
-    final searchEnabled =
-        session.valueOrNull?.bootstrap?.features.search ?? true;
+    final assistantEnabled =
+        session.valueOrNull?.bootstrap?.features.assistant ?? true;
     _handledSharedIntentId = shared.id;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -230,7 +256,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             .setActiveSharedCitation(citation);
       }
       _setQuery(prompt);
-      if (searchEnabled) {
+      if (assistantEnabled) {
         ref.read(assistantSearchProvider.notifier).search(prompt);
       }
       ref.read(mobileSharedIntentProvider.notifier).clear(shared.id);
@@ -248,12 +274,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final sharedCitation =
         activeTab.sharedCitation ?? ref.watch(assistantSharedCitationProvider);
     final history = ref.watch(searchHistoryProvider);
-    final searchEnabled = ref
+    final assistantEnabled = ref
             .watch(sessionControllerProvider)
             .valueOrNull
             ?.bootstrap
             ?.features
-            .search ??
+            .assistant ??
         true;
     if (_queryController.text != query) {
       _queryController.text = query;
@@ -331,7 +357,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         ],
         const SizedBox(height: 10),
         _AssistantQuickPrompts(onSelect: _setQuery),
-        if (!searchEnabled) ...[
+        if (!assistantEnabled) ...[
           const SizedBox(height: 10),
           const _AssistantSearchUnavailableBanner(),
         ],
@@ -340,7 +366,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           children: [
             Expanded(
               child: FilledButton.icon(
-                onPressed: query.trim().isEmpty || !searchEnabled
+                onPressed: query.trim().isEmpty || !assistantEnabled
                     ? null
                     : () => _searchManually(query),
                 icon: const Icon(Icons.send_outlined),
@@ -434,10 +460,10 @@ class _AssistantWorkspaceIntro extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
-            Wrap(
+            const Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: const [
+              children: [
                 _AssistantCapabilityChip(
                   icon: Icons.mic_none,
                   label: '语音输入',
@@ -509,7 +535,7 @@ class _AssistantSearchUnavailableBanner extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                '当前 Hub 未启用助手联网能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
+                '当前 Hub 未启用 AI 助手服务能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.onSecondaryContainer,
                     ),
@@ -1008,7 +1034,8 @@ String assistantAnswerMarkdown({
 String assistantSearchDraftTitle(String query) => assistantDraftTitle(query);
 
 @Deprecated(
-    'Use assistantAnswerMarkdown for the mobile AI assistant workspace.')
+  'Use assistantAnswerMarkdown for the mobile AI assistant workspace.',
+)
 String assistantSearchResultMarkdown({
   required String query,
   required String answer,

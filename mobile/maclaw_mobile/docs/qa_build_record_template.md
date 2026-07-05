@@ -25,10 +25,15 @@ Discovered Hub URL:
 Tenant ID: tenant identifier
 LLM access mode: maclaw_official / desktop_qr_third_party
 Desktop GUI QR authorization ID: not-used-official-mode / desktop QR authorization ID
+Launch splash logo evidence:
 # If any final gate below is waived, include every waived gate name plus a
 # trackable waiver ticket/issue/approval reference such as QA-42 or #123.
 Known issues / waivers:
 ```
+
+`Launch splash logo evidence` must include a traceable cold-start screenshot or
+recording ID showing the MaClaw logo splash screen and explicitly state that
+Flutter placeholder/template branding is absent.
 
 ## Android Signed Build
 
@@ -39,6 +44,8 @@ Version/build number: app version + build number, such as 1.0.0+42
 Signing identity: release alias, SHA fingerprint, upload key, or certificate ID
 Installer channel:
 Device model / OS:
+# Include signed install plus app launch evidence from the QA device, with a
+# traceable screenshot/recording ID.
 Android signed install result:
 Account screen shows selected Hub and tenant:
 No custom Hub URL setting found:
@@ -102,6 +109,8 @@ Team ID:
 Provisioning profiles: Runner and Share Extension profile UUID/file/name
 App group: group.top.mypapers.maclaw.mobile
 Device model / OS:
+# Include TestFlight/development install plus app launch evidence from the QA
+# device, with a traceable screenshot/recording ID.
 iOS signed install result:
 URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER):
 ```
@@ -111,13 +120,13 @@ URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER):
 profiles` must mention both Runner and Share Extension profiles.
 Do not write only `UUID`; include the actual profile UUID value,
 `.mobileprovision` file, or explicit profile name for each target.
-Use `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+Use `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
 to print archive/export context before the signed archive is created. After
 the local archive exists, rerun
-`python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+`python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
 to print record-relative iOS evidence with the same archive/export context. For
 an already-built archive or TestFlight build, use
-`python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+`python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
 to generate paste-ready archive/build, Team ID, and provisioning-profile
 evidence.
 
@@ -193,9 +202,17 @@ LLM access evidence:
 # desktop GUI QR. Also record that no redemption-code login and no arbitrary
 # third-party endpoint, base URL, provider URL, or API key fields are present.
 LLM setup surface restriction:
+# Prove the signed-in first screen opens to the `AI助手` bottom-tab entry, not
+# the legacy `查信息` entry. Include a traceable screenshot/recording ID with
+# visible `主对话`/secondary-tab controls and the microphone/voice input entry
+# from the assistant composer.
+Assistant first screen evidence:
 AI assistant query:
-# Include voice transcription evidence and photo/image/screenshot assistant
-# input evidence, plus a recorded visible citation URL or document upload task ID.
+# Include voice transcription evidence showing the recognized transcript filled
+# the AI助手 composer/input and was sent or ready to send, plus
+# photo/image/screenshot assistant input evidence, a traceable
+# screenshot/recording ID, and a recorded visible citation URL or document
+# upload task ID.
 Voice/photo assistant input evidence:
 # Include at least one visible HTTPS source URL shown in the answer/result
 # citations area, not only a backend/API log URL.
@@ -266,11 +283,13 @@ Server credentials retained after local reset:
 Server profiles/SSH credentials clear confirmation:
 ```
 
-## Manual SSH Smoke Test
+## Backend SSH Session Smoke Test
 
 ```text
 # If notification evidence recorded a server-profile:<id> payload, include the
-# same server-profile:<id> in every SSH smoke evidence line below.
+# same server-profile:<id> and backend SSH session ID in every SSH smoke
+# evidence line below. The session should be created/attached through the
+# agent/backend session manager, not only a phone-local ad hoc terminal.
 Host type:
 Auth mode:
 Connect result:
@@ -279,15 +298,16 @@ Command output excerpt:
 Disconnect result:
 Reconnect result:
 Copied output evidence:
-# Include the SSH terminal/log output preview, the sensitive-data warning, and
-# proof that the output was redacted/masked/sanitized before AI analysis.
+# Include the backend SSH session terminal/log output preview, the
+# sensitive-data warning, and proof that the output was redacted/masked/
+# sanitized before AI analysis.
 AI analysis confirmation and sensitive-data warning:
 # Include AI explanation, command drafts, command-draft:<id>,
 # manual/not-auto-executed evidence, and proof that the result used
-# redacted/masked/sanitized SSH terminal/log output.
+# redacted/masked/sanitized backend SSH session terminal/log output.
 AI explanation / command draft result:
-# If used, mention Hub/tenant warning confirmation and the SSH terminal or
-# pasted/copied output being handed to the digital employee.
+# If used, mention Hub/tenant warning confirmation and the backend SSH session
+# or pasted/copied output being handed to the digital employee.
 Digital employee handoff warning, if used:
 Credential deletion confirmation:
 ```

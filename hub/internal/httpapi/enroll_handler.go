@@ -363,10 +363,12 @@ func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 		hubURL := mobileRequestBaseURL(r)
 		hubCenterURL := emailLoginHubCenterURL(r)
+		phoneNumber, _ := identity.BoundPhoneNumberForUser(r.Context(), user)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"access_token":  token,
 			"expires_in":    30 * 86400,
 			"tenant_id":     user.TenantID,
+			"phone_number":  phoneNumber,
 			"hub_url":       hubURL,
 			"hubcenter_url": hubCenterURL,
 			"hub": map[string]any{
@@ -374,9 +376,10 @@ func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 				"url":      hubURL,
 			},
 			"user": map[string]any{
-				"tenant_id": user.TenantID,
-				"email":     user.Email,
-				"sn":        user.SN,
+				"tenant_id":    user.TenantID,
+				"email":        user.Email,
+				"phone_number": phoneNumber,
+				"sn":           user.SN,
 			},
 			"llm": map[string]any{
 				"mode": "maclaw_official",

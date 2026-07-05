@@ -62,18 +62,21 @@ Status legend:
 | Checklist item | Status | Evidence needed |
 | --- | --- | --- |
 | Login with phone number and SMS verification through HubCenter discovery | Automated evidence | `test/auth_service_test.dart`, `test/login_screen_test.dart`, `test/app_smoke_test.dart`; real SMS and Hub discovery smoke remain manual |
+| Cold start shows the MaClaw logo splash screen and no Flutter placeholder/template branding | Partial | `test/app_smoke_test.dart`, `test/release_docs_test.dart`, native launch asset checks, plus signed-build cold-start screenshot or recording |
+| Signed-in launch opens the GUI-like `AI助手` first tab with `主对话`/secondary-tab controls, visible voice input, and no legacy `查信息` entry | Partial | `test/app_smoke_test.dart`, `test/assistant_screen_test.dart`, `test/mobile_feature_flags_test.dart`, plus signed-build real-device first-screen evidence |
 | AI assistant shows citations, shares results, separates starred frequent questions from recent history, and turns results into each document template type | Automated evidence | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart` |
 | AI assistant result copy/share/draft text and citation copy/share text redact common secrets before externalizing content | Automated evidence | `test/assistant_screen_test.dart` |
 | AI assistant history stores locally redacted answer previews | Automated evidence | `test/assistant_screen_test.dart` |
-| Voice transcript and photo/image/screenshot assistant input produce cited answers or document tasks | Partial | `test/assistant_screen_test.dart`, `test/platform_permissions_test.dart`, `tool/validate_qa_build_record_test.py`; real-device voice/photo smoke remains manual |
+| Voice transcript and photo/image/screenshot assistant input produce cited answers or document tasks, including photo/image assistant input evidence | Partial | `test/assistant_screen_test.dart`, `test/platform_permissions_test.dart`, `tool/validate_qa_build_record_test.py`; real-device voice/photo smoke remains manual |
 | Shared URL remains a citation fallback when assistant online access returns no extra source | Automated evidence | `test/assistant_screen_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Photo, gallery screenshot/image, or file import from assistant enters document parsing flow | Automated evidence | `test/assistant_screen_test.dart` |
 | Document create, import long-running task guidance, edit, table/comment insertion, AI processing, export, and share PDF/Word/Markdown | Automated evidence | `test/documents_screen_test.dart`, `test/documents_state_test.dart` |
-| Server profile with tag/note, SSH connect, read-only command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis, and credential deletion | Partial | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/secure_vault_test.dart`, `tool/validate_qa_build_record_test.py`; real SSH connection remains manual |
+| Server profile with tag/note, backend SSH session creation/attach, session list/status, read-only command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis, and credential deletion | Partial | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/secure_vault_test.dart`, `tool/validate_qa_build_record_test.py`; current mobile direct SSH terminal is transitional and must move toward GUI-style backend session management |
 | Pasted SSH output/logs can be handed to online digital employee with Hub/tenant sensitive-data warning and server-profile metadata when available | Automated evidence | `test/servers_screen_test.dart`, `test/digital_employees_screen_test.dart` |
 | Typed digital employee task creates mobile emergency prompt, includes remote policy/status context, polls, copies/shares result, and keeps remote authorization rules | Automated evidence | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1` |
 | Document/export, digital employee, and SSH abnormal notifications are delivered with typed payload/open evidence, opened payloads route back to the matching mobile tab with a recovery prompt, and document/digital employee notification messages redact common secrets | Partial | `test/mobile_notification_service_test.dart`, `test/app_smoke_test.dart`, `test/documents_state_test.dart`, `test/digital_employees_controller_test.dart`, `test/servers_screen_test.dart`, `tool/validate_qa_build_record_test.py`; real-device notification delivery remains manual |
 | Offline or weak-network warnings appear and Hub services recover after connectivity returns | Partial | `test/mobile_network_status_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_realtime_client_test.dart`, `tool/validate_qa_build_record_test.py`; real Hub/network recovery smoke remains manual |
+| Hub smoke records network offline/recovery evidence for the same tenant session | Partial | `test/mobile_network_status_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_realtime_client_test.dart`, plus real Hub/network recovery smoke |
 | Theme and speech language can be changed from account screen | Automated evidence | `test/account_screen_test.dart`, `test/app_preferences_test.dart` |
 | Clear local work records without deleting saved server credentials | Automated evidence | `test/account_screen_test.dart`, `test/mobile_local_store_test.dart` |
 | Clear server profiles/SSH credentials separately | Automated evidence | `test/account_screen_test.dart`, `test/secure_vault_test.dart`, `test/servers_controller_test.dart` |
@@ -130,15 +133,17 @@ These items are intentionally not closed by local automation:
 - iOS runtime permission prompts for camera, microphone, speech recognition,
   photo library, local network, and notifications, with `permission-grant:<id>`
   evidence.
-- Real SSH maintenance smoke test against a server, including host type, auth mode,
-  connect result, read-only command, command output excerpt,
+- Real backend SSH session smoke test against a server, including host type,
+  auth mode, session creation/attach, read-only command, command output excerpt,
   disconnect result, reconnect result, copied output evidence, AI analysis
   confirmation, and credential deletion confirmation.
 - Hub discovery smoke test with account, selected HubCenter, discovered Hub,
-  tenant, LLM mode/QR authorization evidence, bootstrap, AI assistant query with
-  citations, voice transcription, photo/image assistant input, shared result,
-  document draft, document upload/export, digital employee task, realtime
-  status, notification delivery, network offline/recovery, API base URL, and
-  realtime Hub URL confirmation.
+  tenant, LLM mode/QR authorization evidence, bootstrap, cold-start MaClaw logo
+  splash evidence with no Flutter placeholder/template branding, signed-in
+  `AI助手` first-screen evidence with visible voice input and no legacy `查信息`
+  entry, AI assistant query with citations, voice transcription, photo/image
+  assistant input, shared result, document draft, document upload/export,
+  digital employee task, realtime status, notification delivery, network
+  offline/recovery, API base URL, and realtime Hub URL confirmation.
 
 Record these results with `docs/qa_device_checklist.md`.

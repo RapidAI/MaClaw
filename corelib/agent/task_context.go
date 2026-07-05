@@ -67,6 +67,10 @@ type TaskContextDecision struct {
 	// Source indicates which signal drove the decision (e.g. "structural",
 	// "llm", "explicit").
 	Source string
+
+	// ConfirmedContinuation is true only when the classifier explicitly
+	// identified the user message as a continuation of the current task.
+	ConfirmedContinuation bool
 }
 
 // ArchivedTask is a compact snapshot of a completed or abandoned task,
@@ -348,16 +352,11 @@ func fallbackTaskContextDecision(cause string) TaskContextDecision {
 
 // parseLLMResponse interprets the LLM's classification response.
 func (m *TaskContextManager) parseLLMResponse(resp string, archived []ArchivedTask) TaskContextDecision {
-	resp = strings.TrimSpace(strings.ToLower(resp))
-
-	// Strip markdown fences if present.
-	resp = strings.TrimPrefix(resp, "```")
-	resp = strings.TrimSuffix(resp, "```")
-	resp = strings.TrimSpace(resp)
+	resp = normalizeTaskContextClassifierResponse(resp)
 
 	// The LLM should respond with one of: "continue", "new", "recall:<id>"
-	if strings.HasPrefix(resp, "recall:") {
-		taskID := strings.TrimSpace(strings.TrimPrefix(resp, "recall:"))
+	if strings.HasPrefix(strings.ToLower(resp), "recall:") {
+		taskID := strings.TrimSpace(resp[len("recall:"):])
 		// Validate the task ID exists.
 		for _, t := range archived {
 			if t.ID == taskID {
@@ -369,15 +368,15 @@ func (m *TaskContextManager) parseLLMResponse(resp string, archived []ArchivedTa
 				}
 			}
 		}
-		log.Printf("[TaskContext] LLM returned recall:%s but task not found in archive, treating as new", taskID)
+		log.Printf("[TaskContext] LLM returned recall:%s but task not found in archive, preserving current task context", taskID)
 		return TaskContextDecision{
-			Action: TaskNew,
-			Reason: fmt.Sprintf("LLM said recall:%s but task not found", taskID),
+			Action: TaskContinue,
+			Reason: fmt.Sprintf("LLM said recall:%s but task not found; preserving current task context", taskID),
 			Source: "llm",
 		}
 	}
 
-	if strings.HasPrefix(resp, "new") {
+	if strings.EqualFold(resp, "new") {
 		return TaskContextDecision{
 			Action: TaskNew,
 			Reason: "LLM classified as new task",
@@ -385,11 +384,12 @@ func (m *TaskContextManager) parseLLMResponse(resp string, archived []ArchivedTa
 		}
 	}
 
-	if strings.HasPrefix(resp, "continue") {
+	if strings.EqualFold(resp, "continue") {
 		return TaskContextDecision{
-			Action: TaskContinue,
-			Reason: "LLM classified as continuation",
-			Source: "llm",
+			Action:                TaskContinue,
+			Reason:                "LLM classified as continuation",
+			Source:                "llm",
+			ConfirmedContinuation: true,
 		}
 	}
 
@@ -399,6 +399,31 @@ func (m *TaskContextManager) parseLLMResponse(resp string, archived []ArchivedTa
 		Action: TaskContinue,
 		Reason: fmt.Sprintf("unrecognized LLM response %q; preserving current task context", TruncateRunes(resp, 50)),
 		Source: "llm",
+	}
+}
+
+func normalizeTaskContextClassifierResponse(resp string) string {
+	resp = strings.TrimSpace(resp)
+	if strings.HasPrefix(resp, "```") && strings.HasSuffix(resp, "```") {
+		resp = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(resp, "```"), "```"))
+		if i := strings.IndexAny(resp, "\r\n"); i >= 0 {
+			firstLine := strings.TrimSpace(resp[:i])
+			rest := strings.TrimSpace(resp[i+1:])
+			if isTaskContextFenceLanguage(firstLine) && rest != "" {
+				resp = rest
+			}
+		}
+	}
+	resp = strings.Trim(resp, "`\"' \t\r\n")
+	return strings.TrimSpace(resp)
+}
+
+func isTaskContextFenceLanguage(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "text", "txt", "plain", "plaintext", "json", "md", "markdown":
+		return true
+	default:
+		return false
 	}
 }
 

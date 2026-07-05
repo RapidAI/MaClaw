@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +148,28 @@ func TestPreviousTaskDismissedMessageUsesMessageLanguage(t *testing.T) {
 	}
 	if got := localizedPreviousTaskDismissedMessage("en-US"); got != "Previous task dismissed. Tell me the new task." {
 		t.Fatalf("en-US message = %q", got)
+	}
+}
+
+func TestUnfinishedSlotProjectMatchesCurrent(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "project")
+	sameProjectWithDot := filepath.Join(project, ".")
+	otherProject := filepath.Join(t.TempDir(), "other")
+
+	if !unfinishedSlotProjectMatchesCurrent(&agent.UnfinishedTaskSlot{ProjectPath: project}, sameProjectWithDot) {
+		t.Fatal("expected cleaned equivalent project paths to match")
+	}
+	if !unfinishedSlotProjectMatchesCurrent(&agent.UnfinishedTaskSlot{ProjectPath: " " + project + " "}, " "+sameProjectWithDot+" ") {
+		t.Fatal("expected trimmed equivalent project paths to match")
+	}
+	if unfinishedSlotProjectMatchesCurrent(&agent.UnfinishedTaskSlot{ProjectPath: project}, otherProject) {
+		t.Fatal("expected different project paths not to match")
+	}
+	if !unfinishedSlotProjectMatchesCurrent(&agent.UnfinishedTaskSlot{ProjectPath: ""}, otherProject) {
+		t.Fatal("expected empty slot project path to be allowed")
+	}
+	if !unfinishedSlotProjectMatchesCurrent(&agent.UnfinishedTaskSlot{ProjectPath: project}, "") {
+		t.Fatal("expected empty current project path to be allowed")
 	}
 }
 

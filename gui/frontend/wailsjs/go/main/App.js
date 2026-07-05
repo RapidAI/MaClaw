@@ -671,6 +671,10 @@ export function StartWorkflowDirect(arg1, arg2) {
   return window['go']['main']['App']['StartWorkflowDirect'](arg1, arg2);
 }
 
+export function StartWorkflowDirectWithInput(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartWorkflowDirectWithInput'](arg1, arg2, arg3);
+}
+
 export function RefreshWorkflowV2StateForTab(arg1, ...arg2) {
   return window['go']['main']['App']['RefreshWorkflowV2StateForTab'](arg1, ...arg2);
 }

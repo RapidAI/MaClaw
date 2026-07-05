@@ -63,7 +63,7 @@ class AppShell extends ConsumerWidget {
 const defaultMobileFeatures = MobileFeatures(
   search: true,
   documents: true,
-  localSsh: true,
+  backendSshSessions: true,
   digitalEmployees: true,
   pushNotifications: false,
 );
@@ -89,7 +89,12 @@ const _allMobileTabs = [
     Icons.description_outlined,
     'documents',
   ),
-  MobileAppTab('/servers', _remoteTabLabel, Icons.lan_outlined, 'local_ssh'),
+  MobileAppTab(
+    '/servers',
+    _remoteTabLabel,
+    Icons.lan_outlined,
+    'backend_ssh_sessions',
+  ),
   MobileAppTab(
     '/employees',
     _employeesTabLabel,
@@ -133,7 +138,7 @@ String sharedIntentTargetPath(
     }
     return _firstEnabledPathExcept(features, {'/assistant', '/documents'});
   }
-  if (intent.opensAssistant && features.search) {
+  if (intent.opensAssistant && features.assistant) {
     return '/assistant';
   }
   return mobileInitialPathForFeatures(features);
@@ -172,10 +177,11 @@ class MobileAppTab {
 
   bool enabledBy(MobileFeatures features) {
     return switch (feature) {
-      'assistant' => true,
+      'assistant' => features.assistant,
       'search' => features.search,
       'documents' => features.documents,
-      'local_ssh' => features.localSsh,
+      'backend_ssh_sessions' => features.backendSshSessions,
+      'local_ssh' => features.backendSshSessions,
       'employees' => features.digitalEmployees,
       _ => true,
     };

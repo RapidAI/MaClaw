@@ -80,11 +80,56 @@ void main() {
       bootstrap.services.digitalEmployeesPath,
       '/api/mobile/digital-employees',
     );
+    expect(bootstrap.features.assistant, isTrue);
     expect(bootstrap.features.search, isTrue);
-    expect(bootstrap.features.localSsh, isTrue);
+    expect(bootstrap.features.backendSshSessions, isTrue);
     expect(bootstrap.features.digitalEmployees, isTrue);
     expect(bootstrap.limits.maxUploadBytes, 26214400);
     expect(bootstrap.limits.maxExportJobs, 3);
+  });
+
+  test(
+      'backend SSH session feature prefers new field and accepts legacy Hub field',
+      () {
+    final enabled = MobileBootstrap.fromJson({
+      'features': {
+        'backend_ssh_sessions': true,
+        'local_ssh': false,
+      },
+    });
+    final legacy = MobileBootstrap.fromJson({
+      'features': {
+        'local_ssh': true,
+      },
+    });
+
+    expect(enabled.features.backendSshSessions, isTrue);
+    expect(legacy.features.backendSshSessions, isTrue);
+    expect(legacy.features.localSsh, isTrue);
+  });
+
+  test('assistant feature is independent from search feature', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'features': {
+        'assistant': true,
+        'search': false,
+      },
+    });
+
+    expect(bootstrap.features.assistant, isTrue);
+    expect(bootstrap.features.search, isFalse);
+  });
+
+  test('assistant can be explicitly disabled by Hub bootstrap', () {
+    final bootstrap = MobileBootstrap.fromJson({
+      'features': {
+        'assistant': false,
+        'search': true,
+      },
+    });
+
+    expect(bootstrap.features.assistant, isFalse);
+    expect(bootstrap.features.search, isTrue);
   });
 
   test('detects missing realtime path from bootstrap services', () {

@@ -198,6 +198,11 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	if matched == nil {
 		return &RouteResult{Target: RouteToAgentLoop}
 	}
+	if matched.Type == string(WorkflowUSPatentApplication) && shouldPreferCNPatentApplication(text) {
+		if cnPatent := r.templates.Get(string(WorkflowPatentApplication)); cnPatent != nil {
+			matched = cnPatent
+		}
+	}
 
 	// Step 6: Optional LLM confirmation over the structured template candidate.
 	if r.llmFunc != nil {
@@ -254,6 +259,45 @@ func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
 	}
 	// Without LLM: always default to complex (full SDD) — the safe choice.
 	return ComplexityComplex
+}
+
+func shouldPreferCNPatentApplication(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" || hasUSPatentSignal(lower) {
+		return false
+	}
+	hasPatentApplicationObject := strings.Contains(lower, "专利申请") ||
+		strings.Contains(lower, "發明專利申請") ||
+		strings.Contains(lower, "发明专利") ||
+		strings.Contains(lower, "實用新型") ||
+		strings.Contains(lower, "实用新型") ||
+		strings.Contains(lower, "外观设计") ||
+		strings.Contains(lower, "外觀設計") ||
+		strings.Contains(lower, "交底书") ||
+		strings.Contains(lower, "交底書")
+	if !hasPatentApplicationObject {
+		return false
+	}
+	for _, action := range []string{"写", "撰写", "起草", "准备", "申请", "生成", "制作", "寫", "撰寫", "準備", "申請"} {
+		if strings.Contains(lower, action) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUSPatentSignal(lowerText string) bool {
+	for _, signal := range []string{
+		"uspto", "u.s.", " us ", "usa", "united states", "american patent",
+		"us patent",
+		"美国专利", "美國專利", "美国", "美國",
+		"utility patent", "provisional patent", "non-provisional",
+	} {
+		if strings.Contains(lowerText, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Ambiguous Template Detection ---

@@ -110,6 +110,9 @@ URL_EMBEDDED_CREDENTIAL_RE = re.compile(
 PERMISSION_GRANT_ID_RE = re.compile(
     r"(?i)\bpermission-grant:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
+VISUAL_EVIDENCE_ID_RE = re.compile(
+    r"(?i)\b(?:screenshot|screen-recording|recording|video)[-_: #]?[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
 ANDROID_ARTIFACT_SUFFIXES = (".apk", ".aab")
 DOCUMENT_TEMPLATE_MARKERS = (
     "notice",
@@ -133,6 +136,7 @@ REQUIRED_FIELDS = [
     "Tenant ID",
     "LLM access mode",
     "Desktop GUI QR authorization ID",
+    "Launch splash logo evidence",
     "Artifact path",
     "SHA256",
     "Version/build number",
@@ -182,6 +186,7 @@ REQUIRED_FIELDS = [
     "Discovered Hub/tenant result",
     "LLM access evidence",
     "LLM setup surface restriction",
+    "Assistant first screen evidence",
     AI_ASSISTANT_QUERY_FIELD,
     "Voice/photo assistant input evidence",
     "Visible citations / sources",
@@ -392,6 +397,10 @@ IOS_ONLY_FIELDS = {
     "URL schemes maclaw and ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)",
 }
 
+LAUNCH_SPLASH_LOGO_FIELDS = {
+    "Launch splash logo evidence",
+}
+
 SCOPED_DUAL_PLATFORM_FIELDS = DUAL_PLATFORM_EVIDENCE_FIELDS | {
     "Device model / OS",
 }
@@ -508,6 +517,10 @@ LLM_SETUP_RESTRICTION_FIELDS = {
     "LLM setup surface restriction",
 }
 
+ASSISTANT_FIRST_SCREEN_FIELDS = {
+    "Assistant first screen evidence",
+}
+
 LOGIN_RESULT_FIELDS = {
     "Login result",
 }
@@ -567,10 +580,12 @@ MANUAL_EVIDENCE_FIELDS = {
     "Local network permission",
     "Login result",
     "Bootstrap user/quota/feature flags/service status",
+    "Launch splash logo evidence",
     "HubCenter probe result",
     "Discovered Hub/tenant result",
     "LLM access evidence",
     "LLM setup surface restriction",
+    "Assistant first screen evidence",
     AI_ASSISTANT_QUERY_FIELD,
     "Voice/photo assistant input evidence",
     "Visible citations / sources",
@@ -858,6 +873,10 @@ def _is_attachment_evidence(value: str) -> bool:
     )
 
 
+def _has_visual_evidence_id(value: str) -> bool:
+    return VISUAL_EVIDENCE_ID_RE.search(value) is not None
+
+
 def _is_release_handoff_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -1041,6 +1060,33 @@ def _is_ai_search_query_evidence(value: str) -> bool:
     )
 
 
+def _is_launch_splash_logo_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and "maclaw" in normalized
+        and any(marker in normalized for marker in ("logo", "splash", "launch", "cold start", "startup"))
+        and any(marker in normalized for marker in ("flutter", "placeholder", "template"))
+        and any(marker in normalized for marker in ("not", "absent", "replaced", "removed", "no "))
+        and any(marker in normalized for marker in ("screenshot", "recording", "screen recording", "video"))
+        and _has_visual_evidence_id(value)
+    )
+
+
+def _is_assistant_first_screen_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and ("ai助手" in normalized or "ai assistant" in normalized)
+        and any(marker in normalized for marker in ("first tab", "first screen", "default route", "opens to", "bottom nav"))
+        and any(marker in value for marker in ("主对话", "副对话", "多对话", "多 Tab", "multi-tab", "main tab"))
+        and any(marker in value for marker in ("语音", "麦克风", "voice", "microphone"))
+        and ("查信息" in value or "lookup" in normalized or "search tab" in normalized)
+        and any(marker in normalized for marker in ("not present", "absent", "removed", "no legacy", "not shown", "not visible"))
+        and _has_visual_evidence_id(value)
+    )
+
+
 def _is_mobile_input_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -1049,6 +1095,24 @@ def _is_mobile_input_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("photo", "camera", "image", "picture", "screenshot"))
         and any(marker in normalized for marker in ("assistant", "question", "query", "prompt"))
         and any(marker in normalized for marker in ("search", "citation", "document", "upload task", "task id", "answer"))
+    )
+
+
+def _has_mobile_input_voice_composer_link(value: str) -> bool:
+    normalized = value.strip().lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "filled",
+            "inserted",
+            "entered",
+            "composer",
+            "input box",
+            "sent to assistant",
+            "sent to ai",
+            "发送给 ai",
+            "输入框",
+        )
     )
 
 
@@ -1139,6 +1203,7 @@ def _is_signed_install_result_evidence(value: str) -> bool:
             marker in normalized
             for marker in ("launch", "launched", "opened", "open app", "home screen")
         )
+        and _has_visual_evidence_id(value)
     )
 
 
@@ -2057,6 +2122,10 @@ def missing_required_fields(
             missing.append(
                 f"{field} must describe voice transcription and photo/image assistant input results"
             )
+        if field_values and not all(_has_mobile_input_voice_composer_link(value) for value in field_values):
+            missing.append(
+                f"{field} must prove the recognized voice transcript filled or was sent from the AI助手 input"
+            )
     for field in sorted(CITATION_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_citation_evidence(value) for value in field_values):
@@ -2078,7 +2147,7 @@ def missing_required_fields(
         if field_values and not all(
             _is_signed_install_result_evidence(value) for value in field_values
         ):
-            missing.append(f"{field} must describe signed install and app launch evidence")
+            missing.append(f"{field} must describe signed install/app launch evidence with a traceable screenshot or recording ID")
     for field, markers in sorted(SIGNED_INSTALL_PLATFORM_MARKERS.items()):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
@@ -2190,6 +2259,14 @@ def missing_required_fields(
             _is_bootstrap_service_evidence(value) for value in field_values
         ):
             missing.append(f"{field} must describe bootstrap user/quota/features/service status")
+    for field in sorted(LAUNCH_SPLASH_LOGO_FIELDS):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(
+            _is_launch_splash_logo_evidence(value) for value in field_values
+        ):
+            missing.append(
+                f"{field} must describe cold-start MaClaw logo splash evidence, absence of Flutter placeholder branding, and a traceable screenshot/recording ID"
+            )
     for field in sorted(NETWORK_RECOVERY_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
@@ -2229,6 +2306,14 @@ def missing_required_fields(
         ):
             missing.append(
                 f"{field} must describe phone login plus optional account/settings desktop GUI QR only, with no redemption-code or arbitrary third-party endpoint fields"
+            )
+    for field in sorted(ASSISTANT_FIRST_SCREEN_FIELDS):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(
+            _is_assistant_first_screen_evidence(value) for value in field_values
+        ):
+            missing.append(
+                f"{field} must describe the signed-in AI助手 first tab, multi-tab main/sub conversation UI, visible voice input, absence of the legacy 查信息 entry, and a traceable screenshot/recording ID"
             )
     for field in sorted(LOGIN_RESULT_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2579,6 +2664,8 @@ def missing_required_fields(
         for value in mobile_input_values
     ):
         missing.append("Voice/photo assistant input evidence must reference a recorded citation URL or document upload task ID")
+    if mobile_input_values and not all(_has_visual_evidence_id(value) for value in mobile_input_values):
+        missing.append("Voice/photo assistant input evidence must include a traceable screenshot/recording ID")
     shared_result_values = [
         value for value in values.get("Shared result", []) if value
     ]

@@ -581,9 +581,9 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
     final text = _draftShareText();
     if (text.trim().isEmpty) return;
     await ref.read(documentsDraftTextShareProvider)(
-          text,
-          subject: _editTitleController.text.trim(),
-        );
+      text,
+      subject: _editTitleController.text.trim(),
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()

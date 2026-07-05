@@ -244,6 +244,124 @@ func TestIdentityServiceBindVerifiedPhoneSyncsRouteAndBackfillsLLMRegistry(t *te
 	}
 }
 
+func TestIdentityServiceBindVerifiedEmailRejectsOtherUserEmailIdentity(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	owner := &store.User{
+		ID:               "user_email_identity_owner",
+		TenantID:         store.DefaultTenantID,
+		Email:            "owner@example.com",
+		SN:               "SN-owner-email",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	phoneUser := &store.User{
+		ID:               "user_email_identity_phone",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:17090134628",
+		SN:               "SN-phone-email",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	if err := deps.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+
+	err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "OWNER@example.com")
+	if err == nil || !strings.Contains(err.Error(), "already belongs to another user") {
+		t.Fatalf("BindVerifiedEmailToUser error = %v, want ownership conflict", err)
+	}
+	identities, err := deps.store.Users.ListIdentitiesByUser(ctx, store.DefaultTenantID, phoneUser.ID)
+	if err != nil {
+		t.Fatalf("list phone user identities: %v", err)
+	}
+	for _, identity := range identities {
+		if identity.Type == "email" && strings.EqualFold(identity.Value, "owner@example.com") {
+			t.Fatalf("conflicting email identity should not be bound: %#v", identity)
+		}
+	}
+}
+
+func TestIdentityServiceBindVerifiedEmailAllowsDirtyDuplicatePrimaryAccount(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID:               "user_dirty_primary_phone",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:17090134629",
+		SN:               "SN-dirty-primary-phone",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if _, err := deps.provider.Write.ExecContext(ctx,
+		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"user_dirty_primary_duplicate",
+		store.DefaultTenantID,
+		"dirty@example.com",
+		"SN-dirty-primary-duplicate",
+		"active",
+		"approved",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("seed dirty primary duplicate: %v", err)
+	}
+
+	if err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "DIRTY@example.com"); err != nil {
+		t.Fatalf("BindVerifiedEmailToUser with dirty primary duplicate: %v", err)
+	}
+	resolved, _, err := svc.lookupUserByTenantEmailOrIdentity(ctx, store.DefaultTenantID, "dirty@example.com")
+	if err != nil {
+		t.Fatalf("lookup bound email: %v", err)
+	}
+	if resolved == nil || resolved.ID != phoneUser.ID {
+		t.Fatalf("bound email should resolve to phone user, got %+v", resolved)
+	}
+}
+
 func TestIdentityServiceBindVerifiedPhoneRetriesRouteSyncFailure(t *testing.T) {
 	originalDelays := verifiedPhoneRouteRetryDelays
 	verifiedPhoneRouteRetryDelays = []time.Duration{10 * time.Millisecond}
@@ -621,6 +739,132 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	}
 	if user == nil || user.Email != "user@example.com" || user.SN != enroll.SN {
 		t.Fatalf("unexpected user after confirm: %+v", user)
+	}
+}
+
+func TestEmailLoginUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID:               "user_phone_email_login",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:17090134628",
+		SN:               "SN-phone-email-login",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "znsoft@163.com"); err != nil {
+		t.Fatalf("bind verified email: %v", err)
+	}
+	routeSyncer := &testUserRouteSyncOnly{}
+	svc.SetUserRouteSyncer(routeSyncer)
+	if _, err := deps.provider.Write.ExecContext(ctx,
+		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"user_duplicate_email_login",
+		store.DefaultTenantID,
+		"znsoft@163.com",
+		"SN-duplicate-email-login",
+		"active",
+		"approved",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("seed duplicate email user: %v", err)
+	}
+
+	req, err := svc.RequestEmailLogin(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("RequestEmailLogin: %v", err)
+	}
+	if req == nil || req.Status != "pending_email_confirmation" {
+		t.Fatalf("unexpected login request result: %+v", req)
+	}
+	prefix := "Use this confirm URL for development: "
+	if !strings.HasPrefix(req.Message, prefix) {
+		t.Fatalf("unexpected confirm message: %q", req.Message)
+	}
+	parsedURL, err := url.Parse(strings.TrimPrefix(req.Message, prefix))
+	if err != nil {
+		t.Fatalf("parse confirm URL: %v", err)
+	}
+	viewerToken, user, err := svc.ConfirmEmailLogin(ctx, parsedURL.Query().Get("token"))
+	if err != nil {
+		t.Fatalf("ConfirmEmailLogin: %v", err)
+	}
+	if viewerToken == "" || user == nil || user.ID != phoneUser.ID {
+		t.Fatalf("email login resolved wrong user token=%q user=%+v", viewerToken, user)
+	}
+	if user.Email != "znsoft@163.com" {
+		t.Fatalf("confirmed login user email = %q, want bound login email", user.Email)
+	}
+	if len(routeSyncer.accounts) != 1 || routeSyncer.accounts[0] != "znsoft@163.com" {
+		t.Fatalf("confirm should sync bound email route, accounts=%#v", routeSyncer.accounts)
+	}
+	routeSyncer.syncCalls = 0
+	routeSyncer.accounts = nil
+	routeSyncer.tenants = nil
+	poll, err := svc.PollEmailLogin(ctx, req.PollID)
+	if err != nil {
+		t.Fatalf("PollEmailLogin: %v", err)
+	}
+	if poll == nil || poll.Status != "confirmed" || poll.Email != "znsoft@163.com" || poll.User == nil || poll.User.Email != "znsoft@163.com" {
+		t.Fatalf("poll should return bound login email, got %+v", poll)
+	}
+	if poll.PhoneNumber != "17090134628" || poll.User.PhoneNumber != "17090134628" {
+		t.Fatalf("poll should return bound phone number, got %+v", poll)
+	}
+	if len(routeSyncer.accounts) != 1 || routeSyncer.accounts[0] != "znsoft@163.com" {
+		t.Fatalf("poll should sync bound email route, accounts=%#v", routeSyncer.accounts)
+	}
+	tenantID, found, ambiguous, err := svc.ResolveTenantByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if tenantID != store.DefaultTenantID || !found || ambiguous {
+		t.Fatalf("ResolveTenantByEmail bound email tenant=%q found=%v ambiguous=%v", tenantID, found, ambiguous)
+	}
+	users, err := deps.store.Users.List(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("email login changed user count: %+v", users)
+	}
+
+	enroll, err := svc.StartEnrollment(ctx, "znsoft@163.com", "office-pc", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("StartEnrollment with bound email: %v", err)
+	}
+	if enroll == nil || enroll.UserID != phoneUser.ID || enroll.Email != "znsoft@163.com" {
+		t.Fatalf("unexpected enrollment for bound email: %+v", enroll)
+	}
+	users, err = deps.store.Users.List(ctx)
+	if err != nil {
+		t.Fatalf("list users after enroll: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("bound-email enrollment changed user count: %+v", users)
 	}
 }
 

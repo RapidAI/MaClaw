@@ -15,6 +15,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
     SendRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 }),
     VerifyRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true }),
+    PatchConfigFields: vi.fn().mockResolvedValue({}),
     CreateMobileAuthDesktopQRSession: vi.fn().mockResolvedValue({
         qr_payload: '{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://hub.example"}',
         expires_at: '2026-07-05T12:00:00Z',
@@ -22,7 +23,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
+import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, PatchConfigFields, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -338,6 +339,14 @@ describe('AboutPanel', () => {
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
         expect(screen.queryByText('Mobile Auth QR')).toBeNull();
+    });
+
+    it('hydrates missing registered phone from hub probe for email accounts', async () => {
+        vi.mocked(ProbeRemoteHub).mockResolvedValueOnce({ tenant_name: 'Acme Team', phone_number: '17090134628' });
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(await screen.findByText('17090134628')).toBeTruthy();
+        await waitFor(() => expect(PatchConfigFields).toHaveBeenCalledWith({ remote_mobile: '17090134628' }));
     });
 
     it('probes tenant metadata with a phone account identity', async () => {

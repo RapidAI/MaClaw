@@ -114,6 +114,86 @@ func TestUserRepositoryIdentityCannotMoveToAnotherUser(t *testing.T) {
 	}
 }
 
+func TestUserRepositoryCreateDoesNotLeaveUserWhenAccountIdentityConflicts(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	caseUser := &store.User{ID: "user_case", TenantID: "tenant_a", Email: "CaseUser@Example.com", SN: "SN-user-case", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, caseUser); err != nil {
+		t.Fatalf("create case user: %v", err)
+	}
+	if caseUser.Email != "caseuser@example.com" {
+		t.Fatalf("created user struct email = %q, want normalized lowercase", caseUser.Email)
+	}
+	gotCase, err := st.Users.GetByID(ctx, "user_case")
+	if err != nil {
+		t.Fatalf("lookup case user: %v", err)
+	}
+	if gotCase == nil || gotCase.Email != "caseuser@example.com" {
+		t.Fatalf("case user email = %#v, want normalized lowercase", gotCase)
+	}
+	err = st.Users.Create(ctx, &store.User{ID: "user_duplicate_case", TenantID: "tenant_a", Email: "caseuser@example.com", SN: "SN-duplicate-case", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now})
+	if err == nil {
+		t.Fatal("expected case-insensitive primary account conflict")
+	}
+	duplicateCase, err := st.Users.GetByID(ctx, "user_duplicate_case")
+	if err != nil {
+		t.Fatalf("lookup duplicate case user: %v", err)
+	}
+	if duplicateCase != nil {
+		t.Fatalf("case-insensitive conflict left duplicate user row: %#v", duplicateCase)
+	}
+
+	primaryUser := &store.User{ID: "user_primary", TenantID: "tenant_a", Email: "primary@example.com", SN: "SN-user-primary", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, primaryUser); err != nil {
+		t.Fatalf("create primary user: %v", err)
+	}
+	err = st.Users.Create(ctx, &store.User{ID: "user_duplicate_primary", TenantID: "tenant_a", Email: "primary@example.com", SN: "SN-duplicate-primary", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now})
+	if err == nil {
+		t.Fatal("expected primary account conflict creating duplicate email user")
+	}
+	if !strings.Contains(err.Error(), "already belongs to another user") {
+		t.Fatalf("unexpected primary conflict error: %v", err)
+	}
+	duplicatePrimary, err := st.Users.GetByID(ctx, "user_duplicate_primary")
+	if err != nil {
+		t.Fatalf("lookup duplicate primary user: %v", err)
+	}
+	if duplicatePrimary != nil {
+		t.Fatalf("conflicting primary Create left duplicate user row: %#v", duplicatePrimary)
+	}
+
+	phoneUser := &store.User{ID: "user_phone", TenantID: "tenant_a", Email: "phone:19900001111", SN: "SN-user-phone", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{TenantID: "tenant_a", UserID: phoneUser.ID, Type: "email", Value: "buyer@example.com", Verified: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("bind email identity: %v", err)
+	}
+
+	err = st.Users.Create(ctx, &store.User{ID: "user_duplicate_email", TenantID: "tenant_a", Email: "buyer@example.com", SN: "SN-duplicate-email", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now})
+	if err == nil {
+		t.Fatal("expected identity conflict creating duplicate email user")
+	}
+	if !strings.Contains(err.Error(), "already belongs to another user") {
+		t.Fatalf("unexpected conflict error: %v", err)
+	}
+	duplicate, err := st.Users.GetByID(ctx, "user_duplicate_email")
+	if err != nil {
+		t.Fatalf("lookup duplicate user: %v", err)
+	}
+	if duplicate != nil {
+		t.Fatalf("conflicting Create left duplicate user row: %#v", duplicate)
+	}
+	got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "email", "buyer@example.com")
+	if err != nil {
+		t.Fatalf("lookup email identity: %v", err)
+	}
+	if got == nil || got.ID != phoneUser.ID {
+		t.Fatalf("email identity owner = %#v, want %s", got, phoneUser.ID)
+	}
+}
+
 func TestUserRepositoryUpsertIdentityClaimsOrphanIdentity(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -146,6 +226,35 @@ func TestUserRepositoryUpsertIdentityClaimsOrphanIdentity(t *testing.T) {
 	}
 	if got == nil || got.ID != user.ID {
 		t.Fatalf("claimed phone owner = %#v, want %s", got, user.ID)
+	}
+}
+
+func TestUserRepositoryCreateClaimsOrphanAccountIdentity(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo, ok := st.Users.(*userRepo)
+	if !ok {
+		t.Fatal("expected sqlite user repo")
+	}
+	if _, err := repo.db.ExecContext(ctx,
+		`INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"orphan_email", "tenant_a", "missing_user", "email", "orphan@example.com", 1, now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("seed orphan email identity: %v", err)
+	}
+
+	user := &store.User{ID: "user_orphan_email", TenantID: "tenant_a", Email: "orphan@example.com", SN: "SN-orphan-email", Status: "active", EnrollmentStatus: "approved", EmailVerified: true, CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user should claim orphan email identity: %v", err)
+	}
+	got, err := st.Users.GetByTenantIdentity(ctx, "tenant_a", "email", "orphan@example.com")
+	if err != nil {
+		t.Fatalf("lookup claimed email identity: %v", err)
+	}
+	if got == nil || got.ID != user.ID {
+		t.Fatalf("claimed email owner = %#v, want %s", got, user.ID)
 	}
 }
 
@@ -612,6 +721,144 @@ func TestSessionRepositoryUserTokenUsageSnapshotDeltasAndReset(t *testing.T) {
 	}
 	if got.Usage.TotalTokens() != 212 {
 		t.Fatalf("total tokens = %d, want input + output only", got.Usage.TotalTokens())
+	}
+}
+
+func TestSessionRepositorySummarizeUserTokenUsageMergesLegacyBoundEmailAndPhone(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-test.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = provider.Close()
+	})
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	st := NewStore(provider)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_bound_usage", TenantID: "tenant_acme", Email: "phone:17090134628", SN: "SN-BOUND-USAGE", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:        user.ID + "_email",
+		TenantID:  user.TenantID,
+		UserID:    user.ID,
+		Type:      "email",
+		Value:     "ztest@163.com",
+		Verified:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert email identity: %v", err)
+	}
+	for _, row := range []struct {
+		account string
+		input   int64
+		output  int64
+	}{
+		{account: "phone:17090134628", input: 20, output: 5},
+		{account: "ztest@163.com", input: 100, output: 10},
+	} {
+		if _, err := provider.Write.ExecContext(ctx, `
+			INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+			VALUES (?, ?, ?, ?, ?, 0, 0, ?)`,
+			user.TenantID, row.account, now.Format("2006-01-02"), row.input, row.output, now.Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert legacy usage row %s: %v", row.account, err)
+		}
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.UserID != user.ID || got.UserEmail != "ztest@163.com" {
+		t.Fatalf("identity = user_id:%q email:%q, want bound user/email", got.UserID, got.UserEmail)
+	}
+	if got.Usage.InputTokens != 120 || got.Usage.OutputTokens != 15 || got.Usage.TotalTokens() != 135 {
+		t.Fatalf("usage = %#v, want merged phone+email totals", got.Usage)
+	}
+}
+
+func TestRunMigrationsBackfillsUserUsageUserID(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-test.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = provider.Close()
+	})
+	if _, err := provider.Write.Exec(`CREATE TABLE users (
+		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+		email TEXT NOT NULL,
+		sn TEXT NOT NULL UNIQUE,
+		status TEXT NOT NULL DEFAULT 'active',
+		enrollment_status TEXT NOT NULL DEFAULT 'approved',
+		smart_route INTEGER NOT NULL DEFAULT 0,
+		email_verified INTEGER NOT NULL DEFAULT 0,
+		email_verified_at TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE(tenant_id, email)
+	)`); err != nil {
+		t.Fatalf("create legacy users: %v", err)
+	}
+	if _, err := provider.Write.Exec(`CREATE TABLE user_usage_daily (
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+		user_email TEXT NOT NULL,
+		day TEXT NOT NULL,
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (tenant_id, user_email, day)
+	)`); err != nil {
+		t.Fatalf("create legacy usage: %v", err)
+	}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if _, err := provider.Write.Exec(`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
+		VALUES ('u_backfill_usage', 'tenant_acme', 'phone:17090134628', 'SN-BACKFILL-USAGE', 'active', 'approved', ?, ?)`, now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, updated_at)
+		VALUES ('tenant_acme', 'phone:17090134628', '2026-06-24', 20, 5, ?)`, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert usage: %v", err)
+	}
+
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	var userID string
+	if err := provider.Read.QueryRow(`SELECT user_id FROM user_usage_daily WHERE tenant_id = 'tenant_acme' AND user_email = 'phone:17090134628'`).Scan(&userID); err != nil {
+		t.Fatalf("query backfilled user_id: %v", err)
+	}
+	if userID != "u_backfill_usage" {
+		t.Fatalf("user_id = %q, want u_backfill_usage", userID)
 	}
 }
 

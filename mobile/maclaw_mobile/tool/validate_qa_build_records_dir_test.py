@@ -30,6 +30,28 @@ class ValidateQaBuildRecordsDirTest(unittest.TestCase):
                 validate_qa_build_records_dir.completed_record_paths(records_dir),
             )
 
+    def test_completed_record_paths_skip_continuation_log_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            logs = [
+                records_dir / "release-gates-continuation2-20260705.log",
+                records_dir / "release-gates-continuation4-20260705.log",
+                records_dir / "release-gates-continuation5-20260705.log",
+                records_dir / "runtime-boundary-continuation-20260705.log",
+                records_dir / "runtime-boundary-continuation2-20260705.log",
+                records_dir / "final-release-evidence-continuation-20260705.log",
+                records_dir / "final-release-evidence-continuation2-20260705.log",
+            ]
+            record.write_text("Date: 2026-07-02\n", encoding="utf-8")
+            for path in logs:
+                path.write_text("local evidence snapshot", encoding="utf-8")
+
+            self.assertEqual(
+                [record],
+                validate_qa_build_records_dir.completed_record_paths(records_dir),
+            )
+
     def test_completed_record_paths_skip_release_handoff_markdown_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)

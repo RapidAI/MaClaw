@@ -335,6 +335,8 @@ export function GetWorkflowWorkingDir():Promise<string>;
 
 export function StartWorkflowDirect(arg1:string, arg2:string):Promise<string>;
 
+export function StartWorkflowDirectWithInput(arg1:string, arg2:string, arg3:string):Promise<string>;
+
 export function RefreshWorkflowV2StateForTab(arg1:string, ...arg2:string[]):Promise<void>;
 
 export function SelectSkillFile():Promise<string>;

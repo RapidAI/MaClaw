@@ -19,6 +19,8 @@ interface AssistantInputStackProps {
     handleEditEntry: (id: string) => void;
     handleCancelEdit: () => void;
     handleClearInput: () => void;
+    handleDragOver: (event: React.DragEvent<HTMLElement>) => void;
+    handleDrop: (event: React.DragEvent<HTMLElement>) => void;
     handlePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSaveEdit: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     handleFireEntry: (id: string) => void;
@@ -74,7 +76,7 @@ interface AssistantInputStackProps {
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
         attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
-        exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handleClearInput, handlePaste,
+        exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
@@ -150,6 +152,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     finishVoicePointer={finishVoicePointer}
                     handleCancel={handleCancel}
                     handleClearInput={handleClearInput}
+                    handleDragOver={handleDragOver}
+                    handleDrop={handleDrop}
                     handlePaste={handlePaste}
                     handleSend={handleSend}
                     handleTextareaClick={handleTextareaClick}

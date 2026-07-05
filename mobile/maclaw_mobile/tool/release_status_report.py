@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--team-id",
-        type=plan_ios_release.validate_team_id,
+        type=qa_preflight.validate_team_id_or_placeholder,
         help="Optional Apple Team ID to verify against ios/ExportOptions.plist.",
     )
     parser.add_argument(

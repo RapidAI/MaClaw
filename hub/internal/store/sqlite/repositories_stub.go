@@ -37,6 +37,11 @@ type userRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 type enrollmentRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -393,13 +398,40 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 }
 
 func (r *userRepo) Create(ctx context.Context, user *store.User) error {
-	_, err := r.db.ExecContext(
+	tenantID := normalizeTenantID(user.TenantID)
+	account := normalizeEmailLikeAccount(user.Email)
+	identityType, identityValue := normalizeUserIdentityFromAccount(account)
+	if primaryUserID, err := r.primaryAccountOwnerUserID(ctx, tenantID, account); err != nil {
+		return err
+	} else if primaryUserID != "" && primaryUserID != user.ID {
+		return fmt.Errorf("user account %s already belongs to another user", account)
+	}
+	if identityType != "" && identityValue != "" {
+		existingUserID, err := r.identityOwnerUserID(ctx, tenantID, identityType, identityValue)
+		if err != nil {
+			return err
+		}
+		if existingUserID != "" && existingUserID != user.ID {
+			return fmt.Errorf("user identity %s:%s already belongs to another user", identityType, identityValue)
+		}
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	_, err = tx.ExecContext(
 		ctx,
 		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID,
-		normalizeTenantID(user.TenantID),
-		user.Email,
+		tenantID,
+		account,
 		user.SN,
 		user.Status,
 		user.EnrollmentStatus,
@@ -407,26 +439,43 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 		user.UpdatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return fmt.Errorf("user account %s already belongs to another user", account)
+		}
 		return err
 	}
-	identityType, identityValue := normalizeUserIdentityFromAccount(user.Email)
 	if identityType == "" || identityValue == "" {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
+		user.TenantID = tenantID
+		user.Email = account
 		return nil
 	}
 	now := user.CreatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	return r.UpsertIdentity(ctx, &store.UserIdentity{
+	if err := r.upsertIdentityWithExec(ctx, tx, &store.UserIdentity{
 		ID:        user.ID + "_" + identityType,
-		TenantID:  normalizeTenantID(user.TenantID),
+		TenantID:  tenantID,
 		UserID:    user.ID,
 		Type:      identityType,
 		Value:     identityValue,
 		Verified:  user.EmailVerified || identityType == "phone",
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	user.TenantID = tenantID
+	user.Email = account
+	return nil
 }
 
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
@@ -608,6 +657,51 @@ func (r *userRepo) ListIdentitiesByUsers(ctx context.Context, tenantID string, u
 }
 
 func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdentity) error {
+	return r.upsertIdentityWithExec(ctx, r.db, identity)
+}
+
+func (r *userRepo) primaryAccountOwnerUserID(ctx context.Context, tenantID, account string) (string, error) {
+	account = normalizeEmailLikeAccount(account)
+	if tenantID == "" || account == "" {
+		return "", nil
+	}
+	var userID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM users WHERE tenant_id = ? AND lower(email) = lower(?)`,
+		normalizeTenantID(tenantID), account,
+	).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(userID), nil
+}
+
+func (r *userRepo) identityOwnerUserID(ctx context.Context, tenantID, identityType, value string) (string, error) {
+	identityType, value = normalizeUserIdentity(identityType, value)
+	if tenantID == "" || identityType == "" || value == "" {
+		return "", nil
+	}
+	var userID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT ui.user_id
+		 FROM user_identities ui
+		 JOIN users u ON u.tenant_id = ui.tenant_id AND u.id = ui.user_id
+		 WHERE ui.tenant_id = ? AND ui.type = ? AND lower(ui.value) = lower(?)`,
+		normalizeTenantID(tenantID), identityType, value,
+	).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(userID), nil
+}
+
+func (r *userRepo) upsertIdentityWithExec(ctx context.Context, execer sqlExecer, identity *store.UserIdentity) error {
 	if identity == nil {
 		return nil
 	}
@@ -638,7 +732,7 @@ func (r *userRepo) UpsertIdentity(ctx context.Context, identity *store.UserIdent
 	if id == "" {
 		id = strings.TrimSpace(identity.UserID) + "_" + identityType
 	}
-	result, err := r.db.ExecContext(ctx,
+	result, err := execer.ExecContext(ctx,
 		`INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, type, value) DO UPDATE SET
@@ -795,11 +889,15 @@ func scanUserIdentity(row rowScanner) (*store.UserIdentity, error) {
 }
 
 func normalizeUserIdentityFromAccount(account string) (string, string) {
-	account = strings.TrimSpace(strings.ToLower(account))
+	account = normalizeEmailLikeAccount(account)
 	if strings.HasPrefix(account, "phone:") {
 		return normalizeUserIdentity("phone", strings.TrimPrefix(account, "phone:"))
 	}
 	return normalizeUserIdentity("email", account)
+}
+
+func normalizeEmailLikeAccount(account string) string {
+	return strings.TrimSpace(strings.ToLower(account))
 }
 
 func normalizeUserIdentity(identityType, value string) (string, string) {
@@ -2116,15 +2214,16 @@ func (r *sessionRepo) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID
 		if email != "" {
 			day := observedAt.Format("2006-01-02")
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(tenant_id, user_email, day) DO UPDATE SET
-					input_tokens = user_usage_daily.input_tokens + excluded.input_tokens,
-					output_tokens = user_usage_daily.output_tokens + excluded.output_tokens,
-					cached_input_tokens = user_usage_daily.cached_input_tokens + excluded.cached_input_tokens,
-					cache_write_tokens = user_usage_daily.cache_write_tokens + excluded.cache_write_tokens,
-					updated_at = excluded.updated_at`,
-				tenantID, email, day, delta.InputTokens, delta.OutputTokens, delta.CachedInputTokens, delta.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
+					INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(tenant_id, user_email, day) DO UPDATE SET
+						user_id = CASE WHEN excluded.user_id <> '' THEN excluded.user_id ELSE user_usage_daily.user_id END,
+						input_tokens = user_usage_daily.input_tokens + excluded.input_tokens,
+						output_tokens = user_usage_daily.output_tokens + excluded.output_tokens,
+						cached_input_tokens = user_usage_daily.cached_input_tokens + excluded.cached_input_tokens,
+						cache_write_tokens = user_usage_daily.cache_write_tokens + excluded.cache_write_tokens,
+						updated_at = excluded.updated_at`,
+				tenantID, userID, email, day, delta.InputTokens, delta.OutputTokens, delta.CachedInputTokens, delta.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
 				return err
 			}
 		}
@@ -2141,33 +2240,83 @@ func (r *sessionRepo) SummarizeUserTokenUsage(ctx context.Context, tenantID stri
 	startDay := start.UTC().Format("2006-01-02")
 	endDay := end.UTC().Add(-time.Nanosecond).Format("2006-01-02")
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT user_email,
+		SELECT COALESCE(NULLIF(uud.user_id, ''), ui.user_id, u.id, ''),
+		       uud.user_email,
 		       SUM(input_tokens),
 		       SUM(output_tokens),
 		       SUM(cached_input_tokens),
 		       SUM(cache_write_tokens)
-		  FROM user_usage_daily
-		 WHERE tenant_id = ?
-		   AND day >= ?
-		   AND day <= ?
-		 GROUP BY user_email`, tenantID, startDay, endDay)
+		  FROM user_usage_daily uud
+		  LEFT JOIN user_identities ui
+		    ON ui.tenant_id = uud.tenant_id
+		   AND (
+		     (lower(uud.user_email) NOT LIKE 'phone:%' AND ui.type = 'email' AND lower(ui.value) = lower(uud.user_email))
+		     OR
+		     (lower(uud.user_email) LIKE 'phone:%' AND ui.type = 'phone' AND lower(ui.value) = lower(substr(uud.user_email, 7)))
+		   )
+		  LEFT JOIN users u
+		    ON u.tenant_id = uud.tenant_id
+		   AND lower(u.email) = lower(uud.user_email)
+		 WHERE uud.tenant_id = ?
+		   AND uud.day >= ?
+		   AND uud.day <= ?
+		 GROUP BY COALESCE(NULLIF(uud.user_id, ''), ui.user_id, u.id, ''), uud.user_email`, tenantID, startDay, endDay)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []store.UserTokenSummary{}
+	byKey := map[string]store.UserTokenSummary{}
 	for rows.Next() {
 		var item store.UserTokenSummary
-		if err := rows.Scan(&item.UserEmail, &item.Usage.InputTokens, &item.Usage.OutputTokens, &item.Usage.CachedInputTokens, &item.Usage.CacheWriteTokens); err != nil {
+		if err := rows.Scan(&item.UserID, &item.UserEmail, &item.Usage.InputTokens, &item.Usage.OutputTokens, &item.Usage.CachedInputTokens, &item.Usage.CacheWriteTokens); err != nil {
 			return nil, err
 		}
+		item.UserID = strings.TrimSpace(item.UserID)
 		item.UserEmail = strings.ToLower(strings.TrimSpace(item.UserEmail))
-		if item.UserEmail != "" {
-			out = append(out, item)
+		if item.UserID == "" && item.UserEmail == "" {
+			continue
+		}
+		key := "email:" + item.UserEmail
+		if item.UserID != "" {
+			key = "user:" + item.UserID
+		}
+		existing := byKey[key]
+		existing.UserID = item.UserID
+		existing.UserEmail = preferredUsageDisplayAccount(existing.UserEmail, item.UserEmail)
+		existing.Usage.InputTokens += item.Usage.InputTokens
+		existing.Usage.OutputTokens += item.Usage.OutputTokens
+		existing.Usage.CachedInputTokens += item.Usage.CachedInputTokens
+		existing.Usage.CacheWriteTokens += item.Usage.CacheWriteTokens
+		byKey[key] = existing
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]store.UserTokenSummary, 0, len(byKey))
+	userIDs := make([]string, 0, len(byKey))
+	for _, item := range byKey {
+		if item.UserID != "" {
+			userIDs = append(userIDs, item.UserID)
 		}
 	}
-	return out, rows.Err()
+	emailByUserID := r.resolveUserEmails(ctx, tenantID, userIDs)
+	for _, item := range byKey {
+		if email := emailByUserID[item.UserID]; email != "" {
+			item.UserEmail = preferredUsageDisplayAccount(item.UserEmail, email)
+		}
+		if item.UserEmail == "" && item.UserID != "" {
+			item.UserEmail = item.UserID
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UserEmail == out[j].UserEmail {
+			return out[i].UserID < out[j].UserID
+		}
+		return out[i].UserEmail < out[j].UserEmail
+	})
+	return out, nil
 }
 
 func usageSnapshotDelta(current, previous store.UserTokenUsage) store.UserTokenUsage {
@@ -2344,7 +2493,11 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 	}
 	emailByUserID := r.resolveUserEmails(ctx, tenantID, userIDs)
 
-	byEmail := map[string]int64{}
+	type durationTotals struct {
+		userEmail       string
+		durationSeconds int64
+	}
+	durationTotalsByUserID := map[string]durationTotals{}
 	for userID, seconds := range durationByUserID {
 		email := emailByUserID[userID]
 		if email == "" {
@@ -2355,23 +2508,26 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 		if email == "" {
 			continue
 		}
-		byEmail[email] += seconds
+		total := durationTotalsByUserID[userID]
+		total.userEmail = preferredUsageDisplayAccount(total.userEmail, email)
+		total.durationSeconds += seconds
+		durationTotalsByUserID[userID] = total
 	}
 
-	out := make([]store.UserDurationSummary, 0, len(byEmail))
-	for email, seconds := range byEmail {
-		if seconds <= 0 {
+	out := make([]store.UserDurationSummary, 0, len(durationTotalsByUserID))
+	for userID, total := range durationTotalsByUserID {
+		if total.durationSeconds <= 0 {
 			continue
 		}
-		out = append(out, store.UserDurationSummary{UserEmail: email, DurationSeconds: seconds})
+		out = append(out, store.UserDurationSummary{UserID: userID, UserEmail: total.userEmail, DurationSeconds: total.durationSeconds})
 	}
 
 	// Calculate online time from sessions table as tie-breaker for ranking.
 	// Online time = total connection uptime (client connected to Hub), distinct
 	// from usage time (actual LLM interaction measured by heartbeats above).
-	onlineByEmail := r.summarizeOnlineSeconds(ctx, tenantID, start, end, now, emailByUserID)
+	onlineByUserID := r.summarizeOnlineSeconds(ctx, tenantID, start, end, now)
 	for i := range out {
-		out[i].OnlineSeconds = onlineByEmail[out[i].UserEmail]
+		out[i].OnlineSeconds = onlineByUserID[out[i].UserID]
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -2382,7 +2538,7 @@ func (r *sessionRepo) SummarizeUserDurations(ctx context.Context, tenantID strin
 
 // summarizeOnlineSeconds calculates connection uptime from sessions table.
 // Used only as a tie-breaker in rankings (not as the primary "usage duration").
-func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID string, start, end, now time.Time, emailByUserID map[string]string) map[string]int64 {
+func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID string, start, end, now time.Time) map[string]int64 {
 	result := make(map[string]int64)
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT user_id, status, host_online, started_at, ended_at
@@ -2432,16 +2588,11 @@ func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID strin
 		if !finishedAt.After(startedAt) {
 			continue
 		}
-		email := emailByUserID[userID]
-		if email == "" {
-			if strings.Contains(userID, "@") {
-				email = strings.ToLower(strings.TrimSpace(userID))
-			}
-		}
-		if email == "" {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
 			continue
 		}
-		result[email] += int64(finishedAt.Sub(startedAt).Seconds())
+		result[userID] += int64(finishedAt.Sub(startedAt).Seconds())
 	}
 
 	// Cap online seconds per user to the query window duration (prevent stale
@@ -2453,13 +2604,30 @@ func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID strin
 			maxOnline = elapsed
 		}
 	}
-	for email, seconds := range result {
+	for userID, seconds := range result {
 		if maxOnline > 0 && seconds > maxOnline {
-			result[email] = maxOnline
+			result[userID] = maxOnline
 		}
 	}
 
 	return result
+}
+
+func preferredUsageDisplayAccount(current, candidate string) string {
+	current = strings.ToLower(strings.TrimSpace(current))
+	candidate = strings.ToLower(strings.TrimSpace(candidate))
+	if candidate == "" {
+		return current
+	}
+	if current == "" {
+		return candidate
+	}
+	currentIsEmail := strings.Contains(current, "@") && !strings.HasPrefix(current, "phone:")
+	candidateIsEmail := strings.Contains(candidate, "@") && !strings.HasPrefix(candidate, "phone:")
+	if candidateIsEmail && !currentIsEmail {
+		return candidate
+	}
+	return current
 }
 
 // resolveUserEmails batch-resolves user IDs to lowercase email addresses.
@@ -2484,6 +2652,35 @@ func (r *sessionRepo) resolveUserEmails(ctx context.Context, tenantID string, us
 			args = append(args, uid)
 		}
 		query := `SELECT id, LOWER(TRIM(email)) FROM users WHERE tenant_id = ? AND id IN (` + strings.Join(placeholders, ",") + `)`
+		rows, err := r.readDB.QueryContext(ctx, query, args...)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var uid, email string
+			if err := rows.Scan(&uid, &email); err != nil {
+				continue
+			}
+			if strings.TrimSpace(email) != "" {
+				result[uid] = preferredUsageDisplayAccount(result[uid], email)
+			}
+		}
+		rows.Close()
+	}
+	for i := 0; i < len(userIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(userIDs) {
+			end = len(userIDs)
+		}
+		batch := userIDs[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, tenantID)
+		for j, uid := range batch {
+			placeholders[j] = "?"
+			args = append(args, uid)
+		}
+		query := `SELECT user_id, LOWER(TRIM(value)) FROM user_identities WHERE tenant_id = ? AND type = 'email' AND user_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY user_id, verified DESC, updated_at DESC`
 		rows, err := r.readDB.QueryContext(ctx, query, args...)
 		if err != nil {
 			continue

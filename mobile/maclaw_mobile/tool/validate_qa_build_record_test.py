@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import sys
@@ -53,6 +53,19 @@ SERVER_CREDENTIAL_RETENTION_CONTEXT = (
     "screenshot credential-retain-42"
 )
 
+ASSISTANT_FIRST_SCREEN_CONTEXT = (
+    "Signed-in app opens to the AI助手 first tab from the bottom nav, not the "
+    "legacy 查信息 entry, which is not visible. The 主对话 tab and 新建副对话 "
+    "multi-tab control are visible, and the microphone/语音 input button is "
+    "shown in the assistant composer; screenshot assistant-first-screen-42"
+)
+
+LAUNCH_SPLASH_LOGO_CONTEXT = (
+    "Cold start launch recording splash-logo-42 shows the MaClaw logo on the "
+    "native splash/startup screen; Flutter placeholder/template branding is "
+    "not shown after reinstalling the signed build."
+)
+
 
 def complete_record() -> str:
     lines = []
@@ -87,6 +100,8 @@ def complete_record() -> str:
             value = "passed"
         if field in validate_qa_build_record.MANUAL_EVIDENCE_FIELDS:
             value = f"QA evidence captured for {field} with screenshot/log reference"
+        if field in validate_qa_build_record.LAUNCH_SPLASH_LOGO_FIELDS:
+            value = LAUNCH_SPLASH_LOGO_CONTEXT
         if field == "Release handoff result":
             value = "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md"
         if field == "Runtime boundary verification result":
@@ -113,9 +128,12 @@ def complete_record() -> str:
                 "SSH maintenance? Assistant result showed citation "
                 "https://example.test/source-a; screenshot assistant-query-42"
             )
+        if field in validate_qa_build_record.ASSISTANT_FIRST_SCREEN_FIELDS:
+            value = ASSISTANT_FIRST_SCREEN_CONTEXT
         if field in validate_qa_build_record.MOBILE_INPUT_EVIDENCE_FIELDS:
             value = (
                 "Voice input recognized transcript for assistant question and "
+                "filled the assistant composer before being sent to AI助手; "
                 "photo/image assistant input produced assistant citation answer "
                 "with source https://example.test/source-a; screenshot "
                 "mobile-input-42"
@@ -142,7 +160,7 @@ def complete_record() -> str:
         if field in validate_qa_build_record.SIGNED_INSTALL_RESULT_FIELDS:
             value = (
                 f"Signed build installed and launched for {field}; "
-                f"screenshot install-launch-{field.lower().replace(' ', '-')}"
+                f"screenshot install-launch-{field.lower().replace(' ', '-')}-42"
             )
         if field == "Host type":
             value = "Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42"
@@ -1253,7 +1271,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_voice_photo_assistant_input_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
                 "Voice/photo assistant input evidence: Mobile input screenshot captured during QA run",
             ),
         )
@@ -1266,13 +1284,39 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_voice_photo_assistant_input_must_reference_recorded_result(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer; screenshot mobile-input-42",
             ),
         )
 
         self.assertIn(
             "Voice/photo assistant input evidence must reference a recorded citation URL or document upload task ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_voice_photo_assistant_input_must_include_visual_evidence_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screen capture saved during QA run",
+            ),
+        )
+
+        self.assertIn(
+            "Voice/photo assistant input evidence must include a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_voice_photo_assistant_input_must_link_transcript_to_assistant_input(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and filled the assistant composer before being sent to AI助手; photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+            ),
+        )
+
+        self.assertIn(
+            "Voice/photo assistant input evidence must prove the recognized voice transcript filled or was sent from the AI助手 input",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -1801,7 +1845,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result",
+                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result-42",
                 "Android signed install result: ok",
             )
             .replace(
@@ -2296,11 +2340,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result",
+                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result-42",
                 "Android signed install result: QA evidence captured for Android signed install result with screenshot/log reference",
             )
             .replace(
-                "iOS signed install result: Signed build installed and launched for iOS signed install result; screenshot install-launch-ios-signed-install-result",
+                "iOS signed install result: Signed build installed and launched for iOS signed install result; screenshot install-launch-ios-signed-install-result-42",
                 "iOS signed install result: TestFlight build available in screenshot bundle",
             ),
         )
@@ -2308,11 +2352,35 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         missing = validate_qa_build_record.missing_required_fields(values)
 
         self.assertIn(
-            "Android signed install result must describe signed install and app launch evidence",
+            "Android signed install result must describe signed install/app launch evidence with a traceable screenshot or recording ID",
             missing,
         )
         self.assertIn(
-            "iOS signed install result must describe signed install and app launch evidence",
+            "iOS signed install result must describe signed install/app launch evidence with a traceable screenshot or recording ID",
+            missing,
+        )
+
+    def test_signed_install_results_must_include_visual_evidence_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result-42",
+                "Android signed install result: Signed build installed and launched on Android Pixel device",
+            )
+            .replace(
+                "iOS signed install result: Signed build installed and launched for iOS signed install result; screenshot install-launch-ios-signed-install-result-42",
+                "iOS signed install result: TestFlight build installed and launched on iPhone",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Android signed install result must describe signed install/app launch evidence with a traceable screenshot or recording ID",
+            missing,
+        )
+        self.assertIn(
+            "iOS signed install result must describe signed install/app launch evidence with a traceable screenshot or recording ID",
             missing,
         )
 
@@ -2320,11 +2388,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result",
+                "Android signed install result: Signed build installed and launched for Android signed install result; screenshot install-launch-android-signed-install-result-42",
                 "Android signed install result: TestFlight build installed and launched on iPhone; screenshot install-launch-ios-wrong-slot",
             )
             .replace(
-                "iOS signed install result: Signed build installed and launched for iOS signed install result; screenshot install-launch-ios-signed-install-result",
+                "iOS signed install result: Signed build installed and launched for iOS signed install result; screenshot install-launch-ios-signed-install-result-42",
                 "iOS signed install result: Android APK installed and launched on Pixel; screenshot install-launch-android-wrong-slot",
             ),
         )
@@ -3397,6 +3465,100 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             vague_missing,
         )
 
+    def test_launch_splash_logo_evidence_is_required_and_specific(self) -> None:
+        missing_record = complete_record().replace(
+            f"Launch splash logo evidence: {LAUNCH_SPLASH_LOGO_CONTEXT}\n",
+            "",
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(
+            validate_qa_build_record.parse_record(missing_record),
+        )
+        self.assertIn("Launch splash logo evidence", missing)
+
+        vague_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Launch splash logo evidence: {LAUNCH_SPLASH_LOGO_CONTEXT}",
+                "Launch splash logo evidence: cold-start screenshot captured during QA run",
+            ),
+        )
+
+        self.assertIn(
+            "Launch splash logo evidence must describe cold-start MaClaw logo splash evidence, absence of Flutter placeholder branding, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(vague_values),
+        )
+
+        flutter_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Launch splash logo evidence: {LAUNCH_SPLASH_LOGO_CONTEXT}",
+                "Launch splash logo evidence: startup screenshot shows Flutter placeholder template splash; screenshot splash-logo-42",
+            ),
+        )
+
+        self.assertIn(
+            "Launch splash logo evidence must describe cold-start MaClaw logo splash evidence, absence of Flutter placeholder branding, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(flutter_values),
+        )
+
+        untracked_visual_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Launch splash logo evidence: {LAUNCH_SPLASH_LOGO_CONTEXT}",
+                "Launch splash logo evidence: Cold start launch recording shows the MaClaw logo on the native splash/startup screen; Flutter placeholder/template branding is not shown after reinstalling the signed build.",
+            ),
+        )
+
+        self.assertIn(
+            "Launch splash logo evidence must describe cold-start MaClaw logo splash evidence, absence of Flutter placeholder branding, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(untracked_visual_values),
+        )
+
+    def test_assistant_first_screen_evidence_is_required_and_specific(self) -> None:
+        missing_record = complete_record().replace(
+            f"Assistant first screen evidence: {ASSISTANT_FIRST_SCREEN_CONTEXT}\n",
+            "",
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(
+            validate_qa_build_record.parse_record(missing_record),
+        )
+        self.assertIn("Assistant first screen evidence", missing)
+
+        vague_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Assistant first screen evidence: {ASSISTANT_FIRST_SCREEN_CONTEXT}",
+                "Assistant first screen evidence: AI assistant screenshot captured during QA run",
+            ),
+        )
+
+        self.assertIn(
+            "Assistant first screen evidence must describe the signed-in AI助手 first tab, multi-tab main/sub conversation UI, visible voice input, absence of the legacy 查信息 entry, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(vague_values),
+        )
+
+        legacy_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Assistant first screen evidence: {ASSISTANT_FIRST_SCREEN_CONTEXT}",
+                "Assistant first screen evidence: Signed-in app opens to 查信息 with voice input and 主对话 screenshot assistant-first-screen-42",
+            ),
+        )
+
+        self.assertIn(
+            "Assistant first screen evidence must describe the signed-in AI助手 first tab, multi-tab main/sub conversation UI, visible voice input, absence of the legacy 查信息 entry, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(legacy_values),
+        )
+
+        untracked_visual_values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Assistant first screen evidence: {ASSISTANT_FIRST_SCREEN_CONTEXT}",
+                "Assistant first screen evidence: Signed-in app opens to the AI助手 first tab from the bottom nav, not the legacy 查信息 entry, which is not visible. The 主对话 tab and 新建副对话 multi-tab control are visible, and the microphone/语音 input button is shown in the assistant composer.",
+            ),
+        )
+
+        self.assertIn(
+            "Assistant first screen evidence must describe the signed-in AI助手 first tab, multi-tab main/sub conversation UI, visible voice input, absence of the legacy 查信息 entry, and a traceable screenshot/recording ID",
+            validate_qa_build_record.missing_required_fields(untracked_visual_values),
+        )
+
     def test_final_decision_fields_must_say_passed_or_waived(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
@@ -4016,3 +4178,4 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

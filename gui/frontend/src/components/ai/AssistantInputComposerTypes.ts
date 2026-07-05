@@ -1,4 +1,4 @@
-import type { ClipboardEvent, CSSProperties, Dispatch, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, Ref, SetStateAction } from "react";
+import type { ClipboardEvent, CSSProperties, Dispatch, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, Ref, SetStateAction } from "react";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -14,6 +14,8 @@ export interface AssistantInputComposerProps {
     finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;
     handleCancel: () => void;
     handleClearInput: () => void;
+    handleDragOver: (event: DragEvent<HTMLElement>) => void;
+    handleDrop: (event: DragEvent<HTMLElement>) => void;
     handlePaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSend: () => void;
     handleTextareaClick?: (event: MouseEvent<HTMLTextAreaElement>) => void;

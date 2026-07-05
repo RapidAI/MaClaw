@@ -195,7 +195,8 @@ void main() {
     expect(intent.sharedUrl, 'https://example.com/runbook');
   });
 
-  test('prefers importable file over unsupported attachment in share batch', () {
+  test('prefers importable file over unsupported attachment in share batch',
+      () {
     final intent = MobileSharedIntent.fromPayloads(
       const [
         MobileSharedIntentPayload(

@@ -16,17 +16,16 @@ class ServerCommandEntry {
   });
 
   factory ServerCommandEntry.fromJson(Map<String, dynamic> json) {
-    final createdAt =
-        DateTime.tryParse(json['created_at'] as String? ?? '') ??
-            DateTime.fromMillisecondsSinceEpoch(0);
+    final createdAt = DateTime.tryParse(json['created_at'] as String? ?? '') ??
+        DateTime.fromMillisecondsSinceEpoch(0);
     return ServerCommandEntry(
       id: json['id'] as String? ?? '',
       command: json['command'] as String? ?? '',
       label: json['label'] as String? ?? '',
       favorite: json['favorite'] as bool? ?? false,
       createdAt: createdAt,
-      lastUsedAt: DateTime.tryParse(json['last_used_at'] as String? ?? '') ??
-          createdAt,
+      lastUsedAt:
+          DateTime.tryParse(json['last_used_at'] as String? ?? '') ?? createdAt,
     );
   }
 

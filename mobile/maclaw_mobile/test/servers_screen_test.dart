@@ -7,6 +7,7 @@ import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
 import 'package:maclaw_mobile/core/security/mobile_redaction.dart';
 import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
+import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
 import 'package:maclaw_mobile/features/servers/server_command.dart';
@@ -122,6 +123,61 @@ class _RecordingSSHAnalysisController extends SSHAnalysisController {
         commandDraft: 'systemctl status app --no-pager',
       ),
     );
+  }
+}
+
+class _FakeBackendSSHApiClient extends ApiClient {
+  final Object? createError;
+  final createdProfileIds = <String>[];
+  final inputs = <({String sessionId, String input})>[];
+  final closedSessionIds = <String>[];
+
+  _FakeBackendSSHApiClient({this.createError})
+      : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<MobileBackendSSHSession> createBackendSSHSession({
+    required String serverProfileId,
+  }) async {
+    final error = createError;
+    if (error != null) throw error;
+    createdProfileIds.add(serverProfileId);
+    return MobileBackendSSHSession(
+      sessionId: 'ssh-session-$serverProfileId',
+      serverProfileId: serverProfileId,
+      status: 'connected',
+      recentOutput: 'backend session ready\n',
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHSession> reconnectBackendSSHSession(
+    String sessionId,
+  ) async {
+    return MobileBackendSSHSession(
+      sessionId: sessionId,
+      serverProfileId: 'srv-prod',
+      status: 'connected',
+      recentOutput: 'backend session reconnected\n',
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
+    required String sessionId,
+    required String input,
+  }) async {
+    inputs.add((sessionId: sessionId, input: input));
+    return MobileBackendSSHSessionInputResult(
+      sessionId: sessionId,
+      output: 'ran: ${input.trim()}\n',
+      status: 'accepted',
+    );
+  }
+
+  @override
+  Future<void> closeBackendSSHSession(String sessionId) async {
+    closedSessionIds.add(sessionId);
   }
 }
 
@@ -270,6 +326,21 @@ void main() {
     expect(context, containsPair('task_surface', 'servers'));
     expect(context, containsPair('line_count', '2'));
     expect(context, containsPair('char_count', '22'));
+    expect(context, containsPair('manual_confirmation_required', 'true'));
+    expect(
+      context,
+      containsPair(
+        'execution_boundary',
+        'draft_only_until_mobile_user_confirms',
+      ),
+    );
+    expect(
+      context,
+      containsPair(
+        'manual_confirmation_scope',
+        'destructive_or_high_risk_server_operations',
+      ),
+    );
     expect(context, containsPair('server_profile_id', 'srv-prod'));
     expect(context, containsPair('server_name', 'prod-api'));
     expect(context, containsPair('server_host', '10.0.0.8'));
@@ -353,10 +424,10 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('手动 SSH 终端'), findsOneWidget);
+    expect(find.text('后台 SSH 会话'), findsOneWidget);
     expect(find.text('命令风险预检'), findsOneWidget);
     expect(find.text('保存常用'), findsOneWidget);
-    expect(find.text('发送到终端'), findsOneWidget);
+    expect(find.text('发送到会话'), findsOneWidget);
 
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
@@ -603,9 +674,9 @@ void main() {
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
           mobileNotificationServiceProvider.overrideWithValue(notifications),
-          mobileSshSocketConnectorProvider.overrideWithValue(
-            (host, port) async => throw StateError(
-              'network unreachable for $host:$port',
+          apiClientProvider.overrideWithValue(
+            _FakeBackendSSHApiClient(
+              createError: StateError('backend session unavailable'),
             ),
           ),
           serverProfilesProvider.overrideWith(
@@ -633,7 +704,7 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
 
-    final connectButton = find.text('连接 SSH');
+    final connectButton = find.text('创建/附着会话');
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);

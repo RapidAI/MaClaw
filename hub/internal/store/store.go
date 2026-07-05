@@ -298,6 +298,7 @@ type Session struct {
 }
 
 type UserDurationSummary struct {
+	UserID          string
 	UserEmail       string
 	DurationSeconds int64
 	OnlineSeconds   int64 // connection uptime from sessions (tie-breaker for ranking)
@@ -315,6 +316,7 @@ func (u UserTokenUsage) TotalTokens() int64 {
 }
 
 type UserTokenSummary struct {
+	UserID    string
 	UserEmail string
 	Usage     UserTokenUsage
 }

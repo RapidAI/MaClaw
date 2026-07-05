@@ -24,6 +24,12 @@ func (s staticTaskClassifier) Classify(_, _ string, _ int) (string, error) {
 	return string(s), nil
 }
 
+type taskClassifierFunc func(systemPrompt, userMessage string, timeoutSec int) (string, error)
+
+func (f taskClassifierFunc) Classify(systemPrompt, userMessage string, timeoutSec int) (string, error) {
+	return f(systemPrompt, userMessage, timeoutSec)
+}
+
 func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 	// Minimal config — only LLM config is truly required for the agent to function.
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
@@ -300,6 +306,353 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 	}
 	if !resp.ClearUI {
 		t.Fatalf("expected ClearUI after task context switch, got %+v", resp)
+	}
+}
+
+func TestTaskContextContinueBindsUnfinishedSlotWithoutPrompt(t *testing.T) {
+	userID := "u-semantic-slot"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("continue"))
+
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "搜索长江学者申报材料"},
+		{Role: "assistant", Content: "已经整理了材料清单"},
+	}
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-semantic",
+		UserID:   userID,
+		LastTask: "搜索长江学者申报材料",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+
+	askContext, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "可以给一份更详细的材料大纲吗"},
+		"可以给一份更详细的材料大纲吗",
+		explicitTaskSlotDecision{},
+		entries,
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if askContext != "" || freshTask || clearUI {
+		t.Fatalf("unexpected context decision: ask=%q fresh=%v clear=%v", askContext, freshTask, clearUI)
+	}
+	if slot != nil {
+		t.Fatalf("unfinished slot pointer = %#v, want nil so hint gate is skipped", slot)
+	}
+	if active := h.memory.ActiveUnfinishedSlot(userID); active == nil || active.SlotID != "slot-semantic" {
+		t.Fatalf("active unfinished slot = %#v, want slot-semantic", active)
+	}
+}
+
+func TestTaskContextContinueDoesNotAutoBindSessionExitSlot(t *testing.T) {
+	userID := "u-semantic-session-exit"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("continue"))
+
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-session-exit",
+		UserID:   userID,
+		LastTask: "外部会话退出前的任务",
+		Source:   agent.UnfinishedTaskSlotSourceSessionExit,
+	}
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "继续细化一下"},
+		"继续细化一下",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("unexpected task switch: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if slot == nil {
+		t.Fatal("session-exit slot pointer was cleared")
+	}
+	if active := h.memory.ActiveUnfinishedSlot(userID); active != nil {
+		t.Fatalf("active unfinished slot = %#v, want nil for session-exit source", active)
+	}
+}
+
+func TestTaskContextFallbackContinueDoesNotAutoBindUnfinishedSlot(t *testing.T) {
+	userID := "u-semantic-fallback"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, nil)
+
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-fallback",
+		UserID:   userID,
+		LastTask: "搜索长江学者申报材料",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "可以给一份更详细的材料大纲吗"},
+		"可以给一份更详细的材料大纲吗",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("unexpected task switch: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if slot == nil {
+		t.Fatal("fallback continuation cleared unfinished slot pointer")
+	}
+	if active := h.memory.ActiveUnfinishedSlot(userID); active != nil {
+		t.Fatalf("active unfinished slot = %#v, want nil for fallback continuation", active)
+	}
+}
+
+func TestTaskContextInvalidLLMContinueDoesNotAutoBindUnfinishedSlot(t *testing.T) {
+	userID := "u-semantic-invalid-llm"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("maybe continue, not sure"))
+
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-invalid-llm",
+		UserID:   userID,
+		LastTask: "搜索长江学者申报材料",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "可以给一份更详细的材料大纲吗"},
+		"可以给一份更详细的材料大纲吗",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("unexpected task switch: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if slot == nil {
+		t.Fatal("invalid LLM continuation cleared unfinished slot pointer")
+	}
+	if active := h.memory.ActiveUnfinishedSlot(userID); active != nil {
+		t.Fatalf("active unfinished slot = %#v, want nil for invalid LLM continuation", active)
+	}
+}
+
+func TestTaskContextInvalidRecallDoesNotAutoBindUnfinishedSlot(t *testing.T) {
+	userID := "u-invalid-recall-slot"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("recall:missing-task"))
+
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-invalid-recall",
+		UserID:   userID,
+		LastTask: "搜索长江学者申报材料",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	}
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+
+	_, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "继续那个归档任务"},
+		"继续那个归档任务",
+		explicitTaskSlotDecision{},
+		[]agent.ConversationEntry{
+			{Role: "user", Content: "搜索长江学者申报材料"},
+			{Role: "assistant", Content: "已经整理了材料清单"},
+		},
+		&slot,
+		"",
+		false,
+		false,
+		false,
+	)
+	if freshTask || clearUI {
+		t.Fatalf("unexpected task switch: fresh=%v clear=%v", freshTask, clearUI)
+	}
+	if slot == nil {
+		t.Fatal("invalid recall cleared unfinished slot pointer")
+	}
+	if active := h.memory.ActiveUnfinishedSlot(userID); active != nil {
+		t.Fatalf("active unfinished slot = %#v, want nil for invalid recall", active)
+	}
+}
+
+func TestTaskContextRecallRestoreFailurePreservesCurrentTask(t *testing.T) {
+	userID := "u-recall-race"
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "test-model", Protocol: "openai"}
+		},
+	})
+	defer h.memory.Stop()
+	if h.taskArchive == nil {
+		h.taskArchive = agent.NewTaskArchive("", 10)
+	}
+	h.taskArchive.Archive(agent.ArchivedTask{
+		ID:        "task-race",
+		UserID:    userID,
+		Summary:   "旧任务",
+		Status:    agent.ArchivedTaskStatusSwitched,
+		CreatedAt: time.Now(),
+	})
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, taskClassifierFunc(func(_, _ string, _ int) (string, error) {
+		h.taskArchive.Remove(userID, "task-race")
+		return "recall:task-race", nil
+	}))
+
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "搜索长江学者申报材料"},
+		{Role: "assistant", Content: "已经整理了材料清单"},
+	}
+	h.memory.Save(userID, entries)
+
+	askContext, freshTask, clearUI := h.applyUnifiedTaskContextDecision(
+		IMUserMessage{UserID: userID, Text: "继续上次那个任务"},
+		"继续上次那个任务",
+		explicitTaskSlotDecision{},
+		entries,
+		nil,
+		"",
+		false,
+		false,
+		false,
+	)
+	if askContext != "" || freshTask || clearUI {
+		t.Fatalf("unexpected recall failure decision: ask=%q fresh=%v clear=%v", askContext, freshTask, clearUI)
+	}
+	if got := h.memory.Load(userID); len(got) != len(entries) {
+		t.Fatalf("conversation entries length = %d, want %d", len(got), len(entries))
+	}
+}
+
+func TestHandleIMMessage_SemanticContinuationSkipsUnfinishedSlotHint(t *testing.T) {
+	userID := "u-semantic-hint"
+	var calls int32
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		body, _ := io.ReadAll(r.Body)
+		requestBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已继续细化材料大纲"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+	h.taskContextManager = agent.NewTaskContextManager(agent.TaskContextConfig{
+		MaxArchivedTasks:         10,
+		ActiveConversationWindow: -time.Second,
+		LLMTimeout:               2 * time.Second,
+	}, staticTaskClassifier("continue"))
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "搜索长江学者申报材料"},
+		{Role: "assistant", Content: "已经整理了材料清单"},
+	})
+	h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:   "slot-semantic-hint",
+		UserID:   userID,
+		LastTask: "搜索长江学者申报材料",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{
+		UserID:   userID,
+		Platform: "desktop",
+		Text:     "可以给一份更详细的材料大纲吗",
+		Lang:     "zh-Hans",
+	})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	if atomic.LoadInt32(&calls) == 0 {
+		t.Fatal("expected request to reach LLM instead of being intercepted by unfinished-slot hint")
+	}
+	if strings.Contains(resp.Text, "检测到未完成任务") || resp.UnfinishedTask != nil || resp.UnfinishedSlot != nil {
+		t.Fatalf("got unfinished-slot hint response: text=%q unfinished=%#v", resp.Text, resp.UnfinishedSlot)
+	}
+	if !strings.Contains(requestBody, "Explicit unfinished task resume") && !strings.Contains(requestBody, "显式恢复未完成任务") {
+		t.Fatalf("LLM request did not include unfinished-task resume context: %s", requestBody)
 	}
 }
 

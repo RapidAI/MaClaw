@@ -85,6 +85,7 @@ type PhaseInputField struct {
 	Label       string             `json:"label"`
 	Type        string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file|hidden
 	Required    bool               `json:"required,omitempty"`
+	Sensitive   bool               `json:"sensitive,omitempty"`
 	Description string             `json:"description,omitempty"`
 	Placeholder string             `json:"placeholder,omitempty"`
 	Options     []PhaseInputOption `json:"options,omitempty"`
@@ -364,6 +365,60 @@ func CodingTemplate() *WorkflowTemplate {
 			{ID: "tasks", Name: "任务分解", NeedsConfirm: true, ToolPolicy: ToolPolicyPlanning, Kind: PhaseKindCodePlanning, MutationScope: MutationScopeWorkflowDoc},
 			{ID: "implementation", Name: "编码执行", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent},
 			{ID: "verification", Name: "验收确认", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindReview, MutationScope: MutationScopeProject, ExecMode: ExecModeAutoFromPrev},
+		},
+	}
+}
+
+// CodingSubAgentTemplate is the single-phase "简化编程" workflow. It uses the
+// same workflow form pipeline as other templates, then dispatches directly to
+// CodingSubAgent without requirements/design/task phases.
+func CodingSubAgentTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "coding_subagent",
+		Name:         "简化编程",
+		Description:  "收集工作目录和项目描述后直接进入 CodingSubAgent 执行。Quick coding workflow that collects a working directory and code request, then runs CodingSubAgent directly.",
+		Keywords:     []string{"简化编程", "快速编程", "直接编码", "quick coding", "coding subagent"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "direct_coding", Name: "简化编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent,
+				InputSchema: &PhaseInputSchema{
+					Title:       "简化编程",
+					Description: "填写工作目录和要修改的代码需求，提交后直接执行。",
+					Fields: []PhaseInputField{
+						{Name: "work_dir", Label: "工作目录", Type: "directory", Required: true, Placeholder: "选择或输入项目工作目录"},
+						{Name: "project_description", Label: "项目描述 / 代码需求", Type: "textarea", Required: true, Placeholder: "例如：修改用户列表页面的筛选逻辑，并补充单元测试"},
+					},
+				},
+			},
+		},
+	}
+}
+
+// RemoteCodingSubAgentTemplate is the single-phase "远程编程" workflow. It
+// collects SSH connection details in the standard workflow form and dispatches
+// to RemoteCodingSubAgent.
+func RemoteCodingSubAgentTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "remote_coding_subagent",
+		Name:         "远程编程",
+		Description:  "收集 SSH 主机信息和远程项目描述后直接进入 RemoteCodingSubAgent 执行。Remote coding workflow that connects to SSH and runs RemoteCodingSubAgent directly.",
+		Keywords:     []string{"远程编程", "远程编码", "ssh 编程", "remote coding", "remote subagent"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "remote_direct_coding", Name: "远程编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeRemoteSubAgent,
+				InputSchema: &PhaseInputSchema{
+					Title:       "远程编程",
+					Description: "填写 SSH 连接信息、默认工作目录和要修改的代码需求，提交后直接执行。",
+					Fields: []PhaseInputField{
+						{Name: "ssh_host", Label: "主机 IP / 域名", Type: "text", Required: true, Placeholder: "例如：192.168.1.10 或 example.com"},
+						{Name: "ssh_port", Label: "端口", Type: "number", Required: true, Default: 22, Placeholder: "22"},
+						{Name: "ssh_user", Label: "用户名", Type: "text", Required: true, Placeholder: "例如：root"},
+						{Name: "ssh_password", Label: "密码", Type: "text", Required: true, Sensitive: true, Placeholder: "SSH 登录密码"},
+						{Name: "work_dir", Label: "默认工作目录", Type: "text", Required: true, Placeholder: "例如：/home/user/project"},
+						{Name: "project_description", Label: "项目描述 / 代码需求", Type: "textarea", Required: true, Placeholder: "例如：在远程项目中修复登录接口的超时处理，并补充测试"},
+					},
+				},
+			},
 		},
 	}
 }
@@ -886,7 +941,7 @@ func PaperReproductionTemplate() *WorkflowTemplate {
 						{Name: "paper_title", Label: "论文标题", Type: "text", Required: true, Placeholder: "论文的完整标题"},
 						{Name: "paper_url", Label: "论文链接", Type: "text", Placeholder: "如：https://arxiv.org/abs/xxxx.xxxxx"},
 						{Name: "ssh_host", Label: "GPU服务器", Type: "text", Placeholder: "如：user@192.168.1.100:22"},
-						{Name: "ssh_password", Label: "密码", Type: "text", Placeholder: "SSH登录密码", Description: "仅存储在本机，不会上传到任何服务器"},
+						{Name: "ssh_password", Label: "密码", Type: "text", Sensitive: true, Placeholder: "SSH登录密码", Description: "仅存储在本机，不会上传到任何服务器"},
 						{Name: "work_dir", Label: "工作目录", Type: "text", Placeholder: "如：/home/user/experiments"},
 					},
 				},
@@ -1193,6 +1248,8 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 		return
 	}
 	r.Register(CodingTemplate())
+	r.Register(CodingSubAgentTemplate())
+	r.Register(RemoteCodingSubAgentTemplate())
 	r.Register(MaintenanceTemplate())
 	r.Register(PresentationTemplate())
 	r.Register(ProductDesignTemplate())

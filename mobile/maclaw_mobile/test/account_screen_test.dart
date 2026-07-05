@@ -63,7 +63,7 @@ class _SignedInSessionController extends SessionController {
           features: MobileFeatures(
             search: true,
             documents: true,
-            localSsh: true,
+            backendSshSessions: true,
             digitalEmployees: true,
             pushNotifications: false,
           ),
@@ -123,7 +123,7 @@ class _MalformedCreditsSessionController extends SessionController {
           features: MobileFeatures(
             search: true,
             documents: true,
-            localSsh: true,
+            backendSshSessions: true,
             digitalEmployees: true,
             pushNotifications: false,
           ),
@@ -141,6 +141,10 @@ class _TestAppPreferencesController extends AppPreferencesController {
 }
 
 final _qrAuthorizationPayloads = <String>[];
+const _desktopLlmQrPayload =
+    '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top"}';
+const _scannedDesktopLlmQrPayload =
+    '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_scan","hub_url":"https://tenant-a.maclaw.top"}';
 
 class _QrAuthorizingSessionController extends _SignedInSessionController {
   @override
@@ -525,12 +529,36 @@ void main() {
     expect(find.text('粘贴二维码内容'), findsOneWidget);
     await tester.enterText(
       find.byType(TextField),
-      ' maclaw-gui-llm-qr-payload ',
+      ' $_desktopLlmQrPayload ',
     );
     await tester.tap(find.text('确认授权'));
     await tester.pumpAndSettle();
 
-    expect(_qrAuthorizationPayloads, ['maclaw-gui-llm-qr-payload']);
+    expect(_qrAuthorizationPayloads, [_desktopLlmQrPayload]);
+  });
+
+  testWidgets('rejects non desktop GUI QR payload before authorization',
+      (tester) async {
+    _qrAuthorizationPayloads.clear();
+    await _pumpLlmQrAuthorization(tester);
+
+    await tester.scrollUntilVisible(
+      find.byType(TextField),
+      420,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.enterText(
+      find.byType(TextField),
+      'https://llm.example.com/v1\nsk-test-secret',
+    );
+    await tester.tap(find.text('确认授权'));
+    await tester.pump();
+
+    expect(_qrAuthorizationPayloads, isEmpty);
+    expect(
+      find.text('授权失败：QR payload must be MaClaw desktop GUI JSON.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('submits detected desktop GUI QR payload from scanner',
@@ -540,7 +568,7 @@ void main() {
       tester,
       scannerBuilder: (onPayload) => Center(
         child: FilledButton(
-          onPressed: () => onPayload(' scanned-maclaw-gui-llm-qr-payload '),
+          onPressed: () => onPayload(' $_scannedDesktopLlmQrPayload '),
           child: const Text('模拟扫码'),
         ),
       ),
@@ -549,7 +577,7 @@ void main() {
     await tester.tap(find.text('模拟扫码'));
     await tester.pumpAndSettle();
 
-    expect(_qrAuthorizationPayloads, ['scanned-maclaw-gui-llm-qr-payload']);
+    expect(_qrAuthorizationPayloads, [_scannedDesktopLlmQrPayload]);
   });
 
   testWidgets('clears server profiles and SSH credentials separately',

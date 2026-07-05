@@ -66,7 +66,7 @@ func maskPhoneAccount(account string) string {
 
 // GetPublicUserRankingsHandler returns a public (no auth) leaderboard with masked emails.
 // Uses default tenant and supports daily/weekly/monthly period.
-func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc {
+func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
 			writeError(w, http.StatusServiceUnavailable, "RANKING_UNAVAILABLE", "ranking service unavailable")
@@ -129,33 +129,7 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer) http.HandlerFunc
 			return
 		}
 
-		// Merge (reuse existing logic pattern)
-		byAccount := map[string]*userRankingRow{}
-		for _, t := range tokenRows {
-			account := strings.ToLower(strings.TrimSpace(t.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			byAccount[account] = &userRankingRow{UserEmail: account, TotalTokens: t.Usage.TotalTokens()}
-		}
-		for _, d := range durationRows {
-			account := strings.ToLower(strings.TrimSpace(d.UserEmail))
-			if !isUserRankingAccount(account) {
-				continue
-			}
-			row := byAccount[account]
-			if row == nil {
-				row = &userRankingRow{UserEmail: account}
-				byAccount[account] = row
-			}
-			row.DurationSeconds += d.DurationSeconds
-			row.OnlineSeconds += d.OnlineSeconds
-		}
-
-		merged := make([]userRankingRow, 0, len(byAccount))
-		for _, row := range byAccount {
-			merged = append(merged, *row)
-		}
+		merged := mergeUserRankingRows(ctx, tenantID, users, tokenRows, durationRows)
 		assignUserRankingRanks(merged)
 		sortUserRankingRows(merged, dimension)
 

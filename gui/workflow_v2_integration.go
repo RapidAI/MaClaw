@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -749,13 +750,31 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 				}
 				h.emitWorkflowV2Progress(msg.UserID, hr.State)
 				h.pendingV2SubAgentExecution.Store(msg.UserID, true)
+				if hr.State != nil && hr.State.Type == "coding_subagent" {
+					projectPath, requestText := directCodingFormExecutionInputs(hr.State)
+					if projectPath != "" {
+						hr.State.ProjectPath = projectPath
+						if wf := h.getWorkflowV2(); wf != nil {
+							_ = wf.store.Save(hr.State)
+						}
+					}
+					if requestText == "" {
+						requestText = "执行简化编程任务"
+					}
+					h.pendingDirectCodingProjectPath.Store(msg.UserID, projectPath)
+					h.workflowOriginalRequest.Store(msg.UserID, requestText)
+				} else {
+					h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
+				}
 				h.workflowAgentLoopMarker.Store(msg.UserID, true)
-				h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
 				return workflowIMRouteResult{
 					WorkflowAgentLoop: true,
 					WorkflowDocPhase:  false,
 				}
 			case v2.ExecModeRemoteSubAgent:
+				if hr.State != nil && hr.State.Type == "remote_coding_subagent" {
+					return h.setupDirectRemoteCodingFromWorkflowForm(msg.UserID, hr.State)
+				}
 				// Remote SubAgent execution (e.g. paper_reproduction iterative_improvement).
 				// Launches RemoteExperimentOrchestrator in a background goroutine.
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=remote_subagent for phase=%s", hr.Phase.ID)
@@ -1109,6 +1128,9 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 		if f.Required {
 			field["required"] = true
 		}
+		if f.Sensitive {
+			field["sensitive"] = true
+		}
 		if f.Description != "" {
 			field["description"] = f.Description
 		}
@@ -1193,6 +1215,9 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 				}
 				if f.Required {
 					vf["required"] = true
+				}
+				if f.Sensitive {
+					vf["sensitive"] = true
 				}
 				if f.Description != "" {
 					vf["description"] = f.Description
@@ -2336,6 +2361,101 @@ type directRemoteCodingContext struct {
 	ProjectDir string
 }
 
+func workflowFormString(data map[string]interface{}, key string) string {
+	if data == nil {
+		return ""
+	}
+	switch v := data[key].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func workflowFormInt(data map[string]interface{}, key string, defaultValue int) int {
+	if data == nil {
+		return defaultValue
+	}
+	switch v := data[key].(type) {
+	case int:
+		if v > 0 {
+			return v
+		}
+	case int64:
+		if v > 0 {
+			return int(v)
+		}
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func activePhaseFormData(state *v2.WorkflowState) map[string]interface{} {
+	if state == nil {
+		return nil
+	}
+	if phase := state.ActivePhase(); phase != nil {
+		return phase.FormData
+	}
+	return nil
+}
+
+func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	phase := state.ActivePhase()
+	if phase == nil || phase.FormData == nil {
+		return false
+	}
+	sensitiveNames := map[string]bool{}
+	if phase.InputSchema != nil {
+		collect := func(fields []v2.PhaseInputField) {
+			for _, field := range fields {
+				if field.Sensitive && strings.TrimSpace(field.Name) != "" {
+					sensitiveNames[field.Name] = true
+				}
+			}
+		}
+		collect(phase.InputSchema.Fields)
+		for _, variant := range phase.InputSchema.Variants {
+			collect(variant.Fields)
+		}
+	}
+	changed := false
+	for key := range phase.FormData {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if sensitiveNames[key] || strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+			delete(phase.FormData, key)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func directCodingFormExecutionInputs(state *v2.WorkflowState) (projectPath, requestText string) {
+	formData := activePhaseFormData(state)
+	projectPath = workflowFormString(formData, "work_dir")
+	requestText = workflowFormString(formData, "project_description")
+	if requestText == "" {
+		requestText = strings.TrimSpace(state.Summary)
+	}
+	return projectPath, requestText
+}
+
 func isDirectCodingPanelPlaceholder(text string) bool {
 	switch strings.TrimSpace(text) {
 	case "启动简化编程任务", "启动远程编程任务":
@@ -2485,6 +2605,61 @@ func (h *IMMessageHandler) setupDirectRemoteCodingExecution(userID, originalText
 			Response: &IMAgentResponse{Text: fmt.Sprintf("已进入远程编程模式，将使用 SSH 会话 %s。请直接输入要在远程项目中修改的代码需求。", remoteCtx.SessionID)},
 		}
 	}
+	return workflowIMRouteResult{
+		WorkflowAgentLoop: true,
+		WorkflowDocPhase:  false,
+	}
+}
+
+func (h *IMMessageHandler) setupDirectRemoteCodingFromWorkflowForm(userID string, state *v2.WorkflowState) workflowIMRouteResult {
+	formData := activePhaseFormData(state)
+	sshHost := workflowFormString(formData, "ssh_host")
+	sshUser := workflowFormString(formData, "ssh_user")
+	sshPassword := workflowFormString(formData, "ssh_password")
+	workDir := workflowFormString(formData, "work_dir")
+	requestText := workflowFormString(formData, "project_description")
+	sshPort := workflowFormInt(formData, "ssh_port", 22)
+	if scrubActivePhaseSensitiveFormData(state) {
+		if wf := h.getWorkflowV2(); wf != nil {
+			_ = wf.store.Save(state)
+		}
+	}
+
+	if sshHost == "" || sshUser == "" || sshPassword == "" || workDir == "" || requestText == "" {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ 远程编程表单信息不完整，请重新填写主机、用户名、密码、默认工作目录和项目描述。"}}
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ SSH 端口无效，请填写 1-65535 之间的端口。"}}
+	}
+	if h.ensureSSHManager() == nil {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ SSH 会话管理器不可用，无法启动远程编程。"}}
+	}
+
+	sessionID := h.findOrCreateSSHSession(sshUser, sshHost, sshPort, sshPassword)
+	if sessionID == "" {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("❌ 无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHost, sshPort)}}
+	}
+
+	if state != nil {
+		state.ProjectPath = workDir
+		if wf := h.getWorkflowV2(); wf != nil {
+			if phase := state.ActivePhase(); phase != nil {
+				phase.Status = v2.PhaseExecuting
+			}
+			_ = wf.store.Save(state)
+		}
+	}
+	h.emitWorkflowV2Progress(userID, state)
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingDirectCodingProjectPath.Delete(userID)
+	h.pendingDirectRemoteCoding.Store(userID, directRemoteCodingContext{
+		SessionID:  sessionID,
+		WorkDir:    workDir,
+		ProjectDir: workDir,
+	})
+	h.workflowAgentLoopMarker.Store(userID, true)
+	h.workflowOriginalRequest.Store(userID, requestText)
+
 	return workflowIMRouteResult{
 		WorkflowAgentLoop: true,
 		WorkflowDocPhase:  false,

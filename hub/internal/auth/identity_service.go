@@ -149,6 +149,7 @@ type EmailPollResult struct {
 	AccessToken  string          `json:"access_token,omitempty"`
 	ExpiresIn    int             `json:"expires_in,omitempty"`
 	Email        string          `json:"email,omitempty"`
+	PhoneNumber  string          `json:"phone_number,omitempty"`
 	SN           string          `json:"sn,omitempty"`
 	HubURL       string          `json:"hub_url,omitempty"`
 	HubID        string          `json:"hub_id,omitempty"`
@@ -165,9 +166,10 @@ type EmailLoginHub struct {
 }
 
 type EmailLoginUser struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	Email    string `json:"email,omitempty"`
-	SN       string `json:"sn,omitempty"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	Email       string `json:"email,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	SN          string `json:"sn,omitempty"`
 }
 
 type EmailLoginLLM struct {
@@ -378,7 +380,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		return nil, err
 	}
 
-	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +504,14 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		}
 	}
 
-	return s.issueMachineForUser(ctx, user, machineName, platform, clientID)
+	result, err := s.issueMachineForUser(ctx, user, machineName, platform, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil && !strings.EqualFold(user.Email, email) {
+		result.Email = email
+	}
+	return result, nil
 }
 
 func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (*EmailLoginRequestResult, error) {
@@ -515,7 +524,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		return nil, err
 	}
 
-	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
+	user, matchedPrimaryEmail, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +593,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		}
 	}
 
-	if user != nil && s.mailer != nil && !user.EmailVerified {
+	if user != nil && matchedPrimaryEmail && s.mailer != nil && !user.EmailVerified {
 		result, err := s.sendRegistrationVerification(ctx, email, "")
 		if err != nil {
 			return nil, err
@@ -616,6 +625,14 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		result = s.withMobileLoginRequestContext(ctx, result)
 	}
 	return result, err
+}
+
+func (s *IdentityService) lookupUserByTenantEmailOrIdentity(ctx context.Context, tenantID, email string) (*store.User, bool, error) {
+	user, err := s.users.GetByTenantIdentity(ctx, tenantID, "email", email)
+	if err != nil || user != nil {
+		return user, user != nil && strings.EqualFold(user.Email, email), err
+	}
+	return nil, false, nil
 }
 
 // createLoginTokenAndNotify creates (or refreshes) a login token for the given
@@ -850,7 +867,7 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	}
 
 	ctx = WithTenant(ctx, loginToken.TenantID)
-	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, loginToken.TenantID, loginToken.Email)
 	if err != nil {
 		return "", nil, err
 	}
@@ -876,12 +893,19 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	if err := s.loginTok.Consume(ctx, loginToken.ID, now); err != nil {
 		return "", nil, err
 	}
-	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, user.Email); err != nil {
+	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, loginToken.Email); err != nil {
 		return "", nil, err
 	}
-	// Mark user as email-verified in the user record.
-	_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
+	if strings.EqualFold(user.Email, loginToken.Email) {
+		_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
+	}
+	s.syncUserRoute(ctx, loginToken.Email)
 
+	if !strings.EqualFold(user.Email, loginToken.Email) {
+		copyUser := *user
+		copyUser.Email = loginToken.Email
+		user = &copyUser
+	}
 	return rawViewerToken, user, nil
 }
 
@@ -898,7 +922,7 @@ func (s *IdentityService) ConfirmRegistrationVerification(ctx context.Context, r
 	}
 
 	ctx = WithTenant(ctx, loginToken.TenantID)
-	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, loginToken.TenantID, loginToken.Email)
 	if err != nil {
 		return "", nil, err
 	}
@@ -913,10 +937,12 @@ func (s *IdentityService) ConfirmRegistrationVerification(ctx context.Context, r
 	if err := s.consumePendingRegistrationVerificationTokens(ctx, loginToken.TenantID, loginToken.Email, loginToken.ID); err != nil {
 		return "", nil, err
 	}
-	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, user.Email); err != nil {
+	if err := s.grantEmailConfirmedBenefitForUser(ctx, user.ID, loginToken.Email); err != nil {
 		return "", nil, err
 	}
-	_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
+	if strings.EqualFold(user.Email, loginToken.Email) {
+		_ = s.users.MarkEmailVerified(ctx, user.TenantID, user.Email)
+	}
 
 	return registrationVerificationCode(rawToken), user, nil
 }
@@ -946,7 +972,7 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 	// Token was consumed - the user confirmed via email link.
 	// Issue a viewer token for this polling client too.
 	ctx = WithTenant(ctx, loginToken.TenantID)
-	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, loginToken.TenantID, loginToken.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -969,13 +995,14 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 	}); err != nil {
 		return nil, err
 	}
+	s.syncUserRoute(ctx, loginToken.Email)
 
 	return s.withMobileLoginPollContext(ctx, user, &EmailPollResult{
 		Status:      "confirmed",
 		TenantID:    user.TenantID,
 		AccessToken: rawViewerToken,
 		ExpiresIn:   30 * 86400,
-		Email:       user.Email,
+		Email:       loginToken.Email,
 		SN:          user.SN,
 	}), nil
 }
@@ -1011,16 +1038,49 @@ func (s *IdentityService) withMobileLoginPollContext(ctx context.Context, user *
 		result.HubID = hub.ID
 	}
 	if user != nil {
+		email := user.Email
+		if result.Email != "" {
+			email = result.Email
+		}
+		phoneNumber := result.PhoneNumber
+		if phoneNumber == "" {
+			phoneNumber, _ = s.boundPhoneNumberForUser(ctx, user)
+			result.PhoneNumber = phoneNumber
+		}
 		result.User = &EmailLoginUser{
-			TenantID: user.TenantID,
-			Email:    user.Email,
-			SN:       user.SN,
+			TenantID:    user.TenantID,
+			Email:       email,
+			PhoneNumber: phoneNumber,
+			SN:          user.SN,
 		}
 	}
 	if result.LLM == nil {
 		result.LLM = &EmailLoginLLM{Mode: defaultMobileOfficialLLMMode}
 	}
 	return result
+}
+
+func (s *IdentityService) boundPhoneNumberForUser(ctx context.Context, user *store.User) (string, error) {
+	if s == nil || s.users == nil || user == nil {
+		return "", nil
+	}
+	identities, err := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, identity := range identities {
+		if identity == nil || !identity.Verified || !strings.EqualFold(strings.TrimSpace(identity.Type), "phone") {
+			continue
+		}
+		if phone := normalizePhoneIdentityValue(identity.Value); phone != "" {
+			return phone, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *IdentityService) BoundPhoneNumberForUser(ctx context.Context, user *store.User) (string, error) {
+	return s.boundPhoneNumberForUser(ctx, user)
 }
 
 func (s *IdentityService) currentLoginHubPayload() *EmailLoginHub {
@@ -1273,6 +1333,7 @@ func (s *IdentityService) BindVerifiedEmailToUser(ctx context.Context, user *sto
 	}); err != nil {
 		return err
 	}
+	s.syncUserRoute(WithTenant(ctx, user.TenantID), email)
 	return nil
 }
 
@@ -1291,15 +1352,41 @@ func (s *IdentityService) CanBindVerifiedEmailToUser(ctx context.Context, user *
 	if existing != nil && existing.ID == user.ID {
 		return nil
 	}
+	if existing != nil {
+		hasEmailIdentity, err := s.userHasEmailIdentity(ctx, existing, email)
+		if err != nil {
+			return err
+		}
+		if hasEmailIdentity {
+			return fmt.Errorf("user identity email:%s already belongs to another user", email)
+		}
+	}
 	if err := s.ensureTenantEmailDomainAllowed(ctx, user.TenantID, email); err != nil {
 		return err
 	}
-	if existing == nil {
-		if err := s.ensureUserRouteAllowed(WithTenant(ctx, user.TenantID), email); err != nil {
-			return err
-		}
+	if err := s.ensureUserRouteAllowed(WithTenant(ctx, user.TenantID), email); err != nil {
+		return err
 	}
 	return nil
+}
+
+func (s *IdentityService) userHasEmailIdentity(ctx context.Context, user *store.User, email string) (bool, error) {
+	if s == nil || s.users == nil || user == nil {
+		return false, nil
+	}
+	identities, err := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, identity := range identities {
+		if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "email") {
+			continue
+		}
+		if strings.EqualFold(normalizeEmail(identity.Value), email) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *IdentityService) syncVerifiedPhoneRoute(ctx context.Context, phoneIdentity string) {
@@ -1425,11 +1512,28 @@ func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string
 	}
 	seen := map[string]struct{}{}
 	for _, user := range items {
-		if user == nil || !strings.EqualFold(normalizeEmail(user.Email), email) {
+		if user == nil {
 			continue
 		}
-		id := normalizeTenantIDValue(user.TenantID)
-		seen[id] = struct{}{}
+		if strings.EqualFold(normalizeEmail(user.Email), email) {
+			id := normalizeTenantIDValue(user.TenantID)
+			seen[id] = struct{}{}
+			continue
+		}
+		identities, err := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID)
+		if err != nil {
+			return "", false, false, err
+		}
+		for _, identity := range identities {
+			if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "email") {
+				continue
+			}
+			if strings.EqualFold(normalizeEmail(identity.Value), email) {
+				id := normalizeTenantIDValue(user.TenantID)
+				seen[id] = struct{}{}
+				break
+			}
+		}
 	}
 	if len(seen) == 0 {
 		return s.resolveTenantByConfiguredDomain(ctx, email)

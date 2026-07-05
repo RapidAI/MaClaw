@@ -8,12 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -28,13 +31,37 @@ func downloadSkillJSONFromHubCenterToDir(ctx context.Context, app *App, path, ta
 }
 
 func downloadSkillJSONFromHubCenterToDirWithIntegrity(ctx context.Context, app *App, path, targetDir, expectedSHA256, expectedSignature string) (*corelib.NLSkillEntry, error) {
+	return downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(ctx, app, "", path, targetDir, expectedSHA256, expectedSignature)
+}
+
+func downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(ctx context.Context, app *App, locator, fallbackPath, targetDir, expectedSHA256, expectedSignature string) (*corelib.NLSkillEntry, error) {
 	if app == nil {
 		return nil, fmt.Errorf("app is nil")
 	}
-	_, _, data, err := app.getHubCenterBytes(ctx, &http.Client{Timeout: 30 * time.Second}, path, maxDownloadSize)
+	client := &http.Client{Timeout: 30 * time.Second}
+	data, err := app.getHubCenterDownloadLocatorBytes(ctx, client, locator, fallbackPath, maxDownloadSize)
 	if err != nil {
 		return nil, err
 	}
+	entry, err := decodeVerifiedDownloadedSkillPackage(app, data, targetDir, expectedSHA256, expectedSignature)
+	if err == nil {
+		return entry, nil
+	}
+	if strings.TrimSpace(locator) == "" || strings.TrimSpace(fallbackPath) == "" {
+		return nil, err
+	}
+	fallbackData, fallbackErr := app.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, maxDownloadSize, err)
+	if fallbackErr != nil {
+		return nil, fallbackErr
+	}
+	entry, fallbackErr = decodeVerifiedDownloadedSkillPackage(app, fallbackData, targetDir, expectedSHA256, expectedSignature)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("%v; fallback package verification failed: %w", err, fallbackErr)
+	}
+	return entry, nil
+}
+
+func decodeVerifiedDownloadedSkillPackage(app *App, data []byte, targetDir, expectedSHA256, expectedSignature string) (*corelib.NLSkillEntry, error) {
 	if err := verifyDownloadedSkillPackageSHA256(data, expectedSHA256); err != nil {
 		return nil, err
 	}
@@ -42,6 +69,95 @@ func downloadSkillJSONFromHubCenterToDirWithIntegrity(ctx context.Context, app *
 		return nil, err
 	}
 	return decodeDownloadedSkillJSONToDir(data, targetDir)
+}
+
+func (a *App) getHubCenterDownloadLocatorBytes(ctx context.Context, client *http.Client, locator, fallbackPath string, limit int64) ([]byte, error) {
+	locator = strings.TrimSpace(locator)
+	if locator == "" {
+		_, _, data, err := a.getHubCenterBytes(ctx, client, fallbackPath, limit)
+		return data, err
+	}
+	parsed, err := url.Parse(locator)
+	if err != nil {
+		return nil, fmt.Errorf("invalid skill download locator %q: %w", locator, err)
+	}
+	if parsed.Scheme == "" {
+		path := locator
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		_, _, data, err := a.getHubCenterBytes(ctx, client, path, limit)
+		return data, err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, fmt.Errorf("unsupported skill download locator scheme %q", parsed.Scheme))
+	}
+	bases, err := a.resolveHubCenterCandidates(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	allowedBases := append([]string{}, bases...)
+	if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
+		allowedBases = append(allowedBases, cfg.RemoteHubURL, cfg.RemoteHubCenterURL)
+		allowedBases = append(allowedBases, cfg.RemoteHubCenterURLs...)
+	}
+	if !hubCenterDownloadLocatorAllowed(locator, allowedBases) {
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, fmt.Errorf("skill download locator host is not an active Hub or HubCenter: %s", parsed.Host))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locator, nil)
+	if err != nil {
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body))))
+	}
+	if limit > 0 {
+		data, readErr := readLimitedHubCenterBody(resp.Body, limit)
+		if readErr != nil {
+			return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, readErr)
+		}
+		return data, nil
+	}
+	data, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return a.getHubCenterDownloadFallbackBytes(ctx, client, fallbackPath, limit, readErr)
+	}
+	return data, nil
+}
+
+func (a *App) getHubCenterDownloadFallbackBytes(ctx context.Context, client *http.Client, fallbackPath string, limit int64, locatorErr error) ([]byte, error) {
+	fallbackPath = strings.TrimSpace(fallbackPath)
+	if fallbackPath == "" {
+		return nil, locatorErr
+	}
+	_, _, data, fallbackErr := a.getHubCenterBytes(ctx, client, fallbackPath, limit)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("%v; fallback download failed: %w", locatorErr, fallbackErr)
+	}
+	return data, nil
+}
+
+func hubCenterDownloadLocatorAllowed(locator string, bases []string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(locator))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	for _, base := range remote.NormalizeHubCenterURLs(bases) {
+		candidate, err := url.Parse(base)
+		if err != nil || candidate.Scheme == "" || candidate.Host == "" {
+			continue
+		}
+		if strings.EqualFold(parsed.Scheme, candidate.Scheme) && strings.EqualFold(parsed.Host, candidate.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 func verifyDownloadedSkillPackageSHA256(data []byte, expectedSHA256 string) error {

@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession, PatchConfigFields } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
@@ -36,6 +36,7 @@ type BrandInfo = {
 type RemoteProbeIdentity = {
     tenant_id?: string;
     tenant_name?: string;
+    phone_number?: string;
 };
 
 type AboutPanelProps = {
@@ -161,6 +162,7 @@ export function AboutPanel({
         id: String(config?.remote_tenant_id || ''),
         name: String(config?.remote_tenant_name || ''),
     });
+    const [probedMobile, setProbedMobile] = useState('');
 
     useEffect(() => {
         setRemoteTenant({
@@ -169,10 +171,18 @@ export function AboutPanel({
         });
     }, [config?.remote_hub_url, config?.remote_email, (config as any)?.remote_mobile, config?.remote_tenant_id, config?.remote_tenant_name]);
 
+    useEffect(() => {
+        setProbedMobile('');
+    }, [config?.remote_hub_url, config?.remote_email, (config as any)?.remote_mobile]);
+
     const probeIdentity = registrationProbeIdentityFromConfig(config?.remote_email, (config as any)?.remote_mobile);
+    const configuredMobile = registrationPhoneFromConfig((config as any)?.remote_mobile, config?.remote_email);
+    const hasRegisteredMachine = String(config?.remote_machine_id || '').trim() !== '' && String(config?.remote_machine_token || '').trim() !== '';
     useEffect(() => {
         const hubURL = String(config?.remote_hub_url || '').trim();
-        if (!hubURL || !probeIdentity || remoteTenant.id || remoteTenant.name) return;
+        const needsTenant = !remoteTenant.id && !remoteTenant.name;
+        const needsMobile = hasRegisteredMachine && !configuredMobile && !String(probedMobile || '').trim();
+        if (!hubURL || !probeIdentity || (!needsTenant && !needsMobile)) return;
         let cancelled = false;
         ProbeRemoteHub(hubURL, probeIdentity)
             .then((result: RemoteProbeIdentity) => {
@@ -180,12 +190,18 @@ export function AboutPanel({
                 const id = String(result?.tenant_id || '').trim();
                 const name = String(result?.tenant_name || '').trim();
                 if (id || name) setRemoteTenant({ id, name });
+                const phoneNumber = String(result?.phone_number || '').trim();
+                if (phoneNumber && !configuredMobile) {
+                    setProbedMobile(phoneNumber);
+                    void PatchConfigFields({ remote_mobile: phoneNumber })
+                        .then(() => onRegistrationContactUpdated?.())
+                        .catch(() => undefined);
+                }
             })
             .catch(() => undefined);
         return () => { cancelled = true; };
-    }, [config?.remote_hub_url, probeIdentity, remoteTenant.id, remoteTenant.name]);
+    }, [config?.remote_hub_url, probeIdentity, remoteTenant.id, remoteTenant.name, configuredMobile, probedMobile, hasRegisteredMachine, onRegistrationContactUpdated]);
 
-    const hasRegisteredMachine = String(config?.remote_machine_id || '').trim() !== '' && String(config?.remote_machine_token || '').trim() !== '';
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
     const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
     const hubURL = String(config?.remote_hub_url || '').trim() || emptyValue;
@@ -206,7 +222,7 @@ export function AboutPanel({
         return preferred || emptyValue;
     })();
     const remoteEmailRaw = registrationEmailFromConfig(config?.remote_email);
-    const remoteMobileRaw = registrationPhoneFromConfig((config as any)?.remote_mobile, config?.remote_email);
+    const remoteMobileRaw = configuredMobile || probedMobile;
     const remoteEmail = remoteEmailRaw || emptyValue;
     const remoteMobile = remoteMobileRaw || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;

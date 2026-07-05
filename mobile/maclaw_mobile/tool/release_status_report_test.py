@@ -115,6 +115,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.ios_artifact_evidence_command(
                 archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+                team_id=release_evidence_commands.DEFAULT_SIGNING_TEAM_ID,
             ),
             output,
         )
@@ -614,6 +615,39 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertEqual((root,), seen["args"])
         self.assertEqual("ABCDE12345", seen["kwargs"]["ios_team_id"])
         self.assertEqual("ad-hoc", seen["kwargs"]["ios_export_method"])
+
+    def test_main_accepts_placeholder_team_id_for_handoff_templates(self) -> None:
+        root = self.make_root()
+        ready = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+            record_results=[],
+            final_errors=[],
+        )
+        seen: dict[str, object] = {}
+        stdout = StringIO()
+        original_build_status = release_status_report.build_status
+        try:
+            def fake_build_status(*args: object, **kwargs: object) -> release_status_report.ReleaseStatus:
+                seen["args"] = args
+                seen["kwargs"] = kwargs
+                return ready
+
+            release_status_report.build_status = fake_build_status
+            with redirect_stdout(stdout):
+                exit_code = release_status_report.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--team-id",
+                        "<APPLE_TEAM_ID>",
+                    ],
+                )
+        finally:
+            release_status_report.build_status = original_build_status
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(release_evidence_commands.DEFAULT_TEAM_ID, seen["kwargs"]["ios_team_id"])
 
     def test_main_passes_records_dir_and_scope_to_status_builder(self) -> None:
         root = self.make_root()

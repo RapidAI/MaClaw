@@ -14,7 +14,7 @@ void main() {
     const features = MobileFeatures(
       search: true,
       documents: false,
-      localSsh: false,
+      backendSshSessions: false,
       digitalEmployees: true,
       pushNotifications: false,
     );
@@ -49,7 +49,7 @@ void main() {
     const features = MobileFeatures(
       search: false,
       documents: false,
-      localSsh: false,
+      backendSshSessions: false,
       digitalEmployees: false,
       pushNotifications: false,
     );
@@ -67,7 +67,7 @@ void main() {
     const features = MobileFeatures(
       search: false,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: false,
     );
@@ -86,12 +86,30 @@ void main() {
     expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
   });
 
+  test('mobile can explicitly disable assistant without treating it as search',
+      () {
+    const features = MobileFeatures(
+      assistant: false,
+      search: true,
+      documents: true,
+      backendSshSessions: false,
+      digitalEmployees: false,
+      pushNotifications: false,
+    );
+
+    final tabs = mobileAppTabsForFeatures(features);
+
+    expect(tabs.map((tab) => tab.path), ['/documents', '/account']);
+    expect(mobileInitialPathForFeatures(features), '/documents');
+    expect(mobilePathEnabledForFeatures('/assistant', features), isFalse);
+  });
+
   test('shared file intents prefer documents when document feature is enabled',
       () {
     const features = MobileFeatures(
       search: true,
       documents: true,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: false,
       pushNotifications: false,
     );
@@ -112,7 +130,7 @@ void main() {
     const features = MobileFeatures(
       search: true,
       documents: false,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: false,
     );
@@ -133,7 +151,7 @@ void main() {
     const features = MobileFeatures(
       search: false,
       documents: false,
-      localSsh: true,
+      backendSshSessions: true,
       digitalEmployees: false,
       pushNotifications: false,
     );
@@ -167,5 +185,23 @@ void main() {
       sharedIntentCanBeConsumedAtTarget(intent, '/documents'),
       isFalse,
     );
+  });
+
+  test('shared link intents still open assistant when search is disabled', () {
+    const features = MobileFeatures(
+      search: false,
+      documents: true,
+      backendSshSessions: true,
+      digitalEmployees: true,
+      pushNotifications: false,
+    );
+    final intent = MobileSharedIntent(
+      id: 'share-link-search-disabled',
+      kind: MobileSharedIntentKind.link,
+      value: 'https://example.com/incident',
+      receivedAt: DateTime.utc(2026, 7, 1),
+    );
+
+    expect(sharedIntentTargetPath(intent, features), '/assistant');
   });
 }

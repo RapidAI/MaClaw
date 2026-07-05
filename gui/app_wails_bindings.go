@@ -301,6 +301,10 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 }
 
 func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPackageSHA256, expectedPackageSignature string) error {
+	return a.installMixedSkillWithIntegrityAndLocator(source, id, installRef, "", expectedPackageSHA256, expectedPackageSignature)
+}
+
+func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}); err != nil {
 		return err
 	}
@@ -361,7 +365,7 @@ func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPac
 		if err != nil {
 			return err
 		}
-		skill, err := downloadSkillJSONFromHubCenterToDirWithIntegrity(ctx, a, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, expectedPackageSHA256, expectedPackageSignature)
+		skill, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(ctx, a, downloadLocator, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, expectedPackageSHA256, expectedPackageSignature)
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
 			return err
@@ -370,7 +374,7 @@ func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPac
 			cskill.CleanupStaging(stagingDir)
 			return fmt.Errorf("skill %q already exists", skill.Name)
 		}
-		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "skillhub")
+		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, string(kind))
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
 			return err
@@ -1767,14 +1771,28 @@ func (a *App) continueAIAssistantWorkflowMessage(userID string, text string, req
 // confirmation. Called from the "常用工作流" panel when a user clicks a workflow tile.
 // The workflow is started immediately and the first phase begins executing.
 func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (string, error) {
+	return a.startWorkflowDirect(workflowType, projectPath, "")
+}
+
+func (a *App) StartWorkflowDirectWithInput(workflowType string, projectPath string, taskText string) (string, error) {
+	return a.startWorkflowDirect(workflowType, projectPath, taskText)
+}
+
+func (a *App) startWorkflowDirect(workflowType string, projectPath string, taskText string) (string, error) {
 	workflowType = strings.TrimSpace(workflowType)
 	if workflowType == "" {
 		return "", fmt.Errorf("workflow type is required")
 	}
+	taskText = strings.TrimSpace(taskText)
 	directCodingSubAgent := workflowType == "coding_subagent"
 	directRemoteCodingSubAgent := workflowType == "remote_coding_subagent"
+	if taskText != "" && !directCodingSubAgent && !directRemoteCodingSubAgent {
+		return "", fmt.Errorf("workflow input is only supported for direct coding workflows")
+	}
+	directCodingWithInlineInput := taskText != "" && directCodingSubAgent
+	directRemoteCodingWithInlineInput := taskText != "" && directRemoteCodingSubAgent
 	routeWorkflowType := workflowType
-	if directCodingSubAgent || directRemoteCodingSubAgent {
+	if directCodingWithInlineInput || directRemoteCodingWithInlineInput {
 		routeWorkflowType = "coding"
 	}
 
@@ -1822,10 +1840,13 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	// agent loop races. Send a synthetic message that the workflow integration
 	// layer will pick up and route to startNewWorkflowV2.
 	syntheticText := fmt.Sprintf("启动%s工作流", workflowType)
-	if directCodingSubAgent {
+	if directCodingWithInlineInput {
 		syntheticText = "启动简化编程任务"
-	} else if directRemoteCodingSubAgent {
+	} else if directRemoteCodingWithInlineInput {
 		syntheticText = "启动远程编程任务"
+	}
+	if taskText != "" {
+		syntheticText = taskText
 	}
 
 	// Store the RouteResult so the handleCodingComplexityCommand path can
@@ -1852,9 +1873,9 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	// events carry it — the frontend's useWorkflowState filters events by scope ID
 	// and only accepts events matching the active tab's scope ("local" for default tab).
 	workflowChoice := workflowChoiceComplex
-	if directCodingSubAgent {
+	if directCodingWithInlineInput {
 		workflowChoice = workflowChoiceSimple
-	} else if directRemoteCodingSubAgent {
+	} else if directRemoteCodingWithInlineInput {
 		workflowChoice = workflowChoiceRemoteSimple
 	}
 	choiceCommand := buildWorkflowChoiceCommand(workflowChoice, choiceID)

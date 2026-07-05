@@ -417,7 +417,7 @@ func TestRemoteRegistrationContactPhoneUsesRegistrationSMSEndpoints(t *testing.T
 			if payload["phone_number"] != "17090134628" || payload["verify_code"] != "123456" || payload["tenant_id"] != "tenant-acme" || payload["machine_id"] != "machine-1" || payload["machine_token"] != "token-1" {
 				t.Fatalf("verify payload = %#v", payload)
 			}
-			_, _ = w.Write([]byte(`{"ok":true,"kind":"phone","tenant_id":"tenant-acme","phone_number":"17090134628"}`))
+			_, _ = w.Write([]byte(`{"ok":true,"kind":"phone","tenant_id":"tenant-acme","phone_number":"17090134628","email":"bound@example.com"}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -428,6 +428,7 @@ func TestRemoteRegistrationContactPhoneUsesRegistrationSMSEndpoints(t *testing.T
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:       server.URL,
 		RemoteTenantID:     "tenant-acme",
+		RemoteEmail:        "phone:17090134628",
 		RemoteMachineID:    "machine-1",
 		RemoteMachineToken: "token-1",
 	}); err != nil {
@@ -452,6 +453,9 @@ func TestRemoteRegistrationContactPhoneUsesRegistrationSMSEndpoints(t *testing.T
 	}
 	if cfg.RemoteMobile != "17090134628" {
 		t.Fatalf("RemoteMobile = %q, want verified phone", cfg.RemoteMobile)
+	}
+	if cfg.RemoteEmail != "bound@example.com" {
+		t.Fatalf("RemoteEmail = %q, want bound email from phone verification", cfg.RemoteEmail)
 	}
 }
 

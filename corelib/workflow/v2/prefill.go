@@ -19,7 +19,7 @@ var noPrefillFieldNames = map[string]bool{
 	// File/material input fields
 	"material_path": true, "material_text": true,
 	"contract_path": true, "contract_text": true,
-	"bid_doc_path":  true, "bid_doc_text": true,
+	"bid_doc_path": true, "bid_doc_text": true,
 	// Sensitive
 	"ssh_password": true,
 	// Task-specific creative fields that must be user-authored
@@ -41,6 +41,12 @@ func ShouldPrefill(fieldName string) bool {
 	return !noPrefillFieldNames[fieldName]
 }
 
+// ShouldPrefillField returns whether a concrete schema field can be prefilled
+// from recent context. Sensitive fields are blocked regardless of name.
+func ShouldPrefillField(field PhaseInputField) bool {
+	return !field.Sensitive && ShouldPrefill(field.Name)
+}
+
 // ShouldRecallPrefill returns whether a field should be actively recalled from
 // memory/knowledge for prefill. This is a stricter check than ShouldPrefill:
 // the field must not be blacklisted AND must be declared Reusable by the template.
@@ -54,7 +60,7 @@ func ShouldPrefill(fieldName string) bool {
 // eligible for recall (old behavior). This ensures existing templates don't
 // regress while new templates get precise control.
 func ShouldRecallPrefill(field PhaseInputField, schemaHasAnyReusable bool) bool {
-	if noPrefillFieldNames[field.Name] {
+	if !ShouldPrefillField(field) {
 		return false
 	}
 	// If the schema has at least one Reusable field, use Reusable as the gate.
@@ -134,7 +140,7 @@ func PrefillFromContext(schema *PhaseInputSchema, userMessage string, contextTex
 	result := make(map[string]*PrefilledValue)
 
 	for _, field := range allFields {
-		if !ShouldPrefill(field.Name) {
+		if !ShouldPrefillField(field) {
 			continue
 		}
 

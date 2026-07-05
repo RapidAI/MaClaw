@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -195,6 +196,25 @@ type maclawAppInstallPlanDependency struct {
 	Health             string   `json:"health,omitempty"`
 	Action             string   `json:"action"`
 	Message            string   `json:"message,omitempty"`
+}
+
+type maclawAppBundledDependencies struct {
+	Schema string                       `json:"schema"`
+	Skills []maclawAppBundledSkillEntry `json:"skills,omitempty"`
+}
+
+type maclawAppBundledSkillEntry struct {
+	StableID    string            `json:"stable_id"`
+	ID          string            `json:"id,omitempty"`
+	Name        string            `json:"name"`
+	Version     string            `json:"version,omitempty"`
+	Source      string            `json:"source,omitempty"`
+	HubSkillID  string            `json:"hub_skill_id,omitempty"`
+	HubVersion  string            `json:"hub_version,omitempty"`
+	CanonicalID string            `json:"canonical_id,omitempty"`
+	SHA256      string            `json:"sha256"`
+	Files       map[string]string `json:"files"`
+	AppIDs      []string          `json:"app_ids,omitempty"`
 }
 
 type maclawAppInstallSkillVersionSnapshot struct {
@@ -668,6 +688,10 @@ func (a *App) SubmitMaclawAppPackage(packageJSON string) (map[string]any, error)
 		// Entry-level (survives Hub storage which only persists per-entry ManifestJSON).
 		injectResolvedDepsIntoAppEntries(pkg, enrichedDeps)
 	}
+	if bundledDeps := a.maclawAppBundledDependenciesForPlan(dependencies); len(bundledDeps.Skills) > 0 {
+		pkg["bundled_dependencies"] = bundledDeps
+		injectBundledDepsIntoAppEntries(pkg, bundledDeps)
+	}
 
 	// Compute fingerprint AFTER enrichment so the receiver's integrity check
 	// matches what was actually uploaded (including resolved_dependencies).
@@ -784,6 +808,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 	if installDoc != nil {
 		applyResolvedDependenciesToPlan(plan.Dependencies, installDoc)
 	}
+	maclawAppApplySourceVersionKeyDependencyRefs(plan.Dependencies)
 	maclawAppValidateDependencyInstallRefs(plan.Dependencies)
 	maclawAppApplyDependencyPreflightDiagnostics(plan.Dependencies)
 	a.maclawAppApplyRemoteDependencyPreflightDiagnostics(plan.Dependencies)
@@ -808,8 +833,24 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 				if dep.Message == "" {
 					dep.Message = "installed locally"
 				}
+				continue
 			}
-			continue
+			if dep.VersionStatus == "mismatch" {
+				if updated, updateErr := a.updateInstalledMaclawAppDependency(dep); updated {
+					if updateErr != nil {
+						dep.InstallErrorCode = "dependency_update_failed"
+						dep.InstallErrorStage = "dependency_update"
+						dep.InstallErrorDetail = updateErr.Error()
+						dep.Health = "missing"
+						dep.Action = "failed"
+						dep.Message = updateErr.Error()
+						continue
+					}
+					dep.Action = "updated"
+					dep.Message = "updated dependency skill from remote"
+					continue
+				}
+			}
 		}
 		if !dep.Required {
 			dep.Health = "missing"
@@ -819,15 +860,34 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			}
 			continue
 		}
-		source, ok := maclawAppInstallSkillSource(dep.Source)
+		source, ok := maclawAppDependencyInstallerSource(*dep)
 		if !ok {
+			if installedFromBundle, bundleErr := a.installBundledMaclawAppDependency(packageJSON, *dep); installedFromBundle {
+				if bundleErr != nil {
+					dep.InstallErrorCode = "bundled_dependency_failed"
+					dep.InstallErrorStage = "bundled_dependency_install"
+					dep.InstallErrorDetail = bundleErr.Error()
+					dep.Health = "missing"
+					dep.Action = "failed"
+					dep.Message = bundleErr.Error()
+					continue
+				}
+				dep.Installed = true
+				dep.Action = "installed_from_bundle"
+				dep.Message = "installed bundled dependency skill"
+				continue
+			} else if bundleErr != nil {
+				dep.InstallErrorCode = "bundled_dependency_failed"
+				dep.InstallErrorStage = "bundled_dependency_install"
+				dep.InstallErrorDetail = bundleErr.Error()
+			}
 			dep.Health = "missing"
 			dep.Action = "blocked"
-			dep.Message = fmt.Sprintf("required skill dependency source %q cannot be installed automatically", dep.Source)
+			dep.Message = firstNonEmpty(dep.InstallErrorDetail, fmt.Sprintf("required skill dependency source %q cannot be installed automatically", dep.Source))
 			continue
 		}
 		installMixedSkill := func(source, id, installRef string) error {
-			return a.installMixedSkillWithIntegrity(source, id, installRef, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
+			return a.installMixedSkillWithIntegrityAndLocator(source, id, installRef, dep.PackageDownloadURL, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
 		}
 		if a.maclawAppInstallMixedSkill != nil {
 			installMixedSkill = a.maclawAppInstallMixedSkill
@@ -842,6 +902,29 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			continue
 		}
 		if err := installMixedSkill(source, dep.ID, installRef); err != nil {
+			if installedFromBundle, bundleErr := a.installBundledMaclawAppDependency(packageJSON, *dep); installedFromBundle {
+				if bundleErr != nil {
+					dep.InstallErrorCode = "bundled_dependency_failed"
+					dep.InstallErrorStage = "bundled_dependency_install"
+					dep.InstallErrorDetail = fmt.Sprintf("%v; bundled fallback failed: %v", err, bundleErr)
+					dep.Health = "missing"
+					dep.Action = "failed"
+					dep.Message = dep.InstallErrorDetail
+					continue
+				}
+				dep.Installed = true
+				dep.Action = "installed_from_bundle"
+				dep.Message = "remote dependency install failed; installed bundled dependency skill"
+				continue
+			} else if bundleErr != nil {
+				dep.InstallErrorCode = "bundled_dependency_failed"
+				dep.InstallErrorStage = "bundled_dependency_install"
+				dep.InstallErrorDetail = fmt.Sprintf("%v; bundled fallback failed: %v", err, bundleErr)
+				dep.Health = "missing"
+				dep.Action = "failed"
+				dep.Message = dep.InstallErrorDetail
+				continue
+			}
 			dep.Health = "missing"
 			dep.Action = "failed"
 			dep.InstallErrorCode, dep.InstallErrorStage, dep.InstallErrorDetail = maclawAppClassifyDependencyInstallError(*dep, source, err)
@@ -6195,6 +6278,7 @@ func validMaclawAppWorkspacePlacement(value string) bool {
 func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstallPlanDependency {
 	deps := []maclawAppInstallPlanDependency{}
 	seen := map[string]int{}
+	defaultSource := maclawAppDefaultDependencySourceForEntry(entry)
 	add := func(dep maclawAppInstallPlanDependency) {
 		dep.ID = strings.TrimSpace(dep.ID)
 		if dep.ID == "" {
@@ -6206,8 +6290,14 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 		if dep.Kind == "" {
 			dep.Kind = "skill"
 		}
-		if dep.Source == "" {
-			dep.Source = "hub"
+		dep.Source = maclawAppNormalizeDependencySourceForEntry(dep, defaultSource)
+		if dep.InstallRef == "" && strings.EqualFold(dep.Source, "skillmarket") {
+			if resolved, ok := maclawAppImplicitHubSkillResolution(dep); ok {
+				dep.InstallRef = resolved.Target
+				if dep.CanonicalID == "" {
+					dep.CanonicalID = resolved.Target
+				}
+			}
 		}
 		key := strings.ToLower(dep.ID)
 		if idx, ok := seen[key]; ok {
@@ -6312,6 +6402,69 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 		}
 	}
 	return deps
+}
+
+func maclawAppDefaultDependencySourceForEntry(entry parsedMaclawAppEntry) string {
+	for _, holder := range []map[string]any{entry.App, anyMap(entry.App["binding"]), entry.Entry} {
+		if holder == nil {
+			continue
+		}
+		source := strings.ToLower(strings.TrimSpace(firstNonEmpty(
+			stringMapValue(holder, "dependency_source"),
+			stringMapValue(holder, "dependencySource"),
+			stringMapValue(holder, "install_source"),
+			stringMapValue(holder, "installSource"),
+			stringMapValue(holder, "marketInstallSource"),
+			stringMapValue(holder, "market_install_source"),
+			stringMapValue(holder, "source"),
+		)))
+		switch source {
+		case "market", "skillmarket", "hubcenter":
+			return "skillmarket"
+		case "enterprise", "enterprise_hub":
+			return "enterprise_hub"
+		}
+	}
+	return "hub"
+}
+
+func maclawAppNormalizeDependencySourceForEntry(dep maclawAppInstallPlanDependency, defaultSource string) string {
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	defaultSource = strings.ToLower(strings.TrimSpace(defaultSource))
+	if defaultSource == "" {
+		defaultSource = "hub"
+	}
+	switch source {
+	case "":
+		return defaultSource
+	case "local":
+		return "local"
+	case "hub", "skillhub":
+		if defaultSource == "enterprise_hub" {
+			return defaultSource
+		}
+		if defaultSource == "skillmarket" && maclawAppHubDependencyShouldUseMarketDefault(dep) {
+			return "skillmarket"
+		}
+		return "hub"
+	case "market", "skillmarket", "hubcenter":
+		return "skillmarket"
+	case "enterprise", "enterprise_hub":
+		return "enterprise_hub"
+	default:
+		return source
+	}
+}
+
+func maclawAppHubDependencyShouldUseMarketDefault(dep maclawAppInstallPlanDependency) bool {
+	ref := strings.ToLower(strings.TrimSpace(dep.InstallRef))
+	if strings.HasPrefix(ref, "skillmarket://") || strings.HasPrefix(ref, "hubcenter://") {
+		return true
+	}
+	if _, ok := maclawAppImplicitHubSkillResolution(dep); ok {
+		return true
+	}
+	return false
 }
 
 func maclawAppDependencyInstallRef(values map[string]any) string {
@@ -7835,7 +7988,7 @@ func maclawAppDependencyInstallStage(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "enterprise", "enterprise_hub":
 		return "enterprise_hub_install"
-	case "market", "skillmarket":
+	case "market", "skillmarket", "hubcenter":
 		return "skillmarket_download"
 	case "hub", "skillhub", "local", "":
 		return "skillhub_download"
@@ -7864,7 +8017,7 @@ func maclawAppApplyDependencyPreflightDiagnostics(deps []maclawAppInstallPlanDep
 			dep.PreflightMessage = fmt.Sprintf("installed version %s does not satisfy required version %s", dep.InstalledVersion, firstNonEmpty(dep.RequiredVersion, dep.Version))
 			continue
 		}
-		if strings.TrimSpace(dep.InstallRefVersion) != "" && strings.TrimSpace(dep.Version) != "" && !maclawAppDependencyVersionSatisfied(dep.Version, dep.InstallRefVersion) {
+		if strings.TrimSpace(dep.InstallRefVersion) != "" && strings.TrimSpace(dep.Version) != "" && !maclawAppInstallRefVersionSatisfiesDependency(*dep) {
 			dep.PreflightStatus = "blocked"
 			dep.PreflightCode = "version_mismatch"
 			dep.PreflightStage = "install_ref"
@@ -7901,6 +8054,26 @@ func maclawAppApplyDependencyPreflightDiagnostics(deps []maclawAppInstallPlanDep
 		dep.PreflightMessage = "dependency preflight has not checked remote availability yet"
 	}
 }
+
+func maclawAppInstallRefVersionSatisfiesDependency(dep maclawAppInstallPlanDependency) bool {
+	required := strings.TrimSpace(dep.Version)
+	installRefVersion := strings.TrimSpace(dep.InstallRefVersion)
+	if required == "" || installRefVersion == "" {
+		return required == installRefVersion
+	}
+	if _, target, version, ok := maclawAppParseSourceVersionKey(required); ok {
+		if version == "" {
+			return true
+		}
+		refTarget := strings.TrimSpace(dep.InstallRefTarget)
+		if refTarget != "" && target != "" && !strings.EqualFold(refTarget, target) {
+			return false
+		}
+		return maclawAppDependencyVersionSatisfied(version, installRefVersion)
+	}
+	return maclawAppDependencyVersionSatisfied(required, installRefVersion)
+}
+
 func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAppInstallPlanDependency) {
 	if a == nil || len(deps) == 0 {
 		return
@@ -7916,6 +8089,9 @@ func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAp
 			continue
 		}
 		if dep.PreflightStatus == "blocked" {
+			continue
+		}
+		if dep.Installed {
 			continue
 		}
 		if strings.EqualFold(dep.InstallRefKind, "enterprise_hub") && strings.TrimSpace(dep.InstallRefTarget) != "" {
@@ -7952,8 +8128,17 @@ func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAp
 			maclawAppApplyEnterpriseHubCapabilityPreflight(dep, item)
 			continue
 		}
+		opportunisticHubCenterLookup := false
 		if !maclawAppDependencySupportsPublicMarketPreflight(*dep) {
-			continue
+			if !maclawAppDependencySupportsHubCenterLookup(*dep) || cfgErr != nil || !maclawAppConfigHasExplicitHubCenter(cfg) {
+				continue
+			}
+			// A custom installer may resolve aliases itself; do not let remote
+			// preflight rewrite its install_ref contract.
+			if a.maclawAppInstallMixedSkill != nil {
+				continue
+			}
+			opportunisticHubCenterLookup = true
 		}
 		if cfgErr != nil || !maclawAppConfigHasExplicitHubCenter(cfg) {
 			dep.PreflightStatus = "pending"
@@ -7984,6 +8169,10 @@ func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAp
 			dep.PreflightMessage = fmt.Sprintf("SkillMarket dependency %s preflight unavailable: %v", query, err)
 			continue
 		}
+		if opportunisticHubCenterLookup {
+			maclawAppApplyHubCenterLookupPreflight(dep, results)
+			continue
+		}
 		maclawAppApplyPublicSkillMarketPreflight(dep, results)
 	}
 }
@@ -7999,14 +8188,40 @@ func maclawAppDependencySupportsPublicMarketPreflight(dep maclawAppInstallPlanDe
 	source := strings.ToLower(strings.TrimSpace(dep.Source))
 	kind := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
 	switch source {
-	case "market", "skillmarket":
+	case "market", "skillmarket", "hubcenter":
 		return true
 	}
 	switch kind {
-	case "skillmarket", "market":
+	case "skillmarket", "market", "hubcenter":
 		return true
 	}
 	return false
+}
+
+func maclawAppDependencySupportsHubCenterLookup(dep maclawAppInstallPlanDependency) bool {
+	if strings.TrimSpace(dep.ID) == "" || strings.EqualFold(dep.InstallRefKind, "github") || strings.EqualFold(dep.InstallRefKind, "enterprise_hub") {
+		return false
+	}
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	switch source {
+	case "", "hub", "skillhub":
+	default:
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(dep.InstallRefStatus))
+	return status == "ok" || status == "not_required"
+}
+
+func maclawAppApplyHubCenterLookupPreflight(dep *maclawAppInstallPlanDependency, results []SkillSearchResult) bool {
+	if dep == nil {
+		return false
+	}
+	match := maclawAppFindSkillMarketPreflightMatch(*dep, results)
+	if match == nil {
+		return false
+	}
+	maclawAppApplyPublicSkillMarketPreflight(dep, []SkillSearchResult{*match})
+	return true
 }
 
 type maclawAppDependencyIntegrityMetadata struct {
@@ -8114,6 +8329,15 @@ func maclawAppApplyPublicSkillMarketPreflight(dep *maclawAppInstallPlanDependenc
 		return
 	}
 	maclawAppApplyDependencyIntegrityMetadata(dep, maclawAppDependencyIntegrityFromSkillMarketResult(*match), "skillmarket_preflight")
+	if ref := strings.TrimSpace(firstNonEmpty(match.InstallRef, match.ID)); ref != "" {
+		dep.InstallRef = ref
+		dep.InstallRefKind = "skillmarket"
+		dep.InstallRefTarget = ref
+		dep.InstallRefStatus = "ok"
+		if dep.CanonicalID == "" {
+			dep.CanonicalID = ref
+		}
+	}
 	requiredVersion := strings.TrimSpace(firstNonEmpty(dep.InstallRefVersion, dep.Version, dep.RequiredVersion))
 	if requiredVersion != "" && strings.TrimSpace(match.Version) != "" && !maclawAppDependencyVersionSatisfied(requiredVersion, match.Version) {
 		dep.PreflightStatus = "blocked"
@@ -8222,6 +8446,19 @@ func maclawAppDependencyInstallerRef(dep maclawAppInstallPlanDependency) string 
 	}
 	return firstNonEmpty(dep.InstallRefTarget, dep.InstallRef)
 }
+
+func maclawAppDependencyInstallerSource(dep maclawAppInstallPlanDependency) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(dep.InstallRefKind)) {
+	case "skillmarket", "market", "hubcenter":
+		return string(skillSearchSourceSkillMarket), true
+	case "enterprise", "enterprise_hub":
+		return string(skillSearchSourceEnterpriseHub), true
+	case "github":
+		return string(skillSearchSourceGitHub), true
+	}
+	return maclawAppInstallSkillSource(dep.Source)
+}
+
 func maclawAppValidateDependencyInstallRefs(deps []maclawAppInstallPlanDependency) {
 	for i := range deps {
 		dep := &deps[i]
@@ -8338,11 +8575,18 @@ var maclawAppDependencyAliasRegistry = []maclawAppDependencyAliasRegistryEntry{
 		Sources:    []string{"", "hub", "skillhub"},
 		Kinds:      []string{"", "runtime_skill", "app_skill", "skill"},
 	},
+	{
+		Target:     "paper_pdf_translator",
+		Aliases:    []string{"paper-pdf-translator", "pdf-paper-translator", "pdf_paper_translator"},
+		LocalNames: []string{"paper_pdf_translator", "paper-pdf-translator", "pdf-paper-translator"},
+		Sources:    []string{"", "hub", "skillhub", "market", "skillmarket", "hubcenter"},
+		Kinds:      []string{"", "runtime_skill", "app_skill", "skill", "tool_skill"},
+	},
 }
 
 func maclawAppImplicitHubSkillResolution(dep maclawAppInstallPlanDependency) (maclawAppDependencyImplicitResolution, bool) {
 	source := strings.ToLower(strings.TrimSpace(dep.Source))
-	if source != "" && source != "hub" && source != "skillhub" {
+	if source != "" && source != "hub" && source != "skillhub" && source != "market" && source != "skillmarket" && source != "hubcenter" {
 		return maclawAppDependencyImplicitResolution{}, false
 	}
 	kind := strings.ToLower(strings.TrimSpace(dep.Kind))
@@ -8438,8 +8682,8 @@ func maclawAppInstallRefSourceMatches(source, kind string) bool {
 	switch source {
 	case "", "local", "hub", "skillhub":
 		return kind == "hub" || kind == "skillhub" || kind == "skill" || kind == "skills"
-	case "market", "skillmarket":
-		return kind == "market" || kind == "skillmarket"
+	case "market", "skillmarket", "hubcenter":
+		return kind == "market" || kind == "skillmarket" || kind == "hubcenter"
 	case "enterprise", "enterprise_hub":
 		return kind == "enterprise" || kind == "enterprise_hub" || kind == "hub"
 	case "github":
@@ -8528,6 +8772,79 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	}
 }
 
+func maclawAppApplySourceVersionKeyDependencyRefs(deps []maclawAppInstallPlanDependency) {
+	for i := range deps {
+		dep := &deps[i]
+		if strings.TrimSpace(dep.InstallRef) != "" {
+			continue
+		}
+		kind, target, version, ok := maclawAppParseSourceVersionKey(dep.Version)
+		if !ok || target == "" {
+			continue
+		}
+		switch strings.ToLower(kind) {
+		case "enterprise_hub":
+			dep.InstallRef = "enterprise_hub://capabilities/" + target
+			if version != "" {
+				dep.InstallRef += "@" + version
+			}
+			source := strings.ToLower(strings.TrimSpace(dep.Source))
+			if source == "" || source == "local" || source == "hub" || source == "skillhub" {
+				dep.Source = "enterprise_hub"
+			}
+			if strings.TrimSpace(dep.CanonicalID) == "" {
+				dep.CanonicalID = target
+			}
+		case "hubcenter", "skillmarket":
+			dep.InstallRef = "skillmarket://skills/" + target
+			if version != "" {
+				dep.InstallRef += "@" + version
+			}
+			source := strings.ToLower(strings.TrimSpace(dep.Source))
+			if source == "" || source == "local" || source == "hub" || source == "skillhub" || source == "hubcenter" {
+				dep.Source = "skillmarket"
+			}
+			if strings.TrimSpace(dep.CanonicalID) == "" {
+				dep.CanonicalID = target
+			}
+		}
+	}
+}
+
+func maclawAppParseSourceVersionKey(value string) (kind, target, version string, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", "", false
+	}
+	lower := strings.ToLower(value)
+	prefix := ""
+	switch {
+	case strings.HasPrefix(lower, "enterprise_hub:skill:"):
+		kind = "enterprise_hub"
+		prefix = value[:len("enterprise_hub:skill:")]
+	case strings.HasPrefix(lower, "skillmarket:skill:"):
+		kind = "skillmarket"
+		prefix = value[:len("skillmarket:skill:")]
+	case strings.HasPrefix(lower, "hubcenter:skill:"):
+		kind = "hubcenter"
+		prefix = value[:len("hubcenter:skill:")]
+	default:
+		return "", "", "", false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	if rest == "" {
+		return "", "", "", false
+	}
+	if strings.Contains(rest, "@") {
+		parts := strings.SplitN(rest, "@", 2)
+		target = strings.TrimSpace(parts[0])
+		version = strings.TrimSpace(parts[1])
+	} else {
+		target = rest
+	}
+	return kind, target, version, target != ""
+}
+
 // injectResolvedDepsIntoAppEntries writes resolved_dependencies into each app
 // entry inside the package. This ensures the data survives Hub storage (which
 // only persists per-entry ManifestJSON, not the top-level package structure).
@@ -8543,6 +8860,586 @@ func injectResolvedDepsIntoAppEntries(pkg map[string]any, enrichedDeps []map[str
 		}
 		entryMap["resolved_dependencies"] = enrichedDeps
 	}
+}
+
+func injectBundledDepsIntoAppEntries(pkg map[string]any, bundled maclawAppBundledDependencies) {
+	if len(bundled.Skills) == 0 {
+		return
+	}
+	apps := anySlice(pkg["apps"])
+	if len(apps) == 0 {
+		return
+	}
+	for _, appRaw := range apps {
+		entryMap := anyMap(appRaw)
+		if entryMap == nil {
+			continue
+		}
+		entryMap["bundled_dependencies"] = bundled
+	}
+}
+
+const (
+	maxMaclawAppBundledSkillFiles = 256
+	maxMaclawAppBundledSkillBytes = 8 << 20
+)
+
+func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDependency) maclawAppBundledDependencies {
+	out := maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1"}
+	if a == nil || len(deps) == 0 {
+		return out
+	}
+	defs := a.ListNLSkills()
+	byName := map[string]NLSkillDefinition{}
+	for _, def := range defs {
+		for _, id := range []string{def.Name, def.DirName, def.HubSkillID} {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			key := strings.ToLower(id)
+			if _, exists := byName[key]; !exists {
+				byName[key] = def
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, dep := range deps {
+		if !dep.Installed {
+			continue
+		}
+		def, ok := byName[strings.ToLower(strings.TrimSpace(firstNonEmpty(dep.InstalledName, dep.CanonicalID, dep.ID)))]
+		if !ok && strings.TrimSpace(dep.InstalledDir) != "" {
+			for _, candidate := range defs {
+				if skillDirIdentityKey(candidate.SkillDir) == skillDirIdentityKey(dep.InstalledDir) {
+					def = candidate
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok || strings.TrimSpace(def.SkillDir) == "" {
+			continue
+		}
+		bundled, err := maclawAppBundleInstalledSkill(def, dep)
+		if err != nil {
+			log.Printf("[maclaw-app] skip bundled dependency %q: %v", dep.ID, err)
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(firstNonEmpty(bundled.StableID, bundled.Name)))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out.Skills = append(out.Skills, bundled)
+	}
+	return out
+}
+
+func maclawAppBundleInstalledSkill(def NLSkillDefinition, dep maclawAppInstallPlanDependency) (maclawAppBundledSkillEntry, error) {
+	root := strings.TrimSpace(def.SkillDir)
+	if root == "" {
+		return maclawAppBundledSkillEntry{}, fmt.Errorf("skill directory is empty")
+	}
+	type bundledFile struct {
+		rel  string
+		data []byte
+	}
+	var collected []bundledFile
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		name := entry.Name()
+		if entry.IsDir() && maclawAppBundledSkillSkipDir(name) {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !maclawAppBundledSkillFilePathOK(rel) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		collected = append(collected, bundledFile{rel: rel, data: data})
+		return nil
+	})
+	if err != nil {
+		return maclawAppBundledSkillEntry{}, err
+	}
+	if len(collected) == 0 {
+		return maclawAppBundledSkillEntry{}, fmt.Errorf("skill directory has no packageable files")
+	}
+	sort.Slice(collected, func(i, j int) bool {
+		return collected[i].rel < collected[j].rel
+	})
+	files := map[string]string{}
+	total := int64(0)
+	hasher := sha256.New()
+	for _, file := range collected {
+		total += int64(len(file.data))
+		if len(files)+1 > maxMaclawAppBundledSkillFiles {
+			return maclawAppBundledSkillEntry{}, fmt.Errorf("too many files: %d > %d", len(files)+1, maxMaclawAppBundledSkillFiles)
+		}
+		if total > maxMaclawAppBundledSkillBytes {
+			return maclawAppBundledSkillEntry{}, fmt.Errorf("too much data: %d > %d bytes", total, maxMaclawAppBundledSkillBytes)
+		}
+		files[file.rel] = base64.StdEncoding.EncodeToString(file.data)
+		hasher.Write([]byte(file.rel))
+		hasher.Write([]byte{0})
+		hasher.Write(file.data)
+		hasher.Write([]byte{0})
+	}
+	stableID := maclawAppStableSkillID(def)
+	return maclawAppBundledSkillEntry{
+		StableID:    stableID,
+		ID:          firstNonEmpty(dep.CanonicalID, dep.InstallRefTarget, dep.ID, def.HubSkillID, def.Name),
+		Name:        def.Name,
+		Version:     firstNonEmpty(dep.InstalledVersion, def.HubVersion, dep.Version),
+		Source:      def.Source,
+		HubSkillID:  def.HubSkillID,
+		HubVersion:  def.HubVersion,
+		CanonicalID: firstNonEmpty(dep.CanonicalID, dep.InstallRefTarget, def.HubSkillID, def.Name),
+		SHA256:      hex.EncodeToString(hasher.Sum(nil)),
+		Files:       files,
+		AppIDs:      append([]string(nil), dep.AppIDs...),
+	}, nil
+}
+
+func maclawAppStableSkillID(def NLSkillDefinition) string {
+	if def.Capability != nil {
+		if value := strings.TrimSpace(def.Capability.GlobalKey); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(def.Capability.CapabilityID); value != "" {
+			return "capability:" + value
+		}
+	}
+	if value := strings.TrimSpace(def.HubSkillID); value != "" {
+		return "hub_skill:" + value
+	}
+	if value := strings.TrimSpace(def.QualifiedID()); value != "" {
+		return "skill:" + strings.ToLower(value)
+	}
+	return "skill:" + strings.ToLower(strings.TrimSpace(def.Name))
+}
+
+func maclawAppBundledSkillSkipDir(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", "dist", "build", ".maclaw", ".cache":
+		return true
+	default:
+		return false
+	}
+}
+
+func maclawAppBundledSkillFilePathOK(rel string) bool {
+	rel = strings.TrimSpace(filepath.ToSlash(rel))
+	if rel == "" || strings.HasPrefix(rel, "/") || strings.Contains(rel, "\x00") || strings.Contains(rel, "\\") {
+		return false
+	}
+	if strings.Contains(rel, "../") || strings.HasPrefix(rel, "../") || rel == ".." {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.Contains(part, ":") {
+			return false
+		}
+		if maclawAppBundledSkillSkipFileName(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func maclawAppBundledSkillSkipFileName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return true
+	}
+	switch lower {
+	case ".env", ".env.local", ".env.production", ".env.development", ".npmrc", ".pypirc", ".netrc", ".ds_store", "thumbs.db", "skill_scan_cache.json":
+		return true
+	default:
+		return strings.HasSuffix(lower, ".pyc") || strings.HasSuffix(lower, ".pyo") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".tmp")
+	}
+}
+
+func (a *App) installBundledMaclawAppDependency(packageJSON string, dep maclawAppInstallPlanDependency) (bool, error) {
+	bundled := maclawAppBundledDependenciesForPackageJSON(packageJSON)
+	if len(bundled.Skills) == 0 {
+		return false, nil
+	}
+	var candidate *maclawAppBundledSkillEntry
+	for i := range bundled.Skills {
+		if maclawAppBundledSkillMatchesDependency(bundled.Skills[i], dep) {
+			candidate = &bundled.Skills[i]
+			break
+		}
+	}
+	if candidate == nil {
+		return false, nil
+	}
+	if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDependency) (bool, error) {
+	if a == nil || dep == nil {
+		return false, nil
+	}
+	name := strings.TrimSpace(dep.InstalledName)
+	if name == "" {
+		return false, nil
+	}
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	if source != "" && source != "hub" && source != "skillhub" && source != "market" && source != "skillmarket" && source != "hubcenter" {
+		return false, nil
+	}
+	a.ensureSkillHubClient()
+	if a.skillExecutor == nil {
+		return true, fmt.Errorf("skill executor not initialized")
+	}
+	if a.skillHubClient == nil {
+		return true, fmt.Errorf("skill hub client not initialized")
+	}
+	downloadID := strings.TrimSpace(firstNonEmpty(dep.InstallRefTarget, dep.CanonicalID, dep.ID))
+	if downloadID == "" {
+		return false, nil
+	}
+	targetDir := strings.TrimSpace(dep.InstalledDir)
+	if targetDir == "" {
+		primaryDir, err := a.primarySkillsDir()
+		if err != nil {
+			return true, fmt.Errorf("resolve primary skills directory: %w", err)
+		}
+		targetDir = filepath.Join(primaryDir, name)
+	}
+	targetParent := filepath.Dir(targetDir)
+	if err := os.MkdirAll(targetParent, 0o755); err != nil {
+		return true, fmt.Errorf("create dependency update parent dir: %w", err)
+	}
+	stagingDir, err := os.MkdirTemp(targetParent, ".maclaw-app-dep-update-*")
+	if err != nil {
+		return true, fmt.Errorf("create dependency update staging dir: %w", err)
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
+	updated, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(context.Background(), a, dep.PackageDownloadURL, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
+	if err != nil {
+		return true, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(updated.Name), name) {
+		return true, fmt.Errorf("downloaded dependency name %q does not match installed skill %q", updated.Name, name)
+	}
+	updated.Name = name
+	updated.Source = skillEntrySourceHub.String()
+	updated.HubSkillID = firstNonEmpty(updated.HubSkillID, downloadID)
+	updated.SkillDir = stagingDir
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), updated, "maclaw app dependency update")
+	if err != nil {
+		return true, err
+	}
+	if err := writeSkillScanCacheForInstalledEntry(updated, report); err != nil {
+		return true, fmt.Errorf("write skill scan cache: %w", err)
+	}
+	backupDir := ""
+	if _, err := os.Stat(targetDir); err == nil {
+		backupDir = targetDir + ".bak-" + shortRandomHex()
+		if err := os.Rename(targetDir, backupDir); err != nil {
+			return true, fmt.Errorf("backup existing dependency skill dir: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return true, fmt.Errorf("check existing dependency skill dir: %w", err)
+	}
+	if err := os.Rename(stagingDir, targetDir); err != nil {
+		if backupDir != "" {
+			_ = os.Rename(backupDir, targetDir)
+		}
+		return true, fmt.Errorf("replace dependency skill dir: %w", err)
+	}
+	cleanupStaging = false
+	updated.SkillDir = targetDir
+	if err := a.updateRegisteredMaclawAppDependencySkill(*updated); err != nil {
+		_ = os.RemoveAll(targetDir)
+		if backupDir != "" {
+			_ = os.Rename(backupDir, targetDir)
+		}
+		return true, err
+	}
+	if backupDir != "" {
+		_ = os.RemoveAll(backupDir)
+	}
+	if a.hubUpdCache != nil {
+		a.hubUpdCache.invalidate()
+	}
+	dep.InstalledVersion = ""
+	dep.VersionStatus = ""
+	return true, nil
+}
+
+func (a *App) updateRegisteredMaclawAppDependencySkill(updated corelib.NLSkillEntry) error {
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	a.skillExecutor.mu.Lock()
+	defer a.skillExecutor.mu.Unlock()
+	skills := a.skillExecutor.loadSkills()
+	for i, existing := range skills {
+		if existing.Name != updated.Name {
+			continue
+		}
+		updated.Status = firstNonEmpty(updated.Status, existing.Status)
+		updated.CreatedAt = firstNonEmpty(existing.CreatedAt, updated.CreatedAt)
+		updated.UsageCount = existing.UsageCount
+		updated.SuccessCount = existing.SuccessCount
+		updated.FailureCount = existing.FailureCount
+		updated.LastUsedAt = existing.LastUsedAt
+		updated.LastError = existing.LastError
+		if isShellBrowserAutomationSkillEntry(updated) {
+			return browserAutomationSkillRejectedError(updated.Name)
+		}
+		skills[i] = updated
+		return a.skillExecutor.saveSkills(skills)
+	}
+	return fmt.Errorf("skill %q not found", updated.Name)
+}
+
+func maclawAppBundledDependenciesForPackageJSON(packageJSON string) maclawAppBundledDependencies {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(packageJSON), &doc); err != nil {
+		return maclawAppBundledDependencies{}
+	}
+	return maclawAppBundledDependenciesFromDoc(doc)
+}
+
+func maclawAppBundledDependenciesFromDoc(doc map[string]any) maclawAppBundledDependencies {
+	out := maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1"}
+	seen := map[string]struct{}{}
+	add := func(raw any) {
+		block := anyMap(raw)
+		if block == nil {
+			return
+		}
+		for _, item := range anySlice(block["skills"]) {
+			itemMap := anyMap(item)
+			if itemMap == nil {
+				continue
+			}
+			files := map[string]string{}
+			if fileMap := anyMap(itemMap["files"]); fileMap != nil {
+				for path, value := range fileMap {
+					if s := strings.TrimSpace(stringFromAny(value)); s != "" {
+						files[path] = s
+					}
+				}
+			}
+			if len(files) == 0 {
+				continue
+			}
+			entry := maclawAppBundledSkillEntry{
+				StableID:    stringMapValue(itemMap, "stable_id"),
+				ID:          stringMapValue(itemMap, "id"),
+				Name:        stringMapValue(itemMap, "name"),
+				Version:     stringMapValue(itemMap, "version"),
+				Source:      stringMapValue(itemMap, "source"),
+				HubSkillID:  stringMapValue(itemMap, "hub_skill_id"),
+				HubVersion:  stringMapValue(itemMap, "hub_version"),
+				CanonicalID: stringMapValue(itemMap, "canonical_id"),
+				SHA256:      stringMapValue(itemMap, "sha256"),
+				Files:       files,
+				AppIDs:      stringSliceFromAny(itemMap["app_ids"]),
+			}
+			key := strings.ToLower(strings.TrimSpace(firstNonEmpty(entry.StableID, entry.HubSkillID, entry.CanonicalID, entry.ID, entry.Name)))
+			if key == "" {
+				key = fmt.Sprintf("sha256:%s", strings.ToLower(strings.TrimSpace(entry.SHA256)))
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out.Skills = append(out.Skills, entry)
+		}
+	}
+	add(doc["bundled_dependencies"])
+	for _, rawEntry := range anySlice(doc["apps"]) {
+		if entry := anyMap(rawEntry); entry != nil {
+			add(entry["bundled_dependencies"])
+		}
+	}
+	return out
+}
+
+func maclawAppBundledSkillMatchesDependency(skill maclawAppBundledSkillEntry, dep maclawAppInstallPlanDependency) bool {
+	needles := []string{dep.ID, dep.CanonicalID, dep.InstallRefTarget, dep.InstalledName}
+	if resolved, ok := maclawAppImplicitHubSkillResolution(dep); ok {
+		needles = append(needles, resolved.Target)
+		needles = append(needles, resolved.LocalNames...)
+		needles = append(needles, resolved.Aliases...)
+	}
+	haystack := []string{skill.ID, skill.Name, skill.CanonicalID, skill.HubSkillID, strings.TrimPrefix(skill.StableID, "hub_skill:"), strings.TrimPrefix(skill.StableID, "skill:"), strings.TrimPrefix(skill.StableID, "capability:")}
+	for _, needle := range needles {
+		needle = strings.TrimSpace(needle)
+		if needle == "" {
+			continue
+		}
+		for _, candidate := range haystack {
+			if strings.EqualFold(strings.TrimSpace(candidate), needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *App) installBundledMaclawAppSkill(bundle maclawAppBundledSkillEntry) error {
+	if a == nil {
+		return fmt.Errorf("app is not initialized")
+	}
+	a.ensureInteractionInfra()
+	if a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	if strings.TrimSpace(bundle.Name) == "" {
+		return fmt.Errorf("bundled skill name is required")
+	}
+	if len(bundle.Files) == 0 {
+		return fmt.Errorf("bundled skill %q has no files", bundle.Name)
+	}
+	if a.skillNameAlreadyRegistered(bundle.Name) {
+		return fmt.Errorf("skill %q already exists", bundle.Name)
+	}
+	tmpDir, err := os.MkdirTemp("", "maclaw-app-bundled-skill-*")
+	if err != nil {
+		return fmt.Errorf("create bundled skill temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := maclawAppExtractBundledSkillFiles(bundle, tmpDir); err != nil {
+		return err
+	}
+	entry, err := loadImportedSkillEntry(tmpDir)
+	if err != nil {
+		return fmt.Errorf("load bundled skill definition: %w", err)
+	}
+	if strings.TrimSpace(entry.Name) == "" {
+		entry.Name = bundle.Name
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.Name), strings.TrimSpace(bundle.Name)) {
+		return fmt.Errorf("bundled skill name mismatch: package=%q definition=%q", bundle.Name, entry.Name)
+	}
+	entry.HubSkillID = firstNonEmpty(entry.HubSkillID, bundle.HubSkillID, bundle.CanonicalID, bundle.ID)
+	entry.HubVersion = firstNonEmpty(entry.HubVersion, bundle.HubVersion, bundle.Version)
+	if strings.TrimSpace(entry.HubSkillID) != "" {
+		entry.Source = skillEntrySourceHub.String()
+	} else {
+		entry.Source = "maclaw_app_bundle"
+	}
+	entry.SkillDir = tmpDir
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "maclaw app bundled dependency")
+	if err != nil {
+		return err
+	}
+	primaryDir, err := a.primarySkillsDir()
+	if err != nil {
+		return fmt.Errorf("resolve primary skills directory: %w", err)
+	}
+	if err := os.MkdirAll(primaryDir, 0o755); err != nil {
+		return fmt.Errorf("create primary skills directory: %w", err)
+	}
+	destDir := filepath.Join(primaryDir, entry.Name)
+	if _, err := os.Stat(destDir); err == nil {
+		return fmt.Errorf("skill %q already exists", entry.Name)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check bundled skill destination: %w", err)
+	}
+	if err := copySkillPackageRootAtomically(tmpDir, destDir, primaryDir); err != nil {
+		return err
+	}
+	installedEntry := *entry
+	installedEntry.SkillDir = destDir
+	if err := writeSkillScanCacheForInstalledEntry(&installedEntry, report); err != nil {
+		_ = os.RemoveAll(destDir)
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
+	if err := a.skillExecutor.Register(installedEntry); err != nil {
+		_ = os.RemoveAll(destDir)
+		return err
+	}
+	a.emitSkillInstallProgress(installedEntry.Name, "done", "Bundled dependency skill installed successfully.", report)
+	return nil
+}
+
+func maclawAppExtractBundledSkillFiles(bundle maclawAppBundledSkillEntry, destDir string) error {
+	if strings.TrimSpace(destDir) == "" {
+		return fmt.Errorf("bundled skill destination is empty")
+	}
+	total := int64(0)
+	hasher := sha256.New()
+	paths := make([]string, 0, len(bundle.Files))
+	for path := range bundle.Files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		if !maclawAppBundledSkillFilePathOK(rel) {
+			return fmt.Errorf("bundled skill contains unsafe path %q", rel)
+		}
+		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(bundle.Files[rel]))
+		if err != nil {
+			return fmt.Errorf("decode bundled skill file %q: %w", rel, err)
+		}
+		total += int64(len(data))
+		if total > maxMaclawAppBundledSkillBytes {
+			return fmt.Errorf("bundled skill expands to too much data: %d > %d bytes", total, maxMaclawAppBundledSkillBytes)
+		}
+		target := filepath.Join(destDir, filepath.FromSlash(rel))
+		if !strings.HasPrefix(skillDirIdentityKey(target), skillDirIdentityKey(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("bundled skill path escapes destination: %q", rel)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create bundled skill directory: %w", err)
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write bundled skill file %q: %w", rel, err)
+		}
+		hasher.Write([]byte(filepath.ToSlash(rel)))
+		hasher.Write([]byte{0})
+		hasher.Write(data)
+		hasher.Write([]byte{0})
+	}
+	if expected := strings.TrimSpace(bundle.SHA256); expected != "" && !strings.EqualFold(expected, hex.EncodeToString(hasher.Sum(nil))) {
+		return fmt.Errorf("bundled skill %q checksum mismatch", bundle.Name)
+	}
+	return nil
 }
 
 // stringFromMapSafe extracts a string from a map[string]interface{} entry,
@@ -8563,7 +9460,7 @@ func maclawAppInstallSkillSource(source string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "", "local", "hub", "skillhub":
 		return string(skillSearchSourceSkillHub), true
-	case "market", "skillmarket":
+	case "market", "skillmarket", "hubcenter":
 		return string(skillSearchSourceSkillMarket), true
 	case "enterprise", "enterprise_hub":
 		return string(skillSearchSourceEnterpriseHub), true

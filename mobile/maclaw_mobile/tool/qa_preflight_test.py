@@ -118,6 +118,7 @@ class QaPreflightTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.ios_artifact_evidence_command(
                 archive_or_build="build/ios/archive/MaClawMobile.xcarchive",
+                team_id=release_evidence_commands.DEFAULT_SIGNING_TEAM_ID,
             ),
             output,
         )
@@ -554,6 +555,23 @@ class QaPreflightTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("teamID must match ZZZZ123456", stderr.getvalue())
         self.assertIn("method must match ad-hoc", stderr.getvalue())
+
+    def test_main_accepts_placeholder_team_id_for_planning_preflight(self) -> None:
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = qa_preflight.main(
+                [
+                    "--root",
+                    str(self.make_root()),
+                    "--team-id",
+                    "<APPLE_TEAM_ID>",
+                ],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("MaClaw Mobile QA preflight:", stderr.getvalue())
+        self.assertNotIn("team id must be", stderr.getvalue())
 
     def test_main_passes_custom_records_dir_to_preflight(self) -> None:
         root = self.make_root()

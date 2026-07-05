@@ -209,6 +209,48 @@ func TestDirectCodingPanelPlaceholderOnlyMatchesPanelLaunchText(t *testing.T) {
 	}
 }
 
+func TestScrubActivePhaseSensitiveFormDataRemovesSecretsOnly(t *testing.T) {
+	state := &v2.WorkflowState{
+		Phases: []v2.Phase{
+			{
+				ID: "remote_direct_coding",
+				InputSchema: &v2.PhaseInputSchema{
+					Fields: []v2.PhaseInputField{
+						{Name: "ssh_host", Label: "主机", Type: "text"},
+						{Name: "ssh_password", Label: "密码", Type: "text", Sensitive: true},
+					},
+				},
+				FormData: map[string]interface{}{
+					"ssh_host":        "10.0.0.8",
+					"ssh_password":    "secret",
+					"api_token":       "token",
+					"project_request": "fix login",
+				},
+			},
+		},
+		CurrentPhase: 0,
+	}
+
+	if !scrubActivePhaseSensitiveFormData(state) {
+		t.Fatalf("expected sensitive form data to be scrubbed")
+	}
+	formData := state.Phases[0].FormData
+	for _, key := range []string{"ssh_password", "api_token"} {
+		if _, ok := formData[key]; ok {
+			t.Fatalf("%s should be removed from form data", key)
+		}
+	}
+	if got := formData["ssh_host"]; got != "10.0.0.8" {
+		t.Fatalf("ssh_host = %v, want preserved", got)
+	}
+	if got := formData["project_request"]; got != "fix login" {
+		t.Fatalf("project_request = %v, want preserved", got)
+	}
+	if scrubActivePhaseSensitiveFormData(state) {
+		t.Fatalf("second scrub should report no changes")
+	}
+}
+
 func TestHasPendingDirectSubAgentExecutionRequiresDirectContext(t *testing.T) {
 	h := &IMMessageHandler{}
 	if h.hasPendingDirectSubAgentExecution("u") {

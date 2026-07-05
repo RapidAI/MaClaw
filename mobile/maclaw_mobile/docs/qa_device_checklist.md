@@ -12,12 +12,12 @@ headers, JWTs, API keys, cloud access key IDs, and URLs with embedded credential
 python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
 python3 tool/setup_android_signing.py
-python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
 python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
-python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
+python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
 python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
@@ -25,6 +25,12 @@ python3 tool/create_qa_build_record.py --scope android-ios --version <version+bu
   --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
 ```
+
+`<APPLE_TEAM_ID>` is allowed only for planning/status commands
+(`release_status_report.py`, `release_handoff.py`, and `qa_preflight.py`).
+Replace it with the real 10-character Apple Team ID before running
+`setup_ios_export_options.py`, `plan_ios_release.py`, or
+`signed_artifact_evidence.py`.
 
 When the handoff, runtime-boundary, and release-gate command outputs have
 already been saved, pass their traceable references to
@@ -60,8 +66,8 @@ commands:
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
-python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development
-python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
+python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
+python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
 
 After completing the record, run:
@@ -118,6 +124,7 @@ QA build:
   Tenant ID:
   LLM access mode:
   Desktop GUI QR authorization ID:
+  Launch splash logo evidence:
 
 Android:
   Artifact path:
@@ -166,6 +173,9 @@ iOS:
 - Open MaClaw Mobile and confirm the account screen shows the selected
   HubCenter, discovered Hub, tenant, and LLM access mode; record the selected
   Hub and tenant shown on screen.
+- Cold-start the signed app after install and record a screenshot or screen
+  recording showing the MaClaw logo splash screen. Confirm the Flutter
+  placeholder/template splash is not visible.
 - Confirm there is no custom Hub URL setting or settings surface.
 - Record installer channel, version/build number, artifact SHA256, and install
   result with app launch/open evidence. Installer channel should name a
@@ -214,17 +224,17 @@ it. Each permission evidence item must include the matching
   `ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)`.
 - On macOS, create local export options from `ios/ExportOptions.plist.example`
   with
-  `python3 tool/setup_ios_export_options.py --team-id <APPLE_TEAM_ID> --export-method development`.
+  `python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`.
 - On macOS, plan the signed archive/export command with
-  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method development`
+  `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   or `--export-method app-store` for TestFlight/App Store Connect. Record the
   printed bundle IDs, app group, Team ID, archive/export command context,
   `.xcarchive` path or TestFlight build number, and Runner/Share Extension
   provisioning profile evidence.
 - After the signed archive/TestFlight build exists, run
-  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+  `python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   or pass the same provisioning profile summary to
-  `python3 tool/plan_ios_release.py --team-id <APPLE_TEAM_ID> --export-method <export-method> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
+  `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method <export-method> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds`
   and paste the generated archive/build, Team ID, and provisioning-profile
   fields into the QA build record.
 - Install via development signing or TestFlight, launch/open the app, and
@@ -277,11 +287,21 @@ it. Each permission evidence item must include the matching
   present.
 - Confirm bootstrap returns user, quota/limits, feature flags, and service
   status; record all four categories in the QA build record.
+- Cold-start the signed app after install and record a traceable screenshot or
+  screen recording ID showing the MaClaw logo splash screen before the
+  signed-in assistant opens. Confirm the Flutter placeholder/template splash is
+  not visible.
+- Launch the signed-in app from a cold start and confirm it opens to the
+  `AI助手` bottom-tab entry, not the legacy `查信息` entry. Record a traceable
+  screenshot or screen recording ID showing the `AI助手` page, `主对话`, the
+  secondary-tab add control, and the microphone/voice input entry in the
+  assistant composer.
 - Ask the AI assistant a question with citations and record the query plus at least one
   visible HTTPS source URL.
 - Ask one assistant question by voice and record the recognized transcript;
-  ask one photo/image/screenshot assistant question or import and record the
-  resulting assistant citation answer or document upload task ID.
+  ask one photo/image/screenshot assistant question or import and record a
+  traceable screenshot/recording ID plus the resulting assistant citation answer
+  or document upload task ID.
 - Share the assistant result and record the target or output, such as Mail,
   WeChat, system share sheet, clipboard, exported file, or saved local path.
 - Create document drafts from the assistant result for every first-version
@@ -318,12 +338,17 @@ it. Each permission evidence item must include the matching
 - Clear server profiles/SSH credentials through the separate explicit account
   action and confirm saved server access is revoked.
 
-## Manual SSH Smoke Test
+## Backend SSH Session Smoke Test
 
 - Add a server profile with host, port, username, tag, and note.
 - Test password auth or private-key auth, depending on the QA server.
-- Connect and run a read-only command such as `whoami` or `uptime`.
-- Disconnect and reconnect.
+- Create or attach an agent/backend-managed SSH session, not just a phone-local
+  ad hoc terminal.
+- Confirm the session is visible in the session list/status surface with the
+  same `server-profile:<id>`.
+- Run a read-only command such as `whoami` or `uptime`.
+- Disconnect and reconnect the backend session, preserving the session ID or
+  recording the replacement session ID.
 - Copy terminal output.
 - In the QA record, capture action-specific evidence for host type, auth mode,
   connect result, read-only command, command output excerpt, disconnect result,
@@ -335,7 +360,8 @@ it. Each permission evidence item must include the matching
   or not-auto-executed evidence.
 - Hand pasted output to a digital employee after the Hub/tenant handoff
   warning and confirmation, if digital employee access is enabled; record that
-  the SSH terminal or pasted/copied output was the handoff content.
+  the backend SSH session output or pasted/copied output was the handoff
+  content.
 - Delete the server profile and confirm stored password/private-key credentials
   are cleared from secure storage.
 

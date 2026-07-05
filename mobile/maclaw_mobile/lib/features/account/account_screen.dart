@@ -762,7 +762,10 @@ class _FeatureStatusCard extends StatelessWidget {
               children: [
                 _FeatureChip(label: '助手联网', enabled: features.search),
                 _FeatureChip(label: '应急文档', enabled: features.documents),
-                _FeatureChip(label: '本地 SSH', enabled: features.localSsh),
+                _FeatureChip(
+                  label: '后台 SSH',
+                  enabled: features.backendSshSessions,
+                ),
                 _FeatureChip(
                   label: '数字员工',
                   enabled: features.digitalEmployees,

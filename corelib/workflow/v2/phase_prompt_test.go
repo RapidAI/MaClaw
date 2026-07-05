@@ -88,6 +88,37 @@ func TestBuildPhasePrompt_SkipsGuidanceWhenNoFilePath(t *testing.T) {
 	}
 }
 
+func TestRenderFormDataFields_MasksSensitiveSchemaFields(t *testing.T) {
+	phase := &Phase{
+		InputSchema: &PhaseInputSchema{
+			Fields: []PhaseInputField{
+				{Name: "ssh_user", Label: "用户名", Type: "text"},
+				{Name: "ssh_password", Label: "密码", Type: "text", Sensitive: true},
+				{Name: "project_description", Label: "项目描述", Type: "textarea"},
+			},
+		},
+		FormData: map[string]interface{}{
+			"ssh_user":            "root",
+			"ssh_password":        "super-secret",
+			"project_description": "修复登录接口",
+		},
+	}
+
+	rendered := RenderFormDataFields(phase, true)
+	if strings.Contains(rendered, "super-secret") {
+		t.Fatalf("sensitive field value leaked into rendered form data:\n%s", rendered)
+	}
+	for _, want := range []string{
+		"- **用户名**：root",
+		"- **密码**：已填写（敏感信息已隐藏）",
+		"- **项目描述**：修复登录接口",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered form data missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestBuildPhasePrompt_PPTGenerationRequiresPPTXArtifactSkill(t *testing.T) {
 	state := &WorkflowState{
 		Type:        string(WorkflowPresentationDesign),
@@ -179,7 +210,7 @@ func TestBuildPhasePrompt_SkipsGuidanceForPaDisclosureParsing(t *testing.T) {
 		t.Error("shared documentParsingGuidance should be SKIPPED for pa_disclosure_parsing (has own)")
 	}
 	// The phase instruction should still be present.
-	if !strings.Contains(prompt, "交底书文件") {
+	if !strings.Contains(prompt, "交底书/申请材料文件") {
 		t.Error("expected pa_disclosure_parsing's own instruction to be present")
 	}
 }

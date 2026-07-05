@@ -154,7 +154,7 @@ func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 	}
 
 	// Sanity check: known templates must be present
-	mustHave := []string{"coding", "patent_application", "us_patent_application", "gaokao_application"}
+	mustHave := []string{"coding", "coding_subagent", "remote_coding_subagent", "patent_application", "us_patent_application", "gaokao_application"}
 	typeSet := make(map[string]bool, len(types))
 	for _, typ := range types {
 		typeSet[typ] = true
@@ -162,6 +162,88 @@ func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 	for _, required := range mustHave {
 		if !typeSet[required] {
 			t.Errorf("AllTypes() missing expected template: %q", required)
+		}
+	}
+}
+
+func TestDirectCodingTemplatesUseWorkflowInputSchemas(t *testing.T) {
+	local := CodingSubAgentTemplate()
+	if local == nil || local.Type != "coding_subagent" || len(local.Phases) != 1 {
+		t.Fatalf("CodingSubAgentTemplate shape = %#v", local)
+	}
+	if local.Phases[0].ExecMode != ExecModeSubAgent {
+		t.Fatalf("local direct phase ExecMode = %q, want %q", local.Phases[0].ExecMode, ExecModeSubAgent)
+	}
+	localSchema := local.Phases[0].InputSchema
+	if localSchema == nil {
+		t.Fatal("CodingSubAgentTemplate missing InputSchema")
+	}
+	localRequired := map[string]bool{}
+	for _, field := range localSchema.Fields {
+		if field.Required {
+			localRequired[field.Name] = true
+		}
+	}
+	for _, want := range []string{"work_dir", "project_description"} {
+		if !localRequired[want] {
+			t.Fatalf("local direct coding schema missing required field %q; got %#v", want, localRequired)
+		}
+	}
+
+	remote := RemoteCodingSubAgentTemplate()
+	if remote == nil || remote.Type != "remote_coding_subagent" || len(remote.Phases) != 1 {
+		t.Fatalf("RemoteCodingSubAgentTemplate shape = %#v", remote)
+	}
+	if remote.Phases[0].ExecMode != ExecModeRemoteSubAgent {
+		t.Fatalf("remote direct phase ExecMode = %q, want %q", remote.Phases[0].ExecMode, ExecModeRemoteSubAgent)
+	}
+	remoteSchema := remote.Phases[0].InputSchema
+	if remoteSchema == nil {
+		t.Fatal("RemoteCodingSubAgentTemplate missing InputSchema")
+	}
+	remoteRequired := map[string]PhaseInputField{}
+	for _, field := range remoteSchema.Fields {
+		if field.Required {
+			remoteRequired[field.Name] = field
+		}
+	}
+	for _, want := range []string{"ssh_host", "ssh_port", "ssh_user", "ssh_password", "work_dir", "project_description"} {
+		if _, ok := remoteRequired[want]; !ok {
+			t.Fatalf("remote direct coding schema missing required field %q; got %#v", want, remoteRequired)
+		}
+	}
+	if !remoteRequired["ssh_password"].Sensitive {
+		t.Fatal("ssh_password should be marked sensitive")
+	}
+	if roundTrip := phaseInputFieldFromSpec(phaseInputFieldToSpec(remoteRequired["ssh_password"])); !roundTrip.Sensitive {
+		t.Fatal("ssh_password sensitive flag should survive spec round trip")
+	}
+	if remoteRequired["ssh_port"].Default != 22 {
+		t.Fatalf("ssh_port default = %#v, want 22", remoteRequired["ssh_port"].Default)
+	}
+}
+
+func TestSSHPasswordFieldsAreSensitive(t *testing.T) {
+	registry := NewTemplateRegistry()
+	RegisterBuiltinTemplates(registry)
+	for _, tmpl := range registry.templates {
+		for _, phase := range tmpl.Phases {
+			if phase.InputSchema == nil {
+				continue
+			}
+			checkField := func(field PhaseInputField, location string) {
+				if field.Name == "ssh_password" && !field.Sensitive {
+					t.Fatalf("%s ssh_password field must be marked Sensitive", location)
+				}
+			}
+			for _, field := range phase.InputSchema.Fields {
+				checkField(field, tmpl.Type+"/"+phase.ID)
+			}
+			for _, variant := range phase.InputSchema.Variants {
+				for _, field := range variant.Fields {
+					checkField(field, tmpl.Type+"/"+phase.ID+"/"+variant.ID)
+				}
+			}
 		}
 	}
 }

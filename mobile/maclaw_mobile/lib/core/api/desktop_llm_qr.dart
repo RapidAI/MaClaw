@@ -45,6 +45,14 @@ DesktopLlmQrPayload parseMaclawDesktopLlmQrPayload(String qrPayload) {
     throw const FormatException('session_id is required.');
   }
   final hubUrl = (decoded['hub_url'] as String? ?? '').trim();
+  final parsedHubUrl = Uri.tryParse(hubUrl);
+  if (parsedHubUrl == null ||
+      parsedHubUrl.scheme != 'https' ||
+      parsedHubUrl.host.isEmpty) {
+    throw const FormatException(
+      'hub_url must be the HTTPS MaClaw Hub URL from the desktop GUI QR.',
+    );
+  }
   return DesktopLlmQrPayload(
     raw: raw,
     type: type,

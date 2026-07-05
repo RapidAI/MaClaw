@@ -147,7 +147,7 @@ void main() {
       features: MobileFeatures(
         search: true,
         documents: true,
-        localSsh: true,
+        backendSshSessions: true,
         digitalEmployees: true,
         pushNotifications: false,
       ),

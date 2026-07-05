@@ -80,6 +80,7 @@ type RemoteProbeResult struct {
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
 	TenantID               string `json:"tenant_id,omitempty"`
 	TenantName             string `json:"tenant_name,omitempty"`
+	PhoneNumber            string `json:"phone_number,omitempty"`
 	Status                 string `json:"status,omitempty"`
 	Message                string `json:"message,omitempty"`
 }
@@ -450,7 +451,11 @@ func (a *App) VerifyRemoteRegistrationContactCode(kind string, value string, ver
 		if phone == "" {
 			phone = normalizeRemoteRegistrationPhoneNumber(value)
 		}
-		if _, err := a.PatchConfigFields(map[string]interface{}{"remote_mobile": phone}); err != nil {
+		patch := map[string]interface{}{"remote_mobile": phone}
+		if email := strings.TrimSpace(result.Email); shouldPatchRemoteEmailFromLogin(cfg.RemoteEmail, email) {
+			patch["remote_email"] = email
+		}
+		if _, err := a.PatchConfigFields(patch); err != nil {
 			return RemoteRegistrationContactResult{}, err
 		}
 		a.emitRemoteStateChanged()

@@ -22,6 +22,16 @@ func TestShouldPrefill_AllowsNormalFields(t *testing.T) {
 	}
 }
 
+func TestShouldPrefillField_BlocksSensitiveFlag(t *testing.T) {
+	field := PhaseInputField{Name: "api_token", Label: "API Token", Type: "text", Sensitive: true}
+	if ShouldPrefillField(field) {
+		t.Fatal("ShouldPrefillField should block fields marked Sensitive")
+	}
+	if ShouldRecallPrefill(PhaseInputField{Name: "api_token", Reusable: true, Sensitive: true}, true) {
+		t.Fatal("ShouldRecallPrefill should block fields marked Sensitive even when Reusable")
+	}
+}
+
 func TestPrefillFromContext_NilSchema(t *testing.T) {
 	result := PrefillFromContext(nil, "我是张三", nil)
 	if result != nil {
@@ -54,8 +64,8 @@ func TestPrefillFromContext_ExtractsPersonName(t *testing.T) {
 	}{
 		{"我是张三，来自北京大学", "张三", "北京大学"},
 		{"我叫李明华，清华大学教授", "李明华", "清华大学"},
-		{"申请人：王五，中国科学院计算所", "王五", "中国科学院"},  // matches 学院 suffix in 科学院
-		{"帮我写杰青申请书", "", ""},                     // no name info
+		{"申请人：王五，中国科学院计算所", "王五", "中国科学院"}, // matches 学院 suffix in 科学院
+		{"帮我写杰青申请书", "", ""},               // no name info
 		{"姓名：赵六", "赵六", ""},
 		{"我是北京大学计算机学院的张伟教授", "张伟", "北京大学计算机学院"}, // possessive pattern
 	}
@@ -225,7 +235,6 @@ func TestPrefillFromContext_AllSourcesMarkedAsContext(t *testing.T) {
 	}
 }
 
-
 func TestPrefillFromContext_ExtractsEmail(t *testing.T) {
 	schema := &PhaseInputSchema{
 		Fields: []PhaseInputField{
@@ -345,7 +354,6 @@ func TestPrefillFromContext_BooleanFieldNeverPrefilled(t *testing.T) {
 	}
 }
 
-
 func TestPrefillFromContext_ExtractsEnglishName(t *testing.T) {
 	schema := &PhaseInputSchema{
 		Fields: []PhaseInputField{
@@ -361,7 +369,7 @@ func TestPrefillFromContext_ExtractsEnglishName(t *testing.T) {
 		{"I'm Alice Johnson, from MIT", "Alice Johnson"},
 		{"Name: Bob Chen", "Bob Chen"},
 		{"姓名：David Wang", "David Wang"},
-		{"I'm happy to help", ""}, // "happy" is a common non-name
+		{"I'm happy to help", ""},    // "happy" is a common non-name
 		{"I'm Professor at MIT", ""}, // "Professor" filtered out
 	}
 	for _, tt := range tests {
@@ -393,9 +401,9 @@ func TestPrefillFromContext_ExtractsPhone(t *testing.T) {
 		{"联系方式：+86-13912345678", "+8613912345678"},
 		{"电话 +1-650-555-1234", "+16505551234"},
 		{"没有电话号码", ""},
-		{"订单号12345", ""},                       // too short, not a phone
-		{"身份证320106199001153215", ""},           // ID card contains 11-digit sequence but shouldn't match
-		{"编号：20231301000234567", ""},            // 17-digit number, not a phone
+		{"订单号12345", ""},              // too short, not a phone
+		{"身份证320106199001153215", ""}, // ID card contains 11-digit sequence but shouldn't match
+		{"编号：20231301000234567", ""},  // 17-digit number, not a phone
 	}
 	for _, tt := range tests {
 		result := PrefillFromContext(schema, tt.msg, nil)
@@ -441,7 +449,6 @@ func TestPrefillFromContext_ExtractsDate(t *testing.T) {
 		}
 	}
 }
-
 
 func TestPrefillFromContext_LabelAnchorFalsePositivePrevention(t *testing.T) {
 	schema := &PhaseInputSchema{

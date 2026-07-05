@@ -328,25 +328,35 @@ class MobileServices {
 }
 
 class MobileFeatures {
+  final bool assistant;
   final bool search;
   final bool documents;
-  final bool localSsh;
+  final bool backendSshSessions;
   final bool digitalEmployees;
   final bool pushNotifications;
 
   const MobileFeatures({
+    bool? assistant,
     required this.search,
     required this.documents,
-    required this.localSsh,
+    bool? backendSshSessions,
+    bool? localSsh,
     required this.digitalEmployees,
     required this.pushNotifications,
-  });
+  })  : assistant = assistant ?? true,
+        backendSshSessions = backendSshSessions ?? localSsh ?? true;
+
+  bool get localSsh => backendSshSessions;
 
   factory MobileFeatures.fromJson(Map<String, dynamic> json) {
     return MobileFeatures(
+      assistant: json['assistant'] as bool? ?? true,
       search: json['search'] as bool? ?? true,
       documents: json['documents'] as bool? ?? true,
-      localSsh: json['local_ssh'] as bool? ?? true,
+      backendSshSessions: json['backend_ssh_sessions'] as bool? ??
+          json['remote_ssh_sessions'] as bool? ??
+          json['local_ssh'] as bool? ??
+          true,
       digitalEmployees: json['digital_employees'] as bool? ?? true,
       pushNotifications: json['push_notifications'] as bool? ?? false,
     );
