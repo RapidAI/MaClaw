@@ -86,7 +86,9 @@ Attach the passing record to `release_evidence.md` after both the individual
 record check and directory check pass. Before release approval, the final
 evidence verifier must also pass with validated Android and iOS signed-build
 records present, and its saved final-release-evidence log should be attached or
-referenced with the QA evidence. Once validated QA records exist, replace
+referenced with the QA evidence. The guarded QA build record link block must use
+Markdown link labels containing the validated QA record filename, not generic
+labels such as `Completed QA record`. Once validated QA records exist, replace
 `<version+build>` with the validated QA record version/build; successful final
 evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename.
@@ -179,7 +181,7 @@ app opens the assistant or document flow as expected.
 | Payload | Expected result | Evidence |
 | --- | --- | --- |
 | Plain text | Assistant opens with the shared text | Screenshot or note |
-| URL | Assistant searches/summarizes and keeps the URL as a citation | Screenshot with citation |
+| URL | Assistant summarizes the link and keeps the URL as a citation | Screenshot with citation |
 | Image/photo | Document import task starts | Upload task ID naming image/photo |
 | PDF | Document import task starts | Upload task ID naming PDF |
 | Word `.docx` or `.doc` | Document import task starts | Upload task ID naming Word/docx/doc |
@@ -236,7 +238,7 @@ app opens the assistant or document flow as expected.
 | Payload | Expected result | Evidence |
 | --- | --- | --- |
 | Plain text | Assistant opens with the shared text | Screenshot or note |
-| URL | Assistant searches/summarizes and keeps the URL as a citation | Screenshot with citation |
+| URL | Assistant summarizes the link and keeps the URL as a citation | Screenshot with citation |
 | Image/photo | Document import task starts | Upload task ID naming image/photo |
 | PDF | Document import task starts | Upload task ID naming PDF |
 | Word `.docx` or `.doc` | Document import task starts | Upload task ID naming Word/docx/doc |
@@ -268,19 +270,21 @@ it. Each permission evidence item must include the matching
 - Confirm LLM mode is MaClaw official by default, or record the MaClaw desktop
   GUI QR authorization ID when third-party LLM access is enabled; record which
   mode was used.
-- Confirm the LLM setup screen only exposes MaClaw official service redemption
-  code entry and MaClaw desktop GUI QR authorization. Record that arbitrary
-  third-party endpoint/base URL/provider URL/API key fields are not present.
+- Confirm the signed-out first screen is phone registration/login through Hub
+  SMS verification. Third-party LLM access must appear only as an optional
+  account/settings action using MaClaw desktop GUI QR authorization. Record that
+  arbitrary third-party endpoint/base URL/provider URL/API key fields are not
+  present.
 - Confirm bootstrap returns user, quota/limits, feature flags, and service
   status; record all four categories in the QA build record.
-- Run an AI search with citations and record the query plus at least one
+- Ask the AI assistant a question with citations and record the query plus at least one
   visible HTTPS source URL.
 - Ask one assistant question by voice and record the recognized transcript;
   ask one photo/image/screenshot assistant question or import and record the
-  resulting search citation answer or document upload task ID.
-- Share the search result and record the target or output, such as Mail,
+  resulting assistant citation answer or document upload task ID.
+- Share the assistant result and record the target or output, such as Mail,
   WeChat, system share sheet, clipboard, exported file, or saved local path.
-- Create document drafts from the search result for every first-version
+- Create document drafts from the assistant result for every first-version
   template: notice, report, email, proposal, meeting minutes, and statement.
 - Upload a document and record the document upload/import task ID.
 - Export a document to PDF, Word, and Markdown; record one matching export job
@@ -299,14 +303,15 @@ it. Each permission evidence item must include the matching
   `digital-employee-task:` payload, and a `server-profile:` payload.
 - Confirm all API/service and realtime surfaces use the discovered Hub URL.
 - Toggle offline/poor-network conditions or otherwise block HubCenter access,
-  record the offline warning, restore connectivity, and confirm search,
-  document export, digital employee status, and realtime surfaces recover.
+  record the offline warning, restore connectivity, and confirm assistant
+  online answers, document export, digital employee status, and realtime
+  surfaces recover.
 
 ## Account Privacy And Local Data
 
 - Change theme and speech language from the account/settings screen and record
   the before/after result.
-- Clear local work records and confirm search history, document drafts/tasks,
+- Clear local work records and confirm assistant history, document drafts/tasks,
   command history, digital employee prompts/tasks, and app preferences reset.
 - After clearing local work records, confirm server profiles and SSH
   credentials remain available.
@@ -344,7 +349,7 @@ Attach or link:
 - Screenshots or recordings for permission prompts and share-to-app flows.
 - MaClaw account, selected HubCenter, discovered Hub, tenant, and LLM mode used
   for smoke test.
-- Search query, upload task IDs, export job IDs, digital employee task IDs.
+- AI assistant query, upload task IDs, export job IDs, digital employee task IDs.
 - Voice transcript and photo/image assistant input result, including citation
   answer evidence or document upload task ID.
 - Account theme/speech language change, local work-record reset, retained

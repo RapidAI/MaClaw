@@ -15,10 +15,14 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
     SendRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 }),
     VerifyRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true }),
+    CreateMobileAuthDesktopQRSession: vi.fn().mockResolvedValue({
+        qr_payload: '{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://hub.example"}',
+        expires_at: '2026-07-05T12:00:00Z',
+    }),
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { GetHubUserRanking, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
+import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -40,6 +44,13 @@ const baseProps = {
         aboutNotRegistered: 'Not registered',
         aboutRegisterBtn: 'Register',
         aboutClearBtn: 'Clear',
+        aboutMobileAuthQRButton: 'Mobile Auth QR',
+        aboutMobileAuthQRTitle: 'Mobile Authentication QR',
+        aboutMobileAuthQRDesc: 'Scan with mobile app.',
+        aboutMobileAuthQRExpiresAt: 'Expires at {time}',
+        aboutMobileAuthQREmpty: 'Hub did not return a QR payload.',
+        aboutMobileAuthQRFailed: 'Failed to create mobile authentication QR code.',
+        aboutRefreshQRBtn: 'Refresh QR',
         aboutRegisterHub: 'Register to Hub',
         aboutClearRegistration: 'Clear registration and re-register',
         aboutTenantName: 'Tenant',
@@ -307,6 +318,26 @@ describe('AboutPanel', () => {
         expect(screen.getByText('19900001111')).toBeTruthy();
         expect(screen.queryByText('phone:19900001111')).toBeNull();
         expect(screen.getAllByText('Set').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('shows mobile auth QR action before clear for registered phone accounts', async () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'phone:19900001111', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        const mobileButton = screen.getByText('Mobile Auth QR');
+        const clearButton = screen.getByText('Clear');
+        expect(mobileButton.compareDocumentPosition(clearButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+        fireEvent.click(mobileButton);
+
+        await waitFor(() => expect(CreateMobileAuthDesktopQRSession).toHaveBeenCalledTimes(1));
+        expect(await screen.findByText('Mobile Authentication QR')).toBeTruthy();
+        expect(screen.getByText('Expires at 2026-07-05T12:00:00Z')).toBeTruthy();
+    });
+
+    it('hides mobile auth QR action when registered account has no phone', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(screen.queryByText('Mobile Auth QR')).toBeNull();
     });
 
     it('probes tenant metadata with a phone account identity', async () => {

@@ -188,8 +188,12 @@ Discovered Hub/tenant result:
 # GUI QR authorization ID recorded above. In both modes, include the same Tenant
 # ID recorded above.
 LLM access evidence:
+# Prove the signed-out LLM/setup surface starts with phone registration/login,
+# and that third-party LLM is only available from account/settings via MaClaw
+# desktop GUI QR. Also record that no redemption-code login and no arbitrary
+# third-party endpoint, base URL, provider URL, or API key fields are present.
 LLM setup surface restriction:
-AI search query:
+AI assistant query:
 # Include voice transcription evidence and photo/image/screenshot assistant
 # input evidence, plus a recorded visible citation URL or document upload task ID.
 Voice/photo assistant input evidence:
@@ -202,11 +206,11 @@ Visible citations / sources:
 # answer/result preview was redacted/masked/sanitized before external sharing,
 # including redaction-check:<id>.
 Shared result:
-# Include all document templates created from the search result: notice,
+# Include all document templates created from the assistant result: notice,
 # report, email, proposal, meeting minutes, and statement, plus a recorded
 # citation URL from Visible citations / sources and the resulting
 # document-draft:<id>.
-Document draft created from search:
+Document draft created from assistant result:
 Document upload task ID:
 PDF export job ID:
 Word export job ID:
@@ -246,10 +250,12 @@ Network offline/recovery evidence:
 ```text
 Theme and speech language change result:
 # If notification evidence recorded a server-profile:<id>, include the same
-# server-profile:<id> and show that clearing local work records removes search,
-# document drafts, commands, digital employee prompts, and preferences without
-# deleting server credentials.
+# server-profile:<id> and show that clearing local work records removes
+# assistant history, document drafts, commands, digital employee prompts, and
+# preferences without deleting server credentials.
 Local work records reset confirmation:
+# Include assistant history, document drafts/tasks, command history, digital
+# employee prompts/tasks, and app preferences in the local reset evidence.
 # Include the same server-profile:<id> and show SSH password/private-key
 # credentials remained available in secure storage/vault after local
 # work-record reset.

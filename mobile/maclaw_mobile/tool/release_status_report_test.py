@@ -187,6 +187,29 @@ class ReleaseStatusReportTest(unittest.TestCase):
             output,
         )
 
+    def test_build_status_uses_release_evidence_from_supplied_root(self) -> None:
+        root = self.make_root()
+        expected_evidence = root / "docs" / "release_evidence.md"
+        seen: dict[str, Path] = {}
+
+        def verify_final(path: Path, **kwargs: object) -> list[str]:
+            seen["records_dir"] = path
+            seen["release_evidence_path"] = kwargs["release_evidence_path"]  # type: ignore[assignment]
+            return [
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ]
+
+        status = release_status_report.build_status(
+            root,
+            preflight=lambda *_args, **_kwargs: [],
+            validate_records=lambda _path: [],
+            verify_final=verify_final,
+        )
+
+        self.assertEqual((root / "docs" / "qa-builds").resolve(), seen["records_dir"])
+        self.assertEqual(expected_evidence, seen["release_evidence_path"])
+        self.assertEqual(expected_evidence.parent.parent, status.root)
+
     def test_not_ready_without_records_preserves_supplied_ios_values(self) -> None:
         root = self.make_root()
 
@@ -232,6 +255,34 @@ class ReleaseStatusReportTest(unittest.TestCase):
                     output,
                 )
                 self.assertNotIn(f"signed {scope} QA packages", output)
+
+    def test_scoped_ready_result_is_not_full_release_approval(self) -> None:
+        root = self.make_root()
+
+        for scope, label in [("android", "Android"), ("ios", "iOS")]:
+            with self.subTest(scope=scope):
+                status = release_status_report.ReleaseStatus(
+                    root=root,
+                    preflight_checks=[qa_preflight.PreflightCheck("Stub", "ok", ["ready"])],
+                    record_results=[
+                        validate_qa_build_records_dir.RecordValidationResult(
+                            path=root
+                            / "docs"
+                            / "qa-builds"
+                            / f"2026-07-02-{scope}-1.0.0+42.md",
+                            errors=[],
+                        ),
+                    ],
+                    final_errors=[],
+                    scope=scope,
+                )
+                output = release_status_report.format_status(status)
+
+                self.assertIn(
+                    f"Result: READY for {label} scoped internal QA approval, not full Android/iOS release approval.",
+                    output,
+                )
+                self.assertNotIn("Result: READY for final release approval.", output)
 
     def test_preflight_blocker_defers_record_creation_flow_until_preflight_passes(self) -> None:
         root = self.make_root()
@@ -467,7 +518,11 @@ class ReleaseStatusReportTest(unittest.TestCase):
             scoped_output,
         )
         self.assertIn("[OUT-OF-SCOPE INVALID] 2026-07-02-ios-1.0.0+43.md", scoped_output)
-        self.assertIn("Result: READY for final release approval.", scoped_output)
+        self.assertIn(
+            "Result: READY for Android scoped internal QA approval, not full Android/iOS release approval.",
+            scoped_output,
+        )
+        self.assertNotIn("Result: READY for final release approval.", scoped_output)
 
     def test_build_status_passes_scope_to_final_verifier(self) -> None:
         root = self.make_root()

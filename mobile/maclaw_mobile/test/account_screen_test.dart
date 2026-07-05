@@ -264,6 +264,12 @@ class _FakeApiClient extends ApiClient {
 void main() {
   testWidgets('account screen shows Hub discovery and LLM access',
       (tester) async {
+    tester.view.physicalSize = const Size(1200, 3000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
     final apiClient = _FakeApiClient(
       const LlmServiceStatus(
         active: true,
@@ -296,18 +302,25 @@ void main() {
     expect(find.text('桌面 GUI 二维码授权的第三方 LLM（llm-auth-1）'), findsOneWidget);
     expect(find.text('可用'), findsWidgets);
     expect(find.text('llm-auth-1 · 来自 maclaw-gui'), findsOneWidget);
+    expect(find.text('第三方 LLM 授权'), findsOneWidget);
+    expect(
+      find.text(
+        '默认使用 MaClaw 官方 LLM；如需接入第三方 LLM，只能扫描或粘贴 MaClaw 桌面 GUI 生成的授权二维码。',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('扫码授权'), findsOneWidget);
     expect(apiClient.requestedStatusPath, '/api/llm/service/status');
     expect(find.text('官方 credits'), findsOneWidget);
     expect(find.text('80'), findsOneWidget);
     expect(find.text('87.50'), findsOneWidget);
     expect(find.text('12.50'), findsOneWidget);
     expect(find.text('maclaw-chat'), findsOneWidget);
+    expect(find.textContaining('助手联网'), findsWidgets);
+    expect(find.text('联网搜索'), findsNothing);
 
-    await tester.scrollUntilVisible(
-      find.text('25 MB'),
-      320,
-      scrollable: find.byType(Scrollable),
-    );
+    expect(find.textContaining('助手联网接口'), findsOneWidget);
+    expect(find.text('联网搜索接口'), findsNothing);
     expect(find.text('25 MB'), findsOneWidget);
     expect(find.text('3'), findsOneWidget);
   });
@@ -340,7 +353,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('phone:user19900001111'), findsNothing);
-    expect(find.text('MaClaw 瀹樻柟 credits 浣跨敤 phone:199****1111'), findsNothing);
+    expect(find.text('MaClaw 官方 credits 使用 phone:199****1111'), findsNothing);
     expect(find.text('phone:199****1111'), findsOneWidget);
   });
 
@@ -384,6 +397,11 @@ void main() {
     );
     await _tapActionTileButton(tester, Icons.cleaning_services_outlined);
     await tester.pumpAndSettle();
+    expect(
+      find.textContaining('将删除助手历史、文档草稿'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('将删除搜索历史'), findsNothing);
     await tester.tap(find.byType(FilledButton).last);
     await tester.pumpAndSettle();
 
@@ -490,11 +508,21 @@ void main() {
     _qrAuthorizationPayloads.clear();
     await _pumpLlmQrAuthorization(tester);
 
+    expect(find.text('桌面二维码授权'), findsOneWidget);
+    expect(find.text('扫描 MaClaw 桌面 GUI 生成的二维码'), findsOneWidget);
+    expect(
+      find.text(
+        '移动端默认使用 MaClaw 官方 LLM。只有扫描或粘贴桌面 GUI 生成的授权二维码后，才会通过你的 Hub 接入第三方 LLM。',
+      ),
+      findsOneWidget,
+    );
+
     await tester.scrollUntilVisible(
       find.byType(TextField),
       420,
       scrollable: find.byType(Scrollable),
     );
+    expect(find.text('粘贴二维码内容'), findsOneWidget);
     await tester.enterText(
       find.byType(TextField),
       ' maclaw-gui-llm-qr-payload ',
@@ -503,6 +531,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_qrAuthorizationPayloads, ['maclaw-gui-llm-qr-payload']);
+  });
+
+  testWidgets('submits detected desktop GUI QR payload from scanner',
+      (tester) async {
+    _qrAuthorizationPayloads.clear();
+    await _pumpLlmQrAuthorization(
+      tester,
+      scannerBuilder: (onPayload) => Center(
+        child: FilledButton(
+          onPressed: () => onPayload(' scanned-maclaw-gui-llm-qr-payload '),
+          child: const Text('模拟扫码'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('模拟扫码'));
+    await tester.pumpAndSettle();
+
+    expect(_qrAuthorizationPayloads, ['scanned-maclaw-gui-llm-qr-payload']);
   });
 
   testWidgets('clears server profiles and SSH credentials separately',
@@ -550,7 +597,10 @@ void main() {
   });
 }
 
-Future<void> _pumpLlmQrAuthorization(WidgetTester tester) async {
+Future<void> _pumpLlmQrAuthorization(
+  WidgetTester tester, {
+  LlmQrPayloadScannerBuilder? scannerBuilder,
+}) async {
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
@@ -558,9 +608,10 @@ Future<void> _pumpLlmQrAuthorization(WidgetTester tester) async {
           _QrAuthorizingSessionController.new,
         ),
       ],
-      child: const MaterialApp(
+      child: MaterialApp(
         home: LlmQrAuthorizationScreen(
-          scanner: SizedBox.expand(),
+          scanner: scannerBuilder == null ? const SizedBox.expand() : null,
+          scannerBuilder: scannerBuilder,
         ),
       ),
     ),

@@ -68,7 +68,7 @@ const defaultMobileFeatures = MobileFeatures(
   pushNotifications: false,
 );
 
-const _lookupTabLabel = '\u67e5\u4fe1\u606f';
+const _assistantTabLabel = 'AI助手';
 const _documentsTabLabel = '\u6587\u6863';
 const _remoteTabLabel = '\u8fdc\u7a0b';
 const _employeesTabLabel = '\u5458\u5de5';
@@ -79,9 +79,9 @@ const _sharedContentMessage = '\u5df2\u63a5\u6536\u5206\u4eab\u5185\u5bb9';
 const _allMobileTabs = [
   MobileAppTab(
     '/assistant',
-    _lookupTabLabel,
-    Icons.manage_search_outlined,
-    'search',
+    _assistantTabLabel,
+    Icons.chat_bubble_outline,
+    'assistant',
   ),
   MobileAppTab(
     '/documents',
@@ -172,6 +172,7 @@ class MobileAppTab {
 
   bool enabledBy(MobileFeatures features) {
     return switch (feature) {
+      'assistant' => true,
       'search' => features.search,
       'documents' => features.documents,
       'local_ssh' => features.localSsh,

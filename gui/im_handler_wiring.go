@@ -233,6 +233,10 @@ type IMMessageHandler struct {
 	// (RouteToDirectCoding) — simple tasks that skip SDD and go straight to SubAgent.
 	pendingDirectCodingProjectPath sync.Map
 
+	// pendingDirectRemoteCoding stores context for direct remote coding tasks
+	// that skip SDD and run RemoteCodingSubAgent against an existing SSH session.
+	pendingDirectRemoteCoding sync.Map
+
 	// pendingWorkflowChoice stores the original message and route result while
 	// waiting for the user to choose how to handle a detected workflow task
 	// (full workflow / simple coding / skip). Keyed by userID.

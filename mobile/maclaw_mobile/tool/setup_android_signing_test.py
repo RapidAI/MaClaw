@@ -41,6 +41,21 @@ class SetupAndroidSigningTest(unittest.TestCase):
         self.assertEqual(4, len(errors))
         self.assertTrue(any(setup_android_signing.ENV_STORE_FILE in error for error in errors))
 
+    def test_config_from_env_rejects_documented_placeholders(self) -> None:
+        env = self.env("<release-signing-key.jks>")
+        env[setup_android_signing.ENV_STORE_PASSWORD] = "<release-keystore-password>"
+        env[setup_android_signing.ENV_KEY_ALIAS] = "<release-key-alias>"
+        env[setup_android_signing.ENV_KEY_PASSWORD] = "<release-key-password>"
+
+        config, errors = setup_android_signing.config_from_env(env)
+
+        self.assertIsNone(config)
+        self.assertEqual(4, len(errors))
+        self.assertTrue(all("placeholder" in error for error in errors))
+        self.assertTrue(
+            any(setup_android_signing.ENV_STORE_PASSWORD in error for error in errors),
+        )
+
     def test_validate_config_requires_existing_non_debug_store(self) -> None:
         root = self.make_root()
         config, errors = setup_android_signing.config_from_env(self.env("debug.keystore"))
@@ -108,6 +123,20 @@ class SetupAndroidSigningTest(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("Android signing setup cannot continue", stderr.getvalue())
         self.assertIn(setup_android_signing.ENV_KEY_PASSWORD, stderr.getvalue())
+
+    def test_main_rejects_placeholder_environment_without_writing_config(self) -> None:
+        root = self.make_root()
+        (root / "android" / "release.jks").write_text("keystore", encoding="utf-8")
+        env = self.env()
+        env[setup_android_signing.ENV_KEY_PASSWORD] = "<release-key-password>"
+        stderr = StringIO()
+
+        with patch.dict(os.environ, env, clear=True), redirect_stderr(stderr):
+            exit_code = setup_android_signing.main(["--root", str(root)])
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("placeholder value", stderr.getvalue())
+        self.assertFalse((root / "android" / "key.properties").exists())
 
 
 if __name__ == "__main__":

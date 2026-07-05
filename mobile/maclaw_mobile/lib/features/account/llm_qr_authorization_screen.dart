@@ -4,10 +4,19 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../auth/session_controller.dart';
 
+typedef LlmQrPayloadScannerBuilder = Widget Function(
+  ValueChanged<String> onPayload,
+);
+
 class LlmQrAuthorizationScreen extends ConsumerStatefulWidget {
   final Widget? scanner;
+  final LlmQrPayloadScannerBuilder? scannerBuilder;
 
-  const LlmQrAuthorizationScreen({super.key, this.scanner});
+  const LlmQrAuthorizationScreen({
+    super.key,
+    this.scanner,
+    this.scannerBuilder,
+  });
 
   @override
   ConsumerState<LlmQrAuthorizationScreen> createState() =>
@@ -72,12 +81,12 @@ class _LlmQrAuthorizationScreenState
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
           children: [
             Text(
-              '扫描 MaClaw GUI 生成的二维码',
+              '扫描 MaClaw 桌面 GUI 生成的二维码',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
             Text(
-              '移动端默认使用 MaClaw 官方 LLM。只有扫描桌面 GUI 生成的授权二维码后，才会通过你的 Hub 接入第三方 LLM。',
+              '移动端默认使用 MaClaw 官方 LLM。只有扫描或粘贴桌面 GUI 生成的授权二维码后，才会通过你的 Hub 接入第三方 LLM。',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -89,7 +98,8 @@ class _LlmQrAuthorizationScreenState
                 borderRadius: BorderRadius.circular(8),
                 child: DecoratedBox(
                   decoration: BoxDecoration(color: scheme.surfaceContainer),
-                  child: widget.scanner ??
+                  child: widget.scannerBuilder?.call(_submit) ??
+                      widget.scanner ??
                       MobileScanner(
                         onDetect: _submitting ? (_) {} : _handleDetect,
                       ),
@@ -108,9 +118,8 @@ class _LlmQrAuthorizationScreenState
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: _submitting
-                  ? null
-                  : () => _submit(_manualController.text),
+              onPressed:
+                  _submitting ? null : () => _submit(_manualController.text),
               icon: _submitting
                   ? const SizedBox.square(
                       dimension: 18,

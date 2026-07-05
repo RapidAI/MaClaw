@@ -10,6 +10,10 @@ IOS_BUNDLE_ID = 'top.mypapers.maclaw.mobile'
 IOS_TEST_BUNDLE_ID = f'{IOS_BUNDLE_ID}.RunnerTests'
 IOS_APP_GROUP_ID = f'group.{IOS_BUNDLE_ID}'
 IOS_SHARE_EXTENSION_NAME = 'ShareExtension'
+IOS_RUNNER_TEST_MARKERS = (
+    'testMaClawMobileBundleConfiguration',
+    f'"{IOS_TEST_BUNDLE_ID}"',
+)
 
 IOS_USAGE_DESCRIPTIONS = {
     'NSCameraUsageDescription': '\u7528\u4e8e\u62cd\u7167\u63d0\u95ee\u548c\u5bfc\u5165\u56fe\u7247\u6587\u6863\u3002',
@@ -52,6 +56,7 @@ def verify_ios_wrapper(root: Path) -> list[str]:
     share_info_path = ios / f'{IOS_SHARE_EXTENSION_NAME}/Info.plist'
     share_entitlements_path = ios / f'{IOS_SHARE_EXTENSION_NAME}/{IOS_SHARE_EXTENSION_NAME}.entitlements'
     share_controller_path = ios / f'{IOS_SHARE_EXTENSION_NAME}/ShareViewController.swift'
+    runner_tests_path = ios / 'RunnerTests/RunnerTests.swift'
     project_path = ios / 'Runner.xcodeproj/project.pbxproj'
 
     required_files = [
@@ -60,6 +65,7 @@ def verify_ios_wrapper(root: Path) -> list[str]:
         share_info_path,
         share_entitlements_path,
         share_controller_path,
+        runner_tests_path,
         project_path,
     ]
     missing = [path for path in required_files if not path.exists()]
@@ -71,6 +77,10 @@ def verify_ios_wrapper(root: Path) -> list[str]:
     for key, expected in IOS_USAGE_DESCRIPTIONS.items():
         if runner_info.get(key) != expected:
             errors.append(f'iOS Runner Info.plist `{key}` must contain the readable MaClaw usage description.')
+    if runner_info.get('CFBundleDisplayName') != 'MaClaw Mobile':
+        errors.append('iOS Runner Info.plist CFBundleDisplayName must be MaClaw Mobile.')
+    if runner_info.get('CFBundleName') != 'MaClaw Mobile':
+        errors.append('iOS Runner Info.plist CFBundleName must be MaClaw Mobile, not the Flutter template name.')
     if runner_info.get('AppGroupId') != '$(CUSTOM_GROUP_ID)':
         errors.append('iOS Runner Info.plist must expose AppGroupId as $(CUSTOM_GROUP_ID).')
     schemes = _url_schemes(runner_info)
@@ -115,6 +125,11 @@ def verify_ios_wrapper(root: Path) -> list[str]:
         errors.append('iOS Share Extension PHSupportedMediaTypes must be Image.')
     if 'RSIShareViewController' not in share_controller_path.read_text(encoding='utf-8'):
         errors.append('iOS ShareViewController must extend receive_sharing_intent RSIShareViewController.')
+    runner_tests = runner_tests_path.read_text(encoding='utf-8', errors='ignore')
+    for marker in IOS_RUNNER_TEST_MARKERS:
+        if marker not in runner_tests:
+            errors.append('iOS RunnerTests must contain the MaClaw bundle configuration smoke test.')
+            break
 
     project = project_path.read_text(encoding='utf-8', errors='ignore')
     for marker in [

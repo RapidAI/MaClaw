@@ -41,6 +41,23 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             self.assertIn("Date: 2026-07-02", text)
             self.assertIn("Version/build number: 1.0.0+42", text)
 
+    def test_default_template_creates_assistant_query_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = create_qa_build_record.create_record(
+                template_path=create_qa_build_record.default_template_path(),
+                records_dir=Path(tmp),
+                record_date="2026-07-02",
+                scope="android-ios",
+                version_build="1.0.0+42",
+            )
+
+            text = target.read_text(encoding="utf-8")
+
+            self.assertIn("AI assistant query:", text)
+            self.assertIn("Document draft created from assistant result:", text)
+            self.assertNotIn("AI search query:", text)
+            self.assertNotIn("Document draft created from search:", text)
+
     def test_create_record_prefills_final_decision_evidence_when_provided(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

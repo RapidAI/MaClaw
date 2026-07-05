@@ -41,6 +41,20 @@ void main() {
     return File(path);
   }
 
+  int dartTestCount() {
+    return Directory('test')
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((file) => file.path.endsWith('_test.dart'))
+        .map(
+          (file) => RegExp(
+            r'^\s*test(?:Widgets)?\(',
+            multiLine: true,
+          ).allMatches(file.readAsStringSync()).length,
+        )
+        .fold<int>(0, (sum, count) => sum + count);
+  }
+
   bool localPathExists(String path) {
     final file = localFile(path);
     return file.existsSync() || Directory(file.path).existsSync();
@@ -58,7 +72,8 @@ void main() {
     }
   }
 
-  const lookupTab = '\u67e5\u4fe1\u606f';
+  const assistantTab = 'AI助手';
+  const webLookup = '发送给 AI 助手';
   const documentsTab = '\u6587\u6863';
   const remoteTab = '\u8fdc\u7a0b';
   const employeesTab = '\u5458\u5de5';
@@ -80,6 +95,14 @@ void main() {
     ]) {
       expect(readme, contains(docName));
     }
+    expect(
+      readme,
+      contains(
+        'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      ),
+    );
+    expect(readme, contains('`NOT READY` means'));
+    expect(readme, contains('signing inputs, QA records, or final evidence'));
     expect(evidence, contains('docs/release_audit.md'));
     expect(evidence, contains('docs/qa_device_checklist.md'));
     expect(evidence, contains('docs/qa_build_record_template.md'));
@@ -167,24 +190,60 @@ void main() {
     );
   });
 
+  test('README preserves mobile AI assistant positioning', () {
+    final readme = readDoc('README.md');
+    final readmeText = readme.replaceAll(RegExp(r'\s+'), ' ');
+
+    for (final expected in [
+      'MaClaw mobile AI assistant',
+      'MaClaw GUI-like multi-tab AI assistant',
+      'typed or voice input',
+      'assistant online answers with citations',
+      'only the three preset official HubCenter endpoints',
+      'assistant history',
+    ]) {
+      expect(readme, contains(expected));
+    }
+    for (final expected in [
+      'does not expose custom Hub endpoint configuration',
+      'Third-party LLM access is available only as an optional account/settings action',
+      'first screen for an unregistered or signed-out user is phone registration/login',
+      'does not embed or directly call the Go `corelib` package',
+      'official Hub or on authorized remote desktop/server digital employees',
+      'AI assistant, emergency documents, manual SSH, digital employees',
+    ]) {
+      expect(readmeText, contains(expected));
+    }
+    for (final forbidden in [
+      'emergency AI work',
+      'source-backed lookup',
+      'search history',
+      'information lookup',
+    ]) {
+      expect(readmeText, isNot(contains(forbidden)));
+    }
+  });
+
   test('user guide preserves mobile product decisions', () {
     final guide = readDoc('docs/user_guide.md');
+    final guideText = guide.replaceAll(RegExp(r'\s+'), ' ');
 
     for (final expected in [
       'MaClaw logo splash screen',
-      'If a valid mobile session and LLM access are already configured',
-      'opens the assistant directly',
-      'MaClaw official service redemption code',
-      'followed by phone SMS verification',
+      'first screen is phone registration/login',
+      'discovered Hub',
       'SMS verification succeeds',
-      'verified `phone:<digits>` account',
-      'provider QR code generated',
-      'from the LLM configuration screen',
-      'MaClaw desktop GUI',
       'multi-tab assistant',
-      'does not accept arbitrary third-party LLM endpoints',
-      '`$lookupTab` tab',
+      'account/settings area',
+      'MaClaw desktop GUI',
+      'provider base URLs, or API keys',
+      '`$assistantTab` tab',
+      'do not remove the `$assistantTab` entry',
+      'disables `$webLookup`',
+      'disables assistant online access',
+      '`助手联网`, `文档草稿`, or `日志排障`',
       '`$documentsTab` tab',
+      'Template selection fills a phone-friendly emergency skeleton',
       '`$remoteTab` tab',
       '`$employeesTab` tab',
       '`$accountTab` tab',
@@ -197,13 +256,29 @@ void main() {
     ]) {
       expect(guide, contains(expected));
     }
+    expect(
+      guideText,
+      contains('new phone number is registered and signed in automatically'),
+    );
+    expect(guideText, contains('verified `phone:<digits>` account'));
+    expect(guideText, contains('Third-party LLM access is optional'));
+    expect(guideText, contains('does not expose a redemption-code login path'));
+    expect(guideText, isNot(contains('disables the search feature')));
+    expect(
+      guideText,
+      contains('provider QR code generated from the LLM configuration screen'),
+    );
+    expect(
+      guideText,
+      contains('does not accept arbitrary third-party LLM endpoints'),
+    );
   });
 
   test('release docs do not contain mojibake markers', () {
     final docs = releaseDocCorpus();
 
     for (final expected in [
-      lookupTab,
+      assistantTab,
       documentsTab,
       remoteTab,
       employeesTab,
@@ -240,6 +315,65 @@ void main() {
         readDoc(sourcePath),
         isNot(contains('\ufffd')),
         reason: '$sourcePath must stay UTF-8 clean for QA evidence parsing.',
+      );
+    }
+  });
+
+  test('native launch screens use MaClaw logo assets', () {
+    final androidLaunch =
+        readDoc('android/app/src/main/res/drawable/launch_background.xml');
+    final androidLaunchV21 =
+        readDoc('android/app/src/main/res/drawable-v21/launch_background.xml');
+    final androidLaunchV31 =
+        readDoc('android/app/src/main/res/values-v31/styles.xml');
+    final androidManifest = readDoc('android/app/src/main/AndroidManifest.xml');
+    final iosStoryboard =
+        readDoc('ios/Runner/Base.lproj/LaunchScreen.storyboard');
+
+    for (final xml in [androidLaunch, androidLaunchV21]) {
+      expect(xml, contains('android:src="@mipmap/launch_image"'));
+      expect(xml, isNot(contains('<!-- <item>')));
+    }
+    expect(
+      androidLaunchV31,
+      contains('android:windowSplashScreenAnimatedIcon'),
+    );
+    expect(androidLaunchV31, contains('@mipmap/launch_image'));
+    expect(
+      androidLaunchV31,
+      contains('android:windowSplashScreenIconBackgroundColor'),
+    );
+    expect(androidManifest, contains('android:icon="@mipmap/ic_launcher"'));
+    expect(
+      androidManifest,
+      contains('android:roundIcon="@mipmap/ic_launcher"'),
+    );
+    expect(
+      File(
+        'android/app/src/main/kotlin/top/mypapers/maclaw/maclaw_mobile/MainActivity.kt',
+      ).existsSync(),
+      isFalse,
+      reason: 'old Flutter template package activity must not remain',
+    );
+    expect(iosStoryboard, contains('image="LaunchImage"'));
+
+    for (final path in [
+      'android/app/src/main/res/mipmap-mdpi/launch_image.png',
+      'android/app/src/main/res/mipmap-hdpi/launch_image.png',
+      'android/app/src/main/res/mipmap-xhdpi/launch_image.png',
+      'android/app/src/main/res/mipmap-xxhdpi/launch_image.png',
+      'android/app/src/main/res/mipmap-xxxhdpi/launch_image.png',
+      'ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage.png',
+      'ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage@2x.png',
+      'ios/Runner/Assets.xcassets/LaunchImage.imageset/LaunchImage@3x.png',
+      'ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024@1x.png',
+    ]) {
+      final file = File(path);
+      expect(file.existsSync(), isTrue, reason: '$path must exist');
+      expect(
+        file.lengthSync(),
+        greaterThan(1024),
+        reason: '$path must not be an empty Flutter placeholder',
       );
     }
   });
@@ -373,6 +507,16 @@ void main() {
         contains(
           'successful final evidence logs must use that same version/build in the `final-release-evidence*.log` filename',
         ),
+        reason: entry.key,
+      );
+      expect(
+        normalized,
+        contains('validated QA record filename'),
+        reason: entry.key,
+      );
+      expect(
+        normalized,
+        contains('not generic labels such as `Completed QA record`'),
         reason: entry.key,
       );
     }
@@ -563,11 +707,12 @@ void main() {
       'https://hubs.maclaw.top',
       'Discovered Hub',
       'LLM access mode',
-      'LLM setup screen only exposes',
+      'signed-out first screen is phone registration/login',
+      'MaClaw desktop GUI QR authorization',
       'Ask one assistant question by voice',
       'recognized transcript',
       'photo/image/screenshot assistant question',
-      'resulting search citation answer or document upload task ID',
+      'resulting assistant citation answer or document upload task ID',
       'Upload a document',
       'Export a document to PDF, Word, and Markdown',
       'Submit a digital employee task',
@@ -579,6 +724,7 @@ void main() {
       'offline warning',
       'restore connectivity',
       'visible HTTPS source URL',
+      'AI assistant query',
       'Mail,',
       'WeChat',
       'clipboard',
@@ -607,7 +753,9 @@ void main() {
     ]) {
       expect(qa, contains(expected));
     }
+    expect(qaText, contains('optional account/settings action'));
     expect(qaText, contains('arbitrary third-party endpoint'));
+    expect(qa, isNot(contains('Search query')));
   });
 
   test('release docs lock SSH action-specific evidence fields', () {
@@ -684,7 +832,7 @@ void main() {
     expect(
       auditText,
       contains(
-        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI search with citations',
+        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI assistant query with citations',
       ),
     );
     expect(auditText, contains('with `permission-grant:<id>` evidence'));
@@ -696,7 +844,7 @@ void main() {
 
     for (final expected in [
       'Hub discovery smoke test',
-      'AI search with citations',
+      'AI assistant query with citations',
       'voice transcription',
       'photo/image assistant input',
       'shared result',
@@ -783,12 +931,13 @@ void main() {
       'Discovered Hub/tenant result',
       'LLM access evidence',
       'LLM setup surface restriction',
+      'AI assistant query',
       'Voice/photo assistant input evidence',
       'visible HTTPS source URL',
       'share target or output',
       'clipboard',
       'saved local path',
-      'Document draft created from search',
+      'Document draft created from assistant result',
       'notice',
       'report',
       'email',
@@ -809,6 +958,7 @@ void main() {
       'Network offline/recovery evidence',
       'Theme and speech language change result',
       'Local work records reset confirmation',
+      'assistant history',
       'Server credentials retained after local reset',
       'Server profiles/SSH credentials clear confirmation',
       'Connect result',
@@ -830,6 +980,13 @@ void main() {
       'Approver must be different from Tester',
     ]) {
       expect(template, contains(expected));
+    }
+    for (final forbidden in [
+      'AI search query:',
+      'Document draft created from search:',
+      'search history',
+    ]) {
+      expect(template, isNot(contains(forbidden)));
     }
     expectInOrder(template, [
       'python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds',
@@ -983,6 +1140,11 @@ void main() {
       ),
     );
     expect(checklist, contains('guarded QA build record link block'));
+    expect(checklist, contains('validated QA record filename'));
+    expect(
+      checklist,
+      contains('not generic labels such as `Completed QA record`'),
+    );
     expect(
       checklist,
       contains(
@@ -1214,6 +1376,14 @@ void main() {
       'force-add a fully redacted record only when release policy requires it',
       'Keep this',
       'docs/qa_build_record_template.md',
+      '`tool/release_status_report.py` is expected',
+      '`NOT READY`',
+      '`android/key.properties`',
+      '`ios/ExportOptions.plist`',
+      'pre-signing setup state',
+      'Do not add placeholder signing files',
+      'placeholder QA records',
+      'placeholder final evidence links',
       'build date, platform scope, and build number',
       'python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42',
       'python3 tool/setup_android_signing.py',
@@ -1285,6 +1455,10 @@ void main() {
       ),
     );
     expect(qaBuildsReadmeText, contains('private customer content'));
+    expect(
+      qaBuildsReadmeText,
+      contains('completed signed-build QA records are still absent'),
+    );
     for (final expected in [
       'Out-of-scope invalid records appear as an ignored warning',
       'do not block the current scoped Android or iOS package',
@@ -1319,6 +1493,7 @@ void main() {
 
   test('release evidence records resolved automated test residuals', () {
     final evidence = readDoc('docs/release_evidence.md');
+    final fullFlutterTestCount = dartTestCount();
 
     for (final expected in [
       'Resolved Automated Test Residuals',
@@ -1326,7 +1501,27 @@ void main() {
       'MobileLocalStore',
       'shared future',
       'passes without the Drift',
-      'Passed: 190 tests',
+      'Passed: $fullFlutterTestCount tests',
+    ]) {
+      expect(evidence, contains(expected));
+    }
+  });
+
+  test('release evidence records current local gate log and debug APK refresh',
+      () {
+    final evidence = readDoc('docs/release_evidence.md');
+
+    for (final expected in [
+      'run on 2026-07-05 passed all',
+      'release-gates-local-20260705.log',
+      'The local transcript was saved under `docs/qa-builds/`',
+      'attach the versioned `release-gates-<version+build>.log`',
+      'from signed-build QA as external evidence',
+      'Refreshed after the 2026-07-05 full automated release gate run.',
+      '03739ABFD43A3E1773564314AD7F58A8F75BD37F35B8F799B07D690936277F9B',
+      'These cannot be proven by local unit tests or the unsigned debug APK',
+      'Android signed internal build',
+      'Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result',
     ]) {
       expect(evidence, contains(expected));
     }

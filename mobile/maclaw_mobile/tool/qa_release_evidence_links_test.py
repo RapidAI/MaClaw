@@ -18,8 +18,8 @@ from validate_qa_build_record_test import complete_record, scoped_record
 
 class QaReleaseEvidenceLinksTest(unittest.TestCase):
     def records_dir(self, root: Path) -> Path:
-        records_dir = root / "qa-builds"
-        records_dir.mkdir()
+        records_dir = root / "docs" / "qa-builds"
+        records_dir.mkdir(parents=True)
         return records_dir
 
     def write_record(self, records_dir: Path, text: str, name: str) -> Path:
@@ -134,6 +134,7 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 "- [2026-07-02-android-ios-1.0.0+42.md](docs/qa-builds/2026-07-02-android-ios-1.0.0+42.md)",
                 output,
             )
+            self.assertNotIn("Scoped internal QA only", output)
 
     def test_valid_records_are_linked_in_deterministic_filename_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,6 +195,40 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
                 output,
             )
             self.assertNotIn(f"](docs/qa-builds/{record.name})", output)
+
+    def test_custom_directory_named_qa_builds_links_actual_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            records_dir = root / "tmp" / "qa-builds"
+            records_dir.mkdir(parents=True)
+            record = self.write_record(
+                records_dir,
+                self.complete_record_with_local_artifact(records_dir),
+                "2026-07-02-android-ios-1.0.0+42.md",
+            )
+
+            output = qa_release_evidence_links.format_links(
+                qa_release_evidence_links.summarize_records(records_dir),
+            )
+
+            self.assertIn(
+                f"- [{record.name}]({record.as_posix()})",
+                output,
+            )
+            self.assertIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    records_dir=records_dir.as_posix(),
+                    version="1.0.0+42",
+                ),
+                output,
+            )
+            self.assertNotIn(f"](docs/qa-builds/{record.name})", output)
+            self.assertNotIn(
+                release_evidence_commands.verify_final_release_evidence_command(
+                    version="1.0.0+42",
+                ),
+                output,
+            )
 
     def test_invalid_record_is_reported_but_not_linked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -625,6 +660,10 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertFalse(summary.has_ios)
         self.assertEqual([], qa_release_evidence_links.release_evidence_update_errors(summary))
         self.assertIn("Verification scope: Android", output)
+        self.assertIn(
+            "Scoped internal QA only: this does not approve a full Android/iOS release candidate.",
+            output,
+        )
         self.assertIn("Validated platform coverage: Android", output)
         self.assertIn(
             "After adding these links, run: "
@@ -736,6 +775,10 @@ class QaReleaseEvidenceLinksTest(unittest.TestCase):
         self.assertTrue(summary.has_ios)
         self.assertEqual([], qa_release_evidence_links.release_evidence_update_errors(summary))
         self.assertIn("Verification scope: iOS", output)
+        self.assertIn(
+            "Scoped internal QA only: this does not approve a full Android/iOS release candidate.",
+            output,
+        )
         self.assertIn("Validated platform coverage: iOS", output)
         self.assertIn(
             "After adding these links, run: "

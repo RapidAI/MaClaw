@@ -1,10 +1,11 @@
 import ReactMarkdown from 'react-markdown';
+import { QRCodeSVG } from 'qrcode.react';
 import type { MouseEvent } from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
@@ -209,6 +210,14 @@ export function AboutPanel({
     const remoteEmail = remoteEmailRaw || emptyValue;
     const remoteMobile = remoteMobileRaw || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
+    const canCreateMobileAuthQR = hasRegisteredMachine && remoteMobileRaw.trim() !== '';
+    const [showMobileAuthQR, setShowMobileAuthQR] = useState(false);
+    const [mobileAuthQRValue, setMobileAuthQRValue] = useState('');
+    const [mobileAuthQRExpiresAt, setMobileAuthQRExpiresAt] = useState('');
+    const [mobileAuthQRError, setMobileAuthQRError] = useState('');
+    const [mobileAuthQRLoading, setMobileAuthQRLoading] = useState(false);
+    const mobileAuthQRRequestRef = useRef(0);
+    const { backdropProps: mobileAuthQRBackdropProps, dialogProps: mobileAuthQRDialogProps } = useSafeBackdropDismiss(() => setShowMobileAuthQR(false));
     const [contactDialog, setContactDialog] = useState<null | { kind: 'email' | 'phone' }>(null);
     const [contactValue, setContactValue] = useState('');
     const [contactCode, setContactCode] = useState('');
@@ -225,6 +234,31 @@ export function AboutPanel({
         setContactCode('');
         setContactMessage('');
         setContactCodeSent(false);
+    };
+    const openMobileAuthQRDialog = () => {
+        if (!canCreateMobileAuthQR) return;
+        const requestID = mobileAuthQRRequestRef.current + 1;
+        mobileAuthQRRequestRef.current = requestID;
+        setShowMobileAuthQR(true);
+        setMobileAuthQRValue('');
+        setMobileAuthQRExpiresAt('');
+        setMobileAuthQRError('');
+        setMobileAuthQRLoading(true);
+        CreateMobileAuthDesktopQRSession()
+            .then((session: any) => {
+                if (mobileAuthQRRequestRef.current !== requestID) return;
+                const payload = String(session?.qr_payload || '');
+                setMobileAuthQRValue(payload);
+                setMobileAuthQRExpiresAt(String(session?.expires_at || ''));
+                if (!payload) setMobileAuthQRError(t("aboutMobileAuthQREmpty"));
+            })
+            .catch((err: unknown) => {
+                if (mobileAuthQRRequestRef.current !== requestID) return;
+                setMobileAuthQRError(String((err as any)?.message || err || t("aboutMobileAuthQRFailed")));
+            })
+            .finally(() => {
+                if (mobileAuthQRRequestRef.current === requestID) setMobileAuthQRLoading(false);
+            });
     };
     const sendContactCode = async () => {
         if (!contactDialog) return;
@@ -479,14 +513,26 @@ export function AboutPanel({
                             </p>
                         </div>
                         {hasRegisteredMachine ? (
-                            <button
-                                className="about-status-pill is-online"
-                                style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-danger-bg)', color: 'var(--theme-danger)' }}
-                                onClick={onClearRegistration}
-                                title={t("aboutClearRegistration")}
-                            >
-                                {t("aboutClearBtn")}
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                {canCreateMobileAuthQR && (
+                                    <button
+                                        className="about-status-pill is-online"
+                                        style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-primary-soft)', color: 'var(--theme-primary)' }}
+                                        onClick={openMobileAuthQRDialog}
+                                        title={t("aboutMobileAuthQRTitle")}
+                                    >
+                                        {t("aboutMobileAuthQRButton")}
+                                    </button>
+                                )}
+                                <button
+                                    className="about-status-pill is-online"
+                                    style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-danger-bg)', color: 'var(--theme-danger)' }}
+                                    onClick={onClearRegistration}
+                                    title={t("aboutClearRegistration")}
+                                >
+                                    {t("aboutClearBtn")}
+                                </button>
+                            </div>
                         ) : (
                             <button
                                 className="about-status-pill"
@@ -666,6 +712,56 @@ export function AboutPanel({
                             <button className="btn-primary" disabled={contactBusy || !contactCode.trim() || !contactCodeSent} onClick={verifyContactCode}>
                                 {contactBusyAction === 'verify' ? t("loading") : t("aboutVerifyAndSaveBtn")}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {showMobileAuthQR && (
+                <div className="modal-overlay" {...mobileAuthQRBackdropProps}>
+                    <div
+                        className="modal-content about-mobile-auth-qr-dialog"
+                        style={{ width: '360px', maxWidth: '92vw' }}
+                        {...mobileAuthQRDialogProps}
+                    >
+                        <div className="about-contact-dialog__header">
+                            <h3>{t("aboutMobileAuthQRTitle")}</h3>
+                            <button className="modal-close" onClick={() => setShowMobileAuthQR(false)}>&times;</button>
+                        </div>
+                        <p className="about-contact-dialog__desc">{t("aboutMobileAuthQRDesc")}</p>
+                        <div style={{
+                            minHeight: 244,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            background: 'var(--theme-surface-muted)',
+                            border: '1px solid var(--theme-border)',
+                            borderRadius: 8,
+                            margin: '14px 0',
+                            padding: 12,
+                        }}>
+                            {mobileAuthQRLoading ? (
+                                <div style={{ color: 'var(--theme-text-muted)', fontSize: '0.85rem' }}>{t("loading")}...</div>
+                            ) : mobileAuthQRValue ? (
+                                <div style={{ background: '#fff', padding: 10, borderRadius: 8 }}>
+                                    <QRCodeSVG value={mobileAuthQRValue} size={220} level="M" bgColor="#ffffff" fgColor="#111111" />
+                                </div>
+                            ) : (
+                                <div style={{ color: 'var(--theme-danger)', fontSize: '0.82rem', lineHeight: 1.5, textAlign: 'center' }}>
+                                    {mobileAuthQRError || t("aboutMobileAuthQRFailed")}
+                                </div>
+                            )}
+                        </div>
+                        {mobileAuthQRExpiresAt && (
+                            <div style={{ color: 'var(--theme-text-muted)', fontSize: '0.76rem', textAlign: 'center', marginBottom: 12 }}>
+                                {t("aboutMobileAuthQRExpiresAt").replace("{time}", mobileAuthQRExpiresAt)}
+                            </div>
+                        )}
+                        {mobileAuthQRError && mobileAuthQRValue && (
+                            <div className="about-contact-dialog__message">{mobileAuthQRError}</div>
+                        )}
+                        <div className="modal-actions">
+                            <button className="btn-hide" onClick={() => setShowMobileAuthQR(false)}>{t("close")}</button>
+                            <button className="btn-primary" disabled={mobileAuthQRLoading} onClick={openMobileAuthQRDialog}>{t("aboutRefreshQRBtn")}</button>
                         </div>
                     </div>
                 </div>

@@ -295,6 +295,33 @@ class QaPreflightTest(unittest.TestCase):
             output,
         )
 
+    def test_android_scope_ignores_ios_only_invalid_records(self) -> None:
+        root = self.make_root()
+        ios_record = validate_qa_build_records_dir.RecordValidationResult(
+            path=root / "docs" / "qa-builds" / "2026-07-02-ios-1.0.0+42.md",
+            errors=["Missing TestFlight evidence"],
+        )
+
+        checks = qa_preflight.run_preflight(
+            root,
+            scope="android",
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            records_dir_validator=lambda _: [ios_record],
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        existing_record_check = next(
+            check for check in checks if check.name == "Existing QA build records"
+        )
+        self.assertEqual("info", existing_record_check.status)
+        self.assertIn("1 out-of-scope invalid record(s) ignored", output)
+        self.assertIn("create an in-scope Android QA record", output)
+        self.assertNotIn("[BLOCKER] Existing QA build records", output)
+        self.assertNotIn("Missing TestFlight evidence", output)
+
     def test_android_scope_counts_only_in_scope_existing_records_as_ready(self) -> None:
         root = self.make_root()
         android_record = validate_qa_build_records_dir.RecordValidationResult(

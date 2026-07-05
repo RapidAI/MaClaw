@@ -17,6 +17,13 @@ REQUIRED_ENV = (
     ENV_KEY_ALIAS,
     ENV_KEY_PASSWORD,
 )
+PLACEHOLDER_VALUES = {
+    "<release-keystore-password>",
+    "<release-key-alias>",
+    "<release-key-password>",
+    "<path-to-release-keystore>",
+    "<release-signing-key.jks>",
+}
 
 
 @dataclass(frozen=True)
@@ -38,10 +45,27 @@ def _resolve_store_file(root: Path, store_file: str) -> Path:
     return root / "android" / path
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in PLACEHOLDER_VALUES or (
+        normalized.startswith("<") and normalized.endswith(">")
+    )
+
+
 def config_from_env(env: dict[str, str]) -> tuple[AndroidSigningConfig | None, list[str]]:
     missing = [name for name in REQUIRED_ENV if not env.get(name, "").strip()]
     if missing:
         return None, [f"Missing environment variable `{name}`" for name in missing]
+    placeholders = [
+        name
+        for name in REQUIRED_ENV
+        if _looks_like_placeholder(env.get(name, ""))
+    ]
+    if placeholders:
+        return None, [
+            f"Environment variable `{name}` still contains a placeholder value"
+            for name in placeholders
+        ]
     return (
         AndroidSigningConfig(
             store_file=env[ENV_STORE_FILE].strip(),

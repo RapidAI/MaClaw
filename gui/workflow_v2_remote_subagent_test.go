@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -133,5 +134,120 @@ func TestExtractSSHSessionIDFromConnectResultPrefersExplicitFields(t *testing.T)
 		if got := extractSSHSessionIDFromConnectResult(tt.input); got != tt.want {
 			t.Fatalf("%s: got %q want %q", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestInferRemoteProjectDirFromSSHSessionHandlesCommonLaunchCommands(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "cd /repo/project && bash", want: "/repo/project"},
+		{input: "cd '/repo/project with space'; exec bash", want: "/repo/project with space"},
+		{input: "cd \"/srv/app\" && clear", want: "/srv/app"},
+		{input: "cd -- /opt/service && exec bash", want: "/opt/service"},
+		{input: "cd\t/var/www && bash", want: "/var/www"},
+		{input: "cd -P /srv/physical && bash", want: "/srv/physical"},
+		{input: "cd -L '/srv/link target' && bash", want: "/srv/link target"},
+		{input: "cdfoo /wrong && bash", want: ""},
+		{input: "echo hello", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := inferRemoteProjectDirFromSSHSession(tt.input); got != tt.want {
+			t.Fatalf("inferRemoteProjectDirFromSSHSession(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDirectRemoteCodingSessionUsableOnlyAllowsInteractiveStates(t *testing.T) {
+	allowed := []remote.SessionStatus{remote.SessionRunning, remote.SessionWaitingInput}
+	for _, status := range allowed {
+		if !directRemoteCodingSessionUsable(status) {
+			t.Fatalf("status %s should be usable", status)
+		}
+	}
+
+	blocked := []remote.SessionStatus{remote.SessionStarting, remote.SessionBusy, remote.SessionExited, remote.SessionError}
+	for _, status := range blocked {
+		if directRemoteCodingSessionUsable(status) {
+			t.Fatalf("status %s should not be usable", status)
+		}
+	}
+}
+
+func TestDirectRemoteCodingSessionSelectableRequiresIDAndInteractiveState(t *testing.T) {
+	tests := []struct {
+		name    string
+		session *remote.SSHManagedSession
+		want    bool
+	}{
+		{name: "nil session", session: nil, want: false},
+		{name: "empty id", session: &remote.SSHManagedSession{Status: remote.SessionRunning}, want: false},
+		{name: "blank id", session: &remote.SSHManagedSession{ID: "   ", Status: remote.SessionRunning}, want: false},
+		{name: "busy", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionBusy}, want: false},
+		{name: "running", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionRunning}, want: true},
+		{name: "waiting input", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionWaitingInput}, want: true},
+	}
+
+	for _, tt := range tests {
+		if got := directRemoteCodingSessionSelectable(tt.session); got != tt.want {
+			t.Fatalf("%s: got %v want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestDirectCodingPanelPlaceholderOnlyMatchesPanelLaunchText(t *testing.T) {
+	if !isDirectCodingPanelPlaceholder("启动简化编程任务") {
+		t.Fatalf("quick coding panel launch text should be treated as placeholder")
+	}
+	if !isDirectCodingPanelPlaceholder(" 启动远程编程任务 ") {
+		t.Fatalf("remote coding panel launch text should be treated as placeholder")
+	}
+	if isDirectCodingPanelPlaceholder("请修改登录页样式") {
+		t.Fatalf("real user task should not be treated as placeholder")
+	}
+}
+
+func TestHasPendingDirectSubAgentExecutionRequiresDirectContext(t *testing.T) {
+	h := &IMMessageHandler{}
+	if h.hasPendingDirectSubAgentExecution("u") {
+		t.Fatalf("empty handler state should not be pending direct execution")
+	}
+
+	h.pendingV2SubAgentExecution.Store("u", true)
+	if h.hasPendingDirectSubAgentExecution("u") {
+		t.Fatalf("generic pending v2 execution without direct context should not be treated as direct")
+	}
+
+	h.pendingDirectCodingProjectPath.Store("u", "D:/repo")
+	if !h.hasPendingDirectSubAgentExecution("u") {
+		t.Fatalf("local direct coding context should be pending direct execution")
+	}
+	h.pendingDirectCodingProjectPath.Delete("u")
+
+	h.pendingDirectRemoteCoding.Store("u", directRemoteCodingContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
+	if !h.hasPendingDirectSubAgentExecution("u") {
+		t.Fatalf("remote direct coding context should be pending direct execution")
+	}
+}
+
+func TestClearPerUserSessionStateClearsDirectSubAgentPendingState(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "u"
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingDirectCodingProjectPath.Store(userID, "D:/repo")
+	h.pendingDirectRemoteCoding.Store(userID, directRemoteCodingContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
+
+	h.clearPerUserSessionState(userID)
+
+	if _, ok := h.pendingV2SubAgentExecution.Load(userID); ok {
+		t.Fatalf("pendingV2SubAgentExecution should be cleared")
+	}
+	if _, ok := h.pendingDirectCodingProjectPath.Load(userID); ok {
+		t.Fatalf("pendingDirectCodingProjectPath should be cleared")
+	}
+	if _, ok := h.pendingDirectRemoteCoding.Load(userID); ok {
+		t.Fatalf("pendingDirectRemoteCoding should be cleared")
 	}
 }

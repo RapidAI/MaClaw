@@ -43,6 +43,15 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
       return;
     }
+    final session = ref.read(sessionControllerProvider).valueOrNull;
+    if (session?.bootstrap?.features.search == false) {
+      state = AsyncError(
+        StateError('当前 Hub 未启用助手联网能力，仍可使用语音输入、图片/文件导入和文档草稿。'),
+        StackTrace.current,
+      );
+      ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
+      return;
+    }
     state = const AsyncLoading();
     ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
     state = await AsyncValue.guard(() async {

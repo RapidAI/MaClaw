@@ -11,6 +11,15 @@ force-add a fully redacted record only when release policy requires it. Keep thi
 Use `docs/qa_build_record_template.md` as the source template. The safest path is
 to run local QA preflight and scaffold a validator-named record before QA starts:
 
+Before local signing is configured, `tool/release_status_report.py` is expected
+to return `NOT READY` because `android/key.properties`,
+`ios/ExportOptions.plist`, and completed signed-build QA records are still
+absent. Treat that as the pre-signing setup state, not as evidence to bypass:
+create the local signing inputs with the setup helpers, then rerun preflight
+before building signed QA packages. Do not add placeholder signing files,
+placeholder QA records, or placeholder final evidence links to make the status
+look ready.
+
 ```bash
 python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md

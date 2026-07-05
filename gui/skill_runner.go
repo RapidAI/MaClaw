@@ -327,6 +327,56 @@ func (r *SkillRunner) runDefaultTimeoutSec(run *skillRun) int {
 	return r.defaultTimeoutSec()
 }
 
+const maclawAppRunTimeoutSec = corelib.MaxSkillRunnerTimeoutSec
+
+func (r *SkillRunner) effectiveSkillGlobalTimeoutSec(run *skillRun, skill *corelib.NLSkillEntry) int {
+	timeout := r.runDefaultTimeoutSec(run)
+	if isMaclawAppSkillRun(run) && timeout < maclawAppRunTimeoutSec {
+		timeout = maclawAppRunTimeoutSec
+	}
+	if run != nil {
+		if requested, ok := cskill.SkillParamSeconds(run.runArgs, "global_timeout"); ok && requested > timeout {
+			timeout = requested
+		}
+	}
+	if skill != nil && skill.GlobalTimeout > timeout {
+		timeout = skill.GlobalTimeout
+	}
+	return corelib.NormalizeSkillRunnerTimeoutSec(timeout)
+}
+
+func (r *SkillRunner) applyEffectiveSkillGlobalTimeoutSec(run *skillRun, skill *corelib.NLSkillEntry) int {
+	timeout := r.effectiveSkillGlobalTimeoutSec(run, skill)
+	if run != nil {
+		r.mu.Lock()
+		run.timeoutSec = timeout
+		r.mu.Unlock()
+	}
+	return timeout
+}
+
+func isMaclawAppSkillRun(run *skillRun) bool {
+	if run == nil || len(run.runArgs) == 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(fmt.Sprint(firstNonNilRunArg(run.runArgs, "_maclaw_app"))), "true") {
+		return true
+	}
+	if strings.TrimSpace(fmt.Sprint(firstNonNilRunArg(run.runArgs, "app_id", "app_name", "app_kind"))) != "" {
+		return true
+	}
+	return false
+}
+
+func firstNonNilRunArg(runArgs map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := runArgs[key]; ok && value != nil {
+			return value
+		}
+	}
+	return ""
+}
+
 func (r *SkillRunner) runDefaultTimeoutSecForID(runID string) int {
 	if r == nil {
 		return corelib.DefaultSkillRunnerTimeoutSec
@@ -736,10 +786,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	execStart, finishExecution := r.beginRunExecution(run, "pipeline")
 	finishStatus := "unknown"
 	defer func() { finishExecution(finishStatus) }()
-	globalTimeout := time.Duration(r.runDefaultTimeoutSec(run)) * time.Second
-	if entry.GlobalTimeout > 0 {
-		globalTimeout = time.Duration(entry.GlobalTimeout) * time.Second
-	}
+	globalTimeout := time.Duration(r.applyEffectiveSkillGlobalTimeoutSec(run, entry)) * time.Second
 	globalCtx, cancel := context.WithTimeout(ctx, globalTimeout)
 	defer cancel()
 
@@ -1651,7 +1698,17 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 	if r == nil || run == nil {
 		return
 	}
+	if status == skillRunStatusSuccess || status == skillRunStatusFailed {
+		r.materializeStdoutToExpectedOutput(run)
+	}
 	r.mu.Lock()
+	if status == skillRunStatusFailed && runHasVerifiedArtifactLocked(&run.status) {
+		if strings.TrimSpace(run.status.Error) != "" {
+			run.status.Warnings = append(run.status.Warnings, "execution reported an error after producing the expected artifact: "+run.status.Error)
+		}
+		run.status.Error = ""
+		status = skillRunStatusSuccess
+	}
 	run.status.Status = status
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
@@ -1659,18 +1716,6 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 	r.mu.Unlock()
 	if status == skillRunStatusFailed {
 		logSkillRunnerFailure(statusSnapshot.RunID, statusSnapshot.OwnerID, statusSnapshot.Skill, "execution", skillRunFailureReason(statusSnapshot))
-	}
-
-	// Materialize stdout output to ExpectedOutput file when:
-	// 1. Run succeeded
-	// 2. ExpectedOutput path is set (synthesized by App panel from output_mode)
-	// 3. The file does NOT already exist (skill didn't write it itself)
-	// 4. Steps have non-empty stdout output to save
-	//
-	// This handles skills that only output to stdout (e.g. RapidOCR) but the
-	// App panel expects a file artifact at the synthesized path.
-	if status == skillRunStatusSuccess {
-		r.materializeStdoutToExpectedOutput(run)
 	}
 
 	if r.executor == nil || r.executor.app == nil {
@@ -1681,6 +1726,18 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 		run.status.Warnings = append(run.status.Warnings, err.Error())
 		r.mu.Unlock()
 	}
+}
+
+func runHasVerifiedArtifactLocked(status *SkillRunStatus) bool {
+	if status == nil {
+		return false
+	}
+	expectedOutput := strings.TrimSpace(status.ExpectedOutput)
+	if expectedOutput != "" && artifactExists(expectedOutput) {
+		return true
+	}
+	detectedPath := detectArtifactPathFromStatus(status)
+	return detectedPath != "" && artifactExists(detectedPath)
 }
 
 // materializeStdoutToExpectedOutput saves step stdout to the ExpectedOutput
@@ -1815,8 +1872,12 @@ func selectArtifactFileFromJSONOutput(content, expectedExt string) string {
 		return ""
 	}
 	for _, jsonContent := range artifactJSONPayloadCandidates(content) {
-		if sourcePath := selectArtifactFileFromJSONPayload(jsonContent, expectedExt); sourcePath != "" {
+		sourcePath, blocked := selectArtifactFileFromJSONPayload(jsonContent, expectedExt)
+		if sourcePath != "" {
 			return sourcePath
+		}
+		if blocked {
+			return ""
 		}
 	}
 	return ""
@@ -1827,50 +1888,249 @@ func artifactJSONPayloadCandidates(content string) []string {
 	if content == "" {
 		return nil
 	}
-	candidates := []string{content}
-	for idx := strings.LastIndex(content, "{"); idx >= 0; {
-		candidate := strings.TrimSpace(content[idx:])
-		if candidate != content {
-			candidates = append(candidates, candidate)
+	candidates := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
 		}
-		if idx == 0 {
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	add(content)
+	for idx := nextJSONPayloadStart(content, 0); idx >= 0; {
+		if candidate := extractJSONPayloadCandidate(content[idx:]); candidate != "" {
+			add(candidate)
+		}
+		nextStart := idx + 1
+		if nextStart >= len(content) {
 			break
 		}
-		idx = strings.LastIndex(content[:idx], "{")
+		idx = nextJSONPayloadStart(content, nextStart)
 	}
 	return candidates
 }
 
-func selectArtifactFileFromJSONPayload(content, expectedExt string) string {
-	var payload struct {
-		Files []string `json:"files"`
-		File  string   `json:"file"`
-		Path  string   `json:"path"`
+func nextJSONPayloadStart(content string, start int) int {
+	if start < 0 {
+		start = 0
 	}
-	decoder := json.NewDecoder(strings.NewReader(content))
-	if err := decoder.Decode(&payload); err != nil {
+	if start >= len(content) {
+		return -1
+	}
+	objectIdx := strings.Index(content[start:], "{")
+	arrayIdx := strings.Index(content[start:], "[")
+	switch {
+	case objectIdx < 0 && arrayIdx < 0:
+		return -1
+	case objectIdx < 0:
+		return start + arrayIdx
+	case arrayIdx < 0:
+		return start + objectIdx
+	case objectIdx < arrayIdx:
+		return start + objectIdx
+	default:
+		return start + arrayIdx
+	}
+}
+
+func extractJSONPayloadCandidate(content string) string {
+	if content == "" {
 		return ""
+	}
+	var open, close byte
+	switch content[0] {
+	case '{':
+		open, close = '{', '}'
+	case '[':
+		open, close = '[', ']'
+	default:
+		return ""
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(content[:i+1])
+			}
+			if depth < 0 {
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+func selectArtifactFileFromJSONPayload(content, expectedExt string) (string, bool) {
+	pathKeys := []string{
+		"output_path",
+		"outputPath",
+		"output",
+		"artifact_path",
+		"artifactPath",
+		"path",
+		"file",
+		"files",
+		"local_path",
+		"local_file_path",
+		"localFilePath",
+	}
+	containerKeys := []string{
+		"result",
+		"results",
+		"data",
+		"payload",
+		"response",
+		"outputs",
+		"items",
+	}
+	var rawPathCandidates func(json.RawMessage) []string
+	rawPathCandidates = func(raw json.RawMessage) []string {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+			return nil
+		}
+		var path string
+		if err := json.Unmarshal(raw, &path); err == nil {
+			return []string{path}
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err == nil {
+			var out []string
+			for _, item := range items {
+				out = append(out, rawPathCandidates(item)...)
+			}
+			return out
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err == nil {
+			var out []string
+			for _, key := range pathKeys {
+				if value, ok := object[key]; ok {
+					out = append(out, rawPathCandidates(value)...)
+				}
+			}
+			for _, key := range containerKeys {
+				if value, ok := object[key]; ok {
+					out = append(out, rawPathCandidates(value)...)
+				}
+			}
+			return out
+		}
+		return nil
+	}
+	var payload struct {
+		Files        json.RawMessage `json:"files"`
+		File         json.RawMessage `json:"file"`
+		Path         json.RawMessage `json:"path"`
+		Output       json.RawMessage `json:"output"`
+		OutputPath   json.RawMessage `json:"output_path"`
+		OutputPathJS json.RawMessage `json:"outputPath"`
+		Outputs      json.RawMessage `json:"outputs"`
+		Result       json.RawMessage `json:"result"`
+		Results      json.RawMessage `json:"results"`
+		Data         json.RawMessage `json:"data"`
+		Payload      json.RawMessage `json:"payload"`
+		Response     json.RawMessage `json:"response"`
+		Artifact     json.RawMessage `json:"artifact"`
+		ArtifactPath json.RawMessage `json:"artifact_path"`
+		Artifacts    json.RawMessage `json:"artifacts"`
+	}
+	var raw json.RawMessage
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := decoder.Decode(&raw); err != nil {
+		return "", false
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
-		return ""
+		return "", false
 	}
-	candidates := append([]string(nil), payload.Files...)
-	candidates = append(candidates, payload.File, payload.Path)
+	var explicitCandidates []string
+	var genericCandidates []string
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Artifact)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Artifacts)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.ArtifactPath)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.OutputPath)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.OutputPathJS)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Output)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Outputs)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Result)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Results)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Data)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Payload)...)
+		explicitCandidates = append(explicitCandidates, rawPathCandidates(payload.Response)...)
+		genericCandidates = append(genericCandidates, rawPathCandidates(payload.Files)...)
+		genericCandidates = append(genericCandidates, rawPathCandidates(payload.File)...)
+		genericCandidates = append(genericCandidates, rawPathCandidates(payload.Path)...)
+	}
 	expectedExt = strings.ToLower(strings.TrimSpace(expectedExt))
+	if selected, blocked := selectArtifactPathCandidate(explicitCandidates, expectedExt); selected != "" || blocked {
+		return selected, blocked
+	}
+	genericCandidates = append(genericCandidates, rawPathCandidates(raw)...)
+	selected, _ := selectArtifactPathCandidate(genericCandidates, expectedExt)
+	return selected, false
+}
+
+func selectArtifactPathCandidate(candidates []string, expectedExt string) (string, bool) {
 	var fallback string
+	var extensionlessFallback string
+	hasMissingAbsolute := false
+	hasExistingMismatch := false
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" || !filepath.IsAbs(candidate) || !artifactExists(candidate) {
+		if candidate == "" || !filepath.IsAbs(candidate) {
+			continue
+		}
+		if !artifactExists(candidate) {
+			hasMissingAbsolute = true
 			continue
 		}
 		if fallback == "" {
 			fallback = candidate
 		}
 		if expectedExt != "" && strings.EqualFold(filepath.Ext(candidate), expectedExt) {
-			return candidate
+			return candidate, false
+		}
+		if expectedExt != "" && filepath.Ext(candidate) == "" && extensionlessFallback == "" {
+			extensionlessFallback = candidate
+		} else if expectedExt != "" {
+			hasExistingMismatch = true
 		}
 	}
-	return fallback
+	if expectedExt != "" {
+		if extensionlessFallback != "" {
+			return extensionlessFallback, false
+		}
+		return "", hasExistingMismatch || hasMissingAbsolute
+	}
+	return fallback, false
 }
 
 func samePath(a, b string) bool {
@@ -2288,10 +2548,10 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			cleanup()
 		}()
 	}
-	// Global timeout: use skill-level setting if available, otherwise the system Skill Runner default.
-	globalTimeout := time.Duration(r.runDefaultTimeoutSec(run)) * time.Second
+	// Global timeout: skill/app settings and long document translation runs
+	// can extend the system Skill Runner default.
+	globalTimeout := time.Duration(r.applyEffectiveSkillGlobalTimeoutSec(run, skill)) * time.Second
 	if skill.GlobalTimeout > 0 {
-		globalTimeout = time.Duration(skill.GlobalTimeout) * time.Second
 		log.Printf("[skill-runner] using skill-level global timeout: %v", globalTimeout)
 	}
 	globalCtx, globalCancel := context.WithTimeout(ctx, globalTimeout)
@@ -2383,6 +2643,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		var proxyCfg corelib.OpenAIProxyConfig
 		if r.executor != nil && r.executor.app != nil {
 			llmCfg := r.executor.app.GetMaclawLLMConfig()
+			providerName := maclawLLMUsageProviderName(r.executor.app, llmCfg)
 			proxyCfg = corelib.OpenAIProxyConfig{
 				URL:      llmCfg.URL,
 				Key:      llmCfg.Key,
@@ -2390,6 +2651,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				Protocol: llmCfg.Protocol,
 				WireAPI:  llmCfg.WireAPI,
 				AuthType: llmCfg.AuthType,
+				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
+					if providerName == "" {
+						return
+					}
+					r.executor.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+				},
 			}
 		}
 		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {

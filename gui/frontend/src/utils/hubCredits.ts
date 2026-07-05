@@ -71,6 +71,12 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
     return token ? `${creditsURL}#token=${encodeURIComponent(token)}` : creditsURL;
 }
 
+export function buildHubMaclawAppManualURL(hubURL?: string, lang?: string) {
+    const base = String(hubURL || '').trim().replace(/\/+$/, '');
+    const normalizedLang = String(lang || '').toLowerCase().startsWith('en') ? 'en' : String(lang || '').trim() ? 'zh' : '';
+    return base ? appendQuery(`${base}/maclaw-app-manual`, { lang: normalizedLang }) : '';
+}
+
 /**
  * Build the URL for the card/credits purchase page.
  *

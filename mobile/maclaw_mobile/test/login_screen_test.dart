@@ -55,7 +55,7 @@ class _HubDiscoverySessionController extends SessionController {
 }
 
 void main() {
-  testWidgets('shows selected HubCenter and discovered Hub during phone login',
+  testWidgets('phone login is the only signed-out first screen path',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(900, 1200));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -69,21 +69,33 @@ void main() {
       ),
     );
 
+    expect(find.text('手机号注册/登录'), findsOneWidget);
+    expect(find.bySemanticsLabel('MaClaw'), findsOneWidget);
+    expect(find.textContaining('仅支持手机号账户接入'), findsOneWidget);
+    expect(find.text('发送验证码'), findsOneWidget);
+    expect(find.text('桌面二维码接入'), findsNothing);
+    expect(find.text('扫码接入'), findsNothing);
+    expect(find.byIcon(Icons.qr_code_scanner_outlined), findsNothing);
+
     await tester.enterText(find.byType(TextField).first, '19900001111');
     await tester.tap(find.text('发送验证码'));
     await tester.pump();
 
     expect(find.text('https://hubs.maclaw.top'), findsOneWidget);
     expect(find.text('https://tenant-a.maclaw.top'), findsOneWidget);
+    expect(find.text('官方接入状态'), findsOneWidget);
     expect(find.byIcon(Icons.verified_outlined), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField).last, '303246');
+    await tester.enterText(find.byType(TextField).at(1), '303246');
     await tester.ensureVisible(find.text('验证并登录'));
     await tester.tap(find.text('验证并登录'));
     await tester.pump();
 
     expect(controller.verifiedCode, '303246');
-    expect(find.text('登录成功，已接入手机号账户的官方服务 credits。'), findsOneWidget);
+    expect(
+      find.text('登录成功，已接入手机号账户的官方服务 credits。'),
+      findsOneWidget,
+    );
   });
 }
 
@@ -92,6 +104,7 @@ MobileBootstrap _bootstrap() {
     user: MobileUser(
       userId: 'u1',
       email: 'phone:19900001111',
+      phoneNumber: '19900001111',
       tenantId: 'tenant-a',
     ),
     services: MobileServices(

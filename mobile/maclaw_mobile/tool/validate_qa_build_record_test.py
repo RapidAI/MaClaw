@@ -107,16 +107,16 @@ def complete_record() -> str:
             value = f"{platform} Assistant opened shared URL with visible citation for {field}; screenshot share-url-{field.lower().replace(' ', '-')}-{platform.lower()}"
         if field in validate_qa_build_record.SHARE_DOCUMENT_EVIDENCE_FIELDS:
             value = f"{platform} document import upload task ID share-{field.lower().replace(' ', '-')}-{platform.lower()}-12345"
-        if field in validate_qa_build_record.AI_SEARCH_EVIDENCE_FIELDS:
+        if field in validate_qa_build_record.AI_ASSISTANT_QUERY_EVIDENCE_FIELDS:
             value = (
-                "Search query asked: what changed in mobile emergency SSH "
-                "maintenance? Result showed citation "
-                "https://example.test/source-a; screenshot ai-search-42"
+                "AI assistant query asked: what changed in mobile emergency "
+                "SSH maintenance? Assistant result showed citation "
+                "https://example.test/source-a; screenshot assistant-query-42"
             )
         if field in validate_qa_build_record.MOBILE_INPUT_EVIDENCE_FIELDS:
             value = (
                 "Voice input recognized transcript for assistant question and "
-                "photo/image assistant input produced search citation answer "
+                "photo/image assistant input produced assistant citation answer "
                 "with source https://example.test/source-a; screenshot "
                 "mobile-input-42"
             )
@@ -131,11 +131,11 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.DOCUMENT_DRAFT_EVIDENCE_FIELDS:
             value = (
-                "Assistant search result with citations created document draft "
-                "document-draft:draft-from-search-12345 for "
+                "Assistant result with citations created document draft "
+                "document-draft:draft-from-assistant-12345 for "
                 "templates for notice, report, email, proposal, meeting minutes, "
                 "and statement from source https://example.test/source-a; "
-                "screenshot draft-from-search-42"
+                "screenshot draft-from-assistant-42"
             )
         if field in validate_qa_build_record.DOCUMENT_EXPORT_SHARE_FIELDS:
             value = DOCUMENT_EXPORT_SHARE_CONTEXT
@@ -183,7 +183,7 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.LOCAL_WORK_RECORDS_RESET_FIELDS:
             value = (
-                "Cleared local work records cache including search history, "
+                "Cleared local work records cache including assistant history, "
                 "document drafts, command history, digital employee prompts, "
                 "and app preferences while preserving server-profile:srv-prod; "
                 "screenshot local-reset-42"
@@ -246,9 +246,10 @@ def complete_record() -> str:
                 "network-recovery-id-12345 captured the offline and restored probes; "
                 "after recovery selected HubCenter https://hubs.maclaw.top "
                 "and discovered Hub https://tenant-a.maclaw.top for tenant "
-                "tenant-a returned online status, while search, document "
-                "export pdf-export-job-id-12345, digital employee task "
-                "digital-employee-task-id-12345, and realtime surfaces resumed; "
+                "tenant-a returned online status, while assistant online "
+                "answers, document export pdf-export-job-id-12345, digital "
+                "employee task digital-employee-task-id-12345, and realtime "
+                "surfaces resumed; "
                 "screenshot network-recovery-42"
             )
         if field in validate_qa_build_record.HUBCENTER_PROBE_FIELDS:
@@ -267,9 +268,10 @@ def complete_record() -> str:
             value = OFFICIAL_LLM_ACCESS_CONTEXT
         if field in validate_qa_build_record.LLM_SETUP_RESTRICTION_FIELDS:
             value = (
-                "LLM setup configuration shows MaClaw official service redemption "
-                "code and desktop GUI QR options only; no arbitrary third-party "
-                "endpoint, base URL, provider URL, or API key fields are exposed; "
+                "LLM setup configuration shows phone registration/login first and "
+                "optional account/settings desktop GUI QR authorization only; "
+                "no redemption-code login and no arbitrary third-party endpoint, base URL, "
+                "provider URL, or API key fields are exposed; "
                 "screenshot llm-setup-restriction-42"
             )
         if field in validate_qa_build_record.PERMISSION_EVIDENCE_FIELDS:
@@ -1225,20 +1227,33 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_llm_setup_surface_restriction_must_exclude_arbitrary_endpoints(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "LLM setup surface restriction: LLM setup configuration shows MaClaw official service redemption code and desktop GUI QR options only; no arbitrary third-party endpoint, base URL, provider URL, or API key fields are exposed; screenshot llm-setup-restriction-42",
+                "LLM setup surface restriction: LLM setup configuration shows phone registration/login first and optional account/settings desktop GUI QR authorization only; no redemption-code login and no arbitrary third-party endpoint, base URL, provider URL, or API key fields are exposed; screenshot llm-setup-restriction-42",
                 "LLM setup surface restriction: LLM setup page screenshot captured during QA run",
             ),
         )
 
         self.assertIn(
-            "LLM setup surface restriction must describe official redemption or desktop GUI QR only, with no arbitrary third-party endpoint fields",
+            "LLM setup surface restriction must describe phone login plus optional account/settings desktop GUI QR only, with no redemption-code or arbitrary third-party endpoint fields",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_llm_setup_surface_rejects_legacy_redemption_login_evidence(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "LLM setup surface restriction: LLM setup configuration shows phone registration/login first and optional account/settings desktop GUI QR authorization only; no redemption-code login and no arbitrary third-party endpoint, base URL, provider URL, or API key fields are exposed; screenshot llm-setup-restriction-42",
+                "LLM setup surface restriction: LLM setup configuration shows MaClaw official service redemption code and desktop GUI QR options only; no arbitrary third-party endpoint, base URL, provider URL, or API key fields are exposed; screenshot llm-setup-restriction-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM setup surface restriction must describe phone login plus optional account/settings desktop GUI QR only, with no redemption-code or arbitrary third-party endpoint fields",
             validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_voice_photo_assistant_input_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
                 "Voice/photo assistant input evidence: Mobile input screenshot captured during QA run",
             ),
         )
@@ -1251,8 +1266,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_voice_photo_assistant_input_must_reference_recorded_result(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer with source https://example.test/source-a; screenshot mobile-input-42",
-                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced search citation answer; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer with source https://example.test/source-a; screenshot mobile-input-42",
+                "Voice/photo assistant input evidence: Voice input recognized transcript for assistant question and photo/image assistant input produced assistant citation answer; screenshot mobile-input-42",
             ),
         )
 
@@ -2063,11 +2078,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_ai_search_smoke_fields_must_describe_expected_flow(self) -> None:
+    def test_ai_assistant_smoke_fields_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Search query asked: what changed in mobile emergency SSH maintenance? Result showed citation https://example.test/source-a; screenshot ai-search-42",
+                "AI assistant query asked: what changed in mobile emergency SSH maintenance? Assistant result showed citation https://example.test/source-a; screenshot assistant-query-42",
                 "Assistant evidence captured in release notes",
             )
             .replace(
@@ -2079,7 +2094,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Result evidence captured in release notes",
             )
             .replace(
-                "Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Assistant result with citations created document draft document-draft:draft-from-assistant-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
                 "Draft evidence captured in release notes",
             ),
         )
@@ -2087,67 +2102,115 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         missing = validate_qa_build_record.missing_required_fields(values)
 
         for expected in [
-            "AI search query must include the actual AI search query or question",
+            "AI assistant query must include the actual AI assistant query or question",
             "Visible citations / sources must identify visible citations, sources, or URLs",
             "Shared result must describe copy, export, or system-share evidence",
-            "Document draft created from search must describe search-result draft creation for every document template",
+            "Document draft created from assistant result must describe assistant-result draft creation for every document template",
         ]:
             self.assertIn(expected, missing)
 
-    def test_document_draft_from_search_must_cover_every_template_type(self) -> None:
+    def test_ai_assistant_query_must_name_assistant_context(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
-                "Document draft created from search: Assistant search result with citations created report document draft template; screenshot draft-from-search-42",
+                "AI assistant query asked: what changed in mobile emergency SSH maintenance? Assistant result showed citation https://example.test/source-a; screenshot assistant-query-42",
+                "Search query asked: what changed in mobile emergency SSH maintenance? Result showed citation https://example.test/source-a; screenshot search-query-42",
             ),
         )
 
         self.assertIn(
-            "Document draft created from search must describe search-result draft creation for every document template",
+            "AI assistant query must include the actual AI assistant query or question",
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_document_draft_from_search_must_reference_recorded_citation_url(self) -> None:
+    def test_document_draft_from_assistant_result_must_name_assistant_result(
+        self,
+    ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
-                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-search-42",
+                "Document draft created from assistant result: Assistant result with citations created document draft document-draft:draft-from-assistant-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
+                "Document draft created from assistant result: Search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
             ),
         )
 
         self.assertIn(
-            "Document draft created from search must reference a recorded citation URL",
+            "Document draft created from assistant result must describe assistant-result draft creation for every document template",
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_document_draft_from_search_requires_trackable_draft_id(self) -> None:
+    def test_document_draft_from_assistant_result_must_cover_every_template_type(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
-                "Document draft created from search: Assistant search result with citations created document draft for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Document draft created from assistant result: Assistant result with citations created document draft document-draft:draft-from-assistant-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
+                "Document draft created from assistant result: Assistant result with citations created report document draft template; screenshot draft-from-assistant-42",
             ),
         )
 
         self.assertIn(
-            "Document draft created from search must describe search-result draft creation for every document template",
+            "Document draft created from assistant result must describe assistant-result draft creation for every document template",
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_ai_search_smoke_fields_accept_specific_evidence(self) -> None:
+    def test_document_draft_from_assistant_result_must_reference_recorded_citation_url(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Document draft created from assistant result: Assistant result with citations created document draft document-draft:draft-from-assistant-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
+                "Document draft created from assistant result: Assistant result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-assistant-42",
+            ),
+        )
+
+        self.assertIn(
+            "Document draft created from assistant result must reference a recorded citation URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_document_draft_from_assistant_result_requires_trackable_draft_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Document draft created from assistant result: Assistant result with citations created document draft document-draft:draft-from-assistant-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
+                "Document draft created from assistant result: Assistant result with citations created document draft for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-assistant-42",
+            ),
+        )
+
+        self.assertIn(
+            "Document draft created from assistant result must describe assistant-result draft creation for every document template",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ai_assistant_smoke_fields_accept_specific_evidence(self) -> None:
         values = validate_qa_build_record.parse_record(complete_record())
 
         self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
 
-    def test_ai_search_query_must_reference_recorded_citation_url(self) -> None:
+    def test_legacy_ai_search_field_names_map_to_assistant_fields(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace("AI assistant query:", "AI search query:")
+            .replace(
+                "Document draft created from assistant result:",
+                "Document draft created from search:",
+            )
+        )
+
+        self.assertIn(
+            "AI assistant query",
+            values,
+        )
+        self.assertIn(
+            "Document draft created from assistant result",
+            values,
+        )
+        self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
+
+    def test_ai_assistant_query_must_reference_recorded_citation_url(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Search query asked: what changed in mobile emergency SSH maintenance? Result showed citation https://example.test/source-a; screenshot ai-search-42",
-                "Search query asked: what changed in mobile emergency SSH maintenance? screenshot ai-search-42",
+                "AI assistant query asked: what changed in mobile emergency SSH maintenance? Assistant result showed citation https://example.test/source-a; screenshot assistant-query-42",
+                "AI assistant query asked: what changed in mobile emergency SSH maintenance? screenshot assistant-query-42",
             ),
         )
 
         self.assertIn(
-            "AI search query must reference a recorded citation URL",
+            "AI assistant query must reference a recorded citation URL",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -2356,7 +2419,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Theme and speech language change result: Settings screenshot captured",
             )
             .replace(
-                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
                 "Local work records reset confirmation: Cache cleared screenshot captured",
             )
             .replace(
@@ -2394,8 +2457,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
-                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server profiles; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server profiles; screenshot local-reset-42",
             )
             .replace(
                 f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
@@ -2409,6 +2472,21 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
         self.assertIn(
             "Account privacy server credential evidence must reference the recorded server-profile notification ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_local_work_records_reset_accepts_legacy_search_history_wording(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+                "Local work records reset confirmation: Cleared local work records cache including search history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+            ),
+        )
+
+        self.assertNotIn(
+            "Local work records reset confirmation must describe clearing local work records and app preferences",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -2932,7 +3010,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_network_recovery_evidence_must_describe_offline_and_recovered_services(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while assistant online answers, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
                 "Network offline/recovery evidence: Network status screenshot captured during QA run",
             ),
         )
@@ -2947,8 +3025,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery HubCenter online status returned and search, document export, digital employee, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while assistant online answers, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery HubCenter online status returned and assistant online answers, document export, digital employee, and realtime surfaces resumed; screenshot network-recovery-42",
             ),
         )
 
@@ -2974,8 +3052,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_network_recovery_evidence_requires_trace_id(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while assistant online answers, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while assistant online answers, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
             ),
         )
 

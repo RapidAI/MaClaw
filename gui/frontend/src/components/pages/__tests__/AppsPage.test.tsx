@@ -75,6 +75,7 @@ import { AppsPage } from '../AppsPage';
 const marketManifestPlaceholder = /(?:Paste app package JSON \(maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json\)|粘贴应用包 JSON（maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json）)/;
 const manageManifestTitle = /^(?:Manifest|清单)$/;
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
+const activeRunStorageKey = 'maclaw:apps-active-runs:v1';
 
 function getStudioButton() {
     return screen.queryByTitle('App Studio')
@@ -750,6 +751,25 @@ function seedStaleRunHistoryArtifact() {
     }));
 }
 
+function seedFailedRunHistoryArtifact() {
+    window.localStorage.setItem(runHistoryStorageKey, JSON.stringify({
+        'invoice-audit': [{
+            runID: 'run-failed-1',
+            appID: 'invoice-audit',
+            status: 'error',
+            outputMode: 'pdf',
+            inputSummary: 'sample.pdf',
+            message: 'failed',
+            artifactID: 'artifact-failed-pdf',
+            artifactURI: 'artifact://skill-run/run-failed-1/artifact-failed-pdf',
+            artifactName: 'failed-output.pdf',
+            artifactPath: 'C:\\bad\\failed.pdf',
+            artifacts: [{ id: 'artifact-failed-pdf', uri: 'artifact://skill-run/run-failed-1/artifact-failed-pdf', name: 'failed-output.pdf', path: 'C:\\bad\\failed.pdf', status: 'ready' }],
+            at: new Date().toISOString(),
+        }],
+    }));
+}
+
 async function openStaleRunHistoryItem(action: '打开' | '定位') {
     render(<AppsPage lang="zh-Hans" />);
     fireEvent.click(screen.getAllByText('发票审核')[0]);
@@ -1308,8 +1328,8 @@ describe('AppsPage', () => {
         const updatedTile = screen.getAllByText('报销申请')[0].closest('.apps-app-tile') as HTMLButtonElement;
         expect(updatedTile.dataset.status).toBe('running');
         expect(updatedTile.querySelector('.apps-app-status-dot')).toBeNull();
-        expect(updatedTile.title).toContain('状态: 运行中');
-        expect(updatedTile.getAttribute('aria-label')).toContain('状态: 运行中');
+        expect(updatedTile.title).toContain('状态: 已打开');
+        expect(updatedTile.getAttribute('aria-label')).toContain('状态: 已打开');
         expect(updatedTile.title).toContain('最近使用');
         expect(updatedTile.title).not.toContain('最近使用: 尚未使用');
     });
@@ -5888,6 +5908,12 @@ describe('AppsPage', () => {
         expect(within(workspace).getAllByText('Timed out').length).toBeGreaterThan(0);
         expect(within(workspace).getAllByText('Workflow timed out waiting for approval').length).toBeGreaterThan(0);
         expect(within(workspace).getByText('workflow_timeout')).not.toBeNull();
+        expect(document.querySelector('.apps-result-panel[data-state="error"]')).not.toBeNull();
+        expect(document.querySelector('.apps-runtime-output')?.hasAttribute('hidden')).toBe(true);
+        const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, Array<{ runID: string; status: string; artifacts?: unknown[] }>>;
+        const entry = history.expense?.find((item) => item.runID === 'approval-timeout-ui-1');
+        expect(entry?.status).toBe('error');
+        expect(entry?.artifacts).toBeUndefined();
     });
 
     it('shows cancelled workflow results in the handled approval workspace', async () => {
@@ -6670,6 +6696,21 @@ describe('AppsPage', () => {
         expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
     });
 
+    it('does not expose artifact actions for failed run-history records', async () => {
+        seedFailedRunHistoryArtifact();
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('发票审核')[0]);
+        const artifactNodes = await screen.findAllByText('failed-output.pdf');
+        const historyItem = artifactNodes.map((node) => node.closest('article')).find(Boolean) as HTMLElement;
+
+        expect(within(historyItem).queryByRole('button', { name: '打开' })).toBeNull();
+        expect(within(historyItem).queryByRole('button', { name: '定位' })).toBeNull();
+        expect(within(historyItem).queryByRole('button', { name: 'failed-output.pdf' })).toBeNull();
+        expect(openSkillRunArtifactMock).not.toHaveBeenCalled();
+        expect(revealSkillRunArtifactMock).not.toHaveBeenCalled();
+    });
+
     it('falls back to the registry path when locating a stale run-history artifact', async () => {
         seedStaleRunHistoryArtifact();
         revealSkillRunArtifactMock.mockRejectedValueOnce(new Error('missing registered file'));
@@ -7188,10 +7229,19 @@ describe('AppsPage', () => {
         const actions = document.querySelector('.apps-runtime-actions') as HTMLElement;
         expect(within(actions).queryByText('执行')).toBeNull();
         expect(screen.queryByRole('progressbar')).toBeNull();
+        await waitFor(() => {
+            const activeRuns = JSON.parse(window.localStorage.getItem(activeRunStorageKey) || '{}') as Record<string, unknown>;
+            expect(activeRuns['pdf-to-word']).toBeUndefined();
+        });
     });
 
     it('hides the run button and shows running progress while a skill app is executing', async () => {
-        getNLSkillRunStatusMock.mockResolvedValue({ run_id: 'run-test-1', status: 'running', summary: { progress_text: '正在处理文件' } });
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-test-1',
+            status: 'running',
+            summary: { progress_text: '正在处理文件', artifact_path: '/tmp/pending.pdf', artifact_status: 'ready' },
+            artifacts: [{ id: 'artifact-pending', uri: 'artifact://skill-run/run-test-1/artifact-pending', name: 'pending.pdf', path: '/tmp/pending.pdf', status: 'ready' }],
+        });
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
@@ -7206,6 +7256,44 @@ describe('AppsPage', () => {
         expect(within(actions).getByText('取消执行')).not.toBeNull();
         expect(document.querySelector('.apps-result-panel[data-state="running"] .apps-result-progress')).not.toBeNull();
         expect(screen.getByRole('progressbar')).not.toBeNull();
+        expect(document.querySelector('.apps-runtime-output')?.hasAttribute('hidden')).toBe(true);
+        expect(screen.queryByText('pending.pdf')).toBeNull();
+        expect(screen.queryByText('/tmp/pending.pdf')).toBeNull();
+        expect(screen.queryByRole('button', { name: '打开' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '定位' })).toBeNull();
+        await waitFor(() => {
+            const activeRuns = JSON.parse(window.localStorage.getItem(activeRunStorageKey) || '{}') as Record<string, any>;
+            expect(activeRuns['pdf-to-word']).toMatchObject({
+                appID: 'pdf-to-word',
+                runID: 'run-test-1',
+                runKind: 'tool_skill',
+            });
+        });
+    });
+
+    it('keeps the result region hidden when a skill app run fails with partial artifacts', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-test-1',
+            status: 'failed',
+            error: '转换失败',
+            summary: { last_error_snippet: '转换失败', artifact_path: '/tmp/failed.pdf', artifact_status: 'ready' },
+            artifacts: [{ id: 'artifact-failed', uri: 'artifact://skill-run/run-test-1/artifact-failed', name: 'failed.pdf', path: '/tmp/failed.pdf', status: 'ready' }],
+        });
+        const { container } = render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
+        const fileInput = container.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        const file = new File(['demo'], 'demo.pdf', { type: 'application/pdf' });
+        fireEvent.change(fileInput, { target: { files: [file] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(document.querySelector('.apps-result-panel[data-state="error"]')).not.toBeNull());
+        expect(screen.getAllByText('转换失败').length).toBeGreaterThan(0);
+        expect(document.querySelector('.apps-runtime-output')?.hasAttribute('hidden')).toBe(true);
+        expect(screen.queryByText('failed.pdf')).toBeNull();
+        expect(screen.queryByText('/tmp/failed.pdf')).toBeNull();
+        expect(screen.queryByRole('button', { name: '打开' })).toBeNull();
+        expect(screen.queryByRole('button', { name: '定位' })).toBeNull();
     });
 
     it('treats empty skill run ids as failed starts', async () => {

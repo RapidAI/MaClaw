@@ -1003,6 +1003,10 @@ export function CreateMobileLLMDesktopQRSession(arg1, arg2, arg3, arg4, arg5, ar
   return window['go']['main']['App']['CreateMobileLLMDesktopQRSession'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function CreateMobileAuthDesktopQRSession() {
+  return window['go']['main']['App']['CreateMobileAuthDesktopQRSession']();
+}
+
 export function SaveCodeGenModelChoice(arg1, arg2) {
   return window['go']['main']['App']['SaveCodeGenModelChoice'](arg1, arg2);
 }

@@ -84,7 +84,7 @@ class SetupIOSExportOptionsTest(unittest.TestCase):
                     "--root",
                     str(self.root()),
                     "--team-id",
-                    "ABCD123456",
+                    "abcd123456",
                     "--export-method",
                     "enterprise",
                 ],
@@ -93,9 +93,10 @@ class SetupIOSExportOptionsTest(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertIn("Wrote local iOS export options", stdout.getvalue())
         self.assertIn(
-            "python3 tool/qa_preflight.py --team-id <APPLE_TEAM_ID> --export-method enterprise",
+            "python3 tool/qa_preflight.py --team-id ABCD123456 --export-method enterprise",
             stdout.getvalue(),
         )
+        self.assertNotIn("<APPLE_TEAM_ID>", stdout.getvalue())
         self.assertIn("keep ios/ExportOptions.plist local", stdout.getvalue())
 
     def test_main_rejects_invalid_team_id_without_traceback(self) -> None:

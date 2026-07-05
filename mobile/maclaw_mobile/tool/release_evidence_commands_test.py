@@ -806,16 +806,33 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         self.assertEqual(
             'python3 tool/signed_artifact_evidence.py android app-release.aab '
             '--record-dir custom-records --version 1.0.0+42 '
-            '--signing-identity "release-key" '
-            '--installer-channel "internal"',
+            '--signing-identity "release alias upload key SHA256:AA" '
+            '--installer-channel "Firebase App Distribution internal track"',
             release_evidence_commands.android_artifact_evidence_command(
                 "1.0.0+42",
                 artifact="app-release.aab",
                 record_dir="custom-records",
-                signing_identity="release-key",
-                installer_channel="internal",
+                signing_identity="release alias upload key SHA256:AA",
+                installer_channel="Firebase App Distribution internal track",
             ),
         )
+
+    def test_android_artifact_evidence_command_rejects_weak_custom_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "artifact path"):
+            release_evidence_commands.android_artifact_evidence_command(
+                "1.0.0+42",
+                artifact="app-debug.apk",
+            )
+        with self.assertRaisesRegex(ValueError, "signing identity"):
+            release_evidence_commands.android_artifact_evidence_command(
+                "1.0.0+42",
+                signing_identity="release-key",
+            )
+        with self.assertRaisesRegex(ValueError, "installer channel"):
+            release_evidence_commands.android_artifact_evidence_command(
+                "1.0.0+42",
+                installer_channel="internal",
+            )
 
     def test_ios_artifact_evidence_command_is_shared(self) -> None:
         self.assertEqual(
@@ -830,17 +847,33 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         )
         self.assertEqual(
             'python3 tool/signed_artifact_evidence.py ios '
-            '--archive-or-build "TF-42" '
+            '--archive-or-build "TestFlight build 42" '
             '--team-id ABCDE12345 '
-            '--provisioning-profiles "Runner profile; Share profile" '
+            '--provisioning-profiles "Runner profile name MaClaw Runner; Share Extension profile name MaClaw Share Extension" '
             "--record-dir custom-records",
             release_evidence_commands.ios_artifact_evidence_command(
-                archive_or_build="TF-42",
+                archive_or_build="TestFlight build 42",
                 team_id="ABCDE12345",
-                provisioning_profiles="Runner profile; Share profile",
+                provisioning_profiles="Runner profile name MaClaw Runner; Share Extension profile name MaClaw Share Extension",
                 record_dir="custom-records",
             ),
         )
+
+    def test_ios_artifact_evidence_command_rejects_weak_custom_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "archive"):
+            release_evidence_commands.ios_artifact_evidence_command(
+                archive_or_build="TF-42",
+                team_id="ABCDE12345",
+            )
+        with self.assertRaisesRegex(ValueError, "Team ID"):
+            release_evidence_commands.ios_artifact_evidence_command(
+                team_id="TEAM",
+            )
+        with self.assertRaisesRegex(ValueError, "provisioning profile"):
+            release_evidence_commands.ios_artifact_evidence_command(
+                team_id="ABCDE12345",
+                provisioning_profiles="Runner profile; Share profile",
+            )
 
     def test_release_docs_use_shared_android_artifact_evidence_command(self) -> None:
         mobile_root = Path(__file__).resolve().parents[1]

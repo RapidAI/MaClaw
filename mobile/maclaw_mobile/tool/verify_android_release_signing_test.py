@@ -99,6 +99,19 @@ class VerifyAndroidReleaseSigningTest(unittest.TestCase):
 
         self.assertTrue(any('debug' in error for error in errors))
 
+    def test_rejects_flutter_template_gradle_comments(self) -> None:
+        root = self._write_fixture(
+            VALID_GRADLE
+            + '\n// TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).\n'
+            + '// For more information, see: https://flutter.dev/to/review-gradle-config.\n',
+            '\n'.join(verify_android_release_signing.REQUIRED_GITIGNORE_MARKERS),
+        )
+
+        errors = verify_android_release_signing.verify_android_release_signing(root)
+
+        self.assertTrue(any('unique Application ID' in error for error in errors))
+        self.assertTrue(any('review-gradle-config' in error for error in errors))
+
     def test_rejects_missing_key_properties_loading(self) -> None:
         root = self._write_fixture(
             VALID_GRADLE.replace('rootProject.file("key.properties")', 'rootProject.file("debug.properties")'),

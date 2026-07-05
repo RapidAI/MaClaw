@@ -771,7 +771,7 @@ func parseMobileDesktopQRSessionPayload(raw string) (mobileDesktopQRSessionPaylo
 	payload.Type = strings.TrimSpace(payload.Type)
 	payload.SessionID = strings.TrimSpace(payload.SessionID)
 	payload.HubURL = strings.TrimSpace(payload.HubURL)
-	if payload.Type != "maclaw_mobile_llm_authorization" || payload.SessionID == "" || payload.HubURL == "" {
+	if (payload.Type != "maclaw_mobile_llm_authorization" && payload.Type != "maclaw_mobile_desktop_authorization") || payload.SessionID == "" || payload.HubURL == "" {
 		return mobileDesktopQRSessionPayload{}, fmt.Errorf("Desktop GUI QR login requires a Hub-signed mobile session payload. Provider-only LLM QR payloads can be authorized after mobile login.")
 	}
 	return payload, nil

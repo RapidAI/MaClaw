@@ -1771,6 +1771,12 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	if workflowType == "" {
 		return "", fmt.Errorf("workflow type is required")
 	}
+	directCodingSubAgent := workflowType == "coding_subagent"
+	directRemoteCodingSubAgent := workflowType == "remote_coding_subagent"
+	routeWorkflowType := workflowType
+	if directCodingSubAgent || directRemoteCodingSubAgent {
+		routeWorkflowType = "coding"
+	}
 
 	// Note: workflow disabled setting is NOT checked here.
 	// When user explicitly clicks a workflow tile, it should always start
@@ -1796,7 +1802,7 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	if wf == nil {
 		return "", fmt.Errorf("workflow engine not initialized")
 	}
-	if tmpl := wf.machine.GetRegistry().Get(workflowType); tmpl == nil {
+	if tmpl := wf.machine.GetRegistry().Get(routeWorkflowType); tmpl == nil {
 		return "", fmt.Errorf("unknown workflow type: %s", workflowType)
 	}
 
@@ -1816,6 +1822,11 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	// agent loop races. Send a synthetic message that the workflow integration
 	// layer will pick up and route to startNewWorkflowV2.
 	syntheticText := fmt.Sprintf("启动%s工作流", workflowType)
+	if directCodingSubAgent {
+		syntheticText = "启动简化编程任务"
+	} else if directRemoteCodingSubAgent {
+		syntheticText = "启动远程编程任务"
+	}
 
 	// Store the RouteResult so the handleCodingComplexityCommand path can
 	// pick it up as a pre-routed "complex" workflow choice without disambiguation.
@@ -1829,7 +1840,7 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 		},
 		RouteResult: &v2.RouteResult{
 			Target:       "workflow",
-			WorkflowType: workflowType,
+			WorkflowType: routeWorkflowType,
 			ProjectPath:  projectPath,
 		},
 		ChoiceID: choiceID,
@@ -1840,7 +1851,13 @@ func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (stri
 	// EventScopeID must be "local" so the backend caches it and subsequent workflow
 	// events carry it — the frontend's useWorkflowState filters events by scope ID
 	// and only accepts events matching the active tab's scope ("local" for default tab).
-	choiceCommand := buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID)
+	workflowChoice := workflowChoiceComplex
+	if directCodingSubAgent {
+		workflowChoice = workflowChoiceSimple
+	} else if directRemoteCodingSubAgent {
+		workflowChoice = workflowChoiceRemoteSimple
+	}
+	choiceCommand := buildWorkflowChoiceCommand(workflowChoice, choiceID)
 	go func() {
 		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
 			Text:         choiceCommand,

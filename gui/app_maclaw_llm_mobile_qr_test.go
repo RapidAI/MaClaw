@@ -71,3 +71,57 @@ func TestCreateMobileLLMDesktopQRSessionRequiresHubLogin(t *testing.T) {
 		t.Fatalf("error = %v, want Hub login requirement", err)
 	}
 }
+
+func TestCreateMobileAuthDesktopQRSessionUsesHubAuthSessionEndpoint(t *testing.T) {
+	var seenAuth string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile/auth/desktop-qr-sessions" {
+			t.Fatalf("path = %s, want mobile auth QR session endpoint", r.URL.Path)
+		}
+		seenAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"created","session_id":"maqr_test","expires_at":"2026-07-05T12:00:00Z","qr_payload":"{\"v\":2,\"type\":\"maclaw_mobile_desktop_authorization\",\"session_id\":\"maqr_test\",\"hub_url\":\"https://tenant-a.maclaw.top\"}"}`))
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       hub.URL + "/",
+		RemoteViewerToken:  "viewer-token",
+		RemoteMachineID:    "m_123",
+		RemoteMachineToken: "mt_123",
+		RemoteEmail:        "phone:19900001111",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	session, err := app.CreateMobileAuthDesktopQRSession()
+	if err != nil {
+		t.Fatalf("CreateMobileAuthDesktopQRSession: %v", err)
+	}
+
+	if seenAuth != "Bearer viewer-token" {
+		t.Fatalf("Authorization = %q, want viewer bearer token", seenAuth)
+	}
+	if session.SessionID != "maqr_test" || !strings.Contains(session.QRPayload, "maclaw_mobile_desktop_authorization") {
+		t.Fatalf("session = %#v, want mobile auth QR session payload", session)
+	}
+}
+
+func TestCreateMobileAuthDesktopQRSessionRequiresBoundPhone(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       "https://hub.example.com",
+		RemoteViewerToken:  "viewer-token",
+		RemoteMachineID:    "m_123",
+		RemoteMachineToken: "mt_123",
+		RemoteEmail:        "dev@example.com",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	_, err := app.CreateMobileAuthDesktopQRSession()
+	if err == nil || !strings.Contains(err.Error(), "requires a bound phone number") {
+		t.Fatalf("error = %v, want bound phone requirement", err)
+	}
+}

@@ -270,6 +270,17 @@ def run_preflight(
     else:
         results = records_dir_validator(resolved_records_dir)
         invalid = [result for result in results if result.errors]
+        blocking_invalid = [
+            result
+            for result in invalid
+            if not validate_qa_build_records_dir.record_is_known_out_of_scope(
+                result.path,
+                scope,
+            )
+        ]
+        out_of_scope_invalid = [
+            result for result in invalid if result not in blocking_invalid
+        ]
         valid = [result.path for result in results if not result.errors]
         in_scope_valid = [
             path
@@ -279,9 +290,9 @@ def run_preflight(
         out_of_scope_valid = [
             path for path in valid if path not in in_scope_valid
         ]
-        if invalid:
+        if blocking_invalid:
             details: list[str] = []
-            for result in invalid:
+            for result in blocking_invalid:
                 details.append(f"{result.path}:")
                 details.extend(f"  - {error}" for error in result.errors)
             checks.append(_blocker("Existing QA build records", details))
@@ -289,6 +300,8 @@ def run_preflight(
             detail = f"{len(in_scope_valid)} in-scope completed record(s) already validate"
             if out_of_scope_valid:
                 detail += f"; {len(out_of_scope_valid)} out-of-scope record(s) ignored for {_scope_label(scope)} preflight"
+            if out_of_scope_invalid:
+                detail += f"; {len(out_of_scope_invalid)} out-of-scope invalid record(s) ignored for {_scope_label(scope)} preflight"
             checks.append(_ok("Existing QA build records", detail))
         else:
             if has_preflight_blockers:
@@ -314,6 +327,13 @@ def run_preflight(
             if out_of_scope_valid:
                 detail = (
                     f"{len(out_of_scope_valid)} out-of-scope completed record(s) already validate; "
+                    f"create an in-scope {_scope_label(scope)} QA record. "
+                    + detail
+                )
+            if out_of_scope_invalid:
+                detail = (
+                    f"{len(out_of_scope_invalid)} out-of-scope invalid record(s) ignored for "
+                    f"{_scope_label(scope)} preflight; "
                     f"create an in-scope {_scope_label(scope)} QA record. "
                     + detail
                 )

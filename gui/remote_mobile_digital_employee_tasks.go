@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -216,12 +217,20 @@ func buildMobileDigitalEmployeeExecutionPrompt(task mobileDigitalEmployeeTask) s
 	b.WriteString("\n")
 	if len(task.Context) > 0 {
 		b.WriteString("Context:\n")
-		for key, value := range task.Context {
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
+		keys := make([]string, 0, len(task.Context))
+		contextValues := make(map[string]string, len(task.Context))
+		for rawKey, rawValue := range task.Context {
+			key := strings.TrimSpace(rawKey)
+			value := strings.TrimSpace(rawValue)
 			if key == "" || value == "" {
 				continue
 			}
+			contextValues[key] = value
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value := contextValues[key]
 			b.WriteString("- ")
 			b.WriteString(key)
 			b.WriteString(": ")

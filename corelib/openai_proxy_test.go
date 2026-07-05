@@ -686,6 +686,93 @@ func TestHandleChatCompletions_AcceptsNonV1ChatPath(t *testing.T) {
 	}
 }
 
+func TestHandleChatCompletions_ReportsUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"test-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":3},"cache_creation_input_tokens":5}}`)
+	}))
+	defer upstream.Close()
+
+	var got OpenAIProxyUsage
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL:               upstream.URL,
+		Key:               "sk-test",
+		Model:             "test-model",
+		UsageCallbackSync: true,
+		UsageCallback: func(usage OpenAIProxyUsage) {
+			got = usage
+		},
+	})
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	body := `{"model":"ignored","messages":[{"role":"user","content":"hello"}]}`
+	resp, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, data)
+	}
+	if got.InputTokens != 11 || got.OutputTokens != 7 || got.CachedInputTokens != 3 || got.CacheWriteTokens != 5 || got.Estimated {
+		t.Fatalf("usage = %#v", got)
+	}
+}
+
+func TestOpenAIProxyRecordUsageSyncRecoversPanic(t *testing.T) {
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		UsageCallbackSync: true,
+		UsageCallback: func(OpenAIProxyUsage) {
+			panic("boom")
+		},
+	})
+
+	p.recordUsage(
+		map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}},
+		[]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`),
+		http.StatusOK,
+	)
+}
+
+func TestOpenAIProxyUsageFromResponse_TotalOnlyDoesNotOvercount(t *testing.T) {
+	got := openAIProxyUsageFromResponse(
+		map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}},
+		[]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"total_tokens":18}}`),
+	)
+	if got.InputTokens != 18 || got.OutputTokens != 0 || got.Estimated {
+		t.Fatalf("usage = %#v", got)
+	}
+}
+
+func TestOpenAIProxyFlattenText_FallsBackToJSONForSchemas(t *testing.T) {
+	text := openAIProxyFlattenText(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"city": map[string]interface{}{"type": "string", "description": "city name"},
+		},
+		"required": []interface{}{"city"},
+	})
+	if !strings.Contains(text, "properties") || !strings.Contains(text, "city") {
+		t.Fatalf("flattened schema = %q", text)
+	}
+}
+
+func TestOpenAIProxyUsageFromResponse_PromptDetailsCacheWrite(t *testing.T) {
+	got := openAIProxyUsageFromResponse(
+		map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}},
+		[]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cache_creation_tokens":4}}}`),
+	)
+	if got.CacheWriteTokens != 4 {
+		t.Fatalf("cache write tokens = %d, want 4; usage=%#v", got.CacheWriteTokens, got)
+	}
+}
+
 func TestHandleResponses_ConvertsToChatAndBack(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

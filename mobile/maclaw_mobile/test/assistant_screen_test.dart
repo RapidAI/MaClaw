@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
+import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/core/settings/app_preferences.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
@@ -90,16 +91,112 @@ class _FakeSearchApiClient extends ApiClient {
   Future<SearchAnswer> search(String query) async {
     queries.add(query);
     return SearchAnswer(
-      answer: '移动查询结果：$query',
+      answer: '移动助手回答：$query',
       citations: const [
         SearchCitation(
           title: '官方服务来源',
           url: 'https://hubs.mypapers.top/status',
-          snippet: '来自 MaClaw 官方服务的联网搜索结果。',
+          snippet: '来自 MaClaw 官方服务的助手联网结果。',
         ),
       ],
     );
   }
+}
+
+class _AssistantDisabledSessionController extends SessionController {
+  @override
+  Future<SessionState> build() async => const SessionState.signedIn(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: MobileBootstrap(
+          user: MobileUser(
+            userId: 'u1',
+            email: '',
+            tenantId: 'tenant-a',
+          ),
+          services: MobileServices(
+            hubStatus: 'online',
+            llmStatus: 'available',
+            searchStatus: 'disabled',
+            documentsStatus: 'available',
+            digitalEmployeesStatus: 'available',
+            llmStatusPath: '/api/llm/status',
+            modelsPath: '/api/llm/models',
+            searchPath: '',
+            documentsPath: '/api/mobile/documents',
+            digitalEmployeesPath: '/api/mobile/digital-employees',
+            realtimePath: '/api/mobile/realtime',
+          ),
+          connection: MobileConnection(
+            hubCenterCandidates: [
+              'https://hubs.mypapers.top',
+              'https://hubs.maclaw.top',
+              'https://hubs2.maclaw.top',
+            ],
+            selectedHubCenterUrl: 'https://hubs.mypapers.top',
+            hubUrl: 'https://tenant-a.maclaw.top',
+            hubId: 'hub-a',
+            tenantId: 'tenant-a',
+          ),
+          features: MobileFeatures(
+            search: false,
+            documents: true,
+            localSsh: true,
+            digitalEmployees: true,
+            pushNotifications: false,
+          ),
+          limits: MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+        ),
+      );
+}
+
+class _AssistantEnabledSessionController extends SessionController {
+  @override
+  Future<SessionState> build() async => SessionState.signedIn(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: _assistantTestBootstrap(searchEnabled: true),
+      );
+}
+
+MobileBootstrap _assistantTestBootstrap({required bool searchEnabled}) {
+  return MobileBootstrap(
+    user: const MobileUser(
+      userId: 'u1',
+      email: '',
+      tenantId: 'tenant-a',
+    ),
+    services: MobileServices(
+      hubStatus: 'online',
+      llmStatus: 'available',
+      searchStatus: searchEnabled ? 'available' : 'disabled',
+      documentsStatus: 'available',
+      digitalEmployeesStatus: 'available',
+      llmStatusPath: '/api/llm/status',
+      modelsPath: '/api/llm/models',
+      searchPath: searchEnabled ? '/api/mobile/search' : '',
+      documentsPath: '/api/mobile/documents',
+      digitalEmployeesPath: '/api/mobile/digital-employees',
+      realtimePath: '/api/mobile/realtime',
+    ),
+    connection: const MobileConnection(
+      hubCenterCandidates: [
+        'https://hubs.mypapers.top',
+        'https://hubs.maclaw.top',
+        'https://hubs2.maclaw.top',
+      ],
+      selectedHubCenterUrl: 'https://hubs.mypapers.top',
+      hubUrl: 'https://tenant-a.maclaw.top',
+      hubId: 'hub-a',
+      tenantId: 'tenant-a',
+    ),
+    features: MobileFeatures(
+      search: searchEnabled,
+      documents: true,
+      localSsh: true,
+      digitalEmployees: true,
+      pushNotifications: false,
+    ),
+    limits: const MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+  );
 }
 
 class _RecordingDocumentsController extends DocumentsController {
@@ -222,7 +319,7 @@ void main() {
   });
 
   test('assistant export markdown redacts common secrets', () {
-    final markdown = assistantSearchResultMarkdown(
+    final markdown = assistantAnswerMarkdown(
       query: 'check outage token: query-secret',
       answer: 'service ok\nAuthorization: Bearer answer-secret',
       citations: const [
@@ -263,7 +360,7 @@ void main() {
     expect(citation, isNot(contains('citation-secret')));
   });
 
-  test('assistant search history redacts query and answer secrets', () async {
+  test('assistant history redacts query and answer secrets', () async {
     final store = _FakeHistoryStore([]);
     final container = ProviderContainer(
       overrides: [
@@ -309,7 +406,7 @@ void main() {
     );
   });
 
-  testWidgets('assistant screen searches shared links automatically',
+  testWidgets('assistant screen handles shared links automatically',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     _RecordingAssistantSearchController.queries.clear();
@@ -325,6 +422,9 @@ void main() {
           mobileLocalStoreProvider.overrideWithValue(store),
           mobileSharedIntentProvider.overrideWith(
             _InitialAssistantSharedIntentController.new,
+          ),
+          sessionControllerProvider.overrideWith(
+            _AssistantEnabledSessionController.new,
           ),
           assistantSearchProvider.overrideWith(
             _RecordingAssistantSearchController.new,
@@ -345,13 +445,13 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_RecordingAssistantSearchController.queries, hasLength(1));
     expect(
       _RecordingAssistantSearchController.queries.single,
-      '请联网查证并总结这个链接，保留来源引用：https://example.com/incident',
+      '请交给 MaClaw AI 助手处理这个链接，保留来源引用：https://example.com/incident',
     );
     final container = ProviderScope.containerOf(
       tester.element(find.byType(AssistantScreen)),
@@ -381,6 +481,9 @@ void main() {
           mobileSharedIntentProvider.overrideWith(
             _MixedTextLinkSharedIntentController.new,
           ),
+          sessionControllerProvider.overrideWith(
+            _AssistantEnabledSessionController.new,
+          ),
           assistantSearchProvider.overrideWith(
             _RecordingAssistantSearchController.new,
           ),
@@ -400,7 +503,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_RecordingAssistantSearchController.queries, hasLength(1));
@@ -425,7 +528,8 @@ void main() {
     );
   });
 
-  testWidgets('assistant screen exposes mobile lookup actions', (tester) async {
+  testWidgets('assistant screen exposes GUI-like AI assistant actions',
+      (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     addTearDown(store.close);
 
@@ -451,12 +555,158 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('查信息'), findsOneWidget);
-    expect(find.byTooltip('语音提问'), findsOneWidget);
-    expect(find.text('要查什么？'), findsOneWidget);
-    expect(find.text('联网查询'), findsOneWidget);
+    expect(find.text('AI助手'), findsOneWidget);
+    expect(
+      find.text(
+        '类似 MaClaw GUI 的多对话 AI 助手，可文字或语音输入，也可接入截图、文件、服务器日志和数字员工能力。',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('开始语音输入'), findsOneWidget);
+    expect(find.byTooltip('语音输入'), findsOneWidget);
+    expect(find.text('问 MaClaw AI 助手'), findsOneWidget);
+    expect(
+      find.text('支持普通对话、助手联网、文档处理、日志排障和应急操作草案。'),
+      findsOneWidget,
+    );
+    expect(find.text('MaClaw AI 助手'), findsOneWidget);
+    expect(
+      find.text('像电脑端一样用自然语言发起多轮对话；手机端重点支持语音、截图、文件、服务器日志和应急排障。'),
+      findsOneWidget,
+    );
+    expect(find.text('语音输入'), findsOneWidget);
+    expect(find.text('自由对话'), findsOneWidget);
+    expect(find.text('助手联网'), findsWidgets);
+    expect(find.text('截图提问'), findsOneWidget);
+    expect(find.text('远程排障'), findsOneWidget);
+    expect(find.text('文档草稿'), findsWidgets);
+    expect(find.text('日志排障'), findsOneWidget);
+    expect(find.text('发送给 AI 助手'), findsOneWidget);
     expect(find.byTooltip('拍照提问'), findsOneWidget);
     expect(find.byTooltip('导入截图或文件'), findsOneWidget);
+  });
+
+  testWidgets('assistant quick prompts fill the mobile query field',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('日志排障'));
+    await tester.pump();
+
+    final queryField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+    );
+    expect(queryField.controller?.text, contains('服务器日志'));
+    expect(queryField.controller?.text, contains('人工确认'));
+  });
+
+  testWidgets(
+      'assistant disables sending when Hub assistant access is unavailable',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    _FakeSearchApiClient.queries.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(_FakeSearchApiClient()),
+          sessionControllerProvider.overrideWith(
+            _AssistantDisabledSessionController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      '帮我查服务状态',
+    );
+    await tester.pump();
+
+    expect(find.textContaining('当前 Hub 未启用助手联网能力'), findsOneWidget);
+    final sendButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '发送给 AI 助手'),
+    );
+    expect(sendButton.onPressed, isNull);
+    expect(_FakeSearchApiClient.queries, isEmpty);
+  });
+
+  testWidgets('shared assistant links respect disabled Hub assistant access',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    _FakeSearchApiClient.queries.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(_FakeSearchApiClient()),
+          sessionControllerProvider.overrideWith(
+            _AssistantDisabledSessionController.new,
+          ),
+          mobileSharedIntentProvider.overrideWith(
+            _InitialAssistantSharedIntentController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(_FakeSearchApiClient.queries, isEmpty);
+    expect(find.textContaining('当前 Hub 未启用助手联网能力'), findsWidgets);
+    expect(find.textContaining('https://example.com/incident'), findsWidgets);
   });
 
   testWidgets('assistant supports a primary tab and secondary tabs',
@@ -492,7 +742,7 @@ void main() {
     expect(find.text('副对话 1'), findsOneWidget);
 
     await tester.enterText(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
       '副对话里的应急问题',
     );
     await tester.pump();
@@ -502,19 +752,20 @@ void main() {
     await tester.tap(find.text('主对话'));
     await tester.pump();
     var queryField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
     );
     expect(queryField.controller?.text, isEmpty);
 
     await tester.tap(find.textContaining('副对话里的应'));
     await tester.pump();
     queryField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
     );
     expect(queryField.controller?.text, '副对话里的应急问题');
   });
 
-  testWidgets('assistant tabs keep independent search results', (tester) async {
+  testWidgets('assistant tabs keep independent assistant results',
+      (tester) async {
     final store = _FakeHistoryStore([]);
     _FakeSearchApiClient.queries.clear();
     tester.view.physicalSize = const Size(1200, 2200);
@@ -546,12 +797,12 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
       'main incident',
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('联网查询'));
-    await tester.tap(find.text('联网查询'));
+    await tester.ensureVisible(find.text('发送给 AI 助手'));
+    await tester.tap(find.text('发送给 AI 助手'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.textContaining('main incident'), findsWidgets);
@@ -559,34 +810,34 @@ void main() {
     await tester.tap(find.byIcon(Icons.add));
     await tester.pump();
     await tester.enterText(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
       'secondary incident',
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('联网查询'));
-    await tester.tap(find.text('联网查询'));
+    await tester.ensureVisible(find.text('发送给 AI 助手'));
+    await tester.tap(find.text('发送给 AI 助手'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.textContaining('secondary incident'), findsWidgets);
-    expect(find.text('移动查询结果：secondary incident'), findsNWidgets(2));
+    expect(find.text('移动助手回答：secondary incident'), findsNWidgets(2));
 
     await tester.ensureVisible(find.text('主对话'));
     await tester.tap(find.text('主对话'));
     await tester.pumpAndSettle();
     expect(find.textContaining('main incident'), findsWidgets);
-    expect(find.text('移动查询结果：secondary incident'), findsOneWidget);
+    expect(find.text('移动助手回答：secondary incident'), findsOneWidget);
 
     await tester.tap(find.textContaining('secondary in').first);
     await tester.pumpAndSettle();
     expect(find.textContaining('secondary incident'), findsWidgets);
-    expect(find.text('移动查询结果：main incident'), findsOneWidget);
+    expect(find.text('移动助手回答：main incident'), findsOneWidget);
     expect(
       _FakeSearchApiClient.queries,
       ['main incident', 'secondary incident'],
     );
   });
 
-  testWidgets('assistant manual lookup uses official API and records history',
+  testWidgets('assistant send uses official API and records history',
       (tester) async {
     final store = _FakeHistoryStore([]);
     _FakeSearchApiClient.queries.clear();
@@ -615,28 +866,30 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-      find.widgetWithText(TextField, '要查什么？'),
+      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
       '查一下 MaClaw 官方移动服务状态',
     );
     await tester.pump();
-    final searchButton = find.text('联网查询');
+    final searchButton = find.text('发送给 AI 助手');
     await tester.ensureVisible(searchButton);
     await tester.tap(searchButton);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_FakeSearchApiClient.queries, ['查一下 MaClaw 官方移动服务状态']);
-    expect(find.text('移动查询结果：查一下 MaClaw 官方移动服务状态'), findsOneWidget);
+    expect(find.text('移动助手回答：查一下 MaClaw 官方移动服务状态'), findsOneWidget);
+    expect(find.text('助手回答'), findsOneWidget);
     expect(find.text('官方服务来源'), findsOneWidget);
     expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
     expect(store.entries, hasLength(1));
     expect(store.entries.single.query, '查一下 MaClaw 官方移动服务状态');
-    expect(store.entries.single.answerPreview, contains('移动查询结果'));
+    expect(store.entries.single.answerPreview, contains('移动助手回答'));
   });
 
-  testWidgets('assistant voice input fills the lookup query', (tester) async {
+  testWidgets('assistant voice input fills the assistant query',
+      (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
-    final voice = _FakeAssistantVoiceInput(text: '帮我查今天的服务器告警');
+    final voice = _FakeAssistantVoiceInput(text: '请 AI 助手分析今天的服务器告警');
     addTearDown(store.close);
 
     await tester.pumpWidget(
@@ -662,12 +915,12 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.byTooltip('语音提问'));
+    await tester.tap(find.byTooltip('开始语音输入'));
     await tester.pump();
 
     expect(voice.localeId, 'zh_CN');
-    expect(find.text('帮我查今天的服务器告警'), findsOneWidget);
-    expect(find.text('正在听写，识别结果会填入输入框'), findsOneWidget);
+    expect(find.text('请 AI 助手分析今天的服务器告警'), findsOneWidget);
+    expect(find.text('正在听写，识别结果会填入 AI 助手输入框'), findsOneWidget);
   });
 
   testWidgets('assistant voice input explains unavailable microphone',
@@ -699,7 +952,7 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.byTooltip('语音提问'));
+    await tester.tap(find.byTooltip('开始语音输入'));
     await tester.pump();
 
     expect(find.text('语音输入不可用，请检查麦克风权限'), findsWidgets);
@@ -990,7 +1243,7 @@ void main() {
 
       expect(
         _RecordingDocumentsController.created.last.title,
-        '信息查询：排查 MaClaw Mobile 官方服务状态',
+        'AI助手：排查 MaClaw Mobile 官方服务状态',
       );
       expect(_RecordingDocumentsController.created.last.template, template);
       expect(
@@ -1051,6 +1304,10 @@ void main() {
         createdAt: now,
       ),
     ]);
+    tester.view.physicalSize = const Size(1200, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(
       ProviderScope(
@@ -1075,10 +1332,11 @@ void main() {
     await tester.pump();
 
     expect(find.text('常用问题'), findsOneWidget);
-    expect(find.text('最近查询'), findsOneWidget);
+    expect(find.text('最近对话'), findsOneWidget);
     expect(find.text('常用：排查 502'), findsOneWidget);
     expect(find.text('临时：天气'), findsOneWidget);
 
+    await tester.ensureVisible(find.byIcon(Icons.cleaning_services_outlined));
     await tester.tap(find.byIcon(Icons.cleaning_services_outlined));
     await tester.pump();
 

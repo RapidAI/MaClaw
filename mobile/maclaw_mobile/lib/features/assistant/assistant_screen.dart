@@ -13,6 +13,7 @@ import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/mobile_shared_intent.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../shared/surface.dart';
+import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
 import 'assistant_controller.dart';
@@ -130,7 +131,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       onText: (text) {
         if (!mounted) return;
         _setQuery(text);
-        setState(() => _voiceStatus = '已识别语音，检查后可联网查询');
+        setState(() => _voiceStatus = '已识别语音，检查后可发送给 AI 助手');
       },
     );
     if (!mounted) return;
@@ -146,7 +147,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
     setState(() {
       _listening = true;
-      _voiceStatus = '正在听写，识别结果会填入输入框';
+      _voiceStatus = '正在听写，识别结果会填入 AI 助手输入框';
     });
   }
 
@@ -202,11 +203,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   void _consumeSharedIntent() {
     final shared = ref.watch(mobileSharedIntentProvider);
+    final session = ref.watch(sessionControllerProvider);
     if (shared == null ||
         !shared.opensAssistant ||
         shared.id == _handledSharedIntentId) {
       return;
     }
+    if (session.isLoading) return;
+    final searchEnabled =
+        session.valueOrNull?.bootstrap?.features.search ?? true;
     _handledSharedIntentId = shared.id;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -225,7 +230,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             .setActiveSharedCitation(citation);
       }
       _setQuery(prompt);
-      ref.read(assistantSearchProvider.notifier).search(prompt);
+      if (searchEnabled) {
+        ref.read(assistantSearchProvider.notifier).search(prompt);
+      }
       ref.read(mobileSharedIntentProvider.notifier).clear(shared.id);
     });
   }
@@ -241,14 +248,21 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final sharedCitation =
         activeTab.sharedCitation ?? ref.watch(assistantSharedCitationProvider);
     final history = ref.watch(searchHistoryProvider);
+    final searchEnabled = ref
+            .watch(sessionControllerProvider)
+            .valueOrNull
+            ?.bootstrap
+            ?.features
+            .search ??
+        true;
     if (_queryController.text != query) {
       _queryController.text = query;
     }
     return ScreenScaffold(
-      title: '查信息',
-      subtitle: '联网搜索、整理来源，把结果转成可分享文本或文档草稿。',
+      title: 'AI助手',
+      subtitle: '类似 MaClaw GUI 的多对话 AI 助手，可文字或语音输入，也可接入截图、文件、服务器日志和数字员工能力。',
       trailing: IconButton.filledTonal(
-        tooltip: '语音提问',
+        tooltip: _listening ? '停止语音输入' : '开始语音输入',
         onPressed: _toggleVoiceInput,
         icon: Icon(_listening ? Icons.mic : Icons.mic_none),
       ),
@@ -282,10 +296,16 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           minLines: 3,
           maxLines: 6,
           onChanged: (value) => _setQuery(value),
-          decoration: const InputDecoration(
-            labelText: '要查什么？',
-            hintText: '例如：总结这个链接的关键事实，保留来源引用',
-            prefixIcon: Icon(Icons.search),
+          decoration: InputDecoration(
+            labelText: '问 MaClaw AI 助手',
+            hintText: '直接输入，或点麦克风用语音告诉 AI 助手要处理什么',
+            helperText: '支持普通对话、助手联网、文档处理、日志排障和应急操作草案。',
+            prefixIcon: const Icon(Icons.auto_awesome_outlined),
+            suffixIcon: IconButton(
+              tooltip: _listening ? '停止语音输入' : '语音输入',
+              onPressed: _toggleVoiceInput,
+              icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+            ),
           ),
         ),
         if (_voiceStatus != null) ...[
@@ -309,15 +329,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             ],
           ),
         ],
+        const SizedBox(height: 10),
+        _AssistantQuickPrompts(onSelect: _setQuery),
+        if (!searchEnabled) ...[
+          const SizedBox(height: 10),
+          const _AssistantSearchUnavailableBanner(),
+        ],
         const SizedBox(height: 12),
         Row(
           children: [
             Expanded(
               child: FilledButton.icon(
-                onPressed:
-                    query.trim().isEmpty ? null : () => _searchManually(query),
-                icon: const Icon(Icons.travel_explore),
-                label: const Text('联网查询'),
+                onPressed: query.trim().isEmpty || !searchEnabled
+                    ? null
+                    : () => _searchManually(query),
+                icon: const Icon(Icons.send_outlined),
+                label: const Text('发送给 AI 助手'),
               ),
             ),
             const SizedBox(width: 10),
@@ -343,14 +370,14 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         const SizedBox(height: 18),
         result.when(
           data: (answer) => answer == null
-              ? const SizedBox.shrink()
-              : _SearchResultCard(
+              ? const _AssistantWorkspaceIntro()
+              : _AssistantAnswerCard(
                   query: query,
                   answer: answer.answer,
                   citations: answer.citations,
                   fallbackCitation: sharedCitation,
                 ),
-          error: (error, _) => _SearchErrorCard(
+          error: (error, _) => _AssistantErrorCard(
             error: error,
             query: query,
           ),
@@ -362,10 +389,180 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           ),
         ),
         const SizedBox(height: 12),
-        _SearchHistoryCard(
+        _AssistantHistoryCard(
           history: history,
           onSelect: _setQuery,
         ),
+      ],
+    );
+  }
+}
+
+class _AssistantWorkspaceIntro extends StatelessWidget {
+  const _AssistantWorkspaceIntro();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.chat_bubble_outline, color: scheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('MaClaw AI 助手', style: textTheme.titleMedium),
+                      const SizedBox(height: 4),
+                      Text(
+                        '像电脑端一样用自然语言发起多轮对话；手机端重点支持语音、截图、文件、服务器日志和应急排障。',
+                        style: textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: const [
+                _AssistantCapabilityChip(
+                  icon: Icons.mic_none,
+                  label: '语音输入',
+                ),
+                _AssistantCapabilityChip(
+                  icon: Icons.travel_explore_outlined,
+                  label: '助手联网',
+                ),
+                _AssistantCapabilityChip(
+                  icon: Icons.image_search_outlined,
+                  label: '截图提问',
+                ),
+                _AssistantCapabilityChip(
+                  icon: Icons.article_outlined,
+                  label: '文档草稿',
+                ),
+                _AssistantCapabilityChip(
+                  icon: Icons.terminal_outlined,
+                  label: '远程排障',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantCapabilityChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _AssistantCapabilityChip({
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Chip(
+      avatar: Icon(icon, size: 18, color: scheme.primary),
+      label: Text(label),
+      side: BorderSide(color: scheme.outlineVariant),
+      backgroundColor: scheme.surface,
+    );
+  }
+}
+
+class _AssistantSearchUnavailableBanner extends StatelessWidget {
+  const _AssistantSearchUnavailableBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer,
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, color: scheme.onSecondaryContainer),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '当前 Hub 未启用助手联网能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSecondaryContainer,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantQuickPrompts extends StatelessWidget {
+  final ValueChanged<String> onSelect;
+
+  const _AssistantQuickPrompts({required this.onSelect});
+
+  static const _prompts = [
+    (
+      label: '自由对话',
+      icon: Icons.chat_bubble_outline,
+      text: '我想和 MaClaw AI 助手讨论一个问题，请先帮我理清思路并追问必要信息。',
+    ),
+    (
+      label: '助手联网',
+      icon: Icons.travel_explore_outlined,
+      text: '请用 MaClaw AI 助手联网核对这件事，列出关键结论和来源引用。',
+    ),
+    (
+      label: '文档草稿',
+      icon: Icons.article_outlined,
+      text: '帮我把下面要点整理成一份可直接发送的应急文档草稿。',
+    ),
+    (
+      label: '日志排障',
+      icon: Icons.terminal_outlined,
+      text: '帮我分析这段服务器日志，先说明风险，再给出需要人工确认的排查命令草案。',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final prompt in _prompts)
+          ActionChip(
+            avatar: Icon(prompt.icon, size: 18),
+            label: Text(prompt.label),
+            tooltip: prompt.text,
+            onPressed: () => onSelect(prompt.text),
+          ),
       ],
     );
   }
@@ -433,11 +630,11 @@ class _AssistantTabStrip extends StatelessWidget {
   }
 }
 
-class _SearchErrorCard extends ConsumerWidget {
+class _AssistantErrorCard extends ConsumerWidget {
   final Object error;
   final String query;
 
-  const _SearchErrorCard({
+  const _AssistantErrorCard({
     required this.error,
     required this.query,
   });
@@ -450,7 +647,7 @@ class _SearchErrorCard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('查询失败：$error'),
+            Text('助手请求失败：$error'),
             const SizedBox(height: 10),
             OutlinedButton.icon(
               onPressed: canRetryAssistantQuery(query)
@@ -458,7 +655,7 @@ class _SearchErrorCard extends ConsumerWidget {
                       ref.read(assistantSearchProvider.notifier).search(query)
                   : null,
               icon: const Icon(Icons.refresh),
-              label: const Text('重试查询'),
+              label: const Text('重新发送'),
             ),
           ],
         ),
@@ -467,11 +664,11 @@ class _SearchErrorCard extends ConsumerWidget {
   }
 }
 
-class _SearchHistoryCard extends ConsumerWidget {
+class _AssistantHistoryCard extends ConsumerWidget {
   final AsyncValue<List<SearchHistoryEntry>> history;
   final ValueChanged<String> onSelect;
 
-  const _SearchHistoryCard({
+  const _AssistantHistoryCard({
     required this.history,
     required this.onSelect,
   });
@@ -483,7 +680,7 @@ class _SearchHistoryCard extends ConsumerWidget {
         padding: const EdgeInsets.all(16),
         child: history.when(
           data: (items) => _buildHistory(context, ref, items),
-          error: (error, _) => Text('搜索历史加载失败：$error'),
+          error: (error, _) => Text('助手历史加载失败：$error'),
           loading: () => const LinearProgressIndicator(),
         ),
       ),
@@ -507,7 +704,7 @@ class _SearchHistoryCard extends ConsumerWidget {
               color: Theme.of(context).colorScheme.primary,
             ),
             const SizedBox(width: 8),
-            Text('搜索历史', style: Theme.of(context).textTheme.titleMedium),
+            Text('助手历史', style: Theme.of(context).textTheme.titleMedium),
             const Spacer(),
             if (items.any((item) => !item.favorite))
               TextButton.icon(
@@ -520,7 +717,7 @@ class _SearchHistoryCard extends ConsumerWidget {
         if (items.isEmpty) ...[
           const SizedBox(height: 8),
           Text(
-            '完成一次联网查询后会保存在这里。',
+            '发送给 AI 助手后的结果会保存在这里。',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
@@ -540,7 +737,7 @@ class _SearchHistoryCard extends ConsumerWidget {
             const SizedBox(height: 8),
             _HistorySectionTitle(
               icon: Icons.schedule,
-              label: '最近查询',
+              label: '最近对话',
               count: recent.length,
             ),
             for (final item in recent)
@@ -560,7 +757,7 @@ class _SearchHistoryCard extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('只保留收藏问题？'),
         content: const Text(
-          '将清理未收藏的搜索历史，已收藏的常用问题会继续保留在本机，方便应急时快速复用。',
+          '将清理未收藏的助手历史，已收藏的常用问题会继续保留在本机，方便应急时快速复用。',
         ),
         actions: [
           TextButton(
@@ -647,13 +844,13 @@ class _HistoryItem extends ConsumerWidget {
   }
 }
 
-class _SearchResultCard extends ConsumerWidget {
+class _AssistantAnswerCard extends ConsumerWidget {
   final String query;
   final String answer;
   final List<SearchCitation> citations;
   final SearchCitation? fallbackCitation;
 
-  const _SearchResultCard({
+  const _AssistantAnswerCard({
     required this.query,
     required this.answer,
     required this.citations,
@@ -675,7 +872,7 @@ class _SearchResultCard extends ConsumerWidget {
               children: [
                 Icon(Icons.fact_check_outlined, color: scheme.primary),
                 const SizedBox(width: 8),
-                Text('查询结果', style: Theme.of(context).textTheme.titleMedium),
+                Text('助手回答', style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 12),
@@ -729,7 +926,7 @@ class _SearchResultCard extends ConsumerWidget {
   }
 
   String _answerMarkdown(List<SearchCitation> mergedCitations) {
-    return assistantSearchResultMarkdown(
+    return assistantAnswerMarkdown(
       query: query,
       answer: answer,
       citations: mergedCitations,
@@ -744,7 +941,7 @@ class _SearchResultCard extends ConsumerWidget {
     await ref.read(assistantClipboardWriterProvider).call(markdown);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('查询结果已复制')),
+      const SnackBar(content: Text('助手回答已复制')),
     );
   }
 
@@ -759,7 +956,7 @@ class _SearchResultCard extends ConsumerWidget {
     );
     if (template == null || !context.mounted) return;
     await ref.read(documentsControllerProvider.notifier).createDraft(
-          title: assistantSearchDraftTitle(query),
+          title: assistantDraftTitle(query),
           template: template,
           content: markdown,
         );
@@ -770,15 +967,15 @@ class _SearchResultCard extends ConsumerWidget {
   }
 }
 
-String assistantSearchDraftTitle(String query) {
+String assistantDraftTitle(String query) {
   final compact = query.replaceAll(RegExp(r'\s+'), ' ').trim();
-  if (compact.isEmpty) return '信息查询整理';
+  if (compact.isEmpty) return 'AI助手整理';
   final title =
       compact.length > 28 ? '${compact.substring(0, 28)}...' : compact;
-  return '信息查询：$title';
+  return 'AI助手：$title';
 }
 
-String assistantSearchResultMarkdown({
+String assistantAnswerMarkdown({
   required String query,
   required String answer,
   required List<SearchCitation> citations,
@@ -806,6 +1003,22 @@ String assistantSearchResultMarkdown({
   }
   return buffer.toString().trimRight();
 }
+
+@Deprecated('Use assistantDraftTitle for the mobile AI assistant workspace.')
+String assistantSearchDraftTitle(String query) => assistantDraftTitle(query);
+
+@Deprecated(
+    'Use assistantAnswerMarkdown for the mobile AI assistant workspace.')
+String assistantSearchResultMarkdown({
+  required String query,
+  required String answer,
+  required List<SearchCitation> citations,
+}) =>
+    assistantAnswerMarkdown(
+      query: query,
+      answer: answer,
+      citations: citations,
+    );
 
 class _CitationTile extends ConsumerWidget {
   final SearchCitation citation;

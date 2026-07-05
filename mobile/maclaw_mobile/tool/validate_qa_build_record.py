@@ -20,6 +20,14 @@ OFFICIAL_HUBCENTER_URLS = [
     "https://hubs.maclaw.top",
     "https://hubs2.maclaw.top",
 ]
+AI_ASSISTANT_QUERY_FIELD = "AI assistant query"
+LEGACY_AI_SEARCH_QUERY_FIELD = "AI search query"
+DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD = "Document draft created from assistant result"
+LEGACY_DOCUMENT_DRAFT_FROM_SEARCH_FIELD = "Document draft created from search"
+FIELD_ALIASES = {
+    LEGACY_AI_SEARCH_QUERY_FIELD: AI_ASSISTANT_QUERY_FIELD,
+    LEGACY_DOCUMENT_DRAFT_FROM_SEARCH_FIELD: DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD,
+}
 RUNNER_BUNDLE_ID = "top.mypapers.maclaw.mobile"
 SHARE_EXTENSION_BUNDLE_ID = "top.mypapers.maclaw.mobile.ShareExtension"
 APP_GROUP = "group.top.mypapers.maclaw.mobile"
@@ -174,11 +182,11 @@ REQUIRED_FIELDS = [
     "Discovered Hub/tenant result",
     "LLM access evidence",
     "LLM setup surface restriction",
-    "AI search query",
+    AI_ASSISTANT_QUERY_FIELD,
     "Voice/photo assistant input evidence",
     "Visible citations / sources",
     "Shared result",
-    "Document draft created from search",
+    DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD,
     "Document upload task ID",
     "PDF export job ID",
     "Word export job ID",
@@ -388,8 +396,8 @@ SCOPED_DUAL_PLATFORM_FIELDS = DUAL_PLATFORM_EVIDENCE_FIELDS | {
     "Device model / OS",
 }
 
-AI_SEARCH_EVIDENCE_FIELDS = {
-    "AI search query",
+AI_ASSISTANT_QUERY_EVIDENCE_FIELDS = {
+    AI_ASSISTANT_QUERY_FIELD,
 }
 
 MOBILE_INPUT_EVIDENCE_FIELDS = {
@@ -405,7 +413,7 @@ SHARED_RESULT_EVIDENCE_FIELDS = {
 }
 
 DOCUMENT_DRAFT_EVIDENCE_FIELDS = {
-    "Document draft created from search",
+    DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD,
 }
 
 SIGNED_INSTALL_RESULT_FIELDS = {
@@ -563,11 +571,11 @@ MANUAL_EVIDENCE_FIELDS = {
     "Discovered Hub/tenant result",
     "LLM access evidence",
     "LLM setup surface restriction",
-    "AI search query",
+    AI_ASSISTANT_QUERY_FIELD,
     "Voice/photo assistant input evidence",
     "Visible citations / sources",
     "Shared result",
-    "Document draft created from search",
+    DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD,
     "Exported document share evidence",
     "Status polling result",
     "Realtime update evidence",
@@ -660,6 +668,7 @@ def parse_record(text: str) -> dict[str, list[str]]:
             value = value.strip()
         if not key:
             continue
+        key = FIELD_ALIASES.get(key, key)
         values.setdefault(key, []).append(value)
     return values
 
@@ -1023,6 +1032,7 @@ def _is_ai_search_query_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
         _is_auditable_note(value)
+        and "assistant" in normalized
         and any(
             marker in normalized
             for marker in ("query", "question", "search", "asked", "prompt", "?")
@@ -1113,7 +1123,8 @@ def _is_document_draft_from_search_evidence(value: str) -> bool:
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("draft", "document", "template"))
-        and any(marker in normalized for marker in ("search", "citation", "source", "assistant"))
+        and "assistant" in normalized
+        and any(marker in normalized for marker in ("result", "answer", "citation", "source"))
         and DOCUMENT_DRAFT_ID_RE.search(value) is not None
         and all(marker in normalized for marker in DOCUMENT_TEMPLATE_MARKERS)
     )
@@ -1205,7 +1216,11 @@ def _is_local_work_records_reset_evidence(value: str) -> bool:
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("clear", "cleared", "reset", "deleted"))
         and any(marker in normalized for marker in ("local work", "work records", "cache"))
-        and "search" in normalized
+        and (
+            "assistant history" in normalized
+            or "assistant conversation history" in normalized
+            or "search history" in normalized
+        )
         and any(marker in normalized for marker in ("document", "draft"))
         and "command" in normalized
         and "digital employee" in normalized
@@ -1346,7 +1361,19 @@ def _is_network_recovery_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("offline", "unavailable", "unreachable", "不可用", "不可达"))
         and any(marker in normalized for marker in ("recover", "recovered", "online", "reachable", "restored", "恢复", "可达"))
         and any(marker in normalized for marker in ("hubcenter", "hub center", "network", "网络"))
-        and any(marker in normalized for marker in ("search", "document", "export", "digital employee", "realtime"))
+        and any(
+            marker in normalized
+            for marker in (
+                "assistant online",
+                "ai assistant",
+                "assistant",
+                "search",  # legacy QA records before the mobile AI assistant wording.
+                "document",
+                "export",
+                "digital employee",
+                "realtime",
+            )
+        )
     )
 
 
@@ -1402,13 +1429,23 @@ def _is_llm_access_evidence(value: str) -> bool:
 
 def _is_llm_setup_restriction_evidence(value: str) -> bool:
     normalized = value.strip().lower()
+    has_phone_login = (
+        "phone" in normalized
+        or "手机号" in normalized
+        or "mobile number" in normalized
+    ) and any(marker in normalized for marker in ("login", "sign in", "registration", "注册", "登录"))
+    has_settings_qr = (
+        any(marker in normalized for marker in ("account", "settings", "我的", "设置"))
+        and any(marker in normalized for marker in ("desktop gui", "qr"))
+    )
     return (
         _is_auditable_note(value)
         and "llm" in normalized
         and any(marker in normalized for marker in ("setup", "configuration", "config", "配置"))
-        and any(marker in normalized for marker in ("redemption", "兑换码", "official service", "maclaw official"))
-        and any(marker in normalized for marker in ("desktop gui", "qr"))
+        and has_phone_login
+        and has_settings_qr
         and any(marker in normalized for marker in ("no arbitrary", "does not accept", "no custom", "not exposed", "absent"))
+        and "redemption" in normalized
         and any(marker in normalized for marker in ("endpoint", "base url", "api key", "provider url", "third-party endpoint"))
     )
 
@@ -2010,10 +2047,10 @@ def missing_required_fields(
             _is_share_document_evidence(value, markers) for value in field_values
         ):
             missing.append(f"{field} must describe document import/upload share-to-app evidence")
-    for field in sorted(AI_SEARCH_EVIDENCE_FIELDS):
+    for field in sorted(AI_ASSISTANT_QUERY_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_ai_search_query_evidence(value) for value in field_values):
-            missing.append(f"{field} must include the actual AI search query or question")
+            missing.append(f"{field} must include the actual AI assistant query or question")
     for field in sorted(MOBILE_INPUT_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_mobile_input_evidence(value) for value in field_values):
@@ -2034,7 +2071,7 @@ def missing_required_fields(
             _is_document_draft_from_search_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe search-result draft creation for every document template"
+                f"{field} must describe assistant-result draft creation for every document template"
             )
     for field in sorted(SIGNED_INSTALL_RESULT_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2191,7 +2228,7 @@ def missing_required_fields(
             _is_llm_setup_restriction_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe official redemption or desktop GUI QR only, with no arbitrary third-party endpoint fields"
+                f"{field} must describe phone login plus optional account/settings desktop GUI QR only, with no redemption-code or arbitrary third-party endpoint fields"
             )
     for field in sorted(LOGIN_RESULT_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2550,25 +2587,25 @@ def missing_required_fields(
         for value in values.get("Visible citations / sources", [])
         for url in _listed_https_urls(value)
     ]
-    ai_search_values = [value for value in values.get("AI search query", []) if value]
-    if citation_urls and ai_search_values and not all(
+    ai_assistant_query_values = [value for value in values.get(AI_ASSISTANT_QUERY_FIELD, []) if value]
+    if citation_urls and ai_assistant_query_values and not all(
         _mentions_any_trackable_id(value, citation_urls)
-        for value in ai_search_values
+        for value in ai_assistant_query_values
     ):
-        missing.append("AI search query must reference a recorded citation URL")
+        missing.append("AI assistant query must reference a recorded citation URL")
     if citation_urls and shared_result_values and not all(
         _mentions_any_trackable_id(value, citation_urls)
         for value in shared_result_values
     ):
         missing.append("Shared result must reference a recorded citation URL")
     document_draft_values = [
-        value for value in values.get("Document draft created from search", []) if value
+        value for value in values.get(DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD, []) if value
     ]
     if citation_urls and document_draft_values and not all(
         _mentions_any_trackable_id(value, citation_urls)
         for value in document_draft_values
     ):
-        missing.append("Document draft created from search must reference a recorded citation URL")
+        missing.append("Document draft created from assistant result must reference a recorded citation URL")
     status_values = [value for value in values.get("Status polling result", []) if value]
     if task_ids and status_values and not all(
         _mentions_any_trackable_id(value, task_ids) for value in status_values

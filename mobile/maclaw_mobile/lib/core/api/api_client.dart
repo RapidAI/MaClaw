@@ -61,6 +61,11 @@ class ApiClient {
     String qrPayload,
   ) async {
     final payload = parseMaclawDesktopLlmQrPayload(qrPayload);
+    if (payload.type != maclawMobileLlmAuthorizationType) {
+      throw const FormatException(
+        'Desktop LLM QR authorization requires an LLM authorization session.',
+      );
+    }
     if (payload.hubUrl.isNotEmpty && !sameOrigin(payload.hubUrl, _hubUrl)) {
       throw UnsupportedError(
         'Desktop LLM QR authorization must belong to the current MaClaw Hub.',

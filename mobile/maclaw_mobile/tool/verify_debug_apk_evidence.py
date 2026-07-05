@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 DEFAULT_APK_PATH = Path("build/app/outputs/flutter-apk/app-debug.apk")
+DEFAULT_CI_ARTIFACT_NAME = "maclaw-mobile-debug-apk"
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class DebugApkEvidence:
     artifact: Path
     size: int
     sha256: str
+    ci_artifact_name: str
 
 
 def mobile_root() -> Path:
@@ -49,10 +51,15 @@ def parse_debug_apk_evidence(text: str) -> DebugApkEvidence:
         re.search(r"(?m)^  - SHA256: `(?P<value>[0-9A-Fa-f]{64})`\.?$", body),
         "SHA256",
     )
+    ci_artifact_name = _required_group(
+        re.search(r"(?m)^  - CI artifact name: `(?P<value>[^`]+)`\.?$", body),
+        "CI artifact name",
+    )
     return DebugApkEvidence(
         artifact=Path(artifact),
         size=int(size_text),
         sha256=sha256.upper(),
+        ci_artifact_name=ci_artifact_name,
     )
 
 
@@ -118,6 +125,11 @@ def verify_debug_apk_evidence(root: Path, evidence_path: Path) -> list[str]:
     if actual_sha != evidence.sha256:
         errors.append(
             f"Debug APK SHA256 mismatch: evidence={evidence.sha256} actual={actual_sha}"
+        )
+    if evidence.ci_artifact_name != DEFAULT_CI_ARTIFACT_NAME:
+        errors.append(
+            "Debug APK CI artifact name mismatch: "
+            f"evidence={evidence.ci_artifact_name} expected={DEFAULT_CI_ARTIFACT_NAME}"
         )
 
     return errors

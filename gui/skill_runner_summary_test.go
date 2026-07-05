@@ -6,6 +6,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSummarizeSkillRun_PopulatesCurrentAndLastStep(t *testing.T) {
@@ -101,6 +104,86 @@ func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
 	}
 	if status.Summary.NeedsArtifactVerification {
 		t.Fatalf("expected no pending verification, got %#v", status.Summary)
+	}
+}
+
+func TestFinalizeRunOutcomeTreatsVerifiedArtifactAsSuccess(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "translated.pdf")
+	if err := os.WriteFile(outputPath, []byte("%PDF translated"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-artifact-timeout",
+		Skill:          "paper_pdf_translator",
+		Status:         skillRunStatusRunning,
+		ExpectedOutput: outputPath,
+		StartedAt:      time.Now().Add(-time.Minute).Format(time.RFC3339),
+		Error:          "step 1 (bash) failed: timeout",
+		Steps: []StepResult{{
+			Index:   0,
+			Action:  "bash",
+			Status:  skillStepStatusFailed,
+			Error:   "timeout",
+			Timeout: true,
+			Output:  "Output: " + outputPath,
+		}},
+	}}
+
+	runner.finalizeRunOutcome(run, skillRunStatusFailed, time.Now())
+
+	if run.status.Status != skillRunStatusSuccess {
+		t.Fatalf("Status = %q, want success", run.status.Status)
+	}
+	if run.status.Error != "" {
+		t.Fatalf("Error = %q, want cleared", run.status.Error)
+	}
+	if len(run.status.Warnings) == 0 || !strings.Contains(run.status.Warnings[0], "expected artifact") {
+		t.Fatalf("Warnings = %#v, want artifact warning", run.status.Warnings)
+	}
+}
+
+func TestEffectiveSkillGlobalTimeoutUsesMaxForMaclawAppRuns(t *testing.T) {
+	runner := NewSkillRunner(nil)
+	run := &skillRun{
+		status: SkillRunStatus{Skill: "paper_pdf_translator"},
+		runArgs: map[string]interface{}{
+			"_maclaw_app": "true",
+			"app_name":    "PDF\u7ffb\u8bd1\u5de5\u5177",
+			"input":       filepath.Join(t.TempDir(), "paper.pdf"),
+			"output":      filepath.Join(t.TempDir(), "paper.zh.pdf"),
+			"output_mode": "pdf",
+		},
+	}
+
+	if got := runner.effectiveSkillGlobalTimeoutSec(run, &corelib.NLSkillEntry{Name: "paper_pdf_translator", GlobalTimeout: corelib.DefaultSkillRunnerTimeoutSec}); got != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("effectiveSkillGlobalTimeoutSec() = %d, want %d", got, corelib.MaxSkillRunnerTimeoutSec)
+	}
+	run.runArgs["global_timeout"] = "14400"
+	if got := runner.effectiveSkillGlobalTimeoutSec(run, &corelib.NLSkillEntry{Name: "paper_pdf_translator"}); got != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("effectiveSkillGlobalTimeoutSec(global_timeout) = %d, want %d", got, corelib.MaxSkillRunnerTimeoutSec)
+	}
+	if got := runner.applyEffectiveSkillGlobalTimeoutSec(run, &corelib.NLSkillEntry{Name: "paper_pdf_translator"}); got != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("applyEffectiveSkillGlobalTimeoutSec() = %d, want %d", got, corelib.MaxSkillRunnerTimeoutSec)
+	}
+	if got := runner.runDefaultTimeoutSec(run); got != corelib.MaxSkillRunnerTimeoutSec {
+		t.Fatalf("runDefaultTimeoutSec() after apply = %d, want %d", got, corelib.MaxSkillRunnerTimeoutSec)
+	}
+}
+
+func TestEffectiveSkillGlobalTimeoutDoesNotTreatOutputModeAsAppRun(t *testing.T) {
+	runner := NewSkillRunner(nil)
+	run := &skillRun{
+		status: SkillRunStatus{Skill: "generic_converter"},
+		runArgs: map[string]interface{}{
+			"input":       filepath.Join(t.TempDir(), "paper.pdf"),
+			"output":      filepath.Join(t.TempDir(), "paper.txt"),
+			"output_mode": "txt",
+		},
+	}
+
+	if got := runner.effectiveSkillGlobalTimeoutSec(run, &corelib.NLSkillEntry{Name: "generic_converter"}); got != corelib.DefaultSkillRunnerTimeoutSec {
+		t.Fatalf("effectiveSkillGlobalTimeoutSec() = %d, want default %d", got, corelib.DefaultSkillRunnerTimeoutSec)
 	}
 }
 
@@ -230,6 +313,380 @@ func TestMaterializeStdoutToExpectedOutputFindsTrailingJSONArtifactFile(t *testi
 	}
 }
 
+func TestMaterializeStdoutToExpectedOutputAllowsRunnerTrailerAfterJSON(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	expectedPath := filepath.Join(dir, "paper_output.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated with trailer"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-json-artifact-with-trailer",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "shell: cmd.exe\nelapsed: 1s\n───────────────\n" +
+				"{\"ok\":true,\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}\n" +
+				"[stderr] [PaperTranslator] translated 2 pages",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	got, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("ReadFile(expected) error = %v", err)
+	}
+	if string(got) != "%PDF translated with trailer" {
+		t.Fatalf("expected copied artifact bytes, got %q", string(got))
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputAllowsTextAfterJSON(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated with parser trailer"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}\n" +
+		"elapsed: 2m1s\ncommand: post-processing summary"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputHandlesBracesInJSONString(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated with brace text"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "progress before json\n" +
+		"{\"ok\":true,\"message\":\"kept literal {brace} text\",\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}\n" +
+		"runner trailer"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsArtifactObjectPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from artifact object"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "logs before result\n" +
+		"{\"ok\":true,\"artifact\":{\"path\":\"" + filepath.ToSlash(sourcePath) + "\"}}\n" +
+		"runner trailer"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsArtifactStringPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from artifact string"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"artifact\":\"" + filepath.ToSlash(sourcePath) + "\"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputPrefersExplicitArtifactOverFiles(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "paper.pdf")
+	outputPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(inputPath, []byte("%PDF original"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("%PDF translated"), 0o644); err != nil {
+		t.Fatalf("WriteFile(output) error = %v", err)
+	}
+
+	content := "{\"ok\":true," +
+		"\"files\":[\"" + filepath.ToSlash(inputPath) + "\"]," +
+		"\"artifact\":{\"path\":\"" + filepath.ToSlash(outputPath) + "\"}" +
+		"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, outputPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want explicit artifact %q", got, outputPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsOutputPath(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "paper.pdf")
+	outputPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(inputPath, []byte("%PDF original"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("%PDF translated from output_path"), 0o644); err != nil {
+		t.Fatalf("WriteFile(output) error = %v", err)
+	}
+
+	content := "{\"ok\":true," +
+		"\"files\":[\"" + filepath.ToSlash(inputPath) + "\"]," +
+		"\"output_path\":\"" + filepath.ToSlash(outputPath) + "\"" +
+		"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, outputPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want output_path %q", got, outputPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputDoesNotFallbackToInputWhenExplicitOutputMismatches(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "paper.pdf")
+	textOutputPath := filepath.Join(dir, "paper.txt")
+	if err := os.WriteFile(inputPath, []byte("%PDF original"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+	if err := os.WriteFile(textOutputPath, []byte("translated text sidecar"), 0o644); err != nil {
+		t.Fatalf("WriteFile(text output) error = %v", err)
+	}
+
+	content := "{\"ok\":true," +
+		"\"files\":[\"" + filepath.ToSlash(inputPath) + "\"]," +
+		"\"output_path\":\"" + filepath.ToSlash(textOutputPath) + "\"" +
+		"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); got != "" {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want empty instead of falling back to input PDF", got)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputDoesNotFallbackToInputWhenExplicitOutputMissing(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "paper.pdf")
+	missingOutputPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(inputPath, []byte("%PDF original"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+
+	content := "{\"ok\":true," +
+		"\"files\":[\"" + filepath.ToSlash(inputPath) + "\"]," +
+		"\"output_path\":\"" + filepath.ToSlash(missingOutputPath) + "\"" +
+		"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); got != "" {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want empty instead of falling back to input PDF", got)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsNestedResultOutputPath(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "paper.pdf")
+	outputPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(inputPath, []byte("%PDF original"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("%PDF translated from nested result output_path"), 0o644); err != nil {
+		t.Fatalf("WriteFile(output) error = %v", err)
+	}
+
+	content := "{\"ok\":true," +
+		"\"files\":[\"" + filepath.ToSlash(inputPath) + "\"]," +
+		"\"result\":{\"output_path\":\"" + filepath.ToSlash(outputPath) + "\"}" +
+		"}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, outputPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want nested result output_path %q", got, outputPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsFileObjectPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from file object"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"file\":{\"path\":\"" + filepath.ToSlash(sourcePath) + "\"}}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputKeepsObjectCandidateWithNonStringPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated despite metadata path"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"artifact\":{\"path\":{\"kind\":\"metadata\"},\"local_file_path\":\"" + filepath.ToSlash(sourcePath) + "\"}}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputIgnoresUnrelatedPathObject(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated with unrelated metadata path"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"path\":{\"kind\":\"metadata\"},\"artifact\":{\"path\":\"" + filepath.ToSlash(sourcePath) + "\"}}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsArtifactsArrayPath(t *testing.T) {
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "paper.txt")
+	pdfPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(textPath, []byte("sidecar text"), 0o644); err != nil {
+		t.Fatalf("WriteFile(text) error = %v", err)
+	}
+	if err := os.WriteFile(pdfPath, []byte("%PDF translated from artifacts array"), 0o644); err != nil {
+		t.Fatalf("WriteFile(pdf) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"artifacts\":[" +
+		"{\"path\":\"" + filepath.ToSlash(textPath) + "\"}," +
+		"{\"path\":\"" + filepath.ToSlash(pdfPath) + "\"}" +
+		"]}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, pdfPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, pdfPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsOutputsArrayPath(t *testing.T) {
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "paper.txt")
+	pdfPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(textPath, []byte("sidecar text"), 0o644); err != nil {
+		t.Fatalf("WriteFile(text) error = %v", err)
+	}
+	if err := os.WriteFile(pdfPath, []byte("%PDF translated from outputs array"), 0o644); err != nil {
+		t.Fatalf("WriteFile(pdf) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"outputs\":[" +
+		"{\"path\":\"" + filepath.ToSlash(textPath) + "\"}," +
+		"{\"path\":\"" + filepath.ToSlash(pdfPath) + "\"}" +
+		"]}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, pdfPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, pdfPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsFilesObjectArrayPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from files object array"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"files\":[{\"local_file_path\":\"" + filepath.ToSlash(sourcePath) + "\"}]}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsMixedFilesArrayPath(t *testing.T) {
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "paper.txt")
+	pdfPath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(textPath, []byte("sidecar text"), 0o644); err != nil {
+		t.Fatalf("WriteFile(text) error = %v", err)
+	}
+	if err := os.WriteFile(pdfPath, []byte("%PDF translated from mixed files array"), 0o644); err != nil {
+		t.Fatalf("WriteFile(pdf) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"files\":[" +
+		"\"" + filepath.ToSlash(textPath) + "\"," +
+		"{\"path\":\"" + filepath.ToSlash(pdfPath) + "\"}" +
+		"]}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, pdfPath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, pdfPath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsTopLevelArrayPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from top-level array"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "[\"" + filepath.ToSlash(sourcePath) + "\"]"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsTrailingTopLevelArrayStringPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from trailing top-level array string"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "progress before json\n" +
+		"[\"" + filepath.ToSlash(sourcePath) + "\"]\n" +
+		"runner trailer"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputReadsTrailingTopLevelArrayObjectPath(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")
+	if err := os.WriteFile(sourcePath, []byte("%PDF translated from top-level array object"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	content := "progress before json\n" +
+		"[{\"path\":\"" + filepath.ToSlash(sourcePath) + "\"}]\n" +
+		"runner trailer"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); !samePath(got, sourcePath) {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want %q", got, sourcePath)
+	}
+}
+
+func TestSelectArtifactFileFromJSONOutputRejectsMismatchedExtension(t *testing.T) {
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "paper.txt")
+	if err := os.WriteFile(textPath, []byte("not a pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile(text) error = %v", err)
+	}
+
+	content := "{\"ok\":true,\"artifact\":{\"path\":\"" + filepath.ToSlash(textPath) + "\"}}"
+
+	if got := selectArtifactFileFromJSONOutput(content, ".pdf"); got != "" {
+		t.Fatalf("selectArtifactFileFromJSONOutput() = %q, want empty for mismatched extension", got)
+	}
+}
+
 func TestMaterializeStdoutToExpectedOutputDoesNotWritePlainTextAsPDF(t *testing.T) {
 	dir := t.TempDir()
 	expectedPath := filepath.Join(dir, "paper_output.pdf")
@@ -249,6 +706,32 @@ func TestMaterializeStdoutToExpectedOutputDoesNotWritePlainTextAsPDF(t *testing.
 
 	if _, err := os.Stat(expectedPath); !os.IsNotExist(err) {
 		t.Fatalf("plain stdout should not be materialized as PDF, stat err=%v", err)
+	}
+}
+
+func TestMaterializeStdoutToExpectedOutputDoesNotCopyTextArtifactAsPDF(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "paper.txt")
+	expectedPath := filepath.Join(dir, "paper_output.pdf")
+	if err := os.WriteFile(sourcePath, []byte("not a pdf artifact"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-json-text-artifact-for-pdf",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "{\"ok\":true,\"files\":[\"" + filepath.ToSlash(sourcePath) + "\"]}",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	if _, err := os.Stat(expectedPath); !os.IsNotExist(err) {
+		t.Fatalf("text artifact should not be copied as PDF, stat err=%v", err)
 	}
 }
 

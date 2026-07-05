@@ -132,7 +132,14 @@ def _status_lines(
 
     lines: list[str] = []
     if status.ready:
-        return ["- Current status: READY for final release approval."]
+        if status.scope == DEFAULT_SCOPE:
+            return ["- Current status: READY for final release approval."]
+        scope_label = release_evidence_commands.scope_label(status.scope)
+        return [
+            "- Current status: READY for "
+            + scope_label
+            + " scoped internal QA approval, not full Android/iOS release approval.",
+        ]
 
     lines.append("- Current status: NOT READY.")
     if blocker_checks:
@@ -391,7 +398,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         *platform_evidence,
         "- Runtime boundary verifier result proving mobile does not embed or bridge Go corelib.",
         "- HubCenter discovery result, discovered Hub URL, tenant, LLM access mode, and mobile bootstrap result.",
-        "- Assistant search with citations, voice query, image/screenshot query, and share-to-app payload results.",
+        "- AI assistant answer with citations, voice query, image/screenshot query, and share-to-app payload results.",
         "- Document import, AI transform, export/share, and notification evidence.",
         "- SSH login, read-only command output, reconnect, copied log, AI analysis, and credential deletion evidence.",
         "- Digital employee list, remote target invocation, completion/failure result, and notification evidence.",

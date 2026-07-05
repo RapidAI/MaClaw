@@ -48,4 +48,63 @@ void main() {
 
     expect(offenders, isEmpty);
   });
+
+  test('mobile runtime exposes no redemption-code login surface', () {
+    final root = Directory('lib');
+    final sources = root
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.dart'));
+
+    final forbidden = <RegExp>[
+      RegExp(r'redemption[-_\s]?code', caseSensitive: false),
+      RegExp(r'service-redemptions', caseSensitive: false),
+      RegExp(r'redeemOfficialServiceCode', caseSensitive: false),
+      RegExp(r"""labelText:\s*['"][^'"]*(兑换码|redemption)"""),
+      RegExp(r"""hintText:\s*['"][^'"]*(兑换码|redemption)"""),
+      RegExp(r"""Text\(\s*['"][^'"]*(兑换码|redemption)"""),
+    ];
+
+    final offenders = <String>[];
+    for (final file in sources) {
+      final path = file.path.replaceAll('\\', '/');
+      final text = file.readAsStringSync();
+      for (final pattern in forbidden) {
+        if (pattern.hasMatch(text)) {
+          offenders.add('$path matches ${pattern.pattern}');
+        }
+      }
+    }
+
+    expect(offenders, isEmpty);
+  });
+
+  test('signed-out mobile runtime exposes no desktop QR login surface', () {
+    final root = Directory('lib');
+    final sources = root
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.dart'));
+
+    final forbidden = <RegExp>[
+      RegExp(r'connectWithDesktopAuthQr'),
+      RegExp(r'desktop-qr-sessions'),
+      RegExp(r'maclaw_mobile_desktop_authorization'),
+      RegExp(r'桌面二维码接入'),
+      RegExp(r'扫码接入'),
+    ];
+
+    final offenders = <String>[];
+    for (final file in sources) {
+      final path = file.path.replaceAll('\\', '/');
+      final text = file.readAsStringSync();
+      for (final pattern in forbidden) {
+        if (pattern.hasMatch(text)) {
+          offenders.add('$path matches ${pattern.pattern}');
+        }
+      }
+    }
+
+    expect(offenders, isEmpty);
+  });
 }

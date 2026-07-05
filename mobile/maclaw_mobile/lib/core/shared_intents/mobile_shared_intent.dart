@@ -52,9 +52,9 @@ class MobileSharedIntent {
     if (kind == MobileSharedIntentKind.link) {
       final url = sharedUrl;
       if (url != null && text != url) {
-        return '请联网查证并总结这个链接，保留来源引用：$url\n\n分享附带说明：$text';
+        return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：$url\n\n分享附带说明：$text';
       }
-      return '请联网查证并总结这个链接，保留来源引用：${url ?? text}';
+      return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：${url ?? text}';
     }
     return text;
   }

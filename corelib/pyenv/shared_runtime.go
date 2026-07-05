@@ -56,6 +56,7 @@ type SharedPythonRuntimeStatus struct {
 	LastUsedAt string   `json:"last_used_at,omitempty"`
 	HasLock    bool     `json:"has_lock"`
 	HasPython  bool     `json:"has_python"`
+	HasPip     bool     `json:"has_pip"`
 	Error      string   `json:"error,omitempty"`
 }
 
@@ -196,6 +197,9 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 	if err := runUV(plan, uvPath, args...); err != nil {
 		return failSharedPythonRuntime(plan, usedBy, "uv_pip_install", err)
 	}
+	if err := ensureSharedPythonRuntimePip(plan, uvPath); err != nil {
+		return failSharedPythonRuntime(plan, usedBy, "uv_ensure_pip", err)
+	}
 	if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
 		return plan, err
 	}
@@ -212,13 +216,6 @@ func ensureSharedPythonRuntimeWithPip(plan SharedPythonRuntimePlan, usedBy strin
 		}
 		return plan, nil
 	}
-	seedPython, err := sharedRuntimeResolveSeedPython()
-	if err != nil {
-		return failSharedPythonRuntime(plan, usedBy, "resolve_seed_python", err)
-	}
-	if err := validateSharedRuntimeSeedPython(seedPython, plan); err != nil {
-		return failSharedPythonRuntime(plan, usedBy, "validate_seed_python", err)
-	}
 	if emit != nil {
 		emit("python_runtime", 10, "preparing shared Python "+plan.Python+" with pip")
 	}
@@ -229,6 +226,13 @@ func ensureSharedPythonRuntimeWithPip(plan SharedPythonRuntimePlan, usedBy strin
 		return plan, err
 	}
 	if _, err := os.Stat(plan.PythonPath); os.IsNotExist(err) {
+		seedPython, err := sharedRuntimeResolveSeedPython()
+		if err != nil {
+			return failSharedPythonRuntime(plan, usedBy, "resolve_seed_python", err)
+		}
+		if err := validateSharedRuntimeSeedPython(seedPython, plan); err != nil {
+			return failSharedPythonRuntime(plan, usedBy, "validate_seed_python", err)
+		}
 		if emit != nil {
 			emit("python_runtime", 35, "creating shared virtual environment")
 		}
@@ -241,18 +245,16 @@ func ensureSharedPythonRuntimeWithPip(plan SharedPythonRuntimePlan, usedBy strin
 	if emit != nil {
 		emit("python_runtime", 60, "installing Python dependencies")
 	}
+	if err := ensureSharedPythonRuntimePip(plan, ""); err != nil {
+		return failSharedPythonRuntime(plan, usedBy, "pip_ensurepip", err)
+	}
 	pipArgs := []string{"-m", "pip", "install", "--quiet"}
 	for _, indexURL := range plan.IndexURLs {
 		pipArgs = append(pipArgs, "--index-url", indexURL)
 	}
 	pipArgs = append(pipArgs, plan.Packages...)
 	if err := runSharedRuntimeCommand(plan, plan.PythonPath, pipArgs...); err != nil {
-		if ensureErr := runSharedRuntimeCommand(plan, plan.PythonPath, "-m", "ensurepip", "--upgrade"); ensureErr != nil {
-			return failSharedPythonRuntime(plan, usedBy, "pip_ensurepip", fmt.Errorf("%w\nensurepip fallback failed: %v", err, ensureErr))
-		}
-		if err := runSharedRuntimeCommand(plan, plan.PythonPath, pipArgs...); err != nil {
-			return failSharedPythonRuntime(plan, usedBy, "pip_install", err)
-		}
+		return failSharedPythonRuntime(plan, usedBy, "pip_install", err)
 	}
 	if err := writeSharedRuntimeLock(plan, usedBy, "ready"); err != nil {
 		return plan, err
@@ -341,7 +343,44 @@ func sharedPythonRuntimeReady(plan SharedPythonRuntimePlan) bool {
 	if err := json.Unmarshal(data, &lock); err != nil {
 		return false
 	}
-	return lock.ID == plan.ID && strings.EqualFold(strings.TrimSpace(lock.Status), "ready")
+	if lock.ID != plan.ID || !strings.EqualFold(strings.TrimSpace(lock.Status), "ready") {
+		return false
+	}
+	return sharedPythonRuntimeHasPip(plan)
+}
+
+func sharedPythonRuntimeHasPip(plan SharedPythonRuntimePlan) bool {
+	return runSharedRuntimeCommand(plan, plan.PythonPath, "-m", "pip", "--version") == nil
+}
+
+func ensureSharedPythonRuntimePip(plan SharedPythonRuntimePlan, uvPath string) error {
+	if sharedPythonRuntimeHasPip(plan) {
+		return nil
+	}
+	ensureErr := runSharedRuntimeCommand(plan, plan.PythonPath, "-m", "ensurepip", "--upgrade")
+	if ensureErr == nil && sharedPythonRuntimeHasPip(plan) {
+		return nil
+	}
+	if strings.TrimSpace(uvPath) != "" {
+		uvErr := runUV(plan, uvPath, "pip", "install", "--python", plan.PythonPath, "pip")
+		if uvErr == nil && sharedPythonRuntimeHasPip(plan) {
+			return nil
+		}
+		switch {
+		case ensureErr != nil && uvErr != nil:
+			return fmt.Errorf("ensurepip failed: %v; uv pip install failed: %v", ensureErr, uvErr)
+		case ensureErr != nil:
+			return fmt.Errorf("ensurepip failed: %v; pip still unavailable after uv pip install", ensureErr)
+		case uvErr != nil:
+			return fmt.Errorf("pip still unavailable after ensurepip; uv pip install failed: %v", uvErr)
+		default:
+			return fmt.Errorf("pip still unavailable after ensurepip and uv pip install")
+		}
+	}
+	if ensureErr != nil {
+		return ensureErr
+	}
+	return fmt.Errorf("pip still unavailable after ensurepip")
 }
 
 func normalizeRuntimeList(in []string) []string {
@@ -553,6 +592,15 @@ func ListSharedPythonRuntimes(dataDir string) ([]SharedPythonRuntimeStatus, erro
 		}
 		if status.Status == "ready" && !status.HasPython {
 			status.Status = "missing_python"
+		}
+		if status.HasPython {
+			status.HasPip = sharedPythonRuntimeHasPip(status.SharedPythonRuntimePlan)
+		}
+		if status.Status == "ready" && status.HasPython && !status.HasPip {
+			status.Status = "missing_pip"
+			if status.Error == "" {
+				status.Error = "pip is not available in shared Python runtime"
+			}
 		}
 		statuses = append(statuses, status)
 	}

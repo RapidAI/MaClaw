@@ -81,7 +81,7 @@ For signed-build QA, run `python3 tool/run_release_gates.py --log docs/qa-builds
 so the completed QA record can reference the saved automated-gate transcript.
 Run `python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log`
 for the matching runtime-boundary evidence file.
-The latest local `python tool\run_release_gates.py` run on 2026-07-04 passed all
+The latest local `python tool\run_release_gates.py` run on 2026-07-05 passed all
 38 automated release gates, including Flutter analysis, the full Flutter test
 suite, runtime boundary verification, native wrapper regeneration/configuration,
 Go mobile API tests, QA build record scaffold tests, QA record directory
@@ -91,8 +91,9 @@ signing setup helper tests, release status report tests, QA/debug/final evidence
 verifier tests, manual release gate verification, Android release signing
 verification, Android release build helper tests, iOS wrapper verification, iOS
 release plan helper tests, iOS export options setup helper tests, and Android
-debug APK build. The local transcript was saved under `docs/qa-builds/`, which
-is ignored by default; attach the versioned `release-gates-<version+build>.log`
+debug APK build. The local transcript was saved under `docs/qa-builds/` as
+`release-gates-local-20260705.log`, which is ignored by default;
+attach the versioned `release-gates-<version+build>.log`
 from signed-build QA as external evidence when preparing a release package.
 After a local debug APK build, run `python3 tool/update_debug_apk_evidence.py`
 to refresh the artifact path, byte size, and SHA256 recorded below, then run
@@ -102,7 +103,9 @@ Before final release approval with completed signed-build QA records, run
 `python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log`
 to require validated Android and iOS evidence records for the same
 version/build, require this file to link every validated QA record by filename,
-and save the success or failure transcript as release evidence; successful final
+require those guarded Markdown link labels to contain the validated QA record
+filename, not generic labels such as `Completed QA record`, and save the
+success or failure transcript as release evidence; successful final
 evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename, and existing logs require `--force`
 before they can be overwritten.
@@ -134,7 +137,7 @@ before they can be overwritten.
 | iOS wrapper, Share Extension wiring, export options, and archive planning | `tool/verify_ios_wrapper.py`, `tool/verify_ios_wrapper_test.py`, `tool/setup_ios_export_options.py`, `tool/setup_ios_export_options_test.py`, `tool/plan_ios_release.py`, `tool/plan_ios_release_test.py`, `ios/ExportOptions.plist.example`, `ios/Runner/Info.plist`, `ios/ShareExtension/Info.plist`, `ios/Runner/Runner.entitlements`, `ios/ShareExtension/ShareExtension.entitlements` |
 | Manual release gate documentation parity | `tool/verify_manual_release_gates.py`, `tool/verify_manual_release_gates_test.py`, `docs/release_audit.md`, `docs/release_evidence.md`, `docs/qa_device_checklist.md`, `docs/qa_build_record_template.md` |
 | Final signed-build evidence package readiness | `tool/verify_final_release_evidence.py`, `tool/verify_final_release_evidence_test.py`, `docs/release_evidence.md`, `docs/qa-builds/README.md`, `docs/qa_device_checklist.md` |
-| Assistant lookup, citations, shared links, voice locale, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
+| GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, shared links, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Emergency document templates, import, AI actions, edit helpers, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
 | Manual SSH profiles, terminal output copy, AI analysis confirmation, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart` |
@@ -171,7 +174,7 @@ before they can be overwritten.
     upstream consume failures do not leak Hub response bodies.
 - Verified:
   - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
-  - `flutter test test\auth_service_test.dart test\api_client_test.dart test\llm_setup_screen_test.dart --concurrency=1 --reporter compact`
+  - `flutter test test\auth_service_test.dart test\api_client_test.dart test\login_screen_test.dart test\account_screen_test.dart --concurrency=1 --reporter compact`
   - `flutter analyze`
 
 2026-07-02:
@@ -336,9 +339,9 @@ before they can be overwritten.
     employee task IDs plus redacted/masked/sanitized notification message
     preview proof.
   - Requires network offline/recovery evidence to show HubCenter/network
-    unavailable warnings and restored search, document, digital employee, or
-    realtime service behavior after connectivity returns, with a trackable
-    network-recovery/connectivity-probe/retry/incident trace ID.
+    unavailable warnings and restored assistant online, document, digital
+    employee, or realtime service behavior after connectivity returns, with a
+    trackable network-recovery/connectivity-probe/retry/incident trace ID.
   - Requires account-screen, no-custom-Hub-URL, and bootstrap smoke evidence to
     explicitly mention selected Hub, tenant, absent custom Hub URL settings,
     user/quota, feature flags, and service status, with account-screen Hub and
@@ -359,9 +362,10 @@ before they can be overwritten.
     HubCenters, discovered Hub evidence to include Hub URL plus tenant, and LLM
     evidence to identify MaClaw official access or desktop GUI QR third-party
     authorization.
-  - Requires LLM setup surface evidence to prove mobile only exposes MaClaw
-    official service redemption and MaClaw desktop GUI QR authorization, with no
-    arbitrary third-party endpoint, base URL, provider URL, or API key fields.
+  - Requires LLM setup surface evidence to prove mobile starts from phone
+    registration/login, keeps third-party LLM authorization in account/settings
+    through MaClaw desktop GUI QR, and exposes no arbitrary third-party
+    endpoint, base URL, provider URL, API key, or redemption-code login fields.
   - Requires document upload task IDs to identify document upload/import tasks,
     and PDF/Word/Markdown export job IDs to match the requested export format.
   - Requires exported document share evidence to prove PDF, Word, and Markdown
@@ -383,7 +387,7 @@ before they can be overwritten.
     and photo/image assistant input, with a resulting cited answer or document
     upload task ID, and to reference a recorded citation URL or document upload
     task ID.
-  - Requires search-result document draft evidence to cover every first-version
+  - Requires assistant-result document draft evidence to cover every first-version
     template: notice, report, email, proposal, meeting minutes, and statement,
     to reference a recorded citation URL, and to include the resulting
     `document-draft:<id>`.
@@ -545,7 +549,7 @@ before they can be overwritten.
     and total gate count without running Go, Flutter, or Android build
     commands.
 - `flutter test test/release_docs_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 29 release documentation integrity tests.
+  - Passed: 32 release documentation integrity tests.
   - Covers release doc cross-links, signed-build manual gates, required
     share/permission payloads, service/SSH smoke steps, and explicit remaining
     blockers.
@@ -562,9 +566,10 @@ before they can be overwritten.
     host type, auth mode, connect result, read-only command, command output
     excerpt, disconnect result, reconnect result, and copied output evidence.
   - Covers the user guide's mobile product decisions: MaClaw logo startup,
-    configured-session assistant entry, LLM setup through official redemption or
-    MaClaw GUI QR, multi-tab assistant, official HubCenter discovery only, and
-    no arbitrary third-party LLM endpoint setup.
+    phone registration/login as the first unauthenticated screen, configured
+    sessions opening the assistant, optional MaClaw desktop GUI QR authorization
+    from account/settings, multi-tab assistant, official HubCenter discovery only,
+    and no arbitrary third-party LLM endpoint setup.
   - Verifies the release documentation corpus preserves readable Chinese
     navigation labels and contains no known mojibake or replacement markers.
   - Verifies critical release tooling sources stay free of Unicode replacement
@@ -577,6 +582,10 @@ before they can be overwritten.
     runner sequence.
   - Verifies the automated gate command block in this evidence document matches
     the release gate runner sequence.
+  - Covers native launch branding resources: Android launch backgrounds and
+    Android 12 splash styles reference `@mipmap/launch_image`, iOS
+    LaunchScreen references `LaunchImage`, and generated launch/app icon PNGs
+    are non-empty MaClaw assets instead of Flutter placeholders.
   - Covers signed Android/iOS share-to-app payload completeness, including CSV.
   - Covers the full Hub discovery smoke manual gate, including voice/photo
     input, shared result, notification delivery, network recovery, API base
@@ -598,8 +607,9 @@ before they can be overwritten.
   - Passed.
   - Covers ready document export download, generated local file path handoff,
     and system file-share invocation with the draft title.
-- `flutter test test/official_service_test.dart test/api_client_test.dart test/documents_state_test.dart --concurrency=1 --reporter compact`
-  - Passed: 28 official service, API client, and document state tests.
+- `flutter test test/official_service_test.dart test/official_service_surface_test.dart test/api_client_test.dart test/documents_state_test.dart --concurrency=1 --reporter compact`
+  - Passed: 30 official service, API client, document state, and service
+    surface tests.
   - Covers document export download URL safety: relative paths resolve against
     the discovered Hub, same-Hub absolute URLs are accepted, external absolute
     URLs are rejected before a request is sent, same host with the wrong scheme
@@ -612,16 +622,18 @@ before they can be overwritten.
     the official mobile upload byte limit from bootstrap.
   - Covers failed-import retry being rejected unless the last upload task is
     actually failed and has a recoverable source path.
-- `flutter test test/auth_service_test.dart test/api_client_test.dart test/llm_setup_screen_test.dart --concurrency=1 --reporter compact`
-  - Passed: 21 phone login, desktop GUI QR, API client, and LLM setup widget
-    tests.
+  - Covers absence of custom Hub URL configuration and redemption-code login
+    surfaces in the mobile runtime.
+- `flutter test test/auth_service_test.dart test/api_client_test.dart test/login_screen_test.dart test/account_screen_test.dart --concurrency=1 --reporter compact`
+  - Passed: 30 phone login, desktop GUI QR settings, API client, and account
+    settings tests.
   - Covers phone-number login through HubCenter discovery, phone-account
     official credits identity, verified phone accounts using the official
     `phone:<digits>` credits account for MaClaw LLM access, formatted phone
     credits in Hub SMS verification results being normalized to
     `phone:<digits>` only when the value contains digits and phone separators,
-    malformed `phone:` credits with letters staying untrusted, MaClaw GUI
-    desktop QR session consumption, authenticated third-party LLM authorization
+    malformed `phone:` credits with letters staying untrusted, MaClaw desktop
+    GUI QR session consumption, authenticated third-party LLM authorization
     on the discovered Hub, and client-side rejection of arbitrary endpoint URLs,
     raw API keys, legacy provider JSON, or malformed QR payloads before mobile
     attempts a service connection.
@@ -639,24 +651,25 @@ before they can be overwritten.
     retry controls wiring through the mobile document UI.
 - `flutter test test/assistant_screen_test.dart --plain-name "assistant result can become every document template with citations" --concurrency=1 --reporter expanded`
   - Passed.
-  - Covers turning an AI lookup result with citations into every mobile
+  - Covers turning an AI assistant result with citations into every mobile
     document template type: notice, report, email, proposal, meeting minutes,
     and statement.
 - `flutter test test/assistant_screen_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 19 assistant workflow widget/model tests.
-  - Covers assistant lookup, shared-link search, multi-tab search state,
-    voice/file/camera/gallery handoff, citation copy/share, creating document
-    drafts from lookup results, history cleanup confirmation, and local search
-    history redaction for both query text and answer previews.
+  - Passed: 22 assistant workflow widget/model tests.
+  - Covers AI assistant conversation, shared-link processing, multi-tab
+    assistant state, voice/file/camera/gallery handoff, citation copy/share,
+    creating document drafts from assistant results, history cleanup
+    confirmation, and local assistant history redaction for both prompt text
+    and answer previews.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter expanded`
   - Passed: 14 shared-intent classification and controller tests.
   - Covers routing shared PDF, Word, Excel, and CSV files into the document
-    import flow instead of the AI text lookup flow.
+    import flow instead of the AI assistant text flow.
   - Covers file and image shares that include a URL in the platform message:
     the URL remains available as context, but the payload still enters document
-    import instead of being misrouted to assistant lookup.
+    import instead of being misrouted to assistant conversation.
   - Covers unsupported shared attachments with a message or link falling back to
-    assistant lookup, while mixed batches still prefer a later importable
+    assistant conversation, while mixed batches still prefer a later importable
     document over an unsupported attachment.
 - `flutter test test/platform_permissions_test.dart --concurrency=1 --reporter expanded`
   - Passed: 4 platform wrapper tests.
@@ -664,20 +677,24 @@ before they can be overwritten.
     declarations for text, web URLs, files, and images.
   - Covers readable UTF-8 iOS privacy usage descriptions for camera,
     microphone, speech recognition, photo library, and local network access,
-    and rejects known mojibake/replacement markers.
+    rejects known mojibake/replacement markers, and verifies the iOS Runner
+    bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 529 Python release tool tests.
+  - Passed: 554 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
     release gate runner guard tests.
 - `python tool\configure_platforms_test.py`
-  - Passed: 14 platform configuration tests.
+  - Passed: 16 platform configuration tests.
   - Covers cleanup of Flutter's generated widget-test template so
     native wrapper regeneration does not introduce stale `MyApp` analyzer
-    failures.
+    failures, and cleanup of Flutter Android Gradle template comments after
+    the official MaClaw Mobile package ID is applied.
+  - Covers iOS Runner bundle display/name regeneration as `MaClaw Mobile`
+    instead of the Flutter template name.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 193 QA record validator tests.
+  - Passed: 198 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
     tenant Hub versus HubCenter URL separation,
@@ -712,10 +729,11 @@ before they can be overwritten.
     document share evidence linked to recorded PDF/Word/Markdown export job
     IDs, and digital employee task ID semantics tied to recorded HubCenter,
     discovered Hub, Tenant ID, and MaClaw phone-account credits,
-    AI search query evidence linked to recorded citation URLs, shared-result
+    AI assistant query evidence linked to recorded citation URLs, shared-result
     citation linkage and externalized-result redaction proof, voice-photo input
     result linkage, document-draft citation and `document-draft:<id>` linkage
     smoke evidence semantics, manual and optional evidence placeholder rejection,
+    rejection of legacy redemption-code LLM setup evidence,
     SSH smoke action-specific evidence validation, recorded server-profile ID
     linkage for manual SSH smoke and account privacy server credential evidence,
     `credential-clear:<id>` linkage for separate server/SSH credential clearing,
@@ -757,7 +775,7 @@ before they can be overwritten.
     not require out-of-scope platform fields, artifact evidence, or dual-device
     entries when the filename scope is `android` or `ios`.
 - `python -m unittest tool\create_qa_build_record_test.py`
-  - Passed: 14 QA build record scaffold tests.
+  - Passed: 15 QA build record scaffold tests.
   - Covers validator-compatible record filenames, date/version prefilling,
     optional Final Release Decision evidence prefilling with the same
     handoff/runtime-boundary/release-gates artifact semantics enforced by the
@@ -806,17 +824,20 @@ before they can be overwritten.
     `qa_build_record_report.py <failed-record>` for grouped gaps, redaction
     remediation, and signed artifact hints.
 - `python -m unittest tool\qa_build_record_report_test.py`
-  - Passed: 14 QA build record report tests.
+  - Passed: 15 QA build record report tests.
   - Covers passing completed records, missing evidence summaries, invalid
     HubCenter values, filename errors, missing handoff/runtime-boundary/release
-    gate evidence, local artifact SHA256 mismatches, and CLI stdout/stderr
-    behavior.
+    gate evidence, local artifact SHA256 mismatches, missing local iOS
+    archives, and CLI stdout/stderr behavior.
   - Covers release handoff evidence hints that include the required
     `--version <version+build>`, `--team-id <APPLE_TEAM_ID>`, and
     `--export-method <export-method>` inputs.
   - Covers validator-compatible Final Release Decision examples for
     handoff, runtime-boundary, and release-gates evidence when those fields are
     missing or malformed.
+  - Covers local Android artifact and iOS archive failures pointing to the
+    shared signed artifact evidence helper commands before release evidence
+    linking.
   - Covers deriving the concrete version/build from the QA record filename when
     printing handoff, runtime-boundary, and release-gates evidence hints.
   - Covers that those gap-report hints use the shared release evidence command
@@ -842,7 +863,7 @@ before they can be overwritten.
   - Covers release handoff evidence paths being rejected as non-QA-record
     inputs without mixing in missing evidence-field noise.
 - `python -m unittest tool\qa_release_evidence_links_test.py`
-  - Passed: 22 QA release evidence link helper tests.
+  - Passed: 23 QA release evidence link helper tests.
   - Covers empty QA record directories, valid record Markdown link output,
     invalid record exclusion, invalid-record CLI failure behavior, and valid
     record CLI output, with deterministic filename ordering for generated QA
@@ -890,12 +911,15 @@ before they can be overwritten.
     version/build mismatches keep distinct remediation commands.
   - Covers rejecting legacy `ios-android` scope filenames as Android/iOS
     platform coverage before updating guarded release-evidence links.
-  - Covers custom QA record directories so generated release-evidence links
+  - Covers Android-only and iOS-only scoped link output warning that scoped
+    internal QA does not approve a full Android/iOS release candidate.
+  - Covers custom QA record directories, including directories also named
+    `qa-builds` such as `tmp/qa-builds`, so generated release-evidence links
     point at the actual record path instead of incorrectly rewriting every
     record as `docs/qa-builds/...`, and so follow-up final verifier commands
     use the same custom QA record directory.
 - `python -m unittest tool\qa_preflight_test.py`
-  - Passed: 21 QA preflight helper tests.
+  - Passed: 22 QA preflight helper tests.
   - Covers ready summaries, Android signing input blockers, iOS wrapper
     blockers, missing or invalid iOS export options blockers, invalid existing
     QA records, missing QA record directories, and CLI stdout/stderr behavior.
@@ -909,6 +933,8 @@ before they can be overwritten.
     the requirement that completed QA evidence has no secret redaction failures.
   - Covers ready/status output naming scoped internal QA command parity so
     Android-only and iOS-only QA command examples stay part of preflight.
+  - Covers scoped Android-only and iOS-only ready output warning that scoped
+    internal QA approval is not full Android/iOS release approval.
   - Covers Android signing blocker output that points operators to
     `setup_android_signing.py` with the required environment variables.
   - Covers iOS export-options setup hints that preserve the requested Team ID
@@ -939,7 +965,7 @@ before they can be overwritten.
     forwarding, deferred rerun commands, signed-build QA record creation hints,
     release-evidence link updates, and final evidence verification commands.
 - `python -m unittest tool\release_evidence_commands_test.py`
-  - Passed: 39 release evidence command helper tests.
+  - Passed: 41 release evidence command helper tests.
   - Covers validator-compatible Final Release Decision prefills, the copyable
     `create_qa_build_record.py` command, and the default signed-QA-record
     next-action hint used by preflight and release status.
@@ -957,11 +983,17 @@ before they can be overwritten.
   - Covers scope-specific signed artifact evidence commands in shared
     signed-QA-record hints, so Android-only records do not prompt for iOS
     artifact evidence.
+  - Covers rejecting weak custom Android signed artifact command values that the
+    signed artifact evidence tool would reject, such as debug artifact paths,
+    `release-key` signing aliases, or bare `internal` installer channels.
   - Covers shared iOS signed-QA-record hints using the default
     `build/ios/archive/MaClawMobile.xcarchive` archive path and the
     `plan_ios_release.py --provisioning-profiles ... --record-dir ...`
     evidence command, matching the release handoff command sequence while
     still allowing TestFlight replacement.
+  - Covers rejecting weak custom iOS signed artifact command values that the
+    signed artifact evidence tool would reject, such as shorthand TestFlight
+    labels, malformed Apple Team IDs, or generic provisioning profile notes.
   - Covers shared platform coverage helpers so legacy `ios-android` scope
     never counts as Android or iOS release evidence.
   - Covers a source guard that prevents non-test release tools from
@@ -1036,12 +1068,14 @@ before they can be overwritten.
   - Covers the shared version-mismatch hint used when final QA records span
     multiple version/build values.
 - `python -m unittest tool\setup_android_signing_test.py`
-  - Passed: 6 Android signing setup helper tests.
-  - Covers environment-variable validation, debug-keystore rejection, local
-    `android/key.properties` writing, overwrite protection, successful CLI
-    setup, and missing-environment CLI errors.
+  - Passed: 8 Android signing setup helper tests.
+  - Covers environment-variable validation, documented placeholder rejection,
+    debug-keystore rejection, local `android/key.properties` writing,
+    overwrite protection, successful CLI setup, missing-environment CLI
+    errors, and refusing to write `key.properties` when placeholders are still
+    present.
 - `python -m unittest tool\release_status_report_test.py`
-  - Passed: 16 release status report helper tests.
+  - Passed: 18 release status report helper tests.
   - Covers grouped not-ready output, ready output, current empty-fixture CLI
     failure, and ready CLI stdout behavior.
   - Covers passing the requested platform scope into final release evidence
@@ -1083,7 +1117,7 @@ before they can be overwritten.
     generation, including copyable custom-directory Android final-verifier
     rerun commands.
 - `python -m unittest tool\release_handoff_test.py`
-  - Passed: 20 release handoff helper tests.
+  - Passed: 21 release handoff helper tests.
   - Covers blocker summaries, ready output, operator command generation, output
     file writing, and blocked/ready CLI exit codes.
   - Covers real release version/build, Apple Team ID, and iOS export method CLI
@@ -1135,6 +1169,8 @@ before they can be overwritten.
   - Covers scope-specific platform commands, operator inputs, current-status
     blockers, and evidence so Android-only and iOS-only handoffs do not include
     the other platform's signing, build, export, or artifact evidence steps.
+  - Covers scoped ready handoff status as Android/iOS internal QA approval only,
+    not full Android/iOS final release approval.
   - Covers custom QA record directories in handoff command sequences so status,
     handoff output, runtime-boundary logs, release-gate logs, artifact evidence,
     record creation, release-evidence links, directory validation, and final
@@ -1165,17 +1201,18 @@ before they can be overwritten.
   - Covers CI workflow, release checklist, and release evidence parity for
     automated gate commands and command order, plus debug APK artifact upload.
 - `python -m unittest tool\verify_debug_apk_evidence_test.py`
-  - Passed: 6 debug APK evidence verifier tests.
+  - Passed: 7 debug APK evidence verifier tests.
   - Covers debug APK evidence parsing, duplicate build-command mentions,
     relative artifact paths, missing artifacts, size mismatches, SHA256
-    mismatches, and missing evidence fields.
+    mismatches, missing evidence fields, and the required
+    `maclaw-mobile-debug-apk` CI artifact name.
 - `python -m unittest tool\update_debug_apk_evidence_test.py`
   - Passed: 6 debug APK evidence updater tests.
   - Covers artifact path, size, SHA256 refresh, preserving surrounding evidence
     lines, missing artifact failures, missing section failures, and CLI update
     behavior.
 - `python -m unittest tool\signed_artifact_evidence_test.py`
-  - Passed: 23 signed artifact evidence helper tests.
+  - Passed: 25 signed artifact evidence helper tests.
   - Covers Android signed APK hash/size snippets, record-relative paths, debug
     artifact rejection, untrackable names, missing artifacts, Android
     version/build format validation, required Android version/build, signing
@@ -1187,7 +1224,9 @@ before they can be overwritten.
   - Covers rejecting missing or non-directory `--record-dir` values before
     generating record-relative Android artifact or iOS archive evidence.
   - Covers CLI help describing `--record-dir` as a generic QA records
-    directory while preserving `docs/qa-builds` as the documented default
+    directory while preserving `docs/qa-builds` as the documented default.
+  - Covers generated Android and iOS signed artifact evidence lines pasted into
+    a completed QA build record and accepted by the QA record validator.
     example.
 - `python -m unittest tool\verify_manual_release_gates_test.py`
   - Passed: 15 manual release gate parity tests.
@@ -1208,7 +1247,7 @@ before they can be overwritten.
     Android-only handoff commands must not include Apple Team ID options while
     iOS-only commands keep Team ID and export method values.
 - `python -m unittest tool\verify_final_release_evidence_test.py`
-  - Passed: 38 final release evidence verifier tests.
+  - Passed: 39 final release evidence verifier tests.
   - Covers the final release evidence package rule that completed signed-build
     QA records must validate successfully and cover the requested platform
     scope before approval, including full Android/iOS final release coverage
@@ -1239,9 +1278,10 @@ before they can be overwritten.
   - Covers missing-platform final verifier next actions using the existing
     validated QA record version/build when prompting operators to create the
     missing Android or iOS signed-build QA record.
-  - Covers custom QA record directories in final verifier failure next actions,
-    so missing-record and missing-link remediation commands do not fall back to
-    `docs/qa-builds`.
+  - Covers custom QA record directories, including directories also named
+    `qa-builds` such as `tmp/qa-builds`, in final verifier link validation and
+    failure next actions, so missing-record and missing-link remediation
+    commands do not fall back to `docs/qa-builds`.
   - Covers final verifier CLI failure output that points directly to
     `qa_build_record_report.py` when an existing signed-build QA record is
     present but invalid.
@@ -1269,8 +1309,9 @@ before they can be overwritten.
     evidence path needed to audit the archived result, plus overwrite
     protection and explicit `--force` regeneration.
 - `python -m unittest tool\verify_android_release_signing_test.py`
-  - Passed: 7 Android release signing verifier tests.
+  - Passed: 8 Android release signing verifier tests.
   - Covers the Gradle release signing guard, rejection of debug-key fallback,
+    rejection of Flutter Android Gradle template comments,
     required `android/key.properties` loading, tracked
     `android/key.properties.example` placeholder coverage, and `.gitignore`
     rules for local keystore material.
@@ -1291,11 +1332,12 @@ before they can be overwritten.
   - Covers rejecting a missing QA records directory before invoking Flutter
     when Android artifact evidence generation was requested.
 - `python -m unittest tool\verify_ios_wrapper_test.py`
-  - Passed: 6 iOS wrapper verifier tests.
+  - Passed: 8 iOS wrapper verifier tests.
   - Covers readable iOS permission usage descriptions, Runner and Share
     Extension app-group entitlements, Share Extension activation rules for
     text, URLs, files, and images, receive_sharing_intent controller wiring,
-    and the generated-project marker.
+    the generated-project marker, and rejection of Flutter template Runner
+    bundle names.
 - `python -m unittest tool\plan_ios_release_test.py`
   - Passed: 13 iOS release plan helper tests.
   - Covers Apple Team ID validation, Xcode archive/export command planning,
@@ -1318,8 +1360,8 @@ before they can be overwritten.
   - Passed: 6 iOS export options setup helper tests.
   - Covers Team ID normalization, export method validation, local
     `ios/ExportOptions.plist` generation, overwrite protection, CLI output,
-    next-step preflight hints that preserve the chosen export method, and
-    invalid Team ID CLI failures.
+    next-step preflight hints that preserve the normalized Team ID and chosen
+    export method, and invalid Team ID CLI failures.
 - `python tool\configure_platforms.py`
   - Passed.
 - `python tool\verify_android_release_signing.py`
@@ -1352,9 +1394,11 @@ before they can be overwritten.
 - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1`
   - Passed; revalidated on the current worktree after the desktop GUI QR
     HubCenter proxy updates.
-  - Covers official mobile service redemption resolving the user's Hub/tenant
-    without issuing a token from HubCenter, unknown redemption rejection, and
-    rejection of legacy provider-only desktop LLM QR payloads at HubCenter.
+  - Covers the legacy mobile service-redemption compatibility endpoint resolving
+    Hub/tenant without issuing a mobile login token from HubCenter, unknown
+    redemption rejection, and rejection of legacy provider-only desktop LLM QR
+    payloads at HubCenter. This endpoint is not exposed as a MaClaw Mobile login
+    surface; phone/SMS login remains the mobile entry path.
   - Covers desktop GUI mobile QR session bootstrap through HubCenter: HubCenter
     verifies that the QR `hub_url` belongs to a registered online Hub before
     proxying the original payload to the Hub one-time consume endpoint, enriches
@@ -1370,11 +1414,11 @@ before they can be overwritten.
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
 - `python -m unittest tool\configure_platforms_test.py`
-  - Passed: 14 platform configuration tests.
+  - Passed: 16 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 193 QA record validator tests.
+  - Passed: 198 QA record validator tests.
 - `python -m unittest tool\create_qa_build_record_test.py`
-  - Passed: 14 QA build record scaffold tests.
+  - Passed: 15 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
   - Passed: 6 runtime boundary verifier tests.
   - Covers the current mobile runtime source tree and negative fixtures for
@@ -1389,10 +1433,11 @@ before they can be overwritten.
   - Confirms current mobile runtime source under `lib`, `android`, `ios`, and
     `pubspec.yaml` does not embed or bridge Go `corelib`.
 - `flutter test test/mobile_local_store_test.dart test/assistant_screen_test.dart test/digital_employees_screen_test.dart --concurrency=1 --reporter compact`
-  - Passed: 31 focused storage, assistant, and digital employee widget/model
+  - Passed: 34 focused storage, assistant, and digital employee widget/model
     tests.
   - Covers SQLite-backed mobile local cache, legacy JSON migration, shared-link
-    assistant search, multi-tab assistant behavior, voice/file/camera handoff,
+    assistant answers, disabled-Hub assistant fallback, quick emergency prompts,
+    multi-tab assistant behavior, voice/file/camera handoff,
     digital employee task submission with Hub/tenant/HubCenter/LLM credits
     context, and recent task restore.
 - `flutter test test/mobile_local_store_test.dart --concurrency=1 --reporter compact`
@@ -1429,17 +1474,16 @@ before they can be overwritten.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 190 tests.
+  - Passed: 267 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
 - `flutter build apk --debug`
   - Passed.
   - Artifact: `build\app\outputs\flutter-apk\app-debug.apk`.
-  - Size: `227304480` bytes.
-  - SHA256: `406026B4E76322D82416AB68AA771447CA644CFBA79F8A6474D57EFA5D295DEB`.
-  - Refreshed after enforcing discovered-Hub export download URL safety and
-    typed notification payload recovery behavior.
+  - Size: `182128306` bytes.
+  - SHA256: `03739ABFD43A3E1773564314AD7F58A8F75BD37F35B8F799B07D690936277F9B`.
+  - Refreshed after the 2026-07-05 full automated release gate run.
   - CI artifact name: `maclaw-mobile-debug-apk`.
 - `python3 tool/verify_debug_apk_evidence.py`
   - Passed.
@@ -1456,12 +1500,15 @@ before they can be overwritten.
     `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`.
 - `flutter test test/mobile_feature_flags_test.dart test/app_smoke_test.dart test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
   - Passed: 25 app shell, startup, feature flag, and shared-intent tests.
-  - Covers readable bottom navigation labels for `查信息`, `文档`, `远程`,
-    `员工`, and `我的`; configured sessions opening the assistant; missing LLM
-    access returning to setup; official LLM sessions accepting normalized
-    `phone:<digits>` credits from bootstrap JSON, returning to setup without a
-    phone credits account, including malformed `phone:` values and malformed
-    letter-bearing phone credits after bootstrap parsing; and shared file intents
+  - Covers readable bottom navigation labels for `AI助手`, `文档`, `远程`,
+    `员工`, and `我的`; configured sessions opening the assistant; feature
+    flags never removing the primary `AI助手` workspace; missing LLM
+    access opening the mobile workspace while third-party LLM authorization
+    remains optional in account/settings; official LLM sessions accepting
+    normalized `phone:<digits>` credits from bootstrap JSON, keeping the
+    workspace open without a phone credits account, including malformed `phone:`
+    values and malformed letter-bearing phone credits after bootstrap parsing;
+    and shared file intents
     preferring documents when available while avoiding the assistant fallback
     when document handling is disabled.
   - Covers notification-open recovery from typed task payloads and URL payloads,
@@ -1483,9 +1530,9 @@ before they can be overwritten.
   - Covers multi-payload share batches where a text caption or context URL is
     delivered before the actual file payload: supported files and images still
     route to document import, while empty file paths with only message text
-    fall back to assistant lookup instead of attempting an empty document upload.
+    fall back to assistant conversation instead of attempting an empty document upload.
   - Covers unsupported shared attachments with message/link context falling
-    back to assistant lookup, while mixed batches still prefer a later supported
+    back to assistant conversation, while mixed batches still prefer a later supported
     document over an unsupported file.
   - Covers suppressing immediate duplicate shared payloads from the initial
     media load and live share stream while still allowing the same file or link
@@ -1559,7 +1606,7 @@ These cannot be proven by local unit tests or the unsigned debug APK:
 | iOS share-to-app | TestFlight or development install notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
 | iOS runtime permissions | QA notes/screenshots for camera, microphone, speech recognition, photo library, local network, and notifications, with `permission-grant:<id>` evidence |
 | Manual SSH against real server | Host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation |
-| Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, AI search with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
+| Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
 
 ## Build Record Template
 

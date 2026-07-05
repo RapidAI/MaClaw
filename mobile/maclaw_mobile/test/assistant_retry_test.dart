@@ -28,7 +28,7 @@ void main() {
     );
   });
 
-  test('assistant search markdown keeps query answer and citations structured',
+  test('assistant answer markdown keeps query answer and citations structured',
       () {
     const citation = SearchCitation(
       title: '官方公告',
@@ -36,7 +36,7 @@ void main() {
       snippet: '服务状态已恢复。',
     );
 
-    final markdown = assistantSearchResultMarkdown(
+    final markdown = assistantAnswerMarkdown(
       query: '排查今天的官方服务状态',
       answer: '官方服务运行正常。',
       citations: const [citation],
@@ -50,15 +50,15 @@ void main() {
     expect(markdown, contains('https://hubs.mypapers.top/news/1'));
   });
 
-  test('assistant search draft title follows the emergency query', () {
+  test('assistant draft title follows the emergency query', () {
     expect(
-      assistantSearchDraftTitle('  排查今天的官方服务状态  '),
-      '信息查询：排查今天的官方服务状态',
+      assistantDraftTitle('  排查今天的官方服务状态  '),
+      'AI助手：排查今天的官方服务状态',
     );
-    expect(assistantSearchDraftTitle('   '), '信息查询整理');
+    expect(assistantDraftTitle('   '), 'AI助手整理');
     expect(
-      assistantSearchDraftTitle('${'a' * 40} status'),
-      '信息查询：aaaaaaaaaaaaaaaaaaaaaaaaaaaa...',
+      assistantDraftTitle('${'a' * 40} status'),
+      'AI助手：aaaaaaaaaaaaaaaaaaaaaaaaaaaa...',
     );
   });
 }

@@ -87,6 +87,7 @@ void main() {
         File('ios/Runner.xcodeproj/project.pbxproj').readAsStringSync();
 
     expect(runnerPlist, contains('<string>MaClaw Mobile</string>'));
+    expect(runnerPlist, isNot(contains('<string>maclaw_mobile</string>')));
     expect(runnerPlist, contains('<string>maclaw</string>'));
     expect(
       runnerPlist,

@@ -27,7 +27,7 @@ import { readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, ty
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
-import { buildHubCardStoreURL, buildHubCreditsURL } from './utils/hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
@@ -2341,6 +2341,21 @@ function App() {
         }
     }, [config, lang, showAlert]);
 
+    const openMaclawAppManualPage = useCallback(async () => {
+        try {
+            const freshConfig = await callBackend(() => LoadConfig());
+            const sourceConfig = freshConfig || config;
+            const url = buildHubMaclawAppManualURL((sourceConfig as any)?.remote_hub_url, lang);
+            if (url) {
+                safeBrowserOpenURL(url);
+                return;
+            }
+            showAlert(lang === 'zh-Hans' ? 'Hub 地址缺失，暂时无法打开应用工作室使用说明。' : lang === 'zh-Hant' ? 'Hub 位址缺失，暫時無法打開應用工作室使用說明。' : 'Hub URL is missing, so the App Studio manual cannot be opened.');
+        } catch (error) {
+            showAlert(String(error || (lang === 'zh-Hans' ? '打开应用工作室使用说明失败' : lang === 'zh-Hant' ? '打開應用工作室使用說明失敗' : 'Failed to open the App Studio manual')));
+        }
+    }, [config, lang, showAlert]);
+
     const formatSidebarCredit = useCallback((value: number) => {
         if (!Number.isFinite(value)) return '0';
         if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
@@ -3375,7 +3390,7 @@ ${instruction}`;
                     {showAppEntryEnabled && (
                         <div style={{ display: navTab === 'apps' ? undefined : 'none', height: '100%', minHeight: 0 }} hidden={navTab !== 'apps'}>
                             <Suspense fallback={null}>
-                                <AppsPage lang={lang} onOpenMISDataSettings={openMISDataSettings} />
+                                <AppsPage lang={lang} onOpenMISDataSettings={openMISDataSettings} onOpenManual={openMaclawAppManualPage} />
                             </Suspense>
                         </div>
                     )}

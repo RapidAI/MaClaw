@@ -22,6 +22,9 @@ REQUIRED_GRADLE_MARKERS = (
 FORBIDDEN_GRADLE_MARKERS = (
     'signingConfig = signingConfigs.getByName("debug")',
     'Signing with the debug keys',
+    'Specify your own unique Application ID',
+    'flutter.dev/to/review-gradle-config',
+    'You can update the following values to match your application needs',
 )
 
 REQUIRED_GITIGNORE_MARKERS = (

@@ -998,7 +998,52 @@ function summaryBody(value){ if(typeof value==="string") return `<p class="muted
 function showInlineSummary(id,title,value){ const el=$(id); if(!el) return; el.classList.remove("hidden"); el.innerHTML=`${title?`<h3>${esc(title)}</h3>`:""}${summaryBody(value)}`; }
 function emptyState(label){ return `<div class="empty-state" role="status"><span aria-hidden="true"></span><p>${esc(label||t("empty"))}</p></div>`; }
 function sectionHead(title, hint="", actions=""){ return `<div class="section-head"><div><h2>${title}</h2>${hint?`<p class="muted">${hint}</p>`:""}</div>${actions||""}</div>`; }
-function pageShell(klass, body){ return `<section class="page-shell ${klass}">${body}</section>`; }
+function pageShell(klass, body){ const guide=klass==="dashboard-page"?quickStartGuide():""; return `<section class="page-shell ${klass}">${guide}${body}</section>`; }
+const guideIcons={
+  tenant:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5 12 2l8 3.5v13L12 22l-8-3.5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
+  user:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>',
+  key:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7.5a5 5 0 1 0 1.4 4.3L22 5.2V3h-2.2l-1.1 1.1h-2.1v2.1z"/><path d="M7.5 12.5h.01"/></svg>',
+  knowledge:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M8 6h8M8 10h7M8 14h5"/></svg>',
+  skill:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path d="m5.6 5.6 2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/><circle cx="12" cy="12" r="3"/></svg>',
+  client:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H4z"/><path d="M9 19h6M12 15v4"/></svg>',
+  service:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v5H5zM5 14h14v5H5z"/><path d="M8 7.5h.01M8 16.5h.01M12 7.5h4M12 16.5h4"/></svg>',
+  sandbox:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.8 8.5 7 10 4.2-1.5 7-5.6 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg>',
+  overview:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v7H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 14h7v5H4z"/></svg>',
+  check:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
+  logs:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 11h6M9 15h6"/></svg>'
+};
+function guideIcon(name){ return guideIcons[name] || guideIcons.overview; }
+const quickGuideConcepts=[
+  ["tenant","租户 Tenant","一组用户、知识和策略的隔离边界。先建租户，再在租户下建用户。","An isolation boundary for users, knowledge, and policy. Create a tenant first, then create users under it."],
+  ["user","用户 User","真实使用 MaClawSrv 的账号。用户会拥有自己的会话、知识、凭据和客户端默认配置。","The account that actually uses MaClawSrv. A user has sessions, knowledge, credentials, and client defaults."],
+  ["key","API 凭据 API Credential","给外部程序调用 MaClawSrv API 的密钥。普通后台管理不需要创建。","A key for external programs calling MaClawSrv APIs. Normal admin console work does not require one."],
+  ["knowledge","知识 Knowledge","用户或公用知识库中可检索的资料。权限决定某个用户能读到哪些知识范围。","Retrievable material from user-owned or public knowledge bases. Permissions decide what a user can read."],
+  ["skill","技能来源 Skill Sources","助手查找和安装技能的渠道，不是知识库。优先级是用户策略 > 租户策略 > 全局默认。","Channels for finding and installing skills, not knowledge bases. Priority is user policy > tenant policy > global default."],
+  ["client","客户端配置 Client Config","所有用户共用的搜索、代理、MCP、SSH、技能市场和界面默认值，保存后按运行时配置生效。","Shared defaults for search, proxy, MCP, SSH, skill markets, and UI behavior. Saved values apply through runtime config."],
+  ["service","服务配置 Service Config","服务进程自己的配置。保存草稿后通常还要校验、导出方案、应用到 .env/systemd 并重启。","Server-process configuration. After saving a draft, validate, export a plan, apply .env/systemd changes, and restart when required."],
+  ["sandbox","沙箱 Sandbox","限制工具运行权限的安全边界。用于减少文件、网络和进程操作风险。","A safety boundary for tool execution that reduces file, network, and process-operation risk."]
+];
+const quickGuideSteps=[
+  ["overview","先看总览","确认运行时、就绪状态、任务和安全风险是否正常。","Check Overview first: runtime, readiness, jobs, and security risks.", "overview"],
+  ["tenant","创建租户和用户","进入租户与用户，先创建租户，再创建普通用户；需要外部调用时再创建 API 凭据。","Go to Tenants & Users. Create a tenant, then users. Create API credentials only for external callers.", "tenants"],
+  ["client","配置用户侧默认值","进入客户端配置，设置联网搜索、代理、MCP/SSH、SkillHub 和界面默认值。","Open Client Config to set search, proxy, MCP/SSH, SkillHub, and UI defaults.", "clientConfig"],
+  ["knowledge","导入或挂载知识","进入知识与技能来源，创建公用知识库、导入资料，并把知识范围挂到目标用户。","Open Knowledge & Skill Sources, create public knowledge bases, import material, and attach scopes to users.", "knowledge"],
+  ["skill","调整技能来源","按全局、租户、用户三个层级设置技能市场来源；只在需要覆盖时启用租户或用户策略。","Configure skill sources at global, tenant, and user levels. Enable overrides only when needed.", "knowledge"],
+  ["logs","做一次验证","回到总览看任务是否完成；到日志或运维里查错误、导出支持包或审计风险事件。","Return to Overview for job status. Use Logs or Ops for errors, support bundles, and risk-event audit.", "logs"]
+];
+const quickGuideHeaderHTML=`<div class="quick-guide__head"><div class="quick-guide__title-wrap"><div class="quick-guide__hero-icon">${guideIcon("service")}</div><div><h2 id="quickGuideTitle">快速操作手册 / Quick Start Manual</h2><p>MaClawSrv 是多用户的数据与能力服务后台。管理员通常按“建账号 - 配默认能力 - 导入知识 - 验证运行”的顺序使用。</p><p>MaClawSrv is a multi-user data and capability service. Admins usually follow: create accounts, configure shared capabilities, import knowledge, then verify runtime health.</p></div></div><div class="quick-guide__status"><span>Admin</span><strong>Data Server</strong></div></div>`;
+const quickGuideFlowHTML=`<div class="quick-guide__flow" aria-hidden="true"><span>${guideIcon("tenant")}Account</span><i></i><span>${guideIcon("client")}Config</span><i></i><span>${guideIcon("knowledge")}Knowledge</span><i></i><span>${guideIcon("check")}Verify</span></div>`;
+const quickGuideConceptsHTML=quickGuideConcepts.map(([icon,term,cn,en])=>`<div><dt><span class="guide-mini-icon">${guideIcon(icon)}</span>${esc(term)}</dt><dd>${esc(cn)}<span>${esc(en)}</span></dd></div>`).join("");
+const quickGuideStepsHTMLCache=Object.create(null);
+function quickGuideStepsHTML(){
+  const locale=String(state.locale || "zh-CN");
+  if(locale in quickGuideStepsHTMLCache) return quickGuideStepsHTMLCache[locale];
+  quickGuideStepsHTMLCache[locale]=quickGuideSteps.map(([icon,title,cn,en,target],i)=>`<li><span class="step-index">${guideIcon(icon)}<b>${i+1}</b></span><div><strong>${esc(title)}</strong><p>${esc(cn)}</p><p>${esc(en)}</p><button type="button" class="secondary guide-link" data-guide-section="${esc(target)}">${esc(t(target))}</button></div></li>`).join("");
+  return quickGuideStepsHTMLCache[locale];
+}
+function quickStartGuide(){
+  return `<section class="quick-guide" aria-labelledby="quickGuideTitle">${quickGuideHeaderHTML}${quickGuideFlowHTML}<div class="quick-guide__grid"><div class="quick-guide__block"><h3>核心概念 / Core Concepts</h3><dl class="concept-list">${quickGuideConceptsHTML}</dl></div><div class="quick-guide__block"><h3>推荐步骤 / Recommended Steps</h3><ol class="step-list">${quickGuideStepsHTML()}</ol></div></div></section>`;
+}
 function optionText(parts){ return parts.filter(Boolean).join(" / "); }
 function displayWithID(label,id){ const text=String(label||"").trim(); const raw=String(id||"").trim(); if(!text||text===raw) return raw||"-"; return `${text} (${raw})`; }
 function tenantSelect(id,items,selected="",blank=true,blankLabel="allOption"){ const opts=blank?`<option value="">${t(blankLabel)}</option>`:""; return `<select id="${esc(id)}">${opts}${(items||[]).map(x=>`<option value="${esc(x.id)}" ${selected===x.id?"selected":""}>${esc(optionText([x.name,x.id]))}</option>`).join("")}</select>`; }
@@ -1022,6 +1067,7 @@ function isOwner(){ return state.me?.auth_type==="admin_secret" || state.me?.adm
 function applyOwnerGuards(){ if(isOwner()) return; const tip=t("ownerOnly"); ["runRuntimeGC","rotateLog","saveSandbox","rollbackSandbox","installSandboxRun","saveSandboxProfile","createTenant","createTenantUser","createCredential","saveCfg","exportCfg","clearCfgDraft","saveAIModels","clearTenantKnowledge","saveKnowledgeCrossTenant","saveKnowledgeAccess","deleteKnowledgeAccess","saveKnowledgeImportDefaults","createPublicKnowledge","publicKnowledgeImportText","publicKnowledgeImportFile","publicKnowledgeImportURLs","saveSkillGlobal","saveSkillTenant","deleteSkillTenant","saveSkillUser","deleteSkillUser","runImport","createSnapshot","pruneSnapshots"].forEach(id=>{ const el=$(id); if(el){ el.disabled=true; el.title=tip; }}); document.querySelectorAll("[data-job-cancel],[data-tenant-status],[data-tenant-delete],[data-user-status],[data-user-delete],[data-credential-status],[data-credential-secret],[data-credential-key],[data-credential-revoke],[data-admin-toggle],[data-session-revoke],[data-sandbox-report-delete],[data-sandbox-profile-delete],[data-snapshot-restore-run],[data-snapshot-delete],[data-public-kb-add],[data-public-kb-remove],[data-public-kb-delete],[data-ai-model-download]").forEach(el=>{ el.disabled=true; el.title=tip; }); }
 function bindNavKeyboard(){ const buttons=[...$("nav").querySelectorAll("button")]; buttons.forEach((b,i)=>b.onkeydown=(e)=>{ const keys={ArrowDown:1,ArrowRight:1,ArrowUp:-1,ArrowLeft:-1}; if(e.key==="Home"||e.key==="End"||keys[e.key]){ e.preventDefault(); const next=e.key==="Home"?0:e.key==="End"?buttons.length-1:(i+keys[e.key]+buttons.length)%buttons.length; buttons[next]?.focus(); } if(e.key==="Enter"||e.key===" "){ e.preventDefault(); b.click(); } }); document.onkeydown=(e)=>{ if(e.altKey||e.ctrlKey||e.metaKey||e.shiftKey) return; const target=e.target; if(target&&["INPUT","TEXTAREA","SELECT"].includes(target.tagName)) return; const n=Number(e.key); if(n>=1&&n<=buttons.length){ e.preventDefault(); buttons[n-1]?.click(); buttons[n-1]?.focus(); } }; }
 function setSection(id, updateHash=true){ if(!sections.includes(id)) id="overview"; state.sectionChanged=state.section!==id; state.section=id; localStorage.setItem("maclaw.admin.section",id); if(updateHash&&location.hash!==`#${id}`) history.replaceState(null,"",`#${id}`); }
+document.addEventListener("click",(e)=>{ const btn=e.target?.closest?.(".quick-guide [data-guide-section]"); if(!btn) return; e.preventDefault(); setSection(btn.dataset.guideSection); render(); });
 function setAuthShell(on,target="loginPanel"){ const active=!!on; document.body.classList.toggle("auth-screen",active); $("app")?.classList.toggle("auth-only",active); $("skipLink")?.setAttribute("href",active?`#${target}`:"#content"); }
 function renderShell(){ document.documentElement.lang=state.locale; const localeSelect=$("localeSelect"); if(localeSelect){ localeSelect.innerHTML=(state.locales||[]).map(x=>`<option value="${esc(x.locale)}">${esc(x.label||x.locale)}</option>`).join(""); localeSelect.value=state.locale; } document.querySelectorAll("[data-i18n]").forEach(n=>n.textContent=t(n.dataset.i18n)); $("nav").innerHTML=sections.map((id)=>`<button type="button" class="${state.section===id?"active":""}" data-section="${id}" title="${esc(t(id))}" aria-current="${state.section===id?"page":"false"}"><span class="nav-icon">${navIcons[id]||""}</span><span class="nav-label">${esc(t(id))}</span></button>`).join(""); $("nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{setSection(b.dataset.section); render();}); bindNavKeyboard(); const badge=$("authBadge"); badge.textContent=state.me?.admin?.username || state.me?.auth_type || (state.token ? t("adminRole") : t("noToken")); badge.className=`badge ${state.token?"badge-on":"badge-off"}`; }
 function focusPrimaryInput(scope){ const root=scope||document; const el=root.querySelector("input:not([type='hidden']):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)"); if(el&&window.matchMedia("(pointer: fine)").matches) setTimeout(()=>el.focus({preventScroll:true}),0); }

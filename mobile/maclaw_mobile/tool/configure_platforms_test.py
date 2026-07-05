@@ -70,6 +70,31 @@ class ConfigurePlatformsTest(unittest.TestCase):
             "\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002",
         )
 
+    def test_configure_ios_sets_readable_runner_bundle_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = root / "ios/Runner"
+            runner.mkdir(parents=True)
+            info = runner / "Info.plist"
+            with info.open("wb") as fh:
+                plistlib.dump(
+                    {
+                        "CFBundleDisplayName": "maclaw_mobile",
+                        "CFBundleName": "maclaw_mobile",
+                    },
+                    fh,
+                )
+            old_root = configure_platforms.ROOT
+            configure_platforms.ROOT = root
+            try:
+                configure_platforms.configure_ios()
+            finally:
+                configure_platforms.ROOT = old_root
+
+            plist = plistlib.loads(info.read_bytes())
+            self.assertEqual(plist["CFBundleDisplayName"], "MaClaw Mobile")
+            self.assertEqual(plist["CFBundleName"], "MaClaw Mobile")
+
     def test_android_gradle_uses_official_package_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -82,7 +107,12 @@ class ConfigurePlatformsTest(unittest.TestCase):
                 '        sourceCompatibility = JavaVersion.VERSION_17\n'
                 '        targetCompatibility = JavaVersion.VERSION_17\n'
                 '    }\n'
-                '    defaultConfig { applicationId = "com.example.maclaw_mobile" }\n'
+                '    defaultConfig {\n'
+                '        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).\n'
+                '        applicationId = "com.example.maclaw_mobile"\n'
+                '        // You can update the following values to match your application needs.\n'
+                '        // For more information, see: https://flutter.dev/to/review-gradle-config.\n'
+                '    }\n'
                 '    buildTypes {\n'
                 '        release {\n'
                 '            // TODO: Add your own signing config for the release build.\n'
@@ -116,6 +146,8 @@ class ConfigurePlatformsTest(unittest.TestCase):
             self.assertIn("bundleRelease", text)
             self.assertNotIn('signingConfigs.getByName("debug")', text)
             self.assertNotIn("com.example.maclaw_mobile", text)
+            self.assertNotIn("Specify your own unique Application ID", text)
+            self.assertNotIn("review-gradle-config", text)
 
     def test_android_release_signing_template_is_idempotent(self) -> None:
         source = (
@@ -350,6 +382,30 @@ class ConfigurePlatformsTest(unittest.TestCase):
             payload["com.apple.security.application-groups"],
             ["$(CUSTOM_GROUP_ID)"],
         )
+
+    def test_ios_runner_tests_are_generated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests_dir = root / "ios/RunnerTests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "RunnerTests.swift").write_text(
+                "func testExample() {}\n",
+                encoding="utf-8",
+            )
+            old_root = configure_platforms.ROOT
+            configure_platforms.ROOT = root
+            try:
+                configure_platforms.configure_ios_runner_tests()
+            finally:
+                configure_platforms.ROOT = old_root
+
+            text = (tests_dir / "RunnerTests.swift").read_text(encoding="utf-8")
+            self.assertIn("testMaClawMobileBundleConfiguration", text)
+            self.assertIn(
+                "top.mypapers.maclaw.mobile.RunnerTests",
+                text,
+            )
+            self.assertNotIn("testExample", text)
 
     def test_ios_share_extension_files_are_generated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

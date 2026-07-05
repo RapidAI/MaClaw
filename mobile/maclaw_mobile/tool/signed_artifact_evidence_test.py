@@ -11,6 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import signed_artifact_evidence
+import validate_qa_build_record
+from validate_qa_build_record_test import complete_record
 
 
 class SignedArtifactEvidenceTest(unittest.TestCase):
@@ -42,6 +44,36 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
             self.assertIn("Version/build number: 1.0.0+42", output)
             self.assertIn("Signing identity: release alias", output)
             self.assertIn("Installer channel: Firebase App Distribution", output)
+
+    def test_android_evidence_lines_validate_when_pasted_into_qa_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"signed release apk bytes")
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+            evidence = "\n".join(
+                signed_artifact_evidence.android_evidence_lines(
+                    artifact,
+                    record_dir=record_dir,
+                    version="1.0.0+42",
+                    signing_identity="release alias upload key SHA256:AA",
+                    installer_channel="Firebase App Distribution internal track",
+                ),
+            )
+            record = record_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text(
+                complete_record()
+                .replace("Artifact path: build/app/outputs/flutter-apk/app-release.apk", "")
+                .replace("SHA256: " + "a" * 64, "")
+                .replace("Version/build number: 1.0.0+42", "")
+                .replace("Signing identity: Android release keystore alias maclaw-mobile", "")
+                .replace("Installer channel: internal app sharing", evidence),
+                encoding="utf-8",
+            )
+
+            self.assertEqual([], validate_qa_build_record.validate_file(record))
 
     def test_android_evidence_rejects_debug_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +186,57 @@ class SignedArtifactEvidenceTest(unittest.TestCase):
             ],
             lines,
         )
+
+    def test_ios_evidence_lines_validate_when_pasted_into_qa_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            android_artifact = (
+                root / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
+            )
+            android_artifact.parent.mkdir(parents=True)
+            android_artifact.write_bytes(b"signed release apk bytes")
+            archive = root / "build" / "ios" / "archive" / "MaClawMobile.xcarchive"
+            archive.mkdir(parents=True)
+            record_dir = root / "docs" / "qa-builds"
+            record_dir.mkdir(parents=True)
+            android_evidence = "\n".join(
+                signed_artifact_evidence.android_evidence_lines(
+                    android_artifact,
+                    record_dir=record_dir,
+                    version="1.0.0+42",
+                    signing_identity="release alias upload key SHA256:AA",
+                    installer_channel="Firebase App Distribution internal track",
+                ),
+            )
+            ios_evidence = "\n".join(
+                signed_artifact_evidence.ios_evidence_lines(
+                    archive_or_build=str(archive),
+                    team_id="ABCDE12345",
+                    provisioning_profiles=(
+                        "Runner profile UUID abc123; "
+                        "Share Extension profile UUID def456"
+                    ),
+                    record_dir=record_dir,
+                ),
+            )
+            record = record_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text(
+                complete_record()
+                .replace("Artifact path: build/app/outputs/flutter-apk/app-release.apk", "")
+                .replace("SHA256: " + "a" * 64, "")
+                .replace("Version/build number: 1.0.0+42", "")
+                .replace("Signing identity: Android release keystore alias maclaw-mobile", "")
+                .replace("Installer channel: internal app sharing", android_evidence)
+                .replace("Archive/TestFlight build: TestFlight build 42", "")
+                .replace("Team ID: A1B2C3D4E5", "")
+                .replace(
+                    "Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456",
+                    ios_evidence,
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual([], validate_qa_build_record.validate_file(record))
 
     def test_ios_evidence_with_record_dir_validates_and_relativizes_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

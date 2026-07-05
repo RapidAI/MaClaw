@@ -1378,6 +1378,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		var proxyCfg corelib.OpenAIProxyConfig
 		if e.app != nil {
 			llmCfg := e.app.GetMaclawLLMConfig()
+			providerName := maclawLLMUsageProviderName(e.app, llmCfg)
 			proxyCfg = corelib.OpenAIProxyConfig{
 				URL:      llmCfg.URL,
 				Key:      llmCfg.Key,
@@ -1385,6 +1386,12 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 				Protocol: llmCfg.Protocol,
 				WireAPI:  llmCfg.WireAPI,
 				AuthType: llmCfg.AuthType,
+				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
+					if providerName == "" {
+						return
+					}
+					e.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+				},
 			}
 		}
 		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
@@ -4415,7 +4422,7 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	}
 	log.Printf("[skill-app] RunNLSkillAsync skill=%q arg_keys=%v arg_count=%d", skillName, argKeys, len(runArgs))
 
-	runArgs = withSkillAppInputFileAliases(runArgs)
+	runArgs = markMaclawAppSkillRunArgs(withSkillAppInputFileAliases(runArgs))
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
 		if err := a.cleanupStagedSkillAppInputFilesFromRunArgs(runArgs); err != nil {
@@ -4459,6 +4466,14 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	}
 	log.Printf("[skill-app] RunNLSkillAsync OK skill=%q run_id=%s", skillName, runID)
 	return runID, nil
+}
+
+func markMaclawAppSkillRunArgs(runArgs map[string]interface{}) map[string]interface{} {
+	if runArgs == nil {
+		runArgs = map[string]interface{}{}
+	}
+	runArgs["_maclaw_app"] = true
+	return runArgs
 }
 
 // GetNLSkillRunStatus returns the status of an async skill run for Wails.

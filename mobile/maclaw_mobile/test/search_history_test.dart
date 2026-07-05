@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/features/assistant/search_history.dart';
 
 void main() {
-  test('round trips search history json', () {
+  test('round trips assistant history json', () {
     final entry = SearchHistoryEntry(
       id: 's1',
       query: 'nginx 502',
@@ -20,7 +20,7 @@ void main() {
     expect(restored.favorite, isTrue);
   });
 
-  test('defaults old search history entries to non favorite', () {
+  test('defaults old assistant history entries to non favorite', () {
     final restored = SearchHistoryEntry.fromJson({
       'id': 's1',
       'query': 'nginx 502',

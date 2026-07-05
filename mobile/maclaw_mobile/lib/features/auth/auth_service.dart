@@ -1,6 +1,5 @@
 import 'package:dio/dio.dart';
 
-import '../../core/api/desktop_llm_qr.dart';
 import '../../core/api/official_service.dart';
 import '../../core/storage/secure_vault.dart';
 
@@ -173,60 +172,6 @@ class AuthService {
         token: result.accessToken,
       );
     }
-    return result;
-  }
-
-  Future<MobileServiceConnectResult> redeemOfficialServiceCode(
-    String code,
-  ) async {
-    return _connectWithOfficialHubCenter(
-      data: {'code': code.trim()},
-      path: '/api/mobile/service-redemptions',
-    );
-  }
-
-  Future<MobileServiceConnectResult> connectWithDesktopLlmQr(
-    String qrPayload,
-  ) async {
-    final payload = parseMaclawDesktopLlmQrPayload(qrPayload);
-    return _connectWithOfficialHubCenter(
-      data: {'qr_payload': payload.raw},
-      path: '/api/mobile/llm/desktop-qr-sessions',
-    );
-  }
-
-  Future<MobileServiceConnectResult> _connectWithOfficialHubCenter({
-    required String path,
-    required Map<String, dynamic> data,
-  }) async {
-    final resolution = await tryOfficialHubCenters<MobileServiceConnectResult>(
-      dio: _dio,
-      preferredHubCenterUrl: _selectedHubCenterUrl,
-      operation: (client, hubCenterUrl) async {
-        final response = await client.post<Map<String, dynamic>>(
-          path,
-          data: data,
-          options: Options(
-            headers: {'X-MaClaw-HubCenter-URL': hubCenterUrl},
-          ),
-        );
-        return MobileServiceConnectResult.fromJson(
-          response.data ?? const {},
-        ).copyWith(hubCenterUrl: hubCenterUrl);
-      },
-    );
-    _selectedHubCenterUrl = resolution.selectedHubCenterUrl;
-    final result = resolution.value;
-    if (result.accessToken.isEmpty || result.hubUrl.isEmpty) {
-      if (result.requiresFollowUp) {
-        throw MobileServiceConnectionPendingException(result);
-      }
-      throw StateError('Official service did not return a mobile Hub session.');
-    }
-    await _vault.saveSession(
-      hubUrl: result.hubUrl,
-      token: result.accessToken,
-    );
     return result;
   }
 
@@ -511,93 +456,5 @@ class PhoneLoginVerifyResult {
       llmAuthorizationId: llmAuthorizationId ?? this.llmAuthorizationId,
       isNewUser: isNewUser ?? this.isNewUser,
     );
-  }
-}
-
-class MobileServiceConnectResult {
-  final String status;
-  final String nextAction;
-  final String message;
-  final String accessToken;
-  final String hubUrl;
-  final String hubId;
-  final String tenantId;
-  final String hubCenterUrl;
-
-  const MobileServiceConnectResult({
-    required this.status,
-    required this.nextAction,
-    required this.message,
-    required this.accessToken,
-    required this.hubUrl,
-    required this.hubId,
-    required this.tenantId,
-    required this.hubCenterUrl,
-  });
-
-  factory MobileServiceConnectResult.fromJson(Map<String, dynamic> json) {
-    final hub = Map<String, dynamic>.from(json['hub'] as Map? ?? const {});
-    final user = Map<String, dynamic>.from(json['user'] as Map? ?? const {});
-    final hubUrl = json['hub_url'] as String? ??
-        hub['base_url'] as String? ??
-        hub['url'] as String? ??
-        '';
-    return MobileServiceConnectResult(
-      status: json['status'] as String? ?? '',
-      nextAction: json['next_action'] as String? ?? '',
-      message: json['message'] as String? ?? '',
-      accessToken: json['access_token'] as String? ?? '',
-      hubUrl: hubUrl.isEmpty ? '' : normalizeDiscoveredHubUrl(hubUrl),
-      hubId: json['hub_id'] as String? ?? hub['id'] as String? ?? '',
-      tenantId:
-          json['tenant_id'] as String? ?? user['tenant_id'] as String? ?? '',
-      hubCenterUrl: json['hubcenter_url'] as String? ??
-          json['hub_center_url'] as String? ??
-          '',
-    );
-  }
-
-  MobileServiceConnectResult copyWith({
-    String? status,
-    String? nextAction,
-    String? message,
-    String? accessToken,
-    String? hubUrl,
-    String? hubId,
-    String? tenantId,
-    String? hubCenterUrl,
-  }) {
-    return MobileServiceConnectResult(
-      status: status ?? this.status,
-      nextAction: nextAction ?? this.nextAction,
-      message: message ?? this.message,
-      accessToken: accessToken ?? this.accessToken,
-      hubUrl: hubUrl ?? this.hubUrl,
-      hubId: hubId ?? this.hubId,
-      tenantId: tenantId ?? this.tenantId,
-      hubCenterUrl: hubCenterUrl ?? this.hubCenterUrl,
-    );
-  }
-
-  bool get requiresFollowUp {
-    return accessToken.isEmpty &&
-        hubUrl.isNotEmpty &&
-        (status == 'requires_phone_login' || nextAction.isNotEmpty);
-  }
-}
-
-class MobileServiceConnectionPendingException implements Exception {
-  final MobileServiceConnectResult result;
-
-  const MobileServiceConnectionPendingException(this.result);
-
-  @override
-  String toString() {
-    final message = result.message.trim();
-    if (message.isNotEmpty) return message;
-    if (result.nextAction == 'phone_login') {
-      return '兑换码已匹配到所属 Hub，请继续完成手机号验证码登录，由 Hub 签发手机访问凭据。';
-    }
-    return '兑换码已匹配到所属 Hub，还需要继续完成下一步接入。';
   }
 }

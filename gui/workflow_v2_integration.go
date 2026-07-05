@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -521,6 +522,10 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	// --- Handle pending coding complexity choice ---
 	if choice := h.handleCodingComplexityCommand(msg, trimmed); choice != nil {
 		return *choice
+	}
+	if h.hasPendingDirectSubAgentExecution(msg.UserID) {
+		log.Printf("[workflow-v2] direct SubAgent mode awaiting user task: user=%s", msg.UserID)
+		return workflowIMRouteResult{WorkflowAgentLoop: true}
 	}
 
 	log.Printf("[workflow-v2] routing: user=%s text_len=%d", msg.UserID, len([]rune(trimmed)))
@@ -1971,7 +1976,7 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 
 // runDirectCodingSubAgent executes a single coding task directly via SubAgent
 // without going through the full SDD workflow. Used for simple/medium tasks.
-func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath string, onProgress func(string), onToken func(string)) *IMAgentResponse {
+func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
 		log.Printf("[workflow-v2] direct coding: failed to ensure project dir %s: %v", projectPath, err)
 	}
@@ -2006,7 +2011,7 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 		} else {
 			fn = RunTaskWithSubAgent
 		}
-		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, "", "", nil, nil, onTk, onPr)
+		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, "", "", nil, loopCtx, onTk, onPr)
 		if v1Result == nil {
 			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
@@ -2065,6 +2070,65 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 
 	return &IMAgentResponse{
 		Text: fmt.Sprintf("✅ 编码完成\n项目路径：%s\n\n%s", projectPath, report),
+	}
+}
+
+func (h *IMMessageHandler) runDirectRemoteCodingSubAgent(userID, userText string, remoteCtx directRemoteCodingContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	userText = strings.TrimSpace(userText)
+	if userText == "" {
+		userText = "执行远程编程任务"
+	}
+	if strings.TrimSpace(remoteCtx.SessionID) == "" {
+		return &IMAgentResponse{Text: "⚠️ 远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
+	}
+	if remoteCtx.ProjectDir == "" {
+		remoteCtx.ProjectDir = "."
+	}
+	if remoteCtx.WorkDir == "" {
+		remoteCtx.WorkDir = remoteCtx.ProjectDir
+	}
+
+	log.Printf("[workflow-v2] direct remote coding: user=%s session=%s project=%s task=%q", userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80))
+	if onProgress != nil {
+		onProgress(fmt.Sprintf("🚀 远程编程模式：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
+	}
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("direct-remote-coding-subagent", h.getMaclawAgentMaxIterations(), httpClient)
+		defer func() {
+			loopCtx.Cancel()
+			loopCtx.Done()
+		}()
+	}
+	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
+	subAgent.SetCallbacks(onToken, onProgress)
+	if h != nil && h.app != nil {
+		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+	}
+
+	result := subAgent.ExecuteTask(userText, "")
+	if result == nil {
+		return &IMAgentResponse{Text: "❌ 远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
+	}
+
+	statusText := "✅ 远程编程完成"
+	if result.Status != "success" {
+		statusText = "❌ 远程编程未完成"
+	}
+	summary := strings.TrimSpace(result.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(result.Error)
+	}
+	if summary == "" {
+		summary = fmt.Sprintf("状态：%s", result.Status)
+	}
+	if onToken != nil {
+		onToken("\n\n" + summary)
+	}
+	return &IMAgentResponse{
+		Text: fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary),
 	}
 }
 
@@ -2254,8 +2318,9 @@ const (
 	workflowChoiceCommandPrefix = "__workflow_choice__"
 	workflowChoiceComplex       = "complex" // Full SDD workflow
 	workflowChoiceSimple        = "simple"  // Direct SubAgent (coding only)
-	workflowChoiceSkip          = "skip"    // Not a workflow task, use normal agent loop
-	workflowChoiceDirect        = "direct"  // Non-coding direct handling, use normal agent loop
+	workflowChoiceRemoteSimple  = "remote_simple"
+	workflowChoiceSkip          = "skip"   // Not a workflow task, use normal agent loop
+	workflowChoiceDirect        = "direct" // Non-coding direct handling, use normal agent loop
 )
 
 // pendingWorkflowChoice stores the original route result while waiting for user choice.
@@ -2263,6 +2328,37 @@ type pendingWorkflowChoice struct {
 	Msg         IMUserMessage
 	RouteResult *v2.RouteResult
 	ChoiceID    string
+}
+
+type directRemoteCodingContext struct {
+	SessionID  string
+	WorkDir    string
+	ProjectDir string
+}
+
+func isDirectCodingPanelPlaceholder(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "启动简化编程任务", "启动远程编程任务":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *IMMessageHandler) hasPendingDirectSubAgentExecution(userID string) bool {
+	if h == nil {
+		return false
+	}
+	if _, pending := h.pendingV2SubAgentExecution.Load(userID); !pending {
+		return false
+	}
+	if _, ok := h.pendingDirectCodingProjectPath.Load(userID); ok {
+		return true
+	}
+	if _, ok := h.pendingDirectRemoteCoding.Load(userID); ok {
+		return true
+	}
+	return false
 }
 
 func buildWorkflowChoiceCommand(choice, choiceID string) string {
@@ -2347,12 +2443,154 @@ func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawP
 	}
 	h.pendingV2SubAgentExecution.Store(userID, true)
 	h.pendingDirectCodingProjectPath.Store(userID, projectPath)
+	h.pendingDirectRemoteCoding.Delete(userID)
 	h.workflowAgentLoopMarker.Store(userID, true)
 	h.workflowOriginalRequest.Store(userID, originalText)
+	if isDirectCodingPanelPlaceholder(originalText) {
+		return workflowIMRouteResult{
+			Response: &IMAgentResponse{Text: "已进入简化编程模式，请直接输入要修改的代码需求。"},
+		}
+	}
 	return workflowIMRouteResult{
 		WorkflowAgentLoop: true,
 		WorkflowDocPhase:  false,
 	}
+}
+
+func (h *IMMessageHandler) setupDirectRemoteCodingExecution(userID, originalText string) workflowIMRouteResult {
+	remoteCtx, err := h.resolveDirectRemoteCodingContext()
+	if err != nil {
+		log.Printf("[workflow-v2] setupDirectRemoteCodingExecution failed: user=%s err=%v", userID, err)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("⚠️ 无法启动远程编程：%v\n\n请先使用 SSH 工具连接远程服务器，再重新点击「远程编程」。", err)}}
+	}
+	if wf := h.getWorkflowV2(); wf != nil {
+		if prevState := wf.machine.GetActive(userID); prevState != nil {
+			wf.machine.Cancel(userID)
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+				"id":             prevState.ID,
+				"status":         string(v2.StatusCancelled),
+				"type":           prevState.Type,
+				"project_path":   workflowEventProjectPath(prevState),
+				"event_scope_id": h.app.getEventScopeID(prevState.UserID),
+			})
+		}
+	}
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingDirectCodingProjectPath.Delete(userID)
+	h.pendingDirectRemoteCoding.Store(userID, remoteCtx)
+	h.workflowAgentLoopMarker.Store(userID, true)
+	h.workflowOriginalRequest.Store(userID, originalText)
+	if isDirectCodingPanelPlaceholder(originalText) {
+		return workflowIMRouteResult{
+			Response: &IMAgentResponse{Text: fmt.Sprintf("已进入远程编程模式，将使用 SSH 会话 %s。请直接输入要在远程项目中修改的代码需求。", remoteCtx.SessionID)},
+		}
+	}
+	return workflowIMRouteResult{
+		WorkflowAgentLoop: true,
+		WorkflowDocPhase:  false,
+	}
+}
+
+func (h *IMMessageHandler) resolveDirectRemoteCodingContext() (directRemoteCodingContext, error) {
+	mgr := h.ensureSSHManager()
+	if mgr == nil {
+		return directRemoteCodingContext{}, fmt.Errorf("SSH 会话管理器不可用")
+	}
+	var selectedID string
+	var selectedWorkDir string
+	var selectedProjectDir string
+	var selectedCreatedAt time.Time
+	for _, session := range mgr.List() {
+		if !directRemoteCodingSessionSelectable(session) {
+			continue
+		}
+		if selectedID != "" && !session.CreatedAt.After(selectedCreatedAt) {
+			continue
+		}
+		selectedID = strings.TrimSpace(session.ID)
+		selectedCreatedAt = session.CreatedAt
+		selectedProjectDir = inferRemoteProjectDirFromSSHSession(session.Spec.InitialCommand)
+		selectedWorkDir = selectedProjectDir
+	}
+	if selectedID == "" {
+		return directRemoteCodingContext{}, fmt.Errorf("没有可用的 SSH 会话")
+	}
+	if selectedProjectDir == "" {
+		selectedProjectDir = "."
+	}
+	if selectedWorkDir == "" {
+		selectedWorkDir = selectedProjectDir
+	}
+	return directRemoteCodingContext{
+		SessionID:  selectedID,
+		WorkDir:    selectedWorkDir,
+		ProjectDir: selectedProjectDir,
+	}, nil
+}
+
+func directRemoteCodingSessionUsable(status remote.SessionStatus) bool {
+	return status == remote.SessionRunning || status == remote.SessionWaitingInput
+}
+
+func directRemoteCodingSessionSelectable(session *remote.SSHManagedSession) bool {
+	return session != nil &&
+		strings.TrimSpace(session.ID) != "" &&
+		directRemoteCodingSessionUsable(session.Status)
+}
+
+func inferRemoteProjectDirFromSSHSession(initialCommand string) string {
+	cmd := strings.TrimSpace(initialCommand)
+	for _, separator := range []string{"&&", ";", "\n"} {
+		cmd = strings.ReplaceAll(cmd, separator, "\n")
+	}
+	for _, part := range strings.Split(cmd, "\n") {
+		if dir := remoteProjectDirFromCDCommand(part); dir != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+func remoteProjectDirFromCDCommand(commandPart string) string {
+	part := strings.TrimSpace(commandPart)
+	if part == "cd" || !strings.HasPrefix(part, "cd") {
+		return ""
+	}
+	rest := strings.TrimPrefix(part, "cd")
+	if rest == "" || rest == part {
+		return ""
+	}
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return ""
+	}
+	dir := strings.TrimSpace(rest)
+	for {
+		switch {
+		case strings.HasPrefix(dir, "-- "):
+			dir = strings.TrimSpace(strings.TrimPrefix(dir, "--"))
+		case strings.HasPrefix(dir, "-P "):
+			dir = strings.TrimSpace(strings.TrimPrefix(dir, "-P"))
+		case strings.HasPrefix(dir, "-L "):
+			dir = strings.TrimSpace(strings.TrimPrefix(dir, "-L"))
+		default:
+			goto parseTarget
+		}
+	}
+
+parseTarget:
+	if dir == "" {
+		return ""
+	}
+	if strings.HasPrefix(dir, "\"") || strings.HasPrefix(dir, "'") {
+		quote := dir[:1]
+		dir = strings.TrimPrefix(dir, quote)
+		if idx := strings.Index(dir, quote); idx >= 0 {
+			dir = dir[:idx]
+		}
+	} else if fields := strings.Fields(dir); len(fields) > 0 {
+		dir = fields[0]
+	}
+	return strings.TrimSpace(dir)
 }
 
 // askWorkflowConfirmChoice presents the user with a choice before entering a workflow.
@@ -2510,6 +2748,16 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 		}
 		log.Printf("[workflow-v2] user chose: SIMPLE (direct coding)")
 		result := h.setupDirectCodingExecution(pending.Msg.UserID, pending.Msg.Text, pending.RouteResult.ProjectPath)
+		return &result
+
+	case workflowChoiceRemoteSimple:
+		if pending.RouteResult.WorkflowType != "coding" {
+			log.Printf("[workflow-v2] user sent 'remote_simple' for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
+		log.Printf("[workflow-v2] user chose: REMOTE_SIMPLE (direct remote coding)")
+		result := h.setupDirectRemoteCodingExecution(pending.Msg.UserID, pending.Msg.Text)
 		return &result
 
 	case workflowChoiceSkip:

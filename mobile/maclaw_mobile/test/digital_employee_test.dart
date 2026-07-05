@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
+import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_screen.dart';
 
@@ -89,5 +90,98 @@ void main() {
     expect(prompt, contains('风险、验证方式和回滚方式'));
     expect(prompt, contains('高风险命令只生成命令草案'));
     expect(prompt, contains('检查 nginx 502'));
+  });
+
+  test('digital employee mobile task context carries Hub and safety boundary',
+      () {
+    const employee = DigitalEmployee(
+      id: 'employee-1',
+      machineId: 'srv-1',
+      name: '服务器助手',
+      skillDescription: '远程服务器巡检、日志分析和应急处理。',
+      onlineStatus: 'online',
+      accessPolicy: 'per_request',
+      resident: true,
+      runtimeMissing: false,
+    );
+    const bootstrap = MobileBootstrap(
+      user: MobileUser(
+        userId: 'u-phone',
+        email: 'phone:19900001111',
+        phoneNumber: '19900001111',
+        creditsAccount: 'phone:19900001111',
+        tenantId: 'tenant-user',
+      ),
+      services: MobileServices(
+        hubStatus: 'online',
+        llmStatus: 'available',
+        searchStatus: 'available',
+        documentsStatus: 'available',
+        digitalEmployeesStatus: 'available',
+        llmStatusPath: '/api/llm/status',
+        modelsPath: '/api/llm/models',
+        searchPath: '/api/mobile/search',
+        documentsPath: '/api/mobile/documents',
+        digitalEmployeesPath: '/api/mobile/digital-employees',
+        realtimePath: '/api/mobile/realtime',
+      ),
+      connection: MobileConnection(
+        hubCenterCandidates: [
+          'https://hubs.mypapers.top',
+          'https://hubs.maclaw.top',
+          'https://hubs2.maclaw.top',
+        ],
+        selectedHubCenterUrl: 'https://hubs.maclaw.top',
+        hubUrl: 'https://tenant-a.maclaw.top',
+        hubId: 'hub-a',
+        tenantId: 'tenant-a',
+      ),
+      llmAccess: MobileLlmAccess(
+        mode: 'maclaw_official',
+        status: 'available',
+        authorizationId: '',
+        authorizedBy: '',
+        creditsAccount: 'phone:19900001111',
+        authorizedAt: null,
+      ),
+      features: MobileFeatures(
+        search: true,
+        documents: true,
+        localSsh: true,
+        digitalEmployees: true,
+        pushNotifications: false,
+      ),
+      limits: MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+    );
+    const draft = DigitalEmployeeMobileTaskDraft(
+      prompt: '检查 nginx 502，给我可复制的排查命令。',
+      type: DigitalEmployeeMobileTaskType.serverMaintenance,
+      requireManualConfirmation: true,
+    );
+
+    final context = draft.contextFor(
+      employee,
+      hubUrl: 'https://tenant-a.maclaw.top',
+      bootstrap: bootstrap,
+    );
+
+    expect(draft.taskTypeWireValue, 'server_maintenance');
+    expect(context['source'], 'maclaw_mobile');
+    expect(context['handoff'], 'mobile_emergency');
+    expect(context['task_type_label'], '服务器维护');
+    expect(context['hub_url'], 'https://tenant-a.maclaw.top');
+    expect(context['discovered_hub_url'], 'https://tenant-a.maclaw.top');
+    expect(context['selected_hubcenter_url'], 'https://hubs.maclaw.top');
+    expect(context['tenant_id'], 'tenant-a');
+    expect(context['credits_account'], 'phone:19900001111');
+    expect(context['manual_confirmation_required'], 'true');
+    expect(
+      context['execution_boundary'],
+      'draft_only_until_mobile_user_confirms',
+    );
+    expect(
+      context['manual_confirmation_scope'],
+      'destructive_or_high_risk_server_desktop_operations',
+    );
   });
 }

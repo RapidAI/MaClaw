@@ -10,7 +10,7 @@ import 'core/security/mobile_redaction.dart';
 import 'core/settings/app_preferences.dart';
 import 'features/account/account_screen.dart';
 import 'features/assistant/assistant_screen.dart';
-import 'features/auth/llm_setup_screen.dart';
+import 'features/auth/login_screen.dart';
 import 'features/auth/session_controller.dart';
 import 'features/auth/startup_splash_screen.dart';
 import 'features/digital_employees/digital_employees_screen.dart';
@@ -107,14 +107,13 @@ class MaClawMobileApp extends ConsumerWidget {
     final preferences =
         ref.watch(appPreferencesProvider).valueOrNull ?? const AppPreferences();
     final routerConfig = session.maybeWhen(
-      data: (state) =>
-          state.authenticated && mobileLlmConfigured(state.bootstrap)
-              ? mobileRouterForFeatures(state.bootstrap!.features)
-              : _setupRouter,
+      data: (state) {
+        if (!state.authenticated) return _loginRouter;
+        return mobileRouterForFeatures(state.bootstrap!.features);
+      },
       orElse: () => _loadingRouter,
     );
-    final canRouteNotifications = session.valueOrNull?.authenticated == true &&
-        mobileLlmConfigured(session.valueOrNull?.bootstrap);
+    final canRouteNotifications = session.valueOrNull?.authenticated == true;
     return MaterialApp.router(
       title: 'MaClaw Mobile',
       debugShowCheckedModeBanner: false,
@@ -172,11 +171,11 @@ class _NotificationOpenBridge extends ConsumerWidget {
   }
 }
 
-final _setupRouter = GoRouter(
+final _loginRouter = GoRouter(
   routes: [
     GoRoute(
       path: '/',
-      builder: (context, state) => const LlmSetupScreen(),
+      builder: (context, state) => const LoginScreen(),
     ),
   ],
 );

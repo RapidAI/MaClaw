@@ -614,6 +614,16 @@ func TestMobileDesktopQRSessionRejectsProviderOnlyPayload(t *testing.T) {
 	}
 }
 
+func TestMobileDesktopQRSessionAcceptsDesktopAuthPayloadType(t *testing.T) {
+	payload, err := parseMobileDesktopQRSessionPayload(`{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://tenant-a.maclaw.top"}`)
+	if err != nil {
+		t.Fatalf("parse mobile auth QR payload: %v", err)
+	}
+	if payload.Type != "maclaw_mobile_desktop_authorization" || payload.SessionID != "maqr_test" || payload.HubURL != "https://tenant-a.maclaw.top" {
+		t.Fatalf("payload = %#v, want desktop auth QR payload", payload)
+	}
+}
+
 func TestMobileDesktopQRSessionProxiesSignedPayloadToRegisteredHub(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	var hubServerURL string

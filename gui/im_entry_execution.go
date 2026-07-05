@@ -88,6 +88,32 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent
 	loopCtxElapsed := time.Since(loopCtxStart)
+	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
+
+	// Direct coding modes entered from the workflow panel wait for the user's
+	// next message. Consume them before generic direct-execution or SubAgent
+	// routing can reinterpret that message.
+	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase && h.hasPendingDirectSubAgentExecution(msg.UserID) {
+		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
+			if remoteRaw, isDirectRemoteCoding := h.pendingDirectRemoteCoding.LoadAndDelete(msg.UserID); isDirectRemoteCoding {
+				remoteCtx, _ := remoteRaw.(directRemoteCodingContext)
+				log.Printf("[workflow-v2] Direct remote coding SubAgent: user=%s session=%s project=%s request_id=%s", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID)
+				execResp := h.runDirectRemoteCodingSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, opts.OnProgress, opts.OnToken)
+				if execResp != nil {
+					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+				}
+			}
+			if projectPathRaw, isDirectCoding := h.pendingDirectCodingProjectPath.LoadAndDelete(msg.UserID); isDirectCoding {
+				projectPath := projectPathRaw.(string)
+				log.Printf("[workflow-v2] Direct coding SubAgent: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
+				execResp := h.runDirectCodingSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, opts.OnProgress, opts.OnToken)
+				if execResp != nil {
+					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+				}
+			}
+			log.Printf("[workflow-v2] Direct SubAgent execution returned nil, falling back to agent loop")
+		}
+	}
 
 	if resp, handled := h.tryDirectExecutionProfile(msg, loopCtx, history); handled {
 		imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
@@ -111,17 +137,23 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 	imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", promptElapsed, "history_len", len(history), "prompt_len", len(systemPrompt), "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
 
-	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
-
 	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt
 	// which gets consumed by system prompt builder via LoadAndDelete).
 	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
 		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
+			if remoteRaw, isDirectRemoteCoding := h.pendingDirectRemoteCoding.LoadAndDelete(msg.UserID); isDirectRemoteCoding {
+				remoteCtx, _ := remoteRaw.(directRemoteCodingContext)
+				log.Printf("[workflow-v2] Direct remote coding SubAgent: user=%s session=%s project=%s request_id=%s", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID)
+				execResp := h.runDirectRemoteCodingSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, opts.OnProgress, opts.OnToken)
+				if execResp != nil {
+					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
+				}
+			}
 			// Check if this is a direct coding request (no workflow, single task from user text)
 			if projectPathRaw, isDirectCoding := h.pendingDirectCodingProjectPath.LoadAndDelete(msg.UserID); isDirectCoding {
 				projectPath := projectPathRaw.(string)
 				log.Printf("[workflow-v2] Direct coding SubAgent: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
-				execResp := h.runDirectCodingSubAgent(msg.UserID, agentLoopUserText, projectPath, opts.OnProgress, opts.OnToken)
+				execResp := h.runDirectCodingSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, opts.OnProgress, opts.OnToken)
 				if execResp != nil {
 					return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 				}

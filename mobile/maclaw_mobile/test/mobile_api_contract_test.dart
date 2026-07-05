@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
 
 void main() {
-  test('parses mobile search answer with citation snippets', () {
+  test('parses mobile AI assistant answer with citation snippets', () {
     final answer = SearchAnswer.fromJson({
       'answer': 'Check the latest incident notes.',
       'citations': [

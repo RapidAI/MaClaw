@@ -503,6 +503,8 @@ export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:str
 
 export function CreateMobileLLMDesktopQRSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<main.MobileLLMQRCodeSession>;
 
+export function CreateMobileAuthDesktopQRSession():Promise<main.MobileLLMQRCodeSession>;
+
 export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
 
 export function GetOpenAIUsage():Promise<any>;

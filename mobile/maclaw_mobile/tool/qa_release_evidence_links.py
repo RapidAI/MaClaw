@@ -100,7 +100,7 @@ def summarize_records(
 def record_link_target(path: Path, records_dir: Path) -> str:
     try:
         rel = path.relative_to(records_dir)
-        if records_dir.name == "qa-builds":
+        if records_dir.name == "qa-builds" and records_dir.parent.name == "docs":
             return f"docs/qa-builds/{rel.as_posix()}"
         return path.as_posix()
     except ValueError:
@@ -113,7 +113,7 @@ def record_link_target(path: Path, records_dir: Path) -> str:
 
 
 def records_dir_command_arg(records_dir: Path) -> str:
-    if records_dir.name == "qa-builds":
+    if records_dir.name == "qa-builds" and records_dir.parent.name == "docs":
         return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
     return records_dir.as_posix()
 
@@ -137,11 +137,23 @@ def _coverage_label(scope: str) -> str:
     return release_evidence_commands.scope_label(scope)
 
 
+def _scope_notice(scope: str) -> str | None:
+    if scope == release_evidence_commands.DEFAULT_SCOPE:
+        return None
+    return (
+        "Scoped internal QA only: this does not approve a full Android/iOS "
+        "release candidate."
+    )
+
+
 def format_links(summary: EvidenceLinkSummary) -> str:
     lines: list[str] = [
         f"QA release evidence links for: {summary.records_dir}",
         f"Verification scope: {release_evidence_commands.scope_label(summary.scope)}",
     ]
+    scope_notice = _scope_notice(summary.scope)
+    if scope_notice is not None:
+        lines.append(scope_notice)
     if summary.valid_records:
         ready_to_link = (
             len(summary.versions) == 1 and has_required_platform_coverage(summary)

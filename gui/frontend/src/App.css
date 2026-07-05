@@ -314,6 +314,10 @@
     max-width: min(92vw, 520px);
 }
 
+.modal-content.about-mobile-auth-qr-dialog {
+    text-align: left;
+}
+
 .about-contact-dialog__header {
     display: flex;
     align-items: center;

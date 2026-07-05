@@ -79,7 +79,11 @@ def build_status(
             records_dir=resolved_records_dir,
         ),
         record_results=validate_records(resolved_records_dir),
-        final_errors=verify_final(resolved_records_dir, scope=scope),
+        final_errors=verify_final(
+            resolved_records_dir,
+            release_evidence_path=root / "docs" / "release_evidence.md",
+            scope=scope,
+        ),
         scope=scope,
         ios_team_id=ios_team_id,
         ios_export_method=ios_export_method,
@@ -95,6 +99,16 @@ def _format_list(prefix: str, items: list[str]) -> list[str]:
 
 def _scope_label(scope: str) -> str:
     return release_evidence_commands.scope_label(scope)
+
+
+def _ready_result_line(scope: str) -> str:
+    if scope == release_evidence_commands.DEFAULT_SCOPE:
+        return "Result: READY for final release approval."
+    return (
+        "Result: READY for "
+        + _scope_label(scope)
+        + " scoped internal QA approval, not full Android/iOS release approval."
+    )
 
 
 def _preflight_command(status: ReleaseStatus) -> str:
@@ -195,7 +209,7 @@ def format_status(status: ReleaseStatus) -> str:
 
     lines.append("")
     if status.ready:
-        lines.append("Result: READY for final release approval.")
+        lines.append(_ready_result_line(status.scope))
     else:
         preflight_blockers = [
             check for check in status.preflight_checks if check.is_blocker

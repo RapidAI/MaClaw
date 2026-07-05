@@ -17,7 +17,7 @@ const _fileMessageWithUrl =
     '\u80cc\u666f\u89c1 https://example.com/context';
 
 void main() {
-  test('classifies shared links for assistant lookup', () {
+  test('classifies shared links for assistant conversation', () {
     final intent = MobileSharedIntent.fromMedia(
       value: 'https://example.com/report',
       typeName: 'url',

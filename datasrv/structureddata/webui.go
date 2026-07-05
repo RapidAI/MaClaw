@@ -123,7 +123,7 @@ const webConsoleHTML = `<!doctype html>
     .topbar-language select { width: auto; min-width: 82px; min-height: 26px; padding: 2px 22px 2px 6px; border: 0; background: transparent; color: var(--text); font-size: 12px; }
     .global-admin-mode .topbar .context-chip:first-child { border-color: #99d6cc; background: var(--brand-soft); color: #0b5f59; }
     .tenant-admin-mode .topbar .context-chip:first-child { border-color: #c7d2fe; background: var(--accent-soft); color: #3730a3; }
-    .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+    .layout { display: block; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: var(--shadow-sm); }
     .setup-panel { border: 0; padding: 0; box-shadow: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
     .setup-panel.ready { border-color: #b7dfc4; background: #f7fcf9; }
@@ -132,17 +132,8 @@ const webConsoleHTML = `<!doctype html>
     .setup-copy p { margin: 4px 0 0; color: var(--muted); }
     #adminInitBox, #adminLoginBox { padding: 14px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
     #adminInitBox.hide, #adminLoginBox.hide { display: none !important; }
-    .resource-sidebar { position: sticky; top: 88px; max-height: calc(100vh - 108px); overflow: auto; background: rgba(255,255,255,.98); }
-    .resource-sidebar h2 { font-size: 15px; margin-bottom: 6px; }
-    .resource-sidebar .row { justify-content: space-between; }
-    .resource-sidebar button.primary { width: fit-content; }
-    .resource-sidebar section { padding-top: 12px; border-top: 1px solid var(--line-2); }
-    .resource-sidebar section h3 { color: #334155; }
-    .resource-sidebar .action-toolbar { display: grid; grid-template-columns: 1fr; gap: 7px; padding: 8px; background: var(--panel-2); }
-    .resource-sidebar .action-toolbar button, .resource-sidebar section > button { width: 100%; min-height: 36px; }
-    .resource-sidebar .label { gap: 4px; }
     .workspace { padding: 0; overflow: hidden; box-shadow: 0 18px 42px rgba(15, 23, 42, .08); }
-    .workspace-shell { display: grid; grid-template-columns: 204px minmax(0, 1fr); min-height: calc(100vh - 132px); }
+    .workspace-shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: calc(100vh - 132px); }
     .workspace-body { min-width: 0; padding: 18px; background: #fbfcfe; }
     .module-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line-2); }
     .module-kicker { color: var(--brand); font-size: 12px; font-weight: 760; text-transform: uppercase; letter-spacing: .05em; }
@@ -284,6 +275,22 @@ const webConsoleHTML = `<!doctype html>
     .status.ok { color: var(--ok); }
     .status.err { color: var(--danger); }
     .tabs { display: grid; align-content: start; gap: 4px; padding: 12px; background: var(--nav); border-right: 1px solid #101722; overflow: auto; }
+    .tablist { display: grid; align-content: start; gap: 4px; }
+    .nav-dataset-panel { display: grid; gap: 8px; padding: 0 0 12px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
+    .nav-dataset-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; min-height: 34px; }
+    .nav-dataset-header h2 { margin: 0; color: #f8fafc; font-size: 13px; }
+    .nav-dataset-header button { min-height: 30px; padding: 5px 8px; border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: #dbe4ef; font-size: 12px; box-shadow: none; }
+    .nav-dataset-header button:hover { border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.10); color: #fff; }
+    .tabs .dataset-search { margin: 0; border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: #eef5fb; }
+    .tabs .dataset-search::placeholder { color: #95a3b6; opacity: 1; }
+    .tabs .dataset-search:focus { background: rgba(255,255,255,.10); }
+    .tabs .dataset-list { gap: 6px; max-height: 210px; padding-right: 2px; }
+    .tabs .dataset-item { min-height: 52px; padding: 8px 9px; border-color: rgba(255,255,255,.10); background: rgba(255,255,255,.04); color: #e5edf5; box-shadow: none; }
+    .tabs .dataset-item:hover { border-color: rgba(255,255,255,.20); background: rgba(255,255,255,.08); }
+    .tabs .dataset-item.active { border-color: rgba(45,212,191,.78); background: rgba(45,212,191,.14); }
+    .tabs .dataset-id { color: #f8fafc; }
+    .tabs .dataset-meta { color: #aab8c8; }
+    .tabs .empty { padding: 18px 10px; border-color: rgba(255,255,255,.13); background: rgba(255,255,255,.04); color: #aab8c8; }
     .nav-group { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 8px 4px; color: #8795a6; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
     .nav-group::after { content: attr(data-count); min-width: 22px; padding: 1px 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; color: #cbd5e1; background: rgba(255,255,255,.06); text-align: center; letter-spacing: 0; }
     .nav-group:first-child { margin-top: 2px; }
@@ -320,8 +327,6 @@ const webConsoleHTML = `<!doctype html>
     .result { background: #101418; color: #e8edf2; border-radius: 8px; padding: 12px; min-height: 120px; max-height: 360px; overflow: auto; }
     .hide { display: none !important; }
     @media (max-width: 1180px) {
-      .layout { grid-template-columns: 1fr; }
-      .resource-sidebar { position: static; max-height: none; }
       .workspace-shell { grid-template-columns: 196px minmax(0, 1fr); }
     }
     @media (max-width: 960px) {
@@ -331,15 +336,18 @@ const webConsoleHTML = `<!doctype html>
       .auth-title h1 { font-size: 26px; }
       .auth-card-wrap { padding: 16px; align-content: start; }
       .auth-fields { grid-template-columns: 1fr; }
-      .topbar, .layout, .workspace-shell, .grid-2, .grid-3 { grid-template-columns: 1fr; min-width: 0; }
+      .topbar, .workspace-shell, .grid-2, .grid-3 { grid-template-columns: 1fr; min-width: 0; }
       .admin-ops-grid { grid-template-columns: 1fr; }
       .action-toolbar.compact-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .access-filter-grid { grid-template-columns: 1fr; }
       .access-results-grid { grid-template-columns: 1fr; }
       .dataset-workbench { grid-template-columns: 1fr; }
       main { padding: 12px; }
-      .resource-sidebar { position: static; max-height: none; }
-      .tabs { display: flex; border-right: 0; border-bottom: 1px solid #101722; overflow-x: auto; }
+      .tabs { display: flex; align-items: stretch; border-right: 0; border-bottom: 1px solid #101722; overflow-x: auto; }
+      .tablist { display: flex; align-items: stretch; gap: 4px; flex: 1 0 auto; }
+      .nav-dataset-panel { flex: 0 0 min(280px, 82vw); margin: 0 8px 0 0; padding: 0 10px 0 0; border-right: 1px solid rgba(255,255,255,.10); border-bottom: 0; }
+      .tabs .dataset-list { max-height: 96px; }
+      .tabs .empty { min-height: 52px; padding: 12px 10px; display: grid; place-items: center; }
       .tab { width: auto; min-width: max-content; }
       .module-header { display: grid; }
       .summary-bar { grid-template-columns: 1fr 1fr; }
@@ -363,6 +371,8 @@ const webConsoleHTML = `<!doctype html>
       .topbar .context-chip { max-width: 100%; }
       .topbar-language { width: 100%; justify-content: space-between; border-radius: 8px; }
       .topbar-language select { flex: 1; }
+      .nav-dataset-panel { flex-basis: min(240px, 86vw); }
+      .tabs .dataset-list { max-height: 72px; }
       .auth-hero { min-height: auto; gap: 28px; padding: 24px 18px; }
       .auth-title h1 { font-size: 24px; }
       .auth-facts { grid-template-columns: 1fr; }
@@ -380,7 +390,7 @@ const webConsoleHTML = `<!doctype html>
       .checklist-item .row { grid-column: 1 / -1; }
     }
     @media (pointer: coarse) {
-      button.small, .tab-panel > .row:not(.section-title-row) button, .action-toolbar button, .resource-sidebar section > button { min-height: 44px; }
+      button.small, .tab-panel > .row:not(.section-title-row) button, .action-toolbar button { min-height: 44px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
@@ -493,6 +503,12 @@ const webConsoleHTML = `<!doctype html>
     .dark-mode .summary-item { background: var(--panel); border-color: var(--line); box-shadow: inset 3px 0 0 var(--brand-soft); }
     .dark-mode .dataset-item { background: var(--panel); border-color: var(--line); }
     .dark-mode .dataset-item.active { background: var(--brand-soft); border-color: var(--brand); }
+    .dark-mode .tabs .dataset-search { border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: #eef5fb; }
+    .dark-mode .tabs .dataset-search:focus { background: rgba(255,255,255,.10); }
+    .dark-mode .tabs .dataset-item { border-color: rgba(255,255,255,.10); background: rgba(255,255,255,.04); color: #e5edf5; }
+    .dark-mode .tabs .dataset-item:hover { border-color: rgba(255,255,255,.20); background: rgba(255,255,255,.08); }
+    .dark-mode .tabs .dataset-item.active { border-color: rgba(45,212,191,.78); background: rgba(45,212,191,.14); }
+    .dark-mode .tabs .empty { border-color: rgba(255,255,255,.13); background: rgba(255,255,255,.04); color: #aab8c8; }
     .dark-mode .action-item { background: var(--panel); border-color: var(--line); }
     .dark-mode .action-item.active { background: var(--brand-soft); border-color: var(--brand); }
     .dark-mode .overview-card { background: var(--panel); border-color: var(--line); }
@@ -610,43 +626,44 @@ const webConsoleHTML = `<!doctype html>
   </header>
 
   <main class="layout" aria-label="Data service administration workspace">
-    <aside class="panel stack resource-sidebar" aria-label="Dataset selector">
-      <div class="row section-title-row">
-        <h2>Datasets</h2>
-        <button id="refreshDatasets" data-testid="refresh-datasets">Refresh</button>
-      </div>
-      <div class="dataset-list" id="datasetList" data-testid="dataset-list"></div>
-    </aside>
-
     <section class="panel workspace">
       <div class="workspace-shell">
-      <div class="tabs" id="tabs" role="tablist" aria-label="Administration modules">
-        <div class="nav-group" data-count="7">Operations</div>
-        <button class="tab active" data-tab="overview" data-testid="tab-overview">Overview</button>
-        <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
-        <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
-        <button class="tab" data-tab="domains" data-testid="tab-domains">Domains</button>
-        <button class="tab" data-tab="relationships" data-testid="tab-relationships">Relationships</button>
-        <button class="tab" data-tab="actions" data-testid="tab-actions">Actions</button>
-        <button class="tab" data-tab="rules" data-testid="tab-rules">Rules</button>
-        <div class="nav-group" data-count="4">Integration</div>
-        <button class="tab" data-tab="connectors" data-testid="tab-connectors">Connectors</button>
-        <button class="tab" data-tab="views" data-testid="tab-views">Views</button>
-        <button class="tab" data-tab="dashboards" data-testid="tab-dashboards">Dashboards</button>
-        <button class="tab" data-tab="reports" data-testid="tab-reports">Reports</button>
-        <div class="nav-group" data-count="7">Governance</div>
-        <button class="tab" data-tab="quality" data-testid="tab-quality">Quality</button>
-        <button class="tab" data-tab="dataset" data-testid="tab-dataset">Dataset</button>
-        <button class="tab" data-tab="fields" data-testid="tab-fields">Fields</button>
-        <button class="tab" data-tab="write" data-testid="tab-write">Editor</button>
-        <button class="tab" data-tab="backups" data-testid="tab-backups">Backups</button>
-        <button class="tab" data-tab="events" data-testid="tab-events">Events</button>
-        <button class="tab" data-tab="audit" data-testid="tab-audit">Audit</button>
-        <div class="nav-group" data-count="3">System</div>
-        <button class="tab" data-tab="ops" data-testid="tab-ops">Ops</button>
-        <button class="tab" data-tab="access" data-testid="tab-access">Access</button>
-        <button class="tab" data-tab="raw" data-testid="tab-raw">Response</button>
-      </div>
+      <nav class="tabs" aria-label="Administration navigation">
+        <div class="nav-dataset-panel" role="group" aria-label="Dataset selector">
+          <div class="nav-dataset-header">
+            <h2>Datasets</h2>
+            <button id="refreshDatasets" data-testid="refresh-datasets">Refresh</button>
+          </div>
+          <div class="dataset-list" id="datasetList" data-testid="dataset-list"></div>
+        </div>
+        <div class="tablist" id="tabs" role="tablist" aria-label="Administration modules">
+          <div class="nav-group" role="presentation" data-count="7">Operations</div>
+          <button class="tab active" data-tab="overview" data-testid="tab-overview">Overview</button>
+          <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
+          <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
+          <button class="tab" data-tab="domains" data-testid="tab-domains">Domains</button>
+          <button class="tab" data-tab="relationships" data-testid="tab-relationships">Relationships</button>
+          <button class="tab" data-tab="actions" data-testid="tab-actions">Actions</button>
+          <button class="tab" data-tab="rules" data-testid="tab-rules">Rules</button>
+          <div class="nav-group" role="presentation" data-count="4">Integration</div>
+          <button class="tab" data-tab="connectors" data-testid="tab-connectors">Connectors</button>
+          <button class="tab" data-tab="views" data-testid="tab-views">Views</button>
+          <button class="tab" data-tab="dashboards" data-testid="tab-dashboards">Dashboards</button>
+          <button class="tab" data-tab="reports" data-testid="tab-reports">Reports</button>
+          <div class="nav-group" role="presentation" data-count="7">Governance</div>
+          <button class="tab" data-tab="quality" data-testid="tab-quality">Quality</button>
+          <button class="tab" data-tab="dataset" data-testid="tab-dataset">Dataset</button>
+          <button class="tab" data-tab="fields" data-testid="tab-fields">Fields</button>
+          <button class="tab" data-tab="write" data-testid="tab-write">Editor</button>
+          <button class="tab" data-tab="backups" data-testid="tab-backups">Backups</button>
+          <button class="tab" data-tab="events" data-testid="tab-events">Events</button>
+          <button class="tab" data-tab="audit" data-testid="tab-audit">Audit</button>
+          <div class="nav-group" role="presentation" data-count="3">System</div>
+          <button class="tab" data-tab="ops" data-testid="tab-ops">Ops</button>
+          <button class="tab" data-tab="access" data-testid="tab-access">Access</button>
+          <button class="tab" data-tab="raw" data-testid="tab-raw">Response</button>
+        </div>
+      </nav>
 
       <div class="workspace-body">
       <div class="module-header">
@@ -3497,8 +3514,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     // === Dataset search filter ===
     function initDatasetSearch() {
-      const sidebar = document.querySelector(".resource-sidebar");
-      if (!sidebar) return;
+      const panel = document.querySelector(".nav-dataset-panel");
+      if (!panel) return;
       const listEl = $("datasetList");
       if (!listEl) return;
       let searchInput = $("datasetSearchInput");
@@ -3508,7 +3525,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         searchInput.className = "dataset-search";
         searchInput.placeholder = translateText("Filter datasets...");
         searchInput.setAttribute("data-testid", "dataset-search-input");
-        listEl.parentNode.insertBefore(searchInput, listEl);
+        panel.insertBefore(searchInput, listEl);
         searchInput.addEventListener("input", () => filterDatasetList(searchInput.value));
       }
     }
@@ -8357,7 +8374,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     function syncTabAccessibility(name) {
-      document.querySelectorAll(".tab").forEach(btn => {
+      $("tabs").querySelectorAll(".tab").forEach(btn => {
         const selected = btn.dataset.tab === name;
         const tabID = "module-tab-" + (btn.dataset.tab || "unknown");
         if (!btn.id) btn.id = tabID;
@@ -8402,7 +8419,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     function handleTabKeydown(event) {
       if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-      const tabs = Array.from(document.querySelectorAll(".tab"));
+      if (!event.target || !event.target.classList || !event.target.classList.contains("tab")) return;
+      const tabs = Array.from($("tabs").querySelectorAll(".tab"));
       if (!tabs.length) return;
       const current = Math.max(0, tabs.indexOf(document.activeElement));
       let next = current;
@@ -8582,7 +8600,10 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     $("runIntegrityCheck").onclick = () => runMaintenance(["integrity_check"]);
     $("runOptimize").onclick = () => runMaintenance(["integrity_check", "optimize"]);
     $("runVacuum").onclick = async () => { if (await confirmModal("Run VACUUM", "This will reclaim disk space but may take a moment. The database will be briefly locked.")) runMaintenance(["integrity_check", "vacuum", "optimize"]); };
-    $("tabs").onclick = (event) => { if (event.target.dataset.tab) switchTab(event.target.dataset.tab); };
+    $("tabs").onclick = (event) => {
+      const tab = event.target && event.target.closest ? event.target.closest(".tab") : null;
+      if (tab && $("tabs").contains(tab) && tab.dataset.tab) switchTab(tab.dataset.tab);
+    };
     $("tabs").onkeydown = handleTabKeydown;
     $("refreshOverview").onclick = async () => { await checkConnection(); await loadOverviewStats(false); await loadOverviewCapabilitiesData(false); await loadOverviewDomains(false); await loadOverviewAccessRisk(false); await loadOverviewWorkQueue(false); await loadOverviewIntegrationHealth(false); await loadOverviewActivity(false); switchTab("overview"); };
     $("refreshOverviewDomains").onclick = async () => { await loadOverviewDomains(true); };

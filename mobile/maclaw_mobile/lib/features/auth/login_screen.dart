@@ -104,19 +104,25 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           padding: const EdgeInsets.all(24),
           children: [
             const SizedBox(height: 36),
-            Icon(
-              Icons.phone_android_outlined,
-              size: 56,
-              color: scheme.primary,
+            Center(
+              child: Image.asset(
+                'assets/images/maclaw_logo.png',
+                width: 88,
+                height: 88,
+                semanticLabel: 'MaClaw',
+                fit: BoxFit.contain,
+              ),
             ),
             const SizedBox(height: 18),
             Text(
-              'MaClaw Mobile',
-              style: Theme.of(context).textTheme.headlineSmall,
+              '手机号注册/登录',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
             const SizedBox(height: 8),
             Text(
-              '使用手机号注册或登录。验证通过后，将使用该手机号账户绑定的 MaClaw 官方服务 credits 调用 LLM。',
+              'MaClaw Mobile 仅支持手机号账户接入。验证通过后，将使用该手机号账户绑定的 MaClaw 官方服务 credits 调用 LLM。',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -192,9 +198,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             FilledButton.icon(
               onPressed: _sendingCode ? null : _sendCode,
               icon: _sendingCode
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
+                  ? const SizedBox.square(
+                      dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.sms_outlined),
@@ -216,9 +221,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               FilledButton.icon(
                 onPressed: _verifying ? null : _verifyCode,
                 icon: _verifying
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
+                    ? const SizedBox.square(
+                        dimension: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.login),
@@ -227,7 +231,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ],
             if (_message != null) ...[
               const SizedBox(height: 14),
-              Text(_message!, style: TextStyle(color: scheme.onSurfaceVariant)),
+              Text(
+                _message!,
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
             ],
           ],
         ),

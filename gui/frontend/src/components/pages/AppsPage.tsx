@@ -64,6 +64,7 @@ type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' 
 type AppsPageProps = {
     lang?: string;
     onOpenMISDataSettings?: () => void;
+    onOpenManual?: () => void;
 };
 type AppSkillDependency = {
     id: string;
@@ -354,12 +355,12 @@ type SkillAppField = {
 
 /**
  * SkillParamMappingEntry describes how a single skill parameter is sourced from the App UI.
- * - source: "file_path" — use the staged file path
- * - source: "file_paths" — use all staged file paths (joined by comma)
- * - source: "field:<name>" — use a form field value
- * - source: "params" — use the free-text params input
- * - source: "literal" — use a fixed value (from `value` field)
- * - source: "composite" — build from template string with {file_path}, {params}, {field:<name>} placeholders
+ * - source: "file_path" - use the staged file path
+ * - source: "file_paths" - use all staged file paths (joined by comma)
+ * - source: "field:<name>" - use a form field value
+ * - source: "params" - use the free-text params input
+ * - source: "literal" - use a fixed value (from `value` field)
+ * - source: "composite" - build from template string with {file_path}, {params}, {field:<name>} placeholders
  */
 type SkillParamMappingEntry = {
     source: 'file_path' | 'file_paths' | 'params' | 'literal' | 'composite' | string;
@@ -484,6 +485,19 @@ type AppRunHistoryEntry = {
     dependencyVerification?: AppRunEvidenceDependencyVerification;
     approvalInstance?: AppRunApprovalInstanceEvidence;
     at: string;
+};
+
+type AppActiveRunKind = 'tool_skill' | 'business_skill' | 'approval_workflow';
+
+type AppActiveRunSession = {
+    appID: string;
+    runID: string;
+    runKind: AppActiveRunKind;
+    inputSummary: string;
+    outputMode: string;
+    startedAt: string;
+    definitionHash?: string;
+    approvalInstance?: BackendApprovalInstance;
 };
 
 type AppRunApprovalInstanceEvidence = {
@@ -889,6 +903,7 @@ type StudioSkillChoice = {
 
 const storageKey = 'maclaw:apps-panel:v1';
 const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
+const activeRunStorageKey = 'maclaw:apps-active-runs:v1';
 const publishSubmissionStorageKey = 'maclaw:apps-publish-submissions:v1';
 const dismissedSkillAppsStorageKey = 'maclaw:apps-dismissed-skill:v1';
 const maxPinnedApps = 8;
@@ -922,6 +937,7 @@ const labels = {
         neverUsed: '\u5c1a\u672a\u4f7f\u7528',
         appStatus: '\u72b6\u6001',
         appAvailable: '\u53ef\u7528',
+        appOpened: '\u5df2\u6253\u5f00',
         appRunning: '\u8fd0\u884c\u4e2d',
         appDisabled: '\u5df2\u505c\u7528',
         appDisabledReason: '\u4f01\u4e1a\u7ba1\u7406\u5458\u5df2\u505c\u7528\u6b64\u5e94\u7528\uff0c\u5165\u53e3\u548c\u5386\u53f2\u5df2\u4fdd\u7559',
@@ -930,6 +946,8 @@ const labels = {
         apps: '\u5e94\u7528',
         appStudio: 'MaClaw \u5e94\u7528\u5de5\u4f5c\u5ba4',
         studioSubtitle: '\u521b\u5efa\u3001\u7ba1\u7406\u3001\u4ece\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u6dfb\u52a0\u5e94\u7528\u3002',
+        manual: '\u4f7f\u7528\u8bf4\u660e',
+        manualAria: '\u6253\u5f00 MaClaw \u5e94\u7528\u5de5\u4f5c\u5ba4\u4f7f\u7528\u8bf4\u660e',
         createTab: '\u521b\u5efa\u5e94\u7528',
         promptDraft: '\u7528\u5bf9\u8bdd\u751f\u6210\u8349\u7a3f',
         generateDraft: '\u751f\u6210\u8349\u7a3f',
@@ -1017,6 +1035,7 @@ const labels = {
         skillRunCompleted: 'Skill \u5df2\u5b8c\u6210',
         skillRunFailed: 'Skill \u6267\u884c\u5931\u8d25',
         skillRunCancelled: 'Skill \u5df2\u53d6\u6d88',
+        activeRunLost: '\u8fd0\u884c\u4f1a\u8bdd\u5df2\u5931\u6548\uff0c\u53ef\u80fd\u662f\u5e94\u7528\u5df2\u91cd\u542f\u6216\u540e\u53f0\u4efb\u52a1\u5df2\u6e05\u7406\uff0c\u8bf7\u67e5\u770b\u5386\u53f2\u6216\u91cd\u65b0\u6267\u884c\u3002',
         runSteps: '\u6267\u884c\u6b65\u9aa4',
         runArtifacts: '\u8f93\u51fa\u4ea7\u7269',
         runtimeInput: '\u8f93\u5165',
@@ -1330,6 +1349,7 @@ const labels = {
         neverUsed: 'Never used',
         appStatus: 'Status',
         appAvailable: 'Available',
+        appOpened: 'Opened',
         appRunning: 'Running',
         appDisabled: 'Disabled',
         appDisabledReason: 'Disabled by enterprise policy. The entry and history are retained.',
@@ -1338,6 +1358,8 @@ const labels = {
         apps: 'Apps',
         appStudio: 'MaClaw App Studio',
         studioSubtitle: 'Create, manage, and add apps from the capability market.',
+        manual: 'App Studio manual',
+        manualAria: 'Open the MaClaw App Studio manual',
         createTab: 'Create app',
         promptDraft: 'Generate draft from chat',
         generateDraft: 'Generate draft',
@@ -1425,6 +1447,7 @@ const labels = {
         skillRunCompleted: 'Skill completed',
         skillRunFailed: 'Skill failed',
         skillRunCancelled: 'Skill cancelled',
+        activeRunLost: 'The running session is no longer available. The app may have restarted or the background task was cleaned up. Review history or run it again.',
         runSteps: 'Run steps',
         runArtifacts: 'Output artifacts',
         runtimeInput: 'Input',
@@ -4097,7 +4120,7 @@ function buildSkillFieldPayload(fields: SkillAppField[], values: Record<string, 
 /**
  * buildSkillArgsFromMapping constructs the clean runArgs for the skill runner
  * based on the App's paramMapping declaration. Only skill-relevant parameters
- * are included — no App framework metadata leaks into the skill's template vars.
+ * are included - no App framework metadata leaks into the skill's template vars.
  */
 function buildSkillArgsFromMapping(
     paramMapping: Record<string, SkillParamMappingEntry>,
@@ -4114,9 +4137,9 @@ function buildSkillArgsFromMapping(
         const resolved = resolveParamMappingValue(mapping, context);
         if (resolved !== '') {
             result[skillParam] = resolved;
-            console.log(`[app-param-mapping] ✓ ${skillParam}: source=${mapping.source} → "${resolved.slice(0, 120)}${resolved.length > 120 ? '...' : ''}"`);
+            console.log(`[app-param-mapping] ${skillParam}: source=${mapping.source} -> "${resolved.slice(0, 120)}${resolved.length > 120 ? '...' : ''}"`);
         } else {
-            console.warn(`[app-param-mapping] ✗ ${skillParam}: source=${mapping.source} → (empty, skipped)`);
+            console.warn(`[app-param-mapping] ${skillParam}: source=${mapping.source} -> (empty, skipped)`);
         }
     }
     console.log(`[app-param-mapping] final skill args: [${Object.keys(result).join(', ')}]`);
@@ -4140,7 +4163,7 @@ function resolveParamMappingValue(
         case 'composite':
             return resolveCompositeTemplate(value || '', context);
         default:
-            // source: "field:<name>" — extract from form field values
+            // source: "field:<name>" - extract from form field values
             if (source.startsWith('field:')) {
                 const fieldName = source.slice(6);
                 return String(context.fieldValues[fieldName] ?? '');
@@ -4722,7 +4745,7 @@ function approvalWorkflowProgressFromSkillRunStatus(status: SkillRunStatusView |
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const progressText = firstSkillRunResultString(objects, ['progress', 'progress_summary', 'progressSummary', 'message', 'text', 'result'])
         || String(status?.session_progress?.progress_summary || status?.summary?.current_step_status || status?.summary?.last_completed_step || '').trim()
-        || (currentNode ? (zh ? `流程推进到 ${currentNode}` : `Workflow moved to ${currentNode}`) : '');
+        || (currentNode ? (zh ? `\u6d41\u7a0b\u63a8\u8fdb\u5230 ${currentNode}` : `Workflow moved to ${currentNode}`) : '');
     const businessStatus = firstSkillRunResultString(objects, ['business_status', 'businessStatus', 'to_status', 'toStatus']) || 'approval_running';
     const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || 'running';
     if (!currentNode && !progressText && (!currentNodeIDs || currentNodeIDs.length === 0)) return null;
@@ -4737,7 +4760,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const fallbackText = lifecycle === 'cancelled'
         ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
         : lifecycle === 'timeout'
-            ? (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out')
+            ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out'))
             : lifecycle === 'error'
                 ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8' : 'Workflow failed and needs attention'))
                 : decision === 'approved'
@@ -4824,24 +4847,24 @@ function fileTypeIcon(name: string, mimeType?: string): string {
     const ext = (name.split('.').pop() || '').toLowerCase();
     const mime = (mimeType || '').toLowerCase();
     // Documents
-    if (ext === 'pdf' || mime.includes('pdf')) return '📕';
-    if (['doc', 'docx'].includes(ext) || mime.includes('wordprocessing') || mime.includes('msword')) return '📘';
-    if (['xls', 'xlsx'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) return '📊';
-    if (['ppt', 'pptx'].includes(ext) || mime.includes('presentation') || mime.includes('powerpoint')) return '📙';
-    if (['md', 'txt', 'rtf', 'csv'].includes(ext) || mime.includes('text/')) return '📄';
+    if (ext === 'pdf' || mime.includes('pdf')) return 'PDF';
+    if (['doc', 'docx'].includes(ext) || mime.includes('wordprocessing') || mime.includes('msword')) return 'DOC';
+    if (['xls', 'xlsx'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) return 'XLS';
+    if (['ppt', 'pptx'].includes(ext) || mime.includes('presentation') || mime.includes('powerpoint')) return 'PPT';
+    if (['md', 'txt', 'rtf', 'csv'].includes(ext) || mime.includes('text/')) return 'TXT';
     // Images
-    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext) || mime.startsWith('image/')) return '🖼️';
+    if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext) || mime.startsWith('image/')) return 'IMG';
     // Audio/Video
-    if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext) || mime.startsWith('audio/')) return '🎵';
-    if (['mp4', 'avi', 'mkv', 'mov', 'webm'].includes(ext) || mime.startsWith('video/')) return '🎬';
+    if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext) || mime.startsWith('audio/')) return 'AUD';
+    if (['mp4', 'avi', 'mkv', 'mov', 'webm'].includes(ext) || mime.startsWith('video/')) return 'VID';
     // Archives
-    if (['zip', 'tar', 'gz', '7z', 'rar', 'bz2'].includes(ext) || mime.includes('archive') || mime.includes('zip')) return '📦';
+    if (['zip', 'tar', 'gz', '7z', 'rar', 'bz2'].includes(ext) || mime.includes('archive') || mime.includes('zip')) return 'ZIP';
     // Code/Data
-    if (['json', 'xml', 'yaml', 'yml', 'toml'].includes(ext)) return '📋';
-    if (['py', 'js', 'ts', 'go', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'rb', 'sh'].includes(ext)) return '💻';
-    if (['html', 'htm', 'css'].includes(ext)) return '🌐';
+    if (['json', 'xml', 'yaml', 'yml', 'toml'].includes(ext)) return 'DATA';
+    if (['py', 'js', 'ts', 'go', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'rb', 'sh'].includes(ext)) return 'CODE';
+    if (['html', 'htm', 'css'].includes(ext)) return 'WEB';
     // Default
-    return '📄';
+    return 'FILE';
 }
 
 /** Render output text with file/folder paths as clickable links that reveal in explorer. */
@@ -5105,6 +5128,81 @@ function clearAppRunHistory(appID: string) {
     } catch {
         // History is nice-to-have; ignore storage failures.
     }
+}
+
+function normalizeActiveRunSession(raw: unknown): AppActiveRunSession | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const value = raw as Partial<AppActiveRunSession>;
+    const appID = String(value.appID || '').trim();
+    const runID = String(value.runID || '').trim();
+    const runKind = String(value.runKind || '').trim() as AppActiveRunKind;
+    if (!appID || !runID || !['tool_skill', 'business_skill', 'approval_workflow'].includes(runKind)) return null;
+    return {
+        appID,
+        runID,
+        runKind,
+        inputSummary: String(value.inputSummary || ''),
+        outputMode: String(value.outputMode || ''),
+        startedAt: String(value.startedAt || ''),
+        definitionHash: String(value.definitionHash || '').trim() || undefined,
+        approvalInstance: value.approvalInstance && typeof value.approvalInstance === 'object' ? value.approvalInstance as BackendApprovalInstance : undefined,
+    };
+}
+
+function loadActiveAppRunSessions(): Record<string, AppActiveRunSession> {
+    if (typeof window === 'undefined') return {};
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(activeRunStorageKey) || '{}') as Record<string, unknown>;
+        if (!parsed || typeof parsed !== 'object') return {};
+        const sessions: Record<string, AppActiveRunSession> = {};
+        Object.entries(parsed).forEach(([appID, rawSession]) => {
+            const session = normalizeActiveRunSession(rawSession);
+            if (session) sessions[appID] = session;
+        });
+        return sessions;
+    } catch {
+        return {};
+    }
+}
+
+function loadActiveAppRunSession(appID: string): AppActiveRunSession | null {
+    return loadActiveAppRunSessions()[appID] || null;
+}
+
+function saveActiveAppRunSession(session: AppActiveRunSession) {
+    if (typeof window === 'undefined' || !session.appID || !session.runID) return;
+    try {
+        const sessions = loadActiveAppRunSessions();
+        sessions[session.appID] = session;
+        window.localStorage.setItem(activeRunStorageKey, JSON.stringify(sessions));
+    } catch {
+        // Active run recovery is best-effort; the live UI still keeps state.
+    }
+}
+
+function clearActiveAppRunSession(appID: string, runID?: string) {
+    if (typeof window === 'undefined' || !appID) return;
+    try {
+        const sessions = loadActiveAppRunSessions();
+        if (runID && sessions[appID]?.runID !== runID) return;
+        delete sessions[appID];
+        window.localStorage.setItem(activeRunStorageKey, JSON.stringify(sessions));
+    } catch {
+        // Active run recovery is best-effort; ignore storage failures.
+    }
+}
+
+function activeRunSessionMatchesApp(app: AppEntry, session?: AppActiveRunSession | null) {
+    if (!session || session.appID !== app.id || !session.runID) return false;
+    const expectedHash = appDefinitionFingerprint(app);
+    return !session.definitionHash || !expectedHash || session.definitionHash === expectedHash;
+}
+
+function isActiveRunMissingError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return /(?:run|skill\s*run|nl\s*skill)\s+"?[\w-]+"?\s+(?:was\s+)?not\s+found/i.test(message)
+        || /(?:run|skill\s*run|nl\s*skill).{0,80}\b404\b/i.test(message)
+        || /\b404\b.{0,80}(?:run|skill\s*run|nl\s*skill)/i.test(message);
 }
 
 function readPublishSubmissions(): Record<string, AppPublishSubmission> {
@@ -5718,10 +5816,10 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
         detail: !evidence
             ? (zh ? '请先运行当前应用再评审' : 'Run the current app before review')
             : !actualHash
-                ? (zh ? '运行证据缺少当前应用定义指纹；请重新运行测试' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
+                ? (zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
                 : ok
                     ? `${evidence.runID || ''} ·  ${actualHash}`.trim()
-                    : (zh ? '运行证据已不匹配当前应用定义；请重新运行测试' : 'Run evidence is stale for the current app definition; rerun the test'),
+                    : (zh ? '\u8fd0\u884c\u8bc1\u636e\u5df2\u4e0d\u5339\u914d\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is stale for the current app definition; rerun the test'),
     };
 }
 
@@ -5735,13 +5833,13 @@ function appRunEvidenceDesignConsistencyCheck(app: AppEntry, evidence: AppRunHis
         return { ok: false, detail: zh ? '请先运行当前设计的测试用例' : 'Run the test case for the current design first' };
     }
     if (!actualProtocol) {
-        return { ok: false, detail: zh ? '运行证据缺少测试协议指纹；请重新测试' : 'Run evidence is missing the test protocol fingerprint; rerun the test' };
+        return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u6d4b\u8bd5\u534f\u8bae\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the test protocol fingerprint; rerun the test' };
     }
     if (actualProtocol !== expectedProtocol) {
         return { ok: false, detail: zh ? '测试协议已变更；请重新运行测试' : 'Test protocol changed; rerun the test' };
     }
     if (!actualLayout) {
-        return { ok: false, detail: zh ? '运行证据缺少界面布局指纹；请重新测试' : 'Run evidence is missing the workspace layout fingerprint; rerun the test' };
+        return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u754c\u9762\u5e03\u5c40\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the workspace layout fingerprint; rerun the test' };
     }
     if (actualLayout !== expectedLayout) {
         return { ok: false, detail: zh ? '界面布局已变更；请重新运行测试' : 'Workspace layout changed; rerun the test' };
@@ -6165,8 +6263,8 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const fingerprint = appTestProtocolFingerprint(protocol);
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
-    if (sampleKeys === 0 || outputKeys === 0) return zh ? '缺少 sampleInput 或 expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '协议指纹' : 'Protocol fingerprint'} ${fingerprint} ·  ${protocol.riskLevel}`;
+    if (sampleKeys === 0 || outputKeys === 0) return zh ? '\u7f3a\u5c11 sampleInput \u6216 expectedOutput' : 'Missing sampleInput or expectedOutput';
+    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} ·  ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -6264,13 +6362,13 @@ function marketInstallFriendlyError(rawMessage: string, plan: BackendAppInstallP
     }
     // Fallback to message pattern matching for cases where plan is not available (e.g. catch block errors)
     const lower = rawMessage.toLowerCase();
-    if (lower.includes('governance') || lower.includes('run evidence') || lower.includes('审核')) {
+    if (lower.includes('governance') || lower.includes('run evidence') || lower.includes('\u5ba1\u6838')) {
         return text.installErrorFriendlyGovernance;
     }
-    if (lower.includes('workflow contract') || lower.includes('运行契约') || lower.includes('运行合约')) {
+    if (lower.includes('workflow contract') || lower.includes('\u8fd0\u884c\u5951\u7ea6') || lower.includes('\u8fd0\u884c\u5408\u7ea6')) {
         return text.installErrorFriendlyWorkflow;
     }
-    if (lower.includes('dependency') || lower.includes('download_failed') || lower.includes('依赖')) {
+    if (lower.includes('dependency') || lower.includes('download_failed')) {
         return text.installErrorFriendlyDependency;
     }
     return text.installErrorFriendlyGeneric;
@@ -6530,7 +6628,7 @@ function saveApprovalDecisionRunEvidence(app: AppEntry | undefined, instance: Ba
 function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
     const zh = isZh(lang);
     if (!isEnterpriseApprovalAppKind(app.kind)) {
-        return { ok: true, detail: zh ? '非审批应用无需审批实例证据' : 'Not required for non-approval apps' };
+        return { ok: true, detail: zh ? '\u975e\u5ba1\u6279\u5e94\u7528\u65e0\u9700\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e' : 'Not required for non-approval apps' };
     }
     const approvalInstance = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
     const hasStatus = !!String(approvalInstance?.status || '').trim();
@@ -6544,18 +6642,18 @@ function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHist
     const ok = !!approvalInstance?.instanceId && hasStatus && hasCurrentNode && hasWorkflowSkill && hasResultStatus && hasResultPackage && viewVerified;
     const missingDetail = () => {
         if (!approvalInstance?.instanceId || !hasStatus || !viewVerified) {
-            return zh ? '缺少 instanceId、status 或审批实例视图验证' : 'Missing instanceId, status, or approval instance view verification';
+            return zh ? '\u7f3a\u5c11 instanceId\u3001status \u6216\u5ba1\u6279\u5b9e\u4f8b\u89c6\u56fe\u9a8c\u8bc1' : 'Missing instanceId, status, or approval instance view verification';
         }
         if (!hasCurrentNode || !hasWorkflowSkill || !hasResultStatus) {
-            return zh ? '缺少 currentNode、workflowSkillId 或 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
+            return zh ? '\u7f3a\u5c11 currentNode\u3001workflowSkillId \u6216 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
         }
-        return zh ? '审批实例证据缺少 resultPayload、outputs 或 artifacts' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
+        return zh ? '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
     };
     return {
         ok,
         approvalInstance,
         detail: !evidence
-            ? (zh ? '请先运行一次审批工作流再评审' : 'Run the approval workflow once before review')
+            ? (zh ? '\u8bf7\u5148\u8fd0\u884c\u4e00\u6b21\u5ba1\u6279\u5de5\u4f5c\u6d41\u518d\u8bc4\u5ba1' : 'Run the approval workflow once before review')
             : ok
                 ? `${approvalInstance?.instanceId} / ${approvalInstance?.status}${approvalInstance?.currentNode ? ` / ${approvalInstance.currentNode}` : ''}`
                 : missingDetail(),
@@ -6839,8 +6937,9 @@ const AppRunHistoryItem = ({ item, title, text, showInputSummary = true }: { ite
     const artifactLabel = appRunHistoryArtifactLabel(item);
     const details = appRunHistoryTechnicalDetails(item);
     const artifactRef = primaryArtifact.id || primaryArtifact.uri;
-    const hasArtifact = !!(primaryArtifact.uri || primaryArtifact.path || primaryArtifact.id);
-    const artifactLabelCanReveal = !!(primaryArtifact.uri || primaryArtifact.path);
+    const canUseArtifact = item.status === 'done';
+    const hasArtifact = canUseArtifact && !!(primaryArtifact.uri || primaryArtifact.path || primaryArtifact.id);
+    const artifactLabelCanReveal = canUseArtifact && !!(primaryArtifact.uri || primaryArtifact.path);
     return (
         <article className="apps-run-history__item" data-state={item.status}>
             <div className="apps-run-history__main">
@@ -6898,7 +6997,7 @@ function formatRecentUsedAt(value?: string) {
 
 function appPanelStatusLabel(app: AppEntry, lang?: string) {
     if (app.source !== 'skill') return '';
-    return isZh(lang) ? '已加入面板' : 'In panel';
+    return isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel';
 }
 
 function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
@@ -7109,7 +7208,7 @@ const AppIcon = ({ icon, customIconDataUrl }: { icon: AppIconName; customIconDat
 
 const isZh = (lang?: string) => !lang || lang.startsWith('zh');
 
-export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
+export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPageProps) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
     const [query, setQuery] = useState('');
@@ -7125,6 +7224,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
     const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
+    const [activeRunRevision, setActiveRunRevision] = useState(0);
+    const notifyActiveRunChanged = useCallback(() => setActiveRunRevision((value) => value + 1), []);
 
     useEffect(() => {
         persistLayoutState(apps);
@@ -7221,6 +7322,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
     const panelFilterSummary = filterSummaryText({ query, category, count: filteredApps.length, lang, allLabel: text.all });
     const tileMenuApp = tileMenu ? apps.find((app) => app.id === tileMenu.appId) : undefined;
     const tileMenuPinDisabled = !!tileMenuApp && !tileMenuApp.pinned && apps.filter((app) => app.pinned).length >= maxPinnedApps;
+    const activeRunSessions = useMemo(() => loadActiveAppRunSessions(), [activeRunRevision]);
     const openTabApps = openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app);
     const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
     const hiddenApps = initialApps.filter((app) => !apps.some((item) => item.id === app.id));
@@ -7379,6 +7481,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
 
     const removeApp = (appId: string) => {
         clearAppRunHistory(appId);
+        clearActiveAppRunSession(appId);
+        notifyActiveRunChanged();
         clearAppPublishSubmission(appId);
         const removedApp = apps.find((app) => app.id === appId);
         if (removedApp && removedApp.source === 'skill') {
@@ -7464,7 +7568,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
 
     const appStatusInfo = (app: AppEntry): { key: 'available' | 'running' | 'loading' | 'disabled' | 'error'; label: string } => {
         if (app.disabled) return { key: 'disabled', label: app.disabledReason || text.appDisabled };
-        if (openTabs.includes(app.id)) return { key: 'running', label: text.appRunning };
+        if (activeRunSessionMatchesApp(app, activeRunSessions[app.id])) return { key: 'running', label: text.appRunning };
+        if (openTabs.includes(app.id)) return { key: 'running', label: text.appOpened };
         if (app.source === 'datasrv') {
             if (datasrvDiscovery.status === 'loading') return { key: 'loading', label: text.datasrvLoading };
             if (datasrvDiscovery.status === 'disabled') return { key: 'disabled', label: text.datasrvDisabled };
@@ -7525,7 +7630,10 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
 	                onKeyDown={moveTileFocus}
 	            >
 	                <span className="apps-app-icon"><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-	                <span className="apps-app-name">{app.name}</span>
+	                <span className="apps-app-label">
+                        <span className="apps-app-name">{app.name}</span>
+                        <span className="apps-app-status">{status.label}</span>
+                    </span>
 	            </button>
         );
     };
@@ -7555,7 +7663,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
                             <span className="apps-studio-button__icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M12 8v8M8 12h8" /></svg>
                             </span>
-                            <span className="apps-studio-button__label">{isZh(lang) ? '工作室' : 'Studio'}</span>
+                            <span className="apps-studio-button__label">{isZh(lang) ? '\u5de5\u4f5c\u5ba4' : 'Studio'}</span>
                         </button>
                     </div>
                     <div className="apps-filter-row">
@@ -7657,6 +7765,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
                         datasrvDiscovery={datasrvDiscovery}
                         skillDiscovery={skillDiscovery}
                         onOpenMISDataSettings={onOpenMISDataSettings}
+                        onOpenManual={onOpenManual}
                         onAddDiscoveredApp={addDiscoveredApp}
                         onCreateApp={addDiscoveredApp}
 	                        onInstallMarketApp={installMarketApp}
@@ -7687,6 +7796,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
                         onClose={closeAppTab}
                         onUse={markAppUsed}
                         onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
+                        onActiveRunChange={notifyActiveRunChanged}
                     />
                 </div>
             </main>
@@ -7694,7 +7804,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings }: AppsPageProps) => {
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
     lang?: string;
@@ -7702,6 +7812,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
     onClose: (appId: string) => void;
     onUse: (appId: string) => void;
     onOpenApprovalManager: (appId?: string) => void;
+    onActiveRunChange: () => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     if (tabs.length === 0) {
@@ -7756,7 +7867,8 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
                             aria-label={`${text.close} ${app.name}`}
                             onClick={() => onClose(app.id)}
                         >
-                            x                        </button>
+                            &times;
+                        </button>
                     </div>
                     );
                 })}
@@ -7773,7 +7885,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
                             className="apps-runtime-panel"
                             hidden={!isActive}
                         >
-                            <AppPreview app={tabApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} />
+                            <AppPreview app={tabApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} onActiveRunChange={onActiveRunChange} />
                         </div>
                     );
                 })}
@@ -7983,9 +8095,9 @@ function approvalEvidenceToBackendInstance(app: AppEntry, evidence: AppRunApprov
         current_node: currentNode || undefined,
         current_node_ids: currentNodeIDs.length > 0 ? currentNodeIDs : currentNode ? [currentNode] : undefined,
         workflow_node_ids: currentNodeIDs.length > 0 ? currentNodeIDs : currentNode ? [currentNode] : undefined,
-        owner: isZh(lang) ? '当前用户' : 'Current user',
-        applicant: isZh(lang) ? '当前用户' : 'Current user',
-        approver: String(evidence.approvalObjectRole || evidence.objectRole || '').trim() || (isZh(lang) ? '审批人' : 'Approver'),
+        owner: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+        applicant: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
+        approver: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
         updated_at: evidence.verifiedAt || new Date().toISOString(),
         result: String(evidence.result || evidence.resultStatus || evidence.businessStatus || status).trim(),
         workflow_skill_id: workflowSkillID || undefined,
@@ -8278,6 +8390,14 @@ function approvalStatusLabel(status: ApprovalInstanceView['status'], lang?: stri
     return zh ? '\u8349\u7a3f' : 'Draft';
 }
 
+function runStateFromApprovalLifecycleStatus(status?: string): 'running' | 'done' | 'error' | 'cancelled' {
+    const value = String(status || '').trim().toLowerCase().replace('-', '_');
+    if (['pending', 'running', 'submitted', 'requires_input', 'in_progress'].includes(value)) return 'running';
+    if (['failed', 'error', 'timeout'].includes(value)) return 'error';
+    if (['cancelled', 'canceled'].includes(value)) return 'cancelled';
+    return 'done';
+}
+
 function approvalCurrentAssigneeText(instance: ApprovalInstanceView | undefined): string {
     return String(instance?.currentAssignee || instance?.approver || '').trim() || '-';
 }
@@ -8471,7 +8591,7 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
         </section>
     );
 };
-const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void }) => {
+const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -8499,6 +8619,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const [runtimeDependencyCheckState, setRuntimeDependencyCheckState] = useState<'idle' | 'checking' | 'ready' | 'blocked' | 'error'>('idle');
     const approvalRunContextRef = useRef<ApprovalRunContext | null>(null);
     const activeRunDependencyPlanRef = useRef<BackendAppInstallPlan | null>(null);
+    const appDefinitionKey = useMemo(() => app ? appDefinitionFingerprint(app) : '', [app]);
     useEffect(() => {
         setFileName('');
         setSelectedFile(null);
@@ -8510,22 +8631,34 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setBusinessEntity(app?.category || '');
         setBusinessAction('create');
         setBusinessNote('');
-        setRunState('idle');
-        setValidationMessage('');
-		setRunID('');
-		setSkillRunStatus(null);
-		setBusinessResult(null);
-		setRuntimeBusinessError(null);
-		setCurrentRunContext({ inputSummary: '', outputMode: '' });
+        const activeSession = app ? loadActiveAppRunSession(app.id) : null;
+        const shouldRestoreActiveRun = !!app && activeRunSessionMatchesApp(app, activeSession);
+        if (app && activeSession && !shouldRestoreActiveRun) {
+            clearActiveAppRunSession(app.id, activeSession.runID);
+            onActiveRunChange?.();
+        }
+        setRunState(shouldRestoreActiveRun ? 'running' : 'idle');
+        setValidationMessage(shouldRestoreActiveRun ? text.skillRunRunning : '');
+        setRunID(shouldRestoreActiveRun ? activeSession?.runID || '' : '');
+        setSkillRunStatus(null);
+        setBusinessResult(null);
+        setRuntimeBusinessError(null);
+        setCurrentRunContext(shouldRestoreActiveRun
+            ? { inputSummary: activeSession?.inputSummary || '', outputMode: activeSession?.outputMode || normalizeOutputModes(app?.manifest?.skill?.outputModes)[0] }
+            : { inputSummary: '', outputMode: '' });
         setDependencyRepairState('idle');
         setRuntimeDependencyPlan(null);
         setRuntimeDependencyCheckState('idle');
-        approvalRunContextRef.current = null;
+        approvalRunContextRef.current = shouldRestoreActiveRun && activeSession?.approvalInstance ? { instance: activeSession.approvalInstance } : null;
         activeRunDependencyPlanRef.current = null;
         setRunHistory(appSeedRunHistory(app));
-        setApprovalInstances(app ? appSeedApprovalInstances(app, lang) : []);
+        const restoredApprovalView = app && shouldRestoreActiveRun && activeSession?.approvalInstance
+            ? backendApprovalInstanceToView(activeSession.approvalInstance, lang)
+            : null;
+        const seededApprovalInstances = app ? appSeedApprovalInstances(app, lang) : [];
+        setApprovalInstances(restoredApprovalView ? mergeApprovalInstanceViews(seededApprovalInstances, [restoredApprovalView]) : seededApprovalInstances);
         setApprovalInstancesLoadState('idle');
-    }, [app?.id, app?.manifest?.skill?.outputModes]);
+    }, [app?.id, app?.manifest?.skill?.outputModes, appDefinitionKey, lang, onActiveRunChange, text.skillRunRunning]);
     useEffect(() => {
         if (!app || !appNeedsAutomaticRuntimeDependencyCheck(app)) {
             setRuntimeDependencyPlan(null);
@@ -8540,11 +8673,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
                 if (disposed) return;
                 setRuntimeDependencyPlan(dependencyPlan || null);
+                activeRunDependencyPlanRef.current = dependencyPlan || null;
                 const blocked = runtimeInstallPlanBlocked(dependencyPlan, app);
                 setRuntimeDependencyCheckState(blocked ? 'blocked' : 'ready');
             } catch {
                 if (disposed) return;
                 setRuntimeDependencyPlan(null);
+                activeRunDependencyPlanRef.current = null;
                 setRuntimeDependencyCheckState('error');
             }
         };
@@ -8577,14 +8712,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
 		const appID = app?.id || '';
 		if (!appID) return;
 			const verifiedAt = new Date().toISOString();
-			const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
-			const protocolFingerprint = app ? appTestProtocolFingerprint(appTestProtocolForManifest(app)) : undefined;
-			const workspaceLayoutFingerprint = app ? appWorkspaceLayoutEvidence(app).fingerprint : undefined;
-			const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
-			const dependencyVerification = entry.dependencyVerification || (app && entry.status === 'done'
-				? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt)
-				: undefined);
-	        const nextEntry: AppRunHistoryEntry = { ...entry, definitionHash: entry.definitionHash || definitionHash, testProtocolFingerprint: entry.testProtocolFingerprint || protocolFingerprint, workspaceLayoutFingerprint: entry.workspaceLayoutFingerprint || workspaceLayoutFingerprint, dependencyVerification, appID, at: verifiedAt };
+            const definitionHash = app ? appDefinitionFingerprint(app) : undefined;
+            const protocolFingerprint = app ? appTestProtocolFingerprint(appTestProtocolForManifest(app)) : undefined;
+            const workspaceLayoutFingerprint = app ? appWorkspaceLayoutEvidence(app).fingerprint : undefined;
+            const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
+            const dependencyVerification = entry.dependencyVerification || (app && entry.status === 'done'
+                ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt)
+                : undefined);
+            const nextEntry: AppRunHistoryEntry = { ...entry, definitionHash: entry.definitionHash || definitionHash, testProtocolFingerprint: entry.testProtocolFingerprint || protocolFingerprint, workspaceLayoutFingerprint: entry.workspaceLayoutFingerprint || workspaceLayoutFingerprint, dependencyVerification, appID, at: verifiedAt };
         if (app && nextEntry.status === 'done' && !nextEntry.resultCoverage) {
             const coverage = appRunEvidenceContractCoverage(app, nextEntry);
             nextEntry.resultCoverage = {
@@ -8597,17 +8732,42 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         setRunHistory((current) => {
             const next = [nextEntry, ...current.filter((item) => item.runID !== nextEntry.runID)].slice(0, 8);
             saveAppRunHistory(appID, next);
-			return next;
-		});
-	};
-	const setRuntimeError = (error: unknown, fallback: string) => {
-		const businessError = structuredBusinessErrorFromUnknown(error);
-		setRuntimeBusinessError(businessError);
-		const message = structuredBusinessErrorMessage(businessError, error instanceof Error ? error.message : String(error || fallback));
-		setValidationMessage(message || fallback);
-		setRunState('error');
-		return message || fallback;
-	};
+            return next;
+        });
+    };
+    const rememberActiveRun = (runKind: AppActiveRunKind, activeRunID: string, inputSummary: string, activeOutputMode: string, approvalInstance?: BackendApprovalInstance) => {
+        if (!app?.id || !activeRunID) return;
+        saveActiveAppRunSession({
+            appID: app.id,
+            runID: activeRunID,
+            runKind,
+            inputSummary,
+            outputMode: activeOutputMode,
+            startedAt: new Date().toISOString(),
+            definitionHash: appDefinitionFingerprint(app),
+            approvalInstance,
+        });
+        onActiveRunChange?.();
+    };
+    const forgetActiveRun = (activeRunID?: string) => {
+        if (!app?.id) return;
+        clearActiveAppRunSession(app.id, activeRunID);
+        onActiveRunChange?.();
+    };
+    const updateActiveRunApprovalInstance = (activeRunID: string, approvalInstance?: BackendApprovalInstance) => {
+        if (!app?.id || !activeRunID || !approvalInstance) return;
+        const session = loadActiveAppRunSession(app.id);
+        if (!session || session.runID !== activeRunID || session.runKind !== 'approval_workflow') return;
+        saveActiveAppRunSession({ ...session, approvalInstance });
+    };
+    const setRuntimeError = (error: unknown, fallback: string) => {
+        const businessError = structuredBusinessErrorFromUnknown(error);
+        setRuntimeBusinessError(businessError);
+        const message = structuredBusinessErrorMessage(businessError, error instanceof Error ? error.message : String(error || fallback));
+        setValidationMessage(message || fallback);
+        setRunState('error');
+        return message || fallback;
+    };
     const recordApprovalRuntimeFailure = async (base: BackendApprovalInstance, message: string, inputSummary: string, runIDOverride?: string) => {
         const now = new Date().toISOString();
         const failureRunID = String(runIDOverride || base.workflow_decision_id || base.workflowDecisionID || `failed-${Date.now().toString(36)}`).trim();
@@ -8627,7 +8787,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             workflow_decision_id: failureRunID,
             lane: 'handled',
             status: 'failed',
-            current_node: base.current_node || base.currentNode || (isZh(lang) ? '运行失败' : 'Failed'),
+            current_node: base.current_node || base.currentNode || (isZh(lang) ? '\u8fd0\u884c\u5931\u8d25' : 'Failed'),
             result: failureText,
             business_status: 'workflow_error',
             result_status: 'failed',
@@ -8711,6 +8871,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             ],
         };
         approvalRunContextRef.current = { instance: nextInstance, lastProgressKey: progressKey };
+        updateActiveRunApprovalInstance(status?.run_id || runID, nextInstance);
         const view = backendApprovalInstanceToView(nextInstance, lang);
         if (view) {
             setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
@@ -8721,6 +8882,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 approvalRunContextRef.current = { instance: saved || nextInstance, lastProgressKey: progressKey };
             }
             const savedInstance = saved || nextInstance;
+            updateActiveRunApprovalInstance(status?.run_id || runID, savedInstance);
             const savedView = backendApprovalInstanceToView(savedInstance, lang);
             if (savedView) {
                 setApprovalInstances((current) => [savedView, ...current.filter((item) => item.id !== savedView.id)].slice(0, 50));
@@ -8730,6 +8892,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 if (approvalRunContextRef.current?.lastProgressKey === progressKey) {
                     approvalRunContextRef.current = { instance: syncedInstance, lastProgressKey: progressKey };
                 }
+                updateActiveRunApprovalInstance(status?.run_id || runID, syncedInstance);
                 const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
                 if (syncedView) {
                     setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
@@ -8788,19 +8951,18 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             if (view) {
                 setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
             }
-			const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
-			const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
-			if (syncedView) {
-				setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
-			}
-                return syncedInstance;
-		} catch (error: any) {
-			const businessError = structuredBusinessErrorFromUnknown(error);
-			setRuntimeBusinessError(businessError);
-			setValidationMessage(structuredBusinessErrorMessage(businessError, error?.message || String(error || 'approval sync failed')));
-                return payload;
-		}
-	}, [app, lang, runID]);
+            const syncedInstance = await syncApprovalInstanceToDataSrvWithEvents(app, savedInstance, lang);
+            const syncedView = backendApprovalInstanceToView(syncedInstance, lang);
+            if (syncedView) {
+                setApprovalInstances((current) => [syncedView, ...current.filter((item) => item.id !== syncedView.id)].slice(0, 50));
+            }
+            return syncedInstance;
+        } catch {
+            // Completion itself is authoritative once the Skill run reaches a terminal state.
+            // Approval persistence/DataSrv sync is best-effort here; keep the completed run UI intact.
+            return payload;
+        }
+    }, [app, lang, runID]);
     useEffect(() => {
         if (!runID || runState !== 'running') return;
         let disposed = false;
@@ -8829,10 +8991,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     const primaryResult = appRunPrimaryResultFromPayload(resultContract, resultPayload, outputs);
                     const verifiedAt = new Date().toISOString();
                     const dependencyVerificationPlan = activeRunDependencyPlanRef.current || runtimeDependencyPlan;
-					const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt) : undefined;
-					setValidationMessage('');
-					setRuntimeBusinessError(null);
-					setRunState('done');
+                    const dependencyVerification = app ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, verifiedAt) : undefined;
+                    setValidationMessage('');
+                    setRuntimeBusinessError(null);
+                    setRunState('done');
+                    forgetActiveRun(runID);
                     const finalizedApprovalInstance = await finalizeApprovalRunFromStatus(status || null, lifecycle);
                     const approvalInstance = app && isEnterpriseApprovalAppKind(app.kind) && finalizedApprovalInstance
                         ? appRunApprovalInstanceEvidenceFromBackend(finalizedApprovalInstance, verifiedAt)
@@ -8858,33 +9021,46 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     if (app?.source === 'skill' && app.manifest?.skill?.id) {
                         void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
-				} else if (lifecycle === 'error') {
-					const businessError = structuredBusinessErrorFromUnknown(skillRunErrorMessage(status));
-					const message = structuredBusinessErrorMessage(businessError, skillRunErrorMessage(status) || text.skillRunFailed);
-					setRuntimeBusinessError(businessError);
-					setValidationMessage(message);
-					setRunState('error');
-					recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
+                } else if (lifecycle === 'error') {
+                    const businessError = structuredBusinessErrorFromUnknown(skillRunErrorMessage(status));
+                    const message = structuredBusinessErrorMessage(businessError, skillRunErrorMessage(status) || text.skillRunFailed);
+                    setRuntimeBusinessError(businessError);
+                    setValidationMessage(message);
+                    setRunState('error');
+                    forgetActiveRun(runID);
+                    recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
                     await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 } else if (lifecycle === 'cancelled') {
                     setValidationMessage(text.skillRunCancelled);
                     setRunState('cancelled');
+                    forgetActiveRun(runID);
                     recordRunHistory({ runID, status: 'cancelled', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message: text.skillRunCancelled });
                     await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 } else if (lifecycle === 'timeout') {
-                    const message = skillRunErrorMessage(status) || (isZh(lang) ? '工作流运行超时' : 'Workflow timed out');
+                    const message = skillRunErrorMessage(status) || (isZh(lang) ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out');
                     setRuntimeBusinessError(null);
                     setValidationMessage(message);
                     setRunState('error');
+                    forgetActiveRun(runID);
                     recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
                     await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 }
-			} catch (error: any) {
-				if (disposed) return;
-				const message = setRuntimeError(error, text.skillRunFailed);
-				setBusinessResult(null);
-				recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
-				await finalizeApprovalRunFromStatus({ run_id: runID, status: 'error', error: message }, 'error');
+            } catch (error: any) {
+                if (disposed) return;
+                if (isActiveRunMissingError(error)) {
+                    setSkillRunStatus(null);
+                    setRuntimeBusinessError(null);
+                    setValidationMessage(text.activeRunLost);
+                    setRunState('error');
+                    forgetActiveRun(runID);
+                    approvalRunContextRef.current = null;
+                    return;
+                }
+                const message = setRuntimeError(error, text.skillRunFailed);
+                setBusinessResult(null);
+                forgetActiveRun(runID);
+                recordRunHistory({ runID, status: 'error', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message });
+                await finalizeApprovalRunFromStatus({ run_id: runID, status: 'error', error: message }, 'error');
             }
         };
         void poll();
@@ -8893,7 +9069,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             disposed = true;
             window.clearInterval(timer);
         };
-    }, [runID, runState, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus, updateApprovalRunProgressFromStatus, runtimeDependencyPlan]);
+    }, [runID, runState, text.activeRunLost, text.skillRunCancelled, text.skillRunCompleted, text.skillRunFailed, currentRunContext, finalizeApprovalRunFromStatus, updateApprovalRunProgressFromStatus, runtimeDependencyPlan]);
     if (!app) return <div className="apps-empty">{text.noApps}</div>;
     const isTool = app.kind === 'tool_app';
     const isApproval = isEnterpriseApprovalAppKind(app.kind);
@@ -8931,6 +9107,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
             : `${text.submitted}: ${businessEntity || app.category} · ${businessAction} · ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
 	const markDirty = () => {
+        if (runState === 'running') return;
 		setRunState('idle');
 		setValidationMessage('');
 		setRuntimeBusinessError(null);
@@ -8976,7 +9153,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setRuntimeDependencyCheckState('error');
                 const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
                 const detail = error?.message || '';
-                const depHint = depNames.length > 0 ? (isZh(lang) ? `（需要：${depNames.join(', ')}）` : ` (requires: ${depNames.join(', ')})`) : '';
+                const depHint = depNames.length > 0 ? (isZh(lang) ? `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09` : ` (requires: ${depNames.join(', ')})`) : '';
                 setValidationMessage((detail || text.dependencyPlanError) + depHint);
                 setRunState('error');
                 return;
@@ -9056,15 +9233,16 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     }
 
                     const runID = await RunNLSkillAsync(skillID, skillRunArgs);
-					const nextRunID = String(runID || '').trim();
-					if (!nextRunID) throw new Error(text.skillRunFailed);
-					setRunID(nextRunID);
-					setValidationMessage('');
-					setRuntimeBusinessError(null);
-					setRunState('running');
-					return;
-				} catch (error: any) {
-					const message = setRuntimeError(error, text.validationMissing);
+                    const nextRunID = String(runID || '').trim();
+                    if (!nextRunID) throw new Error(text.skillRunFailed);
+                    setRunID(nextRunID);
+                    rememberActiveRun('tool_skill', nextRunID, toolInputSummary, outputMode);
+                    setValidationMessage('');
+                    setRuntimeBusinessError(null);
+                    setRunState('running');
+                    return;
+                } catch (error: any) {
+                    const message = setRuntimeError(error, text.validationMissing);
 					recordRunHistory({
 						runID: `failed-${Date.now().toString(36)}`,
                         status: 'error',
@@ -9127,7 +9305,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 datasrv_domain: app.manifest?.datasrv?.domain || '',
                 preferred_action: app.manifest?.datasrv?.preferredAction || '',
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
-                prompt: `Start MaClaw approval workflow: ${app.name} ·  ${inputSummary}`,
+                prompt: `Start MaClaw approval workflow: ${app.name} · ${inputSummary}`,
             };
             const fallbackPayload: BackendApprovalInstance = {
                 instance_id: fallbackID,
@@ -9141,14 +9319,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 object_role: approvalObjectRole || undefined,
                 dataset_id: approvalDatasetID || undefined,
                 blueprint_id: approvalBlueprintID || undefined,
-                title: `${businessEntity || app.category} ·  ${businessAction || 'create'}`,
+                title: `${businessEntity || app.category} · ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
                 current_node: workflowMapping?.approvalNode || (isZh(lang) ? '经理审批' : 'Manager approval'),
                 current_node_ids: [workflowMapping?.approvalNode || workflowSkillID].filter(Boolean) as string[],
                 owner: isZh(lang) ? '当前用户' : 'Current user',
                 applicant: isZh(lang) ? '当前用户' : 'Current user',
-                approver: isZh(lang) ? '审批人' : 'Approver',
+                approver: String(approvalObjectRole || '').trim() || (isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver'),
                 submitted_by: isZh(lang) ? '当前用户' : 'Current user',
                 current_assignee: isZh(lang) ? '审批人' : 'Approver',
                 current_assignee_type: 'user',
@@ -9250,7 +9428,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
                 }
                 const lifecycleStatus = String(savedInstance.status || savedInstance.result_status || savedInstance.resultStatus || '').trim().toLowerCase();
-                const stillRunning = ['pending', 'running', 'submitted', 'requires_input', 'requires-input', 'in_progress', 'in-progress'].includes(lifecycleStatus);
+                const terminalRunState = runStateFromApprovalLifecycleStatus(lifecycleStatus);
+                const stillRunning = terminalRunState === 'running';
                 const verifiedAt = new Date().toISOString();
                 const progressEvidence = workflowRunProgressInstances
                     .map((item) => appRunApprovalInstanceEvidenceFromBackend({ ...fallbackPayload, ...item }, verifiedAt))
@@ -9269,12 +9448,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 if (!stillRunning) {
                     recordRunHistory({
                         runID: workflowRunID || `approval-${Date.now().toString(36)}`,
-                        status: 'done',
+                        status: terminalRunState === 'cancelled' ? 'cancelled' : terminalRunState === 'error' ? 'error' : 'done',
                         definitionHash: appDefinitionFingerprint(app),
                         outputMode: 'approval',
                         inputSummary,
                         message: primaryResult.slice(0, 180) || savedInstance.result || text.runCompleted,
-                        artifacts,
+                        artifacts: terminalRunState === 'done' ? artifacts : undefined,
                         resultPayload,
                         outputs,
                         dependencyVerification,
@@ -9282,14 +9461,22 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                     });
                 }
                 setRunID(workflowRunID || fallbackID);
-                setRunState(stillRunning ? 'running' : 'done');
+                if (stillRunning) {
+                    rememberActiveRun('approval_workflow', workflowRunID || fallbackID, inputSummary, 'approval', savedInstance);
+                } else {
+                    forgetActiveRun(workflowRunID || fallbackID);
+                }
+                setRunState(terminalRunState);
+                setValidationMessage(terminalRunState === 'error' || terminalRunState === 'cancelled'
+                    ? String(savedInstance.result || savedInstance.result_status || savedInstance.resultStatus || '').trim()
+                        || (terminalRunState === 'cancelled' ? text.skillRunCancelled : text.skillRunFailed)
+                    : '');
+                setRuntimeBusinessError(null);
             } catch (error: any) {
                 const message = setRuntimeError(error, text.skillRunFailed);
                 await recordApprovalRuntimeFailure(fallbackPayload, message, inputSummary, 'failed-' + Date.now().toString(36));
                 return;
             }
-            setValidationMessage('');
-            setRuntimeBusinessError(null);
             return;
         }
         if (isBusiness) {
@@ -9317,14 +9504,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setCurrentRunContext({ inputSummary, outputMode: 'business' });
                 try {
                     const runID = await RunNLSkillAsync(businessSkillID, businessPayload);
-					const nextRunID = String(runID || '').trim();
-					if (!nextRunID) throw new Error(text.skillRunFailed);
-					setRunID(nextRunID);
-					setValidationMessage('');
-					setRuntimeBusinessError(null);
-					setRunState('running');
-					return;
-				} catch (error: any) {
+                    const nextRunID = String(runID || '').trim();
+                    if (!nextRunID) throw new Error(text.skillRunFailed);
+                    setRunID(nextRunID);
+                    rememberActiveRun('business_skill', nextRunID, inputSummary, 'business');
+                    setValidationMessage('');
+                    setRuntimeBusinessError(null);
+                    setRunState('running');
+                    return;
+                } catch (error: any) {
 					const message = setRuntimeError(error, text.skillRunFailed);
 					recordRunHistory({ runID: `failed-${Date.now().toString(36)}`, status: 'error', outputMode: 'business', inputSummary, message });
 					return;
@@ -9388,7 +9576,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
             activeRunDependencyPlanRef.current = null;
             const depNames = app ? appDependencyEvidence(app).map((d) => d.id).filter(Boolean) : [];
             const detail = error?.message || '';
-            const depHint = depNames.length > 0 ? (isZh(lang) ? `\uFF08\u9700\u8981\uFF1A${depNames.join(', ')}\uFF09` : ` (requires: ${depNames.join(', ')})`) : '';
+            const depHint = depNames.length > 0 ? (isZh(lang) ? `\uff08\u9700\u8981\uff1a${depNames.join(', ')}\uff09` : ` (requires: ${depNames.join(', ')})`) : '';
             setValidationMessage((detail || text.dependencyPlanError) + depHint);
             setRunState('error');
             setDependencyRepairState('idle');
@@ -9487,11 +9675,20 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 setApprovalInstances((current) => mergeApprovalInstanceViews(current, [finalView]));
             }
             const finalStatus = String(startedInstance?.status || startedInstance?.result_status || startedInstance?.resultStatus || '').trim().toLowerCase().replace('-', '_');
-            const stillRunning = ['pending', 'running', 'submitted', 'requires_input', 'in_progress'].includes(finalStatus);
+            const terminalRunState = runStateFromApprovalLifecycleStatus(finalStatus);
+            const stillRunning = terminalRunState === 'running';
             const supplementRunID = String(startedInstance?.workflow_decision_id || startedInstance?.workflowDecisionID || started?.approval_id || instance.approvalID || instance.id).trim();
             setRunID(supplementRunID);
-            setRunState(stillRunning ? 'running' : 'done');
-            setValidationMessage('');
+            if (stillRunning && startedInstance) {
+                rememberActiveRun('approval_workflow', supplementRunID, inputSummary, 'approval', startedInstance);
+            } else {
+                forgetActiveRun(supplementRunID);
+            }
+            setRunState(terminalRunState);
+            setValidationMessage(terminalRunState === 'error' || terminalRunState === 'cancelled'
+                ? String(startedInstance?.result || startedInstance?.result_status || startedInstance?.resultStatus || '').trim()
+                    || (terminalRunState === 'cancelled' ? text.skillRunCancelled : text.skillRunFailed)
+                : '');
             if (startedInstance) {
                 const verifiedAt = new Date().toISOString();
                 const approvalInstance = appRunApprovalInstanceEvidenceFromBackend(startedInstance, verifiedAt);
@@ -9505,13 +9702,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                 }
                 recordRunHistory({
                     runID: supplementRunID || `supplement-${Date.now().toString(36)}`,
-                    status: 'done',
+                    status: terminalRunState === 'cancelled' ? 'cancelled' : terminalRunState === 'error' ? 'error' : 'done',
                     outputMode: 'approval',
                     inputSummary,
                     message: String(startedInstance.result || startedInstance.result_status || startedInstance.resultStatus || text.supplementContinue).slice(0, 180),
                     resultPayload: historyResultPayload,
                     outputs: normalizeApprovalOutputs((startedInstance.outputs || []) as any[]),
-                    artifacts: normalizeApprovalArtifacts((startedInstance.artifacts || []) as any[]),
+                    artifacts: terminalRunState === 'done' ? normalizeApprovalArtifacts((startedInstance.artifacts || []) as any[]) : undefined,
                     approvalInstance,
                 });
             }
@@ -9672,7 +9869,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
         }
         setValidationMessage(text.skillRunCancelled);
         setRunState('cancelled');
-        recordRunHistory({ runID, status: 'cancelled', outputMode, inputSummary: toolInputSummary, message: text.skillRunCancelled });
+        forgetActiveRun(runID);
+        recordRunHistory({
+            runID,
+            status: 'cancelled',
+            outputMode: currentRunContext.outputMode || outputMode,
+            inputSummary: currentRunContext.inputSummary || toolInputSummary,
+            message: text.skillRunCancelled,
+        });
         await finalizeApprovalRunFromStatus({ run_id: runID, status: 'cancelled', summary: { last_error_snippet: text.skillRunCancelled } }, 'cancelled');
     };
     const runtimeAppID = app ? canonicalAppManifestID(app) : '';
@@ -9696,7 +9900,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const runtimeEvidenceReady = runtimeDependencyCheckState === 'idle' && !!runtimeInstallEvidencePlan && visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked;
     const runtimeDependencyMessage = app ? runtimeInstallPlanBlockMessage(app, runtimeVisibleDependencyPlan, text, lang) : backendDependencyUnavailableMessage(app, runtimeVisibleDependencyPlan, text, lang);
     // Only show dependency details inline when there's a problem (blocked/error/installing).
-    // When everything is ready (runtimeDependencyReady), hide details by default — user can expand via "查看详情".
+    // When everything is ready (runtimeDependencyReady), hide details by default; users can expand via detail controls.
     const showRuntimeDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && (runState === 'error' || dependencyRepairState === 'installing' || runtimeDependencyBlocked);
     const canInstallRuntimeDependencies = !!app && appNeedsRuntimeDependencyCheck(app) && (runtimeDependencyNeedsRepair || dependencyRepairState === 'installing' || validationMessage === text.missingRequiredDependency);
     const runtimeDependencyPanelState = dependencyRepairState === 'installing'
@@ -9752,6 +9956,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
     const showWorkspaceRegion = isApproval ? isRuntimeRoleVisible('instance_list') : isBusiness ? isRuntimeRoleVisible('record_list') : isRuntimeRoleVisible('preview');
     const showStatusRegion = isRuntimeRoleVisible('detail') || isRuntimeRoleVisible('parameters') || isRuntimeRoleVisible('preview') || !!app.installEvidence || !!runtimeVisibleDependencyPlan || !!runtimeBusinessError;
     const showOutputRegion = isRuntimeRoleVisible('output');
+    const outputRoleRegions = runtimeLayout.regions.filter((region) => region.role === 'output');
+    const outputExplicitlyHidden = outputRoleRegions.length > 0 && outputRoleRegions.every((region) => region.visible === false);
+    const showOutputShell = !outputExplicitlyHidden && (showOutputRegion || !!runtimeLayout.outputRegion);
+    const showCompletedOutputRegion = showOutputRegion && runState === 'done';
+    const inputLocked = runState === 'running';
 
     return (
         <>
@@ -9795,6 +10004,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                                 key={fileInputResetKey}
                                                 type="file"
                                                 multiple={allowMultipleFiles}
+                                                disabled={inputLocked}
                                                 onChange={(event) => {
                                                     const files = Array.from(event.currentTarget.files || []);
                                                     const file = files[0] || null;
@@ -9818,21 +10028,21 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                                             <label>{field.label || field.name}</label>
                                                             {field.type === 'boolean' ? (
                                                                 <label className="apps-checkbox-field">
-                                                                    <input type="checkbox" checked={!!value} onChange={(event) => {
+                                                                    <input type="checkbox" checked={!!value} disabled={inputLocked} onChange={(event) => {
                                                                         setFieldValues((current) => ({ ...current, [field.name]: event.target.checked }));
                                                                         markDirty();
                                                                     }} />
                                                                     <span>{isZh(lang) ? '\u542f\u7528' : 'Enabled'}</span>
                                                                 </label>
                                                             ) : field.type === 'select' ? (
-                                                                <select aria-label={field.label || field.name} value={String(value)} onChange={(event) => {
+                                                                <select aria-label={field.label || field.name} value={String(value)} disabled={inputLocked} onChange={(event) => {
                                                                     setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
                                                                     markDirty();
                                                                 }}>
                                                                     {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
                                                                 </select>
                                                             ) : (
-                                                                <input aria-label={field.label || field.name} value={String(value)} required={field.required} onChange={(event) => {
+                                                                <input aria-label={field.label || field.name} value={String(value)} required={field.required} disabled={inputLocked} onChange={(event) => {
                                                                     setFieldValues((current) => ({ ...current, [field.name]: event.target.value }));
                                                                     markDirty();
                                                                 }} />
@@ -9844,7 +10054,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                         ) : (
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u53c2\u6570' : 'Parameters'}</label>
-                                                <textarea value={toolParams} onChange={(event) => {
+                                                <textarea value={toolParams} disabled={inputLocked} onChange={(event) => {
                                                     setToolParams(event.target.value);
                                                     markDirty();
                                                 }} placeholder={isZh(lang) ? '\u8f93\u5165\u5904\u7406\u8981\u6c42\u6216\u8868\u5355\u53c2\u6570\u3002' : 'Enter processing instructions or form parameters.'} />
@@ -9853,7 +10063,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                     )}
                                     <div className="apps-form-row">
                                         <label>{text.output}</label>
-                                        <select value={outputMode} onChange={(event) => {
+                                        <select value={outputMode} disabled={inputLocked} onChange={(event) => {
                                             setOutputMode(event.target.value);
                                             markDirty();
                                         }}>
@@ -9863,21 +10073,21 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                 </>
                             ) : isAutomation ? (
                                 <>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u8fd0\u884c\u6a21\u5f0f' : 'Mode'}</label><select defaultValue="manual"><option value="manual">{isZh(lang) ? '\u624b\u52a8\u6267\u884c' : 'Manual run'}</option><option value="schedule">{isZh(lang) ? '\u5b9a\u65f6\u6267\u884c' : 'Scheduled'}</option><option value="monitor">{isZh(lang) ? '\u6301\u7eed\u76d1\u63a7' : 'Continuous monitor'}</option></select></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u8fd0\u884c\u6a21\u5f0f' : 'Mode'}</label><select defaultValue="manual" disabled={inputLocked}><option value="manual">{isZh(lang) ? '\u624b\u52a8\u6267\u884c' : 'Manual run'}</option><option value="schedule">{isZh(lang) ? '\u5b9a\u65f6\u6267\u884c' : 'Scheduled'}</option><option value="monitor">{isZh(lang) ? '\u6301\u7eed\u76d1\u63a7' : 'Continuous monitor'}</option></select></div>
                                     <div className="apps-form-row"><label>{isZh(lang) ? '\u72b6\u6001' : 'Status'}</label><input readOnly value={runState === 'done' ? (isZh(lang) ? '\u8fd0\u884c\u4e2d' : 'Running') : text.readyOutput} /></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea defaultValue={isZh(lang) ? '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002' : 'Agent maintains the long-running task and reports results in the app tab.'} /></div>
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea disabled={inputLocked} defaultValue={isZh(lang) ? '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002' : 'Agent maintains the long-running task and reports results in the app tab.'} /></div>
                                 </>
                             ) : (
                                 <>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Entity'}</label><input value={businessEntity} onChange={(event) => {
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Entity'}</label><input value={businessEntity} disabled={inputLocked} onChange={(event) => {
                                         setBusinessEntity(event.target.value);
                                         markDirty();
                                     }} /></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u64cd\u4f5c' : 'Action'}</label><select value={businessAction} onChange={(event) => {
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u64cd\u4f5c' : 'Action'}</label><select value={businessAction} disabled={inputLocked} onChange={(event) => {
                                         setBusinessAction(event.target.value);
                                         markDirty();
                                     }}><option value="create">{isZh(lang) ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record'}</option><option value="query">{isZh(lang) ? '\u67e5\u8be2\u6570\u636e' : 'Query data'}</option><option value="report">{isZh(lang) ? '\u751f\u6210\u62a5\u8868' : 'Generate report'}</option></select></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea value={businessNote} onChange={(event) => {
+                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea value={businessNote} disabled={inputLocked} onChange={(event) => {
                                         setBusinessNote(event.target.value);
                                         markDirty();
                                     }} placeholder={isZh(lang) ? '\u8f93\u5165\u4e1a\u52a1\u610f\u56fe\uff0cAgent \u751f\u6210\u52a8\u6001\u754c\u9762\u5e76\u901a\u8fc7 DataSrv \u6267\u884c\u3002' : 'Enter business intent. Agent renders a dynamic UI and executes through DataSrv.'} /></div>
@@ -9917,7 +10127,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             />
                         </section>}
                         {showInputRegion && <div className="apps-actions apps-runtime-actions" data-region={inputRegion} style={{ order: runtimeOrder.actions }}>
-                            <button className="apps-secondary-button" type="button" onClick={() => {
+                            <button className="apps-secondary-button" type="button" disabled={runState === 'running'} onClick={() => {
                                 setFileName('');
                                 setSelectedFile(null);
                                 setSelectedFiles([]);
@@ -9942,7 +10152,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
                             {showRunButton && <button className="apps-primary-button" type="button" onClick={() => runApp()}>{text.run}</button>}
                         </div>}
-                        {showOutputRegion && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} />}
+                        {showOutputShell && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} hidden={!showCompletedOutputRegion} />}
                         {showOutputRegion && (isTool || isBusiness) && (
                             <section className="apps-run-history" data-region={outputRegion === 'bottom' ? 'bottom' : outputRegion} style={{ order: runtimeOrder.history }}>
                                 <div className="apps-preview-title-row">
@@ -10666,12 +10876,15 @@ const StructuredBusinessErrorDetails = ({ error, text }: { error: StructuredBusi
 	);
 };
 
-const AppRunOutput = ({ status, runState, resultText, businessResult, isTool, text, style, layoutRegion }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; businessResult?: BusinessOperationResultView | null; isTool: boolean; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string }) => {
+const AppRunOutput = ({ status, runState, resultText, businessResult, isTool, text, style, layoutRegion, hidden }: { status: SkillRunStatusView | null; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; resultText: string; businessResult?: BusinessOperationResultView | null; isTool: boolean; text: typeof labels.zh; style?: CSSProperties; layoutRegion?: string; hidden?: boolean }) => {
+    if (hidden) {
+        return <section className="apps-runtime-section apps-runtime-output" data-region={layoutRegion || 'right'} style={style} hidden aria-hidden="true" />;
+    }
 	const artifacts = skillRunArtifacts(status);
 	const runID = String(status?.run_id || '').trim();
     const hasArtifacts = artifacts.length > 0;
     const showTextOutput = runState === 'done' && !businessResult && (!isTool || !hasArtifacts);
-    // Section title: "结果" when done with artifacts, "输出" otherwise
+    // Section title: "\u7ed3\u679c" when done with artifacts, "\u8f93\u51fa" otherwise
     const sectionTitle = hasArtifacts ? text.outputResult || text.runtimeOutput : text.runtimeOutput;
     return (
         <section className="apps-runtime-section apps-runtime-output" data-region={layoutRegion || 'right'} style={style}>
@@ -11435,7 +11648,7 @@ const InstallVersionSnapshot = ({ snapshot, text }: { snapshot?: BackendAppInsta
     return (
         <div className="apps-install-version-snapshot" role="list" aria-label={text.versionSnapshot}>
             {items.map((item, index) => (
-                <span role="listitem" key={item.label + ':' + item.value + ':' + index}>
+                <span key={`${item.label}-${index}`} role="listitem">
                     <strong>{item.label}</strong>
                     <em>{item.value}</em>
                 </span>
@@ -11444,7 +11657,7 @@ const InstallVersionSnapshot = ({ snapshot, text }: { snapshot?: BackendAppInsta
     );
 };
 
-/** App About Dialog — shows app name, version, author, copyright, etc. */
+/** App About Dialog - shows app name, version, author, copyright, etc. */
 const AppAboutDialog = ({ app, text, onClose }: { app: AppEntry; text: typeof labels.zh; onClose: () => void }) => {
     const about = app.aboutInfo;
     const version = app.version ?? 1;
@@ -11726,28 +11939,29 @@ const RuntimeStatusSection = ({ runState, runtimeStatusState, runtimeStatusMessa
     const hasReadyDependencyDetails = visibleRuntimeDependencyDetails.length > 0 && !runtimeDependencyBlocked && !runtimeBusinessError && dependencyRepairState !== 'installing' && runState !== 'error';
     const hasDetailContent = isPreRun && (!!app.installEvidence || !!runtimeVisibleDependencyPlan || hasReadyDependencyDetails);
 
-    // Execution detail: show "详情" toggle when there are execution steps (for debugging)
+    // Execution detail stays collapsed by default so routine runs keep the status row compact.
     const hasExecDetail = isTool && runState !== 'idle' && (skillRunStatus?.steps?.length || 0) > 0;
 
     return (
         <>
-            <div className="apps-runtime-section__title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span>{text.runtimeStatus}</span>
-                <span style={{ display: 'inline-flex', gap: '6px', marginLeft: 'auto' }}>
-                    {hasExecDetail && (
-                        <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setExecDetailOpen((prev) => !prev)}>
-                            {execDetailOpen ? text.hideExecDetail : text.showExecDetail}
-                        </button>
-                    )}
-                    {hasDetailContent && (
-                        <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)}>
-                            {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
-                        </button>
-                    )}
-                </span>
-            </div>
+            <div className="apps-runtime-section__title">{text.runtimeStatus}</div>
             <div className={`apps-result-panel${showRuntimeDependencyDetails || runtimeBusinessError ? ' apps-result-panel--stacked' : ''}`} data-state={runtimeStatusState}>
-                <span>{runtimeStatusMessage}</span>
+                <div className="apps-result-panel__summary">
+                    <span className="apps-result-panel__dot" aria-hidden="true" />
+                    <span className="apps-result-panel__message">{runtimeStatusMessage}</span>
+                    <span className="apps-result-panel__tools">
+                        {hasExecDetail && (
+                            <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setExecDetailOpen((prev) => !prev)}>
+                                {execDetailOpen ? text.hideExecDetail : text.showExecDetail}
+                            </button>
+                        )}
+                        {hasDetailContent && (
+                            <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)}>
+                                {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
+                            </button>
+                        )}
+                    </span>
+                </div>
                 {runtimeStatusState === 'running' && (
                     <div className="apps-result-progress" role="progressbar" aria-label={runtimeStatusMessage} aria-valuetext={runtimeStatusMessage}>
                         <span />
@@ -12026,7 +12240,7 @@ function MarketInstallFeedbackMessage({ feedback, text }: { feedback: { state: s
     const friendly = marketInstallFriendlyError(feedback.message, feedback.plan, text);
     const rawMessage = feedback.message || '';
     // When plan is available, DependencyVerificationPanel provides structured detail (collapsible).
-    // When plan is absent (catch block errors), raw message is the only detail source — show it inline.
+    // When plan is absent (catch block errors), raw message is the only detail source; show it inline.
     const showRawInline = !feedback.plan && rawMessage && friendly !== rawMessage;
     return (
         <div className="apps-market-row__feedback-block" data-state="error">
@@ -12181,7 +12395,7 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onOpenManual, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onInstallDependencies, onSyncHubAppGovernance }: {
 	apps: AppEntry[];
 	hiddenApps: AppEntry[];
 	lang?: string;
@@ -12200,6 +12414,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
     datasrvDiscovery: DataSrvDiscovery;
     skillDiscovery: SkillAppDiscovery;
     onOpenMISDataSettings?: () => void;
+    onOpenManual?: () => void;
 	onAddDiscoveredApp: (app: AppEntry) => void;
 	onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
 	onInstallMarketApp: (app: AppEntry) => void;
@@ -12264,6 +12479,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                 </div>
 	                <div className="apps-detail__actions">
 	                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} onOpenMISDataSettings={onOpenMISDataSettings} />
+	                    {onOpenManual && <button className="apps-secondary-button apps-manual-button" type="button" onClick={onOpenManual} aria-label={text.manualAria} title={text.manualAria}>{text.manual}</button>}
 	                    <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
 	                </div>
             </div>
@@ -14834,10 +15050,10 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <option value="all">{text.all} ({manageQueryMatchedApps.length})</option>
                     {manageCategories.map((item) => <option key={item} value={item} disabled={!!normalizedManageQuery && (manageCategoryCounts.get(item) || 0) === 0}>{categoryOptionLabel(item, manageCategoryCounts)}</option>)}
                 </select>
-                <select className="apps-manage-category-select" value={managePanelStatus} onChange={(event) => setManagePanelStatus(event.target.value as 'all' | 'in_panel' | 'not_in_panel')} aria-label={isZh(lang) ? '面板状态' : 'Panel status'}>
-                    <option value="all">{isZh(lang) ? '全部状态' : 'All status'}</option>
-                    <option value="in_panel">{isZh(lang) ? '已加入面板' : 'In panel'}</option>
-                    <option value="not_in_panel" disabled={notInPanelApps.length === 0}>{isZh(lang) ? '未加入面板' : 'Not in panel'}{notInPanelApps.length > 0 ? ` (${notInPanelApps.length})` : ''}</option>
+                <select className="apps-manage-category-select" value={managePanelStatus} onChange={(event) => setManagePanelStatus(event.target.value as 'all' | 'in_panel' | 'not_in_panel')} aria-label={isZh(lang) ? '\u9762\u677f\u72b6\u6001' : 'Panel status'}>
+                    <option value="all">{isZh(lang) ? '\u5168\u90e8\u72b6\u6001' : 'All statuses'}</option>
+                    <option value="in_panel">{isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}</option>
+                    <option value="not_in_panel" disabled={notInPanelApps.length === 0}>{isZh(lang) ? '\u672a\u52a0\u5165\u9762\u677f' : 'Not in panel'}{notInPanelApps.length > 0 ? ` (${notInPanelApps.length})` : ''}</option>
                 </select>
                 <button
                     className="apps-secondary-button"

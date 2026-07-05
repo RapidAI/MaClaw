@@ -452,7 +452,7 @@ void main() {
     expect(find.text('任务结果已复制'), findsOneWidget);
 
     await tester.tap(find.byTooltip('分享结果'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 250));
     expect(sharedResults.single, contains('service ok'));
     expect(
       sharedResults.single,

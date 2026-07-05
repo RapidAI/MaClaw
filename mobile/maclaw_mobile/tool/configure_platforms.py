@@ -39,6 +39,21 @@ IOS_CORRUPT_USAGE_MARKERS = [
     "\ufffd",
 ]
 
+IOS_RUNNER_TESTS_SWIFT = """import Flutter
+import UIKit
+import XCTest
+
+class RunnerTests: XCTestCase {
+
+  func testMaClawMobileBundleConfiguration() {
+    let bundle = Bundle(for: RunnerTests.self)
+
+    XCTAssertEqual(bundle.bundleIdentifier, "top.mypapers.maclaw.mobile.RunnerTests")
+  }
+
+}
+"""
+
 ANDROID_PERMISSIONS = [
     ("android.permission.INTERNET", {}),
     ("android.permission.CAMERA", {}),
@@ -247,6 +262,12 @@ def configure_android_gradle() -> None:
         'applicationId = "com.example.maclaw_mobile"',
         f'applicationId = "{ANDROID_PACKAGE_ID}"',
     )
+    for marker in [
+        "        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).\n",
+        "        // You can update the following values to match your application needs.\n",
+        "        // For more information, see: https://flutter.dev/to/review-gradle-config.\n",
+    ]:
+        text = text.replace(marker, "")
     if "isCoreLibraryDesugaringEnabled = true" not in text:
         text = text.replace(
             "targetCompatibility = JavaVersion.VERSION_17",
@@ -371,6 +392,7 @@ def configure_ios() -> None:
         plist = plistlib.load(fh)
     plist["AppGroupId"] = "$(CUSTOM_GROUP_ID)"
     plist["CFBundleDisplayName"] = "MaClaw Mobile"
+    plist["CFBundleName"] = "MaClaw Mobile"
     apply_ios_usage_descriptions(plist)
     url_types = plist.setdefault("CFBundleURLTypes", [])
     if not any("maclaw" in item.get("CFBundleURLSchemes", []) for item in url_types):
@@ -393,6 +415,7 @@ def configure_ios() -> None:
         plistlib.dump(plist, fh)
     configure_ios_entitlements()
     configure_ios_share_extension()
+    configure_ios_runner_tests()
     configure_ios_project_settings()
 
 
@@ -424,6 +447,16 @@ def configure_ios_entitlements() -> None:
     entitlements_path = runner_dir / "Runner.entitlements"
     with entitlements_path.open("wb") as fh:
         plistlib.dump(entitlement_payload(), fh)
+
+
+def configure_ios_runner_tests() -> None:
+    tests_dir = ROOT / "ios/RunnerTests"
+    if not tests_dir.exists():
+        return
+    (tests_dir / "RunnerTests.swift").write_text(
+        IOS_RUNNER_TESTS_SWIFT,
+        encoding="utf-8",
+    )
 
 
 def configure_ios_share_extension() -> None:

@@ -75,10 +75,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"iOS export options setup failed: {exc}", file=sys.stderr)
         return 1
 
+    payload = export_options_payload(args.team_id, args.export_method)
     print(f"Wrote local iOS export options: {target}")
     print(
-        "Run `python3 tool/qa_preflight.py --team-id <APPLE_TEAM_ID> "
-        f"--export-method {args.export_method}` next; keep ios/ExportOptions.plist local."
+        "Run `python3 tool/qa_preflight.py "
+        f"--team-id {payload['teamID']} --export-method {payload['method']}` next; "
+        "keep ios/ExportOptions.plist local."
     )
     return 0
 

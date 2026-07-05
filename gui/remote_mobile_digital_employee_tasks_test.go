@@ -206,8 +206,11 @@ func TestBuildMobileDigitalEmployeeExecutionPromptIncludesTypeAndContext(t *test
 		Prompt:   "check disk",
 		TaskType: "server_maintenance",
 		Context: map[string]string{
-			"source":     "maclaw_mobile",
-			"machine_id": "desktop-1",
+			"source":      "maclaw_mobile",
+			"machine_id":  "desktop-1",
+			" tenant_id ": "tenant-a",
+			"empty_value": " ",
+			"   ":         "ignored",
 		},
 	})
 	for _, want := range []string{
@@ -220,6 +223,27 @@ func TestBuildMobileDigitalEmployeeExecutionPromptIncludesTypeAndContext(t *test
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
+	}
+	for _, unwanted := range []string{"empty_value", "ignored"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt included blank context %q: %s", unwanted, prompt)
+		}
+	}
+	wantOrder := []string{
+		"- machine_id: desktop-1",
+		"- source: maclaw_mobile",
+		"- tenant_id: tenant-a",
+	}
+	last := -1
+	for _, want := range wantOrder {
+		index := strings.Index(prompt, want)
+		if index < 0 {
+			t.Fatalf("prompt missing ordered context %q: %s", want, prompt)
+		}
+		if index <= last {
+			t.Fatalf("prompt context order is unstable; %q appeared after index %d: %s", want, last, prompt)
+		}
+		last = index
 	}
 }
 

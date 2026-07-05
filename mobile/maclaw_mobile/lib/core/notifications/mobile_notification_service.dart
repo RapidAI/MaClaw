@@ -168,7 +168,7 @@ class MobileNotificationService {
         'maclaw_mobile_tasks',
         'MaClaw Mobile tasks',
         channelDescription:
-            'Document, search, SSH, and digital employee updates',
+            'Document, assistant, SSH, and digital employee updates',
         importance: Importance.high,
         priority: Priority.high,
       ),

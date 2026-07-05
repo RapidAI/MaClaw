@@ -34,6 +34,8 @@ class VerifyIosWrapperTest(unittest.TestCase):
         runner_info = {
             **verify_ios_wrapper.IOS_USAGE_DESCRIPTIONS,
             'AppGroupId': '$(CUSTOM_GROUP_ID)',
+            'CFBundleDisplayName': 'MaClaw Mobile',
+            'CFBundleName': 'MaClaw Mobile',
             'CFBundleURLTypes': [
                 {'CFBundleURLSchemes': ['maclaw']},
                 {'CFBundleURLSchemes': ['ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)']},
@@ -62,6 +64,14 @@ class VerifyIosWrapperTest(unittest.TestCase):
         write_plist(ios / 'ShareExtension/ShareExtension.entitlements', entitlements)
         controller = ios / 'ShareExtension/ShareViewController.swift'
         controller.write_text('class ShareViewController: RSIShareViewController {}', encoding='utf-8')
+        runner_tests = ios / 'RunnerTests/RunnerTests.swift'
+        runner_tests.parent.mkdir(parents=True)
+        runner_tests.write_text(
+            'func testMaClawMobileBundleConfiguration() {\n'
+            '  XCTAssertEqual(bundle.bundleIdentifier, "top.mypapers.maclaw.mobile.RunnerTests")\n'
+            '}\n',
+            encoding='utf-8',
+        )
         project = ios / 'Runner.xcodeproj/project.pbxproj'
         project.parent.mkdir(parents=True)
         project.write_text(
@@ -84,6 +94,16 @@ class VerifyIosWrapperTest(unittest.TestCase):
         errors = verify_ios_wrapper.verify_ios_wrapper(self.mobile)
 
         self.assertTrue(any('NSCameraUsageDescription' in error for error in errors))
+
+    def test_rejects_flutter_template_bundle_name(self) -> None:
+        path = self.mobile / 'ios/Runner/Info.plist'
+        plist = verify_ios_wrapper.read_plist(path)
+        plist['CFBundleName'] = 'maclaw_mobile'
+        write_plist(path, plist)
+
+        errors = verify_ios_wrapper.verify_ios_wrapper(self.mobile)
+
+        self.assertTrue(any('CFBundleName' in error for error in errors))
 
     def test_rejects_missing_share_activation_rule(self) -> None:
         path = self.mobile / 'ios/ShareExtension/Info.plist'
@@ -121,6 +141,19 @@ class VerifyIosWrapperTest(unittest.TestCase):
         errors = verify_ios_wrapper.verify_ios_wrapper(self.mobile)
 
         self.assertTrue(any('Share Extension files are generated' in error for error in errors))
+
+    def test_rejects_flutter_template_runner_test(self) -> None:
+        runner_tests = self.mobile / 'ios/RunnerTests/RunnerTests.swift'
+        runner_tests.write_text(
+            'func testExample() {\n'
+            '  // If you add code to the Runner application, consider adding tests here.\n'
+            '}\n',
+            encoding='utf-8',
+        )
+
+        errors = verify_ios_wrapper.verify_ios_wrapper(self.mobile)
+
+        self.assertTrue(any('RunnerTests' in error for error in errors))
 
     def test_main_prints_success(self) -> None:
         output = StringIO()

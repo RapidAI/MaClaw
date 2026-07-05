@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import signed_artifact_evidence
+
 
 DEFAULT_VERSION = "<version+build>"
 DEFAULT_SCOPE = "android-ios"
@@ -17,6 +19,11 @@ QA_RELEASE_EVIDENCE_LINK_COMMAND = (
     "python3 tool/qa_release_evidence_links.py "
     "docs/qa-builds --update-release-evidence"
 )
+
+
+def _is_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized.startswith("<") and normalized.endswith(">")
 
 
 def _version_parts(version: str) -> tuple[str, str]:
@@ -295,6 +302,25 @@ def android_artifact_evidence_command(
     signing_identity: str = "<alias or certificate fingerprint>",
     installer_channel: str = "<internal test channel>",
 ) -> str:
+    if not _is_placeholder(artifact) and not signed_artifact_evidence.is_trackable_android_artifact(
+        artifact,
+    ):
+        raise ValueError(
+            "Android artifact evidence command requires a signed/release/internal "
+            ".apk or .aab artifact path that does not contain debug.",
+        )
+    if not _is_placeholder(signing_identity) and not signed_artifact_evidence.is_android_signing_identity(
+        signing_identity,
+    ):
+        raise ValueError(
+            "Android artifact evidence command requires a non-debug release/internal signing identity.",
+        )
+    if not _is_placeholder(installer_channel) and not signed_artifact_evidence.is_installer_channel(
+        installer_channel,
+    ):
+        raise ValueError(
+            "Android artifact evidence command requires a non-debug auditable installer channel.",
+        )
     return (
         f"python3 tool/signed_artifact_evidence.py android {artifact} "
         f"--record-dir {record_dir} --version {version} "
@@ -310,6 +336,24 @@ def ios_artifact_evidence_command(
     provisioning_profiles: str = "<Runner profile UUID/name; Share Extension profile UUID/name>",
     record_dir: str = DEFAULT_QA_RECORDS_DIR,
 ) -> str:
+    if not _is_placeholder(archive_or_build) and not signed_artifact_evidence.is_trackable_ios_archive(
+        archive_or_build,
+    ):
+        raise ValueError(
+            "iOS artifact evidence command requires an .xcarchive path or explicit TestFlight build number.",
+        )
+    if not _is_placeholder(team_id) and signed_artifact_evidence.APPLE_TEAM_ID_RE.fullmatch(
+        team_id.strip().upper(),
+    ) is None:
+        raise ValueError(
+            "iOS artifact evidence command requires a 10-character Apple Team ID.",
+        )
+    if not _is_placeholder(provisioning_profiles) and not signed_artifact_evidence.is_trackable_ios_profiles(
+        provisioning_profiles,
+    ):
+        raise ValueError(
+            "iOS artifact evidence command requires Runner and Share Extension provisioning profile UUID/file/name evidence.",
+        )
     return (
         "python3 tool/signed_artifact_evidence.py ios "
         f'--archive-or-build "{archive_or_build}" '

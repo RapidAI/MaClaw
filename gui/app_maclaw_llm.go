@@ -1248,6 +1248,52 @@ func (a *App) CreateMobileLLMDesktopQRSession(name, providerURL, key, model stri
 	return session, nil
 }
 
+func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return MobileLLMQRCodeSession{}, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	mobile := strings.TrimSpace(cfg.RemoteMobile)
+	if mobile == "" {
+		email := strings.TrimSpace(cfg.RemoteEmail)
+		if strings.HasPrefix(strings.ToLower(email), "phone:") {
+			mobile = strings.TrimSpace(email[len("phone:"):])
+		}
+	}
+	if hubURL == "" || viewerToken == "" || strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("MaClaw Hub registration is required before creating a mobile authentication QR code")
+	}
+	if mobile == "" {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("mobile authentication QR code requires a bound phone number")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/auth/desktop-qr-sessions", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return MobileLLMQRCodeSession{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := maclawLLMPingClient.Do(req)
+	if err != nil {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("create mobile authentication QR session failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("create mobile authentication QR session failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var session MobileLLMQRCodeSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("decode mobile authentication QR session: %w", err)
+	}
+	if strings.TrimSpace(session.QRPayload) == "" {
+		return MobileLLMQRCodeSession{}, fmt.Errorf("Hub did not return a mobile authentication QR payload")
+	}
+	return session, nil
+}
+
 func openAIModelsEndpointCandidates(baseURL, protocol string) []string {
 	return llm.BuildOpenAIModelsEndpointCandidates(baseURL, protocol)
 }
@@ -1352,10 +1398,40 @@ func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTo
 	a.AccumulateLLMTokenUsageWithCache(providerName, inputTokens, outputTokens, 0, 0)
 }
 
+func maclawLLMUsageProviderName(app *App, llmCfg corelib.MaclawLLMConfig) string {
+	if providerName := strings.TrimSpace(llmCfg.ProviderName); providerName != "" {
+		return providerName
+	}
+	if app == nil {
+		return ""
+	}
+	providers := app.GetMaclawLLMProviders()
+	return strings.TrimSpace(providers.Current)
+}
+
+func maclawLLMUsagePricesFromConfig(cfg *corelib.AppConfig, providerName string) (float64, float64) {
+	inputPrice := corelib.DefaultLLMInputPricePerMTokensRMB
+	outputPrice := corelib.DefaultLLMOutputPricePerMTokensRMB
+	if cfg == nil {
+		return inputPrice, outputPrice
+	}
+	providerName = strings.TrimSpace(providerName)
+	for _, provider := range normalizeMaclawLLMProviders(cfg.MaclawLLMProviders) {
+		if strings.EqualFold(strings.TrimSpace(provider.Name), providerName) {
+			return provider.InputPricePerMTokensRMB, provider.OutputPricePerMTokensRMB
+		}
+	}
+	return inputPrice, outputPrice
+}
+
 // AccumulateLLMTokenUsageWithCache adds token counts plus provider-reported
 // prompt-cache read/write tokens for the given provider.
 func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) {
 	if inputTokens == 0 && outputTokens == 0 && cachedInputTokens == 0 && cacheWriteTokens == 0 {
+		return
+	}
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
 		return
 	}
 	if isRemoteToolTokenUsageProvider(providerName) {
@@ -1378,6 +1454,10 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
 		stat.CachedInputTokens += int64(cachedInputTokens)
 		stat.CacheWriteTokens += int64(cacheWriteTokens)
+		inputPrice, outputPrice := maclawLLMUsagePricesFromConfig(cfg, providerName)
+		stat.InputPricePerMTokensRMB = inputPrice
+		stat.OutputPricePerMTokensRMB = outputPrice
+		stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB = corelib.CalculateLLMCostRMB(stat.InputTokens, stat.OutputTokens, inputPrice, outputPrice)
 		stat.Requests++
 		if cachedInputTokens > 0 {
 			stat.CachedRequests++

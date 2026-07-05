@@ -356,6 +356,40 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 "- SHA256 does not match local artifact build/app/outputs/flutter-apk/app-release.apk",
                 output,
             )
+            self.assertIn("How to fill signed artifact evidence:", output)
+            self.assertIn(
+                release_evidence_commands.android_artifact_evidence_command(
+                    "1.0.0+42",
+                    record_dir=str(record.parent),
+                ),
+                output,
+            )
+
+    def test_report_points_missing_local_ios_archive_to_artifact_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root).replace(
+                "Archive/TestFlight build: TestFlight build 42",
+                "Archive/TestFlight build: build/ios/archive/MaClawMobile.xcarchive",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("Local artifact hashes:", output)
+            self.assertIn(
+                "- Local iOS archive is missing: build/ios/archive/MaClawMobile.xcarchive",
+                output,
+            )
+            self.assertIn("How to fill signed artifact evidence:", output)
+            self.assertIn(
+                release_evidence_commands.ios_artifact_evidence_command(
+                    record_dir=str(record.parent),
+                ),
+                output,
+            )
 
     def test_report_points_secret_redaction_failures_to_redacted_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

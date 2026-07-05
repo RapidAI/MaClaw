@@ -256,6 +256,8 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("full release-gate run result", output)
         self.assertIn("HubCenter discovery result", output)
         self.assertIn("Runtime boundary verifier result", output)
+        self.assertIn("AI assistant answer with citations", output)
+        self.assertNotIn("Assistant search with citations", output)
         self.assertIn("Digital employee list", output)
         self.assertIn("Do not store signing secrets", output)
         self.assertIn("Missing completed signed-build QA record", output)
@@ -848,6 +850,24 @@ class ReleaseHandoffTest(unittest.TestCase):
         output = release_handoff.format_handoff(handoff)
 
         self.assertIn("Current status: READY for final release approval.", output)
+        self.assertNotIn("Current status: NOT READY", output)
+
+    def test_format_handoff_reports_scoped_ready_as_internal_qa_only(self) -> None:
+        root = self.make_root()
+        handoff = release_handoff.build_handoff(
+            root,
+            scope="android",
+            build_status=self.ready_status,
+        )
+
+        output = release_handoff.format_handoff(handoff)
+
+        self.assertIn(
+            "Current status: READY for Android scoped internal QA approval, "
+            "not full Android/iOS release approval.",
+            output,
+        )
+        self.assertNotIn("Current status: READY for final release approval.", output)
         self.assertNotIn("Current status: NOT READY", output)
 
     def test_build_handoff_passes_ios_expected_values_to_status_builder(self) -> None:

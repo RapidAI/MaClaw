@@ -54,7 +54,7 @@ Stream<MobileNetworkSnapshot> mobileNetworkStatusStream(
     if (snapshot.online && wasOffline) {
       yield MobileNetworkSnapshot(
         quality: MobileNetworkQuality.restored,
-        message: '官方服务网络已恢复，可以继续搜索、处理文档和查看任务状态。',
+        message: '官方服务网络已恢复，可以继续使用 AI助手、处理文档和查看任务状态。',
         checkedAt: snapshot.checkedAt,
       );
     } else {
@@ -111,7 +111,7 @@ class HubCenterNetworkProbe implements MobileNetworkProbe {
     }
     return MobileNetworkSnapshot(
       quality: MobileNetworkQuality.offline,
-      message: '当前网络可能不可用，搜索、文档导入/导出和数字员工任务状态可能延迟。',
+      message: '当前网络可能不可用，AI助手、文档导入/导出和数字员工任务状态可能延迟。',
       checkedAt: checkedAt,
     );
   }

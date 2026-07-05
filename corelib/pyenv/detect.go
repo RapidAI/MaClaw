@@ -4,6 +4,9 @@
 package pyenv
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -492,12 +495,32 @@ func extractTarGz(archivePath, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
-	cmd := coretool.Command("tar", "xzf", archivePath, "-C", destDir)
-	out, err := cmd.CombinedOutput()
+
+	f, err := os.Open(archivePath)
 	if err != nil {
-		return fmt.Errorf("tar 解压失败: %w\n%s", err, string(out))
+		return err
 	}
-	return nil
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip 读取失败: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("tar 读取失败: %w", err)
+		}
+		if err := extractTarEntry(tr, header, destDir); err != nil {
+			return err
+		}
+	}
 }
 
 // extractZip 解压 zip 到目标目录（Windows uv 用）。
@@ -505,21 +528,115 @@ func extractZip(archivePath, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" {
-		cmd := coretool.Command("powershell", "-NoProfile", "-Command",
-			fmt.Sprintf("Expand-Archive -Force -Path '%s' -DestinationPath '%s'", archivePath, destDir))
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("Expand-Archive 失败: %w\n%s", err, string(out))
-		}
-		return nil
-	}
-	cmd := coretool.Command("unzip", "-o", archivePath, "-d", destDir)
-	out, err := cmd.CombinedOutput()
+
+	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return fmt.Errorf("unzip 失败: %w\n%s", err, string(out))
+		return fmt.Errorf("zip 读取失败: %w", err)
+	}
+	defer zr.Close()
+
+	for _, file := range zr.File {
+		if err := extractZipEntry(file, destDir); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func extractTarEntry(r io.Reader, header *tar.Header, destDir string) error {
+	target, err := safeArchiveTarget(destDir, header.Name)
+	if err != nil {
+		return err
+	}
+	switch header.Typeflag {
+	case tar.TypeDir:
+		return os.MkdirAll(target, 0755)
+	case tar.TypeReg, tar.TypeRegA:
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		mode := os.FileMode(header.Mode)
+		if mode == 0 {
+			mode = 0644
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, r); err != nil {
+			_ = out.Close()
+			return err
+		}
+		return out.Close()
+	case tar.TypeSymlink:
+		if runtime.GOOS == "windows" {
+			return nil
+		}
+		linkName := strings.ReplaceAll(header.Linkname, "\\", "/")
+		cleanLink := filepath.Clean(linkName)
+		if filepath.IsAbs(cleanLink) || cleanLink == ".." || strings.HasPrefix(cleanLink, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("archive symlink escapes destination: %q -> %q", header.Name, header.Linkname)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		_ = os.Remove(target)
+		return os.Symlink(header.Linkname, target)
+	default:
+		return nil
+	}
+}
+
+func extractZipEntry(file *zip.File, destDir string) error {
+	target, err := safeArchiveTarget(destDir, file.Name)
+	if err != nil {
+		return err
+	}
+	if file.FileInfo().IsDir() {
+		return os.MkdirAll(target, 0755)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	mode := file.Mode()
+	if mode == 0 {
+		mode = 0644
+	}
+	src, err := file.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+func safeArchiveTarget(destDir, name string) (string, error) {
+	name = strings.ReplaceAll(name, "\\", "/")
+	cleanName := filepath.Clean(name)
+	if cleanName == "." || filepath.IsAbs(cleanName) || strings.HasPrefix(cleanName, ".."+string(os.PathSeparator)) || cleanName == ".." {
+		return "", fmt.Errorf("archive entry escapes destination: %q", name)
+	}
+	target := filepath.Join(destDir, cleanName)
+	cleanDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", err
+	}
+	cleanTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	if cleanTarget != cleanDest && !strings.HasPrefix(cleanTarget, cleanDest+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry escapes destination: %q", name)
+	}
+	return cleanTarget, nil
 }
 
 // errFound 是 findAndMoveBinary 内部用于提前终止 Walk 的哨兵错误。
@@ -528,7 +645,7 @@ var errFound = fmt.Errorf("found")
 // findAndMoveBinary 在目录树中查找指定二进制文件并复制到目标目录。
 func findAndMoveBinary(searchDir, binName, destDir string) error {
 	var found string
-	filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -537,7 +654,9 @@ func findAndMoveBinary(searchDir, binName, destDir string) error {
 			return errFound // 提前终止遍历
 		}
 		return nil
-	})
+	}); err != nil && err != errFound {
+		return fmt.Errorf("查找 %s 失败: %w", binName, err)
+	}
 	if found == "" {
 		return fmt.Errorf("在 %s 中未找到 %s", searchDir, binName)
 	}
@@ -672,7 +791,12 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 
 		// 找到 uv 二进制并复制到 ~/.maclaw/python/bin/
 		binDir := filepath.Join(base, "bin")
-		os.MkdirAll(binDir, 0755)
+		if err := os.MkdirAll(binDir, 0755); err != nil {
+			os.RemoveAll(uvExtractDir)
+			os.Remove(archivePath)
+			st.Error = fmt.Sprintf("创建 uv bin 目录失败: %v", err)
+			return st
+		}
 		uvBinName := "uv"
 		if runtime.GOOS == "windows" {
 			uvBinName = "uv.exe"
@@ -704,7 +828,11 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	// --- 步骤 3: 创建 venv ---
 	if installedPrivatePython || !st.VenvReady {
 		emit("venv", 0, "正在创建虚拟环境 ...")
-		venvDir, _ := VenvDir()
+		venvDir, err := VenvDir()
+		if err != nil {
+			st.Error = fmt.Sprintf("获取 venv 目录失败: %v", err)
+			return st
+		}
 		os.RemoveAll(venvDir)
 
 		cmd := coretool.Command(st.UVPath, "venv", "--python", st.PythonPath, venvDir)

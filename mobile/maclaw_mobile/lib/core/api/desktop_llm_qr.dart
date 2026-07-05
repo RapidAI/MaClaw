@@ -4,11 +4,13 @@ const maclawMobileLlmAuthorizationType = 'maclaw_mobile_llm_authorization';
 
 class DesktopLlmQrPayload {
   final String raw;
+  final String type;
   final String sessionId;
   final String hubUrl;
 
   const DesktopLlmQrPayload({
     required this.raw,
+    required this.type,
     required this.sessionId,
     required this.hubUrl,
   });
@@ -35,7 +37,7 @@ DesktopLlmQrPayload parseMaclawDesktopLlmQrPayload(String qrPayload) {
   final type = (decoded['type'] as String? ?? '').trim();
   if (type != maclawMobileLlmAuthorizationType) {
     throw const FormatException(
-      'QR payload must be a MaClaw GUI mobile authorization session.',
+      'QR payload must be a MaClaw GUI LLM authorization session.',
     );
   }
   final sessionId = (decoded['session_id'] as String? ?? '').trim();
@@ -43,5 +45,10 @@ DesktopLlmQrPayload parseMaclawDesktopLlmQrPayload(String qrPayload) {
     throw const FormatException('session_id is required.');
   }
   final hubUrl = (decoded['hub_url'] as String? ?? '').trim();
-  return DesktopLlmQrPayload(raw: raw, sessionId: sessionId, hubUrl: hubUrl);
+  return DesktopLlmQrPayload(
+    raw: raw,
+    type: type,
+    sessionId: sessionId,
+    hubUrl: hubUrl,
+  );
 }

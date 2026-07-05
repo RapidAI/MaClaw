@@ -3,7 +3,7 @@ import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
 import 'package:maclaw_mobile/shared/app_shell.dart';
 
-const _lookupTab = '\u67e5\u4fe1\u606f';
+const _assistantTab = 'AI助手';
 const _documentsTab = '\u6587\u6863';
 const _remoteTab = '\u8fdc\u7a0b';
 const _employeesTab = '\u5458\u5de5';
@@ -27,13 +27,24 @@ void main() {
       '/account',
     ]);
     expect(tabs.map((tab) => tab.label), [
-      _lookupTab,
+      _assistantTab,
       _employeesTab,
       _accountTab,
     ]);
+    expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
   });
 
-  test('mobile app keeps account tab when all optional features are disabled',
+  test('mobile app presents the GUI-like AI assistant as the first tab', () {
+    final tabs = mobileAppTabsForFeatures(defaultMobileFeatures);
+
+    expect(tabs.first.path, '/assistant');
+    expect(tabs.first.label, _assistantTab);
+    expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
+    expect(mobileInitialPathForFeatures(defaultMobileFeatures), '/assistant');
+  });
+
+  test(
+      'mobile app keeps assistant and account when optional features are disabled',
       () {
     const features = MobileFeatures(
       search: false,
@@ -45,12 +56,14 @@ void main() {
 
     final tabs = mobileAppTabsForFeatures(features);
 
-    expect(tabs.map((tab) => tab.path), ['/account']);
-    expect(tabs.map((tab) => tab.label), [_accountTab]);
-    expect(mobileInitialPathForFeatures(features), '/account');
+    expect(tabs.map((tab) => tab.path), ['/assistant', '/account']);
+    expect(tabs.map((tab) => tab.label), [_assistantTab, _accountTab]);
+    expect(mobileInitialPathForFeatures(features), '/assistant');
   });
 
-  test('mobile initial route starts at first enabled emergency feature', () {
+  test(
+      'mobile initial route keeps assistant first even when search flag is off',
+      () {
     const features = MobileFeatures(
       search: false,
       documents: true,
@@ -61,15 +74,16 @@ void main() {
 
     final tabs = mobileAppTabsForFeatures(features);
 
-    expect(mobileInitialPathForFeatures(features), '/documents');
+    expect(mobileInitialPathForFeatures(features), '/assistant');
     expect(tabs.map((tab) => tab.label), [
+      _assistantTab,
       _documentsTab,
       _remoteTab,
       _employeesTab,
       _accountTab,
     ]);
     expect(mobilePathEnabledForFeatures('/documents', features), isTrue);
-    expect(mobilePathEnabledForFeatures('/assistant', features), isFalse);
+    expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
   });
 
   test('shared file intents prefer documents when document feature is enabled',
@@ -115,7 +129,7 @@ void main() {
     expect(sharedIntentCanBeConsumedAtTarget(intent, target), isFalse);
   });
 
-  test('shared intents avoid disabled document and search tabs', () {
+  test('shared intents avoid disabled document and assistant online tabs', () {
     const features = MobileFeatures(
       search: false,
       documents: false,

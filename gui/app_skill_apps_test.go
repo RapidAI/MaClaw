@@ -1247,6 +1247,18 @@ func TestRunNLSkillAsyncCleansStagedInputWhenStartFails(t *testing.T) {
 	}
 }
 
+func TestMarkMaclawAppSkillRunArgsSetsAppMarker(t *testing.T) {
+	got := markMaclawAppSkillRunArgs(map[string]interface{}{"input": "demo.pdf"})
+	if got["_maclaw_app"] != true {
+		t.Fatalf("_maclaw_app = %#v, want true", got["_maclaw_app"])
+	}
+
+	got = markMaclawAppSkillRunArgs(nil)
+	if got == nil || got["_maclaw_app"] != true {
+		t.Fatalf("nil args marker = %#v, want _maclaw_app true", got)
+	}
+}
+
 func TestWithSkillAppInputFileAliasesAddsTemplateFriendlyPaths(t *testing.T) {
 	got := withSkillAppInputFileAliases(map[string]interface{}{
 		"file": map[string]interface{}{
@@ -1338,6 +1350,27 @@ func TestWithSkillAppInputFileAliasesSynthesizesPersistentOutputForStagedInput(t
 	}
 	if info, err := os.Stat(filepath.Dir(want)); err != nil || !info.IsDir() {
 		t.Fatalf("persistent output dir was not created: info=%v err=%v", info, err)
+	}
+}
+
+func TestWithSkillAppInputFileAliasesSynthesizesPersistentPDFOutputForStagedPDF(t *testing.T) {
+	oldBaseDir := corelib.MaclawBaseDir()
+	baseDir := t.TempDir()
+	corelib.SetMaclawBaseDir(baseDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+
+	stagedPath := filepath.Join(baseDir, "temp", "app-inputs", "input-456", "paper.pdf")
+	got := withSkillAppInputFileAliases(map[string]interface{}{
+		"output_mode": "pdf",
+		"file": map[string]interface{}{
+			"name":        "paper.pdf",
+			"staged_path": stagedPath,
+		},
+	})
+
+	want := filepath.Join(baseDir, "data", "app-outputs", "input-456", "paper.pdf")
+	if got["output"] != want {
+		t.Fatalf("output = %#v, want persistent PDF path %q", got["output"], want)
 	}
 }
 

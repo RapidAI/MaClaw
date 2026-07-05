@@ -136,36 +136,6 @@ class SessionController extends AsyncNotifier<SessionState> {
     return bootstrap;
   }
 
-  Future<void> redeemOfficialServiceCode(String code) {
-    return _connectWithMobileService(
-      (service) => service.redeemOfficialServiceCode(code),
-    );
-  }
-
-  Future<void> connectWithDesktopLlmQr(String qrPayload) {
-    return _connectWithMobileService(
-      (service) => service.connectWithDesktopLlmQr(qrPayload),
-    );
-  }
-
-  Future<void> _connectWithMobileService(
-    Future<MobileServiceConnectResult> Function(AuthService service) connect,
-  ) async {
-    final vault = ref.watch(secureVaultProvider);
-    final service = AuthService(vault: vault);
-    final result = await connect(service);
-    final bootstrap = await ApiClient(
-      vault: vault,
-      hubUrl: result.hubUrl,
-    ).bootstrap();
-    state = AsyncData(
-      SessionState.signedIn(
-        hubUrl: result.hubUrl,
-        bootstrap: bootstrap,
-      ),
-    );
-  }
-
   Future<void> signOut() async {
     _authService = null;
     await ref.watch(secureVaultProvider).clearSession();

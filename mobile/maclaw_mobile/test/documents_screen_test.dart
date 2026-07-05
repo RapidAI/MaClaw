@@ -447,6 +447,64 @@ void main() {
     }
   });
 
+  testWidgets('documents screen fills emergency skeletons for templates',
+      (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          documentsControllerProvider.overrideWith(
+            _TestDocumentsController.new,
+          ),
+          documentDraftHistoryProvider.overrideWith(
+            _EmptyDocumentDraftHistoryController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: DocumentsScreen())),
+      ),
+    );
+    await tester.pump();
+
+    var contentField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '要点或原始内容'),
+    );
+    expect(contentField.controller?.text, contains('## 背景'));
+    expect(contentField.controller?.text, contains('## 处理建议'));
+
+    await tester.tap(find.byType(DropdownButtonFormField<DocumentTemplate>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('会议纪要').last);
+    await tester.pumpAndSettle();
+
+    contentField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '要点或原始内容'),
+    );
+    expect(contentField.controller?.text, contains('## 会议信息'));
+    expect(contentField.controller?.text, contains('| 事项 | 负责人 | 截止时间 |'));
+
+    await tester.enterText(
+      find.widgetWithText(TextField, '要点或原始内容'),
+      '用户已经手写的现场记录',
+    );
+    await tester.tap(find.byType(DropdownButtonFormField<DocumentTemplate>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('邮件').last);
+    await tester.pumpAndSettle();
+
+    contentField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '要点或原始内容'),
+    );
+    expect(contentField.controller?.text, '用户已经手写的现场记录');
+  });
+
   testWidgets('documents screen explains failed export reason', (tester) async {
     _FailedExportDocumentsController.retryCount = 0;
     await tester.pumpWidget(
@@ -548,6 +606,8 @@ void main() {
   testWidgets('documents screen can copy and share draft text quickly',
       (tester) async {
     String? clipboardText;
+    String? sharedText;
+    String? sharedSubject;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
       if (call.method == 'Clipboard.setData') {
@@ -571,6 +631,13 @@ void main() {
           documentsControllerProvider.overrideWith(
             _EditableDraftDocumentsController.new,
           ),
+          documentsDraftTextShareProvider.overrideWithValue((
+            text, {
+            subject,
+          }) async {
+            sharedText = text;
+            sharedSubject = subject;
+          }),
           documentDraftHistoryProvider.overrideWith(
             _EmptyDocumentDraftHistoryController.new,
           ),
@@ -602,6 +669,14 @@ void main() {
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
     expect(clipboard?.text, contains('应急说明'));
     expect(clipboard?.text, contains('请现场负责人确认恢复时间。'));
+
+    await tester.tap(find.text('分享文本'));
+    await tester.pump();
+
+    expect(sharedText, contains('应急说明'));
+    expect(sharedText, contains('请现场负责人确认恢复时间。'));
+    expect(sharedSubject, '应急说明');
+    expect(find.text('草稿文本已发送到系统分享'), findsOneWidget);
   });
 
   testWidgets('documents screen exports PDF Word and Markdown formats',

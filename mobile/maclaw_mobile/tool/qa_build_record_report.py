@@ -234,7 +234,18 @@ def _artifact_hints_for_version(
     records_dir: str = release_evidence_commands.DEFAULT_QA_RECORDS_DIR,
 ) -> list[str]:
     hints: list[str] = []
-    if any(_matches_field_error(error, ANDROID_ARTIFACT_FIELDS) for error in errors):
+    android_artifact_error = any(
+        _matches_field_error(error, ANDROID_ARTIFACT_FIELDS)
+        or error.startswith("Local signed artifact ")
+        or error.startswith("SHA256 does not match local artifact ")
+        for error in errors
+    )
+    ios_artifact_error = any(
+        _matches_field_error(error, IOS_ARTIFACT_FIELDS)
+        or error.startswith("Local iOS archive ")
+        for error in errors
+    )
+    if android_artifact_error:
         hints.append(
             "- Android signed artifact: run `"
             + release_evidence_commands.android_artifact_evidence_command(
@@ -243,7 +254,7 @@ def _artifact_hints_for_version(
             )
             + "` and paste the generated fields into the QA record."
         )
-    if any(_matches_field_error(error, IOS_ARTIFACT_FIELDS) for error in errors):
+    if ios_artifact_error:
         hints.append(
             "- iOS archive/TestFlight artifact: run `"
             + release_evidence_commands.ios_artifact_evidence_command(

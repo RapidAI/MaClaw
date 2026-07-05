@@ -392,6 +392,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileLLMDesktopQRSessionHandler(identity))
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions/consume", MobileLLMDesktopQRSessionConsumeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
+	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/drafts", MobileDocumentDraftHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))
@@ -876,6 +877,7 @@ func NewRouter(
 	registerGetCreditsStaticRoutes(mux, "./web/get-credits", "/get-credits")
 	registerCardStoreStaticRoutes(mux, "./web/card_store", "/card_store")
 	registerStaticRoutes(mux, "./web/connector", "/connector")
+	registerStaticRoutes(mux, "./web/maclaw-app-manual", "/maclaw-app-manual")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
 	return mux

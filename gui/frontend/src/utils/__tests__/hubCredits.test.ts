@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric } from '../hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, grantCanContributeExpiry, latestExpiry, numeric } from '../hubCredits';
 
 describe('hubCredits URL builders', () => {
     it('builds card store URL from a trimmed Hub URL', () => {
@@ -52,6 +52,13 @@ describe('hubCredits URL builders', () => {
 
     it('opens the credits page even when viewer token is missing', () => {
         expect(buildHubCreditsURL('https://hub.example.com/', '', 'tenant acme')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme');
+    });
+
+    it('builds the MaClaw App Studio manual URL from the Hub URL', () => {
+        expect(buildHubMaclawAppManualURL(' https://hub.example.com/// ')).toBe('https://hub.example.com/maclaw-app-manual');
+        expect(buildHubMaclawAppManualURL('https://hub.example.com', 'en')).toBe('https://hub.example.com/maclaw-app-manual?lang=en');
+        expect(buildHubMaclawAppManualURL('https://hub.example.com', 'zh-Hans')).toBe('https://hub.example.com/maclaw-app-manual?lang=zh');
+        expect(buildHubMaclawAppManualURL('')).toBe('');
     });
 });
 

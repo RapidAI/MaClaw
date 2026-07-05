@@ -14,8 +14,17 @@ typedef DocumentsExportFileShare = Future<ShareResult> Function(
   String? text,
 });
 
+typedef DocumentsDraftTextShare = Future<void> Function(
+  String text, {
+  String? subject,
+});
+
 final documentsExportFileShareProvider = Provider<DocumentsExportFileShare>(
   (ref) => Share.shareXFiles,
+);
+
+final documentsDraftTextShareProvider = Provider<DocumentsDraftTextShare>(
+  (ref) => Share.share,
 );
 
 class DocumentsScreen extends ConsumerStatefulWidget {
@@ -29,7 +38,16 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
   final _titleController = TextEditingController(text: '应急情况说明');
   final _contentController = TextEditingController();
   DocumentTemplate _template = DocumentTemplate.report;
+  String _lastTemplateSkeleton = emergencyDocumentTemplateSkeleton(
+    DocumentTemplate.report,
+  );
   String? _handledSharedIntentId;
+
+  @override
+  void initState() {
+    super.initState();
+    _contentController.text = _lastTemplateSkeleton;
+  }
 
   @override
   void dispose() {
@@ -44,6 +62,19 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
           template: _template,
           content: _contentController.text.trim(),
         );
+  }
+
+  void _changeTemplate(DocumentTemplate value) {
+    final current = _contentController.text.trim();
+    final canReplace = current.isEmpty || current == _lastTemplateSkeleton;
+    final nextSkeleton = emergencyDocumentTemplateSkeleton(value);
+    setState(() {
+      _template = value;
+      _lastTemplateSkeleton = nextSkeleton;
+      if (canReplace) {
+        _contentController.text = nextSkeleton;
+      }
+    });
   }
 
   void _consumeSharedIntent(AsyncValue<DocumentsState> documentsState) {
@@ -83,7 +114,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
           titleController: _titleController,
           contentController: _contentController,
           template: _template,
-          onTemplateChanged: (value) => setState(() => _template = value),
+          onTemplateChanged: _changeTemplate,
           onCreate: _createDraft,
         ),
         const SizedBox(height: 12),
@@ -251,6 +282,133 @@ String _draftPreviewText(String markdown) {
   final compact = markdown.replaceAll(RegExp(r'\s+'), ' ').trim();
   if (compact.isEmpty) return '空白草稿';
   return compact.length > 32 ? '${compact.substring(0, 32)}...' : compact;
+}
+
+String emergencyDocumentTemplateSkeleton(DocumentTemplate template) {
+  return switch (template) {
+    DocumentTemplate.notice => '''
+## 通知事项
+
+- 事项：
+- 对象：
+- 时间：
+- 地点/范围：
+
+## 处理要求
+
+1. 
+2. 
+
+## 联系方式
+
+- 联系人：
+- 电话/群组：
+'''
+        .trim(),
+    DocumentTemplate.report => '''
+## 背景
+
+- 事件/任务：
+- 当前状态：
+
+## 关键事实
+
+- 
+- 
+
+## 影响与风险
+
+- 
+
+## 处理建议
+
+1. 
+2. 
+
+## 来源或附件
+
+- 
+'''
+        .trim(),
+    DocumentTemplate.email => '''
+收件人：
+抄送：
+主题：
+
+您好，
+
+## 事项说明
+
+
+## 需要确认/处理
+
+1. 
+2. 
+
+谢谢。
+'''
+        .trim(),
+    DocumentTemplate.proposal => '''
+## 目标
+
+
+## 当前约束
+
+- 时间：
+- 人员/资源：
+- 风险：
+
+## 建议方案
+
+1. 
+2. 
+
+## 下一步
+
+- 
+'''
+        .trim(),
+    DocumentTemplate.meetingMinutes => '''
+## 会议信息
+
+- 时间：
+- 参会人：
+- 主题：
+
+## 讨论要点
+
+- 
+- 
+
+## 决议
+
+- 
+
+## 待办
+
+| 事项 | 负责人 | 截止时间 |
+| --- | --- | --- |
+|  |  |  |
+'''
+        .trim(),
+    DocumentTemplate.statement => '''
+## 说明对象
+
+
+## 事实经过
+
+1. 
+2. 
+
+## 当前状态
+
+
+## 补充说明
+
+- 
+'''
+        .trim(),
+  };
 }
 
 class _DraftComposer extends StatelessWidget {
@@ -422,7 +580,16 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
   Future<void> _shareDraftText() async {
     final text = _draftShareText();
     if (text.trim().isEmpty) return;
-    await Share.share(text, subject: _editTitleController.text.trim());
+    await ref.read(documentsDraftTextShareProvider)(
+          text,
+          subject: _editTitleController.text.trim(),
+        );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('草稿文本已发送到系统分享')),
+      );
   }
 
   @override

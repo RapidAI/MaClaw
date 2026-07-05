@@ -52,7 +52,7 @@ class AccountScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('清理本机工作记录？'),
         content: const Text(
-          '将删除搜索历史、文档草稿、导入/导出任务、常用命令、数字员工提示、最近任务和本机偏好设置。本操作不会退出官方服务，也不会删除服务器配置或 SSH 凭据。',
+          '将删除助手历史、文档草稿、导入/导出任务、常用命令、数字员工提示、最近任务和本机偏好设置。本操作不会退出官方服务，也不会删除服务器配置或 SSH 凭据。',
         ),
         actions: [
           TextButton(
@@ -212,7 +212,7 @@ class AccountScreen extends ConsumerWidget {
     final llmServiceStatus = ref.watch(mobileLlmServiceStatusProvider);
     return ScreenScaffold(
       title: '我的',
-      subtitle: '官方服务绑定、额度、模型/搜索状态、凭据和本地隐私数据。',
+      subtitle: '官方服务绑定、额度、模型/助手联网状态、凭据和本地隐私数据。',
       trailing: IconButton.filledTonal(
         tooltip: '退出登录',
         onPressed: () => ref.read(sessionControllerProvider.notifier).signOut(),
@@ -244,7 +244,7 @@ class AccountScreen extends ConsumerWidget {
             icon: Icons.qr_code_scanner_outlined,
             title: '第三方 LLM 授权',
             subtitle:
-                '默认使用 MaClaw 官方 LLM；如需接入第三方 LLM，只能扫描 MaClaw GUI 生成的授权二维码。',
+                '默认使用 MaClaw 官方 LLM；如需接入第三方 LLM，只能扫描或粘贴 MaClaw 桌面 GUI 生成的授权二维码。',
             actionLabel: '扫码授权',
             onPressed: () => _openLlmQrAuthorization(context),
           ),
@@ -254,7 +254,7 @@ class AccountScreen extends ConsumerWidget {
           ActionTile(
             icon: Icons.sync_outlined,
             title: '刷新官方服务状态',
-            subtitle: '重新获取额度、模型/搜索状态、实时通道和功能开关。',
+            subtitle: '重新获取额度、模型/助手联网状态、实时通道和功能开关。',
             actionLabel: '刷新',
             onPressed: () => _refreshOfficialService(context, ref),
           ),
@@ -293,7 +293,7 @@ class AccountScreen extends ConsumerWidget {
         ActionTile(
           icon: Icons.cleaning_services_outlined,
           title: '本机工作记录',
-          subtitle: '清理搜索、文档、导出、命令历史、数字员工临时记录和本机偏好，保留登录态、服务器配置和 SSH 凭据。',
+          subtitle: '清理助手历史、文档、导出、命令历史、数字员工临时记录和本机偏好，保留登录态、服务器配置和 SSH 凭据。',
           actionLabel: '清理记录',
           onPressed: () => _clearLocalWorkCache(context, ref),
         ),
@@ -537,7 +537,7 @@ class _ServiceStatusCard extends StatelessWidget {
             const SizedBox(height: 8),
             _StatusPill(label: 'Hub', value: services.hubStatus),
             _StatusPill(label: '模型/LLM', value: services.llmStatus),
-            _StatusPill(label: '联网搜索', value: services.searchStatus),
+            _StatusPill(label: '助手联网', value: services.searchStatus),
             _StatusPill(label: '文档服务', value: services.documentsStatus),
             _StatusPill(
               label: '数字员工',
@@ -550,7 +550,7 @@ class _ServiceStatusCard extends StatelessWidget {
             const SizedBox(height: 12),
             _InfoRow(label: '模型状态接口', value: services.llmStatusPath),
             _InfoRow(label: '模型列表', value: services.modelsPath),
-            _InfoRow(label: '联网搜索接口', value: services.searchPath),
+            _InfoRow(label: '助手联网接口', value: services.searchPath),
             _InfoRow(label: '文档服务接口', value: services.documentsPath),
             _InfoRow(label: '数字员工接口', value: services.digitalEmployeesPath),
             _InfoRow(label: '实时通道', value: services.realtimePath),
@@ -760,7 +760,7 @@ class _FeatureStatusCard extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _FeatureChip(label: '查信息', enabled: features.search),
+                _FeatureChip(label: '助手联网', enabled: features.search),
                 _FeatureChip(label: '应急文档', enabled: features.documents),
                 _FeatureChip(label: '本地 SSH', enabled: features.localSsh),
                 _FeatureChip(

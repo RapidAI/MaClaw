@@ -95,6 +95,27 @@ void main() {
     expect(adapter.requests, isEmpty);
   });
 
+  test('desktop GUI QR LLM authorization rejects mobile auth payloads',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    const qrPayload =
+        '{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://tenant-a.maclaw.top"}';
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    await expectLater(
+      client.authorizeThirdPartyLlmWithDesktopQr(qrPayload),
+      throwsA(isA<FormatException>()),
+    );
+    expect(adapter.requests, isEmpty);
+  });
+
   test('desktop GUI QR LLM authorization rejects a different Hub URL',
       () async {
     FlutterSecureStorage.setMockInitialValues({});

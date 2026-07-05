@@ -99,7 +99,7 @@ def valid_audit_blockers() -> str:
             "- iOS real-device/TestFlight share-to-app for text, URL, image, PDF, Word, Excel, and CSV.",
             "- iOS runtime permission prompts for camera, microphone, speech recognition, photo library, local network, and notifications, with permission-grant:<id> evidence.",
             "- Real SSH maintenance smoke test against a server, including host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation.",
-            "- Hub discovery smoke test with account, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI search with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export, digital employee task, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation.",
+            "- Hub discovery smoke test with account, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export, digital employee task, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation.",
         ]
     )
 

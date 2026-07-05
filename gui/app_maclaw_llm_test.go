@@ -824,6 +824,71 @@ func TestMaclawLLMTokenUsageIgnoresRemoteToolProviders(t *testing.T) {
 	}
 }
 
+func TestMaclawLLMTokenUsageIgnoresBlankProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	app.AccumulateLLMTokenUsageWithCache("  ", 100, 20, 0, 0)
+
+	if all := app.GetAllLLMTokenUsage(); len(all) != 0 {
+		t.Fatalf("blank provider usage should be ignored, got %+v", all)
+	}
+}
+
+func TestMaclawLLMUsageProviderNameFallsBackToCurrent(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "CurrentProvider", URL: "https://example.test/v1", Model: "model"}},
+		MaclawLLMCurrentProvider: "CurrentProvider",
+	}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	if got := maclawLLMUsageProviderName(app, corelib.MaclawLLMConfig{}); got != "CurrentProvider" {
+		t.Fatalf("provider name = %q, want CurrentProvider", got)
+	}
+}
+
+func TestMaclawLLMTokenUsageCalculatesCost(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:                     "PricedProvider",
+			URL:                      "https://example.test/v1",
+			Model:                    "model",
+			InputPricePerMTokensRMB:  2,
+			OutputPricePerMTokensRMB: 4,
+		}},
+		MaclawLLMCurrentProvider: "PricedProvider",
+	}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	app.AccumulateLLMTokenUsageWithCache("PricedProvider", 1_000_000, 500_000, 0, 0)
+
+	stat := app.GetLLMTokenUsage("PricedProvider")
+	if stat.InputPricePerMTokensRMB != 2 || stat.OutputPricePerMTokensRMB != 4 {
+		t.Fatalf("prices = input %.2f output %.2f", stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB)
+	}
+	if stat.InputCostRMB != 2 || stat.OutputCostRMB != 2 || stat.TotalCostRMB != 4 {
+		t.Fatalf("cost = input %.2f output %.2f total %.2f", stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB)
+	}
+}
+
 func TestMaclawLLMTokenUsagePatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

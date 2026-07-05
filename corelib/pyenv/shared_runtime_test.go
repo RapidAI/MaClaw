@@ -103,6 +103,15 @@ func TestListSharedPythonRuntimesReportsReadyAndMissingPython(t *testing.T) {
 	if err := writeSharedRuntimeLock(missing, "missing-skill", "ready"); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-list.log"))
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
 
 	items, err := ListSharedPythonRuntimes(dataDir)
 	if err != nil {
@@ -112,11 +121,49 @@ func TestListSharedPythonRuntimesReportsReadyAndMissingPython(t *testing.T) {
 	for _, item := range items {
 		byID[item.ID] = item
 	}
-	if got := byID[ready.ID]; got.Status != "ready" || !got.HasPython || !got.HasLock || len(got.UsedBy) != 1 || got.UsedBy[0] != "ready-skill" {
+	if got := byID[ready.ID]; got.Status != "ready" || !got.HasPython || !got.HasPip || !got.HasLock || len(got.UsedBy) != 1 || got.UsedBy[0] != "ready-skill" {
 		t.Fatalf("ready runtime status = %#v", got)
 	}
 	if got := byID[missing.ID]; got.Status != "missing_python" || got.HasPython || !got.HasLock {
 		t.Fatalf("missing runtime status = %#v", got)
+	}
+}
+
+func TestListSharedPythonRuntimesReportsMissingPip(t *testing.T) {
+	dataDir := t.TempDir()
+	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSharedRuntimeLock(plan, "pdf-word", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-list-missing.log"))
+	t.Setenv("MACLAW_FAKE_PIP_FAIL_CONTAINS", "-m pip --version")
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
+
+	items, err := ListSharedPythonRuntimes(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one runtime", items)
+	}
+	if got := items[0]; got.Status != "missing_pip" || !got.HasPython || got.HasPip || !strings.Contains(got.Error, "pip") {
+		t.Fatalf("runtime status = %#v, want missing_pip", got)
 	}
 }
 
@@ -181,6 +228,45 @@ func TestListSharedPythonRuntimesReportsFailedStageAndError(t *testing.T) {
 	got := items[0]
 	if got.Status != "failed" || got.Stage != "resolve_uv" || got.Error != failure.Error() || len(got.UsedBy) != 1 || got.UsedBy[0] != "pdf-word" {
 		t.Fatalf("failed runtime status = %#v", got)
+	}
+}
+
+func TestListSharedPythonRuntimesReportsPipCapabilityForFailedRuntime(t *testing.T) {
+	dataDir := t.TempDir()
+	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failure := fmt.Errorf("previous install failed")
+	if _, err := failSharedPythonRuntime(plan, "pdf-word", "pip_install", failure); err == nil {
+		t.Fatal("expected failure to be returned")
+	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "failed-runtime-pip.log"))
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
+
+	items, err := ListSharedPythonRuntimes(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one failed runtime", items)
+	}
+	got := items[0]
+	if got.Status != "failed" || !got.HasPython || !got.HasPip || got.Stage != "pip_install" {
+		t.Fatalf("failed runtime status = %#v, want failed with pip capability", got)
 	}
 }
 
@@ -429,6 +515,119 @@ func TestEnsureSharedPythonRuntimeFallsBackToPipWhenUVMissing(t *testing.T) {
 	}
 }
 
+func TestEnsureSharedPythonRuntimePipFallbackRepairsExistingVenvWithoutSeedPython(t *testing.T) {
+	dataDir := t.TempDir()
+	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf", "python-docx"}}
+	plan, err := PlanSharedPythonRuntime(dataDir, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "pip-existing-venv.log")
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", logPath)
+	t.Setenv("MACLAW_FAKE_PIP_ENSUREPIP_MARKER", filepath.Join(t.TempDir(), "ensurepip.done"))
+	oldResolveUV := sharedRuntimeResolveUVExecutable
+	sharedRuntimeResolveUVExecutable = func() (string, error) {
+		return "", fmt.Errorf("uv not found")
+	}
+	oldResolveSeed := sharedRuntimeResolveSeedPython
+	sharedRuntimeResolveSeedPython = func() (string, error) {
+		return "", fmt.Errorf("seed python unavailable")
+	}
+	oldCheckPython := sharedRuntimeCheckPython
+	sharedRuntimeCheckPython = func(string) (string, bool) {
+		t.Fatal("existing venv repair should not validate seed Python")
+		return "", false
+	}
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() {
+		sharedRuntimeResolveUVExecutable = oldResolveUV
+		sharedRuntimeResolveSeedPython = oldResolveSeed
+		sharedRuntimeCheckPython = oldCheckPython
+		sharedRuntimeExecCommand = oldExec
+	})
+
+	ensured, err := EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensured.ID != plan.ID {
+		t.Fatalf("runtime ID = %q, want %q", ensured.ID, plan.ID)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if strings.Contains(logText, "-m venv "+plan.EnvDir) {
+		t.Fatalf("existing venv should not be recreated, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "-m ensurepip --upgrade") {
+		t.Fatalf("expected existing venv pip repair, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, plan.PythonPath+" -m pip install --quiet pymupdf python-docx") {
+		t.Fatalf("expected package install in existing venv, got:\n%s", logText)
+	}
+}
+
+func TestEnsureSharedPythonRuntimePipFallbackReportsPackageInstallFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}}
+	plan, err := PlanSharedPythonRuntime(dataDir, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-install-failure.log"))
+	t.Setenv("MACLAW_FAKE_PIP_FAIL_CONTAINS", "-m pip install")
+	oldResolveUV := sharedRuntimeResolveUVExecutable
+	sharedRuntimeResolveUVExecutable = func() (string, error) {
+		return "", fmt.Errorf("uv not found")
+	}
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() {
+		sharedRuntimeResolveUVExecutable = oldResolveUV
+		sharedRuntimeExecCommand = oldExec
+	})
+
+	if _, err := EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil); err == nil {
+		t.Fatal("expected package install failure")
+	}
+	lockData, err := os.ReadFile(plan.LockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock sharedPythonRuntimeLock
+	if err := json.Unmarshal(lockData, &lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.Status != "failed" || lock.Stage != "pip_install" || !strings.Contains(lock.Error, "fake pip failure") {
+		t.Fatalf("lock = %#v, want pip_install failure", lock)
+	}
+}
+
 func TestEnsureSharedPythonRuntimePipFallbackRejectsWrongPythonMinor(t *testing.T) {
 	dataDir := t.TempDir()
 	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}}
@@ -471,6 +670,122 @@ func TestEnsureSharedPythonRuntimePipFallbackRejectsWrongPythonMinor(t *testing.
 	}
 	if sharedPythonRuntimeReady(plan) {
 		t.Fatal("failed mismatch lock must not be treated as ready")
+	}
+}
+
+func TestSharedPythonRuntimeReadyRejectsMissingPip(t *testing.T) {
+	dataDir := t.TempDir()
+	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSharedRuntimeLock(plan, "pdf-word", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-ready.log"))
+	t.Setenv("MACLAW_FAKE_PIP_FAIL_CONTAINS", "-m pip --version")
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
+
+	if sharedPythonRuntimeReady(plan) {
+		t.Fatal("ready lock with missing pip must not be treated as ready")
+	}
+}
+
+func TestEnsureSharedPythonRuntimeRepairsMissingPipForReadyLock(t *testing.T) {
+	dataDir := t.TempDir()
+	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}}
+	plan, err := PlanSharedPythonRuntime(dataDir, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSharedRuntimeLock(plan, "pdf-word", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := t.TempDir()
+	fakeUV := filepath.Join(fakeBin, "uv")
+	if runtime.GOOS == "windows" {
+		fakeUV += ".exe"
+	}
+	if err := os.WriteFile(fakeUV, []byte("fake uv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	logPath := filepath.Join(t.TempDir(), "repair-pip.log")
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", logPath)
+	t.Setenv("MACLAW_FAKE_PIP_ENSUREPIP_MARKER", filepath.Join(t.TempDir(), "ensurepip.done"))
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
+
+	if _, err := EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "-m ensurepip --upgrade") {
+		t.Fatalf("expected ensurepip repair, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "pip install --python "+plan.PythonPath+" pymupdf") {
+		t.Fatalf("expected package reinstall after missing pip, got:\n%s", logText)
+	}
+}
+
+func TestEnsureSharedPythonRuntimePipErrorAvoidsNilUVFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.PythonPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.PythonPath, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-error.log"))
+	t.Setenv("MACLAW_FAKE_PIP_FAIL_CONTAINS", "-m pip --version|-m ensurepip --upgrade")
+	oldExec := sharedRuntimeExecCommand
+	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
+		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
+
+	err = ensureSharedPythonRuntimePip(plan, "uv")
+	if err == nil {
+		t.Fatal("expected pip repair failure")
+	}
+	if strings.Contains(err.Error(), "<nil>") || !strings.Contains(err.Error(), "uv pip install") {
+		t.Fatalf("error = %q, want clear uv repair failure without nil", err)
 	}
 }
 
@@ -577,6 +892,29 @@ func TestSharedPythonRuntimeFakePip(t *testing.T) {
 		os.Exit(2)
 	}
 	line := strings.Join(os.Args[sep+1:], " ") + "\n"
+	if failNeedles := os.Getenv("MACLAW_FAKE_PIP_FAIL_CONTAINS"); failNeedles != "" {
+		for _, failNeedle := range strings.Split(failNeedles, "|") {
+			failNeedle = strings.TrimSpace(failNeedle)
+			if failNeedle != "" && strings.Contains(line, failNeedle) {
+				fmt.Fprintf(os.Stderr, "fake pip failure for %s\n", failNeedle)
+				os.Exit(1)
+			}
+		}
+	}
+	if marker := os.Getenv("MACLAW_FAKE_PIP_ENSUREPIP_MARKER"); marker != "" {
+		if strings.Contains(line, "-m pip ") {
+			if _, err := os.Stat(marker); os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "fake pip missing until ensurepip")
+				os.Exit(1)
+			}
+		}
+		if strings.Contains(line, "-m ensurepip --upgrade") {
+			if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		}
+	}
 	file, err := os.OpenFile(os.Getenv("MACLAW_FAKE_PIP_RUNTIME_LOG"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

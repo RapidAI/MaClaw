@@ -94,7 +94,7 @@ class _RecordingUploadApiClient extends ApiClient {
     uploadedPaths.add(path);
     return MobileDocumentUploadTask(
       taskId: 'upload-${uploadedPaths.length}',
-      filename: path.split(Platform.pathSeparator).last,
+      filename: path.split(RegExp(r'[\\/]')).last,
       status: 'queued',
     );
   }
@@ -337,6 +337,12 @@ void main() {
       container.read(documentsControllerProvider).valueOrNull?.lastUploadPath,
       '/tmp/photo.jpg',
     );
+    final cachedUpload = await store.loadLastDocumentUploadTask();
+    final cachedUploadPath = await store.loadLastDocumentUploadPath();
+    expect(cachedUpload?.taskId, 'upload-5');
+    expect(cachedUpload?.filename, 'photo.jpg');
+    expect(cachedUpload?.status, 'queued');
+    expect(cachedUploadPath, '/tmp/photo.jpg');
   });
 
   test('document process completion caches draft and uses typed payload',

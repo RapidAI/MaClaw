@@ -14,7 +14,8 @@ Mobile account access uses phone-number verification only. Enter a phone number,
 receive the SMS verification code from the discovered Hub, and complete login.
 If the phone number is new, verification creates the phone account and signs in;
 if it already exists, verification signs in to that account. MaClaw official LLM
-calls use the credits bound to that phone account.
+calls use the credits bound to that phone account. The mobile app does not
+expose a redemption-code login path.
 
 MaClaw Mobile does not embed or directly call the desktop/server Go `corelib`.
 Heavy MaClaw capabilities stay on the official Hub or on authorized remote
@@ -22,31 +23,42 @@ server/desktop digital employees. The phone accesses those capabilities through
 the discovered Hub APIs, realtime updates, and explicit digital employee task
 handoff.
 
-## Startup And LLM Setup
+## Startup And Account Login
 
 1. Open the app and wait on the MaClaw logo splash screen.
-2. If no mobile session exists, sign in with phone number and SMS verification.
-3. If a valid mobile session and LLM access are already configured, the app
-   opens the assistant directly.
-4. If LLM access is missing, configure one of the supported access paths:
-   MaClaw official service redemption code followed by phone SMS verification,
-   or the provider QR code generated from the LLM configuration screen in
-   MaClaw desktop GUI.
-5. After setup succeeds, the app opens the multi-tab assistant.
+2. If no mobile session exists, the first screen is phone registration/login.
+   Enter the phone number and request the SMS verification code through the
+   discovered Hub.
+3. After SMS verification succeeds, a new phone number is registered and signed
+   in automatically; an existing phone number signs in to that account.
+4. The app then opens the multi-tab assistant and uses the verified
+   `phone:<digits>` account's MaClaw official credits for LLM calls.
 
-MaClaw official LLM access is the default. The redemption code can help route
-the official service setup, but it does not replace the mobile account: after
-SMS verification succeeds, official LLM calls use the credits bound to the
-verified `phone:<digits>` account. Third-party LLM access is allowed only when
-it is authorized by scanning or pasting the MaClaw GUI QR payload. The mobile
-app does not accept arbitrary third-party LLM endpoints.
+MaClaw official LLM access is the default after phone verification. Third-party
+LLM access is optional and lives under the account/settings area. It is allowed
+only when authorized by scanning or pasting the provider QR code generated from
+the LLM configuration screen in MaClaw desktop GUI. The mobile app does not
+accept arbitrary third-party LLM endpoints, provider base URLs, or API keys.
 
-## Look Up Information
+## AI Assistant
 
-Use the `查信息` tab to ask current-information questions.
+Use the `AI助手` tab as the mobile MaClaw assistant, similar to the MaClaw GUI
+assistant but adapted for short mobile sessions. It supports typed or voice
+questions, current-information checking, source citations, and quick handoff
+into document drafts.
 
-- Type a question and tap `联网查询`.
+The assistant is the primary signed-in workspace. Optional bootstrap feature
+flags can hide documents, local SSH, digital employees, or push notification
+capabilities, but they do not remove the `AI助手` entry or make digital
+employees the default landing page.
+If the current Hub disables assistant online access, the assistant keeps the
+workspace open, disables `发送给 AI 助手`, and explains that voice input, image/file
+handoff, and document drafting remain available.
+
+- Type a question and tap `发送给 AI 助手`.
 - Tap the microphone to dictate a question.
+- Tap a quick prompt such as `助手联网`, `文档草稿`, or `日志排障` to fill a
+  phone-friendly emergency question, then review or edit it before querying.
 - Tap the camera, gallery screenshot/image, or attachment buttons to send a
   photo, screenshot, or file into the document parsing flow.
 - Share text or URLs from another app into MaClaw Mobile.
@@ -55,15 +67,15 @@ Use the `查信息` tab to ask current-information questions.
 - Query result copy/share/draft actions and copied/shared citations redact
   common passwords, tokens, private key blocks, and credential URLs before
   content leaves the current result view.
-  Recent search history stores only a locally redacted answer preview, while
+  Recent assistant history stores only a locally redacted answer preview, while
   the current result view remains available for review before externalizing.
 
 Star frequent questions to keep them in the `常用问题` section. Recent
-non-starred searches remain in `最近查询` and can be cleared separately.
+non-starred assistant conversations remain in `最近对话` and can be cleared separately.
 
-The assistant supports a primary tab and secondary tabs so urgent searches can
-stay separated. Shared URLs are preserved as citations even when no extra search
-result is available.
+The assistant supports a primary tab and secondary tabs so urgent conversations
+can stay separated. Shared URLs are preserved as citations even when no extra
+assistant result is available.
 
 ## Create Emergency Documents
 
@@ -72,6 +84,9 @@ documents.
 
 - Create a draft from templates: notice, report, email, proposal, meeting
   minutes, or statement.
+- Template selection fills a phone-friendly emergency skeleton, such as facts,
+  risks, actions, owners, deadlines, or meeting decisions. Editing your own
+  content prevents later template changes from overwriting it.
 - Import Word, PDF, Excel, text, Markdown, log, CSV, JSON, or image files.
 - Images enter the OCR/vision parsing task flow.
 - Long-running import and parsing tasks can continue after leaving the page;
@@ -159,18 +174,18 @@ Use the `我的` tab for service and local settings.
   document, digital employee, or server alerts back to the matching mobile tab,
   and shows a recovery prompt for the relevant task or status screen.
 - Offline warnings appear across mobile work screens; when official service
-  connectivity returns, a restored banner confirms search, document, and task
-  status checks can continue.
+  connectivity returns, a restored banner confirms assistant online, document,
+  and task status checks can continue.
 - Review privacy notes for tokens and SSH credentials.
 - Clear local work records without deleting server profiles or SSH credentials.
 - Clear server profiles and SSH credentials separately when device access should
   be revoked.
 
-Clearing local work records resets search history, the latest document draft,
+Clearing local work records resets assistant history, the latest document draft,
 document tasks, command history, digital employee prompt/task history, and app
 preferences. Server profiles and SSH credentials are managed by the separate
 server-access cleanup action.
 
 When older local records are migrated into the SQLite cache, MaClaw Mobile also
-redacts common secrets from search answer previews, saved command labels, and
+redacts common secrets from assistant answer previews, saved command labels, and
 digital employee prompt history.

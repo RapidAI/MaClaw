@@ -210,6 +210,9 @@ func TestDataSrvInstallerUsesIndependentModuleReadme(t *testing.T) {
 	if !strings.Contains(text, `datasrv\README.md`) {
 		t.Fatal("DataSrv installer must package datasrv/README.md")
 	}
+	if strings.Contains(text, `MUI_FINISHPAGE_RUN`) {
+		t.Fatal("DataSrv installer should open the admin console automatically after install, not through an optional finish-page checkbox")
+	}
 	for _, want := range []string{
 		`!define SERVICE_NAME "MaClawDataSrv"`,
 		`sc.exe create "${SERVICE_NAME}"`,
@@ -222,6 +225,14 @@ func TestDataSrvInstallerUsesIndependentModuleReadme(t *testing.T) {
 		`Sleep 1000`,
 		`sc.exe stop "${SERVICE_NAME}"`,
 		`sc.exe delete "${SERVICE_NAME}"`,
+		`!define DATASRV_ADMIN_CONSOLE_URL "http://127.0.0.1:18180/ui"`,
+		`!define DATASRV_READY_URL "http://127.0.0.1:18180/readyz"`,
+		`IfSilent 0 +2`,
+		`$SYSDIR\WindowsPowerShell\v1.0\powershell.exe`,
+		`Invoke-WebRequest -UseBasicParsing -TimeoutSec 1`,
+		`${DATASRV_READY_URL}`,
+		`ExecShell "" "${DATASRV_ADMIN_CONSOLE_URL}"`,
+		`Call OpenAdminConsole`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("DataSrv installer missing %s", want)

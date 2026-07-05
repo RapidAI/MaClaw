@@ -44,10 +44,13 @@ const _connectingOfficialService =
 const _llmSetupTitle = '\u914d\u7f6e MaClaw LLM \u670d\u52a1';
 const _connectOfficialService = '\u63a5\u5165\u5b98\u65b9\u670d\u52a1';
 const _connectQrProvider = '\u63a5\u5165\u4e8c\u7ef4\u7801\u670d\u52a1\u5546';
-const _lookupTab = '\u67e5\u4fe1\u606f';
+const _phoneRegistrationLogin = '\u624b\u673a\u53f7\u6ce8\u518c/\u767b\u5f55';
+const _sendVerificationCode = '\u53d1\u9001\u9a8c\u8bc1\u7801';
+const _assistantTab = 'AI助手';
 const _mainConversation = '\u4e3b\u5bf9\u8bdd';
 const _webLookup = '\u8054\u7f51\u67e5\u8be2';
 const _emergencyDocuments = '\u5e94\u6025\u6587\u6863';
+const _openedTaskNotification = '\u5df2\u6253\u5f00\u4efb\u52a1\u63d0\u9192';
 const _unknownTaskNotification =
     '\u65e0\u6cd5\u8bc6\u522b\u4efb\u52a1\u63d0\u9192';
 
@@ -72,7 +75,7 @@ void main() {
     expect(find.text(_connectingOfficialService), findsOneWidget);
   });
 
-  testWidgets('renders LLM setup before mobile service is configured',
+  testWidgets('renders phone registration before mobile service is configured',
       (tester) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -89,9 +92,11 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text(_llmSetupTitle), findsOneWidget);
-    expect(find.text(_connectOfficialService), findsOneWidget);
-    expect(find.text(_connectQrProvider), findsOneWidget);
+    expect(find.text(_phoneRegistrationLogin), findsOneWidget);
+    expect(find.text(_sendVerificationCode), findsOneWidget);
+    expect(find.text(_llmSetupTitle), findsNothing);
+    expect(find.text(_connectOfficialService), findsNothing);
+    expect(find.text(_connectQrProvider), findsNothing);
     expect(find.textContaining('https://hubs.mypapers.top'), findsOneWidget);
     expect(find.textContaining('https://hubs.maclaw.top'), findsOneWidget);
     expect(find.textContaining('https://hubs2.maclaw.top'), findsOneWidget);
@@ -135,7 +140,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text(_lookupTab), findsWidgets);
+    expect(find.text(_assistantTab), findsWidgets);
     expect(find.text(_mainConversation), findsOneWidget);
     expect(find.text(_webLookup), findsOneWidget);
   });
@@ -188,6 +193,7 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
+    expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(find.textContaining('document-export:job-1'), findsOneWidget);
     expect(find.text(_emergencyDocuments), findsOneWidget);
     expect(notifications.latestOpenedNotification, isNull);
@@ -243,6 +249,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining(_unknownTaskNotification), findsNothing);
+    expect(find.textContaining(_openedTaskNotification), findsNothing);
     expect(find.text(_mainConversation), findsOneWidget);
     expect(find.text(_emergencyDocuments), findsNothing);
     expect(notifications.latestOpenedNotification, isNull);
@@ -298,6 +305,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(find.textContaining('[REDACTED_CREDENTIALS]'), findsOneWidget);
     expect(find.textContaining('[REDACTED_SECRET]'), findsOneWidget);
     expect(find.textContaining('admin:pass'), findsNothing);
@@ -305,10 +313,24 @@ void main() {
     expect(notifications.latestOpenedNotification, isNull);
   });
 
-  testWidgets('signed-in missing LLM still requires setup', (tester) async {
+  testWidgets('signed-in missing LLM still opens the mobile workspace',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
           sessionControllerProvider.overrideWith(
             () => _SignedInSessionController(
               const MobileLlmAccess(
@@ -329,14 +351,30 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text(_llmSetupTitle), findsOneWidget);
+    expect(find.text(_llmSetupTitle), findsNothing);
+    expect(find.text(_assistantTab), findsWidgets);
+    expect(find.text(_mainConversation), findsOneWidget);
   });
 
-  testWidgets('signed-in official LLM without phone credits requires setup',
+  testWidgets(
+      'signed-in official LLM without phone credits keeps settings optional',
       (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
           sessionControllerProvider.overrideWith(
             () => _SignedInSessionController(
               const MobileLlmAccess(
@@ -357,8 +395,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text(_llmSetupTitle), findsOneWidget);
-    expect(find.text(_mainConversation), findsNothing);
+    expect(find.text(_llmSetupTitle), findsNothing);
+    expect(find.text(_mainConversation), findsOneWidget);
   });
 
   test('mobileLlmConfigured accepts official and desktop QR delegated access',

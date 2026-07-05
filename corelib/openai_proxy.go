@@ -25,6 +25,20 @@ type OpenAIProxyConfig struct {
 	WireAPI   string // "" or "chat" or "responses" or "responses-ws"
 	AgentType string // optional User-Agent/client identity
 	AuthType  string // optional auth kind from provider config
+	// UsageCallback receives successful request token usage for local accounting.
+	UsageCallback func(OpenAIProxyUsage)
+	// UsageCallbackSync runs UsageCallback on the request path. The default
+	// async mode keeps skill proxy responses independent from statistics I/O.
+	UsageCallbackSync bool
+}
+
+// OpenAIProxyUsage is the token usage observed by the skill-local OpenAI proxy.
+type OpenAIProxyUsage struct {
+	InputTokens       int
+	OutputTokens      int
+	CachedInputTokens int
+	CacheWriteTokens  int
+	Estimated         bool
 }
 
 // OpenAIProxy is a local HTTP proxy that provides an OpenAI-compatible
@@ -550,6 +564,7 @@ func (p *OpenAIProxy) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// 6. Write response
 	w.WriteHeader(statusCode)
 	w.Write(respBody)
+	p.recordUsage(body, respBody, statusCode)
 
 	// 7. Log at debug level
 	log.Printf("[openai-proxy] protocol=%s url=%s model=%s status=%d", protocol, p.config.URL, originalModel, statusCode)
@@ -638,6 +653,190 @@ func (p *OpenAIProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(statusCode)
 	w.Write(respBody)
+	p.recordUsage(body, respBody, statusCode)
+}
+
+func (p *OpenAIProxy) recordUsage(reqBody map[string]interface{}, respBody []byte, statusCode int) {
+	if p == nil || p.config.UsageCallback == nil || statusCode >= http.StatusBadRequest {
+		return
+	}
+	usage := openAIProxyUsageFromResponse(reqBody, respBody)
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedInputTokens == 0 && usage.CacheWriteTokens == 0 {
+		return
+	}
+	callback := p.config.UsageCallback
+	if p.config.UsageCallbackSync {
+		callOpenAIProxyUsageCallback(callback, usage)
+		return
+	}
+	go callOpenAIProxyUsageCallback(callback, usage)
+}
+
+func callOpenAIProxyUsageCallback(callback func(OpenAIProxyUsage), usage OpenAIProxyUsage) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[openai-proxy] usage callback panic: %v", rec)
+		}
+	}()
+	callback(usage)
+}
+
+func openAIProxyUsageFromResponse(reqBody map[string]interface{}, respBody []byte) OpenAIProxyUsage {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return OpenAIProxyUsage{
+			InputTokens:  EstimateTextTokens(openAIProxyFlattenText(reqBody)),
+			OutputTokens: EstimateTextTokens(string(respBody)),
+			Estimated:    true,
+		}
+	}
+	usage := mapFromAny(payload["usage"])
+	var out OpenAIProxyUsage
+	derivedFromTotalOnly := false
+	if usage != nil {
+		out.InputTokens = int(firstPositiveInt64(
+			numberToInt64(usage["prompt_tokens"]),
+			numberToInt64(usage["input_tokens"]),
+		))
+		out.OutputTokens = int(firstPositiveInt64(
+			numberToInt64(usage["completion_tokens"]),
+			numberToInt64(usage["output_tokens"]),
+		))
+		totalTokens := numberToInt64(usage["total_tokens"])
+		if totalTokens > 0 {
+			switch {
+			case out.InputTokens == 0 && out.OutputTokens == 0:
+				out.InputTokens = int(totalTokens)
+				derivedFromTotalOnly = true
+			case out.InputTokens == 0 && totalTokens > int64(out.OutputTokens):
+				out.InputTokens = int(totalTokens) - out.OutputTokens
+			case out.OutputTokens == 0 && totalTokens > int64(out.InputTokens):
+				out.OutputTokens = int(totalTokens) - out.InputTokens
+			}
+		}
+		out.CachedInputTokens = openAIProxyCachedInputTokens(usage)
+		out.CacheWriteTokens = openAIProxyCacheWriteTokens(usage)
+	}
+	if !derivedFromTotalOnly && (out.InputTokens == 0 || out.OutputTokens == 0) {
+		estimatedInput := EstimateTextTokens(openAIProxyFlattenText(reqBody))
+		estimatedOutput := EstimateTextTokens(openAIProxyResponseText(payload))
+		if out.InputTokens == 0 {
+			out.InputTokens = estimatedInput
+			out.Estimated = out.Estimated || estimatedInput > 0
+		}
+		if out.OutputTokens == 0 {
+			out.OutputTokens = estimatedOutput
+			out.Estimated = out.Estimated || estimatedOutput > 0
+		}
+	}
+	return out
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func openAIProxyCachedInputTokens(usage map[string]interface{}) int {
+	if usage == nil {
+		return 0
+	}
+	if v := firstPositiveInt64(
+		numberToInt64(usage["cached_input_tokens"]),
+		numberToInt64(usage["cache_read_input_tokens"]),
+	); v > 0 {
+		return int(v)
+	}
+	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details := mapFromAny(usage[key]); details != nil {
+			if v := firstPositiveInt64(
+				numberToInt64(details["cached_tokens"]),
+				numberToInt64(details["cached_input_tokens"]),
+			); v > 0 {
+				return int(v)
+			}
+		}
+	}
+	return 0
+}
+
+func openAIProxyCacheWriteTokens(usage map[string]interface{}) int {
+	if usage == nil {
+		return 0
+	}
+	if v := firstPositiveInt64(
+		numberToInt64(usage["cache_write_tokens"]),
+		numberToInt64(usage["cache_creation_input_tokens"]),
+		numberToInt64(usage["cache_creation_tokens"]),
+	); v > 0 {
+		return int(v)
+	}
+	for _, key := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		if details := mapFromAny(usage[key]); details != nil {
+			if v := firstPositiveInt64(
+				numberToInt64(details["cache_write_tokens"]),
+				numberToInt64(details["cache_creation_input_tokens"]),
+				numberToInt64(details["cache_creation_tokens"]),
+			); v > 0 {
+				return int(v)
+			}
+		}
+	}
+	return 0
+}
+
+func openAIProxyFlattenText(v interface{}) string {
+	switch val := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return val
+	case []interface{}:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			parts = append(parts, openAIProxyFlattenText(item))
+		}
+		return strings.Join(parts, " ")
+	case map[string]interface{}:
+		parts := make([]string, 0, len(val))
+		for _, key := range []string{"messages", "input", "instructions", "tools", "tool_choice", "response_format", "text", "content", "output", "arguments", "name", "description", "function", "parameters", "schema"} {
+			parts = append(parts, openAIProxyFlattenText(val[key]))
+		}
+		joined := strings.Join(parts, " ")
+		if strings.TrimSpace(joined) == "" {
+			data, _ := json.Marshal(val)
+			return string(data)
+		}
+		return joined
+	default:
+		data, _ := json.Marshal(v)
+		return string(data)
+	}
+}
+
+func openAIProxyResponseText(payload map[string]interface{}) string {
+	if payload == nil {
+		return ""
+	}
+	var parts []string
+	for _, choice := range openAICompatForwardSlice(payload["choices"]) {
+		m := mapFromAny(choice)
+		if m == nil {
+			continue
+		}
+		if message := mapFromAny(m["message"]); message != nil {
+			parts = append(parts, openAIProxyFlattenText(message["content"]))
+			parts = append(parts, openAIProxyFlattenText(message["tool_calls"]))
+			parts = append(parts, openAIProxyFlattenText(message["function_call"]))
+		}
+		parts = append(parts, openAIProxyFlattenText(m["text"]))
+	}
+	parts = append(parts, openAIProxyFlattenText(payload["output"]))
+	return strings.Join(parts, " ")
 }
 
 func (p *OpenAIProxy) handleModels(w http.ResponseWriter, r *http.Request) bool {

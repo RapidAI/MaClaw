@@ -46,6 +46,10 @@ ManifestDPIAware true
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_ABORTWARNING
 
+# Open the Web Console login screen after a successful interactive install.
+!define DATASRV_ADMIN_CONSOLE_URL "http://127.0.0.1:18180/ui"
+!define DATASRV_READY_URL "http://127.0.0.1:18180/readyz"
+
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -65,6 +69,13 @@ OutFile "..\..\..\dist\maclaw-data-srv-Setup.exe"
 InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\maclawdatasrv"
 ShowInstDetails show
 RequestExecutionLevel admin
+
+Function OpenAdminConsole
+    IfSilent 0 +2
+        Return
+    nsExec::ExecToLog `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "for($$i=0; $$i -lt 20; $$i++){ try { $$r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 '${DATASRV_READY_URL}'; if($$r.StatusCode -ge 200 -and $$r.StatusCode -lt 500){ exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 0"`
+    ExecShell "" "${DATASRV_ADMIN_CONSOLE_URL}"
+FunctionEnd
 
 Function .onInit
     System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
@@ -154,6 +165,8 @@ Section
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "Publisher" "${INFO_COMPANYNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
+
+    Call OpenAdminConsole
 SectionEnd
 
 Section "uninstall"

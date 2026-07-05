@@ -281,9 +281,11 @@ class _TaskStatusCard extends ConsumerWidget {
                       tooltip: '分享结果',
                       onPressed: value.result.isEmpty
                           ? null
-                          : () => ref
-                              .read(digitalEmployeeResultShareProvider)
-                              .call(redactMobileSensitiveText(value.result)),
+                          : () => _shareTaskResult(
+                                context,
+                                ref,
+                                redactMobileSensitiveText(value.result),
+                              ),
                       icon: const Icon(Icons.ios_share_outlined),
                     ),
                     OutlinedButton.icon(
@@ -322,9 +324,25 @@ class _TaskStatusCard extends ConsumerWidget {
   ) async {
     await ref.read(digitalEmployeeResultClipboardWriterProvider).call(result);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('任务结果已复制')),
-    );
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('任务结果已复制')),
+      );
+  }
+
+  Future<void> _shareTaskResult(
+    BuildContext context,
+    WidgetRef ref,
+    String result,
+  ) async {
+    await ref.read(digitalEmployeeResultShareProvider).call(result);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('任务结果已发送到系统分享')),
+      );
   }
 
   Future<void> _createResultDraft(
