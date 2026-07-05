@@ -20,7 +20,7 @@ For a single local readiness summary, run:
   resolves the phone account's Hub/tenant through HubCenter, then sends and
   verifies the code on the discovered Hub.
 - After phone verification, MaClaw official LLM calls use the credits bound to
-  that `phone:<number>` account. Official redemption codes may route setup, but
+  that `phone:<digits>` account. Official redemption codes may route setup, but
   they do not replace the phone account as the MaClaw official credits owner.
 - Login starts at HubCenter; bootstrap, search, document, SSH analysis, realtime,
   and digital employee APIs use the discovered Hub/tenant.

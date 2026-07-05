@@ -34,12 +34,39 @@ APPLE_TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 TENANT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 FLUTTER_VERSION_RE = re.compile(r"(?i)\bflutter\s+\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?\b")
 MACLAW_PHONE_ACCOUNT_RE = re.compile(
-    r"(?i)\bphone:\s*(?P<phone>\+?\d[\d .-]{5,20}|\*{2,}\d{2,6})\b"
+    r"(?i)\bphone:\s*(?P<phone>\d{6,20}|\*{2,}\d{2,6})\b"
 )
 VERSION_BUILD_RE = re.compile(
     r"(?i)(?:\b\d+(?:\.\d+){1,3}\+\d+\b|(?:version|v)\s*\d+(?:\.\d+){1,3}.*\bbuild\s*\d+\b)"
 )
 SERVER_PROFILE_PAYLOAD_RE = re.compile(r"(?i)\bserver-profile:([A-Za-z0-9._-]{3,128})\b")
+DIGITAL_EMPLOYEE_NOTIFICATION_PAYLOAD_RE = re.compile(
+    r"(?i)\bdigital-employee-task:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+DOCUMENT_NOTIFICATION_PAYLOAD_RE = re.compile(
+    r"(?i)\bdocument-(?:export|draft|upload):[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+DOCUMENT_DRAFT_ID_RE = re.compile(
+    r"(?i)\bdocument-draft:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+DOCUMENT_SHARE_UPLOAD_TASK_RE = re.compile(
+    r"(?i)\b(?:document-)?(?:import|upload|share)[A-Za-z0-9._/-]*\d[A-Za-z0-9._/-]*\b"
+)
+NETWORK_RECOVERY_TRACE_RE = re.compile(
+    r"(?i)\b(?:network-recovery|connectivity-probe|hubcenter-probe|retry|incident)[._:-]?(?:id|trace|probe|retry|incident)[A-Za-z0-9._:-]*\d[A-Za-z0-9._:-]*\b"
+)
+COMMAND_DRAFT_ID_RE = re.compile(
+    r"(?i)\bcommand-draft:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+CREDENTIAL_CLEAR_ID_RE = re.compile(
+    r"(?i)\bcredential-clear:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+REDACTION_CHECK_ID_RE = re.compile(
+    r"(?i)\bredaction-check:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
+SMS_VERIFICATION_ID_RE = re.compile(
+    r"(?i)\bsms-verification:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
 DIGITAL_EMPLOYEE_TASK_ID_TOKEN_RE = re.compile(
     r"(?i)\bdigital-employee-task-id-[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
@@ -71,6 +98,9 @@ HTTP_SECRET_HEADER_RE = re.compile(
 )
 URL_EMBEDDED_CREDENTIAL_RE = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]{2,}://[A-Za-z0-9._~%+-]{1,64}:[^@\s/'\"<>]{8,}@"
+)
+PERMISSION_GRANT_ID_RE = re.compile(
+    r"(?i)\bpermission-grant:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
 ANDROID_ARTIFACT_SUFFIXES = (".apk", ".aab")
 DOCUMENT_TEMPLATE_MARKERS = (
@@ -911,6 +941,10 @@ def _is_permission_evidence(value: str, scenario_markers: tuple[str, ...]) -> bo
     )
 
 
+def _has_permission_grant_id(value: str) -> bool:
+    return PERMISSION_GRANT_ID_RE.search(value) is not None
+
+
 def _is_media_file_access_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -981,6 +1015,7 @@ def _is_share_document_evidence(value: str, format_markers: tuple[str, ...]) -> 
             ("document import", "import task", "upload task", "task id"),
         )
         and _contains_any(value, format_markers)
+        and DOCUMENT_SHARE_UPLOAD_TASK_RE.search(value) is not None
     )
 
 
@@ -1048,6 +1083,7 @@ def _is_shared_result_evidence(value: str) -> bool:
             marker in normalized
             for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
         )
+        and REDACTION_CHECK_ID_RE.search(value) is not None
     )
 
 
@@ -1056,6 +1092,10 @@ def _is_document_export_share_evidence(value: str) -> bool:
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("export", "exported", "download", "downloaded", "saved"))
+        and any(
+            marker in normalized
+            for marker in ("downloaded", "saved", "saved local path", "file path", "local path")
+        )
         and any(marker in normalized for marker in ("share", "shared", "system share", "share sheet", "mail", "wechat", "clipboard", "saved local path", "file path"))
         and "pdf" in normalized
         and any(marker in normalized for marker in ("word", "docx", ".doc"))
@@ -1064,6 +1104,7 @@ def _is_document_export_share_evidence(value: str) -> bool:
             marker in normalized
             for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
         )
+        and REDACTION_CHECK_ID_RE.search(value) is not None
     )
 
 
@@ -1073,6 +1114,7 @@ def _is_document_draft_from_search_evidence(value: str) -> bool:
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("draft", "document", "template"))
         and any(marker in normalized for marker in ("search", "citation", "source", "assistant"))
+        and DOCUMENT_DRAFT_ID_RE.search(value) is not None
         and all(marker in normalized for marker in DOCUMENT_TEMPLATE_MARKERS)
     )
 
@@ -1125,6 +1167,7 @@ def _is_ssh_ai_result_evidence(value: str) -> bool:
         and "ai" in normalized
         and any(marker in normalized for marker in ("explanation", "explained", "analysis", "reason"))
         and any(marker in normalized for marker in ("command draft", "command drafts", "draft command", "suggested command"))
+        and COMMAND_DRAFT_ID_RE.search(value) is not None
         and any(marker in normalized for marker in ("manual", "confirm", "confirmation", "copy", "not auto", "not executed"))
         and any(marker in normalized for marker in ("ssh", "terminal", "log", "output"))
         and any(
@@ -1190,6 +1233,7 @@ def _is_server_credential_clear_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("server profile", "server profiles"))
         and any(marker in normalized for marker in ("ssh credential", "ssh credentials", "password", "private key"))
         and any(marker in normalized for marker in ("separate", "explicit", "account"))
+        and CREDENTIAL_CLEAR_ID_RE.search(value) is not None
     )
 
 
@@ -1234,16 +1278,9 @@ def _is_notification_delivery_evidence(value: str) -> bool:
 
 def _mentions_typed_notification_payloads(normalized: str) -> bool:
     return (
-        any(
-            marker in normalized
-            for marker in (
-                "document-export:",
-                "document-draft:",
-                "document-upload:",
-            )
-        )
-        and "digital-employee-task:" in normalized
-        and "server-profile:" in normalized
+        DOCUMENT_NOTIFICATION_PAYLOAD_RE.search(normalized) is not None
+        and DIGITAL_EMPLOYEE_NOTIFICATION_PAYLOAD_RE.search(normalized) is not None
+        and SERVER_PROFILE_PAYLOAD_RE.search(normalized) is not None
     )
 
 
@@ -1311,6 +1348,10 @@ def _is_network_recovery_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("hubcenter", "hub center", "network", "网络"))
         and any(marker in normalized for marker in ("search", "document", "export", "digital employee", "realtime"))
     )
+
+
+def _has_network_recovery_trace(value: str) -> bool:
+    return NETWORK_RECOVERY_TRACE_RE.search(value) is not None
 
 
 def _is_hubcenter_probe_evidence(value: str) -> bool:
@@ -1390,6 +1431,29 @@ def _is_login_result_evidence(value: str) -> bool:
         and any(marker in normalized for marker in ("sms", "verification code", "验证码"))
         and any(marker in normalized for marker in ("credits", "credit", "额度"))
         and "hubcenter" in normalized
+    )
+
+
+def _has_official_phone_credit_usage_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        any(marker in normalized for marker in ("llm call", "llm request", "query"))
+        and any(
+            marker in normalized
+            for marker in (
+                "usage",
+                "charged",
+                "debited",
+                "deducted",
+                "quota balance",
+                "credits log",
+            )
+        )
+        and any(
+            marker in normalized
+            for marker in ("request id", "request-id", "log id", "usage record")
+        )
+        and bool(_phone_account_refs(value))
     )
 
 
@@ -1482,6 +1546,51 @@ def _is_digital_employee_task_context_evidence(value: str) -> bool:
 
 def _is_ssh_evidence(value: str, markers: tuple[str, ...]) -> bool:
     return _is_auditable_note(value) and _contains_any(value, markers)
+
+
+def _is_read_only_ssh_command_evidence(value: str) -> bool:
+    normalized = f" {value.strip().lower()} "
+    if not _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Read-only command"]):
+        return False
+    destructive_patterns = (
+        r"\brm\b",
+        r"\bsudo\b",
+        r"\bchmod\b",
+        r"\bchown\b",
+        r"\bmv\b",
+        r"\bcp\b",
+        r"\bdd\b",
+        r"\bmkfs\b",
+        r"\breboot\b",
+        r"\bshutdown\b",
+        r"\bsystemctl\s+(?:start|stop|restart|reload|enable|disable)\b",
+        r"\bservice\s+\S+\s+(?:start|stop|restart|reload)\b",
+        r"\bapt(?:-get)?\s+(?:install|remove|purge|upgrade|dist-upgrade)\b",
+        r"\byum\s+(?:install|remove|update)\b",
+        r"\bdnf\s+(?:install|remove|update)\b",
+        r"\bdocker\s+(?:run|rm|stop|restart|exec)\b",
+        r"\bkubectl\s+(?:apply|delete|scale|rollout|exec)\b",
+        r"\bcurl\b.*\|\s*(?:sh|bash)\b",
+        r"\bwget\b.*\|\s*(?:sh|bash)\b",
+        r">\s*/",
+        r">>\s*/",
+    )
+    if any(re.search(pattern, normalized) for pattern in destructive_patterns):
+        return False
+    read_only_patterns = (
+        r"\bwhoami\b",
+        r"\buptime\b",
+        r"\bpwd\b",
+        r"\bls(?:\s|$)",
+        r"\bdf(?:\s|$)",
+        r"\bfree(?:\s|$)",
+        r"\bcat\s+/proc/",
+        r"\btail\s+(?:-[0-9]+\s+)?/var/log/",
+        r"\bjournalctl\s+(?:-[a-z]+\s+)*",
+        r"\bps(?:\s|$)",
+        r"\btop\s+-b",
+    )
+    return any(re.search(pattern, normalized) for pattern in read_only_patterns)
 
 
 def _android_major_version(value: str) -> int | None:
@@ -1880,6 +1989,13 @@ def missing_required_fields(
             missing.append(
                 f"{field} must link permission evidence to real task notification delivery/open"
             )
+    permission_grant_fields = set(PERMISSION_EVIDENCE_FIELDS)
+    permission_grant_fields.update(MOBILE_ASSISTANT_PERMISSION_FIELDS)
+    permission_grant_fields.update(TASK_NOTIFICATION_PERMISSION_FIELDS)
+    for field in sorted(permission_grant_fields):
+        field_values = [value for value in values.get(field, []) if value]
+        if field_values and not all(_has_permission_grant_id(value) for value in field_values):
+            missing.append(f"{field} must include a trackable permission-grant ID")
     for field in sorted(SHARE_TEXT_EVIDENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_share_text_evidence(value) for value in field_values):
@@ -2045,6 +2161,12 @@ def missing_required_fields(
             missing.append(
                 f"{field} must describe offline warning and recovered HubCenter network/service evidence"
             )
+        if field_values and not all(
+            _has_network_recovery_trace(value) for value in field_values
+        ):
+            missing.append(
+                f"{field} must include a trackable network recovery trace ID"
+            )
     for field in sorted(HUBCENTER_PROBE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
@@ -2079,16 +2201,34 @@ def missing_required_fields(
             missing.append(
                 f"{field} must describe phone/SMS login through HubCenter and official credits binding"
             )
+        if field_values and not all(
+            SMS_VERIFICATION_ID_RE.search(value) is not None for value in field_values
+        ):
+            missing.append(
+                f"{field} must include a trackable SMS verification ID"
+            )
     llm_evidence_values = [value for value in values.get("LLM access evidence", []) if value]
     if llm_evidence_values and all(value == "maclaw_official" for value in llm_modes):
         if not all(_is_official_llm_access_evidence(value) for value in llm_evidence_values):
             missing.append("LLM access evidence must match maclaw_official mode")
+        if not all(
+            _has_official_phone_credit_usage_evidence(value)
+            for value in llm_evidence_values
+        ):
+            missing.append(
+                "LLM access evidence must include official phone-credit usage record"
+            )
     if llm_evidence_values and any(value == "desktop_qr_third_party" for value in llm_modes):
         if not all(_is_desktop_qr_llm_access_evidence(value) for value in llm_evidence_values):
             missing.append("LLM access evidence must match desktop_qr_third_party mode")
     for field, markers in sorted(SSH_EVIDENCE_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
-        if field_values and not all(_is_ssh_evidence(value, markers) for value in field_values):
+        validator = (
+            _is_read_only_ssh_command_evidence
+            if field == "Read-only command"
+            else lambda value, expected=markers: _is_ssh_evidence(value, expected)
+        )
+        if field_values and not all(validator(value) for value in field_values):
             missing.append(f"{field} must describe the expected SSH smoke-test evidence")
     device_values = [value for value in values.get("Device model / OS", []) if value]
     if device_values and not all(_is_device_os_note(value) for value in device_values):
@@ -2146,7 +2286,7 @@ def missing_required_fields(
         missing.append("Branch must be a trackable git branch name")
     maclaw_accounts = [value for value in values.get("MaClaw account", []) if value]
     if maclaw_accounts and not all(_is_maclaw_account(value) for value in maclaw_accounts):
-        missing.append("MaClaw account must identify a trackable phone:<number> MaClaw Mobile account")
+        missing.append("MaClaw account must identify a trackable phone:<digits> MaClaw Mobile account")
     account_refs = [ref for value in maclaw_accounts for ref in _phone_account_refs(value)]
     login_refs = [
         ref

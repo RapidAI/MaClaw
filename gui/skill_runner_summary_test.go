@@ -104,6 +104,69 @@ func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
 	}
 }
 
+func TestSummarizeSkillRun_UsesDetectedArtifactWhenExpectedOutputMissing(t *testing.T) {
+	dir := t.TempDir()
+	expectedPath := filepath.Join(dir, "missing-output.pdf")
+	actualPath := filepath.Join(dir, "translated.pdf")
+	if err := os.WriteFile(actualPath, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	status := &SkillRunStatus{
+		RunID:          "run-artifact-detected",
+		Skill:          "paper-pdf-translator",
+		Status:         skillRunStatusSuccess,
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "Output: " + actualPath,
+		}},
+	}
+
+	summarizeSkillRun(status)
+
+	if status.Summary.ArtifactPath != actualPath {
+		t.Fatalf("ArtifactPath = %q, want detected path %q", status.Summary.ArtifactPath, actualPath)
+	}
+	if status.Summary.ArtifactStatus != skillArtifactStatusVerified {
+		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
+	}
+}
+
+func TestSummarizeSkillRun_UsesDetectedArtifactPathWithSpaces(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "dir with spaces")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	expectedPath := filepath.Join(dir, "missing output.pdf")
+	actualPath := filepath.Join(dir, "translated output.pdf")
+	if err := os.WriteFile(actualPath, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	status := &SkillRunStatus{
+		RunID:          "run-artifact-spaces",
+		Skill:          "paper-pdf-translator",
+		Status:         skillRunStatusSuccess,
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "Output: " + actualPath,
+		}},
+	}
+
+	summarizeSkillRun(status)
+
+	if status.Summary.ArtifactPath != actualPath {
+		t.Fatalf("ArtifactPath = %q, want detected path %q", status.Summary.ArtifactPath, actualPath)
+	}
+	if status.Summary.ArtifactStatus != skillArtifactStatusVerified {
+		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
+	}
+}
+
 func TestMaterializeStdoutToExpectedOutputCopiesJSONArtifactFile(t *testing.T) {
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "paper.zh.dual.pdf")

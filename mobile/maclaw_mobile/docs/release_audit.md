@@ -29,7 +29,7 @@ Status legend:
 | App uses exactly three preset official HubCenters and discovers the user's Hub/tenant | Automated evidence | `test/official_service_test.dart`, `test/auth_service_test.dart`, `test/session_state_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1` |
 | No custom Hub URL setting in UI, storage, or API client | Automated evidence | `test/official_service_surface_test.dart`, `test/official_service_test.dart` |
 | Mobile account login uses phone number plus SMS verification only, resolves Hub/tenant through HubCenter, and signs in with the discovered Hub token | Automated evidence | `test/auth_service_test.dart`, `test/login_screen_test.dart`, `test/llm_setup_screen_test.dart` |
-| Verified phone accounts use MaClaw official LLM credits bound to `phone:<number>` | Automated evidence | `test/auth_service_test.dart`, `test/mobile_bootstrap_test.dart`, `test/login_screen_test.dart`, `test/llm_setup_screen_test.dart`; real Hub credit balance remains part of Hub discovery smoke |
+| Verified phone accounts use MaClaw official LLM credits bound to `phone:<digits>` | Automated evidence | `test/auth_service_test.dart`, `test/mobile_bootstrap_test.dart`, `test/login_screen_test.dart`, `test/llm_setup_screen_test.dart`; real Hub credit balance remains part of Hub discovery smoke |
 | Account page shows official LLM credits, model, service group, and discovered Hub status path | Automated evidence | `test/api_client_test.dart`, `test/account_screen_test.dart` |
 | Login starts at HubCenter; bootstrap, search, document, SSH analysis, and digital employee APIs use the discovered Hub | Automated evidence | `test/auth_service_test.dart`, `test/mobile_api_contract_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1` |
 | Third-party LLM access requires desktop GUI QR authorization evidence | Automated evidence | `test/auth_service_test.dart`, `tool/validate_qa_build_record_test.py` |
@@ -121,13 +121,15 @@ These items are intentionally not closed by local automation:
 - Android real-device share-to-app for text, URL, image, PDF, Word, Excel, and
   CSV.
 - Android runtime permission prompts for notification, camera, microphone,
-  media/file access, and local network/SSH scenario if applicable.
+  media/file access, and local network/SSH scenario if applicable, with
+  `permission-grant:<id>` evidence.
 - iOS signed Runner and Share Extension target with official Team ID,
   provisioning profile, and app-group entitlement.
 - iOS real-device/TestFlight share-to-app for text, URL, image, PDF, Word,
   Excel, and CSV.
 - iOS runtime permission prompts for camera, microphone, speech recognition,
-  photo library, local network, and notifications.
+  photo library, local network, and notifications, with `permission-grant:<id>`
+  evidence.
 - Real SSH maintenance smoke test against a server, including host type, auth mode,
   connect result, read-only command, command output excerpt,
   disconnect result, reconnect result, copied output evidence, AI analysis

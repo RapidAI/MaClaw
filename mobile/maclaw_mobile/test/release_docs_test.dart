@@ -177,7 +177,7 @@ void main() {
       'MaClaw official service redemption code',
       'followed by phone SMS verification',
       'SMS verification succeeds',
-      'verified `phone:<number>` account',
+      'verified `phone:<digits>` account',
       'provider QR code generated',
       'from the LLM configuration screen',
       'MaClaw desktop GUI',
@@ -659,6 +659,7 @@ void main() {
       'installer channel',
       'Android real-device share-to-app',
       'Android runtime permission prompts',
+      'permission-grant:<id>',
       'iOS signed Runner and Share Extension target',
       'iOS real-device/TestFlight share-to-app',
       'iOS runtime permission prompts',
@@ -686,6 +687,7 @@ void main() {
         'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI search with citations',
       ),
     );
+    expect(auditText, contains('with `permission-grant:<id>` evidence'));
   });
 
   test('manual release gate table covers full Hub smoke evidence', () {
@@ -731,7 +733,7 @@ void main() {
       'Git commit: 7-40 character hexadecimal commit SHA',
       'Branch: git branch name',
       'Flutter version: Flutter x.y.z',
-      'MaClaw account: phone:<number> or masked phone:<last-digits>',
+      'MaClaw account: phone:<digits> or masked phone:<last-digits>',
       'Artifact path',
       'SHA256',
       'Version/build number: app version + build number, such as 1.0.0+42',
@@ -1253,6 +1255,9 @@ void main() {
       'python3 tool/verify_final_release_evidence.py docs/qa-builds',
       'docs/qa-builds/final-release-evidence-<version+build>.log',
       'links every validated record by filename',
+      'Markdown link labels containing the',
+      'validated QA record filename',
+      'not generic labels such as `Completed QA record`',
       'Do not store SSH passwords',
       'private keys',
       'access tokens',

@@ -2,12 +2,42 @@ package skill
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 )
+
+type stubRequirementChecker struct {
+	typ       string
+	violation *Violation
+}
+
+func (s *stubRequirementChecker) Type() string { return s.typ }
+
+func (s *stubRequirementChecker) Check(req Requirement) *Violation {
+	if s.violation == nil {
+		return nil
+	}
+	v := *s.violation
+	if v.Requirement.Type == "" {
+		v.Requirement = req
+	}
+	return &v
+}
+
+type stubRequirementFixer struct {
+	typ string
+	err error
+}
+
+func (s stubRequirementFixer) Type() string { return s.typ }
+
+func (s stubRequirementFixer) Fix(req Requirement) error { return s.err }
 
 // --- ExtractRequirements tests ---
 
@@ -801,6 +831,45 @@ func TestPipFixerSharedRuntimeDoesNotRepeatSinglePackageInstall(t *testing.T) {
 	}
 	if ensureCalls != 1 {
 		t.Fatalf("ensure calls = %d, want 1", ensureCalls)
+	}
+}
+
+func TestDefaultCheckPipInstalledFallsBackToImportlibMetadata(t *testing.T) {
+	dir := t.TempDir()
+	python := filepath.Join(dir, "python")
+	script := []byte("#!/bin/sh\nif [ \"$1\" = \"-m\" ]; then exit 1; fi\nexit 0\n")
+	if runtime.GOOS == "windows" {
+		python = filepath.Join(dir, "python.cmd")
+		script = []byte("@echo off\r\nif \"%1\"==\"-m\" exit /b 1\r\nexit /b 0\r\n")
+	}
+	if err := os.WriteFile(python, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !defaultCheckPipInstalled(python, "python-docx") {
+		t.Fatal("expected importlib.metadata fallback to satisfy package check when pip show fails")
+	}
+}
+
+func TestFixAllPreservesFixFailureDetails(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&stubRequirementChecker{typ: "pip", violation: &Violation{
+		Requirement: Requirement{Type: "pip", Name: "pymupdf"},
+		Message:     "missing",
+		Severity:    "error",
+	}})
+	registry.RegisterFixer(stubRequirementFixer{typ: "pip", err: fmt.Errorf("install uv to provision Python 3.12")})
+
+	remaining := registry.FixAll([]Violation{{
+		Requirement: Requirement{Type: "pip", Name: "pymupdf"},
+		Message:     "missing",
+		Severity:    "error",
+	}})
+	if len(remaining) != 1 {
+		t.Fatalf("remaining = %d, want 1", len(remaining))
+	}
+	got := FormatViolations(remaining)
+	if !strings.Contains(got, "install uv to provision Python 3.12") || !strings.Contains(got, "[action: install_dependency]") {
+		t.Fatalf("FormatViolations() = %q, want fixer failure detail and action hint", got)
 	}
 }
 

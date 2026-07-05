@@ -16,6 +16,7 @@ class ManualGate:
     audit_keywords: tuple[str, ...]
     checklist_keywords: tuple[str, ...]
     final_decision_field: str
+    evidence_keywords: tuple[str, ...] = ()
 
 
 CANONICAL_MANUAL_GATES = (
@@ -33,9 +34,20 @@ CANONICAL_MANUAL_GATES = (
     ),
     ManualGate(
         "Android runtime permissions",
-        ("Android runtime permission prompts", "notification", "camera"),
-        ("Android Runtime Permissions", "Notification permission", "Camera permission"),
+        (
+            "Android runtime permission prompts",
+            "notification",
+            "camera",
+            "permission-grant:<id>",
+        ),
+        (
+            "Android Runtime Permissions",
+            "Notification permission",
+            "Camera permission",
+            "permission-grant:<id>",
+        ),
         "Android manual gates passed",
+        ("permission-grant:<id>",),
     ),
     ManualGate(
         "iOS Share Extension target",
@@ -51,9 +63,20 @@ CANONICAL_MANUAL_GATES = (
     ),
     ManualGate(
         "iOS runtime permissions",
-        ("iOS runtime permission prompts", "speech recognition", "notifications"),
-        ("iOS Runtime Permissions", "Speech recognition", "Notification permission"),
+        (
+            "iOS runtime permission prompts",
+            "speech recognition",
+            "notifications",
+            "permission-grant:<id>",
+        ),
+        (
+            "iOS Runtime Permissions",
+            "Speech recognition",
+            "Notification permission",
+            "permission-grant:<id>",
+        ),
         "iOS manual gates passed",
+        ("permission-grant:<id>",),
     ),
     ManualGate(
         "Manual SSH against real server",
@@ -237,6 +260,19 @@ def validate_manual_release_gates(root: Path) -> list[str]:
             errors.append("Manual Release Gates rows must include gate and evidence.")
         if required.lower() in {"ok", "yes", "done", "tbd", "todo"}:
             errors.append(f"{gate_name} required evidence is not auditable.")
+        matching_gate = next(
+            (gate for gate in CANONICAL_MANUAL_GATES if gate.gate == gate_name),
+            None,
+        )
+        if matching_gate is not None and not _contains_all(
+            required,
+            matching_gate.evidence_keywords,
+        ):
+            errors.append(
+                f"Manual Release Gates evidence for {gate_name} must include "
+                + ", ".join(matching_gate.evidence_keywords)
+                + ".",
+            )
 
     blockers = _bullet_items(_section(audit, "Remaining Release Blockers"))
     if not _contains_all(audit, AUDIT_QA_RECORD_VALIDATION_KEYWORDS):
@@ -250,7 +286,15 @@ def validate_manual_release_gates(root: Path) -> list[str]:
             errors.append(
                 f"release_audit.md Remaining Release Blockers must cover {gate.gate}."
             )
-        if not _contains_all(checklist, gate.checklist_keywords):
+        checklist_heading = gate.checklist_keywords[0]
+        try:
+            checklist_section = _section(checklist, checklist_heading)
+        except ValueError:
+            checklist_section = ""
+        if not _contains_all(
+            checklist_heading + "\n" + checklist_section,
+            gate.checklist_keywords,
+        ):
             errors.append(
                 f"qa_device_checklist.md must include executable QA steps for {gate.gate}."
             )

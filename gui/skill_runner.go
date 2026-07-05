@@ -1024,11 +1024,13 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	}
 	artifactPath := strings.TrimSpace(status.ExpectedOutput)
 	artifactExpected := status.ExpectedArtifact || artifactPath != "" || isInstructionOnlySkillStatus(status)
+	detectedPath := detectArtifactPathFromStatus(status)
 	if artifactPath == "" {
-		detectedPath := detectArtifactPathFromStatus(status)
 		if detectedPath != "" && (artifactExpected || artifactExists(detectedPath)) {
 			artifactPath = detectedPath
 		}
+	} else if !status.IsRunning() && !artifactExists(artifactPath) && detectedPath != "" && artifactExists(detectedPath) {
+		artifactPath = detectedPath
 	}
 	if artifactPath != "" {
 		status.Summary.ArtifactPath = artifactPath
@@ -1255,6 +1257,14 @@ func extractArtifactPathCandidate(line string) string {
 	trimmed = strings.Trim(trimmed, "`\"' ,.;:()[]{}")
 	if looksLikeArtifactPath(trimmed) && filepath.IsAbs(trimmed) {
 		return trimmed
+	}
+	for _, label := range []string{"output:", "artifact:", "file:", "path:"} {
+		if strings.HasPrefix(strings.ToLower(trimmed), label) {
+			candidate := strings.Trim(strings.TrimSpace(trimmed[len(label):]), "`\"' ,.;:()[]{}")
+			if looksLikeArtifactPath(candidate) && filepath.IsAbs(candidate) {
+				return candidate
+			}
+		}
 	}
 	for _, field := range strings.Fields(trimmed) {
 		candidate := strings.Trim(field, "`\"' ,.;:()[]{}")

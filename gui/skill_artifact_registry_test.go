@@ -56,7 +56,7 @@ func TestSkillArtifactRegistryRegistersAndLooksUpArtifacts(t *testing.T) {
 	if entry.URI != "artifact://skill-run/run-registry-1/artifact-1" || entry.RunID != "run-registry-1" || entry.ArtifactID != "artifact-1" {
 		t.Fatalf("entry identity = %#v", entry)
 	}
-	if entry.Name != "report.pdf" || entry.Skill != "demo-skill" || !entry.Available {
+	if entry.Name != "report.pdf" || entry.Path != artifactPath || entry.Skill != "demo-skill" || !entry.Available {
 		t.Fatalf("entry metadata = %#v", entry)
 	}
 	entries, err := app.ListSkillRunArtifactsForOwner("owner-1", "run-registry-1", 10)

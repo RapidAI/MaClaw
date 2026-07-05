@@ -37,7 +37,7 @@ handoff.
 MaClaw official LLM access is the default. The redemption code can help route
 the official service setup, but it does not replace the mobile account: after
 SMS verification succeeds, official LLM calls use the credits bound to the
-verified `phone:<number>` account. Third-party LLM access is allowed only when
+verified `phone:<digits>` account. Third-party LLM access is allowed only when
 it is authorized by scanning or pasting the MaClaw GUI QR payload. The mobile
 app does not accept arbitrary third-party LLM endpoints.
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import './AppsPage.css';
 
@@ -400,6 +400,7 @@ type SkillRunStatusView = {
 
 type SkillRunArtifactView = {
     id?: string;
+    artifact_id?: string;
     uri?: string;
     name?: string;
     path?: string;
@@ -410,6 +411,7 @@ type SkillRunArtifactView = {
     download_state?: string;
     status?: string;
     presentation?: string;
+    available?: boolean;
 };
 
 type SkillRunOutputBlockView = {
@@ -1046,6 +1048,7 @@ const labels = {
         fileTooLarge: '\u6587\u4ef6\u8d85\u8fc7 25MB\uff0c\u6682\u4e0d\u652f\u6301\u6b64\u65b9\u5f0f\u4e0a\u4f20',
         cancelRun: '\u53d6\u6d88\u6267\u884c',
         runHistory: '\u8fd0\u884c\u5386\u53f2',
+        runDetails: '\u8fd0\u884c\u8be6\u60c5',
         runHistoryManager: '\u8fd0\u884c\u8bb0\u5f55',
         runHistoryManagerHint: '\u805a\u5408\u5c55\u793a\u672c\u673a\u4fdd\u5b58\u7684\u5e94\u7528\u6267\u884c\u5386\u53f2\u3002',
         runHistoryAllApps: '\u5168\u90e8\u5e94\u7528',
@@ -1453,6 +1456,7 @@ const labels = {
         fileTooLarge: 'File is larger than 25MB and cannot be uploaded this way yet',
         cancelRun: 'Cancel run',
         runHistory: 'Run history',
+        runDetails: 'Run details',
         runHistoryManager: 'Run history',
         runHistoryManagerHint: 'Aggregated execution history saved on this device.',
         runHistoryAllApps: 'All apps',
@@ -4994,8 +4998,25 @@ function businessOperationRunEvidence(result: BusinessOperationResultView): Pick
     return { resultPayload, outputs, artifacts: result.artifacts || [] };
 }
 
+async function lookupSkillRunArtifactFromUI(runID: string, artifactRef: string) {
+    if (!runID || !artifactRef) return null;
+    try {
+        const entry = await GetSkillRunArtifact(runID, artifactRef) as SkillRunArtifactView | null;
+        return entry || null;
+    } catch {
+        return null;
+    }
+}
+
+async function fallbackSkillRunArtifactPathFromUI(runID: string, artifactRef: string, currentPath: string) {
+    const registryEntry = await lookupSkillRunArtifactFromUI(runID, artifactRef);
+    if (registryEntry?.available === false) return '';
+    const registryPath = String(registryEntry?.path || '').trim();
+    return registryPath || currentPath.trim();
+}
+
 async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string, remoteOnly: boolean) {
-    const localPath = artifactPath.trim();
+    let localPath = artifactPath.trim();
     if (runID && artifactRef) {
         if (remoteOnly) {
             await DownloadSkillRunArtifact(runID, artifactRef);
@@ -5004,24 +5025,34 @@ async function openSkillRunArtifactFromUI(runID: string, artifactRef: string, ar
             await OpenSkillRunArtifact(runID, artifactRef);
             return;
         } catch (error) {
-            if (!localPath) throw error;
+            localPath = await fallbackSkillRunArtifactPathFromUI(runID, artifactRef, localPath);
+            if (!localPath) {
+                console.warn('[apps] open artifact unavailable', error);
+                return;
+            }
             console.warn('[apps] open artifact by registry failed; falling back to local path', error);
         }
     }
+    if (!localPath) return;
     await OpenFileOrShowInFolder(localPath);
 }
 
 async function revealSkillRunArtifactFromUI(runID: string, artifactRef: string, artifactPath: string) {
-    const localPath = artifactPath.trim();
+    let localPath = artifactPath.trim();
     if (runID && artifactRef) {
         try {
             await RevealSkillRunArtifact(runID, artifactRef);
             return;
         } catch (error) {
-            if (!localPath) throw error;
+            localPath = await fallbackSkillRunArtifactPathFromUI(runID, artifactRef, localPath);
+            if (!localPath) {
+                console.warn('[apps] reveal artifact unavailable', error);
+                return;
+            }
             console.warn('[apps] reveal artifact by registry failed; falling back to local path', error);
         }
     }
+    if (!localPath) return;
     await ShowItemInFolder(localPath);
 }
 
@@ -6727,22 +6758,138 @@ function appRunHistoryResultSummary(item: AppRunHistoryEntry, text: typeof label
     return '';
 }
 
-function appRunHistoryEvidenceSummary(item: AppRunHistoryEntry, text: typeof labels.zh) {
-    const outputs = (item.outputs || [])
-        .flatMap((output) => {
-            const title = approvalOutputTitle(output, text);
-            const body = approvalOutputBody(output).trim();
-            return [title, body].filter(Boolean);
-        });
-    const artifacts = (item.artifacts || [])
-        .flatMap((artifact) => [artifact.name, artifact.uri || artifact.path || artifact.remote_url || artifact.id])
+function appRunHistoryShortArtifactLabel(value: unknown) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (text.startsWith('artifact://')) {
+        return text.split('/').filter(Boolean).pop() || text;
+    }
+    return text.split(/[\\/]/).pop() || text;
+}
+
+function appRunHistoryEvidenceSummary(item: AppRunHistoryEntry) {
+    const artifactLabels = (item.artifacts || [])
+        .map((artifact) => {
+            const raw = artifact.name || artifact.path || artifact.uri || artifact.remote_url || artifact.id || '';
+            return appRunHistoryShortArtifactLabel(raw);
+        })
         .filter(Boolean);
     return Array.from(new Set([
-        ...outputs,
-        item.artifactName,
-        ...artifacts,
+        appRunHistoryShortArtifactLabel(item.artifactName),
+        ...artifactLabels,
     ].map((value) => String(value || '').trim()).filter(Boolean))).slice(0, 4);
 }
+
+function appRunHistoryPrimaryArtifact(item: AppRunHistoryEntry) {
+    const primary = appRunHistoryArtifacts(item)[0];
+    return {
+        id: item.artifactID || primary?.id || primary?.artifact_id || '',
+        uri: item.artifactURI || primary?.uri || primary?.remote_url || '',
+        path: item.artifactPath || primary?.path || '',
+        name: item.artifactName || primary?.name || '',
+    };
+}
+
+function appRunHistoryArtifactLabel(item: AppRunHistoryEntry) {
+    const primary = appRunHistoryPrimaryArtifact(item);
+    const raw = primary.name || primary.uri || primary.path || primary.id;
+    return appRunHistoryShortArtifactLabel(raw);
+}
+
+function appRunHistoryTechnicalDetails(item: AppRunHistoryEntry) {
+    const message = String(item.message || '').trim();
+    const primaryArtifact = appRunHistoryPrimaryArtifact(item);
+    const details: Array<{ label: string; value: string }> = [];
+    const addDetail = (label: string, value?: string) => {
+        const clean = String(value || '').trim();
+        if (clean && !details.some((item) => item.label === label && item.value === clean)) {
+            details.push({ label, value: clean });
+        }
+    };
+    const shell = message.match(/\bshell:\s*([^\s,;]+)/i)?.[1];
+    const elapsed = message.match(/\belapsed:\s*([^\s,;]+)/i)?.[1];
+    const commandIndex = message.toLowerCase().indexOf(' command: ');
+    if (shell) addDetail('shell', shell);
+    if (elapsed) addDetail('elapsed', elapsed);
+    const beforeCommand = commandIndex >= 0 ? message.slice(0, commandIndex) : message;
+    const path = beforeCommand.match(/[A-Za-z]:\\[\s\S]+$/)?.[0]?.replace(/^[^\wA-Za-z:]+/, '').trim();
+    addDetail('path', path);
+    if (commandIndex >= 0) addDetail('command', message.slice(commandIndex + ' command: '.length));
+    if (message && details.length === 0) addDetail('message', message);
+    addDetail('runID', item.runID);
+    addDetail('artifactID', primaryArtifact.id);
+    addDetail('artifactPath', primaryArtifact.path);
+    if (primaryArtifact.uri && primaryArtifact.uri !== primaryArtifact.path) addDetail('artifactURI', primaryArtifact.uri);
+    return details;
+}
+
+function appRunHistoryMessageSummary(item: AppRunHistoryEntry) {
+    const message = String(item.message || item.status || '').trim();
+    if (!message) return item.status;
+    const shell = message.match(/\bshell:\s*([^\s,;]+)/i)?.[1];
+    const elapsed = message.match(/\belapsed:\s*([^\s,;]+)/i)?.[1];
+    if (shell || elapsed) return [shell ? `shell: ${shell}` : '', elapsed ? `elapsed: ${elapsed}` : ''].filter(Boolean).join(' · ');
+    return message;
+}
+
+const AppRunHistoryItem = ({ item, title, text, showInputSummary = true }: { item: AppRunHistoryEntry; title: string; text: typeof labels.zh; showInputSummary?: boolean }) => {
+    const resultSummary = appRunHistoryResultSummary(item, text);
+    const evidenceSummary = appRunHistoryEvidenceSummary(item);
+    const primaryArtifact = appRunHistoryPrimaryArtifact(item);
+    const artifactLabel = appRunHistoryArtifactLabel(item);
+    const details = appRunHistoryTechnicalDetails(item);
+    const artifactRef = primaryArtifact.id || primaryArtifact.uri;
+    const hasArtifact = !!(primaryArtifact.uri || primaryArtifact.path || primaryArtifact.id);
+    const artifactLabelCanReveal = !!(primaryArtifact.uri || primaryArtifact.path);
+    return (
+        <article className="apps-run-history__item" data-state={item.status}>
+            <div className="apps-run-history__main">
+                <div className="apps-run-history__headline">
+                    <strong>{title}</strong>
+                    <em>{appRunHistoryMessageSummary(item)}</em>
+                </div>
+                <div className="apps-run-history__meta" aria-label={text.runHistory}>
+                    <span>{formatRunHistoryTime(item.at)}</span>
+                    <span>{String(item.outputMode || '').toUpperCase()}</span>
+                    <span>{item.status}</span>
+                </div>
+                {showInputSummary && item.inputSummary && title !== item.inputSummary && <p className="apps-run-history__input">{item.inputSummary}</p>}
+                {resultSummary && <p className="apps-run-history__result">{resultSummary}</p>}
+                {evidenceSummary.length > 0 && (
+                    <div className="apps-run-history__evidence">
+                        {evidenceSummary.map((entry) => <span key={entry}>{entry}</span>)}
+                    </div>
+                )}
+                {artifactLabel && artifactLabelCanReveal && (
+                    <button className="apps-run-history__artifact apps-output-path-link" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, artifactRef, primaryArtifact.path)}>
+                        {artifactLabel}
+                    </button>
+                )}
+                {artifactLabel && !artifactLabelCanReveal && <span className="apps-run-history__artifact apps-run-history__artifact--plain">{artifactLabel}</span>}
+                {details.length > 0 && (
+                    <details className="apps-run-history__details">
+                        <summary>{text.runDetails}</summary>
+                        <dl>
+                            {details.map((detail) => (
+                                <div key={`${detail.label}:${detail.value}`}>
+                                    <dt>{detail.label}</dt>
+                                    <dd>{detail.value}</dd>
+                                </div>
+                            ))}
+                        </dl>
+                    </details>
+                )}
+            </div>
+            {hasArtifact && (
+                <div className="apps-run-history__actions">
+                    <button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, artifactRef, primaryArtifact.path, item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button>
+                    <button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, artifactRef, primaryArtifact.path)}>{text.revealArtifact}</button>
+                </div>
+            )}
+        </article>
+    );
+};
+
 function formatRecentUsedAt(value?: string) {
     const timestamp = Number(String(value || '').slice(0, 13));
     if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
@@ -9812,29 +9959,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager }: { app?: AppEntr
                                     <div className="apps-run-history__empty">{text.noRunHistory}</div>
                                 ) : (
                                     <div className="apps-run-history__list">
-                                        {runHistory.map((item) => {
-                                            const evidenceSummary = appRunHistoryEvidenceSummary(item, text);
-                                            return (
-                                            <div className="apps-run-history__item" data-state={item.status} key={`${item.runID}-${item.at}`}>
-                                                <div>
-                                                    <strong>{item.inputSummary || item.runID}</strong>
-                                                    <span>{formatRunHistoryTime(item.at)} · {item.outputMode.toUpperCase()} · {item.runID}</span>
-                                                    {appRunHistoryResultSummary(item, text) && <small className="apps-run-history__result">{appRunHistoryResultSummary(item, text)}</small>}
-                                                    {evidenceSummary.length > 0 && <small className="apps-run-history__evidence">{evidenceSummary.join(' · ')}</small>}
-                                                    {(item.artifactURI || item.artifactPath) && <code className="apps-output-path-link" onClick={() => { const localPath = item.artifactPath; if (localPath) { void ShowItemInFolder(localPath); } else if (item.artifactURI) { BrowserOpenURL(item.artifactURI); } }}>{item.artifactURI || item.artifactPath}</code>}
-                                                </div>
-                                            <div className="apps-run-history__side">
-                                                <em>{item.message || item.status}</em>
-                                                {(item.artifactURI || item.artifactPath) && (
-                                                    <div className="apps-run-history__actions">
-                                                            <button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button>
-                                                            <button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                            </div>
-                                            );
-                                        })}
+                                        {runHistory.map((item) => (
+                                            <AppRunHistoryItem item={item} title={item.inputSummary || appRunHistoryArtifactLabel(item) || item.runID} text={text} key={`${item.runID}-${item.at}`} />
+                                        ))}
                                     </div>
                                 )}
                             </section>
@@ -10319,7 +10446,7 @@ const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) 
                     <div className="apps-approval-manager__filters"><label><span>{text.approvalAppFilter}</span><select value={appFilter} onChange={(event) => setAppFilter(event.target.value)}><option value="all">{text.runHistoryAllApps}</option>{apps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label></div>
                     {filteredItems.length === 0 ? <div className="apps-run-history__empty">{text.noGlobalRunHistory}</div> : (
                         <div className="apps-run-history__list">
-                            {filteredItems.map((item) => <div className="apps-run-history__item" data-state={item.status} key={`${item.appID}-${item.runID}-${item.at}`}><div><strong>{appNameById.get(item.appID) || item.appID}</strong><span>{formatRunHistoryTime(item.at)} ·  {item.outputMode.toUpperCase()} ·  {item.runID}</span>{item.inputSummary && <code>{item.inputSummary}</code>}</div><div className="apps-run-history__side"><em>{item.message || item.status}</em>{(item.artifactURI || item.artifactPath) && <div className="apps-run-history__actions"><button className="apps-link-button" type="button" onClick={() => void openSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '', item.artifactDownloadState === 'remote')}>{item.artifactDownloadState === 'remote' ? text.downloadArtifact : text.openArtifact}</button><button className="apps-link-button" type="button" onClick={() => void revealSkillRunArtifactFromUI(item.runID, item.artifactID || item.artifactURI || '', item.artifactPath || '')}>{text.revealArtifact}</button></div>}</div></div>)}
+                            {filteredItems.map((item) => <AppRunHistoryItem item={item} title={appNameById.get(item.appID) || item.appID} text={text} key={`${item.appID}-${item.runID}-${item.at}`} />)}
                         </div>
                     )}
                 </section>

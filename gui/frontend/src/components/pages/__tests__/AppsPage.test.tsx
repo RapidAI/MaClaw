@@ -24,6 +24,7 @@ const loadConfigMock = vi.hoisted(() => vi.fn());
 const browserOpenURLMock = vi.hoisted(() => vi.fn());
 const runNLSkillAsyncMock = vi.hoisted(() => vi.fn());
 const getNLSkillRunStatusMock = vi.hoisted(() => vi.fn());
+const getSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const cancelNLSkillRunMock = vi.hoisted(() => vi.fn());
 const stageSkillAppInputFileMock = vi.hoisted(() => vi.fn());
 const openFileOrShowInFolderMock = vi.hoisted(() => vi.fn());
@@ -37,6 +38,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ExecuteMaclawAppBusinessOperation: (...args: unknown[]) => executeMaclawAppBusinessOperationMock(...args),
     GetMISDataConfig: (...args: unknown[]) => getMISDataConfigMock(...args),
     GetNLSkillRunStatus: (...args: unknown[]) => getNLSkillRunStatusMock(...args),
+    GetSkillRunArtifact: (...args: unknown[]) => getSkillRunArtifactMock(...args),
     ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
     LoadConfig: (...args: unknown[]) => loadConfigMock(...args),
@@ -728,6 +730,34 @@ function seedDynamicAppsPanel(apps = testDynamicApps) {
         recentUsedAtById: {},
     }));
 }
+
+function seedStaleRunHistoryArtifact() {
+    window.localStorage.setItem(runHistoryStorageKey, JSON.stringify({
+        'invoice-audit': [{
+            runID: 'run-ok-1',
+            appID: 'invoice-audit',
+            status: 'done',
+            outputMode: 'pdf',
+            inputSummary: 'sample.pdf',
+            message: 'done',
+            artifactID: 'artifact-sample-pdf',
+            artifactURI: 'artifact://skill-run/run-ok-1/artifact-sample-pdf',
+            artifactName: 'sample-output.pdf',
+            artifactPath: 'C:\\bad\\missing.pdf',
+            artifacts: [{ id: 'artifact-sample-pdf', uri: 'artifact://skill-run/run-ok-1/artifact-sample-pdf', name: 'sample-output.pdf', path: 'C:\\bad\\missing.pdf', status: 'ready' }],
+            at: new Date().toISOString(),
+        }],
+    }));
+}
+
+async function openStaleRunHistoryItem(action: '打开' | '定位') {
+    render(<AppsPage lang="zh-Hans" />);
+    fireEvent.click(screen.getAllByText('发票审核')[0]);
+    const artifactNodes = await screen.findAllByText('sample-output.pdf');
+    const historyItem = artifactNodes.map((node) => node.closest('article')).find(Boolean) as HTMLElement;
+    fireEvent.click(within(historyItem).getByRole('button', { name: action }));
+}
+
 describe('AppsPage', () => {
     beforeEach(() => {
         window.localStorage.clear();
@@ -830,6 +860,7 @@ describe('AppsPage', () => {
         browserOpenURLMock.mockReset();
         runNLSkillAsyncMock.mockReset().mockResolvedValue('run-test-1');
         getNLSkillRunStatusMock.mockReset().mockResolvedValue({ run_id: 'run-test-1', status: 'success', summary: { last_output_snippet: 'done' } });
+        getSkillRunArtifactMock.mockReset().mockResolvedValue(null);
         cancelNLSkillRunMock.mockReset().mockResolvedValue(undefined);
         openFileOrShowInFolderMock.mockReset().mockResolvedValue(undefined);
         downloadSkillRunArtifactMock.mockReset().mockResolvedValue({ available: true });
@@ -6614,6 +6645,52 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('清空历史'));
         expect(screen.getByText('暂无运行记录')).not.toBeNull();
         expect(screen.queryByText(/run-test-1/)).toBeNull();
+    });
+
+    it('falls back to the registry path when opening a stale run-history artifact', async () => {
+        seedStaleRunHistoryArtifact();
+        openSkillRunArtifactMock.mockRejectedValueOnce(new Error('missing registered file'));
+        getSkillRunArtifactMock.mockResolvedValueOnce({ path: 'C:\\good\\sample-output.pdf', available: true });
+
+        await openStaleRunHistoryItem('打开');
+
+        await waitFor(() => expect(getSkillRunArtifactMock).toHaveBeenCalledWith('run-ok-1', 'artifact-sample-pdf'));
+        await waitFor(() => expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\good\\sample-output.pdf'));
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalledWith('C:\\bad\\missing.pdf');
+    });
+
+    it('does not open a stale run-history artifact when the registry marks it unavailable', async () => {
+        seedStaleRunHistoryArtifact();
+        openSkillRunArtifactMock.mockRejectedValueOnce(new Error('missing registered file'));
+        getSkillRunArtifactMock.mockResolvedValueOnce({ path: 'C:\\bad\\missing.pdf', available: false });
+
+        await openStaleRunHistoryItem('打开');
+
+        await waitFor(() => expect(getSkillRunArtifactMock).toHaveBeenCalledWith('run-ok-1', 'artifact-sample-pdf'));
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the registry path when locating a stale run-history artifact', async () => {
+        seedStaleRunHistoryArtifact();
+        revealSkillRunArtifactMock.mockRejectedValueOnce(new Error('missing registered file'));
+        getSkillRunArtifactMock.mockResolvedValueOnce({ path: 'C:\\good\\sample-output.pdf', available: true });
+
+        await openStaleRunHistoryItem('定位');
+
+        await waitFor(() => expect(getSkillRunArtifactMock).toHaveBeenCalledWith('run-ok-1', 'artifact-sample-pdf'));
+        await waitFor(() => expect(showItemInFolderMock).toHaveBeenCalledWith('C:\\good\\sample-output.pdf'));
+        expect(showItemInFolderMock).not.toHaveBeenCalledWith('C:\\bad\\missing.pdf');
+    });
+
+    it('does not locate a stale run-history artifact when the registry marks it unavailable', async () => {
+        seedStaleRunHistoryArtifact();
+        revealSkillRunArtifactMock.mockRejectedValueOnce(new Error('missing registered file'));
+        getSkillRunArtifactMock.mockResolvedValueOnce({ path: 'C:\\bad\\missing.pdf', available: false });
+
+        await openStaleRunHistoryItem('定位');
+
+        await waitFor(() => expect(getSkillRunArtifactMock).toHaveBeenCalledWith('run-ok-1', 'artifact-sample-pdf'));
+        expect(showItemInFolderMock).not.toHaveBeenCalled();
     });
 
     it('checks bound skill dependencies before running installed tool apps', async () => {

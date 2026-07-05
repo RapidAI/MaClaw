@@ -593,6 +593,33 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             errors,
         )
 
+    def test_record_link_label_must_include_validated_record_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text("record", encoding="utf-8")
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [f"- [Completed QA record](docs/qa-builds/{record.name})"],
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ):
+                errors = verify_final_release_evidence.verify_final_release_evidence(
+                    records_dir,
+                    evidence,
+                )
+
+        self.assertIn(
+            "Release evidence document QA build record links must use labels containing the validated record filename: "
+            "2026-07-02-android-ios-1.0.0+42.md",
+            errors,
+        )
+
     def test_guarded_block_rejects_stale_or_unvalidated_qa_record_links(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)

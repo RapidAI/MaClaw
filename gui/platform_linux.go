@@ -103,8 +103,8 @@ func (a *App) RunEnvironmentCheckCLI() {
 // Also checks private install paths that may not yet be in PATH.
 func (a *App) detectMissingCoreTools() string {
 	pySt := pyenv.Detect()
-	if !pySt.Available {
-		return "Python"
+	if missing := missingPythonRuntimeComponent(pySt); missing != "" {
+		return missing
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		// Check standard locations
@@ -272,46 +272,14 @@ func (a *App) CheckEnvironment(force bool) {
 
 		a.log(a.tr("✓ Base environment check complete."))
 
-		// Configure China mirror for Python/uv downloads based on user language
-		if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
-			pyenv.SetUseChinaMirror(true)
-		}
-
 		// ===== Check and Install Python =====
-		a.log(a.tr("Checking Python environment..."))
-		pySt := pyenv.Detect()
-		if pySt.Available {
-			label := "system"
-			if pySt.IsPrivate {
-				label = "private"
-			}
-			a.log(a.tr("✓ Python found: v%s (%s) → %s", pySt.Version, label, pySt.PythonPath))
-		} else {
-			a.log(a.tr("Python >= 3.10 not found. Installing private Python + uv ..."))
-			a.emitEvent("python-install-start")
-			pySt = pyenv.EnsureEnvironment(func(stage string, pct int, msg string) {
-				a.log(fmt.Sprintf("[python-env] [%s] %d%% %s", stage, pct, msg))
-				a.emitEvent("python-install-progress", map[string]interface{}{
-					"stage": stage, "pct": pct, "msg": msg,
-				})
-			})
-			if pySt.Error != "" {
-				a.log(a.tr("WARNING: Python environment setup failed: %s", pySt.Error))
-			} else {
-				a.log(a.tr("✓ Python %s installed with venv: %s", pySt.Version, pySt.VenvPath))
-			}
-			a.emitEvent("python-install-done", map[string]interface{}{
-				"available": pySt.Available,
-				"version":   pySt.Version,
-				"error":     pySt.Error,
-			})
-		}
+		pySt := a.ensurePythonRuntimeForEnvironmentCheck("Checking Python environment...")
 
-		// Only mark env check done if Python is available.
-		if pySt.Available {
+		// Only mark env check done if the full Python runtime is available.
+		if pythonRuntimeReady(pySt) {
 			_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
 		} else {
-			a.log(a.tr("Python not available — environment check will retry on next startup."))
+			a.log(a.tr("Python runtime incomplete — environment check will retry on next startup."))
 		}
 
 		a.emitEvent("env-check-done")

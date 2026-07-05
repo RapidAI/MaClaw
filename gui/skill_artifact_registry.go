@@ -39,6 +39,7 @@ type SkillArtifactRegistryEntry struct {
 	Skill         string `json:"skill,omitempty"`
 	ArtifactID    string `json:"artifact_id"`
 	Name          string `json:"name,omitempty"`
+	Path          string `json:"path,omitempty"`
 	MimeType      string `json:"mime_type,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
 	RemoteURL     string `json:"remote_url,omitempty"`
@@ -555,6 +556,7 @@ func skillArtifactRegistryEntryFromRecord(record skillArtifactRegistryRecord) Sk
 		Skill:         strings.TrimSpace(record.Skill),
 		ArtifactID:    strings.TrimSpace(record.ArtifactID),
 		Name:          strings.TrimSpace(record.Name),
+		Path:          strings.TrimSpace(record.Path),
 		MimeType:      strings.TrimSpace(record.MimeType),
 		SizeBytes:     record.SizeBytes,
 		RemoteURL:     strings.TrimSpace(record.RemoteURL),

@@ -246,6 +246,15 @@ var checkPipInstalled = defaultCheckPipInstalled
 func defaultCheckPipInstalled(python, name string) bool {
 	cmd := coretool.Command(python, "-m", "pip", "show", name)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
+	if cmd.Run() == nil {
+		return true
+	}
+	// uv-created virtual environments can contain installed packages without a
+	// pip module. Fall back to importlib.metadata so the checker matches the
+	// runtime import environment instead of requiring pip to be present.
+	check := "import importlib.metadata as m, sys; sys.exit(0 if m.distribution(sys.argv[1]) else 1)"
+	cmd = coretool.Command(python, "-c", check, name)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	return cmd.Run() == nil
 }
 

@@ -195,7 +195,8 @@ app opens the assistant or document flow as expected.
 - Local network/SSH scenario works when connecting to a local or private-network
   server, if that scenario is in scope for the build.
 Record both the permission prompt/result and the feature scenario that triggered
-it.
+it. Each permission evidence item must include the matching
+`permission-grant:<id>` record.
 
 ## iOS Signing And Share Extension
 
@@ -251,7 +252,8 @@ app opens the assistant or document flow as expected.
 - Local network permission appears when connecting to a local/private server.
 - Notification permission can be requested from the account screen.
 Record both the permission prompt/result and the feature scenario that triggered
-it.
+it. Each permission evidence item must include the matching
+`permission-grant:<id>` record.
 
 ## Hub Discovery And Service Smoke Test
 

@@ -302,7 +302,7 @@ before they can be overwritten.
     Extension.
   - Enforces LLM mode consistency: official MaClaw LLM records must mark the
     desktop GUI QR authorization as `not-used-official-mode` and prove LLM
-    calls after SMS verification use the recorded `phone:<number>` account's
+    calls after SMS verification use the recorded `phone:<digits>` account's
     official credits, while
     `desktop_qr_third_party` records must include a real trackable MaClaw
     desktop GUI QR authorization ID instead of the official-mode
@@ -320,8 +320,8 @@ before they can be overwritten.
   - Requires SSH AI analysis evidence to mention preview confirmation, the
     sensitive-data warning, and redacted/masked/sanitized terminal or log
     output before AI analysis; requires AI result evidence to include
-    explanation, command drafts, manual/not-auto-executed proof, and redacted
-    SSH terminal/log output context; and
+    explanation, `command-draft:<id>`, manual/not-auto-executed proof, and
+    redacted SSH terminal/log output context; and
     requires credential deletion evidence to mention cleared
     password/private-key or secure-storage state.
   - Requires status polling and realtime update evidence to identify task/job or
@@ -337,19 +337,23 @@ before they can be overwritten.
     preview proof.
   - Requires network offline/recovery evidence to show HubCenter/network
     unavailable warnings and restored search, document, digital employee, or
-    realtime service behavior after connectivity returns.
+    realtime service behavior after connectivity returns, with a trackable
+    network-recovery/connectivity-probe/retry/incident trace ID.
   - Requires account-screen, no-custom-Hub-URL, and bootstrap smoke evidence to
     explicitly mention selected Hub, tenant, absent custom Hub URL settings,
     user/quota, feature flags, and service status, with account-screen Hub and
     tenant evidence matching the recorded Discovered Hub URL and Tenant ID.
   - Requires login evidence to prove MaClaw Mobile's phone-number-only path:
     HubCenter-mediated SMS verification and official credits bound to the phone
-    account, including the first LLM call after verification using that phone
-    account's MaClaw official credits.
+    account with `sms-verification:<id>`, including the first LLM call after
+    verification using that phone account's MaClaw official credits.
+  - Requires official LLM access evidence to include a request/log/usage record
+    proving the post-verification LLM call was charged to the recorded
+    `phone:<digits>` MaClaw official credits account.
   - Requires account privacy and local-data evidence to record theme/speech
     language changes, local work-record clearing, retained server credentials
     in secure storage/vault after local reset, and separate explicit
-    server/SSH credential clearing,
+    server/SSH credential clearing with `credential-clear:<id>`,
     tied to any recorded `server-profile:<id>` notification payload.
   - Requires HubCenter probe evidence to list the exact three official
     HubCenters, discovered Hub evidence to include Hub URL plus tenant, and LLM
@@ -364,7 +368,7 @@ before they can be overwritten.
     exports were downloaded/saved and handed to a share target or local path,
     to reference the recorded PDF, Word, and Markdown export job IDs, and to
     prove exported document previews were redacted/masked/sanitized before
-    external sharing or saving.
+    external sharing or saving with `redaction-check:<id>`.
   - Requires share-to-app payload evidence to describe the expected mobile
     routing: shared text/URLs open the assistant with citations where
     applicable, while files/images enter document import/upload tasks with the
@@ -374,14 +378,15 @@ before they can be overwritten.
     and shared-result evidence to name the share target or concrete output such
     as Mail, WeChat, clipboard, exported file, or saved local path, and to
     reference a recorded citation URL plus redacted/masked/sanitized shared
-    answer/result preview proof.
+    answer/result preview proof with `redaction-check:<id>`.
   - Requires mobile assistant input evidence to prove both voice transcription
     and photo/image assistant input, with a resulting cited answer or document
     upload task ID, and to reference a recorded citation URL or document upload
     task ID.
   - Requires search-result document draft evidence to cover every first-version
     template: notice, report, email, proposal, meeting minutes, and statement,
-    and to reference a recorded citation URL.
+    to reference a recorded citation URL, and to include the resulting
+    `document-draft:<id>`.
   - Requires runtime permission fields to describe prompt/result evidence and
     the matching feature scenario, including camera/photo and photo-library
     permission evidence tied to real photo/image/screenshot assistant input,
@@ -392,7 +397,9 @@ before they can be overwritten.
     access evidence must prove real file picker or share-to-app document
     import/upload coverage for PDF, Word, Excel, CSV, and image/photo payloads;
     local-network permission evidence must be tied to a real SSH connection
-    against a recorded `server-profile:<id>` and a read-only command result.
+    against a recorded `server-profile:<id>` and a read-only command result;
+    every runtime permission evidence line must include a trackable
+    `permission-grant:<id>` record.
   - Requires signed-build device evidence to name device model plus Android/iOS
     OS version, with both Android and iOS devices represented and at least one
     Android 13+ device recorded.
@@ -610,7 +617,7 @@ before they can be overwritten.
     tests.
   - Covers phone-number login through HubCenter discovery, phone-account
     official credits identity, verified phone accounts using the official
-    `phone:<number>` credits account for MaClaw LLM access, formatted phone
+    `phone:<digits>` credits account for MaClaw LLM access, formatted phone
     credits in Hub SMS verification results being normalized to
     `phone:<digits>` only when the value contains digits and phone separators,
     malformed `phone:` credits with letters staying untrusted, MaClaw GUI
@@ -659,7 +666,7 @@ before they can be overwritten.
     microphone, speech recognition, photo library, and local network access,
     and rejects known mojibake/replacement markers.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 507 Python release tool tests.
+  - Passed: 529 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
@@ -670,7 +677,7 @@ before they can be overwritten.
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 175 QA record validator tests.
+  - Passed: 193 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
     tenant Hub versus HubCenter URL separation,
@@ -687,8 +694,8 @@ before they can be overwritten.
     git branch name format enforcement,
     Flutter SDK semver enforcement,
     MaClaw Mobile phone-account format, login-result account consistency,
-    official LLM credits evidence bound to the recorded phone account, Desktop
-    GUI QR authorization ID linkage,
+    official LLM credits evidence bound to the recorded phone account with a
+    request/log/usage record, Desktop GUI QR authorization ID linkage,
     and tenant ID format enforcement,
     API/realtime URL exact discovered-Hub-origin matching plus API
     client/realtime WebSocket evidence semantics,
@@ -697,7 +704,8 @@ before they can be overwritten.
     account-screen/custom-Hub/bootstrap official-boundary evidence including
     recorded Discovered Hub URL, phone-account, and Tenant ID linkage,
     weak-network recovery evidence tied to the selected HubCenter, recorded
-    discovered Hub URL, Tenant ID, and recorded task/job IDs,
+    discovered Hub URL, Tenant ID, recorded task/job IDs, and a trackable
+    recovery trace ID,
     document upload/export format-specific task/job evidence, document upload
     task ID, document export job ID, and digital employee task ID linkage in
     status polling and realtime update evidence, exported
@@ -706,11 +714,12 @@ before they can be overwritten.
     discovered Hub, Tenant ID, and MaClaw phone-account credits,
     AI search query evidence linked to recorded citation URLs, shared-result
     citation linkage and externalized-result redaction proof, voice-photo input
-    result linkage, document-draft citation linkage
+    result linkage, document-draft citation and `document-draft:<id>` linkage
     smoke evidence semantics, manual and optional evidence placeholder rejection,
     SSH smoke action-specific evidence validation, recorded server-profile ID
     linkage for manual SSH smoke and account privacy server credential evidence,
-    SSH AI analysis preview/sensitive-data warning/redacted-output evidence, command draft/manual execution with redacted SSH output context, and credential deletion evidence,
+    `credential-clear:<id>` linkage for separate server/SSH credential clearing,
+    SSH AI analysis preview/sensitive-data warning/redacted-output evidence, `command-draft:<id>`/manual execution with redacted SSH output context, and credential deletion evidence,
     status polling/realtime task update ID linkage, typed notification payload
     evidence tied to recorded document export and digital employee task IDs
     plus redacted notification message preview proof,
@@ -1181,7 +1190,7 @@ before they can be overwritten.
     directory while preserving `docs/qa-builds` as the documented default
     example.
 - `python -m unittest tool\verify_manual_release_gates_test.py`
-  - Passed: 12 manual release gate parity tests.
+  - Passed: 15 manual release gate parity tests.
   - Covers the canonical manual release gate list, release audit remaining
     blockers, QA device checklist execution steps, and QA build record final
     decision fields so signed-build, real-device, Hub discovery, and SSH manual
@@ -1199,7 +1208,7 @@ before they can be overwritten.
     Android-only handoff commands must not include Apple Team ID options while
     iOS-only commands keep Team ID and export method values.
 - `python -m unittest tool\verify_final_release_evidence_test.py`
-  - Passed: 37 final release evidence verifier tests.
+  - Passed: 38 final release evidence verifier tests.
   - Covers the final release evidence package rule that completed signed-build
     QA records must validate successfully and cover the requested platform
     scope before approval, including full Android/iOS final release coverage
@@ -1207,10 +1216,11 @@ before they can be overwritten.
     evidence document must link every validated in-scope QA record inside the
     guarded QA build record link block, using `docs/qa-builds/...` for the
     canonical QA directory or the actual record path for custom QA record
-    directories, and must reject stale or unvalidated QA build record links in
-    that guarded block while allowing ordinary non-QA markdown links. Missing
-    validated QA record links and stale/unvalidated guarded-block links are
-    reported together so operators can fix the final evidence block in one pass.
+    directories, with link labels containing the validated QA record filename,
+    and must reject stale or unvalidated QA build record links in that guarded
+    block while allowing ordinary non-QA markdown links. Missing validated QA
+    record links, generic link labels, and stale/unvalidated guarded-block links
+    are reported so operators can fix the final evidence block in one pass.
     Ordinary development gates may still pass with an empty `docs/qa-builds/`
     directory.
   - Covers rejecting legacy `ios-android` scope filenames as final Android/iOS
@@ -1362,7 +1372,7 @@ before they can be overwritten.
 - `python -m unittest tool\configure_platforms_test.py`
   - Passed: 14 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 175 QA record validator tests.
+  - Passed: 193 QA record validator tests.
 - `python -m unittest tool\create_qa_build_record_test.py`
   - Passed: 14 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
@@ -1544,10 +1554,10 @@ These cannot be proven by local unit tests or the unsigned debug APK:
 | --- | --- |
 | Android signed internal build | Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result on at least one Android 13+ device |
 | Android share-to-app | Device log or QA notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
-| Android runtime permissions | QA notes/screenshots for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable |
+| Android runtime permissions | QA notes/screenshots for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable, with `permission-grant:<id>` evidence |
 | iOS Share Extension target | Xcode project with `top.mypapers.maclaw.mobile.ShareExtension`, official Team ID, provisioning profile, and `group.top.mypapers.maclaw.mobile` enabled for Runner and Share Extension |
 | iOS share-to-app | TestFlight or development install notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
-| iOS runtime permissions | QA notes/screenshots for camera, microphone, speech recognition, photo library, local network, and notifications |
+| iOS runtime permissions | QA notes/screenshots for camera, microphone, speech recognition, photo library, local network, and notifications, with `permission-grant:<id>` evidence |
 | Manual SSH against real server | Host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation |
 | Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, AI search with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
 

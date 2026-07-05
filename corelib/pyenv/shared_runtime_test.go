@@ -504,6 +504,26 @@ func TestLockSharedPythonRuntimeSerializesSameRuntimeID(t *testing.T) {
 	}
 }
 
+func TestShouldFallbackToNextSourceForHTTPStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "http 400", err: fmt.Errorf("下载失败: HTTP 400 (https://cnb.cool/example.zip)"), want: true},
+		{name: "http 429", err: fmt.Errorf("download failed: HTTP 429 (https://example.test/uv.zip)"), want: true},
+		{name: "http 500", err: fmt.Errorf("download failed: HTTP 500 (https://example.test/uv.zip)"), want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldFallbackToNextSource(tc.err); got != tc.want {
+				t.Fatalf("shouldFallbackToNextSource() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSharedPythonRuntimeFakeUV(t *testing.T) {
 	if os.Getenv("MACLAW_FAKE_UV_LOG") == "" {
 		return

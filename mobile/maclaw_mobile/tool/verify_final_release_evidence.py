@@ -10,7 +10,9 @@ import release_evidence_commands
 import validate_qa_build_record
 import validate_qa_build_records_dir
 
-QA_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+\.md)\)")
+QA_MARKDOWN_LINK_RE = re.compile(
+    r"\[(?P<label>[^\]]+)\]\((?P<target>[^)]+\.md)\)",
+)
 EXPECTED_LOG_FILENAME_RE = re.compile(r"expected (?P<name>final-release-evidence[^\s]+\.log)")
 
 
@@ -102,6 +104,7 @@ def _record_link_errors(
         qa_release_evidence_links.record_link_target(path, records_dir)
         for path in valid_records
     }
+    qa_record_links = _qa_record_links(link_block)
     missing = [
         path.name
         for path in valid_records
@@ -110,9 +113,20 @@ def _record_link_errors(
     ]
     extra_targets = sorted(
         target
-        for target in _qa_record_link_targets(link_block)
+        for _, target in qa_record_links
         if target not in expected_targets
     )
+    missing_filename_labels = [
+        path.name
+        for path in valid_records
+        if not any(
+            target == qa_release_evidence_links.record_link_target(path, records_dir)
+            and path.name in label
+            for label, target in qa_record_links
+        )
+        and f"]({qa_release_evidence_links.record_link_target(path, records_dir)})"
+        in link_block
+    ]
     errors = []
     if missing:
         errors.append(
@@ -124,17 +138,23 @@ def _record_link_errors(
             "Release evidence document guarded QA build record link block must not include stale or unvalidated QA record links: "
             + ", ".join(extra_targets),
         )
+    if missing_filename_labels:
+        errors.append(
+            "Release evidence document QA build record links must use labels containing the validated record filename: "
+            + ", ".join(missing_filename_labels),
+        )
     return errors
 
 
-def _qa_record_link_targets(markdown: str) -> list[str]:
-    targets: list[str] = []
+def _qa_record_links(markdown: str) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
     for match in QA_MARKDOWN_LINK_RE.finditer(markdown):
+        label = match.group("label").strip()
         target = match.group("target").strip()
         name = Path(target).name
         if validate_qa_build_record.QA_BUILD_RECORD_FILENAME_RE.fullmatch(name):
-            targets.append(target)
-    return targets
+            links.append((label, target))
+    return links
 
 
 def verify_final_release_evidence(

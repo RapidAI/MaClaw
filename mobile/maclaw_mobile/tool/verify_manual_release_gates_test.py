@@ -78,7 +78,10 @@ def valid_evidence_table() -> str:
     rows = [
         (
             gate.gate,
-            f"{gate.gate} QA notes with screenshot/log reference and signed evidence",
+            (
+                f"{gate.gate} QA notes with screenshot/log reference "
+                f"and signed evidence {' '.join(gate.evidence_keywords)}"
+            ).strip(),
         )
         for gate in verify_manual_release_gates.CANONICAL_MANUAL_GATES
     ]
@@ -91,10 +94,10 @@ def valid_audit_blockers() -> str:
         [
             "- Signed Android internal APK/AAB with install result on at least one Android 13+ device.",
             "- Android real-device share-to-app for text, URL, image, PDF, Word, Excel, and CSV.",
-            "- Android runtime permission prompts for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable.",
+            "- Android runtime permission prompts for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable, with permission-grant:<id> evidence.",
             "- iOS signed Runner and Share Extension target with official Team ID, provisioning profile, and app-group entitlement.",
             "- iOS real-device/TestFlight share-to-app for text, URL, image, PDF, Word, Excel, and CSV.",
-            "- iOS runtime permission prompts for camera, microphone, speech recognition, photo library, local network, and notifications.",
+            "- iOS runtime permission prompts for camera, microphone, speech recognition, photo library, local network, and notifications, with permission-grant:<id> evidence.",
             "- Real SSH maintenance smoke test against a server, including host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation.",
             "- Hub discovery smoke test with account, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, AI search with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export, digital employee task, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation.",
         ]
@@ -123,12 +126,14 @@ def valid_checklist() -> str:
             "Plain text, URL, Image/photo, PDF, Word, Excel, and CSV payloads must be shared into MaClaw Mobile.",
             "## Android Runtime Permissions",
             "Notification permission and Camera permission prompts must be recorded.",
+            "Every permission prompt/result record must include permission-grant:<id>.",
             "## iOS Signing And Share Extension",
             "Share Extension wiring, official Team ID, and App group evidence must be recorded.",
             "## iOS Share-To-App",
             "Plain text, URL, Image/photo, PDF, Word, Excel, and CSV payloads must be shared into MaClaw Mobile.",
             "## iOS Runtime Permissions",
             "Speech recognition and Notification permission prompts must be recorded.",
+            "Every permission prompt/result record must include permission-grant:<id>.",
             "## Hub Discovery And Service Smoke Test",
             "Record selected HubCenter, discovered Hub, tenant, API base URL, and realtime Hub URL evidence.",
             "Record typed notification payloads for document-export:, digital-employee-task:, and server-profile: targets.",
@@ -186,6 +191,25 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
 
         self.assertIn("canonical gates in order", "\n".join(errors))
 
+    def test_rejects_permission_gates_without_permission_grant_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            table = valid_evidence_table().replace(" permission-grant:<id>", "", 1)
+            write_docs(
+                root,
+                evidence_table=table,
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist(),
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "Manual Release Gates evidence for Android runtime permissions must include permission-grant:<id>.",
+            "\n".join(errors),
+        )
+
     def test_rejects_missing_audit_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -205,6 +229,29 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
 
         self.assertIn(
             "release_audit.md Remaining Release Blockers must cover Manual SSH",
+            "\n".join(errors),
+        )
+
+    def test_rejects_permission_blockers_without_permission_grant_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blockers = valid_audit_blockers().replace(
+                ", with permission-grant:<id> evidence",
+                "",
+                1,
+            )
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=blockers,
+                checklist=valid_checklist(),
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "release_audit.md Remaining Release Blockers must cover Android runtime permissions.",
             "\n".join(errors),
         )
 
@@ -275,6 +322,29 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
 
         self.assertIn(
             "qa_device_checklist.md must include executable QA steps for Hub discovery smoke test",
+            "\n".join(errors),
+        )
+
+    def test_rejects_permission_checklist_without_permission_grant_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checklist = valid_checklist().replace(
+                "Every permission prompt/result record must include permission-grant:<id>.\n",
+                "",
+                1,
+            )
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=checklist,
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        self.assertIn(
+            "qa_device_checklist.md must include executable QA steps for Android runtime permissions.",
             "\n".join(errors),
         )
 

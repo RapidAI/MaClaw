@@ -214,7 +214,9 @@ func (r *Registry) FixAllWithProgress(violations []Violation, progress FixProgre
 		}
 		if err != nil {
 			log.Printf("[requirement] fix failed for %s:%s: %v", v.Requirement.Type, v.Requirement.Name, err)
-			remaining = append(remaining, v)
+			failed := v
+			failed.Message = formatFixFailureMessage(v.Requirement, err)
+			remaining = append(remaining, failed)
 			continue
 		}
 		// Verify the fix actually worked by re-checking.
@@ -230,6 +232,33 @@ func (r *Registry) FixAllWithProgress(violations []Violation, progress FixProgre
 		log.Printf("[requirement] fixed %s:%s", v.Requirement.Type, v.Requirement.Name)
 	}
 	return remaining
+}
+
+func formatFixFailureMessage(req Requirement, err error) string {
+	detail := strings.TrimSpace(fmt.Sprint(err))
+	if detail == "" {
+		detail = "unknown error"
+	}
+	switch req.Type {
+	case "pip":
+		name := strings.TrimSpace(req.Name + req.Version)
+		if name == "" {
+			return fmt.Sprintf("failed to install Python package dependency: %s [action: install_dependency] Install the missing Python dependency, then retry the skill.", detail)
+		}
+		return fmt.Sprintf("failed to install Python package %s: %s [action: install_dependency] Install Python package %s, then retry the skill.", name, detail, name)
+	case "npm":
+		name := strings.TrimSpace(req.Name + req.Version)
+		if name == "" {
+			return fmt.Sprintf("failed to install Node package dependency: %s [action: install_dependency] Install the missing Node dependency, then retry the skill.", detail)
+		}
+		return fmt.Sprintf("failed to install Node package %s: %s [action: install_dependency] Install Node package %s, then retry the skill.", name, detail, name)
+	default:
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return fmt.Sprintf("failed to repair dependency: %s [action: inspect_skill] Inspect the skill requirements and execution environment.", detail)
+		}
+		return fmt.Sprintf("failed to repair dependency %s: %s [action: inspect_skill] Inspect the skill requirements and execution environment.", name, detail)
+	}
 }
 
 // isTransientFixError distinguishes transient network errors (retry-worthy)

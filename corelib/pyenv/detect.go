@@ -39,15 +39,16 @@ const MinPythonMinor = 10
 
 // Status 表示 Python 环境的状态。
 type Status struct {
-	Available   bool   `json:"available"`    // Python 是否可用
-	PythonPath  string `json:"python_path"`  // python 可执行文件路径
-	Version     string `json:"version"`      // 版本字符串，如 "3.12.3"
-	UVAvailable bool   `json:"uv_available"` // uv 是否可用
-	UVPath      string `json:"uv_path"`      // uv 可执行文件路径
-	VenvPath    string `json:"venv_path"`    // 虚拟环境路径
-	VenvReady   bool   `json:"venv_ready"`   // 虚拟环境是否就绪
-	IsPrivate   bool   `json:"is_private"`   // 是否为 maclaw 私有安装
-	Error       string `json:"error"`        // 错误信息
+	Available   bool   `json:"available"`     // Python 是否可用
+	PythonPath  string `json:"python_path"`   // python 可执行文件路径
+	Version     string `json:"version"`       // 版本字符串，如 "3.12.3"
+	UVAvailable bool   `json:"uv_available"`  // uv 是否可用
+	UVPath      string `json:"uv_path"`       // uv 可执行文件路径
+	UVIsPrivate bool   `json:"uv_is_private"` // 是否为 maclaw 私有 uv
+	VenvPath    string `json:"venv_path"`     // 虚拟环境路径
+	VenvReady   bool   `json:"venv_ready"`    // 虚拟环境是否就绪
+	IsPrivate   bool   `json:"is_private"`    // 是否为 maclaw 私有安装
+	Error       string `json:"error"`         // 错误信息
 }
 
 // ProgressFunc 安装进度回调。
@@ -94,6 +95,7 @@ func privateUVPath() (string, error) {
 
 // parseVersion 从 "Python 3.12.3" 格式中提取版本号。
 var versionRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+var http4xxRe = regexp.MustCompile(`http 4\d\d`)
 
 func parseVersion(output string) (major, minor, patch int, raw string, ok bool) {
 	m := versionRe.FindStringSubmatch(output)
@@ -171,6 +173,7 @@ func Detect() Status {
 		if _, serr := os.Stat(uvp); serr == nil {
 			st.UVAvailable = true
 			st.UVPath = uvp
+			st.UVIsPrivate = true
 		}
 	}
 	if !st.UVAvailable {
@@ -386,8 +389,7 @@ func shouldFallbackToNextSource(err error) bool {
 	}
 
 	// HTTP 4xx — 资源在此源上不存在或被拒绝，重试没有意义
-	if strings.Contains(msg, "http 403") || strings.Contains(msg, "http 404") ||
-		strings.Contains(msg, "http 401") || strings.Contains(msg, "http 410") {
+	if http4xxRe.MatchString(msg) {
 		return true
 	}
 
@@ -562,7 +564,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	st := Detect()
 
 	// 已经全部就绪
-	if st.Available && st.UVAvailable && st.VenvReady {
+	if st.Available && st.IsPrivate && st.UVAvailable && st.UVIsPrivate && st.VenvReady {
 		emit("done", 100, fmt.Sprintf("Python 环境就绪: %s (v%s)", st.PythonPath, st.Version))
 		return st
 	}
@@ -573,8 +575,11 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 		return st
 	}
 
-	// --- 步骤 1: 安装 Python ---
-	if !st.Available {
+	// --- 步骤 1: 安装私有 Python ---
+	// 即使系统 Python 可用，也优先补齐 app 私有 Python。桌面环境里的
+	// WindowsApps/PATH Python 可能版本漂移，不能作为可复现 runtime 的基础。
+	installedPrivatePython := false
+	if !st.Available || !st.IsPrivate {
 		emit("python", 0, "正在安装 Python 3.12 ...")
 		pyURLs, err := standalonePythonURLs()
 		if err != nil {
@@ -616,6 +621,9 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 			st.PythonPath = pp
 			st.Version = ver
 			st.IsPrivate = true
+			installedPrivatePython = true
+			st.VenvReady = false
+			st.VenvPath = ""
 			emit("python", 100, fmt.Sprintf("Python %s 安装完成", ver))
 		} else {
 			st.Error = "Python 安装后验证失败，请检查网络或手动安装"
@@ -624,7 +632,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	}
 
 	// --- 步骤 2: 安装 uv ---
-	if !st.UVAvailable {
+	if !st.UVAvailable || !st.UVIsPrivate {
 		emit("uv", 0, "正在安装 uv ...")
 		uvURLs, err := uvInstallURLs()
 		if err != nil {
@@ -682,6 +690,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 		if _, serr := os.Stat(uvp); serr == nil {
 			st.UVAvailable = true
 			st.UVPath = uvp
+			st.UVIsPrivate = true
 			if runtime.GOOS != "windows" {
 				os.Chmod(uvp, 0755)
 			}
@@ -693,7 +702,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	}
 
 	// --- 步骤 3: 创建 venv ---
-	if !st.VenvReady {
+	if installedPrivatePython || !st.VenvReady {
 		emit("venv", 0, "正在创建虚拟环境 ...")
 		venvDir, _ := VenvDir()
 		os.RemoveAll(venvDir)

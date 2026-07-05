@@ -167,7 +167,9 @@ evidence files, and non-Markdown evidence attachments.
 
 Before final release approval, verify that the evidence package contains
 validated signed-build records for both Android and iOS, and that
-`docs/release_evidence.md` links every validated record by filename:
+`docs/release_evidence.md` links every validated record by filename. The
+guarded QA build record link block must use Markdown link labels containing the
+validated QA record filename, not generic labels such as `Completed QA record`:
 
 ```bash
 python3 tool/verify_final_release_evidence.py docs/qa-builds --scope android-ios --log docs/qa-builds/final-release-evidence-<version+build>.log

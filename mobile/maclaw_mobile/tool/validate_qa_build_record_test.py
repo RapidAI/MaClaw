@@ -18,29 +18,32 @@ DIGITAL_EMPLOYEE_TASK_CONTEXT = (
     "Digital employee task digital-employee-task-id-12345 submitted "
     "through selected HubCenter https://hubs.maclaw.top and "
     "discovered Hub https://tenant-a.maclaw.top for tenant tenant-a "
-    "with LLM credits phone:+8613800138000 and manual confirmation "
+    "with LLM credits phone:8613800138000 and manual confirmation "
     "execution boundary draft_only_until_mobile_user_confirms; "
     "screenshot digital-employee-task-context-42"
 )
 
 LOGIN_RESULT_CONTEXT = (
-    "MaClaw official phone account phone:+8613800138000 authenticated through "
-    "HubCenter after SMS verification code; mobile session opened with official "
-    "credits bound to the phone account; first LLM call after verification used "
-    "phone:+8613800138000 credits; screenshot login-result-42"
+    "MaClaw official phone account phone:8613800138000 authenticated through "
+    "HubCenter after SMS verification code sms-verification:sms-login-12345; "
+    "mobile session opened with official credits bound to the phone account; "
+    "first LLM call after verification used phone:8613800138000 credits; "
+    "screenshot login-result-42"
 )
 
 OFFICIAL_LLM_ACCESS_CONTEXT = (
     "MaClaw official LLM access mode available using phone account "
-    "phone:+8613800138000 official credits for tenant tenant-a; "
-    "screenshot llm-access-42; after SMS verification passed, LLM calls use "
-    "the verified phone account's MaClaw official credits"
+    "phone:8613800138000 official credits for tenant tenant-a; "
+    "screenshot llm-access-42; after SMS verification passed, LLM request "
+    "request id llm-request-id-12345 has usage record charged to the verified "
+    "phone account's MaClaw official credits"
 )
 
 DOCUMENT_EXPORT_SHARE_CONTEXT = (
     "Exported PDF, Word/docx, and Markdown/.md files were downloaded and shared "
     "through the system share sheet to Mail after redacted document preview "
-    "check for pdf-export-job-id-12345, word-export-job-id-12345, and "
+    "check redaction-check:document-export-12345 for "
+    "pdf-export-job-id-12345, word-export-job-id-12345, and "
     "markdown-export-job-id-12345; saved local path evidence export-share-42"
 )
 
@@ -73,7 +76,7 @@ def complete_record() -> str:
         if field == "Flutter version":
             value = "Flutter 3.41.5"
         if field == "MaClaw account":
-            value = "phone:+8613800138000"
+            value = "phone:8613800138000"
         if field == "Approved by":
             value = "release-owner"
         if field in validate_qa_build_record.TASK_ID_FIELDS:
@@ -123,11 +126,13 @@ def complete_record() -> str:
             value = (
                 "System share sheet opened and shared result with citation "
                 "https://example.test/source-a to Mail target after redacted "
-                "answer preview check; screenshot shared-result-42"
+                "answer preview check redaction-check:shared-result-12345; "
+                "screenshot shared-result-42"
             )
         if field in validate_qa_build_record.DOCUMENT_DRAFT_EVIDENCE_FIELDS:
             value = (
                 "Assistant search result with citations created document draft "
+                "document-draft:draft-from-search-12345 for "
                 "templates for notice, report, email, proposal, meeting minutes, "
                 "and statement from source https://example.test/source-a; "
                 "screenshot draft-from-search-42"
@@ -164,7 +169,7 @@ def complete_record() -> str:
         if field in validate_qa_build_record.SSH_AI_RESULT_FIELDS:
             value = (
                 "AI explanation returned from redacted SSH terminal output with command draft suggestions for "
-                "manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42"
+                "manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42"
             )
         if field in validate_qa_build_record.CREDENTIAL_DELETION_FIELDS:
             value = (
@@ -189,7 +194,8 @@ def complete_record() -> str:
             value = (
                 "Separate explicit account action cleared server profiles and SSH "
                 "credentials including password/private key for "
-                "server-profile:srv-prod; screenshot credential-clear-42"
+                "server-profile:srv-prod with credential-clear:server-clear-12345; "
+                "screenshot credential-clear-42"
             )
         if field in validate_qa_build_record.STATUS_POLLING_FIELDS:
             value = (
@@ -230,13 +236,14 @@ def complete_record() -> str:
             )
         if field in validate_qa_build_record.BOOTSTRAP_SERVICE_FIELDS:
             value = (
-                "Bootstrap response shows user phone:+8613800138000 for tenant "
+                "Bootstrap response shows user phone:8613800138000 for tenant "
                 "tenant-a, quota limits, feature flags, and service status; "
                 "screenshot bootstrap-status-42"
             )
         if field in validate_qa_build_record.NETWORK_RECOVERY_FIELDS:
             value = (
                 "Network offline warning shown when HubCenter was unreachable; "
+                "network-recovery-id-12345 captured the offline and restored probes; "
                 "after recovery selected HubCenter https://hubs.maclaw.top "
                 "and discovered Hub https://tenant-a.maclaw.top for tenant "
                 "tenant-a returned online status, while search, document "
@@ -273,6 +280,7 @@ def complete_record() -> str:
             )
             value = (
                 f"{permission_scope} {field} prompt granted on QA device; "
+                f"permission-grant:{field.lower().replace(' ', '-')}-12345; "
                 f"screenshot permission-{field.lower().replace(' ', '-')}"
             )
         if field == "Notification permission":
@@ -282,50 +290,58 @@ def complete_record() -> str:
                 "document export document-export:pdf-export-job-id-12345, "
                 "digital employee digital-employee-task:digital-employee-task-id-12345, "
                 "and SSH abnormal server-profile:srv-prod; screenshot "
-                f"permission-notification-task-flow-{platform.lower()}"
+                f"permission-notification-task-flow-{platform.lower()}; "
+                f"permission-grant:notification-{platform.lower()}-12345"
             )
         if field == "Camera permission":
             value = (
                 f"{platform} Camera permission prompt granted while capturing "
                 "photo/image assistant input for the mobile AI question; "
-                "screenshot permission-camera-assistant-input"
+                f"screenshot permission-camera-assistant-input; "
+                f"permission-grant:camera-{platform.lower()}-12345"
             )
         if field == "Microphone permission":
             value = (
                 f"{platform} Microphone permission prompt granted while recording "
                 "voice assistant question input with transcript; screenshot "
-                "permission-microphone-voice-input"
+                f"permission-microphone-voice-input; "
+                f"permission-grant:microphone-{platform.lower()}-12345"
             )
         if field == "Media/file access":
             value = (
                 "Android Media/file access permission granted through file "
                 "picker and share-to-app document import/upload for PDF, Word "
                 ".docx, Excel .xlsx, CSV, and image/photo payloads; screenshot "
-                "permission-media-file-document-import"
+                "permission-media-file-document-import; "
+                "permission-grant:media-file-android-12345"
             )
         if field == "Local network / SSH scenario":
             value = (
                 "Android Local network permission prompt granted, then SSH "
                 "connected to server-profile:srv-prod and read-only command "
-                "whoami returned output; screenshot permission-local-network-ssh"
+                "whoami returned output; screenshot permission-local-network-ssh; "
+                "permission-grant:local-network-android-12345"
             )
         if field == "Local network permission":
             value = (
                 "iOS Local network permission prompt granted, then SSH "
                 "connected to server-profile:srv-prod and read-only command "
-                "whoami returned output; screenshot permission-local-network-ssh"
+                "whoami returned output; screenshot permission-local-network-ssh; "
+                "permission-grant:local-network-ios-12345"
             )
         if field == "Speech recognition permission":
             value = (
                 "iOS Speech recognition permission prompt granted while "
                 "transcribing voice assistant question input; screenshot "
-                "permission-speech-recognition-voice-input"
+                "permission-speech-recognition-voice-input; "
+                "permission-grant:speech-ios-12345"
             )
         if field == "Photo library permission":
             value = (
                 "iOS Photo library permission prompt granted while importing "
                 "photo/image/screenshot assistant input for the mobile AI "
-                "question; screenshot permission-photo-library-assistant-input"
+                "question; screenshot permission-photo-library-assistant-input; "
+                "permission-grant:photo-library-ios-12345"
             )
         if field == "Device model / OS":
             device_model_count += 1
@@ -665,34 +681,47 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_maclaw_account_must_be_trackable_account_identity(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: phone:8613800138000",
                 "MaClaw account: release tester",
             ),
         )
 
         self.assertIn(
-            "MaClaw account must identify a trackable phone:<number> MaClaw Mobile account",
+            "MaClaw account must identify a trackable phone:<digits> MaClaw Mobile account",
             validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_maclaw_account_rejects_desktop_email_identity(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: phone:8613800138000",
                 "MaClaw account: qa.mobile@example.test",
             ),
         )
 
         self.assertIn(
-            "MaClaw account must identify a trackable phone:<number> MaClaw Mobile account",
+            "MaClaw account must identify a trackable phone:<digits> MaClaw Mobile account",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_maclaw_account_rejects_display_formatted_phone_credits(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "MaClaw account: phone:8613800138000",
+                "MaClaw account: phone:+8613800138000",
+            ),
+        )
+
+        self.assertIn(
+            "MaClaw account must identify a trackable phone:<digits> MaClaw Mobile account",
             validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_maclaw_account_must_match_login_result_phone_account(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "MaClaw account: phone:+8613800138000",
-                "MaClaw account: phone:+8613900139000",
+                "MaClaw account: phone:8613800138000",
+                "MaClaw account: phone:8613900139000",
             ),
         )
 
@@ -704,7 +733,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_maclaw_account_accepts_masked_phone_matching_login_tail(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "MaClaw account: phone:+8613800138000",
+                "MaClaw account: phone:8613800138000",
                 "MaClaw account: phone:***8000",
             ),
         )
@@ -1095,8 +1124,47 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             complete_record().replace(
                 f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
                 "LLM access evidence: MaClaw official LLM access mode available "
-                "using phone account phone:+8613800138000 official credits for "
+                "using phone account phone:8613800138000 official credits for "
                 "tenant tenant-a; screenshot llm-access-42",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must match maclaw_official mode",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_official_llm_access_evidence_requires_usage_record_after_login(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available "
+                "using phone account phone:8613800138000 official credits for "
+                "tenant tenant-a; screenshot llm-access-42; after SMS "
+                "verification passed, LLM calls use the verified phone "
+                "account's MaClaw official credits",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+        self.assertIn(
+            "LLM access evidence must include official phone-credit usage record",
+            missing,
+        )
+
+    def test_official_llm_access_evidence_requires_digits_only_phone_credits(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available "
+                "using phone account phone:+8613800138000 official credits for "
+                "tenant tenant-a; screenshot llm-access-42; after SMS verification "
+                "passed, LLM calls use the verified phone account's MaClaw "
+                "official credits",
             ),
         )
 
@@ -1111,7 +1179,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
                 f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613900139000 official credits for tenant tenant-a; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:8613900139000 official credits for tenant tenant-a; screenshot llm-access-42",
             ),
         )
 
@@ -1124,7 +1192,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         official_values = validate_qa_build_record.parse_record(
             complete_record().replace(
                 f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
-                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:+8613800138000 official credits for tenant tenant-b; screenshot llm-access-42",
+                "LLM access evidence: MaClaw official LLM access mode available using phone account phone:8613800138000 official credits for tenant tenant-b; screenshot llm-access-42",
             ),
         )
 
@@ -1531,10 +1599,38 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_document_export_share_evidence_must_include_download_or_saved_path(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Exported document share evidence: {DOCUMENT_EXPORT_SHARE_CONTEXT}",
+                "Exported document share evidence: Exported PDF, Word/docx, and Markdown/.md files were shared through the system share sheet to Mail after redacted document preview check redaction-check:document-export-12345 for pdf-export-job-id-12345, word-export-job-id-12345, and markdown-export-job-id-12345",
+            ),
+        )
+
+        self.assertIn(
+            "Exported document share evidence must describe exported PDF, Word, and Markdown download/share evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_document_export_share_evidence_must_describe_redacted_preview(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                " after redacted document preview check",
+                " after redacted document preview check redaction-check:document-export-12345",
+                "",
+            ),
+        )
+
+        self.assertIn(
+            "Exported document share evidence must describe exported PDF, Word, and Markdown download/share evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_document_export_share_evidence_requires_redaction_check_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                " redaction-check:document-export-12345",
                 "",
             ),
         )
@@ -1580,7 +1676,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "digital-employee-task-id-12345 submitted through selected "
                 "HubCenter https://hubs2.maclaw.top and discovered Hub "
                 "https://tenant-b.maclaw.top for tenant tenant-b with LLM "
-                "credits phone:+8613900139000 and manual confirmation "
+                "credits phone:8613900139000 and manual confirmation "
                 "execution boundary draft_only_until_mobile_user_confirms; "
                 "screenshot digital-employee-task-context-42",
             ),
@@ -1603,6 +1699,27 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Digital employee task ID must reference the recorded MaClaw phone account credits",
             missing,
+        )
+
+    def test_digital_employee_task_id_requires_digits_only_phone_credits(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Digital employee task ID: {DIGITAL_EMPLOYEE_TASK_CONTEXT}",
+                "Digital employee task ID: Digital employee task "
+                "digital-employee-task-id-12345 submitted through selected "
+                "HubCenter https://hubs.maclaw.top and discovered Hub "
+                "https://tenant-a.maclaw.top for tenant tenant-a with LLM "
+                "credits phone:+8613800138000 and manual confirmation "
+                "execution boundary draft_only_until_mobile_user_confirms; "
+                "screenshot digital-employee-task-context-42",
+            ),
+        )
+
+        self.assertIn(
+            "Digital employee task ID must reference the recorded MaClaw phone account credits",
+            validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_duplicate_android_ios_fields_require_both_entries(self) -> None:
@@ -1673,7 +1790,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Android signed install result: ok",
             )
             .replace(
-                "Camera permission: Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
+                "Camera permission: Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input; permission-grant:camera-android-12345",
                 "Camera permission: yes",
                 1,
             )
@@ -1702,22 +1819,22 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android",
+                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android; permission-grant:notification-android-12345",
                 "Runtime evidence captured in release notes",
                 1,
             )
             .replace(
-                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
+                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input; permission-grant:camera-android-12345",
                 "Permission prompt granted on QA device; screenshot permission-generic-a",
                 1,
             )
             .replace(
-                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input",
+                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input; permission-grant:microphone-android-12345",
                 "Permission prompt granted on QA device; screenshot permission-generic-b",
                 1,
             )
             .replace(
-                "iOS Local network permission prompt granted, then SSH connected to server-profile:srv-prod and read-only command whoami returned output; screenshot permission-local-network-ssh",
+                "iOS Local network permission prompt granted, then SSH connected to server-profile:srv-prod and read-only command whoami returned output; screenshot permission-local-network-ssh; permission-grant:local-network-ios-12345",
                 "Permission prompt granted on QA device; screenshot permission-generic-c",
                 1,
             ),
@@ -1733,16 +1850,34 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         ]:
             self.assertIn(expected, missing)
 
+    def test_permission_fields_must_include_trackable_permission_grant_ids(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace("; permission-grant:camera-android-12345", "", 1)
+            .replace("; permission-grant:local-network-ios-12345", "", 1),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Camera permission must include a trackable permission-grant ID",
+            missing,
+        )
+        self.assertIn(
+            "Local network permission must include a trackable permission-grant ID",
+            missing,
+        )
+
     def test_notification_permission_must_link_to_real_task_notifications(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android",
+                "Android Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-android; permission-grant:notification-android-12345",
                 "Android Notification permission prompt granted from account screen; screenshot permission-notification-settings-android",
                 1,
             )
             .replace(
-                "iOS Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-ios",
+                "iOS Notification permission prompt granted from account screen, then real task notifications delivered and opened for document export document-export:pdf-export-job-id-12345, digital employee digital-employee-task:digital-employee-task-id-12345, and SSH abnormal server-profile:srv-prod; screenshot permission-notification-task-flow-ios; permission-grant:notification-ios-12345",
                 "iOS Notification permission prompt granted from account screen; screenshot permission-notification-settings-ios",
                 1,
             ),
@@ -1759,22 +1894,22 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input",
+                "Android Camera permission prompt granted while capturing photo/image assistant input for the mobile AI question; screenshot permission-camera-assistant-input; permission-grant:camera-android-12345",
                 "Android Camera permission prompt granted for QA device settings; screenshot permission-camera-settings",
                 1,
             )
             .replace(
-                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input",
+                "Android Microphone permission prompt granted while recording voice assistant question input with transcript; screenshot permission-microphone-voice-input; permission-grant:microphone-android-12345",
                 "Android Microphone permission prompt granted for QA device settings; screenshot permission-microphone-settings",
                 1,
             )
             .replace(
-                "iOS Speech recognition permission prompt granted while transcribing voice assistant question input; screenshot permission-speech-recognition-voice-input",
+                "iOS Speech recognition permission prompt granted while transcribing voice assistant question input; screenshot permission-speech-recognition-voice-input; permission-grant:speech-ios-12345",
                 "iOS Speech recognition permission prompt granted in Settings; screenshot permission-speech-recognition-settings",
                 1,
             )
             .replace(
-                "iOS Photo library permission prompt granted while importing photo/image/screenshot assistant input for the mobile AI question; screenshot permission-photo-library-assistant-input",
+                "iOS Photo library permission prompt granted while importing photo/image/screenshot assistant input for the mobile AI question; screenshot permission-photo-library-assistant-input; permission-grant:photo-library-ios-12345",
                 "iOS Photo library permission prompt granted in Settings; screenshot permission-photo-library-settings",
                 1,
             ),
@@ -1797,7 +1932,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "granted through file picker and share-to-app document "
                 "import/upload for PDF, Word .docx, Excel .xlsx, CSV, and "
                 "image/photo payloads; screenshot "
-                "permission-media-file-document-import",
+                "permission-media-file-document-import; "
+                "permission-grant:media-file-android-12345",
                 "Media/file access: Android Media/file access permission "
                 "granted through Settings; screenshot permission-media-file",
             ),
@@ -1815,7 +1951,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Local network / SSH scenario: Android Local network "
                 "permission prompt granted, then SSH connected to "
                 "server-profile:srv-prod and read-only command whoami "
-                "returned output; screenshot permission-local-network-ssh",
+                "returned output; screenshot permission-local-network-ssh; "
+                "permission-grant:local-network-android-12345",
                 "Local network / SSH scenario: Android Local network "
                 "permission prompt granted in Settings; screenshot "
                 "permission-local-network-settings",
@@ -1824,7 +1961,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Local network permission: iOS Local network permission prompt "
                 "granted, then SSH connected to server-profile:srv-prod and "
                 "read-only command whoami returned output; screenshot "
-                "permission-local-network-ssh",
+                "permission-local-network-ssh; "
+                "permission-grant:local-network-ios-12345",
                 "Local network permission: iOS Local network permission prompt "
                 "granted in Settings; screenshot permission-local-network-settings",
             ),
@@ -1911,6 +2049,20 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         ]:
             self.assertIn(expected, missing)
 
+    def test_share_document_payloads_must_include_trackable_upload_task_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Android document import upload task ID share-pdf-android-12345",
+                "Android document import upload task ID captured for PDF in screenshot",
+                1,
+            ),
+        )
+
+        self.assertIn(
+            "PDF must describe document import/upload share-to-app evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_ai_search_smoke_fields_must_describe_expected_flow(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
@@ -1923,11 +2075,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Answer area verified in screenshot bundle",
             )
             .replace(
-                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check redaction-check:shared-result-12345; screenshot shared-result-42",
                 "Result evidence captured in release notes",
             )
             .replace(
-                "Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
                 "Draft evidence captured in release notes",
             ),
         )
@@ -1945,7 +2097,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_document_draft_from_search_must_cover_every_template_type(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
                 "Document draft created from search: Assistant search result with citations created report document draft template; screenshot draft-from-search-42",
             ),
         )
@@ -1958,13 +2110,26 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_document_draft_from_search_must_reference_recorded_citation_url(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
                 "Document draft created from search: Assistant search result with citations created document draft templates for notice, report, email, proposal, meeting minutes, and statement; screenshot draft-from-search-42",
             ),
         )
 
         self.assertIn(
             "Document draft created from search must reference a recorded citation URL",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_document_draft_from_search_requires_trackable_draft_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Document draft created from search: Assistant search result with citations created document draft document-draft:draft-from-search-12345 for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+                "Document draft created from search: Assistant search result with citations created document draft for templates for notice, report, email, proposal, meeting minutes, and statement from source https://example.test/source-a; screenshot draft-from-search-42",
+            ),
+        )
+
+        self.assertIn(
+            "Document draft created from search must describe search-result draft creation for every document template",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -2015,7 +2180,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_shared_result_evidence_requires_target_or_output(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check redaction-check:shared-result-12345; screenshot shared-result-42",
                 "Shared result button was tapped and screenshot shared-result-42",
             ),
         )
@@ -2028,7 +2193,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_shared_result_evidence_must_reference_recorded_citation_url(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check; screenshot shared-result-42",
+                "System share sheet opened and shared result with citation https://example.test/source-a to Mail target after redacted answer preview check redaction-check:shared-result-12345; screenshot shared-result-42",
                 "System share sheet opened and shared result to Mail target; screenshot shared-result-42",
             ),
         )
@@ -2041,7 +2206,20 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_shared_result_evidence_must_describe_redacted_externalized_content(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                " after redacted answer preview check",
+                " after redacted answer preview check redaction-check:shared-result-12345",
+                "",
+            ),
+        )
+
+        self.assertIn(
+            "Shared result must describe copy, export, or system-share evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_shared_result_evidence_requires_redaction_check_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                " redaction-check:shared-result-12345",
                 "",
             ),
         )
@@ -2107,7 +2285,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "AI analysis confirmation and sensitive-data warning: SSH analysis completed with screenshot/log reference",
             )
             .replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
                 "AI explanation / command draft result: AI result screenshot captured",
             )
             .replace(
@@ -2134,8 +2312,21 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_ai_result_must_include_redacted_terminal_output_context(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_ai_result_requires_trackable_command_draft_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
                 "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
-                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
             ),
         )
 
@@ -2173,7 +2364,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Server credentials retained after local reset: Credentials screenshot captured",
             )
             .replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
                 "Server profiles/SSH credentials clear confirmation: Cleanup screenshot captured",
             ),
         )
@@ -2211,8 +2402,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Server credentials retained after local reset: After local reset, server profiles and SSH credentials password and private key remained available; screenshot credential-retain-42",
             )
             .replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key with credential-clear:server-clear-12345; screenshot credential-clear-42",
             ),
         )
 
@@ -2236,6 +2427,19 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
         self.assertIn(
             "Server credentials retained after local reset must describe server profiles and SSH credentials retained after local reset",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_server_credential_clear_requires_trackable_clear_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
+                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
+            ),
+        )
+
+        self.assertIn(
+            "Server profiles/SSH credentials clear confirmation must describe separate explicit server profile and SSH credential clearing",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -2290,6 +2494,34 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         ]:
             self.assertIn(expected, missing)
 
+    def test_ssh_read_only_command_rejects_high_risk_commands(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command rm -rf /tmp/cache executed on server-profile:srv-prod; screenshot ssh-command-42",
+            ),
+        )
+
+        self.assertIn(
+            "Read-only command must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_read_only_command_accepts_safe_diagnostic_commands(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command df -h executed on server-profile:srv-prod; screenshot ssh-command-42",
+            )
+            .replace(
+                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for df -h root filesystem usage; screenshot ssh-output-42",
+            ),
+        )
+
+        self.assertEqual([], validate_qa_build_record.missing_required_fields(values))
+
     def test_ssh_smoke_fields_must_reference_recorded_server_profile_id(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
@@ -2330,8 +2562,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
             )
             .replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
-                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345, not auto executed; screenshot ssh-ai-result-42",
             )
             .replace(
                 "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
@@ -2503,6 +2735,31 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_notification_delivery_rejects_empty_typed_payload_ids(self) -> None:
+        missing_document_payload = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "document-export:pdf-export-job-id-12345",
+                "document-export:",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
+            validate_qa_build_record.missing_required_fields(missing_document_payload),
+        )
+
+        missing_digital_employee_payload = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "digital-employee-task:digital-employee-task-id-12345",
+                "digital-employee-task:",
+            ),
+        )
+
+        self.assertIn(
+            "Notification delivery evidence must describe delivered document, digital employee, and SSH abnormal notifications with typed payload/open evidence",
+            validate_qa_build_record.missing_required_fields(missing_digital_employee_payload),
+        )
+
     def test_notification_delivery_must_reference_recorded_task_ids(self) -> None:
         missing_document_job = validate_qa_build_record.parse_record(
             complete_record().replace(
@@ -2542,7 +2799,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "No custom Hub URL setting found: Settings screen screenshot captured during QA run",
             )
             .replace(
-                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:+8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
+                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
                 "Bootstrap user/quota/feature flags/service status: Bootstrap smoke screenshot captured during QA run",
             ),
         )
@@ -2565,7 +2822,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_bootstrap_evidence_must_reference_recorded_phone_and_tenant(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:+8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
+                "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user phone:8613800138000 for tenant tenant-a, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
                 "Bootstrap user/quota/feature flags/service status: Bootstrap response shows user for tenant tenant-b, quota limits, feature flags, and service status; screenshot bootstrap-status-42",
             ),
         )
@@ -2630,7 +2887,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
                 f"Login result: {LOGIN_RESULT_CONTEXT}",
-                "Login result: MaClaw official phone account phone:+8613800138000 "
+                "Login result: MaClaw official phone account phone:8613800138000 "
                 "authenticated through HubCenter after SMS verification code; "
                 "mobile session opened with official credits bound to the phone "
                 "account; screenshot login-result-42",
@@ -2642,10 +2899,40 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_login_result_requires_digits_only_phone_credits(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"Login result: {LOGIN_RESULT_CONTEXT}",
+                "Login result: MaClaw official phone account phone:+8613800138000 "
+                "authenticated through HubCenter after SMS verification code; "
+                "mobile session opened with official credits bound to the phone "
+                "account; first LLM call after verification used "
+                "phone:+8613800138000 credits; screenshot login-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "Login result must describe phone/SMS login through HubCenter and official credits binding",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_login_result_requires_trackable_sms_verification_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                " sms-verification:sms-login-12345",
+                "",
+            ),
+        )
+
+        self.assertIn(
+            "Login result must include a trackable SMS verification ID",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_network_recovery_evidence_must_describe_offline_and_recovered_services(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
                 "Network offline/recovery evidence: Network status screenshot captured during QA run",
             ),
         )
@@ -2660,7 +2947,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
                 "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery HubCenter online status returned and search, document export, digital employee, and realtime surfaces resumed; screenshot network-recovery-42",
             ),
         )
@@ -2682,6 +2969,19 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Network offline/recovery evidence must reference a recorded task/job ID",
             missing,
+        )
+
+    def test_network_recovery_evidence_requires_trace_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while search, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+            ),
+        )
+
+        self.assertIn(
+            "Network offline/recovery evidence must include a trackable network recovery trace ID",
+            validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_device_model_os_requires_platform_and_version(self) -> None:
@@ -2848,7 +3148,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             .replace("Tester: qa-operator", "Tester: ok")
             .replace("Branch: codex/mobile-release", "Branch: ok")
             .replace("Flutter version: Flutter 3.41.5", "Flutter version: soon")
-            .replace("MaClaw account: phone:+8613800138000", "MaClaw account: yes")
+            .replace("MaClaw account: phone:8613800138000", "MaClaw account: yes")
             .replace("Tenant ID: tenant-a", "Tenant ID: ok")
             .replace("Version/build number: 1.0.0+42", "Version/build number: ok")
             .replace(

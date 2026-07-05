@@ -238,14 +238,14 @@ func (a *App) platformInitConsole() {
 }
 
 // RunEnvironmentCheckCLI runs environment check in command-line mode (synchronous, no GUI events)
-// Installation order: Node.js -Git -VC++ Runtime -AI Tools
+// Installation order: Node.js - Git - VC++ Runtime - local Node.js - Python runtime
 func (a *App) RunEnvironmentCheckCLI() {
 	fmt.Println("\n========================================")
 	fmt.Println("Environment Setup - Step by Step")
 	fmt.Println("========================================")
 
 	// ===== STEP 1: Node.js Installation =====
-	fmt.Println("\n[1/4] Step 1: Node.js Installation")
+	fmt.Println("\n[1/5] Step 1: Node.js Installation")
 	fmt.Println("--------------------------------------")
 
 	nodeVersion := ""
@@ -314,7 +314,7 @@ func (a *App) RunEnvironmentCheckCLI() {
 	}
 
 	// ===== STEP 2: Git Installation =====
-	fmt.Println("\n[2/4] Step 2: Git Installation")
+	fmt.Println("\n[2/5] Step 2: Git Installation")
 	fmt.Println("--------------------------------------")
 
 	gitInstalled := false
@@ -362,7 +362,7 @@ func (a *App) RunEnvironmentCheckCLI() {
 	}
 
 	// ===== STEP 3: Visual C++ Redistributable =====
-	fmt.Println("\n[3/4] Step 3: Visual C++ Redistributable")
+	fmt.Println("\n[3/5] Step 3: Visual C++ Redistributable")
 	fmt.Println("--------------------------------------")
 	fmt.Println("Checking Visual C++ Redistributable (required for codex)...")
 
@@ -385,10 +385,15 @@ func (a *App) RunEnvironmentCheckCLI() {
 	}
 
 	// ===== STEP 4: Local Node Environment Setup =====
-	fmt.Println("\n[4/4] Step 4: Local Node.js Environment Setup")
+	fmt.Println("\n[4/5] Step 4: Local Node.js Environment Setup")
 	fmt.Println("--------------------------------------")
 	a.ensureLocalNodeBinary()
 	fmt.Println("-Local Node.js environment configured")
+
+	// ===== STEP 5: Python Runtime Setup =====
+	fmt.Println("\n[5/5] Step 5: Python Runtime Setup")
+	fmt.Println("--------------------------------------")
+	pySt := a.ensurePythonRuntimeForEnvironmentCheckCLI()
 
 	// Base environment setup complete
 	fmt.Println("\n========================================")
@@ -400,8 +405,20 @@ func (a *App) RunEnvironmentCheckCLI() {
 	} else {
 		fmt.Println("Git: Not installed (optional)")
 	}
+	if pythonRuntimeReady(pySt) {
+		fmt.Printf("Python: %s\n", pySt.Version)
+		fmt.Printf("uv: %s\n", pySt.UVPath)
+		fmt.Printf("venv: %s\n", pySt.VenvPath)
+	} else {
+		fmt.Println("Python: Not ready")
+	}
 
-	_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+	if pythonRuntimeReady(pySt) {
+		_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
+	} else {
+		fmt.Println("\n-Base environment setup incomplete. It will retry on next startup.")
+		return
+	}
 
 	fmt.Println("\n-Base environment setup completed!")
 	fmt.Println("AI tools will be installed in background when the application starts.")
@@ -417,8 +434,8 @@ func (a *App) detectMissingCoreTools() string {
 	}
 	// Python — the most commonly lost dependency (PATH changes, uninstall, Store stub)
 	pySt := pyenv.Detect()
-	if !pySt.Available {
-		return "Python"
+	if missing := missingPythonRuntimeComponent(pySt); missing != "" {
+		return missing
 	}
 	// Git — needed for version control and some skills
 	if _, err := exec.LookPath("git"); err != nil {
@@ -516,45 +533,15 @@ func (a *App) CheckEnvironment(force bool) {
 			a.ensureLocalNodeBinary()
 		}
 
-		// Configure China mirror for Python/uv downloads based on user language
-		if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
-			pyenv.SetUseChinaMirror(true)
-		}
-
-		a.log(a.tr("[4/4] Checking Python environment..."))
-		pySt := pyenv.Detect()
-		if pySt.Available {
-			label := "system"
-			if pySt.IsPrivate {
-				label = "private"
-			}
-			a.log(a.tr("✓ Python found: v%s (%s) → %s", pySt.Version, label, pySt.PythonPath))
-		} else {
-			a.log(a.tr("Python >= 3.10 not found. Installing private Python + uv ..."))
-			a.emitEvent("python-install-start")
-			pySt = pyenv.EnsureEnvironment(func(stage string, pct int, msg string) {
-				a.log(fmt.Sprintf("[python-env] [%s] %d%% %s", stage, pct, msg))
-				a.emitEvent("python-install-progress", map[string]interface{}{
-					"stage": stage, "pct": pct, "msg": msg,
-				})
-			})
-			if pySt.Error != "" {
-				a.log(a.tr("WARNING: Python environment setup failed: %s", pySt.Error))
-				allSuccess = false
-			} else {
-				a.log(a.tr("✓ Python %s installed with venv: %s", pySt.Version, pySt.VenvPath))
-			}
-			a.emitEvent("python-install-done", map[string]interface{}{
-				"available": pySt.Available,
-				"version":   pySt.Version,
-				"error":     pySt.Error,
-			})
+		pySt := a.ensurePythonRuntimeForEnvironmentCheck("[4/4] Checking Python environment...")
+		if pySt.Error != "" {
+			allSuccess = false
 		}
 
 		a.log(a.tr("— Base environment check complete."))
 
 		// Only mark env check done if all critical components are available.
-		if allSuccess {
+		if allSuccess && pythonRuntimeReady(pySt) {
 			_, _ = a.PatchConfigFields(map[string]interface{}{"env_check_done": true, "pause_env_check": true})
 		} else {
 			a.log(a.tr("Some components failed — environment check will retry on next startup."))
