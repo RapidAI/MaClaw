@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,7 +19,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -524,8 +523,8 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 	if choice := h.handleCodingComplexityCommand(msg, trimmed); choice != nil {
 		return *choice
 	}
-	if h.hasPendingDirectSubAgentExecution(msg.UserID) {
-		log.Printf("[workflow-v2] direct SubAgent mode awaiting user task: user=%s", msg.UserID)
+	if h.hasPendingTemplateSubAgentExecution(msg.UserID) {
+		log.Printf("[workflow-v2] template SubAgent mode awaiting user task: user=%s", msg.UserID)
 		return workflowIMRouteResult{WorkflowAgentLoop: true}
 	}
 
@@ -631,14 +630,6 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		log.Printf("[workflow-v2] route_result: user=%s target=agent_loop hint=%q", msg.UserID, semanticHint)
 		return workflowIMRouteResult{}
 
-	case v2.RouteToDirectCoding:
-		// NOTE: The router no longer emits RouteToDirectCoding (complexity is
-		// now user-chosen via askWorkflowConfirmChoice). This case is retained
-		// as a safety net in case future code paths re-introduce direct coding
-		// routing.
-		log.Printf("[workflow-v2] RouteToDirectCoding (legacy path): user=%s", msg.UserID)
-		return h.setupDirectCodingExecution(msg.UserID, msg.Text, result.ProjectPath)
-
 	case v2.RouteToWorkflow:
 		if result.HandleResult != nil {
 			// Active workflow handled the message
@@ -720,222 +711,126 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 }
 
 func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.HandleResult) workflowIMRouteResult {
+	if hr == nil {
+		return workflowIMRouteResult{}
+	}
 	switch hr.Action {
 	case v2.ActionShowForm:
-		// Phase has an InputSchema — collect prefill data and emit AG UI form.
 		if hr.Phase != nil && hr.Phase.InputSchema != nil {
-			// Collect prefilled values from context + memory + knowledge base
 			prefilled := h.prefillWorkflowFormFields(msg.UserID, hr.Phase, msg.Text)
 			hr.PrefilledData = prefilled
 			h.emitWorkflowV2PhaseForm(msg.UserID, hr.State, hr.Phase, prefilled)
 			h.emitWorkflowV2Progress(msg.UserID, hr.State)
-			return workflowIMRouteResult{Response: &IMAgentResponse{
-				Text: "📋 请在右侧任务面板填写信息后提交。",
-			}}
+			return workflowIMRouteResult{Response: &IMAgentResponse{Text: "请在右侧任务面板填写信息后提交。"}}
 		}
-		// Fallback: if no schema (shouldn't happen), treat as run_phase
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
-
 	case v2.ActionRunPhase:
-		// Route based on ExecMode declared in template — no hardcoded phase IDs.
 		if hr.Phase != nil {
 			switch hr.Phase.ExecMode {
 			case v2.ExecModeSubAgent:
-				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=subagent for phase=%s, deferring SubAgent", hr.Phase.ID)
-				if wf := h.getWorkflowV2(); wf != nil {
-					if phase := hr.State.ActivePhase(); phase != nil {
-						phase.Status = v2.PhaseExecuting
-						wf.store.Save(hr.State)
-					}
-				}
-				h.emitWorkflowV2Progress(msg.UserID, hr.State)
-				h.pendingV2SubAgentExecution.Store(msg.UserID, true)
+				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=subagent for phase=%s", hr.Phase.ID)
 				if hr.State != nil && hr.State.Type == "coding_subagent" {
-					projectPath, requestText := directCodingFormExecutionInputs(hr.State)
-					if projectPath != "" {
-						hr.State.ProjectPath = projectPath
-						if wf := h.getWorkflowV2(); wf != nil {
+					h.prepareCodingTemplateSubAgentExecution(msg.UserID, hr.State)
+				} else {
+					if wf := h.getWorkflowV2(); wf != nil && hr.State != nil {
+						if phase := hr.State.ActivePhase(); phase != nil {
+							phase.Status = v2.PhaseExecuting
 							_ = wf.store.Save(hr.State)
 						}
 					}
-					if requestText == "" {
-						requestText = "执行简化编程任务"
-					}
-					h.pendingDirectCodingProjectPath.Store(msg.UserID, projectPath)
-					h.workflowOriginalRequest.Store(msg.UserID, requestText)
-				} else {
+					h.emitWorkflowV2Progress(msg.UserID, hr.State)
+					h.pendingV2SubAgentExecution.Store(msg.UserID, true)
 					h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
 				}
 				h.workflowAgentLoopMarker.Store(msg.UserID, true)
-				return workflowIMRouteResult{
-					WorkflowAgentLoop: true,
-					WorkflowDocPhase:  false,
-				}
+				return workflowIMRouteResult{WorkflowAgentLoop: true, WorkflowDocPhase: false}
 			case v2.ExecModeRemoteSubAgent:
 				if hr.State != nil && hr.State.Type == "remote_coding_subagent" {
-					return h.setupDirectRemoteCodingFromWorkflowForm(msg.UserID, hr.State)
+					return h.setupRemoteCodingTemplateFromWorkflowForm(msg.UserID, hr.State)
 				}
-				// Remote SubAgent execution (e.g. paper_reproduction iterative_improvement).
-				// Launches RemoteExperimentOrchestrator in a background goroutine.
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=remote_subagent for phase=%s", hr.Phase.ID)
-				resp := h.launchRemoteExperimentOrchestrator(msg.UserID, hr.State)
-				if resp != nil {
+				if resp := h.launchRemoteExperimentOrchestrator(msg.UserID, hr.State); resp != nil {
 					return workflowIMRouteResult{Response: resp}
 				}
-				// Fallback to normal agent loop if launch failed
 				log.Printf("[workflow-v2] RemoteExperimentOrchestrator launch failed, falling back to agent loop")
-
 			case v2.ExecModeAutoFromPrev:
-				// Auto-complete from previous phase output — no execution needed.
-				// This is used for phases like "verification" where the prior
-				// phase (implementation) already produced the verification report.
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=auto_from_prev for phase=%s, auto-completing", hr.Phase.ID)
-				// Already handled by RecordOutput auto-advance in the prior phase.
-				// If we get here, the prior phase's auto-advance already completed this phase.
-				// Just emit progress and return empty (workflow should be completed).
 				if wf := h.getWorkflowV2(); wf != nil {
 					if updatedState := wf.machine.GetActive(msg.UserID); updatedState != nil {
 						h.emitWorkflowV2Progress(msg.UserID, updatedState)
 					}
 				}
-				return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 工作流已完成"}}
+				return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
 			default:
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=default for phase=%s, running as agent loop", hr.Phase.ID)
 			}
 		}
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
-
 	case v2.ActionModify:
 		return h.runWorkflowV2Phase(msg.UserID, hr.State, hr.ModifyHint)
-
 	case v2.ActionConfirmed:
-		// All phases complete (advanceLocked returns ActionConfirmed only when CurrentPhase >= len(Phases))
 		h.emitWorkflowV2Progress(msg.UserID, hr.State)
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 所有阶段已完成！工作流结束。"}}
-
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "所有阶段已完成！工作流结束。"}}
 	case v2.ActionCancelled:
-		// Clear frontend workflow dashboard state with targeted reset.
 		if hr.State != nil {
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             hr.State.ID,
-				"status":         string(v2.StatusCancelled),
-				"type":           hr.State.Type,
-				"project_path":   workflowEventProjectPath(hr.State),
-				"event_scope_id": h.app.getEventScopeID(hr.State.UserID),
-			})
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{"id": hr.State.ID, "status": string(v2.StatusCancelled), "type": hr.State.Type, "project_path": workflowEventProjectPath(hr.State), "event_scope_id": h.app.getEventScopeID(hr.State.UserID)})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
-			"event_scope_id": h.app.getEventScopeID(msg.UserID),
-		})
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "❌ 工作流已取消"}}
-
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{"event_scope_id": h.app.getEventScopeID(msg.UserID)})
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已取消"}}
 	case v2.ActionCancelAndExecute:
-		// User wants to cancel the workflow but still execute the original task
-		// directly (without the multi-phase process). Retrieve the original
-		// request from state.Summary and let it fall through to the agent loop.
 		originalRequest := ""
 		if hr.State != nil {
 			originalRequest = hr.State.Summary
 		}
 		log.Printf("[workflow-v2] ActionCancelAndExecute: user=%s original_len=%d", msg.UserID, len([]rune(originalRequest)))
-		// Clear frontend workflow dashboard state with targeted reset.
 		if hr.State != nil {
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             hr.State.ID,
-				"status":         string(v2.StatusCancelled),
-				"type":           hr.State.Type,
-				"project_path":   workflowEventProjectPath(hr.State),
-				"event_scope_id": h.app.getEventScopeID(hr.State.UserID),
-			})
+			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{"id": hr.State.ID, "status": string(v2.StatusCancelled), "type": hr.State.Type, "project_path": workflowEventProjectPath(hr.State), "event_scope_id": h.app.getEventScopeID(hr.State.UserID)})
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
-			"event_scope_id": h.app.getEventScopeID(msg.UserID),
-		})
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{"event_scope_id": h.app.getEventScopeID(msg.UserID)})
 		if originalRequest != "" {
-			// Stash the original request so the agent loop processes it
-			// instead of the "取消，直接处理" text.
 			h.pendingCancelExecuteRequest.Store(msg.UserID, originalRequest)
 		}
-		// SkipNeedsConfirmGate ensures the message goes to normal agent loop
-		// without being intercepted by any residual workflow gates.
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
-
 	case v2.ActionPassThrough:
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
 	}
-
 	return workflowIMRouteResult{}
 }
 
-// runWorkflowV2Phase runs the current phase as a single agent loop invocation.
-// The agent loop produces the phase document, then the response is returned to the user.
-// The loop runs once to completion — output is captured post-loop by recordWorkflowV2Output.
 func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowState, modifyHint string) workflowIMRouteResult {
 	if state == nil {
-		return workflowIMRouteResult{Response: &IMAgentResponse{
-			Text:  "❌ 工作流阶段无法启动：工作流状态不存在",
-			Error: "workflow state is nil",
-		}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流阶段无法启动：工作流状态不存在", Error: "workflow state is nil"}}
 	}
 	phase := state.ActivePhase()
 	if phase == nil {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "✅ 工作流已完成"}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
 	}
-
-	// If this phase has an InputSchema and form data hasn't been submitted yet,
-	// show the AG UI form instead of running the agent loop.
 	if phase.InputSchema != nil && phase.FormData == nil {
-		// Prefill from memory/knowledge (no user message text available in this path,
-		// but memory recall still works based on field labels/semantics).
 		prefilled := h.prefillWorkflowFormFields(userID, phase, "")
 		h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
 		h.emitWorkflowV2Progress(userID, state)
-		return workflowIMRouteResult{Response: &IMAgentResponse{
-			Text: "📋 请在右侧面板填写信息后提交。",
-		}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "请在右侧面板填写信息后提交。"}}
 	}
 	if err := ensureWorkflowV2PhaseWorkDir(state); err != nil {
 		log.Printf("[workflow-v2] phase workdir unavailable: user=%s type=%s phase=%s project=%q err=%v", userID, state.Type, phase.ID, state.ProjectPath, err)
 		h.emitWorkflowV2Progress(userID, state)
-		return workflowIMRouteResult{Response: &IMAgentResponse{
-			Text:  fmt.Sprintf("❌ 工作流阶段无法启动：%s", err.Error()),
-			Error: err.Error(),
-		}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("工作流阶段无法启动：%s", err.Error()), Error: err.Error()}}
 	}
-
-	// Emit progress update so the frontend board always reflects the current phase.
 	h.emitWorkflowV2Progress(userID, state)
-
 	phasePrompt := v2.BuildPhasePrompt(state)
 	if modifyHint != "" {
 		phasePrompt += "\n\n## 用户修改意见\n\n" + modifyHint + "\n\n请根据以上修改意见重新生成本阶段文档。"
 	}
-
-	// Store phase prompt for the agent loop to consume.
 	log.Printf("[workflow-v2] stashedPhasePrompt.Store: key=%q len=%d", userID, len(phasePrompt))
 	h.stashedPhasePrompt.Store(userID, phasePrompt)
 	h.workflowAgentLoopMarker.Store(userID, true)
-
-	// Clear conversation history for each doc phase.
-	// Root cause of LLM self-repeating: history contains previous phase's
-	// confirm/advance pattern ("user: 确认" → "assistant: 好的，进入下一阶段...").
-	// LLM copies this pattern and self-confirms after generating the document.
-	// Each phase should start with a clean slate — all context comes from phase prompt.
 	if h.memory != nil {
 		h.memory.Clear(userID)
 	}
-
-	// Set explicit userText for the agent loop so the LLM knows what to do.
-	//
-	// Mechanism-level fix: when FormData is available, inline the key fields
-	// directly into the user message — not just a reference to the system prompt.
-	// Weak models ignore system prompt sections ("上方系统提示中...") and go
-	// explore project directories instead. User message content has the highest
-	// compliance weight in all LLM architectures.
 	phaseUserText := fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
 	if modifyHint != "" {
 		phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
@@ -943,27 +838,9 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		phaseUserText = buildFormDataInlinedUserText(phase)
 	}
 	h.workflowOriginalRequest.Store(userID, phaseUserText)
-
-	log.Printf("[workflow-v2] running phase: user=%s type=%s phase=%s project=%s",
-		userID, state.Type, phase.ID, state.ProjectPath)
-
-	// WorkflowAgentLoop=true signals the agent loop to use the stashed prompt.
-	// WorkflowDocPhase distinguishes doc phases (produce structured output, wait for
-	// user confirmation before proceeding) from execution phases (LLM freely uses
-	// tools to complete the task without intermediate confirmation).
-	// Determined by NeedsConfirm: phases that require user confirmation are doc phases
-	// regardless of their ToolPolicy (a phase can need tools to READ input while still
-	// requiring confirmation of its OUTPUT — e.g. patent disclosure parsing reads .doc
-	// files but produces a structured analysis report for user review).
-	isDocPhase := phase.NeedsConfirm
-	return workflowIMRouteResult{
-		WorkflowAgentLoop: true,
-		WorkflowDocPhase:  isDocPhase,
-		WorkflowPhaseID:   phase.ID,
-		PhasePrompt:       phasePrompt,
-	}
+	log.Printf("[workflow-v2] running phase: user=%s type=%s phase=%s project=%s", userID, state.Type, phase.ID, state.ProjectPath)
+	return workflowIMRouteResult{WorkflowAgentLoop: true, WorkflowDocPhase: phase.NeedsConfirm, WorkflowPhaseID: phase.ID, PhasePrompt: phasePrompt}
 }
-
 func ensureWorkflowV2PhaseWorkDir(state *v2.WorkflowState) error {
 	if state == nil {
 		return nil
@@ -1494,6 +1371,22 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 	if state != nil {
 		phase := state.ActivePhase()
 		if phase != nil && phase.FormData != nil {
+			autoContinueText := "继续"
+			if phase.ExecMode == v2.ExecModeSubAgent && state.Type == "coding_subagent" {
+				autoContinueText = h.prepareCodingTemplateSubAgentExecution(userID, state)
+			} else if phase.ExecMode == v2.ExecModeRemoteSubAgent && state.Type == "remote_coding_subagent" {
+				remoteResult := h.setupRemoteCodingTemplateFromWorkflowForm(userID, state)
+				if remoteResult.Response != nil {
+					return remoteResult.Response
+				}
+				if _, requestText := remoteCodingTemplateFormExecutionInputs(state); requestText != "" {
+					autoContinueText = requestText
+				}
+			}
+			if strings.TrimSpace(autoContinueText) == "" {
+				autoContinueText = "继续"
+			}
+
 			// Emit echo as an immediate streaming token so the frontend shows it
 			// while the async agent loop starts. In deferred mode, response.Text
 			// is not rendered by the frontend — only streaming events are.
@@ -1510,8 +1403,8 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 			// the streaming round open and associates async tokens/response with it.
 			if h.app != nil {
 				go func() {
-					log.Printf("[workflow-v2] form auto-continue: dispatching agent loop for user=%s requestID=%s", userID, requestID)
-					if _, err := h.app.continueAIAssistantWorkflowMessage(userID, "继续", requestID); err != nil {
+					log.Printf("[workflow-v2] form auto-continue: dispatching agent loop for user=%s requestID=%s text_len=%d", userID, requestID, len([]rune(autoContinueText)))
+					if _, err := h.app.continueAIAssistantWorkflowMessage(userID, autoContinueText, requestID); err != nil {
 						log.Printf("[workflow-v2] form auto-continue failed: user=%s err=%v", userID, err)
 						// Emit a final response to resolve the frontend's deferred round.
 						// Without this, the round stays in "requesting" state with spinner forever.
@@ -1999,11 +1892,11 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 	return state.ProjectPath
 }
 
-// runDirectCodingSubAgent executes a single coding task directly via SubAgent
-// without going through the full SDD workflow. Used for simple/medium tasks.
-func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+// runCodingTemplateSubAgent executes the single-phase coding_subagent workflow
+// after the standard workflow form has collected its inputs.
+func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
-		log.Printf("[workflow-v2] direct coding: failed to ensure project dir %s: %v", projectPath, err)
+		log.Printf("[workflow-v2] coding_subagent: failed to ensure project dir %s: %v", projectPath, err)
 	}
 
 	// Create a single task from the user's request
@@ -2014,10 +1907,10 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 	}
 	tasks := []*v2.TaskItem{task}
 
-	log.Printf("[workflow-v2] direct coding: user=%s project=%s task=%q", userID, projectPath, truncateRunesV2(userText, 80))
+	log.Printf("[workflow-v2] coding_subagent: user=%s project=%s task=%q", userID, projectPath, truncateRunesV2(userText, 80))
 
 	if onProgress != nil {
-		onProgress("🚀 直接编码模式：开始执行")
+		onProgress("🚀 模板编程模式：开始执行")
 	}
 
 	cfg := h.getMaclawLLMConfig()
@@ -2079,7 +1972,7 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 
 	runner := v2.NewTaskRunner(config, subAgentFn)
 	runner.RunAll(context.Background(), tasks, reasoningToken, func(progress string) {
-		log.Printf("[workflow-v2-direct] %s", progress)
+		log.Printf("[workflow-v2-template] %s", progress)
 		if onProgress != nil {
 			onProgress(progress)
 		}
@@ -2091,14 +1984,14 @@ func (h *IMMessageHandler) runDirectCodingSubAgent(userID, userText, projectPath
 		onToken("\n\n" + report)
 	}
 
-	log.Printf("[workflow-v2] direct coding complete: user=%s\n%s", userID, report)
+	log.Printf("[workflow-v2] coding_subagent complete: user=%s\n%s", userID, report)
 
 	return &IMAgentResponse{
 		Text: fmt.Sprintf("✅ 编码完成\n项目路径：%s\n\n%s", projectPath, report),
 	}
 }
 
-func (h *IMMessageHandler) runDirectRemoteCodingSubAgent(userID, userText string, remoteCtx directRemoteCodingContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText string, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	userText = strings.TrimSpace(userText)
 	if userText == "" {
 		userText = "执行远程编程任务"
@@ -2113,7 +2006,7 @@ func (h *IMMessageHandler) runDirectRemoteCodingSubAgent(userID, userText string
 		remoteCtx.WorkDir = remoteCtx.ProjectDir
 	}
 
-	log.Printf("[workflow-v2] direct remote coding: user=%s session=%s project=%s task=%q", userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80))
+	log.Printf("[workflow-v2] remote_coding_subagent: user=%s session=%s project=%s task=%q", userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80))
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("🚀 远程编程模式：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
 	}
@@ -2121,19 +2014,17 @@ func (h *IMMessageHandler) runDirectRemoteCodingSubAgent(userID, userText string
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 	if loopCtx == nil {
-		loopCtx = NewLoopContext("direct-remote-coding-subagent", h.getMaclawAgentMaxIterations(), httpClient)
+		loopCtx = NewLoopContext("template-remote-coding-subagent", h.getMaclawAgentMaxIterations(), httpClient)
 		defer func() {
 			loopCtx.Cancel()
 			loopCtx.Done()
 		}()
 	}
-	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
-	subAgent.SetCallbacks(onToken, onProgress)
-	if h != nil && h.app != nil {
-		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+	runner := remoteCodingTemplateRunner
+	if runner == nil {
+		runner = defaultRemoteCodingTemplateRunner
 	}
-
-	result := subAgent.ExecuteTask(userText, "")
+	result := runner(h, cfg, httpClient, remoteCtx, loopCtx, userText, onProgress, onToken)
 	if result == nil {
 		return &IMAgentResponse{Text: "❌ 远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
 	}
@@ -2157,81 +2048,21 @@ func (h *IMMessageHandler) runDirectRemoteCodingSubAgent(userID, userText string
 	}
 }
 
-// buildComplexityFunc returns a ComplexityFunc that uses the configured LLM
-// to assess whether a coding task is simple (direct SubAgent) or complex (full SDD).
-func (h *IMMessageHandler) buildComplexityFunc() v2.ComplexityFunc {
-	return func(text string) v2.TaskComplexity {
-		cfg := h.getMaclawLLMConfig()
-		if cfg.Key == "" && cfg.URL == "" {
-			// No LLM available — default to complex (safe)
-			return v2.ComplexityComplex
-		}
+type remoteCodingTemplateRunnerFunc func(*IMMessageHandler, corelib.MaclawLLMConfig, *http.Client, remoteCodingTemplateContext, *LoopContext, string, func(string), func(string)) *RemoteCodingSubAgentResult
 
-		systemPrompt := `You are a task classifier. Given a user request, respond with ONLY one word: "simple", "complex", or "none".
+var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 
-"simple" — This is a coding task that can be done directly without planning:
-- Bug fixes, typo corrections in code
-- Hello World, single-file programs
-- Add one function, one API endpoint, one button
-- Write a script or small utility (< 100 lines)
-- Configuration file changes
-- Code that does ONE thing (calculator, timer, converter)
-
-"complex" — This is a coding task that needs requirements → design → task breakdown:
-- Multi-module systems with 5+ components
-- Games with rendering, physics, AI, audio subsystems
-- Full applications needing architecture decisions
-- Projects with database, auth, deployment needs
-- 500+ lines across multiple interdependent files
-
-"none" — This is NOT a coding task at all:
-- Document generation (reports, summaries, translations)
-- File operations (copy, move, convert formats)
-- Information lookup or research
-- Anything that doesn't involve writing/modifying source code
-
-CRITICAL RULES:
-- "hello world" or single-output programs → "simple"
-- "修bug"/"fix bug" in actual code → "simple"
-- "生成报告"/"generate report" even if it mentions "BUG" → "none" (it's document work, not coding)
-- "写测试用例" without actual code context → "none"
-- Games, apps, systems with multiple features → "complex"
-
-Respond with ONLY one word: simple, complex, or none.`
-
-		result := h.callLightweightLLM(cfg, systemPrompt, text, 20)
-		result = strings.TrimSpace(strings.ToLower(result))
-
-		if result == "" {
-			// LLM failed (timeout/503/network) — use local keyword fallback
-			// instead of blindly defaulting to complex.
-			fallback := assessComplexityByKeywords(text)
-			log.Printf("[workflow-v2] complexity assessment: LLM unavailable, keyword fallback=%s for %q (model=%s)", fallback, truncateRunesV2(text, 60), cfg.Model)
-			return fallback
-		}
-
-		switch {
-		case result == "none" || strings.Contains(result, "none"):
-			// Not a coding task — route to agent loop (normal non-coding handling)
-			log.Printf("[workflow-v2] complexity assessment: NONE (not coding) for %q", truncateRunesV2(text, 60))
-			return v2.ComplexityNone
-		case result == "simple" || (strings.Contains(result, "simple") && !strings.Contains(result, "complex")):
-			log.Printf("[workflow-v2] complexity assessment: SIMPLE for %q", truncateRunesV2(text, 60))
-			return v2.ComplexitySimple
-		case result == "complex" || strings.Contains(result, "complex"):
-			log.Printf("[workflow-v2] complexity assessment: COMPLEX for %q", truncateRunesV2(text, 60))
-			return v2.ComplexityComplex
-		default:
-			log.Printf("[workflow-v2] complexity assessment: AMBIGUOUS (%q) → defaulting to COMPLEX for %q", result, truncateRunesV2(text, 60))
-			return v2.ComplexityComplex
-		}
+func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
+	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
+	subAgent.SetCallbacks(onToken, onProgress)
+	if h != nil && h.app != nil {
+		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
 	}
+	return subAgent.ExecuteTask(userText, "")
 }
 
-// callLightweightLLM makes a quick non-streaming LLM call for classification.
-// Returns the response text or empty string on failure.
-// Retries once on transient errors (503, timeout, network) since the target
-// API (zhipu) is often slow or intermittently unavailable.
+// callLightweightLLM makes a quick non-streaming LLM call for lightweight
+// workflow classification helpers.
 func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec int) string {
 	if h == nil || h.client == nil {
 		return ""
@@ -2271,81 +2102,15 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 	return ""
 }
 
-// assessComplexityByKeywords is the local fallback when the LLM complexity
-// assessment fails (timeout, 503, network error). It uses keyword heuristics
-// to classify coding tasks without an LLM call.
-//
-// Design principle: this is the FALLBACK path, not the primary classifier.
-// It only runs when the API is unreachable. Be conservative on "simple" —
-// only return simple for clearly trivial tasks. When in doubt, return complex.
-func assessComplexityByKeywords(text string) v2.TaskComplexity {
-	lower := strings.ToLower(text)
-
-	// --- Simple indicators: single-purpose, trivial tasks ---
-	simplePatterns := []string{
-		"hello world", "helloworld", "hello_world",
-		"修bug", "修复bug", "fix bug", "fixbug",
-		"修复错误", "修复问题", "调试", "debug",
-		"改个", "加个", "删个", "加一个",
-		"添加一个按钮", "添加一个接口", "添加一个函数",
-		"写个脚本", "写一个脚本",
-		"配置文件", "修改配置",
-	}
-	for _, p := range simplePatterns {
-		if strings.Contains(lower, p) {
-			return v2.ComplexitySimple
-		}
-	}
-
-	// --- Complex indicators: multi-component systems ---
-	complexSignals := 0
-	complexPatterns := []string{
-		"系统", "管理系统", "平台",
-		"游戏", "应用", "app",
-		"数据库", "认证", "权限", "登录",
-		"前端", "后端", "全栈",
-		"架构", "微服务", "分布式",
-		"多模块", "多功能",
-	}
-	for _, p := range complexPatterns {
-		if strings.Contains(lower, p) {
-			complexSignals++
-		}
-	}
-	// 2+ complex signals → definitely complex
-	if complexSignals >= 2 {
-		return v2.ComplexityComplex
-	}
-
-	// --- Feature count heuristic: multiple requirements listed ---
-	// Chinese enumeration markers: 、，needs multiple features
-	featureMarkers := []string{"，需要", "，支持", "，包含", "，具备", "，实现"}
-	for _, m := range featureMarkers {
-		if strings.Contains(lower, m) {
-			return v2.ComplexityComplex
-		}
-	}
-
-	// Single complex keyword (like "游戏") without additional signals
-	// could be simple (hello-world game) or complex (full game with physics).
-	// Conservative: if ANY complex keyword matched, treat as complex.
-	if complexSignals >= 1 {
-		return v2.ComplexityComplex
-	}
-
-	// No strong signals either way — default to complex (safe)
-	return v2.ComplexityComplex
-}
-
 // --- Workflow Confirm Choice (user decides whether to enter workflow) ---
 
 const (
-	workflowChoiceCommandPrefix = "__workflow_choice__"
-	workflowChoiceComplex       = "complex" // Full SDD workflow
-	workflowChoiceSimple        = "simple"  // Direct SubAgent (coding only)
-	workflowChoiceRemoteSimple  = "remote_simple"
-	workflowChoiceSkip          = "skip"   // Not a workflow task, use normal agent loop
-	workflowChoiceDirect        = "direct" // Non-coding direct handling, use normal agent loop
+	workflowChoiceCommandPrefix  = "__workflow_choice__"
+	workflowChoiceComplex        = "complex"                // Full SDD workflow
+	workflowChoiceCodingSubAgent = "coding_subagent"        // Simplified coding template
+	workflowChoiceRemoteCoding   = "remote_coding_subagent" // Remote coding template
+	workflowChoiceSkip           = "skip"                   // Not a workflow task, use normal agent loop
+	workflowChoiceDirect         = "direct"                 // Non-coding direct handling, use normal agent loop
 )
 
 // pendingWorkflowChoice stores the original route result while waiting for user choice.
@@ -2355,7 +2120,7 @@ type pendingWorkflowChoice struct {
 	ChoiceID    string
 }
 
-type directRemoteCodingContext struct {
+type remoteCodingTemplateContext struct {
 	SessionID  string
 	WorkDir    string
 	ProjectDir string
@@ -2446,36 +2211,62 @@ func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {
 	return changed
 }
 
-func directCodingFormExecutionInputs(state *v2.WorkflowState) (projectPath, requestText string) {
+func codingTemplateFormExecutionInputs(state *v2.WorkflowState) (projectPath, requestText string) {
 	formData := activePhaseFormData(state)
 	projectPath = workflowFormString(formData, "work_dir")
 	requestText = workflowFormString(formData, "project_description")
-	if requestText == "" {
+	if requestText == "" && state != nil {
 		requestText = strings.TrimSpace(state.Summary)
 	}
 	return projectPath, requestText
 }
 
-func isDirectCodingPanelPlaceholder(text string) bool {
-	switch strings.TrimSpace(text) {
-	case "启动简化编程任务", "启动远程编程任务":
-		return true
-	default:
-		return false
+func remoteCodingTemplateFormExecutionInputs(state *v2.WorkflowState) (workDir, requestText string) {
+	formData := activePhaseFormData(state)
+	workDir = workflowFormString(formData, "work_dir")
+	requestText = workflowFormString(formData, "project_description")
+	if requestText == "" && state != nil {
+		requestText = strings.TrimSpace(state.Summary)
 	}
+	return workDir, requestText
 }
 
-func (h *IMMessageHandler) hasPendingDirectSubAgentExecution(userID string) bool {
+func (h *IMMessageHandler) prepareCodingTemplateSubAgentExecution(userID string, state *v2.WorkflowState) string {
+	projectPath, requestText := codingTemplateFormExecutionInputs(state)
+	if requestText == "" {
+		requestText = "执行简化编程任务"
+	}
+	if state != nil {
+		if projectPath != "" {
+			state.ProjectPath = projectPath
+		}
+		if wf := h.getWorkflowV2(); wf != nil {
+			if phase := state.ActivePhase(); phase != nil {
+				phase.Status = v2.PhaseExecuting
+			}
+			_ = wf.store.Save(state)
+		}
+	}
+	h.emitWorkflowV2Progress(userID, state)
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingTemplateRemoteCoding.Delete(userID)
+	h.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+	h.workflowOriginalRequest.Store(userID, requestText)
+	h.workflowAgentLoopMarker.Store(userID, true)
+	return requestText
+}
+
+func (h *IMMessageHandler) hasPendingTemplateSubAgentExecution(userID string) bool {
 	if h == nil {
 		return false
 	}
 	if _, pending := h.pendingV2SubAgentExecution.Load(userID); !pending {
 		return false
 	}
-	if _, ok := h.pendingDirectCodingProjectPath.Load(userID); ok {
+	if _, ok := h.pendingTemplateCodingProjectPath.Load(userID); ok {
 		return true
 	}
-	if _, ok := h.pendingDirectRemoteCoding.Load(userID); ok {
+	if _, ok := h.pendingTemplateRemoteCoding.Load(userID); ok {
 		return true
 	}
 	return false
@@ -2493,125 +2284,7 @@ func parseWorkflowChoiceCommand(text string) (choice, choiceID string, ok bool) 
 	return fields[1], fields[2], true
 }
 
-// isFilesystemRoot returns true for paths that represent the root of a filesystem
-// volume (e.g. "C:\", "D:\", "/"). Scanning these would traverse the entire disk.
-func isFilesystemRoot(cleanPath string) bool {
-	if cleanPath == "/" {
-		return true
-	}
-	// Windows volume roots: "C:\", "D:\", etc.
-	if len(cleanPath) == 3 && cleanPath[1] == ':' && (cleanPath[2] == '\\' || cleanPath[2] == '/') {
-		return true
-	}
-	return false
-}
-
-// setupDirectCodingExecution configures the handler state for direct SubAgent
-// coding execution (skip SDD). Shared by the RouteToDirectCoding legacy path
-// and the user's "simple coding" choice.
-func (h *IMMessageHandler) setupDirectCodingExecution(userID, originalText, rawProjectPath string) workflowIMRouteResult {
-	projectPath := rawProjectPath
-	if projectPath == "" {
-		if tabPath := h.executionProjectPathForOwner(userID); tabPath != "" {
-			projectPath = tabPath
-		} else if h.app != nil {
-			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
-		}
-	}
-	if projectPath != "" {
-		if cleaned := v2.TruncateToValidPathChars(projectPath); cleaned != "" {
-			projectPath = cleaned
-		}
-	}
-	if projectPath == "" {
-		projectPath = "."
-	}
-	// Guard: reject user home directory and filesystem roots as projectPath.
-	// Home directories contain hundreds of thousands of files which causes
-	// search tools to hang for minutes. Filesystem roots (C:\, D:\) are even worse.
-	// Instead, allocate a standalone task directory under ~/.maclaw/data/tasks/.
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		cleanedProject := filepath.Clean(projectPath)
-		cleanedHome := filepath.Clean(home)
-		isTooLarge := strings.EqualFold(cleanedProject, cleanedHome) ||
-			projectPath == "." ||
-			isFilesystemRoot(cleanedProject)
-		if isTooLarge {
-			var dataDir string
-			if h.app != nil {
-				dataDir = h.app.GetDataDir()
-			}
-			taskDir := buildStandaloneTaskPath(dataDir, originalText)
-			if taskDir != "" {
-				projectPath = taskDir
-			}
-			log.Printf("[workflow-v2] setupDirectCodingExecution: allocated task dir %q (rejected home/root path)", projectPath)
-		}
-	}
-	// Cancel any existing workflow
-	if wf := h.getWorkflowV2(); wf != nil {
-		if prevState := wf.machine.GetActive(userID); prevState != nil {
-			wf.machine.Cancel(userID)
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             prevState.ID,
-				"status":         string(v2.StatusCancelled),
-				"type":           prevState.Type,
-				"project_path":   workflowEventProjectPath(prevState),
-				"event_scope_id": h.app.getEventScopeID(prevState.UserID),
-			})
-		}
-	}
-	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingDirectCodingProjectPath.Store(userID, projectPath)
-	h.pendingDirectRemoteCoding.Delete(userID)
-	h.workflowAgentLoopMarker.Store(userID, true)
-	h.workflowOriginalRequest.Store(userID, originalText)
-	if isDirectCodingPanelPlaceholder(originalText) {
-		return workflowIMRouteResult{
-			Response: &IMAgentResponse{Text: "已进入简化编程模式，请直接输入要修改的代码需求。"},
-		}
-	}
-	return workflowIMRouteResult{
-		WorkflowAgentLoop: true,
-		WorkflowDocPhase:  false,
-	}
-}
-
-func (h *IMMessageHandler) setupDirectRemoteCodingExecution(userID, originalText string) workflowIMRouteResult {
-	remoteCtx, err := h.resolveDirectRemoteCodingContext()
-	if err != nil {
-		log.Printf("[workflow-v2] setupDirectRemoteCodingExecution failed: user=%s err=%v", userID, err)
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("⚠️ 无法启动远程编程：%v\n\n请先使用 SSH 工具连接远程服务器，再重新点击「远程编程」。", err)}}
-	}
-	if wf := h.getWorkflowV2(); wf != nil {
-		if prevState := wf.machine.GetActive(userID); prevState != nil {
-			wf.machine.Cancel(userID)
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             prevState.ID,
-				"status":         string(v2.StatusCancelled),
-				"type":           prevState.Type,
-				"project_path":   workflowEventProjectPath(prevState),
-				"event_scope_id": h.app.getEventScopeID(prevState.UserID),
-			})
-		}
-	}
-	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingDirectCodingProjectPath.Delete(userID)
-	h.pendingDirectRemoteCoding.Store(userID, remoteCtx)
-	h.workflowAgentLoopMarker.Store(userID, true)
-	h.workflowOriginalRequest.Store(userID, originalText)
-	if isDirectCodingPanelPlaceholder(originalText) {
-		return workflowIMRouteResult{
-			Response: &IMAgentResponse{Text: fmt.Sprintf("已进入远程编程模式，将使用 SSH 会话 %s。请直接输入要在远程项目中修改的代码需求。", remoteCtx.SessionID)},
-		}
-	}
-	return workflowIMRouteResult{
-		WorkflowAgentLoop: true,
-		WorkflowDocPhase:  false,
-	}
-}
-
-func (h *IMMessageHandler) setupDirectRemoteCodingFromWorkflowForm(userID string, state *v2.WorkflowState) workflowIMRouteResult {
+func (h *IMMessageHandler) setupRemoteCodingTemplateFromWorkflowForm(userID string, state *v2.WorkflowState) workflowIMRouteResult {
 	formData := activePhaseFormData(state)
 	sshHost := workflowFormString(formData, "ssh_host")
 	sshUser := workflowFormString(formData, "ssh_user")
@@ -2651,8 +2324,8 @@ func (h *IMMessageHandler) setupDirectRemoteCodingFromWorkflowForm(userID string
 	}
 	h.emitWorkflowV2Progress(userID, state)
 	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingDirectCodingProjectPath.Delete(userID)
-	h.pendingDirectRemoteCoding.Store(userID, directRemoteCodingContext{
+	h.pendingTemplateCodingProjectPath.Delete(userID)
+	h.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
 		SessionID:  sessionID,
 		WorkDir:    workDir,
 		ProjectDir: workDir,
@@ -2664,53 +2337,6 @@ func (h *IMMessageHandler) setupDirectRemoteCodingFromWorkflowForm(userID string
 		WorkflowAgentLoop: true,
 		WorkflowDocPhase:  false,
 	}
-}
-
-func (h *IMMessageHandler) resolveDirectRemoteCodingContext() (directRemoteCodingContext, error) {
-	mgr := h.ensureSSHManager()
-	if mgr == nil {
-		return directRemoteCodingContext{}, fmt.Errorf("SSH 会话管理器不可用")
-	}
-	var selectedID string
-	var selectedWorkDir string
-	var selectedProjectDir string
-	var selectedCreatedAt time.Time
-	for _, session := range mgr.List() {
-		if !directRemoteCodingSessionSelectable(session) {
-			continue
-		}
-		if selectedID != "" && !session.CreatedAt.After(selectedCreatedAt) {
-			continue
-		}
-		selectedID = strings.TrimSpace(session.ID)
-		selectedCreatedAt = session.CreatedAt
-		selectedProjectDir = inferRemoteProjectDirFromSSHSession(session.Spec.InitialCommand)
-		selectedWorkDir = selectedProjectDir
-	}
-	if selectedID == "" {
-		return directRemoteCodingContext{}, fmt.Errorf("没有可用的 SSH 会话")
-	}
-	if selectedProjectDir == "" {
-		selectedProjectDir = "."
-	}
-	if selectedWorkDir == "" {
-		selectedWorkDir = selectedProjectDir
-	}
-	return directRemoteCodingContext{
-		SessionID:  selectedID,
-		WorkDir:    selectedWorkDir,
-		ProjectDir: selectedProjectDir,
-	}, nil
-}
-
-func directRemoteCodingSessionUsable(status remote.SessionStatus) bool {
-	return status == remote.SessionRunning || status == remote.SessionWaitingInput
-}
-
-func directRemoteCodingSessionSelectable(session *remote.SSHManagedSession) bool {
-	return session != nil &&
-		strings.TrimSpace(session.ID) != "" &&
-		directRemoteCodingSessionUsable(session.Status)
 }
 
 func inferRemoteProjectDirFromSSHSession(initialCommand string) string {
@@ -2769,7 +2395,7 @@ parseTarget:
 }
 
 // askWorkflowConfirmChoice presents the user with a choice before entering a workflow.
-// For coding: 3 options (full SDD / simple coding / not coding).
+// For coding: workflow-template options (full SDD / simplified coding / remote coding / not coding).
 // For other templates: 2 options (enter workflow / handle directly).
 func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v2.RouteResult) workflowIMRouteResult {
 	choiceID := fmt.Sprintf("wc_%d", time.Now().UnixMilli())
@@ -2793,15 +2419,19 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 			"• 架构设计确保模块解耦、接口清晰\n" +
 			"• 任务拆分让每个子任务可独立验证，降低集成风险\n" +
 			"适合：多模块系统、游戏、完整应用、需要多人协作或长期维护的项目\n\n" +
-			"**2. 简单编程（推荐用于小任务）**\n" +
-			"跳过设计文档，直接开始写代码，快速完成\n" +
+			"**2. 简化编程（推荐用于小任务）**\n" +
+			"先填写工作目录和项目描述，再启动编程智能体快速完成\n" +
 			"适合：修 bug、写脚本、加个函数、hello world、单文件小工具\n\n" +
-			"**3. 这不是编程任务**\n" +
+			"**3. 远程编程（推荐用于 SSH 服务器项目）**\n" +
+			"先填写主机、端口、用户名、密码、默认工作目录和项目描述，再启动远程编程智能体\n" +
+			"适合：代码在远程服务器、GPU 机器或部署环境中的任务\n\n" +
+			"**4. 这不是编程任务**\n" +
 			"不走编程流程，当作普通任务由 AI 自由发挥\n" +
 			"适合：翻译、整理文档、搜索资料、格式转换、内容生成等"
 		actions = []IMResponseAction{
 			{Label: "📋 完整开发流程", Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-			{Label: "⚡ 简单编程", Command: buildWorkflowChoiceCommand(workflowChoiceSimple, choiceID), Style: "secondary"},
+			{Label: "⚡ 简化编程", Command: buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID), Style: "secondary"},
+			{Label: "🖥️ 远程编程", Command: buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID), Style: "secondary"},
 			{Label: "🔄 不是编程任务", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
 		}
 	} else {
@@ -2913,26 +2543,38 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 		result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
 		return &result
 
-	case workflowChoiceSimple:
-		// Direct SubAgent coding — only valid for coding type
-		if pending.RouteResult.WorkflowType != "coding" {
-			// Non-coding workflow can't use simple coding path; treat as full workflow
-			log.Printf("[workflow-v2] user sent 'simple' for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+	case workflowChoiceCodingSubAgent:
+		if pending.RouteResult.WorkflowType == workflowChoiceCodingSubAgent {
+			log.Printf("[workflow-v2] user chose: coding_subagent template")
 			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
 			return &result
 		}
-		log.Printf("[workflow-v2] user chose: SIMPLE (direct coding)")
-		result := h.setupDirectCodingExecution(pending.Msg.UserID, pending.Msg.Text, pending.RouteResult.ProjectPath)
+		if pending.RouteResult.WorkflowType != "coding" {
+			log.Printf("[workflow-v2] user sent coding_subagent for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
+		log.Printf("[workflow-v2] user chose: coding_subagent template")
+		routeResult := *pending.RouteResult
+		routeResult.WorkflowType = workflowChoiceCodingSubAgent
+		result := h.startNewWorkflowV2(pending.Msg, &routeResult)
 		return &result
 
-	case workflowChoiceRemoteSimple:
-		if pending.RouteResult.WorkflowType != "coding" {
-			log.Printf("[workflow-v2] user sent 'remote_simple' for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+	case workflowChoiceRemoteCoding:
+		if pending.RouteResult.WorkflowType == workflowChoiceRemoteCoding {
+			log.Printf("[workflow-v2] user chose: remote_coding_subagent template")
 			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
 			return &result
 		}
-		log.Printf("[workflow-v2] user chose: REMOTE_SIMPLE (direct remote coding)")
-		result := h.setupDirectRemoteCodingExecution(pending.Msg.UserID, pending.Msg.Text)
+		if pending.RouteResult.WorkflowType != "coding" {
+			log.Printf("[workflow-v2] user sent remote_coding_subagent for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
+			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
+		log.Printf("[workflow-v2] user chose: remote_coding_subagent template")
+		routeResult := *pending.RouteResult
+		routeResult.WorkflowType = workflowChoiceRemoteCoding
+		result := h.startNewWorkflowV2(pending.Msg, &routeResult)
 		return &result
 
 	case workflowChoiceSkip:

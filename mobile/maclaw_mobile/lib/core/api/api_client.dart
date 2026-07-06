@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 
 import '../../features/digital_employees/digital_employee.dart';
 import '../../features/documents/document_draft.dart';
+import '../../features/servers/server_profile.dart';
+import '../security/mobile_redaction.dart';
 import 'desktop_llm_qr.dart';
 import 'official_service.dart';
 import '../storage/secure_vault.dart';
@@ -224,12 +226,32 @@ class ApiClient {
     return MobileDocumentUploadTask.fromJson(response.data ?? const {});
   }
 
-  Future<MobileSSHAnalysis> analyzeSSHOutput(String output) async {
+  Future<MobileSSHAnalysis> analyzeSSHOutput(
+    String output, {
+    String? backendSessionId,
+  }) async {
+    final sessionId = backendSessionId?.trim() ?? '';
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/mobile/ssh/analyze',
-      data: {'output': output},
+      data: {
+        'output': output,
+        if (sessionId.isNotEmpty) 'backend_session_id': sessionId,
+      },
     );
     return MobileSSHAnalysis.fromJson(response.data ?? const {});
+  }
+
+  Future<List<ServerProfile>> listServerProfiles() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/server-profiles',
+    );
+    final data = response.data ?? const {};
+    return [
+      for (final item in (data['profiles'] as List? ?? const []))
+        ServerProfile.fromJson(Map<String, dynamic>.from(item as Map)),
+    ]
+        .where((profile) => profile.isValid && profile.id.trim().isNotEmpty)
+        .toList();
   }
 
   Future<MobileBackendSSHSession> createBackendSSHSession({
@@ -281,6 +303,18 @@ class ApiClient {
     );
   }
 
+  Future<MobileBackendSSHSession> interruptBackendSSHSession(
+    String sessionId,
+  ) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/interrupt',
+    );
+    return MobileBackendSSHSession.fromJson(
+      _sessionPayload(response.data ?? const {}),
+    );
+  }
+
   Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
     required String sessionId,
     required String input,
@@ -299,6 +333,107 @@ class ApiClient {
     final encodedSessionId = Uri.encodeComponent(sessionId);
     await _dio.delete<Map<String, dynamic>>(
       '/api/mobile/ssh/sessions/$encodedSessionId',
+    );
+  }
+
+  Future<MobileBackendSSHTask> startBackendSSHBackgroundTask({
+    required String sessionId,
+    required String command,
+    int? tailLines,
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/tasks',
+      data: {
+        'action': 'exec_background',
+        'command': command,
+        if (tailLines != null) 'tail_lines': tailLines,
+      },
+    );
+    return MobileBackendSSHTask.fromJson(
+      _taskPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<List<MobileBackendSSHTask>> listBackendSSHBackgroundTasks(
+    String sessionId,
+  ) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/tasks',
+    );
+    final data = response.data ?? const {};
+    return [
+      for (final item in (data['tasks'] as List? ?? const []))
+        MobileBackendSSHTask.fromJson(Map<String, dynamic>.from(item as Map)),
+    ];
+  }
+
+  Future<MobileBackendSSHTask> getBackendSSHBackgroundTask({
+    required String sessionId,
+    required String taskId,
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final encodedTaskId = Uri.encodeComponent(taskId);
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/tasks/$encodedTaskId',
+    );
+    return MobileBackendSSHTask.fromJson(
+      _taskPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<MobileBackendSSHTask> waitBackendSSHBackgroundTask({
+    required String sessionId,
+    required String taskId,
+    int? timeoutSeconds,
+    int? tailLines,
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final encodedTaskId = Uri.encodeComponent(taskId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/tasks/$encodedTaskId/wait',
+      data: {
+        if (timeoutSeconds != null) 'timeout': timeoutSeconds,
+        if (tailLines != null) 'tail_lines': tailLines,
+      },
+    );
+    return MobileBackendSSHTask.fromJson(
+      _taskPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<MobileBackendSSHTask> killBackendSSHBackgroundTask({
+    required String sessionId,
+    required String taskId,
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final encodedTaskId = Uri.encodeComponent(taskId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/tasks/$encodedTaskId/kill',
+    );
+    return MobileBackendSSHTask.fromJson(
+      _taskPayload(response.data ?? const {}),
+    );
+  }
+
+  Future<MobileBackendSSHFileOperation> requestBackendSSHFileOperation({
+    required String sessionId,
+    required String action,
+    String localPath = '',
+    String remotePath = '',
+  }) async {
+    final encodedSessionId = Uri.encodeComponent(sessionId);
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/sessions/$encodedSessionId/files',
+      data: {
+        'action': action,
+        if (localPath.trim().isNotEmpty) 'local_path': localPath,
+        if (remotePath.trim().isNotEmpty) 'remote_path': remotePath,
+      },
+    );
+    return MobileBackendSSHFileOperation.fromJson(
+      _fileOperationPayload(response.data ?? const {}),
     );
   }
 
@@ -333,6 +468,14 @@ class ApiClient {
 
 Map<String, dynamic> _sessionPayload(Map<String, dynamic> data) {
   return Map<String, dynamic>.from(data['session'] as Map? ?? data);
+}
+
+Map<String, dynamic> _taskPayload(Map<String, dynamic> data) {
+  return Map<String, dynamic>.from(data['task'] as Map? ?? data);
+}
+
+Map<String, dynamic> _fileOperationPayload(Map<String, dynamic> data) {
+  return Map<String, dynamic>.from(data['operation'] as Map? ?? data);
 }
 
 class SearchAnswer {
@@ -408,11 +551,13 @@ class MobileSSHAnalysis {
   final String summary;
   final String recommendation;
   final String commandDraft;
+  final String backendSessionId;
 
   const MobileSSHAnalysis({
     required this.summary,
     required this.recommendation,
     required this.commandDraft,
+    this.backendSessionId = '',
   });
 
   factory MobileSSHAnalysis.fromJson(Map<String, dynamic> json) {
@@ -420,6 +565,9 @@ class MobileSSHAnalysis {
       summary: json['summary'] as String? ?? '',
       recommendation: json['recommendation'] as String? ?? '',
       commandDraft: json['command_draft'] as String? ?? '',
+      backendSessionId: redactMobileSensitiveText(
+        json['backend_session_id'] as String? ?? '',
+      ),
     );
   }
 }
@@ -427,19 +575,33 @@ class MobileSSHAnalysis {
 class MobileBackendSSHSession {
   final String sessionId;
   final String serverProfileId;
+  final String backendSessionId;
   final String status;
   final String state;
   final String message;
   final String recentOutput;
+  final String outputChunk;
+  final int outputSeq;
+  final int pendingInputCount;
+  final String claimedBy;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
   final DateTime? lastActivityAt;
 
   const MobileBackendSSHSession({
     required this.sessionId,
     required this.serverProfileId,
+    this.backendSessionId = '',
     required this.status,
     this.state = '',
     this.message = '',
     this.recentOutput = '',
+    this.outputChunk = '',
+    this.outputSeq = 0,
+    this.pendingInputCount = 0,
+    this.claimedBy = '',
+    this.createdAt,
+    this.updatedAt,
     this.lastActivityAt,
   });
 
@@ -452,6 +614,7 @@ class MobileBackendSSHSession {
       state == 'attached';
 
   factory MobileBackendSSHSession.fromJson(Map<String, dynamic> json) {
+    final updatedAt = DateTime.tryParse(json['updated_at'] as String? ?? '');
     return MobileBackendSSHSession(
       sessionId: json['session_id'] as String? ??
           json['id'] as String? ??
@@ -460,6 +623,7 @@ class MobileBackendSSHSession {
       serverProfileId: json['server_profile_id'] as String? ??
           json['profile_id'] as String? ??
           '',
+      backendSessionId: json['backend_session_id'] as String? ?? '',
       status:
           json['status'] as String? ?? json['state'] as String? ?? 'unknown',
       state: json['state'] as String? ?? '',
@@ -468,6 +632,16 @@ class MobileBackendSSHSession {
           json['output'] as String? ??
           json['output_chunk'] as String? ??
           '',
+      outputChunk: json['output_chunk'] as String? ?? '',
+      outputSeq: json['output_seq'] is int
+          ? json['output_seq'] as int
+          : int.tryParse('${json['output_seq'] ?? ''}') ?? 0,
+      pendingInputCount: json['pending_input_count'] is int
+          ? json['pending_input_count'] as int
+          : int.tryParse('${json['pending_input_count'] ?? ''}') ?? 0,
+      claimedBy: json['claimed_by'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+      updatedAt: updatedAt,
       lastActivityAt: DateTime.tryParse(
         json['last_activity_at'] as String? ??
             json['updated_at'] as String? ??
@@ -507,6 +681,106 @@ class MobileBackendSSHSessionInputResult {
           '',
       status: json['status'] as String? ?? session['status'] as String? ?? '',
       message: json['message'] as String? ?? json['error'] as String? ?? '',
+    );
+  }
+}
+
+class MobileBackendSSHTask {
+  final String taskId;
+  final String sessionId;
+  final String backendSessionId;
+  final String command;
+  final String status;
+  final String message;
+  final String logTail;
+  final int? exitCode;
+  final String claimedBy;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const MobileBackendSSHTask({
+    required this.taskId,
+    this.sessionId = '',
+    this.backendSessionId = '',
+    this.command = '',
+    this.status = 'unknown',
+    this.message = '',
+    this.logTail = '',
+    this.exitCode,
+    this.claimedBy = '',
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  bool get running => status == 'running' || status == 'queued';
+
+  factory MobileBackendSSHTask.fromJson(Map<String, dynamic> json) {
+    final exitCodeValue = json['exit_code'];
+    return MobileBackendSSHTask(
+      taskId: json['task_id'] as String? ?? json['id'] as String? ?? '',
+      sessionId: json['session_id'] as String? ?? '',
+      backendSessionId: json['backend_session_id'] as String? ?? '',
+      command: json['command'] as String? ?? '',
+      status: json['status'] as String? ?? 'unknown',
+      message: json['message'] as String? ?? json['error'] as String? ?? '',
+      logTail: json['log_tail'] as String? ??
+          json['tail'] as String? ??
+          json['output'] as String? ??
+          '',
+      exitCode: exitCodeValue is int
+          ? exitCodeValue
+          : int.tryParse('${exitCodeValue ?? ''}'),
+      claimedBy: json['claimed_by'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
+    );
+  }
+}
+
+class MobileBackendSSHFileOperation {
+  final String operationId;
+  final String sessionId;
+  final String backendSessionId;
+  final String action;
+  final String localPath;
+  final String remotePath;
+  final String status;
+  final String message;
+  final int bytesTransferred;
+  final String downloadUrl;
+  final String claimedBy;
+
+  const MobileBackendSSHFileOperation({
+    required this.operationId,
+    this.sessionId = '',
+    this.backendSessionId = '',
+    this.action = '',
+    this.localPath = '',
+    this.remotePath = '',
+    this.status = 'unknown',
+    this.message = '',
+    this.bytesTransferred = 0,
+    this.downloadUrl = '',
+    this.claimedBy = '',
+  });
+
+  factory MobileBackendSSHFileOperation.fromJson(Map<String, dynamic> json) {
+    final bytesValue = json['bytes_transferred'];
+    return MobileBackendSSHFileOperation(
+      operationId:
+          json['operation_id'] as String? ?? json['id'] as String? ?? '',
+      sessionId: json['session_id'] as String? ?? '',
+      backendSessionId: json['backend_session_id'] as String? ?? '',
+      action: json['action'] as String? ?? '',
+      localPath: json['local_path'] as String? ?? '',
+      remotePath: json['remote_path'] as String? ?? '',
+      status: json['status'] as String? ?? 'unknown',
+      message: json['message'] as String? ?? json['error'] as String? ?? '',
+      bytesTransferred: bytesValue is int
+          ? bytesValue
+          : int.tryParse('${bytesValue ?? ''}') ?? 0,
+      downloadUrl: json['download_url'] as String? ?? '',
+      claimedBy: json['claimed_by'] as String? ?? '',
     );
   }
 }

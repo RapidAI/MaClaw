@@ -315,7 +315,47 @@
 }
 
 .modal-content.about-mobile-auth-qr-dialog {
+    width: 360px;
+    max-width: 92vw;
     text-align: left;
+}
+
+.about-mobile-auth-qr-dialog__frame {
+    min-height: 244px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--theme-surface-muted);
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    margin: 14px 0;
+    padding: 12px;
+    box-sizing: border-box;
+}
+
+.about-mobile-auth-qr-dialog__status {
+    color: var(--theme-text-muted);
+    font-size: 0.85rem;
+}
+
+.about-mobile-auth-qr-dialog__code-card {
+    background: #fff;
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.about-mobile-auth-qr-dialog__error {
+    color: var(--theme-danger);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    text-align: center;
+}
+
+.about-mobile-auth-qr-dialog__expires {
+    margin-bottom: 12px;
+    color: var(--theme-text-muted);
+    font-size: 0.76rem;
+    text-align: center;
 }
 
 .about-contact-dialog__header {
@@ -372,7 +412,8 @@
     line-height: 1.45;
 }
 
-.about-contact-dialog .modal-actions {
+.about-contact-dialog .modal-actions,
+.about-mobile-auth-qr-dialog .modal-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -382,7 +423,9 @@
 }
 
 .about-contact-dialog .modal-actions .btn-hide,
-.about-contact-dialog .modal-actions .btn-primary {
+.about-contact-dialog .modal-actions .btn-primary,
+.about-mobile-auth-qr-dialog .modal-actions .btn-hide,
+.about-mobile-auth-qr-dialog .modal-actions .btn-primary {
     min-width: 112px;
     height: 36px;
     display: inline-flex;
@@ -392,6 +435,11 @@
     font-size: 0.82rem;
     line-height: 1;
     box-sizing: border-box;
+}
+
+.about-mobile-auth-qr-dialog .modal-actions .btn-hide,
+.about-mobile-auth-qr-dialog .modal-actions .btn-primary {
+    width: 132px;
 }
 
 @media (max-width: 520px) {
@@ -409,8 +457,11 @@
     }
 
     .about-contact-dialog .modal-actions .btn-hide,
-    .about-contact-dialog .modal-actions .btn-primary {
+    .about-contact-dialog .modal-actions .btn-primary,
+    .about-mobile-auth-qr-dialog .modal-actions .btn-hide,
+    .about-mobile-auth-qr-dialog .modal-actions .btn-primary {
         flex: 1 1 132px;
+        width: auto;
     }
 }
 

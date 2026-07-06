@@ -8,12 +8,12 @@ describe('inferProviderModelFetchProtocol', () => {
 
     it('uses OpenAI for ordinary OpenAI-compatible endpoints', () => {
         expect(inferProviderModelFetchProtocol('codex', 'https://api.example.com/v1')).toBe('openai');
-        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:5001/openai')).toBe('openai');
+        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:9999/openai')).toBe('openai');
     });
 
     it('detects Anthropic-compatible proxy endpoints by path segment', () => {
-        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:5001/anthropic')).toBe('anthropic');
-        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:5001/anthropic/v1/messages')).toBe('anthropic');
+        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:9999/anthropic')).toBe('anthropic');
+        expect(inferProviderModelFetchProtocol('codex', 'http://127.0.0.1:9999/anthropic/v1/messages')).toBe('anthropic');
         expect(inferProviderModelFetchProtocol('opencode', '/anthropic/v1')).toBe('anthropic');
     });
 

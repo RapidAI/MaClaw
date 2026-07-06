@@ -56,8 +56,8 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.pendingCancelExecuteRequest.Delete(userID)
 	h.pendingV2SubAgentExecution.Delete(userID)
 	h.pendingWorkflowChoice.Delete(userID)
-	h.pendingDirectCodingProjectPath.Delete(userID)
-	h.pendingDirectRemoteCoding.Delete(userID)
+	h.pendingTemplateCodingProjectPath.Delete(userID)
+	h.pendingTemplateRemoteCoding.Delete(userID)
 	if h.confirmationStore != nil {
 		h.confirmationStore.clear(userID)
 	}

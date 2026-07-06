@@ -373,7 +373,7 @@ func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 	saved := []corelib.MaclawLLMProvider{
 		{
 			Name:          codegenProviderName,
-			URL:           "http://127.0.0.1:5001/anthropic",
+			URL:           "https://codegen.qianxin-inc.cn/api/v1/anthropic",
 			Model:         "qax-codegen/Auto",
 			Protocol:      "anthropic",
 			AuthType:      "sso",
@@ -417,8 +417,8 @@ func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 	if got.Protocol != "openai" {
 		t.Fatalf("CodeGen SSO protocol = %q, want %q", got.Protocol, "openai")
 	}
-	if got.URL != "http://127.0.0.1:5001" {
-		t.Fatalf("CodeGen SSO URL = %q, want %q", got.URL, "http://127.0.0.1:5001")
+	if got.URL != "https://codegen.qianxin-inc.cn/api/v1" {
+		t.Fatalf("CodeGen SSO URL = %q, want %q", got.URL, "https://codegen.qianxin-inc.cn/api/v1")
 	}
 	if got.Model != saved[0].Model {
 		t.Fatalf("CodeGen SSO model = %q, want %q", got.Model, saved[0].Model)
@@ -521,7 +521,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 			Models: []corelib.ModelConfig{{
 				ModelName: codegenProviderName,
 				ModelId:   "qax-codegen/Auto",
-				ModelUrl:  "http://127.0.0.1:5001/anthropic",
+				ModelUrl:  codegenClaudeRemoteBaseURL,
 				ApiKey:    "token-123",
 				WireApi:   "anthropic",
 			}},
@@ -618,7 +618,7 @@ func TestInjectCodeGenModelIntoToolConfigsUsesFirstModelAsToolModelName(t *testi
 			Models: []corelib.ModelConfig{{
 				ModelName: codegenProviderName,
 				ModelId:   "old-model",
-				ModelUrl:  "http://127.0.0.1:5001/anthropic",
+				ModelUrl:  codegenClaudeRemoteBaseURL,
 				ApiKey:    "old-token",
 				WireApi:   "anthropic",
 			}},
@@ -1243,7 +1243,7 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 			CurrentModel: "GLM",
 			Models: []corelib.ModelConfig{
 				{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/anthropic", ApiKey: "glm-token", WireApi: "anthropic"},
-				{ModelName: codegenProviderName, ModelId: "qax-codegen/Auto", ModelUrl: "http://127.0.0.1:5001/anthropic", ApiKey: "token-123", WireApi: "anthropic"},
+				{ModelName: codegenProviderName, ModelId: "qax-codegen/Auto", ModelUrl: codegenClaudeRemoteBaseURL, ApiKey: "token-123", WireApi: "anthropic"},
 			},
 		},
 		Codex: corelib.ToolConfig{CurrentModel: "Original", Models: []corelib.ModelConfig{{
@@ -1300,8 +1300,14 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 	if got := env["ANTHROPIC_MODEL"]; got != "claude-model" {
 		t.Fatalf("ANTHROPIC_MODEL = %v, want %q", got, "claude-model")
 	}
-	if got := env["ANTHROPIC_BASE_URL"]; got != "http://127.0.0.1:5001/anthropic" {
-		t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, "http://127.0.0.1:5001/anthropic")
+	if got := env["ANTHROPIC_BASE_URL"]; got != codegenClaudeRemoteBaseURL {
+		t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, codegenClaudeRemoteBaseURL)
+	}
+}
+
+func TestCodeGenAnthropicBaseURLUsesRemoteEndpoint(t *testing.T) {
+	if got := codegenAnthropicBaseURL("https://codegen.qianxin-inc.cn/api/v1"); got != codegenClaudeRemoteBaseURL {
+		t.Fatalf("codegenAnthropicBaseURL() = %q, want %q", got, codegenClaudeRemoteBaseURL)
 	}
 }
 

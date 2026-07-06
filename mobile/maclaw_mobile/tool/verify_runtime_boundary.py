@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_SCAN_TARGETS = ("lib", "android", "ios", "pubspec.yaml")
+DEFAULT_SCAN_TARGETS = ("lib", "android", "ios", "pubspec.yaml", "pubspec.lock")
 SKIP_DIRS = {
     ".dart_tool",
     ".gradle",
@@ -22,6 +22,7 @@ TEXT_SUFFIXES = {
     ".gradle",
     ".java",
     ".kt",
+    ".lock",
     ".m",
     ".mm",
     ".plist",
@@ -72,6 +73,19 @@ RULES = (
         "corelib method channel",
         re.compile(r"\bMethodChannel\b.*\b(corelib|go|native)\b", re.IGNORECASE),
         "Flutter Mobile must not add a native method-channel bridge to corelib.",
+    ),
+    BoundaryRule(
+        "phone-local ssh dependency",
+        re.compile(r"\bdartssh2\b", re.IGNORECASE),
+        "Flutter Mobile backend SSH must stay behind Hub/GUI agent sessions, not a phone-local SSH client dependency.",
+    ),
+    BoundaryRule(
+        "phone-side ssh credential api",
+        re.compile(
+            r"\b(?:saveServerPassword|readServerPassword|saveServerPrivateKey|"
+            r"readServerPrivateKey|readServerPrivateKeyPassphrase)\b",
+        ),
+        "Flutter Mobile must not expose phone-side SSH credential save/read APIs; credentials stay on MaClaw GUI/agent.",
     ),
 )
 

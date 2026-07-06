@@ -38,6 +38,7 @@ export interface CodingAgentProgress {
     title: string;
     detail?: string;
     outcome?: string;
+    severity?: string;
     summary?: string;
     event?: string;
     runID?: string;
@@ -146,6 +147,7 @@ export function normalizeCodingAgentProgress(progress: CodingAgentProgress): Cod
         title: normalizeCodingAgentTitle(progress.title),
         detail: normalizeCodingAgentOptionalText(progress.detail),
         outcome: normalizeCodingAgentOptionalText(progress.outcome),
+        severity: normalizeCodingAgentOptionalText(progress.severity),
         summary: normalizeCodingAgentOptionalText(progress.summary),
         event: normalizeCodingAgentOptionalText(progress.event),
         runID: normalizeCodingAgentOptionalText(progress.runID),
@@ -229,6 +231,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
             title: typeof raw.title === "string" ? raw.title : "",
             detail: typeof raw.detail === "string" ? raw.detail : "",
             outcome: typeof raw.outcome === "string" ? raw.outcome : "",
+            severity: typeof raw.severity === "string" ? raw.severity : "",
             summary: typeof raw.summary === "string" ? raw.summary : "",
             event: typeof raw.event === "string" ? raw.event : "",
             runID: typeof raw.run_id === "string" ? raw.run_id : typeof raw.runID === "string" ? raw.runID : "",
@@ -270,6 +273,9 @@ export function codingAgentProgressTone(progress: CodingAgentProgress): CodingAg
         case "diff_check":
             return codingAgentDiffCheckStatusTone(normalized.outcome);
         case "tool_finished":
+            if (codingAgentToolFailureLooksDiagnostic(normalized)) {
+                return neutralAttentionTone;
+            }
             return codingAgentToolOutcomeTone(normalized.outcome);
         default:
             return codingAgentStatusTone(normalized.phase);
@@ -644,6 +650,49 @@ export function codingAgentToolOutcomeTone(outcome: string | undefined): CodingA
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
+}
+
+function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): boolean {
+    if (normalizeCodingAgentToolOutcome(progress.outcome) !== "failed") return false;
+    const text = [progress.detail, progress.summary].filter(Boolean).join("\n").toLowerCase();
+    const hardFailureMarkers = [
+        "assert",
+        "access denied",
+        "build stopped",
+        "check(",
+        "check (",
+        "expected",
+        "fatal error",
+        "fail at",
+        "failed test",
+        "linker command failed",
+        "lnk",
+        "ninja:",
+        "panic:",
+        "permission denied",
+        "pytest",
+        "test failed",
+        "traceback",
+        "undefined reference",
+    ];
+    if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
+    if ((progress.severity || "").trim().toLowerCase() === "diagnostic") return true;
+    if (!text) return false;
+    const diagnosticMarkers = [
+        "--version",
+        "command not found",
+        "could not find files for the given pattern",
+        "diagnostic",
+        "environment probe",
+        "get-command",
+        "not recognized as",
+        "probe",
+        "version check",
+        "where.exe",
+        "无法将",
+        "识别为 cmdlet",
+    ];
+    return diagnosticMarkers.some((marker) => text.includes(marker));
 }
 
 export function normalizeCodingAgentGuardrailStatus(status?: string): CodingAgentGuardrailStatus {

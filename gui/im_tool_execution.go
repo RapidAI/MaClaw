@@ -554,9 +554,14 @@ func workflowPolicyManagedSkillRunHasProjectPath(args map[string]interface{}) bo
 func workflowPolicyBlocksImplementationTool(policy v2.ToolFilterPolicy, name string) bool {
 	name = strings.TrimSpace(name)
 	switch string(policy) {
-	case string(v2.ToolFilterDocOnly), string(v2.ToolFilterPlanning):
+	case string(v2.ToolFilterDocOnly):
 		switch name {
 		case "bash", "write_file", "edit_file", "edit_lines", "task", "delegate_task":
+			return true
+		}
+	case string(v2.ToolFilterPlanning):
+		switch name {
+		case "bash", "edit_file", "edit_lines", "task", "delegate_task":
 			return true
 		}
 	}

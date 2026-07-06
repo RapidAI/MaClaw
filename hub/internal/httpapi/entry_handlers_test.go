@@ -55,6 +55,72 @@ func TestEntryProbeHandlerReturnsBoundUser(t *testing.T) {
 	}
 }
 
+func TestEntryProbeHandlerUsesTenantIDFromBody(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	router := services.handler
+	token := issueHubAdminToken(t, router)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := services.store.Tenants.Create(ctx, &store.Tenant{
+		ID:        "tenant_vantagics",
+		Slug:      "vantagics",
+		Name:      "Vantagics",
+		Status:    "active",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	for _, target := range []string{"/api/admin/users/manual-bind", "/api/admin/users/manual-bind?tenant_id=tenant_vantagics"} {
+		resp := doHubAdminJSONRequest(t, router, http.MethodPost, target, map[string]any{
+			"email": "znsoft@163.com",
+		}, token)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("manual bind %s status = %d body=%s", target, resp.Code, resp.Body.String())
+		}
+	}
+	user, err := services.store.Users.GetByTenantEmail(ctx, "tenant_vantagics", "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("GetByTenantEmail: %v", err)
+	}
+	if user == nil {
+		t.Fatal("tenant user not found")
+	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		ID:         user.ID + "_phone",
+		TenantID:   user.TenantID,
+		UserID:     user.ID,
+		Type:       "phone",
+		Value:      "17090134628",
+		Verified:   true,
+		VerifiedAt: &now,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("UpsertIdentity phone: %v", err)
+	}
+
+	ambiguous := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/entry/probe", map[string]any{
+		"email": "znsoft@163.com",
+	}, "")
+	if ambiguous.Code != http.StatusBadRequest {
+		t.Fatalf("ambiguous probe status = %d body=%s", ambiguous.Code, ambiguous.Body.String())
+	}
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/entry/probe", map[string]any{
+		"email":     "znsoft@163.com",
+		"tenant_id": "tenant_vantagics",
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	if !containsAll(body, "\"tenant_id\":\"tenant_vantagics\"", "\"phone_number\":\"17090134628\"", "\"status\":\"bound\"") {
+		t.Fatalf("unexpected body=%s", body)
+	}
+}
+
 func TestEntryProbeHandlerReturnsNotFoundForUnknownEmail(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 

@@ -47,6 +47,40 @@ void main() {
     expect(intent.assistantPrompt, contains(_incidentReviewPrefix));
   });
 
+  test('redacts shared assistant prompt secrets', () {
+    final intent = MobileSharedIntent.fromMedia(
+      value: 'investigate token=raw-share-token password=raw-share-password',
+      typeName: 'text',
+      mimeType: 'text/plain',
+    );
+
+    expect(intent.kind, MobileSharedIntentKind.text);
+    expect(intent.assistantPrompt, contains('token=[REDACTED_SECRET]'));
+    expect(intent.assistantPrompt, contains('password=[REDACTED_SECRET]'));
+    expect(intent.assistantPrompt, isNot(contains('raw-share-token')));
+    expect(intent.assistantPrompt, isNot(contains('raw-share-password')));
+  });
+
+  test('redacts shared link credentials and message secrets', () {
+    final intent = MobileSharedIntent.fromMedia(
+      value: 'https://user:raw-url-password@example.com/runbook',
+      typeName: 'url',
+      message: 'Authorization: Bearer raw-share-bearer',
+    );
+
+    expect(intent.kind, MobileSharedIntentKind.link);
+    expect(
+      intent.assistantPrompt,
+      contains('https://[REDACTED_CREDENTIALS]@example.com/runbook'),
+    );
+    expect(
+      intent.assistantPrompt,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(intent.assistantPrompt, isNot(contains('raw-url-password')));
+    expect(intent.assistantPrompt, isNot(contains('raw-share-bearer')));
+  });
+
   test('classifies shared images for document import', () {
     final intent = MobileSharedIntent.fromMedia(
       value: '/tmp/capture.png',

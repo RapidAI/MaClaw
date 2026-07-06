@@ -102,12 +102,20 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 	}
 	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(policyOwnerID) {
 		if h.app.workflowEngine.IsAwaitingReview(policyOwnerID) {
+			if policy := h.workflowReviewPhaseToolFilter(policyOwnerID); policy == v2.ToolFilterPlanning {
+				return policyOwnerID, policy, true
+			}
 			return policyOwnerID, v2.ToolFilterDocOnly, true
 		}
 		return policyOwnerID, v2.ToolFilterNone, true
 	}
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyOwnerID) {
 		return policyOwnerID, v2.ToolFilterFull, true
+	}
+	if h != nil && h.app != nil && h.app.workflowEngine != nil {
+		if policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID); policy != v2.ToolFilterNone {
+			return policyOwnerID, policy, true
+		}
 	}
 	if h.isWorkflowV2Active(policyOwnerID) {
 		wf := h.getWorkflowV2()
@@ -136,12 +144,34 @@ func (h *IMMessageHandler) workflowToolFilterOwnerPolicyAndDecision(userID strin
 			}
 		}
 	}
-	if h != nil && h.app != nil && h.app.workflowEngine != nil {
-		if policy := h.app.workflowEngine.GetActivePhaseToolFilter(policyOwnerID); policy != v2.ToolFilterNone {
-			return policyOwnerID, policy, true
+	return policyOwnerID, v2.ToolFilterNone, false
+}
+
+func (h *IMMessageHandler) workflowReviewPhaseToolFilter(userID string) v2.ToolFilterPolicy {
+	if h == nil || h.app == nil || h.app.workflowEngine == nil {
+		return v2.ToolFilterNone
+	}
+	ws := h.app.workflowEngine.GetActiveWorkflow(userID)
+	if ws == nil || ws.PendingReviewPhaseID == "" {
+		return v2.ToolFilterNone
+	}
+	registry := h.app.workflowEngine.GetRegistry()
+	if registry == nil {
+		return v2.ToolFilterNone
+	}
+	tmpl := registry.Match(ws.Type)
+	if tmpl == nil {
+		return v2.ToolFilterNone
+	}
+	for _, phase := range tmpl.Phases {
+		if phase.ID == ws.PendingReviewPhaseID {
+			if ws.Type == v2.WorkflowCoding && phase.ID == v2.PhaseCodingTaskBreakdown {
+				return v2.ToolFilterPlanning
+			}
+			return phase.ToolPolicy
 		}
 	}
-	return policyOwnerID, v2.ToolFilterNone, false
+	return v2.ToolFilterNone
 }
 
 func agentLoopToolNamesForLog(tools []map[string]interface{}) []string {
@@ -170,6 +200,8 @@ func requiredWorkflowToolNamesForPolicy(policy interface{}) []string {
 	switch v2.ToolFilterPolicy(policyName) {
 	case v2.ToolFilterDocOnly:
 		return []string{"read_file", "list_directory", "send_file"}
+	case v2.ToolFilterPlanning:
+		return []string{"read_file", "list_directory", "write_file", "send_file"}
 	case v2.ToolFilterOpsControlled:
 		return []string{"read_file", "list_directory", "send_file", "bash", "ssh"}
 	case v2.ToolFilterFull:

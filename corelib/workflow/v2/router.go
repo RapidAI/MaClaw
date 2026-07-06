@@ -9,9 +9,8 @@ import (
 type RouteTarget string
 
 const (
-	RouteToAgentLoop    RouteTarget = "agent_loop"
-	RouteToWorkflow     RouteTarget = "workflow"
-	RouteToDirectCoding RouteTarget = "direct_coding" // Skip SDD, go straight to SubAgent
+	RouteToAgentLoop RouteTarget = "agent_loop"
+	RouteToWorkflow  RouteTarget = "workflow"
 )
 
 // RouteResult is returned by WorkflowRouter.Route.
@@ -36,28 +35,25 @@ type Attachment struct {
 // Returns true if the message should trigger a workflow.
 type LLMConfirmFunc func(text, workflowType string) bool
 
-// TaskComplexity represents the assessed complexity of a coding task.
+// TaskComplexity is kept for GUI compatibility with older classifier plumbing.
+// The current router asks the user to choose a workflow template.
 type TaskComplexity string
 
 const (
-	ComplexitySimple  TaskComplexity = "simple"  // Direct SubAgent execution, no SDD
-	ComplexityComplex TaskComplexity = "complex" // Full SDD workflow (requirements → design → tasks → code)
-	ComplexityNone    TaskComplexity = "none"    // Not a coding task — route to normal agent loop
+	ComplexitySimple  TaskComplexity = "simple"
+	ComplexityComplex TaskComplexity = "complex"
+	ComplexityNone    TaskComplexity = "none"
 )
 
-// ComplexityFunc assesses whether a coding task is simple (direct coding) or complex (needs SDD).
-// Returns ComplexitySimple for quick tasks (bug fix, hello world, add a button).
-// Returns ComplexityComplex for projects needing design/planning.
-// When nil, assessComplexity conservatively returns ComplexityComplex.
+// ComplexityFunc is retained for older GUI glue; WorkflowRouter does not call it.
 type ComplexityFunc func(text string) TaskComplexity
 
 // WorkflowRouter is the single decision point for message routing.
 // It replaces QuickFilter + UIC + IUM + GateIntentClassifier + SteeringDetector.
 type WorkflowRouter struct {
-	machine        *StateMachine
-	templates      *TemplateRegistry
-	llmFunc        LLMConfirmFunc // optional confirmation after structured template match
-	complexityFunc ComplexityFunc // optional; nil = conservative complex fallback
+	machine   *StateMachine
+	templates *TemplateRegistry
+	llmFunc   LLMConfirmFunc // optional confirmation after structured template match
 }
 
 func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFunc LLMConfirmFunc) *WorkflowRouter {
@@ -66,16 +62,6 @@ func NewWorkflowRouter(machine *StateMachine, templates *TemplateRegistry, llmFu
 		templates: templates,
 		llmFunc:   llmFunc,
 	}
-}
-
-// SetComplexityFunc sets the LLM-based complexity assessor.
-func (r *WorkflowRouter) SetComplexityFunc(fn ComplexityFunc) {
-	r.complexityFunc = fn
-}
-
-// GetComplexityFunc returns the current complexity function (nil if not set).
-func (r *WorkflowRouter) GetComplexityFunc() ComplexityFunc {
-	return r.complexityFunc
 }
 
 // HasTemplate returns true if a template with the given type string is registered.
@@ -213,7 +199,7 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 
 	// Step 7: For coding tasks, let the user decide complexity.
 	// The router returns RouteToWorkflow; the GUI layer will ask the user
-	// whether to use simple (direct coding) or full SDD before proceeding.
+	// whether to use simplified coding, remote coding, or full SDD before proceeding.
 	// Non-coding templates (PPT, business plan, etc.) always go to full workflow.
 
 	// Step 8: Extract project path from text
@@ -246,19 +232,6 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 		ProjectPath:  projectPath,
 		RunnerUp:     runnerUp,
 	}
-}
-
-// assessComplexity determines whether a coding task is simple (direct SubAgent)
-// or complex (needs full SDD workflow). Uses LLM semantic judgment when available.
-// Without LLM, defaults to complex (full SDD) — the safe choice that preserves
-// the three-phase design process. Direct coding only triggers with LLM confirmation.
-func (r *WorkflowRouter) assessComplexity(text string) TaskComplexity {
-	// Use LLM-based complexity assessment when available
-	if r.complexityFunc != nil {
-		return r.complexityFunc(text)
-	}
-	// Without LLM: always default to complex (full SDD) — the safe choice.
-	return ComplexityComplex
 }
 
 func shouldPreferCNPatentApplication(text string) bool {
@@ -312,10 +285,10 @@ const ambiguousTemplateRatio = 0.85
 var skipSignals = []string{
 	// Simplified Chinese
 	"直接做", "不用问了", "按你的想法来", "跳过文档", "不需要文档",
-	"直接开始", "不用三阶段", "直接编码", "不要文档", "别废话",
+	"直接开始", "不用三阶段", "不要文档", "别废话",
 	// Traditional Chinese (only items that differ from simplified)
 	"不用問了", "跳過文檔", "不需要文檔",
-	"直接開始", "不用三階段", "直接編碼", "不要文檔",
+	"直接開始", "不用三階段", "不要文檔",
 	// English
 	"skip workflow", "just do it", "skip docs",
 }

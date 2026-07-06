@@ -783,7 +783,7 @@ describe('OnboardingWizard registration', () => {
     });
 
     it('marks registration done after activation succeeds', async () => {
-        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true, phone_number: '17090134628' });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: true });
 
         render(<OnboardingWizard {...baseProps} />);
@@ -798,6 +798,7 @@ describe('OnboardingWizard registration', () => {
         expect(screen.getByText(/Connecting to Hub in the background/)).toBeTruthy();
         expect(screen.getByText('Hub connecting')).toBeTruthy();
         expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_email: 'user@example.com' });
+        expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_mobile: '17090134628' });
         expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
         expect(RedeemHubLLMServiceMock).not.toHaveBeenCalled();
         expect(GetRemoteActivationStatusMock).not.toHaveBeenCalled();

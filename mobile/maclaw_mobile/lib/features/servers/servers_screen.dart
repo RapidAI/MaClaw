@@ -1,6 +1,3 @@
-import 'dart:convert';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,7 +7,6 @@ import '../../core/api/api_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../shared/surface.dart';
-import '../auth/session_controller.dart';
 import '../digital_employees/digital_employee.dart';
 import '../digital_employees/digital_employees_controller.dart';
 import 'server_command.dart';
@@ -29,26 +25,18 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   final _commandController =
       TextEditingController(text: 'journalctl -u nginx -n 100 --no-pager');
   final _logController = TextEditingController();
-  final _nameController = TextEditingController(text: '生产服务器');
-  final _tagController = TextEditingController(text: '生产');
-  final _noteController = TextEditingController();
-  final _hostController = TextEditingController();
-  final _portController = TextEditingController(text: '22');
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _privateKeyController = TextEditingController();
-  final _privateKeyPassphraseController = TextEditingController();
-  final _terminalKey = GlobalKey<_SSHTerminalCardState>();
-  String _authMode = serverAuthModePassword;
+  final _backendSessionKey = GlobalKey<_BackendSSHSessionCardState>();
   ServerProfile? _analysisProfile;
-  var _settingLogFromTerminal = false;
+  String? _analysisBackendSessionId;
+  var _settingLogFromBackendSession = false;
 
   @override
   void initState() {
     super.initState();
     _logController.addListener(() {
-      if (!_settingLogFromTerminal) {
+      if (!_settingLogFromBackendSession) {
         _analysisProfile = null;
+        _analysisBackendSessionId = null;
       }
     });
   }
@@ -57,99 +45,32 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   void dispose() {
     _commandController.dispose();
     _logController.dispose();
-    _nameController.dispose();
-    _tagController.dispose();
-    _noteController.dispose();
-    _hostController.dispose();
-    _portController.dispose();
-    _usernameController.dispose();
-    _passwordController.dispose();
-    _privateKeyController.dispose();
-    _privateKeyPassphraseController.dispose();
     super.dispose();
   }
 
-  Future<void> _importPrivateKey() async {
-    final picked = await FilePicker.platform.pickFiles(
-      type: FileType.any,
-      withData: true,
-    );
-    if (picked == null || picked.files.isEmpty) return;
-    final bytes = picked.files.single.bytes;
-    if (bytes == null) return;
-    _privateKeyController.text = utf8.decode(bytes, allowMalformed: true);
-    if (mounted) {
-      setState(() => _authMode = serverAuthModePrivateKey);
-    }
-  }
-
-  Future<void> _addServer() async {
-    final privateKey = _privateKeyController.text.trim();
-    final portText = _portController.text.trim();
-    final port = int.tryParse(portText);
-    if (_hostController.text.trim().isEmpty) {
-      _showServerProfileError('请输入服务器 Host。');
-      return;
-    }
-    if (port == null || port <= 0 || port > 65535) {
-      _showServerProfileError('请输入 1-65535 范围内的 SSH 端口。');
-      return;
-    }
-    if (_usernameController.text.trim().isEmpty) {
-      _showServerProfileError('请输入 SSH 用户名。');
-      return;
-    }
-    if (_authMode == serverAuthModePrivateKey && privateKey.isEmpty) {
-      _showServerProfileError('私钥登录需要填写或导入私钥。');
-      return;
-    }
-    final profile = ServerProfile(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
-      name: _nameController.text.trim().isEmpty
-          ? _hostController.text.trim()
-          : _nameController.text.trim(),
-      host: _hostController.text.trim(),
-      port: port,
-      username: _usernameController.text.trim(),
-      authMode: _authMode,
-      tag: _tagController.text.trim().isEmpty
-          ? null
-          : _tagController.text.trim(),
-      note: _noteController.text.trim().isEmpty
-          ? null
-          : _noteController.text.trim(),
-    );
+  Future<void> _refreshServerProfiles() async {
     try {
-      await ref.read(serverProfilesProvider.notifier).addProfile(
-            profile,
-            password: _passwordController.text,
-            privateKey: privateKey,
-            privateKeyPassphrase: _privateKeyPassphraseController.text,
-          );
+      final profiles =
+          await ref.read(serverProfilesProvider.notifier).refreshFromHub();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已同步 ${profiles.length} 个后台服务器档案')),
+      );
     } catch (error) {
-      _showServerProfileError('服务器配置保存失败：$error');
-      return;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('服务器档案同步失败：$error')),
+      );
     }
-    _passwordController.clear();
-    _privateKeyController.clear();
-    _privateKeyPassphraseController.clear();
-    _noteController.clear();
   }
 
-  void _showServerProfileError(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  Future<void> _deleteServer(ServerProfile profile) async {
+  Future<void> _clearCachedServer(ServerProfile profile) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除服务器配置？'),
+        title: const Text('清除本机缓存？'),
         content: Text(
-          '将删除 ${profile.name} 的连接配置，并清理本机保存的 SSH 密码/私钥。',
+          '将从手机本机缓存中移除 ${profile.name} 的服务器档案。真实 SSH 配置和凭据仍由 MaClaw GUI/agent 管理，可再次从 Hub 同步。',
         ),
         actions: [
           TextButton(
@@ -158,21 +79,28 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除'),
+            child: const Text('清除'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
-    await ref.read(serverProfilesProvider.notifier).removeProfile(profile.id);
+    await ref
+        .read(serverProfilesProvider.notifier)
+        .clearCachedProfile(profile.id);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已删除 ${profile.name}')),
+      SnackBar(content: Text('已清除 ${profile.name} 的本机缓存')),
     );
   }
 
-  Future<bool> _sendCommandToTerminal(String command) async {
-    return _terminalKey.currentState?.sendCommand(command) ?? false;
+  Future<bool> _sendCommandToBackendSession(String command) async {
+    return _backendSessionKey.currentState?.sendCommand(command) ?? false;
+  }
+
+  Future<bool> _startBackendTaskFromCommand(String command) async {
+    return _backendSessionKey.currentState?.startBackgroundTask(command) ??
+        false;
   }
 
   Future<void> _analyzeManualLog() async {
@@ -183,9 +111,10 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
       source: 'manual',
     );
     if (!confirmed || !mounted) return;
-    await ref
-        .read(sshAnalysisProvider.notifier)
-        .analyze(redactMobileSensitiveText(output));
+    await ref.read(sshAnalysisProvider.notifier).analyze(
+          redactMobileSensitiveText(output),
+          backendSessionId: _analysisBackendSessionId,
+        );
   }
 
   @override
@@ -195,42 +124,33 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     final profiles = ref.watch(serverProfilesProvider);
     return ScreenScaffold(
       title: '应急服务器',
-      subtitle: '后台 SSH 会话管理，AI 只解释日志和生成命令草案。',
+      subtitle: '通过 Hub 让 MaClaw GUI/agent 接管后台 SSH 会话，AI 只解释日志和生成命令草案。',
       trailing: IconButton.filledTonal(
-        tooltip: '新增服务器',
-        onPressed: _addServer,
-        icon: const Icon(Icons.add),
+        tooltip: '同步服务器档案',
+        onPressed: _refreshServerProfiles,
+        icon: const Icon(Icons.sync),
       ),
       children: [
         _ServerProfileCard(
-          nameController: _nameController,
-          tagController: _tagController,
-          noteController: _noteController,
-          hostController: _hostController,
-          portController: _portController,
-          usernameController: _usernameController,
-          passwordController: _passwordController,
-          privateKeyController: _privateKeyController,
-          privateKeyPassphraseController: _privateKeyPassphraseController,
-          authMode: _authMode,
-          onAuthModeChanged: (value) => setState(() => _authMode = value),
-          onImportPrivateKey: _importPrivateKey,
           profiles: profiles,
-          onAdd: _addServer,
-          onDelete: _deleteServer,
+          onRefresh: _refreshServerProfiles,
+          onClearCache: _clearCachedServer,
         ),
         const SizedBox(height: 12),
-        _SSHTerminalCard(
-          key: _terminalKey,
+        _BackendSSHSessionCard(
+          key: _backendSessionKey,
           profiles: profiles,
           onAnalyzeOutput: (output) {
-            _settingLogFromTerminal = true;
+            _settingLogFromBackendSession = true;
             _logController.text = output;
-            _analysisProfile = _terminalKey.currentState?.activeProfile;
-            _settingLogFromTerminal = false;
-            ref
-                .read(sshAnalysisProvider.notifier)
-                .analyze(redactMobileSensitiveText(output));
+            _analysisProfile = _backendSessionKey.currentState?.activeProfile;
+            _analysisBackendSessionId =
+                _backendSessionKey.currentState?.activeBackendSessionId;
+            _settingLogFromBackendSession = false;
+            ref.read(sshAnalysisProvider.notifier).analyze(
+                  redactMobileSensitiveText(output),
+                  backendSessionId: _analysisBackendSessionId,
+                );
           },
         ),
         const SizedBox(height: 12),
@@ -238,7 +158,8 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           controller: _commandController,
           risk: risk,
           onChanged: () => setState(() {}),
-          onSendCommand: _sendCommandToTerminal,
+          onSendCommand: _sendCommandToBackendSession,
+          onStartBackgroundTask: _startBackendTaskFromCommand,
           onUseCommand: (command) {
             _commandController.text = command;
             setState(() {});
@@ -249,6 +170,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           controller: _logController,
           analysis: analysis,
           serverProfile: _analysisProfile,
+          backendSessionId: _analysisBackendSessionId,
           onAnalyze: _analyzeManualLog,
           onUseCommand: (command) {
             _commandController.text = command;
@@ -261,38 +183,14 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
 }
 
 class _ServerProfileCard extends StatelessWidget {
-  final TextEditingController nameController;
-  final TextEditingController tagController;
-  final TextEditingController noteController;
-  final TextEditingController hostController;
-  final TextEditingController portController;
-  final TextEditingController usernameController;
-  final TextEditingController passwordController;
-  final TextEditingController privateKeyController;
-  final TextEditingController privateKeyPassphraseController;
-  final String authMode;
-  final ValueChanged<String> onAuthModeChanged;
-  final VoidCallback onImportPrivateKey;
   final AsyncValue<List<ServerProfile>> profiles;
-  final VoidCallback onAdd;
-  final Future<void> Function(ServerProfile profile) onDelete;
+  final VoidCallback onRefresh;
+  final Future<void> Function(ServerProfile profile) onClearCache;
 
   const _ServerProfileCard({
-    required this.nameController,
-    required this.tagController,
-    required this.noteController,
-    required this.hostController,
-    required this.portController,
-    required this.usernameController,
-    required this.passwordController,
-    required this.privateKeyController,
-    required this.privateKeyPassphraseController,
-    required this.authMode,
-    required this.onAuthModeChanged,
-    required this.onImportPrivateKey,
     required this.profiles,
-    required this.onAdd,
-    required this.onDelete,
+    required this.onRefresh,
+    required this.onClearCache,
   });
 
   String _serverSubtitle(ServerProfile server) {
@@ -318,123 +216,31 @@ class _ServerProfileCard extends StatelessWidget {
               children: [
                 Icon(Icons.dns_outlined, color: scheme.primary),
                 const SizedBox(width: 8),
-                Text('服务器配置', style: Theme.of(context).textTheme.titleMedium),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '名称',
-                prefixIcon: Icon(Icons.label_outline),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: tagController,
-                    decoration: const InputDecoration(labelText: '标签'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: noteController,
-                    decoration: const InputDecoration(labelText: '备注'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: hostController,
-              decoration: const InputDecoration(
-                labelText: 'Host',
-                prefixIcon: Icon(Icons.cloud_outlined),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: portController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: '端口'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: usernameController,
-                    decoration: const InputDecoration(labelText: '用户名'),
-                  ),
+                Text(
+                  '后台服务器档案',
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(
-                  value: serverAuthModePassword,
-                  icon: Icon(Icons.password_outlined),
-                  label: Text('密码'),
-                ),
-                ButtonSegment(
-                  value: serverAuthModePrivateKey,
-                  icon: Icon(Icons.vpn_key_outlined),
-                  label: Text('私钥'),
-                ),
-              ],
-              selected: {authMode},
-              onSelectionChanged: (values) => onAuthModeChanged(values.first),
+            const Text(
+              '服务器档案来自官方 Hub 同步的 MaClaw GUI/agent 授权配置。'
+              '手机只发起后台会话、发送确认后的输入并查看输出，不录入或直连 SSH 凭据。',
             ),
-            const SizedBox(height: 10),
-            if (authMode == serverAuthModePassword)
-              TextField(
-                controller: passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '密码',
-                  prefixIcon: Icon(Icons.password_outlined),
-                ),
-              )
-            else ...[
-              TextField(
-                controller: privateKeyController,
-                minLines: 4,
-                maxLines: 8,
-                decoration: InputDecoration(
-                  labelText: '私钥 PEM',
-                  prefixIcon: const Icon(Icons.vpn_key_outlined),
-                  suffixIcon: IconButton(
-                    tooltip: '从文件导入',
-                    onPressed: onImportPrivateKey,
-                    icon: const Icon(Icons.file_open_outlined),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: privateKeyPassphraseController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '私钥口令（可选）',
-                  prefixIcon: Icon(Icons.lock_outline),
-                ),
-              ),
-            ],
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: onAdd,
-              icon: const Icon(Icons.add),
-              label: const Text('添加服务器'),
+              onPressed: onRefresh,
+              icon: const Icon(Icons.sync),
+              label: const Text('同步服务器档案'),
             ),
             profiles.when(
               data: (items) => items.isEmpty
-                  ? const SizedBox.shrink()
+                  ? const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text(
+                        '暂无可用服务器档案。请在 MaClaw GUI 配置 SSH 主机并保持桌面/agent 在线。',
+                      ),
+                    )
                   : Column(
                       children: [
                         const SizedBox(height: 14),
@@ -446,9 +252,10 @@ class _ServerProfileCard extends StatelessWidget {
                             title: Text(server.name),
                             subtitle: Text(_serverSubtitle(server)),
                             trailing: IconButton(
-                              tooltip: '删除服务器',
-                              onPressed: () => onDelete(server),
-                              icon: const Icon(Icons.delete_outline),
+                              tooltip: '清除本机缓存',
+                              onPressed: () => onClearCache(server),
+                              icon:
+                                  const Icon(Icons.cleaning_services_outlined),
                             ),
                           ),
                       ],
@@ -466,24 +273,25 @@ class _ServerProfileCard extends StatelessWidget {
   }
 }
 
-class _SSHTerminalCard extends ConsumerStatefulWidget {
+class _BackendSSHSessionCard extends ConsumerStatefulWidget {
   final AsyncValue<List<ServerProfile>> profiles;
   final ValueChanged<String> onAnalyzeOutput;
 
-  const _SSHTerminalCard({
+  const _BackendSSHSessionCard({
     super.key,
     required this.profiles,
     required this.onAnalyzeOutput,
   });
 
   @override
-  ConsumerState<_SSHTerminalCard> createState() => _SSHTerminalCardState();
+  ConsumerState<_BackendSSHSessionCard> createState() =>
+      _BackendSSHSessionCardState();
 }
 
 enum _MobileSSHConnectionState { disconnected, connecting, connected }
 
 @visibleForTesting
-final mobileSshTerminalInitialOutputProvider = Provider<String>((ref) => '');
+final mobileBackendSshInitialOutputProvider = Provider<String>((ref) => '');
 
 typedef MobileClipboardWriter = Future<void> Function(String text);
 
@@ -492,7 +300,7 @@ final mobileClipboardWriterProvider = Provider<MobileClipboardWriter>(
   (ref) => (text) => Clipboard.setData(ClipboardData(text: text)),
 );
 
-String? mobileTerminalCommandPayload(String command) {
+String? backendSshCommandPayload(String command) {
   final text = command.trim();
   if (text.isEmpty) return null;
   return '$text\r';
@@ -524,13 +332,13 @@ const _confirmSaveHighRiskBody =
 const _cancelLabel = '\u53d6\u6d88';
 const _confirmSendLabel = '\u786e\u8ba4\u53d1\u9001';
 const _confirmSaveLabel = '\u786e\u8ba4\u4fdd\u5b58';
-const _sendTerminalOutputTitle =
-    '\u53d1\u9001\u7ec8\u7aef\u8f93\u51fa\u7ed9 AI\uff1f';
-const _sendRecentTerminalOutputBody =
-    '\u5c06\u628a\u6700\u8fd1\u7ec8\u7aef\u8f93\u51fa\u53d1\u9001\u5230 MaClaw \u5b98\u65b9\u670d\u52a1\u8fdb\u884c\u5206\u6790\u3002';
-const _sendPastedTerminalOutputBody =
-    '\u5c06\u628a\u5f53\u524d\u7c98\u8d34\u7684\u7ec8\u7aef\u8f93\u51fa\u53d1\u9001\u5230 MaClaw \u5b98\u65b9\u670d\u52a1\u8fdb\u884c\u5206\u6790\u3002';
-const _terminalOutputSummaryPrefix = '\u5171\u7ea6';
+const _sendBackendSessionOutputTitle =
+    '\u53d1\u9001\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u7ed9 AI\uff1f';
+const _sendRecentBackendSessionOutputBody =
+    '\u5c06\u628a\u6700\u8fd1\u540e\u53f0 SSH \u4f1a\u8bdd\u8f93\u51fa\u53d1\u9001\u5230 MaClaw \u5b98\u65b9\u670d\u52a1\u8fdb\u884c\u5206\u6790\u3002';
+const _sendPastedBackendSessionOutputBody =
+    '\u5c06\u628a\u5f53\u524d\u7c98\u8d34\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u8f93\u51fa\u6216\u670d\u52a1\u5668\u65e5\u5fd7\u53d1\u9001\u5230 MaClaw \u5b98\u65b9\u670d\u52a1\u8fdb\u884c\u5206\u6790\u3002';
+const _backendSessionOutputSummaryPrefix = '\u5171\u7ea6';
 const _lineCountUnit = '\u884c\u3001';
 const _charCountUnit = '\u4e2a\u5b57\u7b26\u3002';
 const _sensitiveDataWarning =
@@ -577,11 +385,11 @@ Future<bool> confirmMobileSSHLogAnalysis(
   if (text.isEmpty) return false;
   final lineCount = RegExp(r'\r\n|\r|\n').allMatches(text).length + 1;
   final preview = text.length > 420 ? '${text.substring(0, 420)}...' : text;
-  final automatic = source == 'terminal';
+  final automatic = source == 'backend_session';
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text(_sendTerminalOutputTitle),
+      title: const Text(_sendBackendSessionOutputTitle),
       content: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -589,12 +397,12 @@ Future<bool> confirmMobileSSHLogAnalysis(
           children: [
             Text(
               automatic
-                  ? _sendRecentTerminalOutputBody
-                  : _sendPastedTerminalOutputBody,
+                  ? _sendRecentBackendSessionOutputBody
+                  : _sendPastedBackendSessionOutputBody,
             ),
             const SizedBox(height: 8),
             Text(
-              '$_terminalOutputSummaryPrefix $lineCount $_lineCountUnit'
+              '$_backendSessionOutputSummaryPrefix $lineCount $_lineCountUnit'
               '${text.length} $_charCountUnit$_sensitiveDataWarning',
             ),
             const SizedBox(height: 12),
@@ -620,13 +428,19 @@ Future<bool> confirmMobileSSHLogAnalysis(
   return confirmed == true;
 }
 
-class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
+class _BackendSSHSessionCardState
+    extends ConsumerState<_BackendSSHSessionCard> {
   static const _maxCapturedOutputChars = 12000;
 
-  final _terminal = Terminal(maxLines: 1000);
+  final _backendSessionTerminal = Terminal(maxLines: 1000);
   final _capturedOutput = StringBuffer();
+  final _fileLocalPathController = TextEditingController();
+  final _fileRemotePathController = TextEditingController();
+  String _fileOperationAction = 'stat';
   String? _selectedId;
   String? _lastBackendSessionId;
+  String? _activeManagedBackendSessionId;
+  int _lastRealtimeOutputSeq = 0;
   ServerProfile? _activeProfile;
   _MobileSSHConnectionState _connectionState =
       _MobileSSHConnectionState.disconnected;
@@ -639,14 +453,26 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
 
   ServerProfile? get activeProfile => _activeProfile;
 
+  String? get activeBackendSessionId => _activeManagedBackendSessionId;
+
   @override
   void initState() {
     super.initState();
-    _writeTerminal('选择服务器后创建或附着后台 SSH 会话。\r\n', capture: false);
-    final initialOutput = ref.read(mobileSshTerminalInitialOutputProvider);
+    _writeBackendSessionOutput(
+      '选择服务器后，通过 Hub 请求 MaClaw GUI/agent 创建或附着后台 SSH 会话。\r\n',
+      capture: false,
+    );
+    final initialOutput = ref.read(mobileBackendSshInitialOutputProvider);
     if (initialOutput.trim().isNotEmpty) {
-      _writeTerminal(initialOutput);
+      _writeBackendSessionOutput(initialOutput);
     }
+  }
+
+  @override
+  void dispose() {
+    _fileLocalPathController.dispose();
+    _fileRemotePathController.dispose();
+    super.dispose();
   }
 
   Future<void> _connect(
@@ -674,25 +500,25 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       _lastError = null;
     });
     try {
-      final client = await _requireApiClient();
-      final session =
-          preferredProfileId == null || _lastBackendSessionId == null
-              ? await client.createBackendSSHSession(
-                  serverProfileId: selectedProfile.id,
-                )
-              : await client.reconnectBackendSSHSession(_lastBackendSessionId!);
+      final controller = ref.read(backendSshSessionsProvider.notifier);
+      final session = preferredProfileId == null ||
+              _lastBackendSessionId == null
+          ? await controller.createSession(serverProfileId: selectedProfile.id)
+          : await controller.reconnectSession(_lastBackendSessionId!);
       _lastBackendSessionId = session.sessionId;
-      _writeTerminal(
+      _activeManagedBackendSessionId = mobileBackendSessionHandoffId(session);
+      _lastRealtimeOutputSeq = session.outputSeq;
+      _writeBackendSessionOutput(
         '已创建/附着后台 SSH 会话 ${session.sessionId} · ${selectedProfile.name}\r\n',
       );
       if (session.recentOutput.trim().isNotEmpty) {
-        _writeTerminal(session.recentOutput);
+        _writeBackendSessionOutput(session.recentOutput);
       }
       if (mounted) {
         setState(() => _connectionState = _MobileSSHConnectionState.connected);
       }
     } catch (error) {
-      _writeTerminal('后台 SSH 会话创建失败：$error\r\n');
+      _writeBackendSessionOutput('后台 SSH 会话创建失败：$error\r\n');
       if (mounted) {
         setState(() {
           _connectionState = _MobileSSHConnectionState.disconnected;
@@ -709,15 +535,61 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     }
   }
 
-  Future<ApiClient> _requireApiClient() async {
-    final existing = ref.read(apiClientProvider);
-    if (existing != null) return existing;
-    await ref.read(sessionControllerProvider.future);
-    final client = ref.read(apiClientProvider);
-    if (client == null) {
-      throw StateError('请先登录 MaClaw 官方服务。');
+  Future<void> _attachExistingSession(
+    MobileBackendSSHSession existing,
+    List<ServerProfile> profiles,
+  ) async {
+    if (_connecting || _connected) return;
+    ServerProfile? selected;
+    for (final profile in profiles) {
+      if (profile.id == existing.serverProfileId) {
+        selected = profile;
+        break;
+      }
     }
-    return client;
+    setState(() {
+      _connectionState = _MobileSSHConnectionState.connecting;
+      _activeProfile = selected;
+      _selectedId = existing.serverProfileId;
+      _lastError = null;
+    });
+    try {
+      final session =
+          await ref.read(backendSshSessionsProvider.notifier).attachSession(
+                existing.sessionId,
+              );
+      _lastBackendSessionId = session.sessionId;
+      _activeManagedBackendSessionId = mobileBackendSessionHandoffId(
+        session,
+        fallback: mobileBackendSessionHandoffId(existing),
+      );
+      _lastRealtimeOutputSeq = session.outputSeq;
+      _writeBackendSessionOutput(
+        '已附着后台 SSH 会话 ${session.sessionId}'
+        '${selected == null ? '' : ' · ${selected.name}'}\r\n',
+      );
+      final output = session.recentOutput.trim().isNotEmpty
+          ? session.recentOutput
+          : existing.recentOutput;
+      if (output.trim().isNotEmpty) {
+        _writeBackendSessionOutput(output);
+      }
+      if (mounted) {
+        setState(() {
+          _connectionState = session.connected
+              ? _MobileSSHConnectionState.connected
+              : _MobileSSHConnectionState.connecting;
+        });
+      }
+    } catch (error) {
+      _writeBackendSessionOutput('后台 SSH 会话附着失败：$error\r\n');
+      if (mounted) {
+        setState(() {
+          _connectionState = _MobileSSHConnectionState.disconnected;
+          _lastError = error.toString();
+        });
+      }
+    }
   }
 
   Future<void> _closeActiveConnection({required bool manual}) async {
@@ -725,10 +597,12 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     final sessionId = _lastBackendSessionId;
     if (manual && wasConnected && sessionId != null) {
       try {
-        await (await _requireApiClient()).closeBackendSSHSession(sessionId);
-        _writeTerminal('已关闭后台 SSH 会话 $sessionId。\r\n');
+        await ref.read(backendSshSessionsProvider.notifier).closeSession(
+              sessionId,
+            );
+        _writeBackendSessionOutput('已关闭后台 SSH 会话 $sessionId。\r\n');
       } catch (error) {
-        _writeTerminal('后台 SSH 会话关闭失败：$error\r\n');
+        _writeBackendSessionOutput('后台 SSH 会话关闭失败：$error\r\n');
         if (mounted) {
           setState(() => _lastError = error.toString());
         }
@@ -736,15 +610,40 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
       }
     }
     if (mounted) {
-      setState(() => _connectionState = _MobileSSHConnectionState.disconnected);
+      setState(() {
+        _connectionState = _MobileSSHConnectionState.disconnected;
+        _lastRealtimeOutputSeq = 0;
+        _activeManagedBackendSessionId = null;
+      });
+    }
+  }
+
+  Future<void> _interruptActiveConnection() async {
+    final sessionId = _lastBackendSessionId;
+    if (!_connected || sessionId == null) return;
+    try {
+      final session =
+          await ref.read(backendSshSessionsProvider.notifier).interruptSession(
+                sessionId,
+              );
+      _activeManagedBackendSessionId = mobileBackendSessionHandoffId(
+        session,
+        fallback: _activeManagedBackendSessionId,
+      );
+      _writeBackendSessionOutput('已请求中断后台 SSH 会话 $sessionId。\r\n');
+    } catch (error) {
+      _writeBackendSessionOutput('后台 SSH 会话中断请求失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
     }
   }
 
   String _statusLabel() {
     return switch (_connectionState) {
-      _MobileSSHConnectionState.connecting => '连接中',
-      _MobileSSHConnectionState.connected => '已连接',
-      _MobileSSHConnectionState.disconnected => '未连接',
+      _MobileSSHConnectionState.connecting => '后台处理中',
+      _MobileSSHConnectionState.connected => 'GUI/agent 已接管',
+      _MobileSSHConnectionState.disconnected => '未接管',
     };
   }
 
@@ -764,8 +663,8 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     };
   }
 
-  void _writeTerminal(String data, {bool capture = true}) {
-    _terminal.write(data);
+  void _writeBackendSessionOutput(String data, {bool capture = true}) {
+    _backendSessionTerminal.write(data);
     if (!capture || data.isEmpty) return;
     final wasEmpty = _capturedOutput.isEmpty;
     _capturedOutput.write(data);
@@ -785,19 +684,191 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
   }
 
   Future<bool> sendCommand(String command) async {
-    final payload = mobileTerminalCommandPayload(command);
+    final payload = backendSshCommandPayload(command);
     final sessionId = _lastBackendSessionId;
     if (!_connected || payload == null || sessionId == null) return false;
-    final result = await (await _requireApiClient()).sendBackendSSHSessionInput(
-      sessionId: sessionId,
-      input: payload,
-    );
+    final result =
+        await ref.read(backendSshSessionsProvider.notifier).sendInput(
+              sessionId: sessionId,
+              input: payload,
+            );
     if (result.output.trim().isNotEmpty) {
-      _writeTerminal(result.output);
+      _writeBackendSessionOutput(result.output);
     } else {
-      _writeTerminal('命令已提交到后台 SSH 会话 $sessionId。\r\n');
+      _writeBackendSessionOutput(
+        '命令已投递到后台 SSH 会话 $sessionId，等待 GUI/agent 处理。\r\n',
+      );
     }
     return true;
+  }
+
+  Future<bool> startBackgroundTask(String command) async {
+    final text = command.trim();
+    final sessionId = _lastBackendSessionId;
+    if (!_connected || text.isEmpty || sessionId == null) return false;
+    final task =
+        await ref.read(backendSshTasksProvider.notifier).startBackgroundTask(
+              sessionId: sessionId,
+              command: text,
+              tailLines: 80,
+            );
+    _writeBackendSessionOutput(
+      '已请求 GUI/agent 后台任务 ${task.taskId}'
+      '${task.status.trim().isEmpty ? '' : ' · ${task.status.trim()}'}\r\n',
+    );
+    if (task.logTail.trim().isNotEmpty) {
+      _writeBackendSessionOutput(task.logTail);
+    }
+    return true;
+  }
+
+  Future<void> _refreshBackgroundTasks() async {
+    final sessionId = _lastBackendSessionId;
+    if (!_connected || sessionId == null) return;
+    try {
+      final tasks = await ref
+          .read(backendSshTasksProvider.notifier)
+          .refreshForSession(sessionId);
+      _writeBackendSessionOutput(
+        '已刷新 GUI/agent 后台任务 ${tasks.length} 个。\r\n',
+      );
+    } catch (error) {
+      _writeBackendSessionOutput('后台任务刷新失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  Future<void> _waitBackgroundTask(MobileBackendSSHTask task) async {
+    final sessionId = _lastBackendSessionId;
+    final taskId = task.taskId.trim();
+    if (!_connected || sessionId == null || taskId.isEmpty) return;
+    try {
+      final updated = await ref.read(backendSshTasksProvider.notifier).waitTask(
+            sessionId: sessionId,
+            taskId: taskId,
+            timeoutSeconds: 30,
+            tailLines: 120,
+          );
+      _writeBackendSessionOutput(
+        '后台任务 ${updated.taskId} 等待结果：${updated.status}\r\n',
+      );
+      if (updated.logTail.trim().isNotEmpty) {
+        _writeBackendSessionOutput(updated.logTail);
+      }
+    } catch (error) {
+      _writeBackendSessionOutput('后台任务等待失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  Future<void> _killBackgroundTask(MobileBackendSSHTask task) async {
+    final sessionId = _lastBackendSessionId;
+    final taskId = task.taskId.trim();
+    if (!_connected || sessionId == null || taskId.isEmpty) return;
+    try {
+      final updated = await ref.read(backendSshTasksProvider.notifier).killTask(
+            sessionId: sessionId,
+            taskId: taskId,
+          );
+      _writeBackendSessionOutput(
+        '已请求终止后台任务 ${updated.taskId}：${updated.status}\r\n',
+      );
+    } catch (error) {
+      _writeBackendSessionOutput('后台任务终止失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  Future<void> _requestFileOperation() async {
+    final sessionId = _lastBackendSessionId;
+    final action = _fileOperationAction.trim();
+    final remotePath = _fileRemotePathController.text.trim();
+    final localPath = _fileLocalPathController.text.trim();
+    if (!_connected || sessionId == null || action.isEmpty) return;
+    if (remotePath.isEmpty && localPath.isEmpty) {
+      setState(() => _lastError = '请填写远端路径，或填写 GUI/agent 侧本地路径。');
+      return;
+    }
+    try {
+      final operation =
+          await ref.read(backendSshTasksProvider.notifier).requestFileOperation(
+                sessionId: sessionId,
+                action: action,
+                localPath: localPath,
+                remotePath: remotePath,
+              );
+      final parts = [
+        if (operation.operationId.trim().isNotEmpty)
+          operation.operationId.trim(),
+        if (operation.action.trim().isNotEmpty) operation.action.trim(),
+        if (operation.status.trim().isNotEmpty) operation.status.trim(),
+        if (operation.claimedBy.trim().isNotEmpty)
+          '接管者 ${operation.claimedBy.trim()}',
+      ];
+      _writeBackendSessionOutput(
+        '已请求 GUI/agent 文件操作 ${parts.join(' · ')}\r\n',
+      );
+      final detail = [
+        if (operation.remotePath.trim().isNotEmpty)
+          '远端 ${operation.remotePath.trim()}',
+        if (operation.localPath.trim().isNotEmpty)
+          'GUI/agent 侧本地 ${operation.localPath.trim()}',
+        if (operation.bytesTransferred > 0) '字节 ${operation.bytesTransferred}',
+        if (operation.downloadUrl.trim().isNotEmpty)
+          '下载 ${operation.downloadUrl.trim()}',
+        if (operation.message.trim().isNotEmpty) operation.message.trim(),
+      ];
+      if (detail.isNotEmpty) {
+        _writeBackendSessionOutput('${detail.join(' · ')}\r\n');
+      }
+      if (mounted) {
+        setState(() => _lastError = null);
+      }
+    } catch (error) {
+      _writeBackendSessionOutput('后台文件操作请求失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  void _applyBackendSessionUpdate(MobileBackendSSHSession session) {
+    if (!mounted || session.sessionId != _lastBackendSessionId) return;
+    _activeManagedBackendSessionId = mobileBackendSessionHandoffId(
+      session,
+      fallback: _activeManagedBackendSessionId,
+    );
+    var changed = false;
+    final chunk = session.outputChunk;
+    if (chunk.isNotEmpty && session.outputSeq > _lastRealtimeOutputSeq) {
+      _writeBackendSessionOutput(chunk);
+      _lastRealtimeOutputSeq = session.outputSeq;
+      changed = true;
+    }
+    final nextState = session.connected
+        ? _MobileSSHConnectionState.connected
+        : session.status == 'closed' || session.state == 'closed'
+            ? _MobileSSHConnectionState.disconnected
+            : session.status == 'failed'
+                ? _MobileSSHConnectionState.disconnected
+                : _connectionState;
+    final nextError = session.status == 'failed' ? session.message : null;
+    if (nextState != _connectionState || nextError != _lastError) {
+      setState(() {
+        _connectionState = nextState;
+        _lastError = nextError;
+      });
+      return;
+    }
+    if (changed) {
+      setState(() {});
+    }
   }
 
   Future<void> _sendOutputToAI() async {
@@ -806,34 +877,47 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
     final confirmed = await confirmMobileSSHLogAnalysis(
       context,
       output,
-      source: 'terminal',
+      source: 'backend_session',
     );
     if (!confirmed || !mounted) return;
     widget.onAnalyzeOutput(output);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已发送最近终端输出给 AI 分析')),
+      const SnackBar(content: Text('已发送最近后台会话输出给 AI 分析')),
     );
   }
 
   Future<void> _copyRecentOutput() async {
     final output = _recentOutputForAI();
     if (output.isEmpty) return;
-    await ref.read(mobileClipboardWriterProvider)(output);
+    await ref.read(mobileClipboardWriterProvider)(
+      redactMobileSensitiveText(output),
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('终端输出已复制')),
+      const SnackBar(content: Text('后台会话输出已复制')),
     );
   }
 
   void _clearCapturedOutput() {
     _capturedOutput.clear();
-    _terminal.write('\x1B[2J\x1B[H');
-    _writeTerminal('终端输出已清空。\r\n', capture: false);
+    _backendSessionTerminal.write('\x1B[2J\x1B[H');
+    _writeBackendSessionOutput('后台会话输出已清空。\r\n', capture: false);
     setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<AsyncValue<Map<String, MobileBackendSSHSession>>>(
+      backendSshSessionsProvider,
+      (previous, next) {
+        final sessionId = _lastBackendSessionId;
+        if (sessionId == null) return;
+        final session = next.valueOrNull?[sessionId];
+        if (session != null) {
+          _applyBackendSessionUpdate(session);
+        }
+      },
+    );
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -842,6 +926,8 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
             final scheme = Theme.of(context).colorScheme;
             final statusColor = _statusColor(scheme);
             final reconnectId = _reconnectProfileId(profiles);
+            final backendSessions = ref.watch(backendSshSessionsProvider);
+            final backendTasks = ref.watch(backendSshTasksProvider);
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -850,7 +936,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                     Icon(Icons.terminal_outlined, color: scheme.primary),
                     const SizedBox(width: 8),
                     Text(
-                      '后台 SSH 会话',
+                      'GUI/agent 后台 SSH 会话',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const Spacer(),
@@ -893,9 +979,11 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                   runSpacing: 8,
                   children: [
                     FilledButton.icon(
-                      onPressed: _connecting ? null : () => _connect(profiles),
+                      onPressed: _connecting || _connected
+                          ? null
+                          : () => _connect(profiles),
                       icon: const Icon(Icons.power_settings_new),
-                      label: Text(_connected ? '重连会话' : '创建/附着会话'),
+                      label: Text(_connected ? 'GUI/agent 已接管' : '请求后台会话'),
                     ),
                     if (!_connected && reconnectId != null)
                       OutlinedButton.icon(
@@ -906,7 +994,7 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                                   preferredProfileId: reconnectId,
                                 ),
                         icon: const Icon(Icons.restart_alt_outlined),
-                        label: const Text('重连上次'),
+                        label: const Text('请求重接管'),
                       ),
                     OutlinedButton.icon(
                       onPressed: _connected
@@ -916,20 +1004,25 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                       label: const Text('关闭会话'),
                     ),
                     OutlinedButton.icon(
+                      onPressed: _connected ? _interruptActiveConnection : null,
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('中断'),
+                    ),
+                    OutlinedButton.icon(
                       onPressed:
                           _recentOutputForAI().isEmpty ? null : _sendOutputToAI,
                       icon: const Icon(Icons.psychology_alt_outlined),
                       label: const Text('交给 AI 分析'),
                     ),
                     IconButton.outlined(
-                      tooltip: '复制终端输出',
+                      tooltip: '复制后台会话输出',
                       onPressed: _recentOutputForAI().isEmpty
                           ? null
                           : _copyRecentOutput,
                       icon: const Icon(Icons.content_copy_outlined),
                     ),
                     IconButton.outlined(
-                      tooltip: '清空终端输出',
+                      tooltip: '清空后台会话输出',
                       onPressed:
                           _capturedOutput.isEmpty ? null : _clearCapturedOutput,
                       icon: const Icon(Icons.cleaning_services_outlined),
@@ -937,15 +1030,455 @@ class _SSHTerminalCardState extends ConsumerState<_SSHTerminalCard> {
                   ],
                 ),
                 const SizedBox(height: 12),
+                _BackendSessionList(
+                  sessions: backendSessions,
+                  profiles: profiles,
+                  activeSessionId: _lastBackendSessionId,
+                  disabled: _connecting || _connected,
+                  onRefresh: () =>
+                      ref.read(backendSshSessionsProvider.notifier).refresh(),
+                  onAttach: (session) =>
+                      _attachExistingSession(session, profiles),
+                ),
+                const SizedBox(height: 12),
+                _BackendTaskList(
+                  tasks: backendTasks,
+                  activeSessionId: _lastBackendSessionId,
+                  connected: _connected,
+                  onRefresh: _refreshBackgroundTasks,
+                  onWait: _waitBackgroundTask,
+                  onKill: _killBackgroundTask,
+                ),
+                const SizedBox(height: 12),
+                _BackendFileOperationCard(
+                  action: _fileOperationAction,
+                  localPathController: _fileLocalPathController,
+                  remotePathController: _fileRemotePathController,
+                  connected: _connected,
+                  onActionChanged: (value) => setState(
+                    () => _fileOperationAction = value ?? _fileOperationAction,
+                  ),
+                  onSubmit: _requestFileOperation,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '手机不会直连服务器；会话由 MaClaw GUI/agent 使用已授权配置创建、接管和回传输出。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+                const SizedBox(height: 12),
                 SizedBox(
                   height: 280,
-                  child: TerminalView(_terminal),
+                  child: TerminalView(_backendSessionTerminal),
                 ),
               ],
             );
           },
-          error: (error, _) => Text('终端加载失败：$error'),
+          error: (error, _) => Text('后台会话加载失败：$error'),
           loading: () => const LinearProgressIndicator(),
+        ),
+      ),
+    );
+  }
+}
+
+String? mobileBackendSessionHandoffId(
+  MobileBackendSSHSession session, {
+  String? fallback,
+}) {
+  final backendSessionId = session.backendSessionId.trim();
+  if (backendSessionId.isNotEmpty) return backendSessionId;
+  final fallbackId = fallback?.trim() ?? '';
+  return fallbackId.isEmpty ? null : fallbackId;
+}
+
+class _BackendSessionList extends StatelessWidget {
+  final AsyncValue<Map<String, MobileBackendSSHSession>> sessions;
+  final List<ServerProfile> profiles;
+  final String? activeSessionId;
+  final bool disabled;
+  final VoidCallback onRefresh;
+  final ValueChanged<MobileBackendSSHSession> onAttach;
+
+  const _BackendSessionList({
+    required this.sessions,
+    required this.profiles,
+    required this.activeSessionId,
+    required this.disabled,
+    required this.onRefresh,
+    required this.onAttach,
+  });
+
+  String _profileName(String profileId) {
+    for (final profile in profiles) {
+      if (profile.id == profileId) return profile.name;
+    }
+    return profileId.isEmpty ? '未知服务器' : profileId;
+  }
+
+  String _formatLastActivity(DateTime? value) {
+    if (value == null) return '';
+    final local = value.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  String _sessionSubtitle(MobileBackendSSHSession session) {
+    final createdAt = _formatLastActivity(session.createdAt);
+    final updatedAt = _formatLastActivity(session.updatedAt);
+    final lastActivity = _formatLastActivity(session.lastActivityAt);
+    final parts = [
+      _profileName(session.serverProfileId),
+      if (session.status.trim().isNotEmpty) '状态 ${session.status.trim()}',
+      if (session.state.trim().isNotEmpty) session.state.trim(),
+      if (session.claimedBy.trim().isNotEmpty)
+        '接管者 ${session.claimedBy.trim()}',
+      if (session.backendSessionId.trim().isNotEmpty)
+        '后端 ${session.backendSessionId.trim()}',
+      if (createdAt.isNotEmpty) '创建 $createdAt',
+      if (updatedAt.isNotEmpty) '更新 $updatedAt',
+      if (lastActivity.isNotEmpty) '最后活动 $lastActivity',
+      if (session.outputSeq > 0) '输出序号 ${session.outputSeq}',
+      if (session.pendingInputCount > 0) '待处理输入 ${session.pendingInputCount}',
+      if (session.message.trim().isNotEmpty) session.message.trim(),
+    ];
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.storage_outlined, color: scheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  '已有后台会话',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: '刷新后台会话',
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            sessions.when(
+              data: (items) {
+                final values = items.values.toList()
+                  ..sort((a, b) {
+                    final left = a.lastActivityAt ??
+                        DateTime.fromMillisecondsSinceEpoch(0);
+                    final right = b.lastActivityAt ??
+                        DateTime.fromMillisecondsSinceEpoch(0);
+                    return right.compareTo(left);
+                  });
+                if (values.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text('暂无可附着的后台 SSH 会话'),
+                  );
+                }
+                return Column(
+                  children: [
+                    for (final session in values.take(3))
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          session.connected
+                              ? Icons.link_outlined
+                              : Icons.link_off_outlined,
+                          color: session.connected
+                              ? scheme.primary
+                              : scheme.onSurfaceVariant,
+                        ),
+                        title: Text(
+                          session.sessionId,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          _sessionSubtitle(session),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: TextButton(
+                          onPressed:
+                              disabled || activeSessionId == session.sessionId
+                                  ? null
+                                  : () => onAttach(session),
+                          child: Text(
+                            activeSessionId == session.sessionId
+                                ? '当前会话'
+                                : '附着',
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+              error: (error, _) => Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('后台会话刷新失败：$error'),
+              ),
+              loading: () => const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: LinearProgressIndicator(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendTaskList extends StatelessWidget {
+  final AsyncValue<Map<String, List<MobileBackendSSHTask>>> tasks;
+  final String? activeSessionId;
+  final bool connected;
+  final VoidCallback onRefresh;
+  final ValueChanged<MobileBackendSSHTask> onWait;
+  final ValueChanged<MobileBackendSSHTask> onKill;
+
+  const _BackendTaskList({
+    required this.tasks,
+    required this.activeSessionId,
+    required this.connected,
+    required this.onRefresh,
+    required this.onWait,
+    required this.onKill,
+  });
+
+  String _taskSubtitle(MobileBackendSSHTask task) {
+    final parts = [
+      if (task.status.trim().isNotEmpty) '状态 ${task.status.trim()}',
+      if (task.backendSessionId.trim().isNotEmpty)
+        '后端 ${task.backendSessionId.trim()}',
+      if (task.exitCode != null) '退出码 ${task.exitCode}',
+      if (task.command.trim().isNotEmpty) task.command.trim(),
+      if (task.logTail.trim().isNotEmpty) task.logTail.trim(),
+    ];
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final sessionId = activeSessionId?.trim() ?? '';
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.pending_actions_outlined, color: scheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'GUI/agent 后台任务',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: '刷新后台任务',
+                  onPressed:
+                      connected && sessionId.isNotEmpty ? onRefresh : null,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            if (sessionId.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('请先创建或附着后台 SSH 会话'),
+              )
+            else
+              tasks.when(
+                data: (items) {
+                  final values =
+                      items[sessionId] ?? const <MobileBackendSSHTask>[];
+                  if (values.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('暂无 GUI/agent 后台任务'),
+                    );
+                  }
+                  return Column(
+                    children: [
+                      for (final task in values.take(4))
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            task.running
+                                ? Icons.play_circle_outline
+                                : Icons.task_alt_outlined,
+                            color: task.running
+                                ? scheme.primary
+                                : scheme.onSurfaceVariant,
+                          ),
+                          title: Text(
+                            task.taskId.isEmpty ? '未知任务' : task.taskId,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            _taskSubtitle(task),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Wrap(
+                            spacing: 4,
+                            children: [
+                              TextButton(
+                                onPressed:
+                                    connected ? () => onWait(task) : null,
+                                child: const Text('等待'),
+                              ),
+                              TextButton(
+                                onPressed:
+                                    connected ? () => onKill(task) : null,
+                                child: const Text('终止'),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  );
+                },
+                error: (error, _) => Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text('后台任务刷新失败：$error'),
+                ),
+                loading: () => const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendFileOperationCard extends StatelessWidget {
+  final String action;
+  final TextEditingController localPathController;
+  final TextEditingController remotePathController;
+  final bool connected;
+  final ValueChanged<String?> onActionChanged;
+  final VoidCallback onSubmit;
+
+  const _BackendFileOperationCard({
+    required this.action,
+    required this.localPathController,
+    required this.remotePathController,
+    required this.connected,
+    required this.onActionChanged,
+    required this.onSubmit,
+  });
+
+  String _actionLabel(String value) {
+    return switch (value) {
+      'download' => '下载到 GUI/agent',
+      'upload' => '从 GUI/agent 上传',
+      'list' => '列目录',
+      _ => '查看文件状态',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.folder_copy_outlined, color: scheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'GUI/agent 文件操作',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '手机只创建 Hub 文件操作控制记录；实际读写由 MaClaw GUI/agent 在后台会话侧处理。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: action,
+              items: [
+                for (final value in const [
+                  'stat',
+                  'list',
+                  'download',
+                  'upload',
+                ])
+                  DropdownMenuItem(
+                    value: value,
+                    child: Text(_actionLabel(value)),
+                  ),
+              ],
+              onChanged: connected ? onActionChanged : null,
+              decoration: const InputDecoration(labelText: '操作'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: remotePathController,
+              enabled: connected,
+              decoration: const InputDecoration(
+                labelText: '远端路径',
+                prefixIcon: Icon(Icons.dns_outlined),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: localPathController,
+              enabled: connected,
+              decoration: const InputDecoration(
+                labelText: 'GUI/agent 侧本地路径（可选）',
+                prefixIcon: Icon(Icons.computer_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: connected ? onSubmit : null,
+              icon: const Icon(Icons.add_task_outlined),
+              label: const Text('请求文件操作'),
+            ),
+          ],
         ),
       ),
     );
@@ -957,6 +1490,7 @@ class _CommandRiskCard extends StatelessWidget {
   final CommandRisk risk;
   final VoidCallback onChanged;
   final Future<bool> Function(String command) onSendCommand;
+  final Future<bool> Function(String command) onStartBackgroundTask;
   final ValueChanged<String> onUseCommand;
 
   const _CommandRiskCard({
@@ -964,6 +1498,7 @@ class _CommandRiskCard extends StatelessWidget {
     required this.risk,
     required this.onChanged,
     required this.onSendCommand,
+    required this.onStartBackgroundTask,
     required this.onUseCommand,
   });
 
@@ -1012,6 +1547,7 @@ class _CommandRiskCard extends StatelessWidget {
             _CommandActionBar(
               command: controller.text,
               onSendCommand: onSendCommand,
+              onStartBackgroundTask: onStartBackgroundTask,
               onUseCommand: onUseCommand,
             ),
           ],
@@ -1024,11 +1560,13 @@ class _CommandRiskCard extends StatelessWidget {
 class _CommandActionBar extends ConsumerWidget {
   final String command;
   final Future<bool> Function(String command) onSendCommand;
+  final Future<bool> Function(String command) onStartBackgroundTask;
   final ValueChanged<String> onUseCommand;
 
   const _CommandActionBar({
     required this.command,
     required this.onSendCommand,
+    required this.onStartBackgroundTask,
     required this.onUseCommand,
   });
 
@@ -1068,7 +1606,34 @@ class _CommandActionBar extends ConsumerWidget {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(sent ? '命令已发送到后台 SSH 会话' : '请先连接后台 SSH 会话'),
+        content: Text(sent ? '命令已投递到后台 SSH 会话' : '请先创建或附着后台 SSH 会话'),
+      ),
+    );
+  }
+
+  Future<void> _startBackgroundTask(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    if (!await confirmMobileHighRiskCommand(
+      context,
+      command,
+      action: 'send',
+    )) {
+      return;
+    }
+    if (!context.mounted) return;
+    final started = await onStartBackgroundTask(command);
+    if (!context.mounted) return;
+    if (started) {
+      await ref.read(serverCommandsProvider.notifier).record(command);
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          started ? '后台任务请求已提交给 GUI/agent' : '请先创建或附着后台 SSH 会话',
+        ),
       ),
     );
   }
@@ -1110,7 +1675,14 @@ class _CommandActionBar extends ConsumerWidget {
                   ? null
                   : () => _sendCommand(context, ref),
               icon: const Icon(Icons.send_outlined),
-              label: const Text('发送到会话'),
+              label: const Text('投递到后台会话'),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: command.trim().isEmpty
+                  ? null
+                  : () => _startBackgroundTask(context, ref),
+              icon: const Icon(Icons.pending_actions_outlined),
+              label: const Text('作为后台任务运行'),
             ),
           ],
         ),
@@ -1199,6 +1771,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
   final TextEditingController controller;
   final AsyncValue<MobileSSHAnalysis?> analysis;
   final ServerProfile? serverProfile;
+  final String? backendSessionId;
   final VoidCallback onAnalyze;
   final ValueChanged<String> onUseCommand;
 
@@ -1206,6 +1779,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
     required this.controller,
     required this.analysis,
     required this.serverProfile,
+    required this.backendSessionId,
     required this.onAnalyze,
     required this.onUseCommand,
   });
@@ -1228,7 +1802,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
     final rawOutput = controller.text.trim();
     if (rawOutput.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先粘贴终端输出或错误日志。')),
+        const SnackBar(content: Text('请先粘贴后台会话输出或错误日志。')),
       );
       return;
     }
@@ -1251,7 +1825,11 @@ class _SSHAnalysisCard extends ConsumerWidget {
           employeeId: request.employeeId,
           prompt: request.prompt,
           taskType: 'server_maintenance',
-          context: mobileSSHOutputTaskContext(output, profile: serverProfile),
+          context: mobileSSHOutputTaskContext(
+            output,
+            profile: serverProfile,
+            backendSessionId: backendSessionId,
+          ),
         );
     if (!context.mounted) return;
     final taskState = ref.read(digitalEmployeeTaskProvider);
@@ -1379,7 +1957,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'AI 分析终端输出',
+                  'AI 分析后台会话输出',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ],
@@ -1390,7 +1968,7 @@ class _SSHAnalysisCard extends ConsumerWidget {
               minLines: 4,
               maxLines: 8,
               decoration: const InputDecoration(
-                labelText: '终端输出或错误日志',
+                labelText: '后台会话输出或错误日志',
                 hintText: '粘贴 systemctl、journalctl、docker logs 等输出',
               ),
             ),
@@ -1470,14 +2048,20 @@ MobileSSHOutputSubmissionSummary mobileSSHOutputSubmissionSummary(
 Map<String, String> mobileSSHOutputTaskContext(
   String output, {
   ServerProfile? profile,
+  String? backendSessionId,
 }) {
   final summary = mobileSSHOutputSubmissionSummary(output);
-  return mobileSSHOutputTaskContextForSummary(summary, profile: profile);
+  return mobileSSHOutputTaskContextForSummary(
+    summary,
+    profile: profile,
+    backendSessionId: backendSessionId,
+  );
 }
 
 Map<String, String> mobileSSHOutputTaskContextForSummary(
   MobileSSHOutputSubmissionSummary summary, {
   ServerProfile? profile,
+  String? backendSessionId,
 }) {
   String? sanitizedMetadata(String? value) {
     final text = value?.trim() ?? '';
@@ -1490,6 +2074,7 @@ Map<String, String> mobileSSHOutputTaskContextForSummary(
   final serverName = sanitizedMetadata(profile?.name);
   final serverHost = sanitizedMetadata(profile?.host);
   final serverUsername = sanitizedMetadata(profile?.username);
+  final backendSession = sanitizedMetadata(backendSessionId);
   return {
     'source': 'maclaw_mobile',
     'handoff': 'ssh_output',
@@ -1499,6 +2084,7 @@ Map<String, String> mobileSSHOutputTaskContextForSummary(
     'manual_confirmation_required': 'true',
     'execution_boundary': 'draft_only_until_mobile_user_confirms',
     'manual_confirmation_scope': 'destructive_or_high_risk_server_operations',
+    if (backendSession != null) 'backend_session_id': backendSession,
     if (profile != null) ...{
       'server_profile_id': profile.id,
       if (serverName != null) 'server_name': serverName,
@@ -1514,8 +2100,8 @@ Map<String, String> mobileSSHOutputTaskContextForSummary(
 
 String digitalEmployeeOutputPrompt(String output) {
   final text = output.trim();
-  return '\u8bf7\u5206\u6790\u4e0b\u9762\u8fd9\u6bb5 SSH '
-      '\u7ec8\u7aef\u8f93\u51fa\u6216\u670d\u52a1\u5668\u65e5\u5fd7\uff0c\u8bf4\u660e\u5f02\u5e38\u3001\u5f71\u54cd\u8303\u56f4\u3001\u6392\u67e5\u4f9d\u636e\u548c\u4e0b\u4e00\u6b65\u5efa\u8bae\u3002'
+  return '\u8bf7\u5206\u6790\u4e0b\u9762\u8fd9\u6bb5 MaClaw GUI/agent '
+      '\u540e\u53f0 SSH \u4f1a\u8bdd\u8f93\u51fa\u6216\u670d\u52a1\u5668\u65e5\u5fd7\uff0c\u8bf4\u660e\u5f02\u5e38\u3001\u5f71\u54cd\u8303\u56f4\u3001\u6392\u67e5\u4f9d\u636e\u548c\u4e0b\u4e00\u6b65\u5efa\u8bae\u3002'
       '\u5982\u679c\u9700\u8981\u547d\u4ee4\uff0c\u53ea\u7ed9\u547d\u4ee4\u8349\u6848\u548c\u98ce\u9669\u8bf4\u660e\uff0c\u4e0d\u8981\u81ea\u52a8\u6267\u884c\u9ad8\u98ce\u9669\u64cd\u4f5c\u3002\n\n'
       '```text\n$text\n```';
 }
@@ -1557,12 +2143,17 @@ class _SSHAnalysisResult extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final command = value.commandDraft.trim();
+    final backendSessionId = value.backendSessionId.trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(value.summary),
         const SizedBox(height: 6),
         Text(value.recommendation),
+        if (backendSessionId.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SelectableText('后台会话：$backendSessionId'),
+        ],
         if (command.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text('命令草稿', style: Theme.of(context).textTheme.labelLarge),

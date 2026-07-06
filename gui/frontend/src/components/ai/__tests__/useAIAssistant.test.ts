@@ -50,7 +50,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -237,6 +237,32 @@ function deferred<T>() {
 }
 
 describe('useAIAssistant property tests', () => {
+    it('formats accepted guide notices as delivery receipts with quoted input', () => {
+        const zhHans = buildGuideReferenceAcceptedNotice('需要最新的\n顺便核对来源', 'zh-Hans');
+        expect(zhHans).toContain('这条补充已接上当前任务');
+        expect(zhHans).toContain('> 需要最新的\n> 顺便核对来源');
+        expect(zhHans).toContain('下一步会顺着这点继续');
+
+        const en = buildGuideReferenceAcceptedNotice('fresh sources please', 'en');
+        expect(en).toContain('Added to the running task');
+        expect(en).toContain('> fresh sources please');
+        expect(en).toContain('The next step will work from this point');
+
+        const zhHant = buildGuideReferenceAcceptedNotice('需要最新的', 'zh-Hant');
+        expect(zhHant).toContain('這條補充已接上目前任務');
+        expect(zhHant).toContain('> 需要最新的');
+        expect(zhHant).toContain('下一步會順著這點繼續');
+    });
+
+    it('formats rejected guide notices without implying the task accepted the input', () => {
+        expect(buildGuideReferenceRejectedNotice('没有运行中的 loop', 'zh-Hans')).toBe(
+            '我听到了，但这条补充暂时还没接上当前任务：\n> 没有运行中的 loop\n\n等助手空闲后，把它作为普通消息发出就可以，我会直接处理。',
+        );
+        expect(buildGuideReferenceRejectedNotice('no active loop', 'en')).toBe(
+            'I heard you, but I could not attach this to the current task yet:\n> no active loop\n\nOnce the assistant is idle, send it as a normal message and I will handle it directly.',
+        );
+    });
+
     beforeEach(() => {
         mockSendResponse = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
         mockSendError = null;
@@ -303,7 +329,7 @@ describe('useAIAssistant property tests', () => {
     });
 
     it('shows localized guide reference echo for the local desktop session', async () => {
-        const { result } = renderAssistantHook();
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
 
         let accepted = false;
         await act(async () => {
@@ -313,7 +339,11 @@ describe('useAIAssistant property tests', () => {
         expect(accepted).toBe(true);
         expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('下一轮参考这个', 'desktop-user');
         expect(InjectAIAssistantGuideReference).not.toHaveBeenCalled();
-        expect(messageContents(result.current.messages)).toContain('引导已注入下一轮：\n下一轮参考这个');
+        const contents = messageContents(result.current.messages).join('\n');
+        expect(contents).toContain('这条补充已接上当前任务');
+        expect(contents).toContain('> 下一轮参考这个');
+        expect(contents).toContain('下一步会顺着这点继续');
+        expect(result.current.messages.find(message => message.content.includes('下一轮参考这个'))?.kind).toBe('guideReceipt');
     });
 
     it('does not echo project guide references into the local desktop history', async () => {
@@ -326,12 +356,12 @@ describe('useAIAssistant property tests', () => {
 
         expect(accepted).toBe(true);
         expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('项目参考', 'desktop-user:D:/tasks/demo');
-        expect(messageContents(result.current.messages)).not.toContain('引导已注入下一轮：\n项目参考');
+        expect(messageContents(result.current.messages)).not.toContain('这条补充已接上当前任务：\n> 项目参考');
     });
 
-    it('does not show guide reference echo when the active loop rejects it', async () => {
+    it('shows guide rejection feedback when the active loop rejects it', async () => {
         (InjectAIAssistantGuideReferenceForSession as any).mockResolvedValueOnce(false);
-        const { result } = renderAssistantHook();
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
 
         let accepted = true;
         await act(async () => {
@@ -339,7 +369,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(accepted).toBe(false);
-        expect(messageContents(result.current.messages)).not.toContain('引导已注入下一轮：\n没有运行中的 loop');
+        expect(messageContents(result.current.messages)).toContain('我听到了，但这条补充暂时还没接上当前任务：\n> 没有运行中的 loop\n\n等助手空闲后，把它作为普通消息发出就可以，我会直接处理。');
+        expect(result.current.messages.find(message => message.content.includes('没有运行中的 loop'))?.kind).toBe('guideRejection');
     });
 
     it('background launch stores visible session, job, and run identifiers in a system message', async () => {
@@ -2959,6 +2990,37 @@ describe('useAIAssistant property tests', () => {
         expect(userMessages[2]?.content).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
         expect(userMessages[3]?.content).toBe('\u6062\u590d\u4f1a\u8bdd');
         expect(userMessages[4]?.content).toBe('\u5ffd\u7565\u4f1a\u8bdd');
+    });
+
+    it('executeAction confirms workflow abort through the injected dialog before sending', async () => {
+        const showConfirm = vi.fn()
+            .mockResolvedValueOnce(false)
+            .mockResolvedValueOnce(true);
+        const calls: any[] = [];
+        (SendAIAssistantMessage as any).mockImplementation(async (req: any) => {
+            calls.push(req);
+            return { text: 'ok', error: '', fields: null, actions: null, request_id: req.request_id || 'req' };
+        });
+
+        const { result } = renderAssistantHook({ lang: 'zh-Hans', showConfirm });
+
+        await act(async () => {
+            await result.current.executeAction('__wf_review__ abort');
+        });
+
+        expect(showConfirm).toHaveBeenCalledWith(
+            expect.stringContaining('\u786e\u5b9a\u8981\u4e2d\u6b62\u5f53\u524d\u5de5\u4f5c\u6d41\u5417'),
+            '\u4e2d\u6b62\u5f53\u524d\u5de5\u4f5c\u6d41\uff1f',
+            { confirmText: '\u4e2d\u6b62', cancelText: '\u53d6\u6d88', confirmVariant: 'danger' },
+        );
+        expect(calls).toHaveLength(0);
+
+        await act(async () => {
+            await result.current.executeAction('__wf_review__ abort');
+        });
+
+        expect(calls[0]?.text).toBe('__wf_review__ abort');
+        expect(calls[0]?.ui_action).toBe(true);
     });
 
     it('executeAction keeps project tab action commands on the active project session', async () => {

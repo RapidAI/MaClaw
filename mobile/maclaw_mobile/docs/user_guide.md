@@ -107,36 +107,53 @@ Complex desktop-grade Office layout editing is intentionally out of scope.
 
 Use the `远程` tab for GUI-like backend SSH session management. Mobile should
 control sessions created and managed by an agent/backend session manager, not
-only a simple phone-local SSH terminal client.
+act as a standalone phone-local SSH terminal client.
+
+The mobile foreground assistant can help choose a server profile, explain a
+problem, and create or attach the Hub control record for the backend SSH
+session. The real session becomes active only after an authorized MaClaw
+GUI/agent worker claims that record and manages the session through the desktop
+`SSHSessionManager`.
 
 Implementation details and the GUI reference model are tracked in
 `docs/backend_ssh_session_design.md`.
 
-- Add server profiles with host, port, username, auth mode, tag, and note.
-- Create or attach a backend SSH session that can be listed, reconnected,
+- Sync server profiles published by MaClaw GUI/agent through the official Hub.
+  The phone displays sanitized host, port, username, auth mode, tag, and note
+  metadata, but does not collect SSH passwords, private keys, or passphrases.
+- Create or attach a backend SSH session owned by MaClaw GUI/agent and backed by
+  the existing `SSHSessionManager`; the session can be listed, reconnected,
   checked for shell responsiveness, and reused across agent actions.
-- Store SSH passwords and private-key passphrases in system secure storage.
+- Start GUI/agent-managed background server tasks for long-running commands,
+  then check, wait for, list, or kill those tasks from mobile through Hub
+  control records.
+- Request backend file listing, upload, and download operations through the
+  GUI/agent SFTP path. The phone shows sanitized paths, progress, and results;
+  SSH credentials and file-transfer execution remain on the authorized desktop
+  or server agent.
 - Copy backend session output, or send recent output to AI analysis.
-- Paste terminal output or logs into the analysis panel and hand them to an
-  online digital employee when remote server/desktop capabilities are needed.
-- When terminal output comes from a saved server profile, digital employee
-  handoff includes non-secret server metadata such as name, host, port, user,
-  tag, note, and auth mode.
+- Paste backend session output or logs into the analysis panel and hand them to
+  an online digital employee when remote server/desktop capabilities are needed.
+- When backend session output comes from a saved server profile, digital
+  employee handoff includes non-secret server metadata such as name, host, port,
+  user, tag, note, and auth mode.
 - Save common commands and command history. The executable command is preserved
   for reuse, while the saved list label redacts common passwords, tokens,
   private key blocks, and credential URLs.
 - High-risk command drafts require confirmation before being saved.
-- Deleting a server profile clears its saved SSH credentials.
+- Removing a server profile from the phone clears the local cached profile and
+  any legacy local credential residue; active SSH credentials remain managed by
+  the authorized desktop/agent side.
 
 AI provides explanations and command drafts; it does not automatically execute
 commands. High-risk operations remain draft/manual-confirm even when an agent
 created the backend SSH session.
 
-Before terminal output is sent to AI or submitted as a digital employee task,
-MaClaw Mobile shows a confirmation with line/character counts, a preview, and a
-local redaction for common passwords, tokens, private key blocks, and credential
-URLs. Still review the preview and remove customer data or unusual secrets
-before sending.
+Before backend session output is sent to AI or submitted as a digital employee
+task, MaClaw Mobile shows a confirmation with line/character counts, a preview,
+and a local redaction for common passwords, tokens, private key blocks, and
+credential URLs. Still review the preview and remove customer data or unusual
+secrets before sending.
 
 ## Use Digital Employees
 
@@ -151,7 +168,7 @@ Use the `员工` tab to access remote server or desktop capabilities.
   manual-confirmation requirement so the remote side can enforce its own rules.
 - Use built-in templates for system status, logs, resource checks, or file
   summaries.
-- From the server maintenance screen, hand pasted SSH output or logs to a
+- From the server maintenance screen, hand backend session output or logs to a
   digital employee for remote-side investigation.
 - Poll task status, then copy, share, or turn the result into a document draft.
   Result copy/share/draft actions locally redact common passwords, tokens,
@@ -186,15 +203,15 @@ Use the `我的` tab for service and local settings.
 - Offline warnings appear across mobile work screens; when official service
   connectivity returns, a restored banner confirms assistant online, document,
   and task status checks can continue.
-- Review privacy notes for tokens and SSH credentials.
-- Clear local work records without deleting server profiles or SSH credentials.
-- Clear server profiles and SSH credentials separately when device access should
-  be revoked.
+- Review privacy notes for tokens, server-profile metadata, and backend session
+  output.
+- Clear local work records without deleting cached server-profile metadata.
+- Clear server-profile caches separately when device access should be revoked.
 
 Clearing local work records resets assistant history, the latest document draft,
 document tasks, command history, digital employee prompt/task history, and app
-preferences. Server profiles and SSH credentials are managed by the separate
-server-access cleanup action.
+preferences. Server-profile caches are managed by the separate server-access
+cleanup action; real SSH credentials stay on the authorized desktop/agent side.
 
 When older local records are migrated into the SQLite cache, MaClaw Mobile also
 redacts common secrets from assistant answer previews, saved command labels, and

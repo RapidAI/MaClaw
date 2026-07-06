@@ -439,6 +439,26 @@ func TestResolveHubsDoesNotSendPhoneNumberForAlphanumericUserID(t *testing.T) {
 	}
 }
 
+func TestPickBestHubWithTenantAndIDPrefersTenantSpecificDefaultHub(t *testing.T) {
+	result := HubCenterResolveResult{
+		Email:        "znsoft@163.com",
+		Mode:         "multiple",
+		DefaultHubID: "hub-official",
+		Hubs: []HubCenterResolveHub{
+			{HubID: "hub-official", Name: "Official", BaseURL: "https://hub.example.com", Status: "online"},
+			{HubID: "hub-official", TenantID: "vantagics", Name: "Official", BaseURL: "https://hub.example.com", Status: "online"},
+		},
+	}
+
+	hubURL, hubID, tenantID, err := PickBestHubWithTenantAndID(result)
+	if err != nil {
+		t.Fatalf("PickBestHubWithTenantAndID() error = %v", err)
+	}
+	if hubURL != "https://hub.example.com" || hubID != "hub-official" || tenantID != "vantagics" {
+		t.Fatalf("picked hubURL=%q hubID=%q tenantID=%q, want tenant-specific default hub", hubURL, hubID, tenantID)
+	}
+}
+
 func TestNormalizeResolvePhoneNumberRejectsAlphanumericUserID(t *testing.T) {
 	if got := normalizeResolvePhoneNumber("abc123456"); got != "" {
 		t.Fatalf("normalizeResolvePhoneNumber(alphanumeric) = %q, want empty", got)

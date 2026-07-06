@@ -361,6 +361,16 @@ void main() {
     expect(citation, isNot(contains('citation-secret')));
   });
 
+  test('assistant draft title redacts common secrets', () {
+    final title = assistantDraftTitle(
+      'write incident report token=raw-draft-token password=raw-draft-password',
+    );
+
+    expect(title, contains('token=[REDACTED_SECRET]'));
+    expect(title, isNot(contains('raw-draft-token')));
+    expect(title, isNot(contains('raw-draft-password')));
+  });
+
   test('assistant voice transcript appends without losing typed context', () {
     expect(
       assistantQueryWithVoiceTranscript(

@@ -8,7 +8,8 @@ MaClaw GUI-like assistant workspace:
 - assistant online answers with citations, shareable results, screenshot/photo
   questions, and document handoff;
 - urgent document drafting, editing, and export;
-- backend SSH session management with AI-assisted log explanation;
+- GUI/agent-managed backend SSH session management, where the phone creates or
+  controls Hub records and MaClaw desktop/agent owns the real SSH session;
 - digital employee access for remote server or desktop capabilities;
 - Hub account, quota, service status, cache, and credential management.
 
@@ -22,13 +23,15 @@ is phone registration/login through the discovered Hub SMS verification flow.
 
 Mobile keeps lightweight local cache for assistant history, server metadata,
 common commands, digital employee prompts, and the most recent document draft.
-Sensitive tokens and SSH credentials stay in secure storage.
+Sensitive login tokens stay in secure storage. SSH passwords, private keys, and
+passphrases stay on the authorized MaClaw GUI/agent side; the phone can only
+clear local server metadata and legacy credential residue.
 
 ## Runtime boundary
 
 MaClaw Mobile does not embed or directly call the Go `corelib` package. The
 Flutter app keeps only mobile-facing capabilities such as UI, cache, sharing,
-document handoff, secure credential storage, and remote session controls. Core MaClaw
+document handoff, secure token storage, and remote session controls. Core MaClaw
 capabilities run behind the official Hub or on authorized remote desktop/server
 digital employees, and the phone reaches them through the discovered Hub APIs
 and realtime channel.
@@ -104,5 +107,5 @@ emergency documents, backend SSH session management, digital employees, and
 account privacy settings.
 
 See `docs/backend_ssh_session_design.md` for the corrected GUI-like backend SSH
-session model, the mobile Hub API shape, and the remaining Hub/agent work needed
-for realtime managed-session output.
+session model, the mobile Hub API shape, the GUI/agent-managed session
+contract, and the remaining real-device QA needed for release evidence.

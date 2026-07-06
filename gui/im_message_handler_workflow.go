@@ -1825,7 +1825,10 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 	}
 
 	policy := v2.ToolFilterNone
-	if h != nil && h.isWorkflowV2Active(userID) {
+	if h != nil && h.app != nil && h.app.workflowEngine != nil {
+		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
+	}
+	if policy == v2.ToolFilterNone && h != nil && h.isWorkflowV2Active(userID) {
 		if wf := h.getWorkflowV2(); wf != nil {
 			if state := wf.machine.GetActive(userID); state != nil {
 				if phase := state.ActivePhase(); phase != nil {
@@ -1849,11 +1852,12 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			}
 		}
 	}
-	if policy == v2.ToolFilterNone && h != nil && h.app != nil && h.app.workflowEngine != nil {
-		policy = h.app.workflowEngine.GetActivePhaseToolFilter(userID)
-	}
-	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsAwaitingReview(userID) {
-		tools = ensureWorkflowRequiredToolsForNames([]string{"read_file", "list_directory", "send_file", "bash"}, tools, allTools)
+	if h != nil && h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.IsPhaseExecutionBlocked(userID) && h.app.workflowEngine.IsAwaitingReview(userID) {
+		if policy := h.workflowReviewPhaseToolFilter(userID); policy == v2.ToolFilterPlanning {
+			tools = ensureWorkflowRequiredTools(policy, tools, allTools)
+			return v2.FilterToolDefinitions(policy, tools)
+		}
+		tools = ensureWorkflowRequiredToolsForNames([]string{"read_file", "list_directory", "send_file"}, tools, allTools)
 		return v2.FilterToolDefinitions(v2.ToolFilterDocOnly, tools)
 	}
 	if h != nil && h.isWorkflowArtifactPhase(userID) {

@@ -92,9 +92,9 @@ Microphone permission:
 # document import/upload for PDF, Word, Excel, CSV, and image/photo payloads,
 # not only the permission dialog.
 Media/file access:
-# Include local-network permission evidence tied to a real SSH connection to the
-# recorded server-profile:<id> plus a read-only command result, not only the
-# permission dialog.
+# Include local-network permission evidence tied to the same GUI/agent-managed
+# backend_session_id for the recorded server-profile:<id> plus a read-only
+# command result, not only the permission dialog.
 Local network / SSH scenario:
 Screenshots / recordings:
 ```
@@ -160,9 +160,9 @@ Speech recognition permission:
 # Include photo-library permission evidence from a real imported
 # photo/image/screenshot assistant input flow.
 Photo library permission:
-# Include local-network permission evidence tied to a real SSH connection to the
-# recorded server-profile:<id> plus a read-only command result, not only the
-# permission dialog.
+# Include local-network permission evidence tied to the same GUI/agent-managed
+# backend_session_id for the recorded server-profile:<id> plus a read-only
+# command result, not only the permission dialog.
 Local network permission:
 # Include notification permission evidence from a real task-notification
 # delivery/open flow, such as document export, digital employee task, and SSH
@@ -269,47 +269,62 @@ Theme and speech language change result:
 # If notification evidence recorded a server-profile:<id>, include the same
 # server-profile:<id> and show that clearing local work records removes
 # assistant history, document drafts, commands, digital employee prompts, and
-# preferences without deleting server credentials.
+# preferences without deleting cached server-profile metadata.
 Local work records reset confirmation:
 # Include assistant history, document drafts/tasks, command history, digital
 # employee prompts/tasks, and app preferences in the local reset evidence.
-# Include the same server-profile:<id> and show SSH password/private-key
-# credentials remained available in secure storage/vault after local
-# work-record reset.
-Server credentials retained after local reset:
+# Include the same server-profile:<id> and show sanitized server-profile
+# metadata remained available after local work-record reset. Real SSH secrets
+# stay on the authorized MaClaw GUI/agent side.
+Server-profile metadata retained after local reset:
 # Include the same server-profile:<id> and show the separate explicit account
-# action cleared server profiles and SSH password/private-key credentials with
-# credential-clear:<id>.
-Server profiles/SSH credentials clear confirmation:
+# action cleared phone-side server-profile caches with server-profile-cache-clear:<id>.
+Server-profile cache clear confirmation:
 ```
 
 ## Backend SSH Session Smoke Test
 
 ```text
-# If notification evidence recorded a server-profile:<id> payload, include the
-# same server-profile:<id> and backend SSH session ID in every SSH smoke
-# evidence line below. The session should be created/attached through the
-# agent/backend session manager, not only a phone-local ad hoc terminal.
+# If notification evidence recorded a server-profile:<id> payload, include it
+# as the selected sanitized server profile, but tie every SSH smoke evidence
+# line below to the same GUI/agent-bound backend_session_id. The session should
+# be created/attached through the agent/backend session manager, not phone-local
+# and not an ad hoc terminal.
 Host type:
 Auth mode:
 Connect result:
 Read-only command:
 Command output excerpt:
+# Include the backend `ssh_session` realtime event evidence for the same
+# GUI/agent-bound backend_session_id. The evidence must show incremental
+# backend session output fields `output_chunk` and `output_seq`, plus GUI/agent
+# `claimed_by` or claim/worker handoff evidence, explicit worker claim/update
+# evidence, and not phone-local/ad hoc terminal evidence; a static screenshot of
+# an output pane is not enough.
+SSH realtime incremental output evidence:
+# Include phone-initiated interrupt evidence through the Hub control record or
+# `/api/mobile/ssh/sessions/{session_id}/interrupt`, plus GUI/agent Ctrl+C
+# handling for the same GUI/agent-bound backend_session_id.
+Interrupt result:
 Disconnect result:
 Reconnect result:
-Copied output evidence:
-# Include the backend SSH session terminal/log output preview, the
+Copied backend session output evidence:
+# Include copied backend session output evidence tied to the same
+# GUI/agent-bound backend_session_id. A generic terminal screenshot or
+# clipboard note without that backend-managed session link is not enough.
+# Include the backend SSH session/log output preview, the
 # sensitive-data warning, and proof that the output was redacted/masked/
 # sanitized before AI analysis.
 AI analysis confirmation and sensitive-data warning:
 # Include AI explanation, command drafts, command-draft:<id>,
 # manual/not-auto-executed evidence, and proof that the result used
-# redacted/masked/sanitized backend SSH session terminal/log output.
+# redacted/masked/sanitized backend SSH session/log output.
 AI explanation / command draft result:
 # If used, mention Hub/tenant warning confirmation and the backend SSH session
-# or pasted/copied output being handed to the digital employee.
+# or pasted/copied backend session output being handed to the digital employee. Tie the handoff
+# to the same GUI/agent-bound backend_session_id.
 Digital employee handoff warning, if used:
-Credential deletion confirmation:
+Backend SSH server-profile cache clear confirmation:
 ```
 
 ## Final Release Decision
@@ -317,6 +332,8 @@ Credential deletion confirmation:
 ```text
 # Paste the handoff output path, attachment ID, or command transcript reference.
 Release handoff result:
+# Paste `python3 tool/qa_preflight.py --log ...` READY output or log attachment ID.
+Preflight result:
 # Paste `python3 tool/verify_runtime_boundary.py` output or log attachment ID.
 # This must prove the signed app has no embedded Go corelib, Dart FFI,
 # gomobile binding, dynamic library, or native corelib MethodChannel bridge;

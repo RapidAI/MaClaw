@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
-import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
+import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
 import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
@@ -55,6 +55,7 @@ import { CancelAIAssistantSessionForSession, GroupDiscussionRenameConsultation, 
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { useDialog } from "../CustomDialog";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
@@ -312,6 +313,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
     const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
+    const { showConfirm } = useDialog();
     const activeTabIdForRecRef = useRef<string>("local");
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
@@ -1382,6 +1384,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const workflowCurrentPhaseStatus = normalizeWorkflowPhaseStatus(workflowCurrentPhaseMeta?.status);
     const workflowCurrentPhaseRunning = isWorkflowPhaseRunningStatus(workflowCurrentPhaseStatus);
     const workflowCurrentPhaseTerminal = isWorkflowPhaseTerminalStatus(workflowCurrentPhaseStatus);
+    const workflowCurrentPhaseExpectsDocument = workflowCurrentPhaseMeta?.expectsDocument !== false;
     const workflowAwaitingReview = workflowState.active && workflowCurrentPhaseStatus === "waiting_confirm";
     const workflowReviewPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
     const workflowFormPhaseName = workflowCurrentPhaseMeta?.name || workflowState.currentPhaseID;
@@ -1510,14 +1513,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (
             workflowAwaitingReview
             || workflowCurrentPhaseTerminal
+            || !workflowCurrentPhaseExpectsDocument
             || workflowFormGeneratingPhaseID !== workflowCurrentPhaseID
             || (!workflowAwaitingForm && !workflowCurrentPhaseRunning && !isBusy)
         ) {
             setWorkflowFormGeneratingPhaseID(null);
         }
-    }, [isBusy, workflowAwaitingForm, workflowAwaitingReview, workflowCurrentPhaseID, workflowCurrentPhaseRunning, workflowCurrentPhaseTerminal, workflowFormGeneratingPhaseID]);
+    }, [isBusy, workflowAwaitingForm, workflowAwaitingReview, workflowCurrentPhaseExpectsDocument, workflowCurrentPhaseID, workflowCurrentPhaseRunning, workflowCurrentPhaseTerminal, workflowFormGeneratingPhaseID]);
     const workflowFormGeneratingDocument = !!workflowCurrentPhaseID
         && workflowFormGeneratingPhaseID === workflowCurrentPhaseID
+        && workflowCurrentPhaseExpectsDocument
         && !workflowFormActive
         && !workflowAwaitingReview
         && (isBusy || workflowCurrentPhaseRunning);
@@ -1574,12 +1579,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const projectSearch = useProjectSearch(lang);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
         if (isBusy && cancelSession) {
-            const ok = window.confirm(localizeText(lang, "A task is running. Stop it and switch tasks?", "\u5f53\u524d\u6709\u4efb\u52a1\u6b63\u5728\u6267\u884c\u3002\u662f\u5426\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\u5e76\u5207\u6362\uff1f"));
+            const ok = await showConfirm(
+                localizeText(lang, "A task is running. Stop it and switch tasks?", "\u5f53\u524d\u6709\u4efb\u52a1\u6b63\u5728\u6267\u884c\u3002\u662f\u5426\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\u5e76\u5207\u6362\uff1f"),
+                localizeText(lang, "Stop current task?", "\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\uff1f"),
+                {
+                    confirmText: localizeText(lang, "Stop and switch", "\u4e2d\u6b62\u5e76\u5207\u6362"),
+                    cancelText: localizeText(lang, "Cancel", "\u53d6\u6d88"),
+                    confirmVariant: 'danger',
+                },
+            );
             if (!ok) return;
             await cancelSession();
         }
         await sendMessageForTab(msg);
-    }, [cancelSession, isBusy, lang, sendMessageForTab]);
+    }, [cancelSession, isBusy, lang, sendMessageForTab, showConfirm]);
     const deriveTaskNameFromMessages = useCallback(() => {
         const firstUser = messages.find((m: ChatMessage) => m.role === "user");
         const text = firstUser && typeof firstUser.content === "string" ? firstUser.content.trim() : "";
@@ -1983,14 +1996,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
     }, [activeTab.id, activeTab.projectPath, activeTab.type, queue, queueEditDraftActive, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendMessageForTab, showChatUI, submitLocked]);
-    const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null) => {
+    const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null, accepted = true) => {
         if (!targetTabId) return;
         const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);
         if (!targetTab || targetTab.type !== "project") return;
         const echo: ChatMessage = {
             id: `guide-reference-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             role: 'system',
-            content: `引导已注入下一轮：\n${text}`,
+            kind: accepted ? 'guideReceipt' : 'guideRejection',
+            content: accepted ? buildGuideReferenceAcceptedNotice(text, lang || "en") : buildGuideReferenceRejectedNotice(text, lang || "en"),
             timestamp: Date.now(),
         };
         const existingState = getTabState(targetTabId);
@@ -2002,7 +2016,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (activeTabIdRef.current === targetTabId) {
             setProjectTabMessages(nextHistory);
         }
-    }, [getTabState, saveTabState, tabState.tabs]);
+    }, [getTabState, lang, saveTabState, tabState.tabs]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
@@ -2018,11 +2032,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else if (injectSupplementary) {
                 injected = await injectSupplementary(outgoing);
             }
-            if (!injected) return;
-            appendProjectGuideReferenceEcho(outgoing, guideTargetTabId);
+            if (!injected) {
+                appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
+                return;
+            }
+            appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, true);
             removeEntry(id);
             recordSubmittedPrompt?.(entry.text);
         } catch {
+            appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
             return;
         } finally {
             firingEntryIdsRef.current.delete(id);
@@ -2125,12 +2143,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const submittedPhaseID = typeof data?._workflow_phase === "string" && data._workflow_phase.trim()
                 ? data._workflow_phase.trim()
                 : workflowCurrentPhaseID;
-            if (submittedPhaseID) {
+            const submittedPhase = workflowState.phases.find(phase => phase.id === submittedPhaseID);
+            if (submittedPhaseID && submittedPhase?.expectsDocument !== false) {
                 setWorkflowFormGeneratingPhaseID(submittedPhaseID);
             }
         }
         return submitAgentView?.(viewId, data);
-    }, [submitAgentView, workflowCurrentPhaseID]);
+    }, [submitAgentView, workflowCurrentPhaseID, workflowState.phases]);
     // Wrap executeAction so that on project tabs, a project round is
     // pre-registered before the send. executeAction's internal sendMessage
     // call goes through optionsForActiveSession (which adds project_path),

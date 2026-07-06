@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -48,6 +49,17 @@ func NewVEMessageHandler(app *App) *VEMessageHandler {
 		app:            app,
 		activeSessions: make(map[string]*veSession),
 	}
+}
+
+func (h *VEMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	localHandler := h.app.ensureLocalIMHandler()
+	if localHandler == nil {
+		return nil
+	}
+	return localHandler.ensureSSHManager()
 }
 
 // HandleGroupEnvelope processes an incoming GroupEnvelope when this maclaw instance

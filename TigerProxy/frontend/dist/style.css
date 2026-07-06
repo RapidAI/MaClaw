@@ -46,6 +46,12 @@ label { display: block; margin: 0 0 6px; color: #33445a; font-size: 12px; font-w
 input, select { --wails-draggable: no-drag; width: 100%; height: 38px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 10px; font: inherit; font-size: 13px; color: var(--text); background: #fbfdff; }
 input:focus, select:focus, button:focus-visible { outline: 2px solid rgba(18, 107, 134, 0.28); outline-offset: 2px; }
 input:disabled { color: #6d7786; background: #f1f5f8; }
+.check-row { --wails-draggable: no-drag; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 10px; margin: 0; padding: 12px; border: 1px solid #e2e9f0; border-radius: 8px; background: var(--surface-soft); cursor: pointer; }
+.check-row input { width: 16px; height: 16px; margin: 2px 0 0; padding: 0; accent-color: var(--primary); }
+.check-row span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.check-row strong { color: #26374d; font-size: 13px; line-height: 1.35; }
+.check-row small { color: var(--muted); font-size: 12px; line-height: 1.45; font-weight: 500; }
+.check-row.disabled { cursor: default; opacity: .62; }
 .hint { margin-top: 6px; }
 .inline { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 10px; }
 button { --wails-draggable: no-drag; height: 38px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; color: #233348; padding: 0 14px; cursor: pointer; font-weight: 700; transition: background .14s ease, border-color .14s ease, color .14s ease; }

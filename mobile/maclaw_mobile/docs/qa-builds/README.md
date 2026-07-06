@@ -25,7 +25,7 @@ python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_
 python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md
 python3 tool/setup_android_signing.py
 python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
-python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-<version+build>.log
 python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -34,6 +34,7 @@ python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-1.
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.log
 python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" \
+  --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" \
   --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
 ```
@@ -43,20 +44,30 @@ python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --v
 Replace it with the real 10-character Apple Team ID before running
 `setup_ios_export_options.py`, `plan_ios_release.py`, or
 `signed_artifact_evidence.py`.
+PowerShell treats unquoted `<...>` placeholders as redirection syntax, so replace
+all angle-bracket placeholders with real values before copying commands there;
+for dry-run previews with placeholders, wrap placeholder arguments in quotes.
 
 The handoff, runtime-boundary log, and release-gates log commands refuse to
 overwrite existing saved evidence files unless `--force` is provided.
+Use `python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-<version+build>.md` to preview
+the handoff content without writing or overwriting the target file.
+When the target handoff file already contains a `Current Local Evidence Snapshot`
+section, dry-run preview preserves that snapshot in stdout while leaving the
+saved file unchanged; use `--force` only after confirming the preview keeps the
+local log references you still need.
 Release handoff outputs saved directly under `docs/qa-builds/` must use a
 `handoff-*.md` filename; `tool/release_handoff.py` rejects other Markdown names
 there so they cannot be mistaken for completed signed-build QA records.
 
-If the handoff, runtime-boundary, and release-gate outputs use different saved
-QA evidence paths or attachment IDs, replace the three Final Release Decision
+If the handoff, preflight, runtime-boundary, and release-gate outputs use different saved
+QA evidence paths or attachment IDs, replace the four Final Release Decision
 references while creating the record:
 
 ```bash
 python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" \
+  --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" \
   --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
 ```
@@ -70,7 +81,7 @@ need Apple Team ID or export method values:
 ```bash
 python3 tool/release_status_report.py --scope android
 python3 tool/release_handoff.py --version 1.0.0+42 --scope android --output docs/qa-builds/handoff-android-1.0.0+42.md
-python3 tool/qa_preflight.py --scope android
+python3 tool/qa_preflight.py --scope android --log docs/qa-builds/preflight-android-<version+build>.log
 python3 tool/build_android_release.py --artifact apk --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version 1.0.0+42 --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 ```
@@ -81,7 +92,7 @@ commands:
 ```bash
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version 1.0.0+42 --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-1.0.0+42.md
-python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-ios-<version+build>.log
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
@@ -117,6 +128,7 @@ evidence is validated through the QA record fields instead.
 
 Completed records must include these Final Release Decision fields:
 - `Release handoff result`
+- `Preflight result`
 - `Runtime boundary verification result`
 - `Automated release gates result`
 

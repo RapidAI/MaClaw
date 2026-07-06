@@ -607,6 +607,67 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
     });
 
+    it('does not show workflow document generation chrome for non-document execution forms', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:coding_subagent_execution',
+            type: 'form',
+            title: 'Quick coding',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'coding_subagent_execution' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-non-document-form-submit-test',
+            type: 'coding_subagent',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'coding_subagent_execution',
+            awaiting_form: true,
+            phases: [
+                { id: 'coding_subagent_execution', name: 'Quick coding', index: 0, status: 'pending', expects_document: false },
+            ],
+        }));
+
+        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+        act(() => phaseUpdateHandler({
+            id: 'workflow-non-document-form-submit-test',
+            type: 'coding_subagent',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'coding_subagent_execution',
+            awaiting_form: false,
+            phases: [
+                { id: 'coding_subagent_execution', name: 'Quick coding', index: 0, status: 'running', expects_document: false },
+            ],
+        }));
+
+        await waitFor(() => expect(queryByTestId('workflow-form-inline-prompt')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').not.toContain('Generating the workflow document');
+    });
+
     it('does not carry submitted-form generation text across workflow phases', async () => {
         const workflowForm: AgentView = {
             id: 'workflow:form:audience_goal',
@@ -1439,6 +1500,7 @@ describe('AIAssistantPanel property tests', () => {
         const guideLaunchReference = vi.fn().mockResolvedValue(false);
         const onHandled = vi.fn();
         const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/no-global-fallback',
                 taskTitle: 'No global fallback task',
@@ -1465,6 +1527,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project selected session only', 'desktop-user:D:/tasks/no-global-fallback'));
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(document.body.textContent || '').toContain('project selected session only');
+        expect(document.body.textContent || '').toContain('我听到了，但这条补充暂时还没接上当前任务');
     });
 
     it('renders restored project context as a compact user-facing note', async () => {
@@ -2185,6 +2248,7 @@ describe('AIAssistantPanel property tests', () => {
         const guideLaunchReference = vi.fn().mockResolvedValue(true);
         const onHandled = vi.fn();
         const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/weather',
                 taskTitle: 'Weather task',
@@ -2208,11 +2272,13 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(fireButton!);
 
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather'));
-        await waitFor(() => expect(document.body.textContent || '').toContain('引导已注入下一轮'));
+        await waitFor(() => expect(document.body.textContent || '').toContain('这条补充已接上当前任务'));
+        expect(getByTestId('guide-receipt')).toBeTruthy();
         expect(document.body.textContent || '').toContain('project guide context');
 
         fireEvent.click(getByTestId('ai-tab-local'));
-        expect(document.body.textContent || '').not.toContain('引导已注入下一轮');
+        expect(document.body.textContent || '').not.toContain('这条补充已接上当前任务');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
     });
 
     it('keeps delayed project guide reference echo bound to the fired tab', async () => {
@@ -2223,6 +2289,7 @@ describe('AIAssistantPanel property tests', () => {
         }));
         const onHandled = vi.fn();
         const { getByTestId, getByText } = renderPanel({
+            lang: 'zh-Hans',
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/delayed-guide',
                 taskTitle: 'Delayed guide task',
@@ -2261,7 +2328,8 @@ describe('AIAssistantPanel property tests', () => {
             fireEvent.click(getByTestId('ai-tab-overflow-btn'));
             fireEvent.click(getByText('Delayed guide task'));
         }
-        await waitFor(() => expect(document.body.textContent || '').toContain('引导已注入下一轮'));
+        await waitFor(() => expect(document.body.textContent || '').toContain('这条补充已接上当前任务'));
+        expect(getByTestId('guide-receipt')).toBeTruthy();
         expect(document.body.textContent || '').toContain('delayed project guide');
     });
     it('preserves multiple rapid project guide reference echoes', async () => {

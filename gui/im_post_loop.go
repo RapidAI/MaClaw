@@ -53,8 +53,9 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 	// arrive before the goroutine runs, causing the state machine to advance without
 	// the phase output being recorded — SubAgent then sees empty tasks output.
 	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
-	if workflowAgentLoop && h.isWorkflowV2Active(ownerID) {
-		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
+	skipWorkflowDocCapture := loopCtx != nil && loopCtx.SkipWorkflowDocCapture
+	if workflowAgentLoop && !skipWorkflowDocCapture && h.isWorkflowV2Active(ownerID) {
+		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, resp, workflowAgentLoop)
 	}
 
 	go func() {
@@ -67,7 +68,7 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 		}()
 		h.runEvidenceCollection(msg.UserID, msg.Text)
 		// V2 capture already done synchronously above; skip in goroutine to avoid double-recording.
-		if !(workflowAgentLoop && h.isWorkflowV2Active(ownerID)) {
+		if !skipWorkflowDocCapture && !(workflowAgentLoop && h.isWorkflowV2Active(ownerID)) {
 			h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
 		}
 		h.recordAgentLoopTerminalExperience(loopCtx, &respSnapshot)
@@ -76,6 +77,9 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 
 func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, loopCtx *LoopContext, resp *IMAgentResponse, workflowAgentLoop bool) {
 	if !workflowAgentLoop || resp == nil || resp.HardExit {
+		return
+	}
+	if loopCtx != nil && loopCtx.SkipWorkflowDocCapture {
 		return
 	}
 	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)

@@ -49,6 +49,7 @@ const _sendVerificationCode = '\u53d1\u9001\u9a8c\u8bc1\u7801';
 const _assistantTab = 'AI助手';
 const _mainConversation = '\u4e3b\u5bf9\u8bdd';
 const _emergencyDocuments = '\u5e94\u6025\u6587\u6863';
+const _emergencyServers = '\u5e94\u6025\u670d\u52a1\u5668';
 const _openedTaskNotification = '\u5df2\u6253\u5f00\u4efb\u52a1\u63d0\u9192';
 const _unknownTaskNotification =
     '\u65e0\u6cd5\u8bc6\u522b\u4efb\u52a1\u63d0\u9192';
@@ -161,6 +162,7 @@ void main() {
       ProviderScope(
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
           mobileNotificationServiceProvider.overrideWithValue(notifications),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
@@ -216,6 +218,7 @@ void main() {
       ProviderScope(
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
           mobileNotificationServiceProvider.overrideWithValue(notifications),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
@@ -272,6 +275,7 @@ void main() {
       ProviderScope(
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
           mobileNotificationServiceProvider.overrideWithValue(notifications),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
@@ -310,6 +314,61 @@ void main() {
     expect(find.textContaining('[REDACTED_SECRET]'), findsOneWidget);
     expect(find.textContaining('admin:pass'), findsNothing);
     expect(find.textContaining('secret-token'), findsNothing);
+    expect(notifications.latestOpenedNotification, isNull);
+  });
+
+  testWidgets('opened server notification payload recovers to servers tab',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final notifications = MobileNotificationService();
+    notifications.handleNotificationResponse(
+      const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        payload: 'server-profile:srv-prod',
+      ),
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
+          mobileNotificationServiceProvider.overrideWithValue(notifications),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+          sessionControllerProvider.overrideWith(
+            () => _SignedInSessionController(
+              const MobileLlmAccess(
+                mode: 'maclaw_official',
+                status: 'available',
+                authorizationId: '',
+                authorizedBy: '',
+                creditsAccount: 'phone:19900001111',
+                authorizedAt: null,
+              ),
+            ),
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text(_emergencyServers), findsOneWidget);
+    expect(find.textContaining(_openedTaskNotification), findsOneWidget);
+    expect(find.textContaining('server-profile:srv-prod'), findsOneWidget);
     expect(notifications.latestOpenedNotification, isNull);
   });
 
@@ -596,6 +655,13 @@ void main() {
         '/servers',
       ),
       '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
+    );
+    expect(
+      mobileNotificationRecoveryMessage(
+        'server-profile:srv-prod',
+        '/assistant',
+      ),
+      '已打开任务提醒',
     );
     expect(
       mobileNotificationRecoveryMessage('raw-id', null),

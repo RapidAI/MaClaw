@@ -368,6 +368,93 @@ describe('CodingAgentProgressStatus', () => {
         expect(formatCodingAgentDuration(65000)).toBe('1m 5s');
     });
 
+    it('renders diagnostic tool failures with a neutral tone while keeping real failures red', () => {
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Probe compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            summary: 'PowerShell exception: 无法将“g++”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。',
+        }).accent).toBe('#64748b');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Probe compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            summary: 'g++: command not found',
+        }).accent).toBe('#64748b');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Locate CMake',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            severity: 'diagnostic',
+            summary: 'PowerShell error while locating optional compiler tools.',
+        }).accent).toBe('#64748b');
+
+        expect(parseCodingAgentProgress('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","title":"Probe compiler","detail":"bash","outcome":"failed","severity":"diagnostic","summary":"PowerShell error while locating optional compiler tools."}')).toMatchObject({
+            phase: 'running',
+            title: 'Probe compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            severity: 'diagnostic',
+            summary: 'PowerShell error while locating optional compiler tools.',
+        });
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Locate CMake',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            summary: 'Last error: INFO: Could not find files for the given pattern(s).',
+        }).accent).toBe('#64748b');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Build project',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            summary: 'ninja: build stopped: subcommand failed.',
+        }).accent).toBe('#c43d34');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Run tests',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            summary: 'FAIL at D:\\test\\test_hello.cpp:11: CHECK(result == "Hello, World!")',
+        }).accent).toBe('#c43d34');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Run tests',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            severity: 'diagnostic',
+            summary: 'FAIL at D:\\test\\test_hello.cpp:11: CHECK (result == "Hello, World!")',
+        }).accent).toBe('#c43d34');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Probe deployment',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            severity: 'diagnostic',
+            summary: 'permission denied while opening /srv/app/config.yml',
+        }).accent).toBe('#c43d34');
+    });
+
     it('keeps older coding-agent turns out of the latest turn snapshot', () => {
         const messages = [
             makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"First task","turn_id":"turn-1","detail":"read_file"}'),

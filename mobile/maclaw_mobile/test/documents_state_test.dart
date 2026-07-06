@@ -132,6 +132,44 @@ class _ProcessDraftApiClient extends ApiClient {
   }
 }
 
+class _RecordingDraftApiClient extends ApiClient {
+  final created = <({String title, String content})>[];
+  final updated = <({String title, String markdown})>[];
+
+  _RecordingDraftApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<DocumentDraft> createDocumentDraft({
+    required String title,
+    required DocumentTemplate template,
+    String content = '',
+  }) async {
+    created.add((title: title, content: content));
+    return DocumentDraft(
+      id: 'draft-created',
+      title: title,
+      template: template,
+      markdown: content,
+      updatedAt: DateTime.utc(2026, 7, 2),
+    );
+  }
+
+  @override
+  Future<DocumentDraft> updateDocumentDraft({
+    required String draftId,
+    required String title,
+    required String markdown,
+  }) async {
+    updated.add((title: title, markdown: markdown));
+    return DocumentDraft(
+      id: draftId,
+      title: title,
+      template: DocumentTemplate.report,
+      markdown: markdown,
+      updatedAt: DateTime.utc(2026, 7, 2, 1),
+    );
+  }
+}
 class _DownloadExportApiClient extends ApiClient {
   _DownloadExportApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
 
@@ -588,6 +626,61 @@ void main() {
     expect(filename, isNot(contains(RegExp(r'[\\/:*?"<>|]'))));
     expect(filename, isNot(contains('__')));
     expect(await file.readAsString(), 'export export-long');
+  });
+
+  test('document export download redacts sensitive title fragments in filename',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp(
+      'maclaw_mobile_store_',
+    );
+    addTearDown(() async {
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+    });
+    final store = MobileLocalStore(
+      executor: NativeDatabase.memory(),
+      documentsDirectory: () async => cacheDir,
+    );
+    _useFakeTemporaryPath(cacheDir.path);
+    addTearDown(store.close);
+    await store.saveLastDocumentDraft(
+      DocumentDraft(
+        id: 'draft-secret-title',
+        title: 'incident token=raw-title-token password=raw-title-password',
+        template: DocumentTemplate.report,
+        markdown: '# report',
+        updatedAt: DateTime.utc(2026, 7, 2),
+      ),
+    );
+    final job = DocumentExportJob(
+      jobId: 'export-secret-title',
+      draftId: 'draft-secret-title',
+      format: DocumentExportFormat.pdf,
+      status: 'ready',
+      downloadUrl: '/api/mobile/documents/exports/export-secret-title/download',
+      createdAt: DateTime.utc(2026, 7, 2),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+        apiClientProvider.overrideWithValue(_DownloadExportApiClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    final file = await container
+        .read(documentsControllerProvider.notifier)
+        .downloadExportFile(job);
+
+    final filename = file.path.split(RegExp(r'[\\/]')).last;
+    expect(filename, endsWith('.pdf'));
+    expect(filename, contains('token=[REDACTED_SECRET]'));
+    expect(filename, contains('password=[REDACTED_SECRET]'));
+    expect(filename, isNot(contains('raw-title-token')));
+    expect(filename, isNot(contains('raw-title-password')));
   });
 
   test('document export notification falls back when download URL is external',

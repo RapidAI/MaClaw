@@ -106,6 +106,10 @@ For a single local readiness summary, run:
   and `qa_preflight.py`). Replace it with the real 10-character Apple Team ID
   before running `setup_ios_export_options.py`, `plan_ios_release.py`, or
   `signed_artifact_evidence.py`.
+  PowerShell treats unquoted `<...>` placeholders as redirection syntax, so
+  replace all angle-bracket placeholders with real values before copying
+  commands there; for dry-run previews with placeholders, wrap placeholder
+  arguments in quotes.
 - Then run
   `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
@@ -139,12 +143,12 @@ For a single local readiness summary, run:
   the document parsing flow.
 - Create, edit, insert a table, add a comment, run AI processing, export, and
   share PDF, Word, and Markdown.
-- Add a server profile with tag and note, create or attach a backend SSH
-  session, copy output, send output to AI analysis, and delete the profile to
-  clear stored credentials.
-- Paste SSH output or logs, hand them to an online digital employee, confirm the
-  Hub/tenant handoff and sensitive-data warning, and verify the task is created
-  without bypassing remote authorization.
+- Sync MaClaw GUI/agent server profiles through Hub, create or attach a backend
+  SSH session, copy output, send output to AI analysis, and clear the phone-side
+  cached profile when revoking mobile access.
+- Send backend session output or logs to an online digital employee, confirm
+  the Hub/tenant handoff and sensitive-data warning, and verify the task is
+  created without bypassing remote authorization.
 - Submit a typed digital employee task, verify the generated mobile emergency
   brief includes phone-friendly output requirements and high-risk command draft
   rules, poll status, copy/share the result, and verify remote-side
@@ -158,30 +162,31 @@ For a single local readiness summary, run:
 - Change theme and speech language from the account screen.
 - Clear local work records and confirm assistant history, document drafts/tasks,
   command history, digital employee prompts/tasks, and app preferences reset
-  while server profiles and SSH credentials remain available.
-- Clear server profiles/SSH credentials separately and confirm saved access is
+  while server-profile caches remain available.
+- Clear server-profile caches separately and confirm phone-side server access is
   revoked.
 
 ## Safety
 
 - High-risk SSH commands are only saved after explicit confirmation.
 - AI-generated SSH analysis returns command drafts, not auto-executed commands.
-- Terminal output is sent to AI only after the user confirms the analysis
-  action, reviews a preview, and sees the sensitive-data warning.
-- Terminal output is submitted to digital employees only after the user confirms
-  the Hub/tenant handoff, reviews a preview, and sees the sensitive-data
-  warning.
-- SSH passwords, private keys, private key passphrases, and login tokens stay in
-  secure storage.
-- Deleting a server profile clears its secure SSH credentials.
-- Clearing local work records does not delete saved server credentials.
-- Clearing server profiles/SSH credentials is a separate explicit action.
+- Backend session output is sent to AI only after the user confirms the
+  analysis action, reviews a preview, and sees the sensitive-data warning.
+- Backend session output is submitted to digital employees only after the user
+  confirms the Hub/tenant handoff, reviews a preview, and sees the
+  sensitive-data warning.
+- SSH passwords, private keys, and private-key passphrases stay on the
+  authorized MaClaw GUI/agent side; login tokens stay in secure storage.
+- Deleting a phone-side server profile clears the cached profile and any legacy
+  local credential residue.
+- Clearing local work records does not delete cached server-profile metadata.
+- Clearing server-profile caches is a separate explicit action.
 
 ## CI
 
 - `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`
-- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1`
-- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1`
+- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1`
 - `python3 -m unittest tool/configure_platforms_test.py`
 - `python3 -m unittest tool/validate_qa_build_record_test.py`
 - `python3 -m unittest tool/create_qa_build_record_test.py`
@@ -227,7 +232,7 @@ Before creating signed QA packages on a local machine, run:
 
 - `python3 tool/setup_android_signing.py`
 - `python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
-- `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`
+- `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-<version+build>.log`
 
 Before approving a release candidate with completed signed-build QA records, run:
 
@@ -254,9 +259,12 @@ above. Once validated QA records exist, replace `<version+build>` with the
 validated QA record version/build; successful final evidence logs must use that
 same version/build in the `final-release-evidence*.log` filename. Pass
 `--force` only when intentionally regenerating that saved evidence.
+Use `python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-<version+build>.md` to preview
+handoff content without writing or overwriting the saved handoff file.
 Each completed record must include these Final Release Decision fields before
 approval:
 - `Release handoff result`
+- `Preflight result`
 - `Runtime boundary verification result`
 - `Automated release gates result`
 

@@ -40,6 +40,49 @@ class VerifyRuntimeBoundaryTest(unittest.TestCase):
             "corelib reference", {violation.rule.name for violation in violations}
         )
 
+    def test_flags_phone_local_ssh_dependency_in_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lib").mkdir()
+            (root / "lib" / "main.dart").write_text("void main() {}\n", encoding="utf-8")
+            (root / "pubspec.lock").write_text(
+                "packages:\n  dartssh2:\n    version: 2.21.0\n",
+                encoding="utf-8",
+            )
+
+            violations = verify_runtime_boundary.find_violations(root)
+
+        self.assertEqual(1, len(violations))
+        self.assertEqual("phone-local ssh dependency", violations[0].rule.name)
+        self.assertEqual(Path("pubspec.lock"), violations[0].path)
+
+    def test_flags_phone_side_ssh_credential_save_read_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lib = root / "lib" / "core" / "storage"
+            lib.mkdir(parents=True)
+            (lib / "secure_vault.dart").write_text(
+                "class SecureVault {\n"
+                "  Future<void> saveServerPassword(String id, String password) async {}\n"
+                "  Future<String?> readServerPrivateKey(String id) async => null;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            violations = verify_runtime_boundary.find_violations(root)
+
+        self.assertEqual(2, len(violations))
+        self.assertEqual(
+            {"phone-side ssh credential api"},
+            {violation.rule.name for violation in violations},
+        )
+        self.assertTrue(
+            all(
+                violation.path == Path("lib/core/storage/secure_vault.dart")
+                for violation in violations
+            )
+        )
+
     def test_ignores_docs_and_tests_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

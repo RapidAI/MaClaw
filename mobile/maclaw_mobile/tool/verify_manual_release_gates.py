@@ -82,16 +82,50 @@ CANONICAL_MANUAL_GATES = (
         "Backend SSH session against real server",
         (
             "Real backend SSH session smoke test",
+            "backend_session_id",
+            "GUI/agent claim",
+            "worker claim/update",
+            "not phone-local",
             "connect result",
-            "credential deletion",
+            "ssh_session",
+            "output_chunk",
+            "output_seq",
+            "interrupt",
+            "Ctrl+C",
+            "GUI/agent Ctrl+C handling",
+            "copied backend session output",
+            "AI/digital-employee handoff",
+            "server-profile cache clear",
         ),
         (
             "Backend SSH Session Smoke Test",
+            "agent/backend-managed",
+            "backend_session_id",
+            "not phone-local",
+            "GUI/agent",
+            "worker claim/update",
             "Connect",
             "read-only command",
-            "credential",
+            "output_chunk",
+            "output_seq",
+            "interrupt",
+            "Ctrl+C",
+            "GUI/agent Ctrl+C handling",
+            "copied backend session output",
+            "AI/digital-employee handoff",
+            "server-profile cache",
         ),
         "Manual SSH smoke passed",
+        (
+            "not phone-local",
+            "backend_session_id",
+            "GUI/agent claim",
+            "worker claim/update",
+            "ssh_session",
+            "output_chunk",
+            "output_seq",
+            "GUI/agent Ctrl+C handling",
+        ),
     ),
     ManualGate(
         "Hub discovery smoke test",
@@ -119,6 +153,13 @@ CANONICAL_MANUAL_GATES = (
         ),
         "Hub discovery smoke passed",
     ),
+)
+
+FINAL_RELEASE_DECISION_EVIDENCE_FIELDS = (
+    "Release handoff result",
+    "Preflight result",
+    "Runtime boundary verification result",
+    "Automated release gates result",
 )
 
 FINAL_RELEASE_EVIDENCE_LOG_COMMAND = (
@@ -322,6 +363,10 @@ def validate_manual_release_gates(root: Path) -> list[str]:
             )
 
     final_decision = _section(template, "Final Release Decision")
+    for field in FINAL_RELEASE_DECISION_EVIDENCE_FIELDS:
+        expected = f"{field}:"
+        if expected not in final_decision:
+            errors.append(f"QA build record final decision must include `{expected}`.")
     for field in sorted({gate.final_decision_field for gate in CANONICAL_MANUAL_GATES}):
         expected = f"{field}: passed / waived with reason"
         if expected not in final_decision:

@@ -374,6 +374,8 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 			cskill.CleanupStaging(stagingDir)
 			return fmt.Errorf("skill %q already exists", skill.Name)
 		}
+		skill.Source = maclawAppRegisteredDependencySource(string(kind))
+		skill.HubSkillID = firstNonEmpty(downloadID, skill.HubSkillID)
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, string(kind))
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
@@ -1767,33 +1769,19 @@ func (a *App) continueAIAssistantWorkflowMessage(userID string, text string, req
 	return requestID, nil
 }
 
-// StartWorkflowDirect starts a workflow of the given type directly without user
-// confirmation. Called from the "常用工作流" panel when a user clicks a workflow tile.
-// The workflow is started immediately and the first phase begins executing.
+// StartWorkflowDirect is kept for compatibility with older generated frontend
+// bindings. New callers should use StartWorkflowTemplate.
 func (a *App) StartWorkflowDirect(workflowType string, projectPath string) (string, error) {
-	return a.startWorkflowDirect(workflowType, projectPath, "")
+	return a.StartWorkflowTemplate(workflowType, projectPath)
 }
 
-func (a *App) StartWorkflowDirectWithInput(workflowType string, projectPath string, taskText string) (string, error) {
-	return a.startWorkflowDirect(workflowType, projectPath, taskText)
-}
-
-func (a *App) startWorkflowDirect(workflowType string, projectPath string, taskText string) (string, error) {
+// StartWorkflowTemplate starts a workflow template from the "常用工作流" panel.
+// If the first phase has an input schema, the AI assistant task panel is shown
+// before execution.
+func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (string, error) {
 	workflowType = strings.TrimSpace(workflowType)
 	if workflowType == "" {
 		return "", fmt.Errorf("workflow type is required")
-	}
-	taskText = strings.TrimSpace(taskText)
-	directCodingSubAgent := workflowType == "coding_subagent"
-	directRemoteCodingSubAgent := workflowType == "remote_coding_subagent"
-	if taskText != "" && !directCodingSubAgent && !directRemoteCodingSubAgent {
-		return "", fmt.Errorf("workflow input is only supported for direct coding workflows")
-	}
-	directCodingWithInlineInput := taskText != "" && directCodingSubAgent
-	directRemoteCodingWithInlineInput := taskText != "" && directRemoteCodingSubAgent
-	routeWorkflowType := workflowType
-	if directCodingWithInlineInput || directRemoteCodingWithInlineInput {
-		routeWorkflowType = "coding"
 	}
 
 	// Note: workflow disabled setting is NOT checked here.
@@ -1820,78 +1808,95 @@ func (a *App) startWorkflowDirect(workflowType string, projectPath string, taskT
 	if wf == nil {
 		return "", fmt.Errorf("workflow engine not initialized")
 	}
-	if tmpl := wf.machine.GetRegistry().Get(routeWorkflowType); tmpl == nil {
+	if tmpl := wf.machine.GetRegistry().Get(workflowType); tmpl == nil {
 		return "", fmt.Errorf("unknown workflow type: %s", workflowType)
 	}
 
-	// For StartWorkflowDirect triggered from the workflow panel, always use
-	// the default desktop session (empty project path). The workflow engine will
-	// determine the actual project path during startNewWorkflowV2 based on the
-	// current project setting. Using empty here ensures the message is routed to
-	// the same session that the AI assistant panel's default tab is listening on.
+	// For workflow panel starts, always use the default desktop session (empty
+	// project path). The workflow engine will determine the actual project path
+	// during startNewWorkflowV2 based on the current project setting. Using empty
+	// here ensures the message is routed to the same session that the AI assistant
+	// panel's default tab is listening on.
 	sendProjectPath := ""
 	if projectPath == "." {
 		projectPath = "" // normalize for RouteResult too
 	}
-	userID := desktopAIAssistantUserIDForProjectPath(sendProjectPath)
-	requestID := fmt.Sprintf("desktop-ai-%d-%s", time.Now().UnixNano(), workflowType)
-
-	// Route through the normal message serialization path to avoid concurrent
-	// agent loop races. Send a synthetic message that the workflow integration
-	// layer will pick up and route to startNewWorkflowV2.
-	syntheticText := fmt.Sprintf("启动%s工作流", workflowType)
-	if directCodingWithInlineInput {
-		syntheticText = "启动简化编程任务"
-	} else if directRemoteCodingWithInlineInput {
-		syntheticText = "启动远程编程任务"
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, workflowType, projectPath, sendProjectPath, time.Now())
+	if err != nil {
+		return "", err
 	}
-	if taskText != "" {
-		syntheticText = taskText
-	}
-
-	// Store the RouteResult so the handleCodingComplexityCommand path can
-	// pick it up as a pre-routed "complex" workflow choice without disambiguation.
-	choiceID := fmt.Sprintf("direct-%d", time.Now().UnixNano())
-	handler.pendingWorkflowChoice.Store(userID, &pendingWorkflowChoice{
-		Msg: IMUserMessage{
-			UserID:    userID,
-			Platform:  desktopPlatform,
-			Text:      syntheticText,
-			RequestID: requestID,
-		},
-		RouteResult: &v2.RouteResult{
-			Target:       "workflow",
-			WorkflowType: routeWorkflowType,
-			ProjectPath:  projectPath,
-		},
-		ChoiceID: choiceID,
-	})
 
 	// Send the choice command through the normal message path. This goes through
 	// enterIMMessageSerializationBoundary, ensuring proper session locking.
 	// EventScopeID must be "local" so the backend caches it and subsequent workflow
 	// events carry it — the frontend's useWorkflowState filters events by scope ID
 	// and only accepts events matching the active tab's scope ("local" for default tab).
-	workflowChoice := workflowChoiceComplex
-	if directCodingWithInlineInput {
-		workflowChoice = workflowChoiceSimple
-	} else if directRemoteCodingWithInlineInput {
-		workflowChoice = workflowChoiceRemoteSimple
-	}
-	choiceCommand := buildWorkflowChoiceCommand(workflowChoice, choiceID)
 	go func() {
 		if _, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
-			Text:         choiceCommand,
-			RequestID:    requestID,
-			ProjectPath:  sendProjectPath,
+			Text:         launch.ChoiceCommand,
+			RequestID:    launch.RequestID,
+			ProjectPath:  launch.SendProjectPath,
 			EventScopeID: "local",
 		}); err != nil {
-			log.Printf("[StartWorkflowDirect] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
-			handler.pendingWorkflowChoice.Delete(userID)
+			log.Printf("[StartWorkflowTemplate] SendAIAssistantMessage failed: type=%s err=%v", workflowType, err)
+			handler.pendingWorkflowChoice.Delete(launch.UserID)
 		}
 	}()
 
-	return requestID, nil
+	return launch.RequestID, nil
+}
+
+type workflowTemplatePanelLaunch struct {
+	UserID          string
+	RequestID       string
+	ChoiceID        string
+	ChoiceCommand   string
+	SendProjectPath string
+}
+
+func prepareWorkflowTemplatePanelLaunch(handler *IMMessageHandler, workflowType, projectPath, sendProjectPath string, now time.Time) (workflowTemplatePanelLaunch, error) {
+	if handler == nil {
+		return workflowTemplatePanelLaunch{}, fmt.Errorf("AI assistant not initialized")
+	}
+	workflowType = strings.TrimSpace(workflowType)
+	if workflowType == "" {
+		return workflowTemplatePanelLaunch{}, fmt.Errorf("workflow type is required")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	userID := desktopAIAssistantUserIDForProjectPath(sendProjectPath)
+	requestID := fmt.Sprintf("desktop-ai-%d-%s", now.UnixNano(), workflowType)
+	choiceID := fmt.Sprintf("template-%d", now.UnixNano())
+	choice := workflowChoiceComplex
+	switch workflowType {
+	case workflowChoiceCodingSubAgent:
+		choice = workflowChoiceCodingSubAgent
+	case workflowChoiceRemoteCoding:
+		choice = workflowChoiceRemoteCoding
+	}
+	choiceCommand := buildWorkflowChoiceCommand(choice, choiceID)
+	handler.pendingWorkflowChoice.Store(userID, &pendingWorkflowChoice{
+		Msg: IMUserMessage{
+			UserID:    userID,
+			Platform:  desktopPlatform,
+			Text:      fmt.Sprintf("启动%s工作流", workflowType),
+			RequestID: requestID,
+		},
+		RouteResult: &v2.RouteResult{
+			Target:       v2.RouteToWorkflow,
+			WorkflowType: workflowType,
+			ProjectPath:  projectPath,
+		},
+		ChoiceID: choiceID,
+	})
+	return workflowTemplatePanelLaunch{
+		UserID:          userID,
+		RequestID:       requestID,
+		ChoiceID:        choiceID,
+		ChoiceCommand:   choiceCommand,
+		SendProjectPath: sendProjectPath,
+	}, nil
 }
 
 func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubClient *RemoteHubClient, requestID string, text string, userID string) {

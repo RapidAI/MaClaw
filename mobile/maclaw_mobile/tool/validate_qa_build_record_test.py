@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import sys
@@ -47,10 +47,10 @@ DOCUMENT_EXPORT_SHARE_CONTEXT = (
     "markdown-export-job-id-12345; saved local path evidence export-share-42"
 )
 
-SERVER_CREDENTIAL_RETENTION_CONTEXT = (
-    "After local reset, server profiles and SSH credentials password and private "
-    "key remained available in secure storage for server-profile:srv-prod; "
-    "screenshot credential-retain-42"
+SERVER_PROFILE_METADATA_RETENTION_CONTEXT = (
+    "After local work-record reset, sanitized server-profile metadata with host, "
+    "auth mode, tag, and note remained cached for server-profile:srv-prod; "
+    "screenshot server-profile-retain-42"
 )
 
 ASSISTANT_FIRST_SCREEN_CONTEXT = (
@@ -104,6 +104,11 @@ def complete_record() -> str:
             value = LAUNCH_SPLASH_LOGO_CONTEXT
         if field == "Release handoff result":
             value = "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md"
+        if field == "Preflight result":
+            value = (
+                "qa_preflight.py: Result READY for signed-build QA preparation; "
+                "log: docs/qa-builds/preflight-1.0.0+42.log"
+            )
         if field == "Runtime boundary verification result":
             value = (
                 "MaClaw Mobile runtime boundary verified; log: "
@@ -163,36 +168,95 @@ def complete_record() -> str:
                 f"screenshot install-launch-{field.lower().replace(' ', '-')}-42"
             )
         if field == "Host type":
-            value = "Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42"
+            value = (
+                "Sanitized Hub-synced server-profile metadata published by "
+                "MaClaw GUI/agent shows Linux cloud server host type for "
+                "server-profile:srv-prod without SSH credentials on the phone; "
+                "screenshot ssh-host-42"
+            )
         if field == "Auth mode":
-            value = "Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42"
+            value = (
+                "Sanitized Hub-synced server-profile metadata published by "
+                "MaClaw GUI/agent shows password auth mode for "
+                "server-profile:srv-prod; credentials stay on GUI/agent side, "
+                "not phone-side SSH credential storage; screenshot ssh-auth-42"
+            )
         if field == "Connect result":
-            value = "SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42"
+            value = (
+                "Connect result created through Hub control record "
+                "for backend-session:mobile-ssh-mobssh-12345 on "
+                "server-profile:srv-prod and was claimed by MaClaw GUI agent "
+                "through SSHSessionManager, not phone-local ad hoc terminal; "
+                "screenshot ssh-connect-42"
+            )
         if field == "Read-only command":
-            value = "Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42"
+            value = (
+                "Read-only command whoami was queued to "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "through the GUI/agent-managed SSHSessionManager path, not "
+                "phone-local ad hoc terminal; screenshot ssh-command-42"
+            )
         if field == "Command output excerpt":
-            value = "Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42"
+            value = (
+                "Command output excerpt from backend session output "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "shows stdout for whoami: qa-user through ssh_session output, "
+                "not phone-local ad hoc terminal; screenshot ssh-output-42"
+            )
+        if field == "SSH realtime incremental output evidence":
+            value = (
+                "Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 "
+                "on server-profile:srv-prod was claimed_by MaClaw GUI agent worker "
+                "through agent/backend-managed SSHSessionManager, not phone-local "
+                "ad hoc terminal, and included output_chunk with whoami stdout "
+                "and output_seq 2; "
+                "screenshot ssh-realtime-output-42"
+            )
+        if field == "Interrupt result":
+            value = (
+                "Interrupt result: Ctrl+C interrupt request queued through Hub "
+                "control record for "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, "
+                "not phone-local ad hoc terminal; screenshot ssh-interrupt-42"
+            )
         if field == "Disconnect result":
-            value = "SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42"
+            value = (
+                "Disconnect result closed through Hub control record for "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "and MaClaw GUI agent removed the managed SSHSessionManager "
+                "session, not phone-local ad hoc terminal; screenshot "
+                "ssh-disconnect-42"
+            )
         if field == "Reconnect result":
-            value = "SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42"
-        if field == "Copied output evidence":
-            value = "Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42"
+            value = (
+                "Reconnect result queued through Hub control record for "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "and MaClaw GUI agent reconnected the SSHSessionManager session, "
+                "not phone-local ad hoc terminal; screenshot ssh-reconnect-42"
+            )
+        if field == "Copied backend session output evidence":
+            value = (
+                "Copied backend session output from backend-session:mobile-ssh-mobssh-12345 "
+                "on server-profile:srv-prod to clipboard through the GUI/agent-managed "
+                "SSHSessionManager path, not phone-local ad hoc terminal; "
+                "screenshot ssh-copy-42"
+            )
         if field in validate_qa_build_record.SSH_AI_ANALYSIS_WARNING_FIELDS:
             value = (
-                "SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis "
+                "Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis "
                 "confirmation after sensitive-data warning; screenshot "
                 "ssh-ai-analysis-warning-42"
             )
         if field in validate_qa_build_record.SSH_AI_RESULT_FIELDS:
             value = (
-                "AI explanation returned from redacted SSH terminal output with command draft suggestions for "
-                "manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42"
+                "AI explanation returned from redacted backend SSH session output with command draft suggestions for "
+                "manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42"
             )
-        if field in validate_qa_build_record.CREDENTIAL_DELETION_FIELDS:
+        if field in validate_qa_build_record.BACKEND_SSH_CACHE_CLEAR_FIELDS:
             value = (
-                "Deleted server profile and cleared password/private key "
-                "credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42"
+                "Cleared phone-side server-profile cache for server-profile:srv-prod "
+                "after backend SSH smoke and revoked mobile access; screenshot server-profile-cache-clear-42"
             )
         if field in validate_qa_build_record.ACCOUNT_PREFERENCE_FIELDS:
             value = (
@@ -206,14 +270,14 @@ def complete_record() -> str:
                 "and app preferences while preserving server-profile:srv-prod; "
                 "screenshot local-reset-42"
             )
-        if field in validate_qa_build_record.SERVER_CREDENTIAL_RETENTION_FIELDS:
-            value = SERVER_CREDENTIAL_RETENTION_CONTEXT
-        if field in validate_qa_build_record.SERVER_CREDENTIAL_CLEAR_FIELDS:
+        if field in validate_qa_build_record.SERVER_PROFILE_METADATA_RETENTION_FIELDS:
+            value = SERVER_PROFILE_METADATA_RETENTION_CONTEXT
+        if field in validate_qa_build_record.SERVER_PROFILE_CACHE_CLEAR_FIELDS:
             value = (
-                "Separate explicit account action cleared server profiles and SSH "
-                "credentials including password/private key for "
-                "server-profile:srv-prod with credential-clear:server-clear-12345; "
-                "screenshot credential-clear-42"
+                "Separate explicit account action cleared phone-side cached "
+                "server-profile metadata for "
+                "server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; "
+                "screenshot server-profile-cache-clear-42"
             )
         if field in validate_qa_build_record.STATUS_POLLING_FIELDS:
             value = (
@@ -338,15 +402,21 @@ def complete_record() -> str:
         if field == "Local network / SSH scenario":
             value = (
                 "Android Local network permission prompt granted, then SSH "
-                "connected to server-profile:srv-prod and read-only command "
-                "whoami returned output; screenshot permission-local-network-ssh; "
+                "connected through Hub control record to "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "via GUI/agent-managed SSHSessionManager, not phone-local ad hoc "
+                "terminal, and read-only command whoami returned output; "
+                "screenshot permission-local-network-ssh; "
                 "permission-grant:local-network-android-12345"
             )
         if field == "Local network permission":
             value = (
                 "iOS Local network permission prompt granted, then SSH "
-                "connected to server-profile:srv-prod and read-only command "
-                "whoami returned output; screenshot permission-local-network-ssh; "
+                "connected through Hub control record to "
+                "backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod "
+                "via GUI/agent-managed SSHSessionManager, not phone-local ad hoc "
+                "terminal, and read-only command whoami returned output; "
+                "screenshot permission-local-network-ssh; "
                 "permission-grant:local-network-ios-12345"
             )
         if field == "Speech recognition permission":
@@ -1854,7 +1924,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 1,
             )
             .replace(
-                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
+                "Connect result: Connect result created through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and was claimed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
                 "Connect result: done",
             ),
         )
@@ -1893,7 +1963,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 1,
             )
             .replace(
-                "iOS Local network permission prompt granted, then SSH connected to server-profile:srv-prod and read-only command whoami returned output; screenshot permission-local-network-ssh; permission-grant:local-network-ios-12345",
+                "iOS Local network permission prompt granted, then SSH connected through Hub control record to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod via GUI/agent-managed SSHSessionManager, not phone-local ad hoc terminal, and read-only command whoami returned output; screenshot permission-local-network-ssh; permission-grant:local-network-ios-12345",
                 "Permission prompt granted on QA device; screenshot permission-generic-c",
                 1,
             ),
@@ -1905,7 +1975,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             "Notification permission must describe permission prompt/result evidence",
             "Camera permission must describe permission prompt/result evidence",
             "Microphone permission must describe permission prompt/result evidence",
-            "Local network permission must describe local-network permission evidence tied to a real SSH connection and read-only command",
+            "Local network permission must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command",
         ]:
             self.assertIn(expected, missing)
 
@@ -2008,9 +2078,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             complete_record()
             .replace(
                 "Local network / SSH scenario: Android Local network "
-                "permission prompt granted, then SSH connected to "
-                "server-profile:srv-prod and read-only command whoami "
-                "returned output; screenshot permission-local-network-ssh; "
+                "permission prompt granted, then SSH connected through Hub "
+                "control record to backend-session:mobile-ssh-mobssh-12345 "
+                "on server-profile:srv-prod via GUI/agent-managed "
+                "SSHSessionManager, not phone-local ad hoc terminal, and "
+                "read-only command whoami returned output; screenshot "
+                "permission-local-network-ssh; "
                 "permission-grant:local-network-android-12345",
                 "Local network / SSH scenario: Android Local network "
                 "permission prompt granted in Settings; screenshot "
@@ -2018,7 +2091,10 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             )
             .replace(
                 "Local network permission: iOS Local network permission prompt "
-                "granted, then SSH connected to server-profile:srv-prod and "
+                "granted, then SSH connected through Hub control record to "
+                "backend-session:mobile-ssh-mobssh-12345 on "
+                "server-profile:srv-prod via GUI/agent-managed "
+                "SSHSessionManager, not phone-local ad hoc terminal, and "
                 "read-only command whoami returned output; screenshot "
                 "permission-local-network-ssh; "
                 "permission-grant:local-network-ios-12345",
@@ -2030,11 +2106,57 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         missing = validate_qa_build_record.missing_required_fields(values)
 
         self.assertIn(
-            "Local network / SSH scenario must describe local-network permission evidence tied to a real SSH connection and read-only command",
+            "Local network / SSH scenario must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command",
             missing,
         )
         self.assertIn(
-            "Local network permission must describe local-network permission evidence tied to a real SSH connection and read-only command",
+            "Local network permission must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command",
+            missing,
+        )
+
+    def test_local_network_permission_rejects_phone_local_ssh_evidence(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Local network / SSH scenario: Android Local network "
+                "permission prompt granted, then SSH connected through Hub "
+                "control record to backend-session:mobile-ssh-mobssh-12345 "
+                "on server-profile:srv-prod via GUI/agent-managed "
+                "SSHSessionManager, not phone-local ad hoc terminal, and "
+                "read-only command whoami returned output; screenshot "
+                "permission-local-network-ssh; "
+                "permission-grant:local-network-android-12345",
+                "Local network / SSH scenario: Android Local network "
+                "permission prompt granted, then SSH connected from phone-local "
+                "terminal to server-profile:srv-prod and read-only command "
+                "whoami returned output; screenshot permission-local-network-ssh; "
+                "permission-grant:local-network-android-12345",
+            )
+            .replace(
+                "Local network permission: iOS Local network permission prompt "
+                "granted, then SSH connected through Hub control record to "
+                "backend-session:mobile-ssh-mobssh-12345 on "
+                "server-profile:srv-prod via GUI/agent-managed "
+                "SSHSessionManager, not phone-local ad hoc terminal, and "
+                "read-only command whoami returned output; screenshot "
+                "permission-local-network-ssh; "
+                "permission-grant:local-network-ios-12345",
+                "Local network permission: iOS Local network permission prompt "
+                "granted, then SSH connected from phone-local terminal to "
+                "server-profile:srv-prod and read-only command whoami returned "
+                "output; screenshot permission-local-network-ssh; "
+                "permission-grant:local-network-ios-12345",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Local network / SSH scenario must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command",
+            missing,
+        )
+        self.assertIn(
+            "Local network permission must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command",
             missing,
         )
 
@@ -2412,71 +2534,126 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: SSH analysis completed with screenshot/log reference",
             )
             .replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
                 "AI explanation / command draft result: AI result screenshot captured",
             )
             .replace(
-                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
-                "Credential deletion confirmation: Server profile cleanup screenshot captured",
+                "Backend SSH server-profile cache clear confirmation: Cleared phone-side server-profile cache for server-profile:srv-prod after backend SSH smoke and revoked mobile access; screenshot server-profile-cache-clear-42",
+                "Backend SSH server-profile cache clear confirmation: Server profile cleanup screenshot captured",
             ),
         )
 
         missing = validate_qa_build_record.missing_required_fields(values)
 
         self.assertIn(
-            "AI analysis confirmation and sensitive-data warning must describe preview confirmation and sensitive-data warning evidence",
+            "AI analysis confirmation and sensitive-data warning must describe preview confirmation, sensitive-data warning evidence, and the same GUI/agent-bound backend_session_id",
             missing,
         )
         self.assertIn(
-            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id",
             missing,
         )
         self.assertIn(
-            "Credential deletion confirmation must describe cleared SSH credential storage evidence",
+            "Backend SSH server-profile cache clear confirmation must describe phone-side server-profile cache clearing evidence",
             missing,
         )
 
     def test_ssh_ai_result_must_include_redacted_terminal_output_context(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
-                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
             ),
         )
 
         self.assertIn(
-            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id",
             validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_ssh_ai_result_requires_trackable_command_draft_id(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
             ),
         )
 
         self.assertIn(
-            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context",
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id",
             validate_qa_build_record.missing_required_fields(values),
         )
 
     def test_ssh_ai_analysis_warning_must_include_redacted_output_preview(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: AI analysis preview confirmation accepted after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
             ),
         )
 
         self.assertIn(
-            "AI analysis confirmation and sensitive-data warning must describe preview confirmation and sensitive-data warning evidence",
+            "AI analysis confirmation and sensitive-data warning must describe preview confirmation, sensitive-data warning evidence, and the same GUI/agent-bound backend_session_id",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_ai_analysis_warning_must_reference_backend_session(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI analysis confirmation and sensitive-data warning must describe preview confirmation, sensitive-data warning evidence, and the same GUI/agent-bound backend_session_id",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_ai_result_must_reference_backend_session(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345, not auto executed; screenshot ssh-ai-result-42",
+            ),
+        )
+
+        self.assertIn(
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_ai_and_handoff_reject_server_profile_only_session_refs(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+            )
+            .replace(
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+            )
+            + "\nDigital employee handoff warning, if used: Screenshot qa-ssh-42 shows Hub tenant handoff warning confirmation before digital employee receives backend SSH session copied output from server-profile:srv-prod",
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "AI analysis confirmation and sensitive-data warning must describe preview confirmation, sensitive-data warning evidence, and the same GUI/agent-bound backend_session_id",
+            missing,
+        )
+        self.assertIn(
+            "AI explanation / command draft result must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id",
+            missing,
+        )
+        self.assertIn(
+            "Digital employee handoff warning, if used must describe Hub/tenant handoff warning evidence tied to the same GUI/agent-bound backend_session_id",
+            missing,
         )
 
     def test_account_privacy_and_local_data_fields_must_be_specific(self) -> None:
@@ -2491,12 +2668,12 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Local work records reset confirmation: Cache cleared screenshot captured",
             )
             .replace(
-                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
-                "Server credentials retained after local reset: Credentials screenshot captured",
+                f"Server-profile metadata retained after local reset: {SERVER_PROFILE_METADATA_RETENTION_CONTEXT}",
+                "Server-profile metadata retained after local reset: Metadata screenshot captured",
             )
             .replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
-                "Server profiles/SSH credentials clear confirmation: Cleanup screenshot captured",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+                "Server-profile cache clear confirmation: Cleanup screenshot captured",
             ),
         )
 
@@ -2511,11 +2688,11 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
         self.assertIn(
-            "Server credentials retained after local reset must describe server profiles and SSH credentials retained after local reset",
+            "Server-profile metadata retained after local reset must describe sanitized server-profile metadata retained after local reset",
             missing,
         )
         self.assertIn(
-            "Server profiles/SSH credentials clear confirmation must describe separate explicit server profile and SSH credential clearing",
+            "Server-profile cache clear confirmation must describe separate explicit phone-side server-profile cache clearing",
             missing,
         )
 
@@ -2529,18 +2706,50 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server profiles; screenshot local-reset-42",
             )
             .replace(
-                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
-                "Server credentials retained after local reset: After local reset, server profiles and SSH credentials password and private key remained available; screenshot credential-retain-42",
+                f"Server-profile metadata retained after local reset: {SERVER_PROFILE_METADATA_RETENTION_CONTEXT}",
+                "Server-profile metadata retained after local reset: After local reset, server profiles remained available; screenshot server-profile-retain-42",
             )
             .replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key with credential-clear:server-clear-12345; screenshot credential-clear-42",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
             ),
         )
 
         self.assertIn(
-            "Account privacy server credential evidence must reference the recorded server-profile notification ID",
+            "Account privacy server-profile evidence must reference the recorded server-profile notification ID",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_legacy_ssh_credential_evidence_fields_are_rejected(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Server-profile metadata retained after local reset:",
+                "Server credentials retained after local reset:",
+            )
+            .replace(
+                "Server-profile cache clear confirmation:",
+                "Server profiles/SSH credentials clear confirmation:",
+            )
+            .replace(
+                "Backend SSH server-profile cache clear confirmation:",
+                "Credential deletion confirmation:",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Server credentials retained after local reset is deprecated; use Server-profile metadata retained after local reset and do not record phone-side SSH credentials",
+            missing,
+        )
+        self.assertIn(
+            "Server profiles/SSH credentials clear confirmation is deprecated; use Server-profile cache clear confirmation and do not record phone-side SSH credentials",
+            missing,
+        )
+        self.assertIn(
+            "Credential deletion confirmation is deprecated; use Backend SSH server-profile cache clear confirmation and do not record phone-side SSH credentials",
+            missing,
         )
 
     def test_local_work_records_reset_accepts_legacy_search_history_wording(
@@ -2558,34 +2767,46 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_server_credentials_retention_must_reference_secure_storage(
+    def test_server_profile_metadata_retention_must_describe_metadata(
         self,
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                f"Server credentials retained after local reset: {SERVER_CREDENTIAL_RETENTION_CONTEXT}",
-                "Server credentials retained after local reset: After local "
-                "reset, server profiles and SSH credentials password and "
-                "private key remained available for server-profile:srv-prod; "
-                "screenshot credential-retain-42",
+                f"Server-profile metadata retained after local reset: {SERVER_PROFILE_METADATA_RETENTION_CONTEXT}",
+                "Server-profile metadata retained after local reset: After local "
+                "reset, server profiles remained available for server-profile:srv-prod; "
+                "screenshot server-profile-retain-42",
             ),
         )
 
         self.assertIn(
-            "Server credentials retained after local reset must describe server profiles and SSH credentials retained after local reset",
+            "Server-profile metadata retained after local reset must describe sanitized server-profile metadata retained after local reset",
             validate_qa_build_record.missing_required_fields(values),
         )
 
-    def test_server_credential_clear_requires_trackable_clear_id(self) -> None:
+    def test_server_profile_cache_clear_requires_trackable_clear_id(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot credential-clear-42",
-                "Server profiles/SSH credentials clear confirmation: Separate explicit account action cleared server profiles and SSH credentials including password/private key for server-profile:srv-prod; screenshot credential-clear-42",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod; screenshot server-profile-cache-clear-42",
             ),
         )
 
         self.assertIn(
-            "Server profiles/SSH credentials clear confirmation must describe separate explicit server profile and SSH credential clearing",
+            "Server-profile cache clear confirmation must describe separate explicit phone-side server-profile cache clearing",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_server_profile_cache_clear_accepts_legacy_credential_clear_id(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with credential-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+            ),
+        )
+
+        self.assertNotIn(
+            "Server-profile cache clear confirmation must describe separate explicit phone-side server-profile cache clearing",
             validate_qa_build_record.missing_required_fields(values),
         )
 
@@ -2593,36 +2814,44 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Host type: Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42",
+                "Host type: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows Linux cloud server host type for server-profile:srv-prod without SSH credentials on the phone; screenshot ssh-host-42",
                 "Host type: QA screenshot captured",
             )
             .replace(
-                "Auth mode: Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42",
+                "Auth mode: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows password auth mode for server-profile:srv-prod; credentials stay on GUI/agent side, not phone-side SSH credential storage; screenshot ssh-auth-42",
                 "Auth mode: QA screenshot captured",
             )
             .replace(
-                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
+                "Connect result: Connect result created through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and was claimed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
                 "Connect result: QA screenshot captured",
             )
             .replace(
-                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
                 "Read-only command: QA screenshot captured",
             )
             .replace(
-                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for whoami: qa-user through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
                 "Command output excerpt: QA screenshot captured",
             )
             .replace(
-                "Disconnect result: SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: QA screenshot captured",
+            )
+            .replace(
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+                "Interrupt result: QA screenshot captured",
+            )
+            .replace(
+                "Disconnect result: Disconnect result closed through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent removed the managed SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-disconnect-42",
                 "Disconnect result: QA screenshot captured",
             )
             .replace(
-                "Reconnect result: SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42",
+                "Reconnect result: Reconnect result queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent reconnected the SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-reconnect-42",
                 "Reconnect result: QA screenshot captured",
             )
             .replace(
-                "Copied output evidence: Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42",
-                "Copied output evidence: QA screenshot captured",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: QA screenshot captured",
             ),
         )
 
@@ -2634,17 +2863,168 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             "Connect result must describe the expected SSH smoke-test evidence",
             "Read-only command must describe the expected SSH smoke-test evidence",
             "Command output excerpt must describe the expected SSH smoke-test evidence",
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            "Interrupt result must describe the expected SSH smoke-test evidence",
             "Disconnect result must describe the expected SSH smoke-test evidence",
             "Reconnect result must describe the expected SSH smoke-test evidence",
-            "Copied output evidence must describe the expected SSH smoke-test evidence",
+            "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
         ]:
             self.assertIn(expected, missing)
+
+    def test_ssh_realtime_incremental_output_requires_delta_fields(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event reached server-profile:srv-prod but only static backend session screenshot was captured; screenshot ssh-realtime-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_connect_requires_hub_control_record(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Connect result: Connect result created through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and was claimed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
+                "Connect result: SSH connected successfully to QA server server-profile:srv-prod through MaClaw GUI agent SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
+            ),
+        )
+
+        self.assertIn(
+            "Connect result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_connect_requires_gui_agent_backend_manager(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Connect result: Connect result created through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and was claimed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
+                "Connect result: SSH connected successfully through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not phone-local ad hoc terminal; screenshot ssh-connect-42",
+            ),
+        )
+
+        self.assertIn(
+            "Connect result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_disconnect_requires_hub_control_record(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Disconnect result: Disconnect result closed through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent removed the managed SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-disconnect-42",
+                "Disconnect result: SSH disconnected from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent removed the managed SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-disconnect-42",
+            ),
+        )
+
+        self.assertIn(
+            "Disconnect result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_reconnect_requires_gui_agent_backend_manager(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Reconnect result: Reconnect result queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent reconnected the SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-reconnect-42",
+                "Reconnect result: SSH reconnected through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not phone-local ad hoc terminal; screenshot ssh-reconnect-42",
+            ),
+        )
+
+        self.assertIn(
+            "Reconnect result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_realtime_incremental_output_requires_gui_agent_handoff(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_realtime_incremental_output_requires_worker_claim_update_evidence(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was managed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_realtime_incremental_output_rejects_generic_mobile_session_api_as_worker_evidence(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was managed by MaClaw GUI agent through SSHSessionManager after mobile called /api/mobile/ssh/sessions/mobssh-12345/input and worker status changed, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_realtime_incremental_output_rejects_phone_local_terminal_only(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker and included output_chunk with whoami stdout and output_seq 2, but evidence only shows a phone-local terminal screenshot; screenshot ssh-realtime-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_interrupt_requires_gui_agent_ctrl_c_handling(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and worker status changed, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+            ),
+        )
+
+        self.assertIn(
+            "Interrupt result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_interrupt_requires_hub_interrupt_control_record(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+                "Interrupt result: Ctrl+C request through Hub for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+            ),
+        )
+
+        self.assertIn(
+            "Interrupt result must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
 
     def test_ssh_read_only_command_rejects_high_risk_commands(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
-                "Read-only command: Read-only command rm -rf /tmp/cache executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
+                "Read-only command: Read-only command rm -rf /tmp/cache was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
             ),
         )
 
@@ -2653,16 +3033,55 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_ssh_read_only_command_requires_backend_session_context(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Read-only command: Read-only command whoami was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+            ),
+        )
+
+        self.assertIn(
+            "Read-only command must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_command_output_requires_backend_session_output_context(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for whoami: qa-user through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+            ),
+        )
+
+        self.assertIn(
+            "Command output excerpt must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_copied_output_rejects_phone_local_terminal_context(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard from phone-local terminal screenshot; screenshot ssh-copy-42",
+            ),
+        )
+
+        self.assertIn(
+            "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_ssh_read_only_command_accepts_safe_diagnostic_commands(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
-                "Read-only command: Read-only command df -h executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
+                "Read-only command: Read-only command df -h was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
             )
             .replace(
-                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
-                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for df -h root filesystem usage; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for whoami: qa-user through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for df -h root filesystem usage through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
             ),
         )
 
@@ -2672,54 +3091,83 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         values = validate_qa_build_record.parse_record(
             complete_record()
             .replace(
-                "Host type: Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42",
+                "Host type: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows Linux cloud server host type for server-profile:srv-prod without SSH credentials on the phone; screenshot ssh-host-42",
                 "Host type: Linux cloud server host type recorded; screenshot ssh-host-42",
             )
             .replace(
-                "Auth mode: Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42",
+                "Auth mode: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows password auth mode for server-profile:srv-prod; credentials stay on GUI/agent side, not phone-side SSH credential storage; screenshot ssh-auth-42",
                 "Auth mode: Password auth mode used for QA SSH server; screenshot ssh-auth-42",
             )
             .replace(
-                "Connect result: SSH connected successfully to QA server server-profile:srv-prod; screenshot ssh-connect-42",
+                "Connect result: Connect result created through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and was claimed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-connect-42",
                 "Connect result: SSH connected successfully to QA server; screenshot ssh-connect-42",
             )
             .replace(
-                "Read-only command: Read-only command whoami executed on server-profile:srv-prod; screenshot ssh-command-42",
+                "Read-only command: Read-only command whoami was queued to backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-command-42",
                 "Read-only command: Read-only command whoami executed; screenshot ssh-command-42",
             )
             .replace(
-                "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
+                "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for whoami: qa-user through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
                 "Command output excerpt: Command output excerpt shows stdout for whoami: qa-user; screenshot ssh-output-42",
             )
             .replace(
-                "Disconnect result: SSH disconnected from server-profile:srv-prod and terminal closed cleanly; screenshot ssh-disconnect-42",
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+                "Interrupt result: Ctrl+C interrupt request queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 and Ctrl+C handled by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal; screenshot ssh-interrupt-42",
+            )
+            .replace(
+                "Disconnect result: Disconnect result closed through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent removed the managed SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-disconnect-42",
                 "Disconnect result: SSH disconnected and terminal closed cleanly; screenshot ssh-disconnect-42",
             )
             .replace(
-                "Reconnect result: SSH reconnected to QA server server-profile:srv-prod after disconnect; screenshot ssh-reconnect-42",
+                "Reconnect result: Reconnect result queued through Hub control record for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod and MaClaw GUI agent reconnected the SSHSessionManager session, not phone-local ad hoc terminal; screenshot ssh-reconnect-42",
                 "Reconnect result: SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42",
             )
             .replace(
-                "Copied output evidence: Copied terminal output from server-profile:srv-prod to clipboard; screenshot ssh-copy-42",
-                "Copied output evidence: Copied terminal output to clipboard; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied output to clipboard; screenshot ssh-copy-42",
             )
             .replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
             )
             .replace(
-                "AI explanation / command draft result: AI explanation returned from redacted SSH terminal output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
+                "AI explanation / command draft result: AI explanation returned from redacted backend SSH session output with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345 for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod, not auto executed; screenshot ssh-ai-result-42",
                 "AI explanation / command draft result: AI explanation returned with command draft suggestions for manual confirmation as command-draft:ssh-ai-draft-12345, not auto executed; screenshot ssh-ai-result-42",
             )
             .replace(
-                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
-                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials from secure storage; screenshot credential-delete-42",
+                "Backend SSH server-profile cache clear confirmation: Cleared phone-side server-profile cache for server-profile:srv-prod after backend SSH smoke and revoked mobile access; screenshot server-profile-cache-clear-42",
+                "Backend SSH server-profile cache clear confirmation: Cleared phone-side server-profile cache after backend SSH smoke and revoked mobile access; screenshot server-profile-cache-clear-42",
             )
         )
 
         self.assertIn(
             "Manual SSH smoke evidence must reference the recorded server-profile notification ID",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_profile_metadata_requires_sanitized_hub_synced_source(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Host type: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows Linux cloud server host type for server-profile:srv-prod without SSH credentials on the phone; screenshot ssh-host-42",
+                "Host type: Linux cloud server host type recorded for server-profile:srv-prod; screenshot ssh-host-42",
+            )
+            .replace(
+                "Auth mode: Sanitized Hub-synced server-profile metadata published by MaClaw GUI/agent shows password auth mode for server-profile:srv-prod; credentials stay on GUI/agent side, not phone-side SSH credential storage; screenshot ssh-auth-42",
+                "Auth mode: Password auth mode used for QA SSH server server-profile:srv-prod; screenshot ssh-auth-42",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+        self.assertIn(
+            "Host type must describe the expected SSH smoke-test evidence",
+            missing,
+        )
+        self.assertIn(
+            "Auth mode must describe the expected SSH smoke-test evidence",
+            missing,
         )
 
     def test_status_polling_and_realtime_fields_must_describe_task_updates(self) -> None:
@@ -3214,13 +3662,13 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         )
 
         self.assertIn(
-            "Digital employee handoff warning, if used must describe Hub/tenant handoff warning evidence",
+            "Digital employee handoff warning, if used must describe Hub/tenant handoff warning evidence tied to the same GUI/agent-bound backend_session_id",
             validate_qa_build_record.missing_required_fields(vague_values),
         )
 
         auditable_values = validate_qa_build_record.parse_record(
             complete_record()
-            + "\nDigital employee handoff warning, if used: Screenshot qa-ssh-42 shows Hub tenant handoff warning confirmation before digital employee receives SSH terminal copied output",
+            + "\nDigital employee handoff warning, if used: Screenshot qa-ssh-42 shows Hub tenant handoff warning confirmation before digital employee receives backend SSH session copied output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod",
         )
 
         self.assertEqual(
@@ -3576,6 +4024,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         record = complete_record()
         for field in (
             "Release handoff result",
+            "Preflight result",
             "Runtime boundary verification result",
             "Automated release gates result",
         ):
@@ -3586,6 +4035,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         )
 
         self.assertIn("Release handoff result", missing)
+        self.assertIn("Preflight result", missing)
         self.assertIn("Runtime boundary verification result", missing)
         self.assertIn("Automated release gates result", missing)
 
@@ -3595,6 +4045,10 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             .replace(
                 "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
                 "Release handoff result: QA evidence screenshot captured for release approval",
+            )
+            .replace(
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
+                "Preflight result: QA evidence screenshot captured for release approval",
             )
             .replace(
                 "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
@@ -3610,6 +4064,10 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
         self.assertIn(
             "Release handoff result must reference release_handoff.py output or saved handoff evidence",
+            missing,
+        )
+        self.assertIn(
+            "Preflight result must reference qa_preflight.py READY output or saved preflight log evidence",
             missing,
         )
         self.assertIn(
@@ -3632,6 +4090,59 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn(
             "Automated release gates result must reference run_release_gates.py gate count and saved log evidence",
             validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_preflight_evidence_requires_ready_result(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
+                "Preflight result: qa_preflight.py: Result BLOCKED (2 blocker checks); log: docs/qa-builds/preflight-1.0.0+42.log",
+            ),
+        )
+
+        self.assertIn(
+            "Preflight result must reference qa_preflight.py READY output or saved preflight log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_automated_evidence_artifact_names_must_match_record_version(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record()
+            .replace(
+                "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+41.md",
+            )
+            .replace(
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+41.log",
+            )
+            .replace(
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+41.log",
+            )
+            .replace(
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
+                "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+41.log",
+            ),
+        )
+
+        missing = validate_qa_build_record.missing_required_fields(values)
+
+        self.assertIn(
+            "Release handoff result artifact reference must include the record Version/build number 1.0.0+42",
+            missing,
+        )
+        self.assertIn(
+            "Preflight result artifact reference must include the record Version/build number 1.0.0+42",
+            missing,
+        )
+        self.assertIn(
+            "Runtime boundary verification result artifact reference must include the record Version/build number 1.0.0+42",
+            missing,
+        )
+        self.assertIn(
+            "Automated release gates result artifact reference must include the record Version/build number 1.0.0+42",
+            missing,
         )
 
     def test_automated_gate_evidence_accepts_real_runner_success_line(self) -> None:
@@ -4010,8 +4521,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             record = Path(tmp) / "qa-record.md"
             record.write_text(
                 complete_record().replace(
-                    "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout for whoami: qa-user; screenshot ssh-output-42",
-                    "Command output excerpt: Command output excerpt for server-profile:srv-prod shows stdout password=SuperSecret123; screenshot ssh-output-42",
+                    "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout for whoami: qa-user through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
+                    "Command output excerpt: Command output excerpt from backend session output backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod shows stdout password=SuperSecret123 through ssh_session output, not phone-local ad hoc terminal; screenshot ssh-output-42",
                 ),
                 encoding="utf-8",
             )
@@ -4178,4 +4689,3 @@ class ValidateQABuildRecordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

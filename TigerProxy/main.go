@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -17,9 +18,12 @@ var trayIcon []byte
 
 func main() {
 	app := NewApp()
+	startHidden := hasStartHiddenArg(os.Args[1:])
+	app.shown = !startHidden
 	appOptions := &options.App{
 		Title:                    "TigerProxy",
 		Frameless:                true,
+		StartHidden:              startHidden,
 		Width:                    920,
 		Height:                   680,
 		MinWidth:                 780,
@@ -42,4 +46,14 @@ func main() {
 	if err := wails.Run(appOptions); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func hasStartHiddenArg(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--hidden", "-hidden", "/hidden":
+			return true
+		}
+	}
+	return false
 }

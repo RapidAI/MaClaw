@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/security/mobile_redaction.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../shared/surface.dart';
 import 'document_draft.dart';
@@ -524,7 +525,7 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
           .downloadExportFile(job);
       final result = await ref.read(documentsExportFileShareProvider)(
         [XFile(file.path)],
-        text: draft.title,
+        text: redactMobileSensitiveText(draft.title),
       );
       if (!mounted) return;
       final message = switch (result.status) {

@@ -90,15 +90,16 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtxElapsed := time.Since(loopCtxStart)
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
 
-	// Direct coding modes entered from the workflow panel wait for the user's
-	// next message. Consume them before generic direct-execution or SubAgent
+	// Coding templates wait for the user's next message after their form is
+	// submitted. Consume them before generic direct-execution or SubAgent
 	// routing can reinterpret that message.
-	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase && h.hasPendingDirectSubAgentExecution(msg.UserID) {
-		if execResp, handled := h.consumePendingDirectSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
+	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase && h.hasPendingTemplateSubAgentExecution(msg.UserID) {
+		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
 			if execResp != nil {
+				loopCtx.SkipWorkflowDocCapture = true
 				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
-			log.Printf("[workflow-v2] Direct SubAgent execution returned nil, falling back to agent loop")
+			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to agent loop")
 		}
 	}
 
@@ -127,11 +128,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt
 	// which gets consumed by system prompt builder via LoadAndDelete).
 	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
-		if execResp, handled := h.consumePendingDirectSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
+		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
 			if execResp != nil {
+				loopCtx.SkipWorkflowDocCapture = true
 				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
-			log.Printf("[workflow-v2] Direct SubAgent execution returned nil, falling back to workflow execution")
+			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to workflow execution")
 		}
 		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
 			// Workflow SubAgent (implementation phase with parsed tasks)
@@ -181,24 +183,24 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 }
 
-func (h *IMMessageHandler) consumePendingDirectSubAgentExecution(msg IMUserMessage, agentLoopUserText string, loopCtx *LoopContext, requestID string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
+func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMessage, agentLoopUserText string, loopCtx *LoopContext, requestID string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
 	if h == nil {
 		return nil, false
 	}
 	if _, pending := h.pendingV2SubAgentExecution.Load(msg.UserID); !pending {
 		return nil, false
 	}
-	if remoteRaw, isDirectRemoteCoding := h.pendingDirectRemoteCoding.LoadAndDelete(msg.UserID); isDirectRemoteCoding {
+	if remoteRaw, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID); isRemoteCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
-		remoteCtx, _ := remoteRaw.(directRemoteCodingContext)
-		log.Printf("[workflow-v2] Direct remote coding SubAgent: user=%s session=%s project=%s request_id=%s", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID)
-		return h.runDirectRemoteCodingSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, onProgress, onToken), true
+		remoteCtx, _ := remoteRaw.(remoteCodingTemplateContext)
+		log.Printf("[workflow-v2] remote_coding_subagent execution: user=%s session=%s project=%s request_id=%s", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID)
+		return h.runRemoteCodingTemplateSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, onProgress, onToken), true
 	}
-	if projectPathRaw, isDirectCoding := h.pendingDirectCodingProjectPath.LoadAndDelete(msg.UserID); isDirectCoding {
+	if projectPathRaw, isCodingTemplate := h.pendingTemplateCodingProjectPath.LoadAndDelete(msg.UserID); isCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		projectPath, _ := projectPathRaw.(string)
-		log.Printf("[workflow-v2] Direct coding SubAgent: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
-		return h.runDirectCodingSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, onProgress, onToken), true
+		log.Printf("[workflow-v2] coding_subagent execution: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
+		return h.runCodingTemplateSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, onProgress, onToken), true
 	}
 	return nil, false
 }

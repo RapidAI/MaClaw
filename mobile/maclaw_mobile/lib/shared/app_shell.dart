@@ -181,7 +181,6 @@ class MobileAppTab {
       'search' => features.search,
       'documents' => features.documents,
       'backend_ssh_sessions' => features.backendSshSessions,
-      'local_ssh' => features.backendSshSessions,
       'employees' => features.digitalEmployees,
       _ => true,
     };

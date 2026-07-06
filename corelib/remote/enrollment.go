@@ -46,6 +46,7 @@ type EnrollResult struct {
 	Code                string `json:"code,omitempty"`
 	UserID              string `json:"user_id,omitempty"`
 	Email               string `json:"email,omitempty"`
+	PhoneNumber         string `json:"phone_number,omitempty"`
 	SN                  string `json:"sn,omitempty"`
 	MachineID           string `json:"machine_id,omitempty"`
 	MachineToken        string `json:"machine_token,omitempty"`
@@ -447,28 +448,46 @@ func PickBestHubWithTenantAndID(result HubCenterResolveResult) (string, string, 
 		return "", "", "", fmt.Errorf("%s", msg)
 	}
 
+	pick := func(hubs []HubCenterResolveHub, requireOnline bool, preferTenant bool) (string, string, string, bool) {
+		for _, preferTenantID := range []bool{preferTenant, false} {
+			for _, hub := range hubs {
+				if strings.TrimSpace(hub.BaseURL) == "" {
+					continue
+				}
+				if requireOnline && !isHubOnline(hub.Status) {
+					continue
+				}
+				if preferTenantID && strings.TrimSpace(hub.TenantID) == "" {
+					continue
+				}
+				return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, true
+			}
+		}
+		return "", "", "", false
+	}
+
 	// Prefer the default hub (if online).
 	if result.DefaultHubID != "" {
+		var defaultHubs []HubCenterResolveHub
 		for _, hub := range result.Hubs {
-			if hub.HubID == result.DefaultHubID && strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-				return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
+			if hub.HubID == result.DefaultHubID {
+				defaultHubs = append(defaultHubs, hub)
 			}
+		}
+		if hubURL, hubID, tenantID, ok := pick(defaultHubs, true, true); ok {
+			return hubURL, hubID, tenantID, nil
 		}
 	}
 
 	// Fallback: first online hub with a non-empty BaseURL.
-	for _, hub := range result.Hubs {
-		if strings.TrimSpace(hub.BaseURL) != "" && isHubOnline(hub.Status) {
-			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
-		}
+	if hubURL, hubID, tenantID, ok := pick(result.Hubs, true, true); ok {
+		return hubURL, hubID, tenantID, nil
 	}
 
 	// Last resort: first hub with a non-empty BaseURL regardless of status.
 	// This handles the case where HubCenter doesn't populate the Status field.
-	for _, hub := range result.Hubs {
-		if strings.TrimSpace(hub.BaseURL) != "" {
-			return strings.TrimRight(hub.BaseURL, "/"), hub.HubID, hub.TenantID, nil
-		}
+	if hubURL, hubID, tenantID, ok := pick(result.Hubs, false, true); ok {
+		return hubURL, hubID, tenantID, nil
 	}
 
 	return "", "", "", fmt.Errorf("hub center did not return a usable hub url")

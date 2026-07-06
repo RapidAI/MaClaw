@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { StartWorkflowDirect } from '../../../wailsjs/go/main/App';
+import { StartWorkflowTemplate } from '../../../wailsjs/go/main/App';
 import { getAllWorkflowShortcuts } from '../remote/WorkflowShortcutsSection';
 import './WorkflowsPage.css';
 
@@ -21,7 +21,7 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
 
     const isZh = !lang || lang.startsWith('zh');
     const title = isZh ? '工作流' : 'Workflows';
-    const subtitle = isZh ? '选择一个工作流模板，点击即可直接启动' : 'Select a workflow template to start immediately';
+    const subtitle = isZh ? '选择一个工作流模板，点击后在 AI 助手中继续' : 'Select a workflow template to continue in the AI assistant';
     const searchPlaceholder = isZh ? '搜索工作流...' : 'Search workflows...';
 
     const filteredGroups = useMemo(() => {
@@ -54,8 +54,8 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
 
         setTimeout(() => window.dispatchEvent(new Event('maclaw:workflow-starting-nudge')), 0);
         setTimeout(() => {
-            StartWorkflowDirect(workflowType, '')
-                .catch(err => console.warn('[WorkflowsPage] StartWorkflowDirect failed:', err))
+            StartWorkflowTemplate(workflowType, '')
+                .catch(err => console.warn('[WorkflowsPage] StartWorkflowTemplate failed:', err))
                 .finally(() => setTimeout(() => setStartingType(null), 2000));
         }, 50);
     }, [startingType, switchToAI, allGroups]);

@@ -15,6 +15,7 @@ import validate_qa_build_records_dir
 import verify_android_release_signing
 import verify_ios_wrapper
 import verify_manual_release_gates
+import verify_runtime_boundary
 
 
 SIGNED_QA_RECORD_HINT = release_evidence_commands.signed_qa_record_hint()
@@ -56,6 +57,38 @@ def validate_team_id_or_placeholder(value: str) -> str:
 
 def _scope_label(scope: str) -> str:
     return release_evidence_commands.scope_label(scope)
+
+
+def _uses_angle_bracket_placeholders(
+    *,
+    scope: str,
+    ios_team_id: str | None,
+    ios_export_method: str | None,
+) -> bool:
+    if not release_evidence_commands.scope_covers_ios(scope):
+        return False
+    team_id = ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID
+    export_method = ios_export_method or release_evidence_commands.DEFAULT_EXPORT_METHOD
+    return "<" in team_id or "<" in export_method
+
+
+def _powershell_placeholder_note(
+    *,
+    scope: str,
+    ios_team_id: str | None,
+    ios_export_method: str | None,
+) -> str | None:
+    if not _uses_angle_bracket_placeholders(
+        scope=scope,
+        ios_team_id=ios_team_id,
+        ios_export_method=ios_export_method,
+    ):
+        return None
+    return (
+        "PowerShell treats unquoted `<...>` placeholders as redirection syntax; "
+        "replace angle-bracket placeholders with real values before copying commands there, "
+        "or quote placeholder arguments for dry-run previews."
+    )
 
 
 def validate_ios_export_options(
@@ -175,6 +208,10 @@ def run_preflight(
         [Path],
         list[str],
     ] = verify_manual_release_gates.validate_manual_release_gates,
+    runtime_boundary_validator: Callable[
+        [Path],
+        list[verify_runtime_boundary.BoundaryViolation],
+    ] = verify_runtime_boundary.find_violations,
 ) -> list[PreflightCheck]:
     root = root.resolve()
     scope = release_evidence_commands.validate_scope(scope)
@@ -196,6 +233,11 @@ def run_preflight(
         scope=scope,
         team_id=ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID,
         export_method=ios_export_method or release_evidence_commands.DEFAULT_EXPORT_METHOD,
+        records_dir=records_dir_label,
+    )
+    preflight_log = release_evidence_commands.preflight_log_path(
+        release_evidence_commands.DEFAULT_VERSION,
+        scope=scope,
         records_dir=records_dir_label,
     )
 
@@ -241,6 +283,26 @@ def run_preflight(
             if ios_export_errors
             else _ok("iOS export options", "ios/ExportOptions.plist is readable and has a valid Team ID/export method")
         )
+
+    try:
+        runtime_boundary_violations = runtime_boundary_validator(root)
+    except OSError as exc:
+        runtime_boundary_errors = [
+            f"Runtime boundary verification cannot be read: {exc}",
+        ]
+    else:
+        runtime_boundary_errors = [
+            f"{violation.path}:{violation.line}: {violation.rule.name}: {violation.text}"
+            for violation in runtime_boundary_violations
+        ]
+    checks.append(
+        _blocker("Runtime boundary verification", runtime_boundary_errors)
+        if runtime_boundary_errors
+        else _ok(
+            "Runtime boundary verification",
+            "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, or phone-side SSH credential save/read APIs",
+        )
+    )
 
     try:
         manual_gate_errors = manual_gate_validator(root)
@@ -333,9 +395,17 @@ def run_preflight(
                         if release_evidence_commands.scope_covers_ios(scope)
                         else None,
                         records_dir=records_dir_label,
+                        log=preflight_log,
                     )
                     + "` after fixing blockers"
                 )
+                placeholder_note = _powershell_placeholder_note(
+                    scope=scope,
+                    ios_team_id=ios_team_id,
+                    ios_export_method=ios_export_method,
+                )
+                if placeholder_note:
+                    detail += ". " + placeholder_note
             else:
                 detail = signed_record_hint
             if out_of_scope_valid:
@@ -416,7 +486,25 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="QA build records directory. Defaults to docs/qa-builds under root.",
     )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        help="Optional path to save the preflight transcript as QA evidence.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing --log file.",
+    )
     args = parser.parse_args(argv)
+
+    if args.log and args.log.exists() and not args.force:
+        print(
+            f"Refusing to overwrite existing preflight log: {args.log}. "
+            "Pass --force to replace it.",
+            file=sys.stderr,
+        )
+        return 2
 
     checks = run_preflight(
         args.root,
@@ -426,6 +514,13 @@ def main(argv: list[str] | None = None) -> int:
         records_dir=args.records_dir,
     )
     output = format_preflight(checks)
+    if args.log:
+        try:
+            args.log.parent.mkdir(parents=True, exist_ok=True)
+            args.log.write_text(output, encoding="utf-8")
+        except OSError as exc:
+            print(f"Failed to write preflight log {args.log}: {exc}", file=sys.stderr)
+            return 2
     if any(check.is_blocker for check in checks):
         print(output, end="", file=sys.stderr)
         return 1

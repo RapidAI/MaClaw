@@ -58,7 +58,7 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 ## Local Coding Tools Boundary
 - External programming session tools/providers may be unavailable in simplified mode.
 - Local tools such as bash, write_file, edit_file, read_file, list_directory, craft_tool, and send_file remain available when they are present in the current tool list.
-- During a workflow implementation phase or any direct coding task, use those local tools to create directories, write files, edit files, build, and test.
+- During workflow-driven coding execution, use those local tools to create directories, write files, edit files, build, and test.
 - Do not tell the user that bash/write_file/edit_file are unavailable merely because simplified mode is active.
 - If a tool is not in the current tool list, choose another available local path or ask for a mode/provider change only for external coding sessions.
 `)

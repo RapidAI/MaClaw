@@ -26,7 +26,7 @@ func setupTray(app *App, appOptions *options.App) {
 			systray.SetIcon(trayIcon)
 			systray.SetTitle("TigerProxy")
 			systray.SetTooltip("TigerProxy")
-			visible := true
+			visible := app.isShown()
 
 			mShowHide := systray.AddMenuItem("隐藏", "显示/隐藏主界面")
 			mQuit := systray.AddMenuItem("退出", "退出 TigerProxy")

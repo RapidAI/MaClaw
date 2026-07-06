@@ -346,6 +346,8 @@ class MobileFeatures {
   })  : assistant = assistant ?? true,
         backendSshSessions = backendSshSessions ?? localSsh ?? true;
 
+  /// Backward-compatible alias for older Hub bootstrap payloads that used
+  /// `local_ssh`. The mobile feature is GUI/agent-managed backend SSH sessions.
   bool get localSsh => backendSshSessions;
 
   factory MobileFeatures.fromJson(Map<String, dynamic> json) {
@@ -353,6 +355,8 @@ class MobileFeatures {
       assistant: json['assistant'] as bool? ?? true,
       search: json['search'] as bool? ?? true,
       documents: json['documents'] as bool? ?? true,
+      // Prefer the GUI/agent-managed backend session flag. Accept `local_ssh`
+      // only so older Hubs do not hide the remote-management tab.
       backendSshSessions: json['backend_ssh_sessions'] as bool? ??
           json['remote_ssh_sessions'] as bool? ??
           json['local_ssh'] as bool? ??

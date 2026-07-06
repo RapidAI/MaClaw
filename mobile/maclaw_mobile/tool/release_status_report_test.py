@@ -90,6 +90,19 @@ class ReleaseStatusReportTest(unittest.TestCase):
             "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
             output,
         )
+        self.assertIn("GUI-equivalent backend-managed SSH session evidence", output)
+        self.assertIn("GUI/agent-bound backend_session_id", output)
+        self.assertIn("GUI/agent claim or worker handoff", output)
+        self.assertIn("explicit worker claim/update evidence", output)
+        self.assertIn("`ssh_session` realtime `output_chunk`/`output_seq` proof", output)
+        self.assertIn("not phone-local/ad hoc terminal evidence", output)
+        self.assertIn("phone-initiated interrupt evidence", output)
+        self.assertIn("Hub control record", output)
+        self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
+        self.assertIn("GUI/agent Ctrl+C handling", output)
+        self.assertIn("copied backend session output", output)
+        self.assertIn("AI/digital-employee handoff evidence", output)
+        self.assertIn("same GUI/agent-bound backend_session_id when used", output)
         self.assertIn("--team-id <APPLE_TEAM_ID>", output)
         self.assertIn("--export-method <export-method>", output)
         self.assertIn("--output docs/qa-builds/handoff-<version+build>.md", output)
@@ -167,6 +180,10 @@ class ReleaseStatusReportTest(unittest.TestCase):
                 team_id=release_evidence_commands.DEFAULT_TEAM_ID,
                 export_method=release_evidence_commands.DEFAULT_EXPORT_METHOD,
                 records_dir=str(records_dir.resolve()),
+                log=release_evidence_commands.preflight_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    records_dir=str(records_dir.resolve()),
+                ),
             ),
             output,
         )
@@ -311,15 +328,88 @@ class ReleaseStatusReportTest(unittest.TestCase):
             + release_evidence_commands.qa_preflight_command(
                 team_id=release_evidence_commands.DEFAULT_TEAM_ID,
                 export_method=release_evidence_commands.DEFAULT_EXPORT_METHOD,
+                log=release_evidence_commands.preflight_log_path(),
             )
             + "`",
             output,
         )
+        self.assertIn(
+            "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
+            output,
+        )
+        self.assertIn("quote placeholder arguments for dry-run previews", output)
+        self.assertIn(
+            "After preflight passes, signed-build QA still needs real-device share/permission, "
+            "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+            output,
+        )
+        self.assertIn("GUI/agent claim or worker handoff", output)
+        self.assertIn("explicit worker claim/update evidence", output)
+        self.assertIn(
+            "`ssh_session` realtime `output_chunk`/`output_seq` proof",
+            output,
+        )
+        self.assertIn("not phone-local/ad hoc terminal evidence", output)
+        self.assertIn("phone-initiated interrupt evidence", output)
+        self.assertIn("Hub control record", output)
+        self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
+        self.assertIn("GUI/agent Ctrl+C handling", output)
+        self.assertIn("copied backend session output", output)
+        self.assertIn("AI/digital-employee handoff evidence", output)
+        self.assertIn("same GUI/agent-bound backend_session_id", output)
         self.assertNotIn(
             "Create and validate in-scope signed-build QA records under docs/qa-builds/.",
             output,
         )
         self.assertNotIn(release_evidence_commands.release_handoff_command(), output)
+
+    def test_runtime_boundary_preflight_result_is_visible_in_status(self) -> None:
+        root = self.make_root()
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[
+                qa_preflight.PreflightCheck(
+                    "Runtime boundary verification",
+                    "ok",
+                    [
+                        "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, or phone-side SSH credential save/read APIs",
+                    ],
+                ),
+            ],
+            record_results=[],
+            final_errors=[
+                "Final release evidence requires at least one completed signed-build QA record.",
+            ],
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn("[OK] Runtime boundary verification", output)
+        self.assertIn("phone-local SSH dependencies", output)
+        self.assertIn("phone-side SSH credential save/read APIs", output)
+        self.assertIn("Result: NOT READY.", output)
+
+    def test_preflight_blocker_omits_powershell_placeholder_note_with_real_team_id(self) -> None:
+        root = self.make_root()
+        status = release_status_report.ReleaseStatus(
+            root=root,
+            preflight_checks=[
+                qa_preflight.PreflightCheck(
+                    "iOS export options",
+                    "blocker",
+                    ["Missing iOS export options plist: ios/ExportOptions.plist"],
+                ),
+            ],
+            record_results=[],
+            final_errors=[],
+            ios_team_id="ABCDE12345",
+            ios_export_method="development",
+        )
+
+        output = release_status_report.format_status(status)
+
+        self.assertIn("--team-id ABCDE12345", output)
+        self.assertNotIn("PowerShell treats unquoted `<...>` placeholders", output)
 
     def test_not_ready_with_valid_records_points_to_final_evidence_blockers(self) -> None:
         root = self.make_root()
@@ -700,6 +790,11 @@ class ReleaseStatusReportTest(unittest.TestCase):
             release_evidence_commands.qa_preflight_command(
                 scope="android",
                 records_dir=str(records_dir.resolve()),
+                log=release_evidence_commands.preflight_log_path(
+                    release_evidence_commands.DEFAULT_VERSION,
+                    scope="android",
+                    records_dir=str(records_dir.resolve()),
+                ),
             ),
             output,
         )

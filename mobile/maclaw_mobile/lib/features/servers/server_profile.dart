@@ -10,6 +10,8 @@ class ServerProfile {
   final String authMode;
   final String? tag;
   final String? note;
+  final String sourceMachineId;
+  final DateTime? updatedAt;
 
   const ServerProfile({
     required this.id,
@@ -20,6 +22,8 @@ class ServerProfile {
     required this.authMode,
     this.tag,
     this.note,
+    this.sourceMachineId = '',
+    this.updatedAt,
   });
 
   bool get isValid =>
@@ -38,6 +42,8 @@ class ServerProfile {
       authMode: json['auth_mode'] as String? ?? serverAuthModePassword,
       tag: json['tag'] as String?,
       note: json['note'] as String?,
+      sourceMachineId: json['source_machine_id'] as String? ?? '',
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
     );
   }
 
@@ -51,6 +57,9 @@ class ServerProfile {
       'auth_mode': authMode,
       if (tag != null) 'tag': tag,
       if (note != null) 'note': note,
+      if (sourceMachineId.trim().isNotEmpty)
+        'source_machine_id': sourceMachineId,
+      if (updatedAt != null) 'updated_at': updatedAt!.toUtc().toIso8601String(),
     };
   }
 }

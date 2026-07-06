@@ -299,7 +299,7 @@ function App() {
         }
     };
     logStartupTrace('app-render-begin');
-    const { showAlert } = useDialog();
+    const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
     const audioDevices = useAudioDevices();
@@ -2066,7 +2066,7 @@ function App() {
         return () => window.clearInterval(timer);
     }, [config, groupDiscussionConfig.enabled, groupDiscussionConfig.discoverable, publishGroupDiscussionProfile]);
 
-    const aiAssistant = useAIAssistant({ refreshSessionsOnly, lang });
+    const aiAssistant = useAIAssistant({ refreshSessionsOnly, lang, showConfirm });
     const codingAgentTurnSnapshot = useMemo(
         () => aiAssistant.sending ? latestCodingAgentTurnSnapshot(aiAssistant.progressMessages || []) : null,
         [aiAssistant.sending, aiAssistant.progressMessages],

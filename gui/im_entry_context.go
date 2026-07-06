@@ -110,11 +110,16 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// confirmation gate. The modified msg.Text now contains the execution plan /
 	// enhanced instruction — running it through BM25 template matching causes
 	// false-positive workflow triggers (e.g. plan text matching unrelated templates).
-	// Exception: __workflow_choice__ commands from StartWorkflowDirect must always
-	// be processed even when workflows are disabled — the user explicitly clicked
-	// a workflow tile, bypassing the global toggle.
+	// Exception: explicit workflow interactions must always be processed even
+	// when workflows are disabled. The global toggle controls cold-start
+	// auto-detection from free-form chat, but workflow tiles/forms create an
+	// active workflow that must be allowed to finish. Otherwise form auto-continue
+	// falls through to a plain chat loop and leaves the workflow phase stuck.
 	isExplicitWorkflowCommand := strings.HasPrefix(trimmed, workflowChoiceCommandPrefix)
-	if v2State != nil && (!v2Disabled || isExplicitWorkflowCommand) && !opts.SkipWorkflowRouting {
+	hasActiveWorkflow := h.hasWorkflowRoutingContinuation(msg.UserID)
+	hasPendingTemplateExecution := h.hasPendingTemplateSubAgentExecution(msg.UserID)
+	shouldRouteWorkflow := !v2Disabled || isExplicitWorkflowCommand || hasActiveWorkflow || hasPendingTemplateExecution
+	if v2State != nil && shouldRouteWorkflow && !opts.SkipWorkflowRouting {
 		workflowRoute = h.routeWithWorkflowV2(*msg, trimmed)
 	}
 	// Legacy fallback removed — StateMachine is the only workflow engine.
@@ -166,4 +171,18 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	result.CapabilityGapContext = h.consumePendingCapabilityGapContext(msg.UserID)
 	capabilityGapElapsed = time.Since(lastPhaseAt)
 	return result
+}
+
+func (h *IMMessageHandler) hasWorkflowRoutingContinuation(userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if h == nil || userID == "" {
+		return false
+	}
+	if v2State := h.getWorkflowV2(); v2State != nil && v2State.machine != nil && v2State.machine.GetActive(userID) != nil {
+		return true
+	}
+	if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.HasActiveWorkflow(userID) {
+		return true
+	}
+	return false
 }

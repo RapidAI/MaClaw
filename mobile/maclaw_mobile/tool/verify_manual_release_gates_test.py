@@ -94,12 +94,12 @@ def valid_audit_blockers() -> str:
         [
             "- Signed Android internal APK/AAB with install result on at least one Android 13+ device.",
             "- Android real-device share-to-app for text, URL, image, PDF, Word, Excel, and CSV.",
-            "- Android runtime permission prompts for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable, with permission-grant:<id> evidence.",
+            "- Android runtime permission prompts for notification, camera, microphone, media/file access, and any platform local-network prompt if applicable, with permission-grant:<id> evidence. Local-network evidence must not be used as phone-local SSH proof; backend SSH remains GUI/agent-managed.",
             "- iOS signed Runner and Share Extension target with official Team ID, provisioning profile, and app-group entitlement.",
             "- iOS real-device/TestFlight share-to-app for text, URL, image, PDF, Word, Excel, and CSV.",
             "- iOS runtime permission prompts for camera, microphone, speech recognition, photo library, local network, and notifications, with permission-grant:<id> evidence.",
-            "- Real backend SSH session smoke test against a server, including host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation.",
-            "- Hub discovery smoke test with account, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, cold-start MaClaw logo splash evidence with no Flutter placeholder branding, signed-in AI助手 first-screen evidence with visible voice input and no legacy 查信息 entry, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export, digital employee task, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation.",
+            "- Real backend SSH session smoke test against a server, including host type, auth mode, backend-managed session proof with GUI/agent-bound backend_session_id that is not phone-local, GUI/agent claim evidence, worker claim/update evidence, connect result, read-only command, command output excerpt, ssh_session realtime output_chunk/output_seq evidence tied to the same backend_session_id, interrupt/Ctrl+C evidence with GUI/agent Ctrl+C handling, disconnect result, reconnect result, copied backend session output evidence, AI analysis confirmation, AI/digital-employee handoff evidence tied to the same backend_session_id if used, and phone-side server-profile cache clear confirmation.",
+            "- Hub discovery smoke test with account, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, cold-start MaClaw logo splash evidence with no Flutter placeholder branding, signed-in AI\u52a9\u624b first-screen evidence with visible voice input and no legacy \u67e5\u4fe1\u606f entry, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export, digital employee task, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation.",
         ]
     )
 
@@ -107,6 +107,10 @@ def valid_audit_blockers() -> str:
 def valid_final_decision() -> str:
     return "\n".join(
         [
+            "Release handoff result:",
+            "Preflight result:",
+            "Runtime boundary verification result:",
+            "Automated release gates result:",
             "Automated gates passed: passed / waived with reason",
             "Android manual gates passed: passed / waived with reason",
             "iOS manual gates passed: passed / waived with reason",
@@ -137,10 +141,10 @@ def valid_checklist() -> str:
             "## Hub Discovery And Service Smoke Test",
             "Record selected HubCenter, discovered Hub, tenant, API base URL, and realtime Hub URL evidence.",
             "Record cold-start MaClaw logo splash evidence and absence of Flutter placeholder branding.",
-            "Record signed-in AI助手 first-screen evidence, 主对话 or secondary-tab controls, voice input, and absence of the legacy 查信息 entry.",
+            "Record signed-in AI\u52a9\u624b first-screen evidence, main or secondary-tab controls, voice input, and absence of the legacy \u67e5\u4fe1\u606f entry.",
             "Record typed notification payloads for document-export:, digital-employee-task:, and server-profile: targets.",
             "## Backend SSH Session Smoke Test",
-            "Connect by creating or attaching a backend-managed QA host session, run a read-only command, copy output, and delete credentials.",
+            "Connect by creating or attaching an agent/backend-managed QA host session with GUI/agent-bound backend_session_id, not phone-local ad hoc terminal, run a read-only command, record GUI/agent claim evidence, record worker claim/update evidence, record ssh_session realtime output_chunk/output_seq evidence tied to the same backend_session_id, record interrupt/Ctrl+C evidence with GUI/agent Ctrl+C handling, copied backend session output evidence, AI/digital-employee handoff evidence tied to the same backend_session_id if used, and record server-profile cache clear evidence.",
             verify_manual_release_gates.FINAL_RELEASE_EVIDENCE_LOG_COMMAND,
             release_evidence_commands.QA_RELEASE_EVIDENCE_LINK_COMMAND,
             *verify_manual_release_gates.SCOPED_INTERNAL_QA_COMMANDS,
@@ -216,7 +220,7 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             blockers = valid_audit_blockers().replace(
-                "- Real backend SSH session smoke test against a server, including host type, auth mode, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation.\n",
+                "- Real backend SSH session smoke test against a server, including host type, auth mode, backend-managed session proof with GUI/agent-bound backend_session_id that is not phone-local, GUI/agent claim evidence, worker claim/update evidence, connect result, read-only command, command output excerpt, ssh_session realtime output_chunk/output_seq evidence tied to the same backend_session_id, interrupt/Ctrl+C evidence with GUI/agent Ctrl+C handling, disconnect result, reconnect result, copied backend session output evidence, AI analysis confirmation, AI/digital-employee handoff evidence tied to the same backend_session_id if used, and phone-side server-profile cache clear confirmation.\n",
                 "",
             )
             write_docs(
@@ -232,6 +236,90 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
         self.assertIn(
             "release_audit.md Remaining Release Blockers must cover Backend SSH session against real server",
             "\n".join(errors),
+        )
+
+    def test_rejects_backend_ssh_gate_without_gui_managed_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blockers = valid_audit_blockers().replace(
+                "backend-managed session proof with GUI/agent-bound backend_session_id that is not phone-local, GUI/agent claim evidence, worker claim/update evidence, ",
+                "",
+            )
+            checklist = valid_checklist().replace(
+                "agent/backend-managed QA host session with GUI/agent-bound backend_session_id, not phone-local ad hoc terminal, ",
+                "QA host session, ",
+            ).replace(
+                "record GUI/agent claim evidence, ",
+                "",
+            ).replace(
+                "record worker claim/update evidence, ",
+                "",
+            )
+            table = valid_evidence_table().replace(
+                " not phone-local backend_session_id GUI/agent claim worker claim/update",
+                "",
+            )
+            write_docs(
+                root,
+                evidence_table=table,
+                audit_blockers=blockers,
+                checklist=checklist,
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        joined = "\n".join(errors)
+        self.assertIn(
+            "release_audit.md Remaining Release Blockers must cover Backend SSH session against real server",
+            joined,
+        )
+        self.assertIn(
+            "qa_device_checklist.md must include executable QA steps for Backend SSH session against real server",
+            joined,
+        )
+        self.assertIn(
+            "Manual Release Gates evidence for Backend SSH session against real server must include",
+            joined,
+        )
+
+    def test_rejects_backend_ssh_gate_without_gui_ctrl_c_handling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blockers = valid_audit_blockers().replace(
+                " with GUI/agent Ctrl+C handling",
+                "",
+            )
+            checklist = valid_checklist().replace(
+                " with GUI/agent Ctrl+C handling",
+                "",
+            )
+            table = valid_evidence_table().replace(
+                " GUI/agent Ctrl+C handling",
+                "",
+            )
+            write_docs(
+                root,
+                evidence_table=table,
+                audit_blockers=blockers,
+                checklist=checklist,
+                final_decision=valid_final_decision(),
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+        joined = "\n".join(errors)
+        self.assertIn(
+            "release_audit.md Remaining Release Blockers must cover Backend SSH session against real server",
+            joined,
+        )
+        self.assertIn(
+            "qa_device_checklist.md must include executable QA steps for Backend SSH session against real server",
+            joined,
+        )
+        self.assertIn(
+            "Manual Release Gates evidence for Backend SSH session against real server must include",
+            joined,
         )
 
     def test_rejects_permission_blockers_without_permission_grant_id(self) -> None:
@@ -419,6 +507,25 @@ class VerifyManualReleaseGatesTest(unittest.TestCase):
                 "Hub discovery smoke passed: passed / waived with reason",
                 "\n".join(errors),
             )
+
+    def test_rejects_missing_final_decision_evidence_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            final_decision = valid_final_decision().replace(
+                "Preflight result:\n",
+                "",
+            )
+            write_docs(
+                root,
+                evidence_table=valid_evidence_table(),
+                audit_blockers=valid_audit_blockers(),
+                checklist=valid_checklist(),
+                final_decision=final_decision,
+            )
+
+            errors = verify_manual_release_gates.validate_manual_release_gates(root)
+
+            self.assertIn("Preflight result:", "\n".join(errors))
 
     def test_rejects_missing_final_release_evidence_log_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

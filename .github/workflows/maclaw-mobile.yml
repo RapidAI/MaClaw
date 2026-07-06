@@ -37,8 +37,8 @@ jobs:
         with:
           channel: stable
       - run: go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
-      - run: go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1
-      - run: go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1
+      - run: go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1
+      - run: go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/configure_platforms_test.py
       - working-directory: mobile/maclaw_mobile

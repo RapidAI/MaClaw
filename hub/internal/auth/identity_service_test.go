@@ -868,6 +868,44 @@ func TestEmailLoginUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing
 	}
 }
 
+func TestStartEnrollmentIncludesBoundPhoneNumberForEmailUser(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+	enrolled, err := svc.StartEnrollment(ctx, "bound@example.com", "desktop", "windows", "client-bound-phone", "")
+	if err != nil {
+		t.Fatalf("initial StartEnrollment: %v", err)
+	}
+	user, err := deps.store.Users.GetByID(ctx, enrolled.UserID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if err := svc.BindVerifiedPhoneToUser(ctx, user, "17090134628"); err != nil {
+		t.Fatalf("BindVerifiedPhoneToUser: %v", err)
+	}
+
+	reenrolled, err := svc.StartEnrollment(ctx, "bound@example.com", "desktop", "windows", "client-bound-phone-2", "")
+	if err != nil {
+		t.Fatalf("reenroll StartEnrollment: %v", err)
+	}
+	if reenrolled.PhoneNumber != "17090134628" {
+		t.Fatalf("PhoneNumber = %q, want 17090134628", reenrolled.PhoneNumber)
+	}
+}
+
 func TestIdentityServiceRegistrationVerificationIsIndependentFromLogin(t *testing.T) {
 	deps := newTestStore(t)
 	mailer := &captureIdentityMailer{}

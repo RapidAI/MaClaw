@@ -25,20 +25,22 @@ func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *tes
 	}
 	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
 		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
 		toolDef("bash", "bash", nil, nil),
 		toolDef("task", "task", nil, nil),
 	})
 
 	plainSkip := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true}, agentLoopPhase{})
 	plainNames := toolNameSetForWorkflowFilterTest(plainSkip.Tools)
-	if plainNames["task"] || !plainNames["read_file"] || !plainNames["bash"] {
-		t.Fatalf("active workflow doc-only phase should allow bash (for document parsing) but block task, got %#v", plainNames)
+	if plainNames["task"] || plainNames["bash"] || !plainNames["read_file"] || !plainNames["list_directory"] || !plainNames["send_file"] {
+		t.Fatalf("active workflow doc-only phase should keep context tools but block implementation tools, got %#v", plainNames)
 	}
 
 	workflowLoop := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
 	workflowNames := toolNameSetForWorkflowFilterTest(workflowLoop.Tools)
-	if workflowNames["task"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["read_file"] || !workflowNames["bash"] {
-		t.Fatalf("doc-only workflow phase should allow bash but block write_file/edit_file/task, got %#v", workflowNames)
+	if workflowNames["task"] || workflowNames["bash"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["read_file"] || !workflowNames["list_directory"] || !workflowNames["send_file"] {
+		t.Fatalf("doc-only workflow phase should keep context tools but block mutation tools, got %#v", workflowNames)
 	}
 	if workflowLoop.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", workflowLoop.WorkflowDecision, workflow.ToolFilterDocOnly)
@@ -357,18 +359,18 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 
 	filtered := handler.applyWorkflowToolFilter(userID, handler.getTools())
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, blocked := range []string{"edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"bash", "write_file", "edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in doc-only workflow phase; got %#v", blocked, names)
 		}
 	}
-	for _, allowed := range []string{"read_file", "list_directory", "bash", "write_file"} {
+	for _, allowed := range []string{"read_file", "list_directory"} {
 		if !names[allowed] {
 			t.Fatalf("%s should remain available in doc-only phase; got %#v", allowed, names)
 		}
 	}
 
-	for _, blocked := range []string{"delegate_task"} {
+	for _, blocked := range []string{"bash", "write_file", "delegate_task"} {
 		if handler.isWorkflowToolAllowed(userID, blocked) {
 			t.Fatalf("%s execution must be blocked in doc-only workflow phase", blocked)
 		}

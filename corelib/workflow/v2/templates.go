@@ -370,20 +370,20 @@ func CodingTemplate() *WorkflowTemplate {
 }
 
 // CodingSubAgentTemplate is the single-phase "简化编程" workflow. It uses the
-// same workflow form pipeline as other templates, then dispatches directly to
-// CodingSubAgent without requirements/design/task phases.
+// same workflow form pipeline as other templates, then runs CodingSubAgent
+// without requirements/design/task phases.
 func CodingSubAgentTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:         "coding_subagent",
 		Name:         "简化编程",
-		Description:  "收集工作目录和项目描述后直接进入 CodingSubAgent 执行。Quick coding workflow that collects a working directory and code request, then runs CodingSubAgent directly.",
-		Keywords:     []string{"简化编程", "快速编程", "直接编码", "quick coding", "coding subagent"},
+		Description:  "通过工作流表单收集工作目录和项目描述，提交后执行 CodingSubAgent。Quick coding workflow that collects a working directory and code request in the standard form panel, then runs CodingSubAgent.",
+		Keywords:     []string{"简化编程", "快速编程", "快速编码", "quick coding", "coding subagent"},
 		SemanticOnly: true,
 		Phases: []PhaseTemplate{
-			{ID: "direct_coding", Name: "简化编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent,
+			{ID: "coding_subagent_execution", Name: "简化编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent,
 				InputSchema: &PhaseInputSchema{
 					Title:       "简化编程",
-					Description: "填写工作目录和要修改的代码需求，提交后直接执行。",
+					Description: "填写工作目录和要修改的代码需求，提交后启动编程智能体。",
 					Fields: []PhaseInputField{
 						{Name: "work_dir", Label: "工作目录", Type: "directory", Required: true, Placeholder: "选择或输入项目工作目录"},
 						{Name: "project_description", Label: "项目描述 / 代码需求", Type: "textarea", Required: true, Placeholder: "例如：修改用户列表页面的筛选逻辑，并补充单元测试"},
@@ -401,14 +401,14 @@ func RemoteCodingSubAgentTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:         "remote_coding_subagent",
 		Name:         "远程编程",
-		Description:  "收集 SSH 主机信息和远程项目描述后直接进入 RemoteCodingSubAgent 执行。Remote coding workflow that connects to SSH and runs RemoteCodingSubAgent directly.",
+		Description:  "通过工作流表单收集 SSH 主机信息和远程项目描述，连接后执行 RemoteCodingSubAgent。Remote coding workflow that collects SSH details in the standard form panel, connects, then runs RemoteCodingSubAgent.",
 		Keywords:     []string{"远程编程", "远程编码", "ssh 编程", "remote coding", "remote subagent"},
 		SemanticOnly: true,
 		Phases: []PhaseTemplate{
-			{ID: "remote_direct_coding", Name: "远程编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeRemoteSubAgent,
+			{ID: "remote_coding_subagent_execution", Name: "远程编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeRemoteSubAgent,
 				InputSchema: &PhaseInputSchema{
 					Title:       "远程编程",
-					Description: "填写 SSH 连接信息、默认工作目录和要修改的代码需求，提交后直接执行。",
+					Description: "填写 SSH 连接信息、默认工作目录和要修改的代码需求，提交后启动远程编程智能体。",
 					Fields: []PhaseInputField{
 						{Name: "ssh_host", Label: "主机 IP / 域名", Type: "text", Required: true, Placeholder: "例如：192.168.1.10 或 example.com"},
 						{Name: "ssh_port", Label: "端口", Type: "number", Required: true, Default: 22, Placeholder: "22"},

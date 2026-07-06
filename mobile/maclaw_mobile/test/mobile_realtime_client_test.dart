@@ -138,6 +138,68 @@ void main() {
     expect(event?.payload['format'], 'pdf');
   });
 
+  test('parses backend ssh session realtime payload', () {
+    final event = MobileRealtimeEvent.tryParse({
+      'type': 'ssh_session',
+      'session_id': 'mobssh_1',
+      'status': 'connected',
+      'session': {
+        'session_id': 'mobssh_1',
+        'server_profile_id': 'prod',
+        'backend_session_id': 'mobile-ssh:mobssh_1',
+        'recent_output': 'connected',
+        'output_chunk': '\n\$ uptime\n1 day',
+        'output_seq': 2,
+      },
+    });
+
+    expect(event?.sshSession, isTrue);
+    expect(event?.taskId, 'mobssh_1');
+    expect(event?.status, 'connected');
+    expect(event?.payload['server_profile_id'], 'prod');
+    expect(event?.payload['recent_output'], 'connected');
+    expect(event?.payload['output_chunk'], '\n\$ uptime\n1 day');
+    expect(event?.payload['output_seq'], 2);
+  });
+
+  test('parses backend ssh task and file operation realtime payloads', () {
+    final taskEvent = MobileRealtimeEvent.tryParse({
+      'type': 'ssh_task',
+      'task_id': 'task-1',
+      'session_id': 'mobssh_1',
+      'status': 'completed',
+      'task': {
+        'task_id': 'task-1',
+        'session_id': 'mobssh_1',
+        'backend_session_id': 'mobile-ssh:mobssh_1',
+        'log_tail': 'done',
+      },
+    });
+    final fileEvent = MobileRealtimeEvent.tryParse({
+      'type': 'ssh_file_operation',
+      'operation_id': 'file-op-1',
+      'session_id': 'mobssh_1',
+      'status': 'completed',
+      'operation': {
+        'operation_id': 'file-op-1',
+        'session_id': 'mobssh_1',
+        'bytes_transferred': 42,
+      },
+    });
+
+    expect(taskEvent?.sshTask, isTrue);
+    expect(taskEvent?.taskId, 'task-1');
+    expect(taskEvent?.payload['session_id'], 'mobssh_1');
+    expect(taskEvent?.payload['status'], 'completed');
+    expect(taskEvent?.payload['log_tail'], 'done');
+    expect(fileEvent?.sshFileOperation, isTrue);
+    expect(fileEvent?.taskId, 'file-op-1');
+    expect(fileEvent?.payload['operation_id'], 'file-op-1');
+    expect(fileEvent?.payload['session_id'], 'mobssh_1');
+    expect(fileEvent?.payload['status'], 'completed');
+    expect(fileEvent?.payload['bytes_transferred'], 42);
+  });
+
   test('events emits parsed realtime frames and closes channel', () async {
     Uri? connectedUri;
     final controller = StreamController<Object?>();

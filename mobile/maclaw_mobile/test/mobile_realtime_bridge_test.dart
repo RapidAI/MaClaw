@@ -10,6 +10,7 @@ import 'package:maclaw_mobile/core/api/official_service.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
+import 'package:maclaw_mobile/features/servers/servers_controller.dart';
 
 class _SignedInSessionController extends SessionController {
   @override
@@ -87,11 +88,38 @@ class _RecordingDigitalEmployeeTaskController
   }
 }
 
+class _RecordingBackendSshSessionsController
+    extends BackendSshSessionsController {
+  static final events = <MobileRealtimeEvent>[];
+
+  @override
+  Future<Map<String, MobileBackendSSHSession>> build() async => const {};
+
+  @override
+  Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
+    events.add(event);
+  }
+}
+
+class _RecordingBackendSshTasksController extends BackendSshTasksController {
+  static final events = <MobileRealtimeEvent>[];
+
+  @override
+  Future<Map<String, List<MobileBackendSSHTask>>> build() async => const {};
+
+  @override
+  Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
+    events.add(event);
+  }
+}
+
 void main() {
-  test('realtime bridge dispatches document and digital employee events',
+  test('realtime bridge dispatches document, digital employee, and ssh events',
       () async {
     _RecordingDocumentsController.events.clear();
     _RecordingDigitalEmployeeTaskController.events.clear();
+    _RecordingBackendSshSessionsController.events.clear();
+    _RecordingBackendSshTasksController.events.clear();
     final stream = StreamController<MobileRealtimeEvent>();
     final container = ProviderContainer(
       overrides: [
@@ -104,6 +132,12 @@ void main() {
         ),
         digitalEmployeeTaskProvider.overrideWith(
           _RecordingDigitalEmployeeTaskController.new,
+        ),
+        backendSshSessionsProvider.overrideWith(
+          _RecordingBackendSshSessionsController.new,
+        ),
+        backendSshTasksProvider.overrideWith(
+          _RecordingBackendSshTasksController.new,
         ),
       ],
     );
@@ -128,6 +162,22 @@ void main() {
           payload: {'task_id': 'task-1', 'status': 'done'},
         ),
       )
+      ..add(
+        const MobileRealtimeEvent(
+          type: 'ssh_session',
+          payload: {'session_id': 'mobssh_1', 'status': 'connected'},
+        ),
+      )
+      ..add(
+        const MobileRealtimeEvent(
+          type: 'ssh_task',
+          payload: {
+            'session_id': 'mobssh_1',
+            'task_id': 'task-ssh-1',
+            'status': 'completed',
+          },
+        ),
+      )
       ..add(const MobileRealtimeEvent(type: 'pong'));
     await Future<void>.delayed(Duration.zero);
 
@@ -140,6 +190,17 @@ void main() {
     expect(
       _RecordingDigitalEmployeeTaskController.events.single.payload['task_id'],
       'task-1',
+    );
+    expect(_RecordingBackendSshSessionsController.events, hasLength(1));
+    expect(
+      _RecordingBackendSshSessionsController
+          .events.single.payload['session_id'],
+      'mobssh_1',
+    );
+    expect(_RecordingBackendSshTasksController.events, hasLength(1));
+    expect(
+      _RecordingBackendSshTasksController.events.single.payload['task_id'],
+      'task-ssh-1',
     );
   });
 }

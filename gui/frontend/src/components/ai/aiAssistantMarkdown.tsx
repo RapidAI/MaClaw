@@ -839,6 +839,69 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
     void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
 }
 
+function parseGuideReceiptContent(content: string): { title: string; detail: string; quote: string } {
+    const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const titleIndex = lines.findIndex(line => !line.startsWith('>'));
+    const title = titleIndex >= 0 ? lines[titleIndex].replace(/[:：]\s*$/, '') : '';
+    const detail = titleIndex >= 0
+        ? (lines.slice(titleIndex + 1).find(line => !line.startsWith('>')) || '')
+        : '';
+    const quote = lines
+        .filter(line => line.startsWith('>'))
+        .map(line => line.replace(/^>\s?/, ''))
+        .join('\n');
+    return { title, detail, quote };
+}
+
+const GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS = 96;
+
+function compactGuideReceiptQuotePreview(quote: string): string {
+    const preview = quote
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .join(" ");
+    if (preview.length <= GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS) return preview;
+    return `${preview.slice(0, GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
+    const { title, detail, quote } = parseGuideReceiptContent(msg.content);
+    const quotePreview = quote ? compactGuideReceiptQuotePreview(quote) : "";
+    return (
+        <div
+            key={msg.id}
+            data-testid="guide-receipt"
+            role="status"
+            aria-live="polite"
+            style={{
+                margin: "2px 0 6px",
+                padding: "2px 2px",
+                color: t.textMuted,
+                fontSize: "12px",
+                lineHeight: 1.45,
+            }}
+        >
+            {title && <span style={{ color: t.fieldLabel, fontWeight: 600 }}>{title}</span>}
+            {detail && <span>{` · ${detail}`}</span>}
+            {quotePreview && (
+                <div
+                    style={{
+                        marginTop: "2px",
+                        color: t.text,
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                        overflow: "hidden",
+                    }}
+                    aria-label={quotePreview}
+                >
+                    {quotePreview}
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* Render a single ChatMessage */
 
 export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en", isStreaming = false): React.ReactNode {
@@ -934,6 +997,9 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
             }
             return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{msg.content}</div>;
         case "system":
+            if (msg.kind === 'guideReceipt') {
+                return renderGuideReceipt(msg, t);
+            }
             return (
                 <div key={msg.id} style={{ padding: "8px 12px", margin: "4px 0", borderRadius: "6px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6" }}>
                     {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}

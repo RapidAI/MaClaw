@@ -67,6 +67,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 "Date: YYYY-MM-DD\n"
                 "Version/build number: app version + build number, such as 1.0.0+42\n"
                 "Release handoff result:\n"
+                "Preflight result:\n"
                 "Runtime boundary verification result:\n"
                 "Automated release gates result:\n",
                 encoding="utf-8",
@@ -80,6 +81,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 version_build="1.0.0+42",
                 final_decision_prefills={
                     "Release handoff result": "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                    "Preflight result": "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
                     "Runtime boundary verification result": "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                     "Automated release gates result": "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                 },
@@ -88,6 +90,10 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             text = target.read_text(encoding="utf-8")
             self.assertIn(
                 "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                text,
+            )
+            self.assertIn(
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
                 text,
             )
             self.assertIn(
@@ -107,6 +113,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             template.write_text(
                 "Date: YYYY-MM-DD\n"
                 "Release handoff result:\n"
+                "Preflight result:\n"
                 "Runtime boundary verification result:\n"
                 "Automated release gates result:\n",
                 encoding="utf-8",
@@ -124,6 +131,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                     version_build="1.0.0+42",
                     final_decision_prefills={
                         "Release handoff result": "QA screenshot captured",
+                        "Preflight result": "QA screenshot captured",
                         "Runtime boundary verification result": "QA screenshot captured",
                         "Automated release gates result": "QA screenshot captured",
                     },
@@ -251,6 +259,36 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             self.assertEqual(0, exit_code)
             record = records_dir / "2026-07-02-android-1.0.0+42.md"
             self.assertTrue(record.exists())
+            self.assertIn(
+                "Complete manual evidence before validation: real-device share/permission, "
+                "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+                output.getvalue(),
+            )
+            self.assertIn(
+                "`ssh_session` realtime `output_chunk`/`output_seq` proof",
+                output.getvalue(),
+            )
+            self.assertIn(
+                "GUI/agent claim or worker handoff",
+                output.getvalue(),
+            )
+            self.assertIn("explicit worker claim/update evidence", output.getvalue())
+            self.assertIn("GUI/agent-bound backend_session_id", output.getvalue())
+            self.assertIn(
+                "not phone-local/ad hoc terminal evidence",
+                output.getvalue(),
+            )
+            self.assertIn("phone-initiated interrupt evidence", output.getvalue())
+            self.assertIn("Hub control record", output.getvalue())
+            self.assertIn(
+                "/api/mobile/ssh/sessions/{session_id}/interrupt",
+                output.getvalue(),
+            )
+            self.assertIn("GUI/agent Ctrl+C handling", output.getvalue())
+            self.assertIn(
+                "AI/digital-employee handoff evidence tied to that same GUI/agent-bound backend_session_id",
+                output.getvalue(),
+            )
             self.assertIn("Validate after completing evidence", output.getvalue())
             self.assertIn(
                 release_evidence_commands.validate_qa_build_record_command(str(record)),
@@ -402,6 +440,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 "Date: YYYY-MM-DD\n"
                 "Version/build number: app version + build number, such as 1.0.0+42\n"
                 "Release handoff result:\n"
+                "Preflight result:\n"
                 "Runtime boundary verification result:\n"
                 "Automated release gates result:\n",
                 encoding="utf-8",
@@ -422,6 +461,8 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                         str(records_dir),
                         "--release-handoff-result",
                         "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                        "--preflight-result",
+                        "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
                         "--runtime-boundary-result",
                         "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                         "--automated-gates-result",
@@ -435,6 +476,10 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             )
             self.assertIn(
                 "Release handoff result: release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
+                text,
+            )
+            self.assertIn(
+                "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
                 text,
             )
             self.assertIn(

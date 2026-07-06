@@ -12,6 +12,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ReadErrorLog: vi.fn().mockResolvedValue([]),
     ProbeRemoteHub: vi.fn().mockResolvedValue({}),
+    GetRemoteRegistrationProfile: vi.fn().mockResolvedValue({}),
     GetHubUserRanking: vi.fn().mockResolvedValue({ error: 'hub not configured' }),
     SendRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true, code_length: 6, expires_min: 5 }),
     VerifyRemoteRegistrationContactCode: vi.fn().mockResolvedValue({ ok: true }),
@@ -23,7 +24,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, PatchConfigFields, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
+import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -339,6 +340,16 @@ describe('AboutPanel', () => {
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
         expect(screen.queryByText('Mobile Auth QR')).toBeNull();
+    });
+
+    it('hydrates missing registered phone from logged-in hub profile before public probe', async () => {
+        vi.mocked(GetRemoteRegistrationProfile).mockResolvedValueOnce({ tenant_name: 'Acme Team', phone_number: '17090134628' });
+
+        render(<AboutPanel {...baseProps} config={{ remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(await screen.findByText('17090134628')).toBeTruthy();
+        await waitFor(() => expect(GetRemoteRegistrationProfile).toHaveBeenCalledTimes(1));
+        expect(ProbeRemoteHub).not.toHaveBeenCalled();
     });
 
     it('hydrates missing registered phone from hub probe for email accounts', async () => {

@@ -141,7 +141,6 @@ const (
 // doc_only workflow phases.
 var DocOnlyAllowedTools = map[string]bool{
 	"read_file":                true,
-	"write_file":               true,
 	"memory":                   true,
 	"generate_pdf":             true,
 	"office":                   true,
@@ -151,7 +150,6 @@ var DocOnlyAllowedTools = map[string]bool{
 	"open":                     true,
 	"set_nickname":             true,
 	"list_directory":           true,
-	"bash":                     true,
 	"manage_skill":             true,
 	"get_skill_run":            true,
 	"list_skills":              true,
@@ -270,7 +268,7 @@ func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 	case ToolPolicyDocOnly:
 		return []string{"read_file", "list_directory", "send_file"}
 	case ToolPolicyPlanning:
-		return []string{"read_file", "list_directory", "send_file"}
+		return []string{"read_file", "list_directory", "write_file", "send_file"}
 	case ToolPolicyOpsControlled:
 		return []string{"bash", "ssh", "read_file", "list_directory"}
 	default:

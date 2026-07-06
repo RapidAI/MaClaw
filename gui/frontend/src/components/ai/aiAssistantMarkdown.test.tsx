@@ -623,6 +623,60 @@ describe("renderContentWithCodeBlocks", () => {
 });
 
 describe("renderMessage assistant display guard", () => {
+    it("renders guide receipts as compact status instead of a system card", () => {
+        render(<div>{renderMessage({
+            id: "guide-receipt",
+            role: "system",
+            kind: "guideReceipt",
+            content: "这条补充已接上当前任务：\n> 可以顺重搜索一下相关申报软件的资料。\n\n下一步会顺着这点继续。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        const receipt = screen.getByTestId("guide-receipt") as HTMLElement;
+        expect(receipt.getAttribute("role")).toBe("status");
+        expect(receipt.getAttribute("aria-live")).toBe("polite");
+        expect(receipt.textContent || "").toContain("这条补充已接上当前任务");
+        expect(receipt.textContent || "").toContain("下一步会顺着这点继续");
+        expect(receipt.textContent || "").toContain("可以顺重搜索一下相关申报软件的资料。");
+        expect(receipt.style.border).toBe("");
+        expect(receipt.style.background).toBe("");
+        expect(receipt.style.padding).toBe("2px");
+        const quote = screen.getByText("可以顺重搜索一下相关申报软件的资料。") as HTMLElement;
+        expect(quote.style.fontStyle).toBe("");
+        expect(quote.style.opacity).toBe("");
+    });
+
+    it("keeps guide receipt detail even when it repeats the title text", () => {
+        render(<div>{renderMessage({
+            id: "guide-receipt-repeated-detail",
+            role: "system",
+            kind: "guideReceipt",
+            content: "这条补充已接上当前任务：\n> 补充内容\n\n这条补充已接上当前任务：",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByTestId("guide-receipt").textContent || '').toContain("这条补充已接上当前任务 · 这条补充已接上当前任务：");
+    });
+
+    it("keeps long guide receipt quotes as a compact preview", () => {
+        const longQuote = `请优先核对资料来源${"，并标注出处".repeat(20)}。TAIL_SHOULD_STAY_IN_TITLE_ONLY`;
+        render(<div>{renderMessage({
+            id: "guide-receipt-long",
+            role: "system",
+            kind: "guideReceipt",
+            content: `这条补充已接上当前任务：\n> ${longQuote}\n\n下一步会顺着这点继续。`,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        const receipt = screen.getByTestId("guide-receipt") as HTMLElement;
+        const quotePreview = receipt.querySelector("div") as HTMLElement;
+        expect(quotePreview.textContent || "").toContain("请优先核对资料来源");
+        expect(quotePreview.textContent || "").toContain("…");
+        expect(quotePreview.textContent || "").not.toContain("TAIL_SHOULD_STAY_IN_TITLE_ONLY");
+        expect(quotePreview.getAttribute("title")).toBeNull();
+        expect(quotePreview.getAttribute("aria-label")).toBe(quotePreview.textContent);
+    });
+
     it("strips Browser role prefixes in the main assistant message path", () => {
         render(<div>{renderMessage({
             id: "assistant-browser-prefix",

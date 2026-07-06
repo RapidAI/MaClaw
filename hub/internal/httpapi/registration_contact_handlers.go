@@ -175,6 +175,42 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 	}
 }
 
+func RegistrationCurrentProfileHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateVEMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		if identity == nil || identity.UsersRepo() == nil {
+			writeError(w, http.StatusInternalServerError, "IDENTITY_UNAVAILABLE", "Identity service is unavailable")
+			return
+		}
+		user, err := identity.UsersRepo().GetByID(auth.WithTenant(r.Context(), principal.TenantID), principal.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
+			return
+		}
+		if user == nil {
+			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "Current user was not found")
+			return
+		}
+		phoneNumber, err := identity.BoundPhoneNumberForUser(auth.WithTenant(r.Context(), principal.TenantID), user)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "PHONE_LOOKUP_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"tenant_id":    principal.TenantID,
+			"tenant_name":  identity.TenantDisplayName(auth.WithTenant(r.Context(), principal.TenantID), principal.TenantID),
+			"user_id":      principal.UserID,
+			"machine_id":   principal.MachineID,
+			"email":        user.Email,
+			"phone_number": phoneNumber,
+		})
+	}
+}
+
 func forwardRegistrationContactSMS(w http.ResponseWriter, r *http.Request, payload any, handler http.HandlerFunc) {
 	data, err := json.Marshal(payload)
 	if err != nil {

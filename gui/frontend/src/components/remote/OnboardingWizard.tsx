@@ -761,22 +761,26 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const doRegister = async () => {
         setShowConfirm(false);
         setRegBusy(true);
-		setRegResult(null);
-		setInvError("");
-		const trimmedRedeemCode = redeemCode.trim();
-		if (registrationAuthMethod !== "phone") {
-			onSaveField({ remote_email: regEmail.trim() });
-		}
-		try {
-				const result = registrationAuthMethod === "phone"
-					? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID)
-					: await ActivateRemote(regEmail.trim(), invCode.trim().toUpperCase(), "");
-			if (registrationAuthMethod === "phone") {
-				const fields: Record<string, string> = { remote_mobile: normalizeSMSPhone(regPhone) };
-				if (result?.email) fields.remote_email = result.email;
-				onSaveField(fields);
-			}
-			if (result?.vip_flag) setVipFlag(true);
+        setRegResult(null);
+        setInvError("");
+        const trimmedRedeemCode = redeemCode.trim();
+        if (registrationAuthMethod !== "phone") {
+            onSaveField({ remote_email: regEmail.trim() });
+        }
+        try {
+            const result = registrationAuthMethod === "phone"
+                ? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID)
+                : await ActivateRemote(regEmail.trim(), invCode.trim().toUpperCase(), "");
+            if (registrationAuthMethod !== "phone") {
+                const phoneNumber = normalizeSMSPhone(String(result?.phone_number || ""));
+                if (phoneNumber) onSaveField({ remote_mobile: phoneNumber });
+            }
+            if (registrationAuthMethod === "phone") {
+                const fields: Record<string, string> = { remote_mobile: normalizeSMSPhone(regPhone) };
+                if (result?.email) fields.remote_email = result.email;
+                onSaveField(fields);
+            }
+            if (result?.vip_flag) setVipFlag(true);
             let redeemNote = "";
             if (trimmedRedeemCode) {
                 try {

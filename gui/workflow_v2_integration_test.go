@@ -5,9 +5,104 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestPrepareWorkflowTemplatePanelLaunchStoresTemplateChoice(t *testing.T) {
+	handler := &IMMessageHandler{}
+	now := time.Unix(0, 123456789)
+
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "remote_coding_subagent", "/srv/app", "", now)
+	if err != nil {
+		t.Fatalf("prepareWorkflowTemplatePanelLaunch failed: %v", err)
+	}
+	if launch.UserID != desktopAIAssistantUserIDForProjectPath("") {
+		t.Fatalf("user ID = %q, want desktop AI assistant user", launch.UserID)
+	}
+	if launch.RequestID != "desktop-ai-123456789-remote_coding_subagent" {
+		t.Fatalf("request ID = %q", launch.RequestID)
+	}
+	if launch.ChoiceID != "template-123456789" {
+		t.Fatalf("choice ID = %q, want template prefix", launch.ChoiceID)
+	}
+	choice, choiceID, ok := parseWorkflowChoiceCommand(launch.ChoiceCommand)
+	if !ok || choice != workflowChoiceRemoteCoding || choiceID != launch.ChoiceID {
+		t.Fatalf("choice command = %q parsed as (%q,%q,%v)", launch.ChoiceCommand, choice, choiceID, ok)
+	}
+
+	raw, ok := handler.pendingWorkflowChoice.Load(launch.UserID)
+	if !ok {
+		t.Fatal("expected pending workflow choice to be stored")
+	}
+	pending, ok := raw.(*pendingWorkflowChoice)
+	if !ok || pending == nil {
+		t.Fatalf("pending workflow choice type = %T", raw)
+	}
+	if pending.RouteResult == nil || pending.RouteResult.Target != v2.RouteToWorkflow || pending.RouteResult.WorkflowType != "remote_coding_subagent" {
+		t.Fatalf("pending route = %#v, want remote_coding_subagent workflow route", pending.RouteResult)
+	}
+	if pending.RouteResult.ProjectPath != "/srv/app" {
+		t.Fatalf("project path = %q", pending.RouteResult.ProjectPath)
+	}
+	if pending.ChoiceID != launch.ChoiceID {
+		t.Fatalf("pending choice ID = %q, want %q", pending.ChoiceID, launch.ChoiceID)
+	}
+	if !strings.Contains(pending.Msg.Text, "remote_coding_subagent") {
+		t.Fatalf("synthetic text should mention workflow type, got %q", pending.Msg.Text)
+	}
+}
+
+func TestWorkflowTemplatePanelLaunchCodingSubAgentStartsSinglePhaseTemplate(t *testing.T) {
+	wf := buildWorkflowV2State(v2.NewMemoryStore())
+	handler := &IMMessageHandler{app: &App{workflowV2: wf}}
+	now := time.Unix(0, 223456789)
+	projectPath := t.TempDir()
+
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "coding_subagent", projectPath, "", now)
+	if err != nil {
+		t.Fatalf("prepareWorkflowTemplatePanelLaunch failed: %v", err)
+	}
+	choice, choiceID, ok := parseWorkflowChoiceCommand(launch.ChoiceCommand)
+	if !ok || choice != workflowChoiceCodingSubAgent || choiceID != launch.ChoiceID {
+		t.Fatalf("choice command = %q parsed as (%q,%q,%v), want coding_subagent", launch.ChoiceCommand, choice, choiceID, ok)
+	}
+
+	result := handler.handleCodingComplexityCommand(IMUserMessage{
+		UserID: launch.UserID,
+		Text:   launch.ChoiceCommand,
+	}, launch.ChoiceCommand)
+	if result == nil {
+		t.Fatal("expected workflow choice to be handled")
+	}
+
+	active := wf.machine.GetActive(launch.UserID)
+	if active == nil {
+		t.Fatal("expected active workflow")
+	}
+	if active.Type != "coding_subagent" {
+		t.Fatalf("active workflow type = %q, want coding_subagent", active.Type)
+	}
+	if len(active.Phases) != 1 {
+		t.Fatalf("coding_subagent phase count = %d, want 1; phases=%#v", len(active.Phases), active.Phases)
+	}
+	if active.Phases[0].ID != "coding_subagent_execution" || active.Phases[0].ExecMode != v2.ExecModeSubAgent {
+		t.Fatalf("phase = %#v, want coding_subagent_execution subagent phase", active.Phases[0])
+	}
+}
+
+func TestPrepareWorkflowTemplatePanelLaunchRejectsNilHandler(t *testing.T) {
+	if _, err := prepareWorkflowTemplatePanelLaunch(nil, "coding_subagent", "", "", time.Unix(0, 1)); err == nil {
+		t.Fatal("expected nil handler error")
+	}
+}
+
+func TestPrepareWorkflowTemplatePanelLaunchRejectsBlankWorkflowType(t *testing.T) {
+	if _, err := prepareWorkflowTemplatePanelLaunch(&IMMessageHandler{}, "  ", "", "", time.Unix(0, 1)); err == nil {
+		t.Fatal("expected blank workflow type error")
+	}
+}
 
 func TestInferExplicitWorkflowHint_Presentation(t *testing.T) {
 	tests := []struct {

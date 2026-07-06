@@ -58,6 +58,8 @@ export function ResolveRemoteRegistrationTarget(arg1:string):Promise<any>;
 
 export function ProbeRemoteHub(arg1:string,arg2:string):Promise<any>;
 
+export function GetRemoteRegistrationProfile():Promise<any>;
+
 export function SendRemoteRegistrationSMS(arg1:string,arg2:string,arg3:string):Promise<any>;
 
 export function SendRemoteRegistrationContactCode(arg1:string,arg2:string):Promise<any>;
@@ -335,7 +337,7 @@ export function GetWorkflowWorkingDir():Promise<string>;
 
 export function StartWorkflowDirect(arg1:string, arg2:string):Promise<string>;
 
-export function StartWorkflowDirectWithInput(arg1:string, arg2:string, arg3:string):Promise<string>;
+export function StartWorkflowTemplate(arg1:string, arg2:string):Promise<string>;
 
 export function RefreshWorkflowV2StateForTab(arg1:string, ...arg2:string[]):Promise<void>;
 

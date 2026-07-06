@@ -907,6 +907,7 @@ func TestIsCodexProcessCandidateMatchesCLIButNotIncidentalNames(t *testing.T) {
 		{name: "codex.exe", cmd: "codex exec --json", want: true},
 		{name: "node.exe", cmd: `node C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js exec`, want: true},
 		{name: "powershell.exe", cmd: `powershell -Command codex exec --json`, want: true},
+		{name: "Codex.exe", cmd: `"C:\Program Files\WindowsApps\OpenAI.Codex_26.623.13972.0_x64__2p2nqsd0c76g0\app\Codex.exe"`, want: false},
 		{name: "openai.exe", cmd: `openai api request`, want: false},
 		{name: "codex.test.exe", cmd: "go test ./corelib/configfile", want: false},
 		{name: "notcodex.exe", cmd: "unrelated", want: false},

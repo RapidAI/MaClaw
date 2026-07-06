@@ -42,8 +42,12 @@ func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 	}
 	defer c.mobileTaskActive.Store(false)
 
+	c.publishMobileServerProfilesOnce()
 	c.pollMobileDigitalEmployeeTasksOnce()
 	c.pollMobileDocumentUploadTasksOnce()
+	c.pollMobileBackendSSHSessionsOnce()
+	c.pollMobileBackendSSHTasksOnce()
+	c.pollMobileBackendSSHFileOperationsOnce()
 	ticker := time.NewTicker(mobileDigitalEmployeeTaskPollInterval)
 	defer ticker.Stop()
 	for {
@@ -52,7 +56,11 @@ func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 			if !c.IsConnected() {
 				return
 			}
+			c.publishMobileServerProfilesOnce()
 			c.pollMobileDocumentUploadTasksOnce()
+			c.pollMobileBackendSSHSessionsOnce()
+			c.pollMobileBackendSSHTasksOnce()
+			c.pollMobileBackendSSHFileOperationsOnce()
 			c.pollMobileDigitalEmployeeTasksOnce()
 		}
 	}

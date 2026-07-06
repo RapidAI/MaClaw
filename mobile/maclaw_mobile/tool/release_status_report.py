@@ -112,6 +112,12 @@ def _ready_result_line(scope: str) -> str:
 
 
 def _preflight_command(status: ReleaseStatus) -> str:
+    records_dir_label = _records_dir_label(status)
+    preflight_log = release_evidence_commands.preflight_log_path(
+        release_evidence_commands.DEFAULT_VERSION,
+        scope=status.scope,
+        records_dir=records_dir_label,
+    )
     team_id = (
         status.ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID
         if release_evidence_commands.scope_covers_ios(status.scope)
@@ -126,8 +132,17 @@ def _preflight_command(status: ReleaseStatus) -> str:
         scope=status.scope,
         team_id=team_id,
         export_method=export_method,
-        records_dir=_records_dir_label(status),
+        records_dir=records_dir_label,
+        log=preflight_log,
     )
+
+
+def _uses_angle_bracket_placeholders(status: ReleaseStatus) -> bool:
+    if not release_evidence_commands.scope_covers_ios(status.scope):
+        return False
+    team_id = status.ios_team_id or release_evidence_commands.DEFAULT_TEAM_ID
+    export_method = status.ios_export_method or release_evidence_commands.DEFAULT_EXPORT_METHOD
+    return "<" in team_id or "<" in export_method
 
 
 def _records_dir(status: ReleaseStatus) -> Path:
@@ -224,6 +239,22 @@ def format_status(status: ReleaseStatus) -> str:
             lines.append(
                 f"- Re-run `{_preflight_command(status)}` after fixing the blockers.",
             )
+            if _uses_angle_bracket_placeholders(status):
+                lines.append(
+                    "- PowerShell treats unquoted `<...>` placeholders as redirection syntax; "
+                    "replace angle-bracket placeholders with real values before copying commands there, "
+                    "or quote placeholder arguments for dry-run previews.",
+                )
+            lines.append(
+                "- After preflight passes, signed-build QA still needs real-device share/permission, "
+                "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence with "
+                "the same GUI/agent-bound backend_session_id, GUI/agent claim "
+                "or worker handoff plus explicit worker claim/update evidence and "
+                "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
+                "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend "
+                "session output, and AI/digital-employee handoff evidence tied to that "
+                "same GUI/agent-bound backend_session_id when used.",
+            )
         if blocking_invalid_records:
             lines.append(
                 f"- Fix invalid signed-build QA records under {records_dir_label}.",
@@ -237,6 +268,16 @@ def format_status(status: ReleaseStatus) -> str:
         elif not in_scope_valid_records and not preflight_blockers:
             lines.append(
                 f"- Create and validate in-scope signed-build QA records under {records_dir_label}/.",
+            )
+            lines.append(
+                "- Include GUI-equivalent backend-managed SSH session evidence with the same GUI/agent-bound "
+                "backend_session_id, plus GUI/agent claim or worker handoff, "
+                "explicit worker claim/update evidence, and `ssh_session` realtime "
+                "`output_chunk`/`output_seq` proof, plus "
+                "not phone-local/ad hoc terminal evidence, phone-initiated interrupt "
+                "evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend session "
+                "output, and AI/digital-employee handoff evidence tied to that same GUI/agent-bound "
+                "backend_session_id when used.",
             )
             lines.append(
                 "- "

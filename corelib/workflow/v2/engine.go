@@ -1218,7 +1218,7 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	if ws == nil {
 		return ToolFilterNone
 	}
-	if ws.PendingReviewPhaseID != "" {
+	if ws.PendingReviewPhaseID != "" && ws.PendingReviewPhaseID == ws.CurrentPhase {
 		return ToolFilterNone
 	}
 	tmpl := e.registry.Match(ws.Type)
@@ -1227,6 +1227,9 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	}
 	for _, phase := range tmpl.Phases {
 		if phase.ID == ws.CurrentPhase {
+			if ws.Type == WorkflowCoding && phase.ID == PhaseCodingTaskBreakdown {
+				return ToolFilterPlanning
+			}
 			return phase.ToolPolicy
 		}
 	}

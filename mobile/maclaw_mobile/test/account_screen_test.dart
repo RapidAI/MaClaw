@@ -238,17 +238,11 @@ class _FakeNotificationService extends MobileNotificationService {
 }
 
 class _FakeSecureVault extends SecureVault {
-  final deletedPasswords = <String>[];
-  final deletedPrivateKeys = <String>[];
+  final clearedLegacyServerCredentials = <String>[];
 
   @override
-  Future<void> deleteServerPassword(String serverId) async {
-    deletedPasswords.add(serverId);
-  }
-
-  @override
-  Future<void> deleteServerPrivateKey(String serverId) async {
-    deletedPrivateKeys.add(serverId);
+  Future<void> clearLegacyServerCredentials(String serverId) async {
+    clearedLegacyServerCredentials.add(serverId);
   }
 }
 
@@ -327,6 +321,21 @@ void main() {
     expect(find.text('联网搜索接口'), findsNothing);
     expect(find.text('25 MB'), findsOneWidget);
     expect(find.text('3'), findsOneWidget);
+
+    await _tapActionTileButton(tester, Icons.security_outlined);
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining(
+        '\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u6216\u65e5\u5fd7\u53d1\u9001\u7ed9 AI \u5206\u6790\u524d',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        '\u7ec8\u7aef\u8f93\u51fa\u6216\u65e5\u5fd7\u53d1\u9001\u7ed9 AI',
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('account screen does not show malformed phone credits',
@@ -398,6 +407,12 @@ void main() {
       find.byIcon(Icons.cleaning_services_outlined),
       320,
       scrollable: find.byType(Scrollable),
+    );
+    expect(
+      find.textContaining(
+        '\u4fdd\u7559\u767b\u5f55\u6001\u548c\u670d\u52a1\u5668\u6863\u6848\u7f13\u5b58',
+      ),
+      findsOneWidget,
     );
     await _tapActionTileButton(tester, Icons.cleaning_services_outlined);
     await tester.pumpAndSettle();
@@ -580,7 +595,7 @@ void main() {
     expect(_qrAuthorizationPayloads, [_scannedDesktopLlmQrPayload]);
   });
 
-  testWidgets('clears server profiles and SSH credentials separately',
+  testWidgets('clears phone-side server profile cache separately',
       (tester) async {
     final vault = _FakeSecureVault();
     final store = _FakeMobileLocalStore(
@@ -613,15 +628,28 @@ void main() {
       320,
       scrollable: find.byType(Scrollable),
     );
+    expect(
+      find.text('\u670d\u52a1\u5668\u6863\u6848\u7f13\u5b58'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        '\u771f\u5b9e SSH \u51ed\u636e\u4ecd\u7531 MaClaw GUI/agent \u7ba1\u7406',
+      ),
+      findsOneWidget,
+    );
     await _tapActionTileButton(tester, Icons.key_off_outlined);
     await tester.pumpAndSettle();
+    expect(
+      find.text('\u6e05\u7406\u670d\u52a1\u5668\u6863\u6848\u7f13\u5b58\uff1f'),
+      findsOneWidget,
+    );
     await tester.tap(find.byType(FilledButton).last);
     await tester.pumpAndSettle();
 
     expect(store.clearedServerProfiles, isTrue);
     expect(await store.loadServerProfiles(), isEmpty);
-    expect(vault.deletedPasswords, ['srv-password', 'srv-key']);
-    expect(vault.deletedPrivateKeys, ['srv-password', 'srv-key']);
+    expect(vault.clearedLegacyServerCredentials, ['srv-password', 'srv-key']);
   });
 }
 

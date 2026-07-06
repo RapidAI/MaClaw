@@ -1,3 +1,4 @@
+import '../security/mobile_redaction.dart';
 import '../documents/mobile_document_import.dart';
 
 enum MobileSharedIntentKind { text, link, file, image }
@@ -48,13 +49,16 @@ class MobileSharedIntent {
   }
 
   String get assistantPrompt {
-    final text = message?.trim().isNotEmpty == true ? message!.trim() : value;
+    final rawText =
+        message?.trim().isNotEmpty == true ? message!.trim() : value;
+    final text = redactMobileSensitiveText(rawText);
     if (kind == MobileSharedIntentKind.link) {
       final url = sharedUrl;
-      if (url != null && text != url) {
-        return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：$url\n\n分享附带说明：$text';
+      final safeUrl = url == null ? null : redactMobileSensitiveText(url);
+      if (safeUrl != null && text != safeUrl) {
+        return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：$safeUrl\n\n分享附带说明：$text';
       }
-      return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：${url ?? text}';
+      return '请交给 MaClaw AI 助手处理这个链接，保留来源引用：${safeUrl ?? text}';
     }
     return text;
   }

@@ -40,6 +40,12 @@ async function refresh() {
     $("healthURL").textContent = status.health_url || "";
     $("openaiEnv").textContent = `OPENAI_BASE_URL=${status.openai_url || ""}`;
     $("anthropicEnv").textContent = `ANTHROPIC_BASE_URL=${status.anthropic_url || ""}`;
+    const autoStart = $("autoStart");
+    const autoStartRow = autoStart.closest(".check-row");
+    autoStart.checked = !!status.auto_start_enabled;
+    autoStart.disabled = !status.auto_start_supported;
+    autoStartRow.classList.toggle("disabled", !status.auto_start_supported);
+    autoStartRow.title = status.auto_start_supported ? "" : "仅 Windows 平台支持开机自动启动";
     $("loginState").textContent = status.logged_in ? `已登录 ${s.email || "CodeGen"}` : "未登录 CodeGen，请先完成 SSO。";
     const loginChip = $("loginChip");
     loginChip.textContent = status.logged_in ? (s.email || "已登录") : "未登录";
@@ -126,6 +132,21 @@ $("logoutBtn").addEventListener("click", async () => {
 });
 $("genKeyBtn").addEventListener("click", async () => { $("apiKey").value = await api.GenerateAPIKey(); notify("已生成新的 API Key，保存后生效"); });
 $("hideBtn").addEventListener("click", async () => { await api.WindowHide(); });
+$("autoStart").addEventListener("change", async (event) => {
+  const checkbox = event.currentTarget;
+  checkbox.disabled = true;
+  try {
+    const status = await api.SetAutoStartEnabled(checkbox.checked);
+    checkbox.checked = !!status.auto_start_enabled;
+    notify(checkbox.checked ? "已开启开机自动启动" : "已关闭开机自动启动");
+  } catch (err) {
+    checkbox.checked = !checkbox.checked;
+    notify(errorMessage(err), "error");
+  } finally {
+    await refresh();
+    checkbox.disabled = checkbox.closest(".check-row").classList.contains("disabled");
+  }
+});
 document.querySelectorAll("button[data-copy]").forEach((btn) => {
   btn.addEventListener("click", async () => { await navigator.clipboard.writeText($(btn.dataset.copy).textContent || ""); notify("已复制"); });
 });

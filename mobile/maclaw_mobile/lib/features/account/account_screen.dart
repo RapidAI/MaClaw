@@ -34,7 +34,7 @@ class AccountScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('凭据与隐私'),
         content: const Text(
-          '登录 Token、SSH 密码、私钥和私钥口令仅保存在系统安全存储中。终端输出或日志发送给 AI 分析前，需要用户手动确认。',
+          '登录 Token 保存在系统安全存储中。服务器 SSH 凭据由授权的 MaClaw GUI/agent 管理，手机只缓存服务器档案 metadata。后台会话输出或日志发送给 AI 分析前，需要用户手动确认。',
         ),
         actions: [
           FilledButton(
@@ -52,7 +52,7 @@ class AccountScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('清理本机工作记录？'),
         content: const Text(
-          '将删除助手历史、文档草稿、导入/导出任务、常用命令、数字员工提示、最近任务和本机偏好设置。本操作不会退出官方服务，也不会删除服务器配置或 SSH 凭据。',
+          '将删除助手历史、文档草稿、导入/导出任务、常用命令、数字员工提示、最近任务和本机偏好设置。本操作不会退出官方服务，也不会删除手机侧服务器档案缓存。',
         ),
         actions: [
           TextButton(
@@ -81,7 +81,7 @@ class AccountScreen extends ConsumerWidget {
 
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('本机工作记录已清理，登录态、服务器配置和 SSH 凭据已保留')),
+      const SnackBar(content: Text('本机工作记录已清理，登录态和服务器档案缓存已保留')),
     );
   }
 
@@ -92,9 +92,9 @@ class AccountScreen extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除服务器资料和 SSH 凭据？'),
+        title: const Text('清理服务器档案缓存？'),
         content: const Text(
-          '将删除本机保存的服务器 Host、端口、用户名、标签、备注，以及对应 SSH 密码、私钥和私钥口令。官方服务登录不会受影响。',
+          '将删除手机本机缓存的服务器 Host、端口、用户名、标签和备注，并清理历史版本可能留下的本机 SSH 凭据残留。官方服务登录不会受影响。',
         ),
         actions: [
           TextButton(
@@ -114,10 +114,8 @@ class AccountScreen extends ConsumerWidget {
     final profiles = await store.loadServerProfiles();
     final vault = ref.read(secureVaultProvider);
     await Future.wait([
-      for (final profile in profiles) ...[
-        vault.deleteServerPassword(profile.id),
-        vault.deleteServerPrivateKey(profile.id),
-      ],
+      for (final profile in profiles)
+        vault.clearLegacyServerCredentials(profile.id),
     ]);
     await store.clearServerProfiles();
     ref
@@ -126,7 +124,7 @@ class AccountScreen extends ConsumerWidget {
 
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('服务器资料和已保存 SSH 凭据已删除')),
+      const SnackBar(content: Text('服务器档案缓存已清理')),
     );
   }
 
@@ -285,7 +283,7 @@ class AccountScreen extends ConsumerWidget {
         ActionTile(
           icon: Icons.security_outlined,
           title: '凭据与隐私',
-          subtitle: 'Token、SSH 密码、私钥口令保存在系统安全存储中。',
+          subtitle: 'Token 保存在系统安全存储中；服务器 SSH 凭据由 MaClaw GUI/agent 管理。',
           actionLabel: '查看',
           onPressed: () => _showPrivacyInfo(context),
         ),
@@ -293,16 +291,16 @@ class AccountScreen extends ConsumerWidget {
         ActionTile(
           icon: Icons.cleaning_services_outlined,
           title: '本机工作记录',
-          subtitle: '清理助手历史、文档、导出、命令历史、数字员工临时记录和本机偏好，保留登录态、服务器配置和 SSH 凭据。',
+          subtitle: '清理助手历史、文档、导出、命令历史、数字员工临时记录和本机偏好，保留登录态和服务器档案缓存。',
           actionLabel: '清理记录',
           onPressed: () => _clearLocalWorkCache(context, ref),
         ),
         const SizedBox(height: 12),
         ActionTile(
           icon: Icons.key_off_outlined,
-          title: '服务器资料与 SSH 凭据',
-          subtitle: '删除本机服务器配置，以及对应 SSH 密码、私钥和私钥口令。',
-          actionLabel: '删除资料',
+          title: '服务器档案缓存',
+          subtitle: '删除手机本机缓存的服务器档案；真实 SSH 凭据仍由 MaClaw GUI/agent 管理。',
+          actionLabel: '清理缓存',
           onPressed: () => _clearServerAccessData(context, ref),
         ),
       ],

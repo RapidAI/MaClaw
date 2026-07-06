@@ -62,6 +62,30 @@ func TestBuildGuideLaunchInjectionIncludesSteeringContract(t *testing.T) {
 	if !strings.Contains(got, "re-evaluate the current plan, tool choice, and answer direction") {
 		t.Fatalf("guide launch injection should require plan and tool re-evaluation: %q", got)
 	}
+	if !strings.Contains(got, "next visible assistant response") || !strings.Contains(got, "acknowledgement that fits the current context") {
+		t.Fatalf("guide launch injection should let the agent acknowledge accepted steering naturally: %q", got)
+	}
+}
+
+func TestGuideLaunchReferenceDetectionAcceptsLegacyInstruction(t *testing.T) {
+	legacyInstruction := guideLaunchReferenceInstructionPrefix + " Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
+	legacy := guideLaunchReferenceMarker + "\n" + legacyInstruction + "\nold pending guide"
+	if !isGuideLaunchReferenceInjection(legacy) {
+		t.Fatalf("legacy guide launch injection should still be recognized")
+	}
+	if got := stripInjectionPrefix(legacy); got != "old pending guide" {
+		t.Fatalf("stripInjectionPrefix(legacy) = %q, want fired text only", got)
+	}
+}
+
+func TestGuideLaunchReferenceDetectionToleratesInstructionRevision(t *testing.T) {
+	revised := guideLaunchReferenceMarker + "\n" + guideLaunchReferenceInstructionPrefix + " Revised steering wording.\nfuture pending guide"
+	if !isGuideLaunchReferenceInjection(revised) {
+		t.Fatalf("revised guide launch instruction should still be recognized")
+	}
+	if got := stripInjectionPrefix(revised); got != "future pending guide" {
+		t.Fatalf("stripInjectionPrefix(revised) = %q, want fired text only", got)
+	}
 }
 
 func TestNormalizeAIAssistantSessionUserID(t *testing.T) {

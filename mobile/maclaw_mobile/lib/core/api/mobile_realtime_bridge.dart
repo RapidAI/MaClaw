@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../features/auth/session_controller.dart';
 import '../../features/digital_employees/digital_employees_controller.dart';
 import '../../features/documents/documents_controller.dart';
+import '../../features/servers/servers_controller.dart';
 import 'mobile_realtime_client.dart';
 
 final mobileRealtimeBridgeProvider = Provider<void>((ref) {
@@ -41,6 +42,18 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
         ref
             .read(digitalEmployeeTaskProvider.notifier)
             .applyRealtimeEvent(event),
+      );
+      return;
+    }
+    if (event.sshSession) {
+      unawaited(
+        ref.read(backendSshSessionsProvider.notifier).applyRealtimeEvent(event),
+      );
+      return;
+    }
+    if (event.sshTask) {
+      unawaited(
+        ref.read(backendSshTasksProvider.notifier).applyRealtimeEvent(event),
       );
     }
   }

@@ -994,11 +994,31 @@ class _AssistantAnswerCard extends ConsumerWidget {
 }
 
 String assistantDraftTitle(String query) {
-  final compact = query.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final compact = redactMobileSensitiveText(
+    query.replaceAll(RegExp(r'\s+'), ' ').trim(),
+  );
   if (compact.isEmpty) return 'AI助手整理';
-  final title =
-      compact.length > 28 ? '${compact.substring(0, 28)}...' : compact;
+  final title = _assistantDraftTitlePreview(compact);
   return 'AI助手：$title';
+}
+
+String _assistantDraftTitlePreview(String text) {
+  const maxLength = 28;
+  if (text.length <= maxLength) return text;
+  var end = maxLength;
+  for (final marker in const [
+    '[REDACTED_SECRET]',
+    '[REDACTED_TOKEN]',
+    '[REDACTED_PRIVATE_KEY]',
+    '[REDACTED_CREDENTIALS]',
+  ]) {
+    final start = text.lastIndexOf(marker, end);
+    if (start >= 0 && start + marker.length > end) {
+      end = start + marker.length;
+      break;
+    }
+  }
+  return '${text.substring(0, end)}...';
 }
 
 String assistantAnswerMarkdown({

@@ -42,7 +42,7 @@ def release_gates() -> list[ReleaseGate]:
                 "test",
                 "./hubcenter/internal/httpapi",
                 "-run",
-                "TestMobile(ServiceRedemption|DesktopQRSession)",
+                "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts",
                 "-count=1",
             ],
         ),
@@ -54,7 +54,7 @@ def release_gates() -> list[ReleaseGate]:
                 "test",
                 "./gui",
                 "-run",
-                "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown",
+                "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts",
                 "-count=1",
             ],
         ),
@@ -273,7 +273,11 @@ def executable_command(command: list[str]) -> list[str]:
 
 def _append_output(log_lines: list[str], output: str) -> None:
     if output:
-        log_lines.append(output.rstrip())
+        log_lines.append(normalize_gate_output(output).rstrip())
+
+
+def normalize_gate_output(output: str) -> str:
+    return output.replace("鈭?Built", "[OK] Built").replace("√ Built", "[OK] Built")
 
 
 def _print_and_log(line: str, log_lines: list[str]) -> None:
@@ -308,10 +312,12 @@ def run_gate(
         errors="replace",
     )
     if completed.stdout:
-        print(completed.stdout, end="")
+        completed_stdout = normalize_gate_output(completed.stdout)
+        print(completed_stdout, end="")
         _append_output(log_lines, completed.stdout)
     if completed.stderr:
-        print(completed.stderr, end="", file=sys.stderr)
+        completed_stderr = normalize_gate_output(completed.stderr)
+        print(completed_stderr, end="", file=sys.stderr)
         _append_output(log_lines, completed.stderr)
     if completed.returncode != 0:
         raise subprocess.CalledProcessError(

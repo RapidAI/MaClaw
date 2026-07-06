@@ -1,151 +1,22 @@
 package main
 
-import (
-	"context"
-	"fmt"
-	"log"
-	"strings"
-	"sync"
-	"time"
+import "log"
 
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
-)
-
-var (
-	codegenProxyServer *codegenproxy.Server
-	codegenProxyMu     sync.Mutex
-	codegenProxyCancel context.CancelFunc
-)
-
-const codegenProxyAddr = ":5001"
-
-func firstCodeGenClientName(names ...string) string {
-	for _, name := range names {
-		if strings.TrimSpace(name) != "" {
-			return corelib.NormalizeCodeGenClientName(name)
-		}
-	}
-	return corelib.CodeGenClientName
-}
-
-// StartCodeGenProxy starts the local Anthropic→OpenAI protocol conversion proxy
-// for CodeGen. This allows Claude Code to communicate with CodeGen's OpenAI API
-// via the Anthropic Messages protocol.
+// StartCodeGenProxy is retained for compatibility with older UI bindings, but
+// the local Anthropic adapter is currently disabled. TigerClaw Code now points
+// Claude Code directly at CodeGen's remote Anthropic-compatible endpoint.
 func (a *App) StartCodeGenProxy(upstreamURL, apiKey string, clientName ...string) (string, error) {
-	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "start codegen proxy", "upstream_url": upstreamURL}); err != nil {
-		return "", err
-	}
-	codegenProxyMu.Lock()
-	defer codegenProxyMu.Unlock()
-
-	if codegenProxyServer != nil {
-		// Update upstream config on the running server
-		codegenProxyServer.SetUpstreamWithClientName(upstreamURL, apiKey, firstCodeGenClientName(clientName...))
-		log.Printf("[codegen-proxy] upstream updated on running proxy: url=%s", upstreamURL)
-		return "already running (upstream updated)", nil
-	}
-
-	log.Printf("[codegen-proxy] ▶ Starting CodeGen proxy: addr=%s, upstream=%s, time=%s",
-		codegenProxyAddr, upstreamURL, time.Now().Format(time.RFC3339))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	srv := codegenproxy.NewServer(codegenProxyAddr)
-	srv.SetUpstreamWithClientName(upstreamURL, apiKey, firstCodeGenClientName(clientName...))
-
-	startErr := make(chan error, 1)
-	go func() {
-		err := srv.Start(ctx)
-		startErr <- err
-		codegenProxyMu.Lock()
-		codegenProxyServer = nil
-		codegenProxyCancel = nil
-		codegenProxyMu.Unlock()
-		if err != nil {
-			log.Printf("[codegen-proxy] ◼ proxy server exited with error: %v", err)
-		} else {
-			log.Printf("[codegen-proxy] ◼ proxy server exited normally")
-		}
-	}()
-
-	select {
-	case err := <-startErr:
-		cancel()
-		if err != nil {
-			log.Printf("[codegen-proxy] ✖ startup failed: %v", err)
-			return "", fmt.Errorf("CodeGen 代理启动失败: %w", err)
-		}
-		log.Printf("[codegen-proxy] ✖ server exited unexpectedly during startup")
-		return "", fmt.Errorf("CodeGen 代理启动失败: 服务器意外退出")
-	case <-time.After(300 * time.Millisecond):
-		codegenProxyServer = srv
-		codegenProxyCancel = cancel
-		log.Printf("[codegen-proxy] ✔ proxy started successfully on %s", codegenProxyAddr)
-		return "started on " + codegenProxyAddr, nil
-	}
+	log.Printf("[CodeGen Proxy] start skipped: local Anthropic proxy disabled; using remote CodeGen endpoint")
+	return "disabled: using remote CodeGen endpoint", nil
 }
 
-// StopCodeGenProxy stops the local CodeGen protocol conversion proxy.
+// StopCodeGenProxy is a no-op while the legacy local adapter is disabled.
 func (a *App) StopCodeGenProxy() string {
-	codegenProxyMu.Lock()
-	defer codegenProxyMu.Unlock()
-
-	log.Printf("[codegen-proxy] ◼ Stopping CodeGen proxy, time=%s", time.Now().Format(time.RFC3339))
-
-	if codegenProxyCancel != nil {
-		codegenProxyCancel()
-		codegenProxyCancel = nil
-	}
-	if codegenProxyServer != nil {
-		codegenProxyServer.Stop()
-		codegenProxyServer = nil
-	}
-	log.Printf("[codegen-proxy] ◼ CodeGen proxy stopped")
+	log.Printf("[CodeGen Proxy] stop skipped: local Anthropic proxy disabled")
 	return "stopped"
 }
 
-// IsCodeGenProxyRunning returns whether the CodeGen proxy server is running.
+// IsCodeGenProxyRunning is always false while the legacy local adapter is disabled.
 func (a *App) IsCodeGenProxyRunning() bool {
-	codegenProxyMu.Lock()
-	defer codegenProxyMu.Unlock()
-	return codegenProxyServer != nil
-}
-
-// ensureCodeGenProxyIfNeeded starts the CodeGen proxy if the current
-// MaClaw LLM provider is "CodeGen" with SSO auth and the proxy is not running.
-// Called during app startup.
-func (a *App) ensureCodeGenProxyIfNeeded() {
-	data := a.GetMaclawLLMProviders()
-
-	// Find the CodeGen SSO provider
-	var codegenProvider *corelib.MaclawLLMProvider
-	for i := range data.Providers {
-		if data.Providers[i].Name == codegenProviderName && data.Providers[i].AuthType == "sso" {
-			codegenProvider = &data.Providers[i]
-			break
-		}
-	}
-	if codegenProvider == nil {
-		return
-	}
-	if codegenProvider.URL == "" || codegenProvider.Key == "" {
-		return
-	}
-
-	if a.IsCodeGenProxyRunning() {
-		// Just update upstream in case credentials changed
-		codegenProxyMu.Lock()
-		if codegenProxyServer != nil {
-			codegenProxyServer.SetUpstreamWithClientName(codegenProvider.URL, codegenProvider.Key, codegenProvider.UserAgent())
-		}
-		codegenProxyMu.Unlock()
-		return
-	}
-
-	result, err := a.StartCodeGenProxy(codegenProvider.URL, codegenProvider.Key, codegenProvider.UserAgent())
-	if err != nil {
-		log.Printf("[CodeGen Proxy] auto-start failed: %v", err)
-	} else {
-		log.Printf("[CodeGen Proxy] auto-start: %s", result)
-	}
+	return false
 }

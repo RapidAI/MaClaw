@@ -32,24 +32,24 @@ var workflowTypeAliases = map[string]string{
 	"maintenance":  string(v2.WorkflowMaintenance),
 
 	// Chinese aliases
-	"编程":   string(v2.WorkflowCoding),
-	"开发":   string(v2.WorkflowCoding),
-	"编码":   string(v2.WorkflowCoding),
+	"编程":    string(v2.WorkflowCoding),
+	"开发":    string(v2.WorkflowCoding),
+	"编码":    string(v2.WorkflowCoding),
 	"ppt设计": string(v2.WorkflowPresentationDesign),
-	"演示":   string(v2.WorkflowPresentationDesign),
-	"产品":   string(v2.WorkflowProductDesign),
-	"产品设计": string(v2.WorkflowProductDesign),
-	"商业":   string(v2.WorkflowBusinessPlan),
-	"商业计划": string(v2.WorkflowBusinessPlan),
-	"测试":   string(v2.WorkflowTesting),
-	"研究":   string(v2.WorkflowResearchReport),
-	"论文":   string(v2.WorkflowPaperWriting),
-	"专利":   string(v2.WorkflowPatentApplication),
-	"招投标":  string(v2.WorkflowBidResponse),
-	"合同":   string(v2.WorkflowContractReview),
-	"活动":   string(v2.WorkflowEventPlanning),
-	"竞品":   string(v2.WorkflowCompetitiveAnalysis),
-	"运维":   string(v2.WorkflowOpsMaintenance),
+	"演示":    string(v2.WorkflowPresentationDesign),
+	"产品":    string(v2.WorkflowProductDesign),
+	"产品设计":  string(v2.WorkflowProductDesign),
+	"商业":    string(v2.WorkflowBusinessPlan),
+	"商业计划":  string(v2.WorkflowBusinessPlan),
+	"测试":    string(v2.WorkflowTesting),
+	"研究":    string(v2.WorkflowResearchReport),
+	"论文":    string(v2.WorkflowPaperWriting),
+	"专利":    string(v2.WorkflowPatentApplication),
+	"招投标":   string(v2.WorkflowBidResponse),
+	"合同":    string(v2.WorkflowContractReview),
+	"活动":    string(v2.WorkflowEventPlanning),
+	"竞品":    string(v2.WorkflowCompetitiveAnalysis),
+	"运维":    string(v2.WorkflowOpsMaintenance),
 }
 
 // handleWorkflowCommand processes the /workflow slash command.
@@ -103,7 +103,7 @@ func resolveWorkflowType(input string, h *IMMessageHandler) string {
 }
 
 // forceStartWorkflow starts a workflow directly, bypassing the workflow_enabled toggle.
-// Reuses the same pendingWorkflowChoice mechanism as StartWorkflowDirect.
+// Reuses the same pendingWorkflowChoice mechanism as StartWorkflowTemplate.
 //
 // For desktop platform: sends a synthetic choice command through SendAIAssistantMessage
 // (same mechanism as workflow panel click).

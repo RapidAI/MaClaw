@@ -1661,8 +1661,6 @@ func (a *App) ensureCodeGenToken() error {
 				})
 			}
 		}
-		// 同步更新本地 Anthropic→OpenAI 代理的上游凭证
-		go a.ensureCodeGenProxyIfNeeded()
 		return nil
 	}
 
@@ -1838,9 +1836,6 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	// 6. 将 CodeGen 注入到各编程工具的服务商列表中
 	a.injectCodeGenModelIntoToolConfigs(result)
 
-	// 7. 启动本地 Anthropic→OpenAI 协议转换代理，供 Claude Code 使用
-	go a.ensureCodeGenProxyIfNeeded()
-
 	var msg string
 	if len(toolResult.Failed) == 0 {
 		msg = "SSO 认证成功，所有工具配置已写入完毕"
@@ -1890,22 +1885,22 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 	return append(providers, entry)
 }
 
-// codegenClaudeProxyBaseURL 是本地 OpenAI→Anthropic 协议转换代理地址。
-// CodeGen 原始服务只提供 OpenAI 协议；Claude Code 需要 Anthropic 协议，
-// 因此必须固定走本地兼容代理，而不是把上游 CodeGen URL 直接追加 /anthropic。
-const codegenClaudeProxyBaseURL = "http://127.0.0.1:5001/anthropic"
+// codegenClaudeRemoteBaseURL is the remote Anthropic-compatible base URL used
+// by Claude/TigerClaw Code. It intentionally does not include /v1 because the
+// Claude Code client appends its Anthropic API paths itself.
+const codegenClaudeRemoteBaseURL = "https://codegen.qianxin-inc.cn/api"
 
 // codegenAnthropicBaseURL 返回 CodeGen 给 Claude/TigerClaw Code 使用的 Anthropic 兼容端点。
 func codegenAnthropicBaseURL(openaiBaseURL string) string {
-	return codegenClaudeProxyBaseURL
+	return codegenClaudeRemoteBaseURL
 }
 
 // injectCodeGenModelIntoToolConfigs 将 CodeGen 服务商作为模型条目注入到各编程工具的
 // 模型列表中（Claude、Codex、OpenCode 等），使其出现在前端的服务商选择网格中。
 // 如果已存在同名条目则更新，否则插入到 Custom 条目之前。
 //
-// 注意：Claude Code 使用 anthropic 协议，需要将 CodeGen 的 openai base URL
-// 转换为 anthropic 兼容端点（追加 /anthropic）。其他工具直接使用 openai URL。
+// 注意：Claude Code 使用 anthropic 协议，直连 CodeGen 的远程兼容端点。
+// 其他工具继续直接使用 openai URL。
 func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -2345,9 +2340,6 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 
 		// 将 CodeGen 注入到各编程工具的服务商列表中
 		a.injectCodeGenModelIntoToolConfigs(result)
-
-		// 启动本地 Anthropic→OpenAI 协议转换代理，供 Claude Code 使用
-		go a.ensureCodeGenProxyIfNeeded()
 
 		var msg string
 		if len(toolResult.Failed) == 0 {

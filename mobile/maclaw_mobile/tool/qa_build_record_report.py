@@ -10,19 +10,30 @@ import validate_qa_build_record
 
 
 _DEFAULT_FINAL_PREFILLS = release_evidence_commands.final_decision_prefills()
+_FINAL_ARTIFACT_VERSION_NOTE = (
+    " Artifact/log filenames must include the same Version/build number as the QA record."
+)
 
 EVIDENCE_FIELD_HINTS = {
     "Release handoff result": (
         f"Use `{_DEFAULT_FINAL_PREFILLS['Release handoff result']}` "
         f"after running `{release_evidence_commands.release_handoff_command()}`."
+        + _FINAL_ARTIFACT_VERSION_NOTE
+    ),
+    "Preflight result": (
+        f"Use `{_DEFAULT_FINAL_PREFILLS['Preflight result']}` after running "
+        f"`{release_evidence_commands.qa_preflight_command(log=release_evidence_commands.preflight_log_path())}`."
+        + _FINAL_ARTIFACT_VERSION_NOTE
     ),
     "Runtime boundary verification result": (
         f"Use `{_DEFAULT_FINAL_PREFILLS['Runtime boundary verification result']}` after running "
         f"`{release_evidence_commands.runtime_boundary_command()}`."
+        + _FINAL_ARTIFACT_VERSION_NOTE
     ),
     "Automated release gates result": (
         f"Use `{_DEFAULT_FINAL_PREFILLS['Automated release gates result']}` after running "
         f"`{release_evidence_commands.release_gates_command()}`."
+        + _FINAL_ARTIFACT_VERSION_NOTE
     ),
 }
 
@@ -48,14 +59,31 @@ def _evidence_field_hints(
                 records_dir=records_dir,
             )
             + "`."
+            + _FINAL_ARTIFACT_VERSION_NOTE
+        ),
+        "Preflight result": (
+            f"Use `{prefills['Preflight result']}` after running `"
+            + release_evidence_commands.qa_preflight_command(
+                scope=scope,
+                log=release_evidence_commands.preflight_log_path(
+                    version,
+                    scope=scope,
+                    records_dir=records_dir,
+                ),
+                records_dir=records_dir,
+            )
+            + "`."
+            + _FINAL_ARTIFACT_VERSION_NOTE
         ),
         "Runtime boundary verification result": (
             f"Use `{prefills['Runtime boundary verification result']}` after running "
             f"`{release_evidence_commands.runtime_boundary_command(version, records_dir=records_dir)}`."
+            + _FINAL_ARTIFACT_VERSION_NOTE
         ),
         "Automated release gates result": (
             f"Use `{prefills['Automated release gates result']}` after running "
             f"`{release_evidence_commands.release_gates_command(version, records_dir=records_dir)}`."
+            + _FINAL_ARTIFACT_VERSION_NOTE
         ),
     }
 
@@ -258,14 +286,26 @@ TASK_CHAIN_FIELDS = {
     "Status polling result",
     "Word export job ID",
 }
+NOTIFICATION_DELIVERY_FIELDS = {
+    "Notification delivery evidence",
+}
+NETWORK_RECOVERY_FIELDS = {
+    "Network offline/recovery evidence",
+}
+ACCOUNT_PRIVACY_FIELDS = {
+    "Local work records reset confirmation",
+    "Server-profile metadata retained after local reset",
+    "Server-profile cache clear confirmation",
+    "Theme and speech language change result",
+}
 SSH_SMOKE_FIELDS = {
     "AI analysis confirmation and sensitive-data warning",
     "AI explanation / command draft result",
     "Auth mode",
     "Command output excerpt",
     "Connect result",
-    "Copied output evidence",
-    "Credential deletion confirmation",
+    "Copied backend session output evidence",
+    "Backend SSH server-profile cache clear confirmation",
     "Disconnect result",
     "Host type",
     "Read-only command",
@@ -352,7 +392,7 @@ def _permission_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, PERMISSION_EVIDENCE_FIELDS) for error in errors):
         return []
     return [
-        "- Runtime permissions: capture the real permission prompt/result in the workflow that needs it, include a `permission-grant:<id>` token, and tie microphone/speech/camera/photo-library evidence to AI助手 voice/photo input, notification evidence to real task notification open, and local-network evidence to a real SSH read-only command.",
+        "- Runtime permissions: capture the real permission prompt/result in the workflow that needs it, include a `permission-grant:<id>` token, and tie microphone/speech/camera/photo-library evidence to AI助手 voice/photo input, notification evidence to real task notification open, and local-network evidence to a backend-managed SSH read-only command executed through the GUI/agent session manager.",
     ]
 
 
@@ -372,11 +412,35 @@ def _task_chain_hints(errors: list[str]) -> list[str]:
     ]
 
 
+def _notification_delivery_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, NOTIFICATION_DELIVERY_FIELDS) for error in errors):
+        return []
+    return [
+        "- Notification delivery/open evidence: record delivered document/export, digital employee, and SSH abnormal/disconnect notifications with typed payloads such as `document-export:<id>`, `digital-employee-task:<id>`, and `server-profile:<id>`, plus the tap/open target and redacted message preview.",
+    ]
+
+
+def _network_recovery_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, NETWORK_RECOVERY_FIELDS) for error in errors):
+        return []
+    return [
+        "- Network offline/recovery evidence: record the offline warning and restored service for the selected HubCenter, discovered Hub URL, tenant ID, and at least one matching document/export/digital-employee task or job ID after connectivity returns.",
+    ]
+
+
+def _account_privacy_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, ACCOUNT_PRIVACY_FIELDS) for error in errors):
+        return []
+    return [
+        "- Account privacy/local data evidence: separately record theme/speech-language changes, local work-record clearing for assistant history, document drafts, commands, digital employee prompts/tasks, and app preferences, retained sanitized server-profile metadata for server-profile:<id> after local reset, then the separate phone-side server-profile cache clear action with `server-profile-cache-clear:<id>`.",
+    ]
+
+
 def _ssh_smoke_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, SSH_SMOKE_FIELDS) for error in errors):
         return []
     return [
-        "- Backend SSH session smoke: record the server profile ID, backend session ID or attach/create evidence, host/auth mode, connect result, read-only command and output, disconnect/reconnect, copied session output, redacted AI analysis with sensitive-data warning, manual command draft ID, and credential deletion confirmation.",
+        "- GUI-equivalent backend SSH session management smoke: record the server profile ID, mobile create/attach control request, GUI/agent-bound backend_session_id, visible claim/worker owner such as claimed_by, GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, not phone-local/ad hoc terminal evidence, host/auth mode metadata, connect result, backend-managed read-only command and output, the `ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` plus GUI/agent Ctrl+C handling, disconnect/reconnect through the managed session path, copied backend session output, redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used, manual command draft ID, digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used, and phone-side server-profile cache clear confirmation.",
     ]
 
 
@@ -483,10 +547,25 @@ def format_report(report: QaBuildRecordReport) -> str:
             lines.append("")
             lines.append("How to fill task chain evidence:")
             lines.extend(task_chain_hints)
+        notification_delivery_hints = _notification_delivery_hints(report.evidence_errors)
+        if notification_delivery_hints:
+            lines.append("")
+            lines.append("How to fill notification delivery evidence:")
+            lines.extend(notification_delivery_hints)
+        network_recovery_hints = _network_recovery_hints(report.evidence_errors)
+        if network_recovery_hints:
+            lines.append("")
+            lines.append("How to fill network recovery evidence:")
+            lines.extend(network_recovery_hints)
+        account_privacy_hints = _account_privacy_hints(report.evidence_errors)
+        if account_privacy_hints:
+            lines.append("")
+            lines.append("How to fill account privacy evidence:")
+            lines.extend(account_privacy_hints)
         ssh_smoke_hints = _ssh_smoke_hints(report.evidence_errors)
         if ssh_smoke_hints:
             lines.append("")
-            lines.append("How to fill backend SSH session smoke evidence:")
+            lines.append("How to fill GUI-equivalent backend SSH session management smoke evidence:")
             lines.extend(ssh_smoke_hints)
         hub_llm_setup_hints = _hub_llm_setup_hints(report.evidence_errors)
         if hub_llm_setup_hints:

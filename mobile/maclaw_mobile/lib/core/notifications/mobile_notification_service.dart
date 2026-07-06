@@ -1,6 +1,8 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../security/mobile_redaction.dart';
+
 final mobileNotificationServiceProvider =
     Provider<MobileNotificationService>((ref) => MobileNotificationService());
 
@@ -45,6 +47,10 @@ String? mobileNotificationPayloadBasePath(String payload) {
     return '/documents';
   }
   return null;
+}
+
+String mobileNotificationDisplayText(String text) {
+  return redactMobileSensitiveText(text.trim());
 }
 
 bool _hasTypedNotificationId(String value, String prefix) {
@@ -176,8 +182,8 @@ class MobileNotificationService {
     );
     await _plugin.show(
       id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
-      title: title,
-      body: body,
+      title: mobileNotificationDisplayText(title),
+      body: mobileNotificationDisplayText(body),
       notificationDetails: details,
       payload: payload,
     );

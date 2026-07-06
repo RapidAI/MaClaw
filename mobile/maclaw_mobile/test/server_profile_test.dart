@@ -35,7 +35,7 @@ void main() {
   });
 
   test('round trips server profile json without secrets', () {
-    const profile = ServerProfile(
+    final profile = ServerProfile(
       id: 'srv-1',
       name: 'prod',
       host: '10.0.0.8',
@@ -44,6 +44,8 @@ void main() {
       authMode: serverAuthModePassword,
       tag: 'ops',
       note: 'primary',
+      sourceMachineId: 'desktop-agent-1',
+      updatedAt: DateTime.utc(2026, 7, 6, 8, 30),
     );
 
     final restored = ServerProfile.fromJson(profile.toJson());
@@ -54,8 +56,11 @@ void main() {
     expect(restored.port, profile.port);
     expect(restored.username, profile.username);
     expect(restored.authMode, profile.authMode);
+    expect(restored.sourceMachineId, 'desktop-agent-1');
+    expect(restored.updatedAt, DateTime.utc(2026, 7, 6, 8, 30));
     expect(serverAuthModeLabel(restored.authMode), '密码');
     expect(profile.toJson().containsKey('password'), isFalse);
+    expect(profile.toJson().containsKey('private_key'), isFalse);
   });
 
   test('supports private key auth metadata without storing secrets', () {

@@ -12,6 +12,7 @@ import (
 type EntryProbeRequest struct {
 	Email       string `json:"email"`
 	PhoneNumber string `json:"phone_number"`
+	TenantID    string `json:"tenant_id,omitempty"`
 }
 
 func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
@@ -23,10 +24,14 @@ func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
 		}
 
 		identity := entryProbeIdentity(req)
-		tenantID, err := tenantIDForEmailRequest(r, service, identity)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
-			return
+		tenantID := strings.TrimSpace(req.TenantID)
+		if tenantID == "" {
+			var err error
+			tenantID, err = tenantIDForEmailRequest(r, service, identity)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+				return
+			}
 		}
 
 		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantID), identity)

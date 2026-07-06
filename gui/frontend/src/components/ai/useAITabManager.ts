@@ -207,6 +207,18 @@ const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
 /** Maximum number of messages to persist per tab (keep localStorage bounded). */
 const MAX_PERSISTED_HISTORY_PER_TAB = 50;
 
+function isTransientProjectHistoryMessage(message: unknown): boolean {
+    if (!message || typeof message !== "object") return false;
+    const candidate = message as { role?: unknown; kind?: unknown };
+    return candidate.role === "system" && (candidate.kind === "guideReceipt" || candidate.kind === "guideRejection");
+}
+
+function persistableProjectHistory(history: unknown[]): unknown[] {
+    return history
+        .filter(message => !isTransientProjectHistoryMessage(message))
+        .slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+}
+
 /** Persist project tab conversation histories to localStorage. Debounced externally. */
 function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AITab[]) {
     try {
@@ -218,7 +230,8 @@ function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AI
         for (const tab of projectTabs) {
             const state = tabStates.get(tab.id);
             if (state && Array.isArray(state.history) && state.history.length > 0) {
-                serialized[tab.id] = state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+                const history = persistableProjectHistory(state.history);
+                if (history.length > 0) serialized[tab.id] = history;
             }
         }
 
@@ -238,7 +251,8 @@ function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AI
         // Sort by lastActiveAt descending — keep most recently used orphans
         orphans.sort((a, b) => (b[1].lastActiveAt ?? 0) - (a[1].lastActiveAt ?? 0));
         for (const [tabId, state] of orphans.slice(0, MAX_ORPHAN_HISTORIES)) {
-            serialized[tabId] = state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+            const history = persistableProjectHistory(state.history);
+            if (history.length > 0) serialized[tabId] = history;
         }
 
         if (Object.keys(serialized).length === 0) {
@@ -258,7 +272,11 @@ function loadPersistedProjectTabHistories(): Record<string, unknown[]> {
         if (!raw) return {};
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object") return {};
-        return parsed as Record<string, unknown[]>;
+        const histories: Record<string, unknown[]> = {};
+        for (const [tabId, history] of Object.entries(parsed as Record<string, unknown>)) {
+            if (Array.isArray(history)) histories[tabId] = persistableProjectHistory(history);
+        }
+        return histories;
     } catch {
         return {};
     }
@@ -650,8 +668,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             for (const tab of projectTabs) {
                 const state = tabStatesRef.current.get(tab.id);
                 if (state && Array.isArray(state.history) && state.history.length > 0) {
-                    SaveProjectTabConversation(tab.id, state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB))
-                        .catch(() => {});
+                    const history = persistableProjectHistory(state.history);
+                    SaveProjectTabConversation(tab.id, history).catch(() => {});
                 }
             }
         };
@@ -680,11 +698,15 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
                 const existing = tabStatesRef.current.get(tab.id);
                 const existingLen = existing?.history?.length || 0;
+                const history = persistableProjectHistory(conversation);
+                if (history.length !== conversation.length) {
+                    SaveProjectTabConversation(tab.id, history).catch(() => {});
+                }
                 // Backend wins if it has more or equal history (more recent flush survived process kill)
-                if (conversation.length >= existingLen) {
+                if (history.length >= existingLen) {
                     tabStatesRef.current.set(tab.id, {
                         ...(existing || { scrollTop: 0, inputText: "" }),
-                        history: conversation,
+                        history,
                         lastActiveAt: Date.now(),
                     });
                 }
@@ -984,8 +1006,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 for (const tab of projectTabs) {
                     const state = tabStatesRef.current.get(tab.id);
                     if (state && Array.isArray(state.history) && state.history.length > 0) {
-                        SaveProjectTabConversation(tab.id, state.history.slice(-MAX_PERSISTED_HISTORY_PER_TAB))
-                            .catch(() => {});
+                        const history = persistableProjectHistory(state.history);
+                        SaveProjectTabConversation(tab.id, history).catch(() => {});
                     }
                 }
                 dirtyTabIdsRef.current = new Set();

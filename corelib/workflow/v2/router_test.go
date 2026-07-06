@@ -93,30 +93,11 @@ func TestRoute_LLMConfirmationCanRejectStructuredTemplateMatch(t *testing.T) {
 	}
 }
 
-func TestRoute_CodingComplexityNoneFallsBackToAgentLoop(t *testing.T) {
-	// After the user-choice refactor, ComplexityFunc is no longer consumed
-	// by the router. Coding tasks always route to RouteToWorkflow; the GUI
-	// layer asks the user to choose complexity. Setting ComplexityFunc has
-	// no effect on routing.
+func TestRoute_CodingTaskRoutesToWorkflowChoice(t *testing.T) {
+	// Coding tasks always route to RouteToWorkflow; the GUI layer presents a
+	// choice panel for the user to select full SDD, simplified coding, remote
+	// coding, or skip.
 	r := setupTestRouter()
-	r.SetComplexityFunc(func(text string) TaskComplexity {
-		return ComplexityNone
-	})
-
-	result := r.Route("user1", "build backend service with APIs and database migrations", nil)
-	if result.Target != RouteToWorkflow {
-		t.Fatalf("target = %q, want workflow (complexity is now user-chosen in GUI)", result.Target)
-	}
-}
-
-func TestRoute_CodingComplexitySimpleGoesDirectCoding(t *testing.T) {
-	// After the user-choice refactor, ComplexityFunc is no longer consumed
-	// by the router. All coding tasks go to RouteToWorkflow; the GUI layer
-	// presents a choice panel for the user to select simple/complex/skip.
-	r := setupTestRouter()
-	r.SetComplexityFunc(func(text string) TaskComplexity {
-		return ComplexitySimple
-	})
 
 	result := r.Route("user1", "d:\\service build backend service with APIs and database migrations", nil)
 	if result.Target != RouteToWorkflow {
@@ -389,7 +370,6 @@ func TestRoute_TraditionalChinese(t *testing.T) {
 		}
 	}
 }
-
 
 func TestRoute_LongTechnicalText_NoWorkflow(t *testing.T) {
 	r := setupTestRouter()

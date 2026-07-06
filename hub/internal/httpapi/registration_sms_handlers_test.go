@@ -146,6 +146,46 @@ func TestCanClaimPhoneIdentityForCurrentUserAllowsSameEmailDuplicate(t *testing.
 	}
 }
 
+func TestRegistrationCurrentProfileHandlerReturnsBoundPhoneForMachine(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	ctx := auth.WithTenant(context.Background(), store.DefaultTenantID)
+	enrolled, err := identity.StartEnrollment(ctx, "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("StartEnrollment: %v", err)
+	}
+	user, err := identity.UsersRepo().GetByID(ctx, enrolled.UserID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(ctx, user, "17090134628"); err != nil {
+		t.Fatalf("BindVerifiedPhoneToUser: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/enroll/profile/current", nil)
+	req.Header.Set("X-Machine-ID", enrolled.MachineID)
+	req.Header.Set("Authorization", "Bearer "+enrolled.MachineToken)
+	rr := httptest.NewRecorder()
+
+	RegistrationCurrentProfileHandler(identity).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		OK          bool   `json:"ok"`
+		UserID      string `json:"user_id"`
+		MachineID   string `json:"machine_id"`
+		Email       string `json:"email"`
+		PhoneNumber string `json:"phone_number"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.OK || body.UserID != enrolled.UserID || body.MachineID != enrolled.MachineID || body.Email != "owner@example.com" || body.PhoneNumber != "17090134628" {
+		t.Fatalf("profile body = %+v", body)
+	}
+}
+
 func TestRegistrationSMSSendCodeHandlerUsesTenantPhoneConfig(t *testing.T) {
 	identity, _, _ := newPreservationTestIdentity(t)
 	settings := &testSystemSettingsRepo{}

@@ -139,6 +139,38 @@ void main() {
     expect(adapter.requests, isEmpty);
   });
 
+  test('SSH analysis request can include backend session id', () async {
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'summary': 'summary',
+        'recommendation': 'recommendation',
+        'command_draft': 'systemctl status app',
+        'backend_session_id': 'mobile-ssh:sess-1 token=server-secret',
+      }),
+    );
+    final client = ApiClient(
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final analysis = await client.analyzeSSHOutput(
+      'backend session output',
+      backendSessionId: 'mobile-ssh:sess-1',
+    );
+
+    expect(adapter.requests, hasLength(1));
+    expect(adapter.requests.single.path, '/api/mobile/ssh/analyze');
+    expect(adapter.requests.single.data, {
+      'output': 'backend session output',
+      'backend_session_id': 'mobile-ssh:sess-1',
+    });
+    expect(analysis.commandDraft, 'systemctl status app');
+    expect(
+      analysis.backendSessionId,
+      'mobile-ssh:sess-1 token=[REDACTED_SECRET]',
+    );
+  });
+
   test('LLM service status parses credits from configured path', () async {
     FlutterSecureStorage.setMockInitialValues({});
     final adapter = _RecordingApiAdapter(
@@ -276,8 +308,17 @@ void main() {
             'session': {
               'session_id': 'ssh-session-1',
               'server_profile_id': 'srv-prod',
+              'backend_session_id': 'mobile-ssh:ssh-session-1',
               'status': 'connected',
+              'state': 'running',
+              'claimed_by': 'desktop-agent-1',
+              'pending_input_count': 2,
               'recent_output': 'ready\n',
+              'output_chunk': 'ready\n',
+              'output_seq': 1,
+              'created_at': '2026-07-06T09:00:00Z',
+              'updated_at': '2026-07-06T09:05:00Z',
+              'last_activity_at': '2026-07-06T09:06:00Z',
             },
           });
         }
@@ -295,6 +336,17 @@ void main() {
               'session_id': 'ssh-session-1',
               'server_profile_id': 'srv-prod',
               'status': 'connected',
+            },
+          });
+        }
+        if (request.path ==
+            '/api/mobile/ssh/sessions/ssh-session-1/interrupt') {
+          return _jsonResponse({
+            'session': {
+              'session_id': 'ssh-session-1',
+              'server_profile_id': 'srv-prod',
+              'status': 'interrupt_requested',
+              'state': 'interrupting',
             },
           });
         }
@@ -317,22 +369,237 @@ void main() {
     final reconnected = await client.reconnectBackendSSHSession(
       session.sessionId,
     );
+    final interrupted = await client.interruptBackendSSHSession(
+      session.sessionId,
+    );
     await client.closeBackendSSHSession(session.sessionId);
 
     expect(session.sessionId, 'ssh-session-1');
     expect(session.serverProfileId, 'srv-prod');
+    expect(session.backendSessionId, 'mobile-ssh:ssh-session-1');
+    expect(session.state, 'running');
+    expect(session.claimedBy, 'desktop-agent-1');
+    expect(session.pendingInputCount, 2);
     expect(session.connected, isTrue);
     expect(session.recentOutput, 'ready\n');
+    expect(session.outputChunk, 'ready\n');
+    expect(session.outputSeq, 1);
+    expect(session.createdAt, DateTime.utc(2026, 7, 6, 9));
+    expect(session.updatedAt, DateTime.utc(2026, 7, 6, 9, 5));
+    expect(session.lastActivityAt, DateTime.utc(2026, 7, 6, 9, 6));
     expect(input.output, 'ran uptime\n');
     expect(reconnected.connected, isTrue);
+    expect(interrupted.status, 'interrupt_requested');
+    expect(interrupted.state, 'interrupting');
     expect(adapter.requests.map((request) => request.path), [
       '/api/mobile/ssh/sessions',
       '/api/mobile/ssh/sessions/ssh-session-1/input',
       '/api/mobile/ssh/sessions/ssh-session-1/reconnect',
+      '/api/mobile/ssh/sessions/ssh-session-1/interrupt',
       '/api/mobile/ssh/sessions/ssh-session-1',
     ]);
     expect(adapter.requests.first.data, {'server_profile_id': 'srv-prod'});
     expect(adapter.requests[1].data, {'input': 'uptime\r'});
+  });
+
+  test('backend SSH tasks and file operations use Hub control records',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) {
+        if (request.path == '/api/mobile/ssh/sessions/ssh-session-1/tasks' &&
+            request.method == 'POST') {
+          return _jsonResponse({
+            'task': {
+              'task_id': 'task-1',
+              'session_id': 'ssh-session-1',
+              'backend_session_id': 'mobile-ssh:ssh-session-1',
+              'command': 'journalctl -u app -n 200',
+              'status': 'running',
+              'log_tail': 'collecting logs\n',
+              'claimed_by': 'desktop-agent-1',
+              'created_at': '2026-07-06T10:00:00Z',
+              'updated_at': '2026-07-06T10:00:05Z',
+            },
+          });
+        }
+        if (request.path == '/api/mobile/ssh/sessions/ssh-session-1/tasks' &&
+            request.method == 'GET') {
+          return _jsonResponse({
+            'tasks': [
+              {
+                'task_id': 'task-1',
+                'session_id': 'ssh-session-1',
+                'status': 'running',
+              },
+            ],
+          });
+        }
+        if (request.path ==
+            '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1') {
+          return _jsonResponse({
+            'task_id': 'task-1',
+            'session_id': 'ssh-session-1',
+            'status': 'running',
+            'tail': 'still running\n',
+          });
+        }
+        if (request.path ==
+            '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1/wait') {
+          return _jsonResponse({
+            'task': {
+              'task_id': 'task-1',
+              'session_id': 'ssh-session-1',
+              'status': 'completed',
+              'exit_code': 0,
+              'output': 'done\n',
+            },
+          });
+        }
+        if (request.path ==
+            '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1/kill') {
+          return _jsonResponse({
+            'task': {
+              'task_id': 'task-1',
+              'session_id': 'ssh-session-1',
+              'status': 'killed',
+              'message': 'terminated by GUI/agent',
+            },
+          });
+        }
+        if (request.path == '/api/mobile/ssh/sessions/ssh-session-1/files') {
+          return _jsonResponse({
+            'operation': {
+              'operation_id': 'file-op-1',
+              'session_id': 'ssh-session-1',
+              'backend_session_id': 'mobile-ssh:ssh-session-1',
+              'action': 'download',
+              'remote_path': '/var/log/app.log',
+              'local_path': 'mobile-downloads/app.log',
+              'status': 'completed',
+              'bytes_transferred': 42,
+              'download_url': '/api/mobile/ssh/files/file-op-1/download',
+              'claimed_by': 'desktop-agent-1',
+            },
+          });
+        }
+        return _jsonResponse({'ok': true});
+      },
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final started = await client.startBackendSSHBackgroundTask(
+      sessionId: 'ssh-session-1',
+      command: 'journalctl -u app -n 200',
+      tailLines: 80,
+    );
+    final listed = await client.listBackendSSHBackgroundTasks('ssh-session-1');
+    final checked = await client.getBackendSSHBackgroundTask(
+      sessionId: 'ssh-session-1',
+      taskId: started.taskId,
+    );
+    final waited = await client.waitBackendSSHBackgroundTask(
+      sessionId: 'ssh-session-1',
+      taskId: started.taskId,
+      timeoutSeconds: 30,
+      tailLines: 120,
+    );
+    final killed = await client.killBackendSSHBackgroundTask(
+      sessionId: 'ssh-session-1',
+      taskId: started.taskId,
+    );
+    final fileOperation = await client.requestBackendSSHFileOperation(
+      sessionId: 'ssh-session-1',
+      action: 'download',
+      remotePath: '/var/log/app.log',
+      localPath: 'mobile-downloads/app.log',
+    );
+
+    expect(started.taskId, 'task-1');
+    expect(started.backendSessionId, 'mobile-ssh:ssh-session-1');
+    expect(started.running, isTrue);
+    expect(started.logTail, 'collecting logs\n');
+    expect(started.createdAt, DateTime.utc(2026, 7, 6, 10));
+    expect(started.updatedAt, DateTime.utc(2026, 7, 6, 10, 0, 5));
+    expect(listed.single.taskId, 'task-1');
+    expect(checked.logTail, 'still running\n');
+    expect(waited.status, 'completed');
+    expect(waited.exitCode, 0);
+    expect(waited.logTail, 'done\n');
+    expect(killed.status, 'killed');
+    expect(fileOperation.operationId, 'file-op-1');
+    expect(fileOperation.backendSessionId, 'mobile-ssh:ssh-session-1');
+    expect(fileOperation.action, 'download');
+    expect(fileOperation.bytesTransferred, 42);
+    expect(
+      fileOperation.downloadUrl,
+      '/api/mobile/ssh/files/file-op-1/download',
+    );
+    expect(adapter.requests.map((request) => request.path), [
+      '/api/mobile/ssh/sessions/ssh-session-1/tasks',
+      '/api/mobile/ssh/sessions/ssh-session-1/tasks',
+      '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1',
+      '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1/wait',
+      '/api/mobile/ssh/sessions/ssh-session-1/tasks/task-1/kill',
+      '/api/mobile/ssh/sessions/ssh-session-1/files',
+    ]);
+    expect(adapter.requests.first.data, {
+      'action': 'exec_background',
+      'command': 'journalctl -u app -n 200',
+      'tail_lines': 80,
+    });
+    expect(adapter.requests[3].data, {
+      'timeout': 30,
+      'tail_lines': 120,
+    });
+    expect(adapter.requests.last.data, {
+      'action': 'download',
+      'local_path': 'mobile-downloads/app.log',
+      'remote_path': '/var/log/app.log',
+    });
+  });
+
+  test('server profiles parse sanitized tenant Hub profiles', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'profiles': [
+          {
+            'id': 'prod',
+            'name': 'Prod',
+            'host': '10.0.0.10',
+            'port': 2222,
+            'username': 'deploy',
+            'auth_mode': 'private_key',
+            'tag': 'desktop',
+            'note': 'Published from desktop',
+          },
+          {
+            'id': 'bad',
+            'host': '',
+            'port': 22,
+            'username': 'root',
+          },
+        ],
+      }),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final profiles = await client.listServerProfiles();
+
+    expect(adapter.requests.single.path, '/api/mobile/server-profiles');
+    expect(profiles, hasLength(1));
+    expect(profiles.single.id, 'prod');
+    expect(profiles.single.authMode, 'private_key');
+    expect(profiles.single.tag, 'desktop');
   });
 
   test('document export download requests relative paths from discovered Hub',
@@ -455,11 +722,13 @@ ResponseBody _bytesResponse(List<int> body) {
 class _RecordedApiRequest {
   final String baseUrl;
   final String path;
+  final String method;
   final Object? data;
 
   const _RecordedApiRequest({
     required this.baseUrl,
     required this.path,
+    required this.method,
     required this.data,
   });
 }
@@ -479,6 +748,7 @@ class _RecordingApiAdapter implements HttpClientAdapter {
     final request = _RecordedApiRequest(
       baseUrl: options.baseUrl,
       path: options.path,
+      method: options.method,
       data: options.data,
     );
     requests.add(request);

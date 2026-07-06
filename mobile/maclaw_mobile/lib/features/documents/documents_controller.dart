@@ -104,10 +104,12 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final current = state.valueOrNull ?? const DocumentsState();
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
+      final safeTitle = redactMobileSensitiveText(title.trim());
+      final safeContent = redactMobileSensitiveText(content.trim());
       final draft = await client.createDocumentDraft(
-        title: title,
+        title: safeTitle,
         template: template,
-        content: content,
+        content: safeContent,
       );
       await _cacheDraft(draft);
       return DocumentsState(
@@ -187,10 +189,12 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
+      final safeTitle = redactMobileSensitiveText(normalizedTitle);
+      final safeMarkdown = redactMobileSensitiveText(normalizedMarkdown);
       final updated = await client.updateDocumentDraft(
         draftId: draft.id,
-        title: normalizedTitle,
-        markdown: normalizedMarkdown,
+        title: safeTitle,
+        markdown: safeMarkdown,
       );
       await _cacheDraft(updated);
       return DocumentsState(
@@ -584,7 +588,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   String _exportFilenameBase(String title, {required String fallback}) {
-    final normalized = title
+    final normalized = redactMobileSensitiveText(title)
         .trim()
         .replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_')
         .replaceAll(RegExp(r'\s+'), '_')

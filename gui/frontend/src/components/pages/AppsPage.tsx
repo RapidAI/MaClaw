@@ -123,7 +123,7 @@ type BackendAppInstallDependency = {
     installed_dir?: string;
     installed_status?: string;
     health?: 'ready' | 'missing' | 'disabled' | 'needs_setup' | 'unknown' | string;
-    action?: 'skip' | 'installed' | 'blocked' | 'failed' | 'optional_missing' | 'optional_unhealthy' | string;
+    action?: 'skip' | 'install' | 'installed' | 'blocked' | 'failed' | 'optional_missing' | 'optional_unhealthy' | string;
     message?: string;
     install_error_code?: string;
     install_error_stage?: string;
@@ -11425,7 +11425,7 @@ function isBlockingBackendDependency(dep: BackendAppInstallDependency) {
     const action = String(dep.action || '').trim();
     const health = String(dep.health || '').trim();
     if (action === 'blocked' || action === 'failed') return true;
-    if (!dep.installed) return true;
+    if (!dep.installed) return action !== 'install';
     return !!health && health !== 'ready';
 }
 

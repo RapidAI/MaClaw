@@ -385,7 +385,7 @@ String digitalEmployeeTaskDocumentMarkdown(MobileDigitalEmployeeTask task) {
     buffer
       ..writeln()
       ..writeln('## 领取者')
-      ..writeln(task.claimedBy.trim());
+      ..writeln(redactMobileSensitiveText(task.claimedBy.trim()));
   }
   if (message.isNotEmpty) {
     buffer
@@ -555,7 +555,7 @@ class _DigitalEmployeeCard extends StatelessWidget {
                             context,
                             employee,
                             initialPrompt:
-                                '请读取并分析远程服务器/电脑最近的关键日志和终端输出，重点说明异常、影响范围、排查依据和建议命令。高风险命令只给草案，不要自动执行。',
+                                '请读取并分析远程服务器/电脑最近的后台会话输出和关键日志，重点说明异常、影响范围、排查依据和建议命令。高风险命令只给草案，不要自动执行。',
                           )
                       : null,
                   icon: const Icon(Icons.plagiarism_outlined),
@@ -674,7 +674,7 @@ String buildDigitalEmployeeMobilePrompt({
   required String prompt,
   bool requireManualConfirmation = true,
 }) {
-  final text = prompt.trim();
+  final text = redactMobileSensitiveText(prompt.trim());
   final buffer = StringBuffer()
     ..writeln('【MaClaw Mobile 应急任务】')
     ..writeln('任务类型：${digitalEmployeeMobileTaskTypeLabel(type)}')

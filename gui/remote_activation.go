@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type RemoteActivationResult struct {
 	Code                string `json:"code,omitempty"`
 	UserID              string `json:"user_id,omitempty"`
 	Email               string `json:"email,omitempty"`
+	PhoneNumber         string `json:"phone_number,omitempty"`
 	SN                  string `json:"sn,omitempty"`
 	MachineID           string `json:"machine_id,omitempty"`
 	MachineToken        string `json:"machine_token,omitempty"`
@@ -74,6 +76,18 @@ type RemoteRegistrationContactResult struct {
 	DailySMSRemaining int    `json:"daily_sms_remaining,omitempty"`
 	Code              string `json:"code,omitempty"`
 	Message           string `json:"message,omitempty"`
+}
+
+type RemoteRegistrationProfileResult struct {
+	OK          bool   `json:"ok"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	TenantName  string `json:"tenant_name,omitempty"`
+	UserID      string `json:"user_id,omitempty"`
+	MachineID   string `json:"machine_id,omitempty"`
+	Email       string `json:"email,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Code        string `json:"code,omitempty"`
 }
 
 type RemoteProbeResult struct {
@@ -161,6 +175,9 @@ func (a *App) ProbeRemoteHub(hubURL string, identity string) (RemoteProbeResult,
 	}
 
 	payload := remoteProbeIdentityPayload(identity)
+	if tenantID := a.remoteProbeTenantID(hubURL, identity); tenantID != "" {
+		payload["tenant_id"] = tenantID
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return RemoteProbeResult{}, err
@@ -184,6 +201,98 @@ func (a *App) ProbeRemoteHub(hubURL string, identity string) (RemoteProbeResult,
 	}
 
 	return result, nil
+}
+
+func (a *App) GetRemoteRegistrationProfile() (RemoteRegistrationProfileResult, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteRegistrationProfileResult{}, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if hubURL == "" {
+		return RemoteRegistrationProfileResult{}, fmt.Errorf("hub URL is required")
+	}
+	machineID := strings.TrimSpace(cfg.RemoteMachineID)
+	machineToken := strings.TrimSpace(cfg.RemoteMachineToken)
+	if machineID == "" || machineToken == "" {
+		return RemoteRegistrationProfileResult{}, fmt.Errorf("machine credentials are required")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/enroll/profile/current", nil)
+	if err != nil {
+		return RemoteRegistrationProfileResult{}, err
+	}
+	req.Header.Set("X-Machine-ID", machineID)
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return RemoteRegistrationProfileResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var result RemoteRegistrationProfileResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration profile"); err != nil {
+		return RemoteRegistrationProfileResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationProfileResult{}, remoteRegistrationProfileError(result, "load registration profile failed: "+resp.Status)
+	}
+
+	phone := normalizeRemoteRegistrationPhoneNumber(result.PhoneNumber)
+	tenantID := strings.TrimSpace(result.TenantID)
+	tenantName := strings.TrimSpace(result.TenantName)
+	userID := strings.TrimSpace(result.UserID)
+	email := strings.TrimSpace(result.Email)
+	if phone != "" || tenantID != "" || tenantName != "" || userID != "" || email != "" {
+		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+			if phone != "" {
+				cfg.RemoteMobile = phone
+			}
+			if tenantID != "" {
+				cfg.RemoteTenantID = tenantID
+			}
+			if tenantName != "" {
+				cfg.RemoteTenantName = tenantName
+			}
+			if userID != "" {
+				cfg.RemoteUserID = userID
+			}
+			if email != "" && strings.TrimSpace(cfg.RemoteEmail) == "" {
+				cfg.RemoteEmail = email
+			}
+		}); err != nil {
+			return RemoteRegistrationProfileResult{}, err
+		}
+	}
+	result.PhoneNumber = phone
+	a.emitRemoteStateChanged()
+	return result, nil
+}
+
+func (a *App) remoteProbeTenantID(hubURL string, identity string) string {
+	if a == nil {
+		return ""
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	tenantID := strings.TrimSpace(cfg.RemoteTenantID)
+	if tenantID == "" {
+		return ""
+	}
+	if strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/") != strings.TrimRight(strings.TrimSpace(hubURL), "/") {
+		return ""
+	}
+	identity = strings.TrimSpace(identity)
+	if strings.EqualFold(identity, strings.TrimSpace(cfg.RemoteEmail)) {
+		return tenantID
+	}
+	configuredPhone := normalizeRemoteRegistrationPhoneNumber(cfg.RemoteMobile)
+	if configuredPhone != "" && normalizeRemoteRegistrationPhoneNumber(identity) == configuredPhone {
+		return tenantID
+	}
+	return ""
 }
 
 func remoteProbeIdentityPayload(identity string) map[string]string {
@@ -576,6 +685,19 @@ func remoteRegistrationContactError(result RemoteRegistrationContactResult, fall
 	return fmt.Errorf("%s", fallback)
 }
 
+func remoteRegistrationProfileError(result RemoteRegistrationProfileResult, fallback string) error {
+	if result.Code != "" && result.Message != "" {
+		return fmt.Errorf("%s: %s", result.Code, result.Message)
+	}
+	if result.Code != "" {
+		return fmt.Errorf("%s", result.Code)
+	}
+	if result.Message != "" {
+		return fmt.Errorf("%s", result.Message)
+	}
+	return fmt.Errorf("%s", fallback)
+}
+
 // autoRegisterOnStartup is called during startup when email and hub URL are present
 // but machine credentials are missing. This can happen when:
 //   - The user was unbound by admin (clearMachineCredentials preserved email/hubURL)
@@ -673,6 +795,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		}
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
+		cfg.RemoteMobile = normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber)
 		if enrollResult.ViewerToken != "" {
 			cfg.RemoteViewerToken = enrollResult.ViewerToken
 		} else {
@@ -735,6 +858,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		Code:                enrollResult.Code,
 		UserID:              enrollResult.UserID,
 		Email:               enrollResult.Email,
+		PhoneNumber:         normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber),
 		SN:                  enrollResult.SN,
 		MachineID:           enrollResult.MachineID,
 		MachineToken:        enrollResult.MachineToken,
@@ -909,6 +1033,7 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		Code:                enrollResult.Code,
 		UserID:              enrollResult.UserID,
 		Email:               enrollResult.Email,
+		PhoneNumber:         phoneNumber,
 		SN:                  enrollResult.SN,
 		MachineID:           enrollResult.MachineID,
 		MachineToken:        enrollResult.MachineToken,

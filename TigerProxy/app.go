@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -55,15 +56,17 @@ type ModelOption struct {
 }
 
 type Status struct {
-	Settings     Settings `json:"settings"`
-	Running      bool     `json:"running"`
-	LastError    string   `json:"last_error,omitempty"`
-	OpenAIURL    string   `json:"openai_url"`
-	AnthropicURL string   `json:"anthropic_url"`
-	HealthURL    string   `json:"health_url"`
-	BindAddress  string   `json:"bind_address"`
-	LANURLs      []string `json:"lan_urls"`
-	LoggedIn     bool     `json:"logged_in"`
+	Settings           Settings `json:"settings"`
+	Running            bool     `json:"running"`
+	LastError          string   `json:"last_error,omitempty"`
+	OpenAIURL          string   `json:"openai_url"`
+	AnthropicURL       string   `json:"anthropic_url"`
+	HealthURL          string   `json:"health_url"`
+	BindAddress        string   `json:"bind_address"`
+	LANURLs            []string `json:"lan_urls"`
+	LoggedIn           bool     `json:"logged_in"`
+	AutoStartSupported bool     `json:"auto_start_supported"`
+	AutoStartEnabled   bool     `json:"auto_start_enabled"`
 }
 
 type LoginStartResult struct {
@@ -228,17 +231,43 @@ func (a *App) Status() (Status, error) {
 		return Status{}, err
 	}
 	hostURL := publicBaseURL(s.ListenAddress, "127.0.0.1")
+	supported := autoStartSupported()
+	autoStartEnabled := false
+	if supported {
+		autoStartEnabled, _ = isAutoStartEnabled()
+	}
 	return Status{
-		Settings:     scrubSettings(s),
-		Running:      a.isRunning(),
-		LastError:    a.getLastError(),
-		OpenAIURL:    hostURL + "/v1",
-		AnthropicURL: hostURL + "/anthropic/v1",
-		HealthURL:    hostURL + "/health",
-		BindAddress:  s.ListenAddress,
-		LANURLs:      lanURLs(s.ListenAddress),
-		LoggedIn:     strings.TrimSpace(s.AccessToken) != "",
+		Settings:           scrubSettings(s),
+		Running:            a.isRunning(),
+		LastError:          a.getLastError(),
+		OpenAIURL:          hostURL + "/v1",
+		AnthropicURL:       hostURL + "/anthropic/v1",
+		HealthURL:          hostURL + "/health",
+		BindAddress:        s.ListenAddress,
+		LANURLs:            lanURLs(s.ListenAddress),
+		LoggedIn:           strings.TrimSpace(s.AccessToken) != "",
+		AutoStartSupported: supported,
+		AutoStartEnabled:   autoStartEnabled,
 	}, nil
+}
+
+func (a *App) SetAutoStartEnabled(enabled bool) (Status, error) {
+	if !autoStartSupported() {
+		return Status{}, fmt.Errorf("auto start is only supported on Windows")
+	}
+	if err := setAutoStartEnabled(enabled); err != nil {
+		return Status{}, err
+	}
+	status, err := a.Status()
+	if err != nil {
+		return Status{}, err
+	}
+	actual, err := isAutoStartEnabled()
+	if err != nil {
+		return Status{}, err
+	}
+	status.AutoStartEnabled = actual
+	return status, nil
 }
 
 func (a *App) GenerateAPIKey() (string, error) {
@@ -300,7 +329,7 @@ func (a *App) restartProxy(s Settings) error {
 	server := codegenproxy.NewServer(s.ListenAddress)
 	server.SetClientAPIKey(s.APIKey)
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {
-		server.SetUpstream(s.BaseURL, s.AccessToken)
+		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, corelib.CodeGenClientName)
 	}
 	listener, err := net.Listen("tcp", s.ListenAddress)
 	if err != nil {
@@ -369,6 +398,12 @@ func (a *App) setShown(v bool) {
 	a.shown = v
 	a.mu.Unlock()
 	UpdateTrayVisibility(v)
+}
+
+func (a *App) isShown() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.shown
 }
 
 func configDir() (string, error) {

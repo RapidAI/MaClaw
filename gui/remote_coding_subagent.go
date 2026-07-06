@@ -155,6 +155,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 
 	result := agent.RunLoop(cb, taskDescription, nil, r.httpClient)
+	cb.completeRemotePostEditAudit()
 	return cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
 }
 
@@ -482,6 +483,43 @@ func (c *remoteCodingCallbacks) remoteAuditSnapshot() ([]string, []string, []str
 	return files, created, read, searches, c.remoteExploredBeforeFirstEdit(), commands, c.lastEditSeq
 }
 
+func (c *remoteCodingCallbacks) completeRemotePostEditAudit() {
+	if c == nil || c.ShouldStop() || len(c.filesModified) == 0 {
+		return
+	}
+	c.completeRemotePostEditReads()
+	c.completeRemoteDiffSelfCheck()
+}
+
+func (c *remoteCodingCallbacks) completeRemotePostEditReads() {
+	for _, path := range c.remoteFilesMissingPostEditRead() {
+		if c.ShouldStop() {
+			return
+		}
+		result := c.sshReadFile(map[string]interface{}{
+			"path":  path,
+			"limit": float64(200),
+		})
+		if remoteCodingToolOutcome(result) != "success" {
+			log.Printf("[remote-subagent] post-edit read audit failed: path=%q result=%q", compactCodingSubAgentLogText(path, 300), compactCodingSubAgentLogText(result, 800))
+		}
+	}
+}
+
+func (c *remoteCodingCallbacks) completeRemoteDiffSelfCheck() {
+	status, _ := summarizeRemoteDiffSelfCheck(c.filesModified, c.commandsRun, c.lastEditSeq)
+	if status != codingSubAgentQualityMissing || c.ShouldStop() {
+		return
+	}
+	result := c.sshBash(map[string]interface{}{
+		"command":     "git status --short; git diff --stat",
+		"working_dir": c.defaultRemoteWorkingDir(),
+	})
+	if remoteCodingToolOutcome(result) != "success" {
+		log.Printf("[remote-subagent] diff/status audit command did not pass: result=%q", compactCodingSubAgentLogText(result, 800))
+	}
+}
+
 func (c *remoteCodingCallbacks) nextRemoteAuditSeq() uint64 {
 	if c == nil {
 		return 0
@@ -537,6 +575,11 @@ func (c *remoteCodingCallbacks) trackRemoteCommand(command, workingDir, result s
 		Summary:    compactCommandResult(result),
 		seq:        seq,
 	})
+	if !succeeded {
+		if !remoteCodingCommandFailureIsDiagnostic(command, result) {
+			c.logRemoteCommandFailure(seq, command, workingDir, result)
+		}
+	}
 	if succeeded && isRemoteCodingExplorationCommand(command) {
 		search := CodingSubAgentSearchResult{
 			Tool:      remoteCodingExplorationToolName(command),
@@ -551,6 +594,35 @@ func (c *remoteCodingCallbacks) trackRemoteCommand(command, workingDir, result s
 			c.firstSearchSeq = seq
 		}
 	}
+}
+
+func remoteCodingCommandFailureIsDiagnostic(command, result string) bool {
+	return subAgentCommandFailureCanBeResolvedByLaterVerification(CodingSubAgentCommandResult{
+		Command: command,
+		Summary: result,
+	})
+}
+
+func (c *remoteCodingCallbacks) logRemoteCommandFailure(seq uint64, command, workingDir, result string) {
+	sessionID := ""
+	projectDir := ""
+	task := ""
+	if c != nil && c.agent != nil {
+		sessionID = c.agent.sessionID
+		projectDir = c.agent.projectDir
+	}
+	if c != nil {
+		task = compactCodingSubAgentLogText(c.task, 300)
+	}
+	log.Printf("[remote-subagent] shell command failed: tool=ssh_bash outcome=failed seq=%d session=%q project=%q task=%q workdir=%q command=%q result=%q",
+		seq,
+		sessionID,
+		projectDir,
+		task,
+		compactCodingSubAgentLogText(workingDir, 300),
+		compactCodingSubAgentLogText(command, 500),
+		compactCodingSubAgentLogText(result, 800),
+	)
 }
 
 func (c *remoteCodingCallbacks) trackRemoteSearch(tool, query, path, result string, succeeded bool) {
@@ -847,6 +919,9 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 					summary = string([]rune(summary)[:180]) + "..."
 				}
 				event.Summary = summary
+				if remoteCodingToolFailureIsDiagnostic(canonicalName, argsJSON, result, outcome) {
+					event.Severity = "diagnostic"
+				}
 			}
 			emitCodingAgentEvent(c.agent.onProgress, event)
 		}
@@ -919,6 +994,20 @@ func remoteCodingToolOutcome(result string) string {
 		return "failed"
 	}
 	return "success"
+}
+
+func remoteCodingToolFailureIsDiagnostic(name, argsJSON, result, outcome string) bool {
+	if strings.ToLower(strings.TrimSpace(name)) != "ssh_bash" || outcome != "failed" {
+		return false
+	}
+	normalizedArgsJSON := normalizeCodingSubAgentToolArguments(argsJSON)
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(normalizedArgsJSON), &args); err != nil {
+		return false
+	}
+	applyRemoteCodingSubAgentToolArgumentAliases("ssh_bash", args)
+	command := remoteArgStr(args, "command")
+	return remoteCodingCommandFailureIsDiagnostic(command, result)
 }
 
 func remoteCodingToolResultLooksFailed(result string) bool {
@@ -1629,11 +1718,13 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 
 ## 工作规范
 
+以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告，否则任务会被判定为未完成。
+
 1. 修改文件前先 ssh_read_file 确认当前内容
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
 3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
 4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
-5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "python3 -c 'import module'"、pytest/go test/npm test 等）
+5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）
 6. 修改后运行并查看只读自检命令（优先 git diff --stat / git diff / git status --short），确认远程改动范围符合任务要求
 7. ssh_bash 只用于探索、诊断、格式化和验证；文件改写必须使用 ssh_edit_file/ssh_write_file
 8. 路径可以是相对路径（相对于项目目录）或绝对路径

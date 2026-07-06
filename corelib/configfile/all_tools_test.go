@@ -106,7 +106,7 @@ func TestWriteAllToolConfigsPassesCodeGenClientNameToCodex(t *testing.T) {
 	result := WriteAllToolConfigs(ToolConfigParams{
 		Token:            "sk-test",
 		BaseURL:          "https://codegen.qianxin-inc.cn/api/v1",
-		AnthropicBaseURL: "https://codegen.qianxin-inc.cn/api/anthropic",
+		AnthropicBaseURL: "https://codegen.qianxin-inc.cn/api",
 		ModelID:          "codegen-model",
 		ProviderName:     "CodeGen",
 		ClientName:       "custom-agent",
@@ -163,7 +163,7 @@ func TestWriteClaudeProviderSettings_CodegenWritesBoth(t *testing.T) {
 		t.Fatalf("seed codegen settings: %v", err)
 	}
 
-	if err := WriteClaudeProviderSettings("codegen", "tok-123", "http://127.0.0.1:5001/anthropic", "claude-codegen-1"); err != nil {
+	if err := WriteClaudeProviderSettings("codegen", "tok-123", "https://codegen.qianxin-inc.cn/api", "claude-codegen-1"); err != nil {
 		t.Fatalf("WriteClaudeProviderSettings: %v", err)
 	}
 
@@ -177,10 +177,10 @@ func TestWriteClaudeProviderSettings_CodegenWritesBoth(t *testing.T) {
 	}
 
 	assertAnthropicEnvValue(t, claudeSettings, "ANTHROPIC_AUTH_TOKEN", "tok-123")
-	assertAnthropicEnvValue(t, claudeSettings, "ANTHROPIC_BASE_URL", "http://127.0.0.1:5001/anthropic")
+	assertAnthropicEnvValue(t, claudeSettings, "ANTHROPIC_BASE_URL", "https://codegen.qianxin-inc.cn/api")
 	assertAnthropicEnvValue(t, claudeSettings, "ANTHROPIC_MODEL", "claude-codegen-1")
 	assertAnthropicEnvValue(t, codegenSettings, "ANTHROPIC_AUTH_TOKEN", "tok-123")
-	assertAnthropicEnvValue(t, codegenSettings, "ANTHROPIC_BASE_URL", "http://127.0.0.1:5001/anthropic")
+	assertAnthropicEnvValue(t, codegenSettings, "ANTHROPIC_BASE_URL", "https://codegen.qianxin-inc.cn/api")
 	assertAnthropicEnvValue(t, codegenSettings, "ANTHROPIC_MODEL", "claude-codegen-1")
 
 	if got, _ := claudeSettings["customField"].(string); got != "keep-me" {

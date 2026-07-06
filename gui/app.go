@@ -2004,15 +2004,14 @@ func (a *App) startup(ctx context.Context) {
 			}()
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
-		// After validation (which may refresh the token), start the local
-		// Anthropic/OpenAI-compatible proxy so Claude Code can reach CodeGen.
+		// Claude/TigerClaw Code now uses CodeGen's remote Anthropic-compatible
+		// base URL directly; the legacy local adapter remains disabled.
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
 				log.Printf("[CodeGen] startup token check failed: %v", err)
 			} else if err := a.ensureCodeGenConfiguredModelAvailable(); err != nil {
 				log.Printf("[CodeGen] startup model availability check failed: %v", err)
 			}
-			a.ensureCodeGenProxyIfNeeded()
 		}()
 		go a.startIWorkerGoalWatchIfConfigured(config)
 		go func() {

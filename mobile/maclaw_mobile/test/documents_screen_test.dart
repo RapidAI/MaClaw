@@ -133,6 +133,46 @@ class _ReadyExportDocumentsController extends DocumentsController {
   }
 }
 
+class _SensitiveTitleReadyExportDocumentsController
+    extends DocumentsController {
+  static final downloadedJobs = <String>[];
+  static String? exportedPath;
+
+  @override
+  Future<DocumentsState> build() async => DocumentsState(
+        draft: DocumentDraft(
+          id: 'draft-sensitive-title',
+          title: 'incident token=raw-title-token password=raw-title-password',
+          template: DocumentTemplate.statement,
+          markdown: '# incident',
+          updatedAt: DateTime.utc(2026, 7, 1),
+        ),
+        exportJob: DocumentExportJob(
+          jobId: 'export-sensitive-title',
+          draftId: 'draft-sensitive-title',
+          format: DocumentExportFormat.markdown,
+          status: 'ready',
+          downloadUrl:
+              '/api/mobile/documents/exports/export-sensitive/download',
+          createdAt: DateTime.utc(2026, 7, 1),
+        ),
+      );
+
+  @override
+  Future<File> downloadExportFile(DocumentExportJob job) async {
+    downloadedJobs.add(job.jobId);
+    final directory = Directory(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}'
+      'maclaw-mobile-export-test-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    directory.createSync(recursive: true);
+    final file = File('${directory.path}${Platform.pathSeparator}incident.md');
+    exportedPath = file.path;
+    file.writeAsStringSync('# incident');
+    return file;
+  }
+}
+
 class _EditableDraftDocumentsController extends DocumentsController {
   static final saved = <({String title, String markdown})>[];
 
@@ -611,6 +651,67 @@ void main() {
     expect(_ReadyExportDocumentsController.downloadedJobs, ['export-ready']);
     expect(sharedFiles, [_ReadyExportDocumentsController.exportedPath]);
     expect(sharedText, '现场说明');
+  });
+
+  testWidgets('documents screen redacts sensitive export share text',
+      (tester) async {
+    _useLargeDocumentViewport(tester);
+    _SensitiveTitleReadyExportDocumentsController.downloadedJobs.clear();
+    _SensitiveTitleReadyExportDocumentsController.exportedPath = null;
+    final sharedFiles = <String>[];
+    String? sharedText;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          documentsControllerProvider.overrideWith(
+            _SensitiveTitleReadyExportDocumentsController.new,
+          ),
+          documentDraftHistoryProvider.overrideWith(
+            _EmptyDocumentDraftHistoryController.new,
+          ),
+          documentsExportFileShareProvider.overrideWithValue(
+            (files, {text}) async {
+              sharedFiles.addAll(files.map((file) => file.path));
+              sharedText = text;
+              return ShareResult.unavailable;
+            },
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: DocumentsScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -1100));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    await tester.tap(find.text('分享文件'));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      _SensitiveTitleReadyExportDocumentsController.downloadedJobs,
+      ['export-sensitive-title'],
+    );
+    expect(sharedFiles, [
+      _SensitiveTitleReadyExportDocumentsController.exportedPath,
+    ]);
+    expect(sharedText, contains('token=[REDACTED_SECRET]'));
+    expect(sharedText, contains('password=[REDACTED_SECRET]'));
+    expect(sharedText, isNot(contains('raw-title-token')));
+    expect(sharedText, isNot(contains('raw-title-password')));
   });
 
   testWidgets('documents screen can copy and share draft text quickly',

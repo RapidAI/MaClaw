@@ -812,6 +812,7 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 	maclawAppValidateDependencyInstallRefs(plan.Dependencies)
 	maclawAppApplyDependencyPreflightDiagnostics(plan.Dependencies)
 	a.maclawAppApplyRemoteDependencyPreflightDiagnostics(plan.Dependencies)
+	maclawAppMarkInstallableMissingDependencies(plan.Dependencies)
 	plan.refreshMaclawAppDependencyFlags()
 	plan.HasWorkflowContractIssue = len(plan.WorkflowContractIssues) > 0
 	plan.HasGovernanceReviewIssue = len(plan.GovernanceReviewIssues) > 0
@@ -4206,10 +4207,49 @@ func maclawAppDependencyBlocksInstall(dep maclawAppInstallPlanDependency) bool {
 		return true
 	}
 	if !dep.Installed {
+		return !maclawAppDependencyCanAttemptInstall(dep)
+	}
+	health := strings.TrimSpace(dep.Health)
+	return health != "" && health != "ready"
+}
+
+func maclawAppDependencyRequiresGovernanceRepair(dep maclawAppInstallPlanDependency) bool {
+	if !dep.Required {
+		return false
+	}
+	if !dep.Installed {
 		return true
 	}
 	health := strings.TrimSpace(dep.Health)
 	return health != "" && health != "ready"
+}
+
+func maclawAppDependencyCanAttemptInstall(dep maclawAppInstallPlanDependency) bool {
+	if !dep.Required || dep.Installed {
+		return false
+	}
+	if dep.InstallRefStatus == "missing" || dep.InstallRefStatus == "invalid" || dep.PreflightStatus == "blocked" {
+		return false
+	}
+	if _, ok := maclawAppDependencyInstallerSource(dep); !ok {
+		return false
+	}
+	return true
+}
+
+func maclawAppMarkInstallableMissingDependencies(deps []maclawAppInstallPlanDependency) {
+	for i := range deps {
+		dep := &deps[i]
+		if !maclawAppDependencyCanAttemptInstall(*dep) {
+			continue
+		}
+		if action := strings.TrimSpace(dep.Action); action != "" && action != "blocked" {
+			continue
+		}
+		dep.Health = "missing"
+		dep.Action = "install"
+		dep.Message = "required skill dependency is missing and can be installed automatically"
+	}
 }
 
 func maclawAppInstallPlanDependencyMergeKey(dep maclawAppInstallPlanDependency) string {
@@ -7766,7 +7806,7 @@ func maclawAppAuthoritativeDependencyReviewIssues(plan maclawAppInstallPlan, exi
 	}
 	issues := []maclawAppReviewIssue{}
 	for _, dep := range plan.Dependencies {
-		if !dep.Required || !maclawAppDependencyBlocksInstall(dep) {
+		if !maclawAppDependencyRequiresGovernanceRepair(dep) {
 			continue
 		}
 		appIDs := dep.AppIDs
@@ -7895,14 +7935,47 @@ func (a *App) enrichDependenciesWithHubSkillID(deps []maclawAppInstallPlanDepend
 		if hubID == "" {
 			continue
 		}
-		// Stamp InstallRef with HubSkillID for precision remote install.
-		if strings.TrimSpace(dep.InstallRef) == "" {
+		ref := strings.TrimSpace(dep.InstallRef)
+		refKind := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
+		refTarget := strings.TrimSpace(dep.InstallRefTarget)
+		shouldStampHubID := ref == "" ||
+			refKind == "" ||
+			refKind == "hub" ||
+			refKind == "skillhub" ||
+			strings.EqualFold(ref, dep.ID) ||
+			(refTarget != "" && strings.EqualFold(ref, refTarget))
+		// Stamp InstallRef with HubSkillID for precision remote install. This
+		// also upgrades implicit alias refs like rapidocr to the concrete UUID.
+		if shouldStampHubID {
 			dep.InstallRef = hubID
+			dep.InstallRefTarget = hubID
+			dep.InstallRefStatus = "ok"
 		}
+		matchSource := strings.ToLower(strings.TrimSpace(match.Source))
 		// Upgrade source from "local"/empty to a resolvable remote source.
 		src := strings.ToLower(strings.TrimSpace(dep.Source))
 		if src == "" || src == "local" {
 			dep.Source = "hub"
+		}
+		switch matchSource {
+		case "skillmarket", "market", "hubcenter":
+			if src == "" || src == "local" || src == "hub" || src == "skillhub" {
+				dep.Source = "skillmarket"
+			}
+			if shouldStampHubID || refKind == "" || refKind == "hub" || refKind == "skillhub" {
+				dep.InstallRefKind = "skillmarket"
+			}
+		case "hub", "skillhub":
+			if shouldStampHubID && refKind == "" {
+				dep.InstallRefKind = "hub"
+			}
+		case "enterprise", "enterprise_hub":
+			if src == "" || src == "local" {
+				dep.Source = "enterprise_hub"
+			}
+			if shouldStampHubID && refKind == "" {
+				dep.InstallRefKind = "enterprise_hub"
+			}
 		}
 		// Record installed version for the receiver's compatibility check.
 		if dep.Version == "" && strings.TrimSpace(match.HubVersion) != "" {
@@ -7939,6 +8012,27 @@ func maclawAppSerializableResolvedDeps(deps []maclawAppInstallPlanDependency) []
 		}
 		if len(dep.Aliases) > 0 {
 			entry["aliases"] = append([]string(nil), dep.Aliases...)
+		}
+		if dep.InstallRefKind != "" {
+			entry["install_ref_kind"] = dep.InstallRefKind
+		}
+		if dep.InstallRefTarget != "" {
+			entry["install_ref_target"] = dep.InstallRefTarget
+		}
+		if dep.InstallRefVersion != "" {
+			entry["install_ref_version"] = dep.InstallRefVersion
+		}
+		if dep.PackageSHA256 != "" {
+			entry["package_sha256"] = dep.PackageSHA256
+		}
+		if dep.PackageChecksum != "" {
+			entry["package_checksum"] = dep.PackageChecksum
+		}
+		if dep.PackageSignature != "" {
+			entry["package_signature"] = dep.PackageSignature
+		}
+		if dep.PackageDownloadURL != "" {
+			entry["package_download_url"] = dep.PackageDownloadURL
 		}
 		out = append(out, entry)
 	}
@@ -8159,14 +8253,13 @@ func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAp
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		query := firstNonEmpty(dep.InstallRefTarget, dep.InstallRef, dep.ID)
-		results, err := publicSearcher.Search(ctx, query, nil, 10)
+		query, results, searched, searchErr := maclawAppSearchSkillMarketDependencyPreflight(ctx, publicSearcher, *dep)
 		cancel()
-		if err != nil {
+		if !searched {
 			dep.PreflightStatus = "pending"
 			dep.PreflightCode = "remote_preflight_unavailable"
 			dep.PreflightStage = "skillmarket_preflight"
-			dep.PreflightMessage = fmt.Sprintf("SkillMarket dependency %s preflight unavailable: %v", query, err)
+			dep.PreflightMessage = fmt.Sprintf("SkillMarket dependency %s preflight unavailable: %v", firstNonEmpty(query, dep.InstallRefTarget, dep.InstallRef, dep.ID), searchErr)
 			continue
 		}
 		if opportunisticHubCenterLookup {
@@ -8175,6 +8268,56 @@ func (a *App) maclawAppApplyRemoteDependencyPreflightDiagnostics(deps []maclawAp
 		}
 		maclawAppApplyPublicSkillMarketPreflight(dep, results)
 	}
+}
+
+func maclawAppSearchSkillMarketDependencyPreflight(ctx context.Context, searcher *SkillSearcher, dep maclawAppInstallPlanDependency) (string, []SkillSearchResult, bool, error) {
+	var lastQuery string
+	var lastResults []SkillSearchResult
+	var lastErr error
+	searched := false
+	hadErr := false
+	for _, query := range maclawAppDependencySkillMarketSearchQueries(dep) {
+		lastQuery = query
+		results, err := searcher.Search(ctx, query, nil, 10)
+		if err != nil {
+			lastErr = err
+			hadErr = true
+			continue
+		}
+		searched = true
+		lastResults = results
+		if maclawAppFindSkillMarketPreflightMatch(dep, results) != nil {
+			return query, results, true, nil
+		}
+	}
+	if hadErr {
+		return lastQuery, nil, false, lastErr
+	}
+	return lastQuery, lastResults, searched, nil
+}
+
+func maclawAppDependencySkillMarketSearchQueries(dep maclawAppInstallPlanDependency) []string {
+	values := []string{dep.InstallRefTarget, dep.InstallRef, dep.CanonicalID}
+	values = append(values, dep.Aliases...)
+	values = append(values, dep.ID)
+	queries := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.HasPrefix(value, "{") {
+			continue
+		}
+		if normalized := maclawAppDependencyLookupValue(value); normalized != "" {
+			value = normalized
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		queries = append(queries, value)
+	}
+	return queries
 }
 
 func maclawAppConfigHasExplicitHubCenter(cfg corelib.AppConfig) bool {
@@ -8328,6 +8471,7 @@ func maclawAppApplyPublicSkillMarketPreflight(dep *maclawAppInstallPlanDependenc
 		}
 		return
 	}
+	dep.Source = "skillmarket"
 	maclawAppApplyDependencyIntegrityMetadata(dep, maclawAppDependencyIntegrityFromSkillMarketResult(*match), "skillmarket_preflight")
 	if ref := strings.TrimSpace(firstNonEmpty(match.InstallRef, match.ID)); ref != "" {
 		dep.InstallRef = ref
@@ -8359,20 +8503,60 @@ func maclawAppApplyPublicSkillMarketPreflight(dep *maclawAppInstallPlanDependenc
 
 func maclawAppFindSkillMarketPreflightMatch(dep maclawAppInstallPlanDependency, results []SkillSearchResult) *SkillSearchResult {
 	keys := map[string]struct{}{}
-	for _, value := range []string{dep.InstallRefTarget, dep.InstallRef, dep.ID} {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value != "" {
-			keys[value] = struct{}{}
-		}
+	values := []string{dep.InstallRefTarget, dep.InstallRef, dep.ID, dep.CanonicalID}
+	values = append(values, dep.Aliases...)
+	for _, value := range values {
+		maclawAppAddDependencyLookupKey(keys, value)
 	}
 	for i := range results {
 		for _, value := range []string{results[i].ID, results[i].Name, results[i].InstallRef} {
 			if _, ok := keys[strings.ToLower(strings.TrimSpace(value))]; ok {
 				return &results[i]
 			}
+			if normalized := maclawAppDependencyLookupValue(value); normalized != "" {
+				if _, ok := keys[strings.ToLower(normalized)]; ok {
+					return &results[i]
+				}
+			}
 		}
 	}
 	return nil
+}
+
+func maclawAppAddDependencyLookupKey(keys map[string]struct{}, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	keys[strings.ToLower(value)] = struct{}{}
+	if normalized := maclawAppDependencyLookupValue(value); normalized != "" {
+		keys[strings.ToLower(normalized)] = struct{}{}
+	}
+}
+
+func maclawAppDependencyLookupValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.Contains(value, "://") {
+		return value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || strings.TrimSpace(parsed.Scheme) == "" {
+		return value
+	}
+	target := strings.Trim(strings.TrimSpace(parsed.Path), "/")
+	if target == "" && strings.TrimSpace(parsed.Host) != "" {
+		target = strings.TrimSpace(parsed.Host)
+	} else if strings.TrimSpace(parsed.Host) != "" && !strings.EqualFold(parsed.Host, "skills") && !strings.EqualFold(parsed.Host, "capabilities") {
+		target = strings.Trim(strings.TrimSpace(parsed.Host+"/"+target), "/")
+	}
+	if strings.Contains(target, "@") {
+		parts := strings.SplitN(target, "@", 2)
+		target = strings.TrimSpace(parts[0])
+	}
+	if target == "" {
+		return value
+	}
+	return target
 }
 func maclawAppApplyEnterpriseHubCapabilityPreflight(dep *maclawAppInstallPlanDependency, item *HubCapabilitySummary) {
 	if dep == nil || item == nil {
@@ -8457,6 +8641,19 @@ func maclawAppDependencyInstallerSource(dep maclawAppInstallPlanDependency) (str
 		return string(skillSearchSourceGitHub), true
 	}
 	return maclawAppInstallSkillSource(dep.Source)
+}
+
+func maclawAppRegisteredDependencySource(installerSource string) string {
+	switch strings.ToLower(strings.TrimSpace(installerSource)) {
+	case string(skillSearchSourceSkillMarket):
+		return string(skillSearchSourceSkillMarket)
+	case string(skillSearchSourceGitHub):
+		return skillEntrySourceGitHub.String()
+	case string(skillSearchSourceClawHub):
+		return skillEntrySourceClawHub.String()
+	default:
+		return skillEntrySourceHub.String()
+	}
 }
 
 func maclawAppValidateDependencyInstallRefs(deps []maclawAppInstallPlanDependency) {
@@ -8548,6 +8745,9 @@ func maclawAppParseDependencyInstallRef(dep maclawAppInstallPlanDependency) (kin
 	}
 	if source == "github" {
 		return "github", ref, "", "invalid", fmt.Sprintf("github dependency %q must use a JSON install_ref with raw_url", dep.ID)
+	}
+	if kind := maclawAppBareDependencyInstallRefKind(dep); kind != "" {
+		return kind, ref, "", "ok", "install_ref resolved"
 	}
 	return "id", ref, "", "ok", "install_ref resolved"
 }
@@ -8692,6 +8892,57 @@ func maclawAppInstallRefSourceMatches(source, kind string) bool {
 		return false
 	}
 }
+
+func maclawAppBareDependencyInstallRefKind(dep maclawAppInstallPlanDependency) string {
+	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	explicit := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
+	if explicit != "" && explicit != "id" {
+		if source == "" || maclawAppInstallRefSourceMatches(source, explicit) {
+			return maclawAppNormalizeInstallRefKind(explicit)
+		}
+	}
+	switch source {
+	case "market", "skillmarket", "hubcenter":
+		return "skillmarket"
+	case "enterprise", "enterprise_hub":
+		return "enterprise_hub"
+	case "hub", "skillhub":
+		return "hub"
+	default:
+		return ""
+	}
+}
+
+func maclawAppNormalizeInstallRefKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "market", "skillmarket", "hubcenter":
+		return "skillmarket"
+	case "enterprise", "enterprise_hub":
+		return "enterprise_hub"
+	case "hub", "skillhub", "skill", "skills":
+		return "hub"
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+type maclawAppResolvedDependencyEntry struct {
+	ID                 string
+	InstallRef         string
+	Source             string
+	Version            string
+	CanonicalID        string
+	Aliases            []string
+	AppIDs             []string
+	InstallRefKind     string
+	InstallRefTarget   string
+	InstallRefVersion  string
+	PackageSHA256      string
+	PackageChecksum    string
+	PackageSignature   string
+	PackageDownloadURL string
+}
+
 func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, installDoc map[string]any) {
 	// Collect resolved entries from all available locations.
 	var allResolved []interface{}
@@ -8712,15 +8963,8 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	if len(allResolved) == 0 {
 		return
 	}
-	// Build a lookup from resolved entries: id → {install_ref, source, version}
-	type resolvedEntry struct {
-		InstallRef  string
-		Source      string
-		Version     string
-		CanonicalID string
-		Aliases     []string
-	}
-	lookup := make(map[string]resolvedEntry, len(allResolved))
+	// Build a lookup from resolved entries: id → scoped resolved metadata.
+	lookup := make(map[string][]maclawAppResolvedDependencyEntry, len(allResolved))
 	for _, item := range allResolved {
 		resMap, ok := item.(map[string]interface{})
 		if !ok {
@@ -8732,33 +8976,36 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 			continue
 		}
 		key := strings.ToLower(id)
-		if _, exists := lookup[key]; !exists {
-			lookup[key] = resolvedEntry{
-				InstallRef:  ref,
-				Source:      stringFromMapSafe(resMap, "source"),
-				Version:     stringFromMapSafe(resMap, "version"),
-				CanonicalID: firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "canonical_id"), stringFromMapSafe(resMap, "canonicalID")),
-				Aliases:     maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(resMap["aliases"], resMap["install_aliases"], resMap["installAliases"])),
-			}
+		entry := maclawAppResolvedDependencyEntry{
+			ID:                 id,
+			InstallRef:         ref,
+			Source:             stringFromMapSafe(resMap, "source"),
+			Version:            stringFromMapSafe(resMap, "version"),
+			CanonicalID:        firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "canonical_id"), stringFromMapSafe(resMap, "canonicalID")),
+			Aliases:            maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(resMap["aliases"], resMap["install_aliases"], resMap["installAliases"])),
+			AppIDs:             maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(resMap["app_ids"], resMap["appIDs"])),
+			InstallRefKind:     firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "install_ref_kind"), stringFromMapSafe(resMap, "installRefKind")),
+			InstallRefTarget:   firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "install_ref_target"), stringFromMapSafe(resMap, "installRefTarget")),
+			InstallRefVersion:  firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "install_ref_version"), stringFromMapSafe(resMap, "installRefVersion")),
+			PackageSHA256:      firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "package_sha256"), stringFromMapSafe(resMap, "packageSHA256")),
+			PackageChecksum:    firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "package_checksum"), stringFromMapSafe(resMap, "packageChecksum")),
+			PackageSignature:   firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "package_signature"), stringFromMapSafe(resMap, "packageSignature")),
+			PackageDownloadURL: firstNonEmptyMaclawAppString(stringFromMapSafe(resMap, "package_download_url"), stringFromMapSafe(resMap, "packageDownloadURL")),
 		}
+		lookup[key] = append(lookup[key], entry)
 	}
 	if len(lookup) == 0 {
 		return
 	}
 	// Apply to plan dependencies.
 	for i := range deps {
-		entry, ok := lookup[strings.ToLower(deps[i].ID)]
+		entry, ok := maclawAppResolvedDependencyEntryForPlanDep(deps[i], lookup[strings.ToLower(deps[i].ID)])
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(deps[i].InstallRef) == "" {
-			deps[i].InstallRef = entry.InstallRef
-		}
+		deps[i].InstallRef = entry.InstallRef
 		if entry.Source != "" {
-			src := strings.ToLower(strings.TrimSpace(deps[i].Source))
-			if src == "" || src == "local" {
-				deps[i].Source = entry.Source
-			}
+			deps[i].Source = entry.Source
 		}
 		if entry.Version != "" && deps[i].Version == "" {
 			deps[i].Version = entry.Version
@@ -8769,7 +9016,69 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 		if len(entry.Aliases) > 0 {
 			deps[i].Aliases = appendMaclawAppUniqueStrings(deps[i].Aliases, entry.Aliases...)
 		}
+		if entry.InstallRefKind != "" {
+			deps[i].InstallRefKind = entry.InstallRefKind
+		}
+		if entry.InstallRefTarget != "" {
+			deps[i].InstallRefTarget = entry.InstallRefTarget
+		}
+		if entry.InstallRefVersion != "" {
+			deps[i].InstallRefVersion = entry.InstallRefVersion
+		}
+		if entry.PackageSHA256 != "" && strings.TrimSpace(deps[i].PackageSHA256) == "" {
+			deps[i].PackageSHA256 = entry.PackageSHA256
+		}
+		if entry.PackageChecksum != "" && strings.TrimSpace(deps[i].PackageChecksum) == "" {
+			deps[i].PackageChecksum = entry.PackageChecksum
+		}
+		if entry.PackageSignature != "" && strings.TrimSpace(deps[i].PackageSignature) == "" {
+			deps[i].PackageSignature = entry.PackageSignature
+		}
+		if entry.PackageDownloadURL != "" && strings.TrimSpace(deps[i].PackageDownloadURL) == "" {
+			deps[i].PackageDownloadURL = entry.PackageDownloadURL
+		}
 	}
+}
+
+func maclawAppResolvedDependencyEntryForPlanDep(dep maclawAppInstallPlanDependency, entries []maclawAppResolvedDependencyEntry) (maclawAppResolvedDependencyEntry, bool) {
+	var fallback maclawAppResolvedDependencyEntry
+	hasFallback := false
+	for _, entry := range entries {
+		if len(entry.AppIDs) == 0 {
+			if !hasFallback {
+				fallback = entry
+				hasFallback = true
+			}
+			continue
+		}
+		if maclawAppStringListsOverlap(dep.AppIDs, entry.AppIDs) {
+			return entry, true
+		}
+	}
+	return fallback, hasFallback
+}
+
+func maclawAppStringListsOverlap(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, value := range right {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawAppApplySourceVersionKeyDependencyRefs(deps []maclawAppInstallPlanDependency) {
@@ -8858,7 +9167,11 @@ func injectResolvedDepsIntoAppEntries(pkg map[string]any, enrichedDeps []map[str
 		if entryMap == nil {
 			continue
 		}
-		entryMap["resolved_dependencies"] = enrichedDeps
+		appID := maclawAppPackageEntryID(entryMap)
+		scoped := maclawAppResolvedDependencyMapsForApp(enrichedDeps, appID)
+		if len(scoped) > 0 {
+			entryMap["resolved_dependencies"] = scoped
+		}
 	}
 }
 
@@ -8875,8 +9188,66 @@ func injectBundledDepsIntoAppEntries(pkg map[string]any, bundled maclawAppBundle
 		if entryMap == nil {
 			continue
 		}
-		entryMap["bundled_dependencies"] = bundled
+		appID := maclawAppPackageEntryID(entryMap)
+		scoped := maclawAppBundledDependenciesForApp(bundled, appID)
+		if len(scoped.Skills) > 0 {
+			entryMap["bundled_dependencies"] = scoped
+		}
 	}
+}
+
+func maclawAppPackageEntryID(entryMap map[string]any) string {
+	if entryMap == nil {
+		return ""
+	}
+	if id := maclawAppStringValue(anyMap(entryMap["app"]), "id", "app_id", "appID"); id != "" {
+		return id
+	}
+	return maclawAppStringValue(entryMap, "id", "app_id", "appID")
+}
+
+func maclawAppResolvedDependencyMapsForApp(deps []map[string]any, appID string) []map[string]any {
+	if len(deps) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(deps))
+	for _, dep := range deps {
+		if dep == nil {
+			continue
+		}
+		appIDs := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(dep["app_ids"], dep["appIDs"]))
+		if len(appIDs) > 0 && !containsMaclawAppStringFold(appIDs, appID) {
+			continue
+		}
+		out = append(out, cloneMapAny(dep))
+	}
+	return out
+}
+
+func maclawAppBundledDependenciesForApp(bundled maclawAppBundledDependencies, appID string) maclawAppBundledDependencies {
+	scoped := maclawAppBundledDependencies{Schema: bundled.Schema}
+	for _, skill := range bundled.Skills {
+		if len(skill.AppIDs) > 0 && !containsMaclawAppStringFold(skill.AppIDs, appID) {
+			continue
+		}
+		skill.AppIDs = append([]string(nil), skill.AppIDs...)
+		skill.Files = cloneStringMap(skill.Files)
+		scoped.Skills = append(scoped.Skills, skill)
+	}
+	return scoped
+}
+
+func containsMaclawAppStringFold(values []string, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == needle {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -9117,8 +9488,13 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 	if name == "" {
 		return false, nil
 	}
-	source := strings.ToLower(strings.TrimSpace(dep.Source))
-	if source != "" && source != "hub" && source != "skillhub" && source != "market" && source != "skillmarket" && source != "hubcenter" {
+	installerSource, ok := maclawAppDependencyInstallerSource(*dep)
+	if !ok {
+		return false, nil
+	}
+	switch installerSource {
+	case string(skillSearchSourceSkillHub), string(skillSearchSourceSkillMarket):
+	default:
 		return false, nil
 	}
 	a.ensureSkillHubClient()
@@ -9162,10 +9538,10 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 		return true, fmt.Errorf("downloaded dependency name %q does not match installed skill %q", updated.Name, name)
 	}
 	updated.Name = name
-	updated.Source = skillEntrySourceHub.String()
-	updated.HubSkillID = firstNonEmpty(updated.HubSkillID, downloadID)
+	updated.Source = maclawAppRegisteredDependencySource(installerSource)
+	updated.HubSkillID = firstNonEmpty(downloadID, updated.HubSkillID)
 	updated.SkillDir = stagingDir
-	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), updated, "maclaw app dependency update")
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), updated, installerSource)
 	if err != nil {
 		return true, err
 	}

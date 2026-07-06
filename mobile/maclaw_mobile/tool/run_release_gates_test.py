@@ -96,8 +96,8 @@ class RunReleaseGatesTest(unittest.TestCase):
 
         for expected in [
             'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
-            'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
-            'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1',
+            'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+            'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1',
             "python3 -m unittest tool/configure_platforms_test.py",
             "python3 -m unittest tool/validate_qa_build_record_test.py",
             "python3 -m unittest tool/create_qa_build_record_test.py",
@@ -247,6 +247,31 @@ class RunReleaseGatesTest(unittest.TestCase):
                 f"{release_evidence_commands.AUTOMATED_RELEASE_GATE_COUNT} gates passed",
                 text,
             )
+
+    def test_run_normalizes_flutter_success_mojibake_in_logs(self) -> None:
+        gate = run_release_gates.ReleaseGate(
+            "Android debug APK",
+            Path.cwd(),
+            ["stub-command"],
+        )
+        completed = run_release_gates.subprocess.CompletedProcess(
+            args=["stub-command"],
+            returncode=0,
+            stdout="Running Gradle task 'assembleDebug'...\n鈭?Built build\\app\\outputs\\flutter-apk\\app-debug.apk\n",
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "release-gates.log"
+            output = StringIO()
+            with patch("run_release_gates.release_gates", return_value=[gate]):
+                with patch("run_release_gates.subprocess.run", return_value=completed):
+                    with redirect_stdout(output):
+                        self.assertEqual(0, run_release_gates.main(["--log", str(log_path)]))
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("[OK] Built build\\app\\outputs\\flutter-apk\\app-debug.apk", text)
+            self.assertNotIn("鈭?Built", text)
+            self.assertIn("[OK] Built", output.getvalue())
 
     def test_run_failure_writes_log_file_with_partial_output(self) -> None:
         gate = run_release_gates.ReleaseGate(

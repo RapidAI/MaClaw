@@ -113,19 +113,31 @@ class MobileRealtimeEvent {
   bool get pong => type == 'pong';
   bool get documentTask => type == 'document_task';
   bool get digitalEmployeeTask => type == 'digital_employee_task';
+  bool get sshSession => type == 'ssh_session';
+  bool get sshTask => type == 'ssh_task';
+  bool get sshFileOperation => type == 'ssh_file_operation';
 
   factory MobileRealtimeEvent.fromJson(Map<String, dynamic> json) {
-    final nestedPayload = json['payload'] ?? json['task'];
+    final nestedPayload =
+        json['payload'] ?? json['task'] ?? json['session'] ?? json['operation'];
     final payload = nestedPayload is Map
         ? Map<String, dynamic>.from(nestedPayload)
         : Map<String, dynamic>.from(json);
     final topLevelTaskId = json['task_id'] as String? ?? '';
     final topLevelJobId = json['job_id'] as String? ?? '';
+    final topLevelSessionId = json['session_id'] as String? ?? '';
+    final topLevelOperationId = json['operation_id'] as String? ?? '';
     if (topLevelTaskId.isNotEmpty) {
       payload.putIfAbsent('task_id', () => topLevelTaskId);
     }
     if (topLevelJobId.isNotEmpty) {
       payload.putIfAbsent('job_id', () => topLevelJobId);
+    }
+    if (topLevelSessionId.isNotEmpty) {
+      payload.putIfAbsent('session_id', () => topLevelSessionId);
+    }
+    if (topLevelOperationId.isNotEmpty) {
+      payload.putIfAbsent('operation_id', () => topLevelOperationId);
     }
     final topLevelStatus = json['status'] as String? ?? '';
     if (topLevelStatus.isNotEmpty) {
@@ -135,7 +147,13 @@ class MobileRealtimeEvent {
       type: json['type'] as String? ?? '',
       userId: json['user_id'] as String? ?? '',
       tenantId: json['tenant_id'] as String? ?? '',
-      taskId: topLevelTaskId.isNotEmpty ? topLevelTaskId : topLevelJobId,
+      taskId: topLevelTaskId.isNotEmpty
+          ? topLevelTaskId
+          : topLevelJobId.isNotEmpty
+              ? topLevelJobId
+              : topLevelOperationId.isNotEmpty
+                  ? topLevelOperationId
+                  : topLevelSessionId,
       status: topLevelStatus,
       serverTime: DateTime.tryParse(json['server_time'] as String? ?? ''),
       payload: payload,

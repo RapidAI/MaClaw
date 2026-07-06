@@ -274,6 +274,18 @@ func (m *SSHSessionManager) ReconnectByID(sessionID string) error {
 	return m.reconnectSession(s)
 }
 
+// InterruptByID sends Ctrl+C to the managed SSH PTY session.
+func (m *SSHSessionManager) InterruptByID(sessionID string) error {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("ssh session %s not found", sessionID)
+	}
+	if s.Handle == nil {
+		return fmt.Errorf("ssh session %s has no handle", sessionID)
+	}
+	return s.Handle.Interrupt()
+}
+
 // CheckShellResponsive 验证 SSH 会话的 shell 是否真正可响应命令。
 // 与 IsAlive() 不同：IsAlive 只检查 SSH 连接级别的心跳，
 // CheckShellResponsive 实际发送一个 echo 命令并等待输出，
@@ -365,9 +377,9 @@ func (m *SSHSessionManager) RecordExecFailure(sessionID string) int {
 // 这是命令完成的唯一确定性信号。"沉默时间"只是辅助 fallback。
 //
 // 检测优先级：
-//   1. 会话退出（SessionExited/SessionError）→ 立即返回
-//   2. Shell prompt 出现在新输出的最后一行 → 立即返回（主信号，零延迟）
-//   3. 稳定性 fallback：连续无新输出超过阈值 → 返回（辅助信号）
+//  1. 会话退出（SessionExited/SessionError）→ 立即返回
+//  2. Shell prompt 出现在新输出的最后一行 → 立即返回（主信号，零延迟）
+//  3. 稳定性 fallback：连续无新输出超过阈值 → 返回（辅助信号）
 //
 // 两阶段稳定阈值：
 //   - 阶段 1（等待首行实际输出）：命令回显后，等待实际输出出现。阈值较高（~4s）。

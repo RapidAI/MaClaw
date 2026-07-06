@@ -166,13 +166,16 @@ func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 	}
 }
 
-func TestDirectCodingTemplatesUseWorkflowInputSchemas(t *testing.T) {
+func TestCodingSubAgentTemplatesUseWorkflowInputSchemas(t *testing.T) {
 	local := CodingSubAgentTemplate()
 	if local == nil || local.Type != "coding_subagent" || len(local.Phases) != 1 {
 		t.Fatalf("CodingSubAgentTemplate shape = %#v", local)
 	}
+	if local.Phases[0].ID != "coding_subagent_execution" {
+		t.Fatalf("local template phase ID = %q, want coding_subagent_execution", local.Phases[0].ID)
+	}
 	if local.Phases[0].ExecMode != ExecModeSubAgent {
-		t.Fatalf("local direct phase ExecMode = %q, want %q", local.Phases[0].ExecMode, ExecModeSubAgent)
+		t.Fatalf("local template phase ExecMode = %q, want %q", local.Phases[0].ExecMode, ExecModeSubAgent)
 	}
 	localSchema := local.Phases[0].InputSchema
 	if localSchema == nil {
@@ -186,7 +189,7 @@ func TestDirectCodingTemplatesUseWorkflowInputSchemas(t *testing.T) {
 	}
 	for _, want := range []string{"work_dir", "project_description"} {
 		if !localRequired[want] {
-			t.Fatalf("local direct coding schema missing required field %q; got %#v", want, localRequired)
+			t.Fatalf("coding_subagent schema missing required field %q; got %#v", want, localRequired)
 		}
 	}
 
@@ -194,8 +197,11 @@ func TestDirectCodingTemplatesUseWorkflowInputSchemas(t *testing.T) {
 	if remote == nil || remote.Type != "remote_coding_subagent" || len(remote.Phases) != 1 {
 		t.Fatalf("RemoteCodingSubAgentTemplate shape = %#v", remote)
 	}
+	if remote.Phases[0].ID != "remote_coding_subagent_execution" {
+		t.Fatalf("remote template phase ID = %q, want remote_coding_subagent_execution", remote.Phases[0].ID)
+	}
 	if remote.Phases[0].ExecMode != ExecModeRemoteSubAgent {
-		t.Fatalf("remote direct phase ExecMode = %q, want %q", remote.Phases[0].ExecMode, ExecModeRemoteSubAgent)
+		t.Fatalf("remote template phase ExecMode = %q, want %q", remote.Phases[0].ExecMode, ExecModeRemoteSubAgent)
 	}
 	remoteSchema := remote.Phases[0].InputSchema
 	if remoteSchema == nil {
@@ -209,7 +215,7 @@ func TestDirectCodingTemplatesUseWorkflowInputSchemas(t *testing.T) {
 	}
 	for _, want := range []string{"ssh_host", "ssh_port", "ssh_user", "ssh_password", "work_dir", "project_description"} {
 		if _, ok := remoteRequired[want]; !ok {
-			t.Fatalf("remote direct coding schema missing required field %q; got %#v", want, remoteRequired)
+			t.Fatalf("remote_coding_subagent schema missing required field %q; got %#v", want, remoteRequired)
 		}
 	}
 	if !remoteRequired["ssh_password"].Sensitive {

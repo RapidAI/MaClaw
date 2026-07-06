@@ -88,6 +88,10 @@ func TestGetRemoteRegistrationAuthDefaultsMissingCodeLengthToSix(t *testing.T) {
 }
 
 func TestProbeRemoteHubSendsPhoneIdentityAsPhoneNumber(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
 	var seen []map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/entry/probe" {
@@ -106,18 +110,113 @@ func TestProbeRemoteHubSendsPhoneIdentityAsPhoneNumber(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := (&App{}).ProbeRemoteHub(server.URL, "phone:199-0000 1111")
+	app := &App{testHomeDir: tmpHome}
+	got, err := app.ProbeRemoteHub(server.URL, "phone:199-0000 1111")
 	if err != nil {
 		t.Fatalf("ProbeRemoteHub() error = %v", err)
 	}
 	if got.TenantID != "tenant-phone" || got.TenantName != "Phone Tenant" {
 		t.Fatalf("probe result = %#v", got)
 	}
-	if _, err := (&App{}).ProbeRemoteHub(server.URL, "199-0000 1111"); err != nil {
+	if _, err := app.ProbeRemoteHub(server.URL, "199-0000 1111"); err != nil {
 		t.Fatalf("ProbeRemoteHub() plain phone error = %v", err)
 	}
 	if len(seen) != 2 {
 		t.Fatalf("seen payloads = %#v, want two probes", seen)
+	}
+}
+
+func TestProbeRemoteHubIncludesConfiguredTenantForCurrentIdentity(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var gotPayload map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/probe" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"bound","tenant_id":"vantagics","phone_number":"17090134628"}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:   server.URL,
+		RemoteEmail:    "znsoft@163.com",
+		RemoteTenantID: "vantagics",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got, err := app.ProbeRemoteHub(server.URL, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("ProbeRemoteHub() error = %v", err)
+	}
+	if got.PhoneNumber != "17090134628" {
+		t.Fatalf("PhoneNumber = %q, want 17090134628", got.PhoneNumber)
+	}
+	if gotPayload["email"] != "znsoft@163.com" || gotPayload["tenant_id"] != "vantagics" {
+		t.Fatalf("payload = %#v, want email and tenant_id", gotPayload)
+	}
+}
+
+func TestGetRemoteRegistrationProfileUsesMachineCredentialsAndPatchesMobile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var gotMachineID string
+	var gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/profile/current" {
+			http.NotFound(w, r)
+			return
+		}
+		gotMachineID = r.Header.Get("X-Machine-ID")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":           true,
+			"tenant_id":    "tenant-acme",
+			"tenant_name":  "Acme Team",
+			"user_id":      "user-1",
+			"machine_id":   "machine-1",
+			"email":        "owner@example.com",
+			"phone_number": "17090134628",
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.GetRemoteRegistrationProfile()
+	if err != nil {
+		t.Fatalf("GetRemoteRegistrationProfile() error = %v", err)
+	}
+	if gotMachineID != "machine-1" || gotAuthorization != "Bearer token-1" {
+		t.Fatalf("auth headers machine=%q authorization=%q", gotMachineID, gotAuthorization)
+	}
+	if result.PhoneNumber != "17090134628" || result.TenantID != "tenant-acme" || result.TenantName != "Acme Team" || result.UserID != "user-1" {
+		t.Fatalf("profile result = %+v", result)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.RemoteMobile != "17090134628" || cfg.RemoteTenantID != "tenant-acme" || cfg.RemoteTenantName != "Acme Team" || cfg.RemoteUserID != "user-1" {
+		t.Fatalf("patched config mobile=%q tenant=%q tenantName=%q user=%q", cfg.RemoteMobile, cfg.RemoteTenantID, cfg.RemoteTenantName, cfg.RemoteUserID)
 	}
 }
 
@@ -714,7 +813,7 @@ func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
 	model := &corelib.ModelConfig{
 		ModelName: "codegen",
 		ModelId:   "claude-codegen-1",
-		ModelUrl:  "http://127.0.0.1:5001/anthropic",
+		ModelUrl:  codegenClaudeRemoteBaseURL,
 		ApiKey:    "cg-test",
 		WireApi:   "anthropic",
 	}
@@ -724,7 +823,7 @@ func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
 
-	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:5001/anthropic" {
+	if env["ANTHROPIC_BASE_URL"] != codegenClaudeRemoteBaseURL {
 		t.Fatalf("ANTHROPIC_BASE_URL = %q", env["ANTHROPIC_BASE_URL"])
 	}
 
@@ -924,6 +1023,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 				"tenant_id":     "tenant_123",
 				"tenant_name":   "Acme Team",
 				"email":         "user@example.com",
+				"phone_number":  "17090134628",
 				"sn":            "SN-2026-000001",
 				"machine_id":    "m_123",
 				"machine_token": "mt_123",
@@ -990,6 +1090,9 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	if result.TenantID != "tenant_123" || result.TenantName != "Acme Team" {
 		t.Fatalf("unexpected tenant result: %+v", result)
 	}
+	if result.PhoneNumber != "17090134628" {
+		t.Fatalf("PhoneNumber = %q, want 17090134628", result.PhoneNumber)
+	}
 
 	saved, err := app.LoadConfig()
 	if err != nil {
@@ -1003,6 +1106,9 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 	if saved.RemoteEmail != "user@example.com" || saved.RemoteSN != "SN-2026-000001" {
 		t.Fatalf("saved identity mismatch: %+v", saved)
+	}
+	if saved.RemoteMobile != "17090134628" {
+		t.Fatalf("RemoteMobile = %q, want 17090134628", saved.RemoteMobile)
 	}
 	if saved.RemoteMachineID != "m_123" || saved.RemoteMachineToken != "mt_123" {
 		t.Fatalf("saved machine identity mismatch: %+v", saved)
@@ -1087,6 +1193,7 @@ func TestActivateRemote_ReconfirmsHubViaHubCenterWhenCachedHubURLExists(t *testi
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:       staleHub.URL,
 		RemoteHubCenterURL: center.URL,
+		RemoteMobile:       "19900001111",
 	}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -1103,6 +1210,9 @@ func TestActivateRemote_ReconfirmsHubViaHubCenterWhenCachedHubURLExists(t *testi
 	}
 	if saved.RemoteHubURL != resolvedHub.URL {
 		t.Fatalf("RemoteHubURL = %q, want dynamically resolved %q", saved.RemoteHubURL, resolvedHub.URL)
+	}
+	if saved.RemoteMobile != "" {
+		t.Fatalf("RemoteMobile = %q, want cleared when email enrollment has no bound phone", saved.RemoteMobile)
 	}
 }
 

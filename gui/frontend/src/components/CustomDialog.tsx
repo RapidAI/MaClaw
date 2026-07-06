@@ -31,11 +31,13 @@ interface DialogState {
     lightScheme?: string;
     confirmText?: string;
     cancelText?: string;
+    confirmVariant?: 'primary' | 'danger';
 }
 
 interface ConfirmOptions {
     confirmText?: string;
     cancelText?: string;
+    confirmVariant?: 'primary' | 'danger';
 }
 
 interface DialogContextValue {
@@ -98,7 +100,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
             // Resolve any pending dialog (dismiss as "cancel") to prevent Promise leak.
             resolveRef.current?.(false);
             resolveRef.current = resolve;
-            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText, confirmVariant: options?.confirmVariant });
         });
     }, []);
 
@@ -116,11 +118,17 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         if (!state.open) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') close(state.mode === 'alert');
-            if (e.key === 'Enter') close(true);
+            if (e.key === 'Enter') {
+                if (state.confirmVariant === 'danger') {
+                    if (!(e.target instanceof HTMLButtonElement)) e.preventDefault();
+                    return;
+                }
+                close(true);
+            }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [state.open, state.mode, close]);
+    }, [state.open, state.mode, state.confirmVariant, close]);
 
     return (
         <DialogContext.Provider value={{ showAlert, showConfirm }}>
@@ -148,7 +156,11 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                                     {state.cancelText || localizeText(state.lang, 'Cancel', '取消')}
                                 </button>
                             )}
-                            <button className="btn-primary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(true)}>
+                            <button
+                                className={state.confirmVariant === 'danger' ? 'btn-secondary btn-danger' : 'btn-primary'}
+                                style={{ fontSize: '0.78rem', padding: '4px 14px' }}
+                                onClick={() => close(true)}
+                            >
                                 {state.confirmText || localizeText(state.lang, 'OK', '确定')}
                             </button>
                         </div>

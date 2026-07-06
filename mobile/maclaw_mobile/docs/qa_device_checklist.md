@@ -13,7 +13,7 @@ python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_
 python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
 python3 tool/setup_android_signing.py
 python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
-python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-<version+build>.log
 python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/build_android_release.py --artifact appbundle --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -22,6 +22,7 @@ python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<v
 python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log
 python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-<version+build>.md" \
+  --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-<version+build>.log" \
   --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
 ```
@@ -31,14 +32,20 @@ python3 tool/create_qa_build_record.py --scope android-ios --version <version+bu
 Replace it with the real 10-character Apple Team ID before running
 `setup_ios_export_options.py`, `plan_ios_release.py`, or
 `signed_artifact_evidence.py`.
+PowerShell treats unquoted `<...>` placeholders as redirection syntax, so replace
+all angle-bracket placeholders with real values before copying commands there;
+for dry-run previews with placeholders, wrap placeholder arguments in quotes.
 
-When the handoff, runtime-boundary, and release-gate command outputs have
+When the handoff, preflight, runtime-boundary, and release-gate command outputs have
 already been saved, pass their traceable references to
 `create_qa_build_record.py` with `--release-handoff-result`,
-`--runtime-boundary-result`, and `--automated-gates-result` so the Final Release
+`--preflight-result`, `--runtime-boundary-result`, and
+`--automated-gates-result` so the Final Release
 Decision section starts with those evidence links already filled.
 The handoff, runtime-boundary log, and release-gates log commands refuse to
 overwrite existing saved evidence files unless `--force` is provided.
+Use `python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-<version+build>.md` to preview
+the handoff content without writing or overwriting the target file.
 Release handoff outputs saved directly under `docs/qa-builds/` must use a
 `handoff-*.md` filename; other Markdown names are rejected so the directory
 validator cannot mistake the handoff plan for a completed signed-build QA
@@ -54,7 +61,7 @@ need Apple Team ID or export method values:
 ```bash
 python3 tool/release_status_report.py --scope android
 python3 tool/release_handoff.py --version <version+build> --scope android --output docs/qa-builds/handoff-android-<version+build>.md
-python3 tool/qa_preflight.py --scope android
+python3 tool/qa_preflight.py --scope android --log docs/qa-builds/preflight-android-<version+build>.log
 python3 tool/build_android_release.py --artifact apk --build-name <app-version> --build-number <build-number> --record-dir docs/qa-builds --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 python3 tool/signed_artifact_evidence.py android <signed-release.apk-or-aab> --record-dir docs/qa-builds --version <version+build> --signing-identity "<alias or certificate fingerprint>" --installer-channel "<internal test channel>"
 ```
@@ -65,7 +72,7 @@ commands:
 ```bash
 python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
 python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
-python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-ios-<version+build>.log
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
 python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive" --team-id <REAL_APPLE_TEAM_ID> --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds
 ```
@@ -100,6 +107,7 @@ evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename.
 The completed record's Final Release Decision must include:
 - `Release handoff result`
+- `Preflight result`
 - `Runtime boundary verification result`
 - `Automated release gates result`
 
@@ -261,7 +269,10 @@ app opens the assistant or document flow as expected.
 - Microphone permission appears when using voice question.
 - Speech recognition permission appears when using voice question.
 - Photo library permission appears when importing from photos.
-- Local network permission appears when connecting to a local/private server.
+- Local network permission, if the platform shows it during Hub/backend-session
+  operation, is recorded separately, tied to the same GUI/agent-bound
+  `backend_session_id` plus a read-only command result, and is not phone-local
+  SSH evidence.
 - Notification permission can be requested from the account screen.
 Record both the permission prompt/result and the feature scenario that triggered
 it. Each permission evidence item must include the matching
@@ -333,37 +344,59 @@ it. Each permission evidence item must include the matching
   the before/after result.
 - Clear local work records and confirm assistant history, document drafts/tasks,
   command history, digital employee prompts/tasks, and app preferences reset.
-- After clearing local work records, confirm server profiles and SSH
-  credentials remain available.
-- Clear server profiles/SSH credentials through the separate explicit account
-  action and confirm saved server access is revoked.
+- After clearing local work records, confirm cached server-profile metadata
+  remains available.
+- Clear server-profile caches through the separate explicit account action and
+  confirm phone-side server access is revoked.
 
 ## Backend SSH Session Smoke Test
 
-- Add a server profile with host, port, username, tag, and note.
-- Test password auth or private-key auth, depending on the QA server.
-- Create or attach an agent/backend-managed SSH session, not just a phone-local
+- Treat this as a GUI-equivalent backend SSH session management smoke test, not
+  a phone-local SSH client check.
+- Sync a server profile from MaClaw GUI/agent through Hub and confirm the phone
+  shows sanitized host, port, username, auth mode, tag, and note metadata.
+- Confirm password/private-key material stays on the authorized desktop/agent
+  side and is not entered into the phone.
+- Create or attach an agent/backend-managed SSH session, not phone-local or an
   ad hoc terminal.
 - Confirm the session is visible in the session list/status surface with the
-  same `server-profile:<id>`.
+  same sanitized server profile and a GUI/agent-bound `backend_session_id`.
 - Run a read-only command such as `whoami` or `uptime`.
+- Confirm realtime `ssh_session` updates arrive for the backend session and
+  record the matching `output_chunk` and `output_seq` evidence for the same
+  GUI/agent-bound `backend_session_id`.
+- Record the GUI/agent handoff evidence for the same GUI/agent-bound
+  `backend_session_id`, such as
+  `claimed_by`, `/api/mobile/ssh/sessions/claim`, worker handoff evidence, or
+  worker claim/update evidence that proves MaClaw GUI/agent claimed and managed
+  the session.
+- Send an interrupt from the phone and record GUI/agent Ctrl+C handling plus
+  the Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt`
+  request for the backend session without the phone executing SSH locally.
 - Disconnect and reconnect the backend session, preserving the session ID or
   recording the replacement session ID.
-- Copy terminal output.
+- Copy backend session output for the same GUI/agent-bound
+  `backend_session_id`; the `server-profile:<id>` only identifies the selected
+  sanitized server profile and is not sufficient as session proof.
 - In the QA record, capture action-specific evidence for host type, auth mode,
-  connect result, read-only command, command output excerpt, disconnect result,
-  reconnect result, and copied output evidence.
-- Send copied output to AI analysis after reviewing the preview and
-  sensitive-data warning; record both the preview confirmation and warning
+  Connect result, read-only command, command output excerpt, interrupt result,
+  disconnect result, reconnect result, copied backend session output evidence,
+  SSH realtime incremental output evidence, and server-profile cache clear
   evidence.
+- Send copied backend session output to AI analysis after reviewing the preview and
+  sensitive-data warning; record both the preview confirmation and warning
+  evidence tied to the same GUI/agent-bound `backend_session_id`.
 - Confirm AI returns explanation and command drafts, with manual confirmation
-  or not-auto-executed evidence.
+  or not-auto-executed evidence tied to the same GUI/agent-bound
+  `backend_session_id`.
 - Hand pasted output to a digital employee after the Hub/tenant handoff
   warning and confirmation, if digital employee access is enabled; record that
-  the backend SSH session output or pasted/copied output was the handoff
-  content.
-- Delete the server profile and confirm stored password/private-key credentials
-  are cleared from secure storage.
+  the backend SSH session output or pasted/copied backend session output was the handoff
+  content, tied to the same GUI/agent-bound `backend_session_id`.
+- In the QA record, label this as AI/digital-employee handoff evidence tied to
+  the same GUI/agent-bound `backend_session_id` when used.
+- Clear the phone-side server-profile cache and confirm mobile access is
+  revoked without requiring the phone to store or delete SSH secrets.
 
 ## Evidence Package
 
@@ -379,9 +412,10 @@ Attach or link:
 - Voice transcript and photo/image assistant input result, including citation
   answer evidence or document upload task ID.
 - Account theme/speech language change, local work-record reset, retained
-  server credentials after local reset, and separate server credential clearing.
+  server-profile metadata after local reset, and separate phone-side
+  server-profile cache clearing.
 - SSH host type, auth mode, connect/disconnect/reconnect results, read-only
-  command, command output excerpt, copied output evidence, and credential
-  deletion confirmation.
+  command, command output excerpt, copied backend session output evidence, and backend SSH
+  server-profile cache clear confirmation.
 - Any known issues or waivers approved for the build.
 - Release approval must be recorded by an approver different from the tester.

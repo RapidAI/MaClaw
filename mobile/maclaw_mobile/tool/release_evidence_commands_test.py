@@ -31,6 +31,10 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                     "release_handoff.py output saved to "
                     "docs/qa-builds/handoff-1.0.0+42.md"
                 ),
+                "Preflight result": (
+                    "qa_preflight.py: Result READY for signed-build QA preparation; "
+                    "log: docs/qa-builds/preflight-1.0.0+42.log"
+                ),
                 "Runtime boundary verification result": (
                     "MaClaw Mobile runtime boundary verified. "
                     "log: docs/qa-builds/runtime-boundary-1.0.0+42.log"
@@ -69,6 +73,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         self.assertEqual(
             'python3 tool/create_qa_build_record.py --scope android-ios --version 1.0.0+42 '
             '--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" '
+            '--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" '
             '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" '
             '--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"',
             command,
@@ -82,6 +87,10 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 "Release handoff result": (
                     "release_handoff.py output saved to "
                     "tmp/qa-builds/handoff-android-1.0.0+42.md"
+                ),
+                "Preflight result": (
+                    "qa_preflight.py: Result READY for signed-build QA preparation; "
+                    "log: tmp/qa-builds/preflight-android-1.0.0+42.log"
                 ),
                 "Runtime boundary verification result": (
                     "MaClaw Mobile runtime boundary verified. "
@@ -101,6 +110,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         self.assertEqual(
             'python3 tool/create_qa_build_record.py --scope android --version 1.0.0+42 '
             '--release-handoff-result "release_handoff.py output saved to tmp/qa-builds/handoff-android-1.0.0+42.md" '
+            '--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: tmp/qa-builds/preflight-android-1.0.0+42.log" '
             '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: tmp/qa-builds/runtime-boundary-1.0.0+42.log" '
             '--automated-gates-result "run_release_gates.py: 38 gates passed; log: tmp/qa-builds/release-gates-1.0.0+42.log" '
             "--records-dir tmp/qa-builds",
@@ -243,6 +253,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 "Date: YYYY-MM-DD\n"
                 "Version/build number: app version + build number, such as 1.0.0+42\n"
                 "Release handoff result:\n"
+                "Preflight result:\n"
                 "Runtime boundary verification result:\n"
                 "Automated release gates result:\n",
                 encoding="utf-8",
@@ -284,6 +295,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 "Date: YYYY-MM-DD\n"
                 "Version/build number: app version + build number, such as 1.0.0+42\n"
                 "Release handoff result:\n"
+                "Preflight result:\n"
                 "Runtime boundary verification result:\n"
                 "Automated release gates result:\n",
                 encoding="utf-8",
@@ -321,6 +333,31 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
 
         self.assertIn(
             "release handoff is only a QA plan, not a completed QA record",
+            hint,
+        )
+        self.assertIn(
+            "complete the signed-build QA record with real-device share/permission, "
+            "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+            hint,
+        )
+        self.assertIn(
+            "`ssh_session` realtime `output_chunk`/`output_seq` proof",
+            hint,
+        )
+        self.assertIn("GUI/agent claim or worker handoff", hint)
+        self.assertIn("explicit worker claim/update evidence", hint)
+        self.assertIn("not phone-local/ad hoc terminal evidence", hint)
+        self.assertIn("phone-initiated interrupt evidence", hint)
+        self.assertIn("Hub control record", hint)
+        self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", hint)
+        self.assertIn("GUI/agent Ctrl+C handling", hint)
+        self.assertIn("GUI/agent-bound backend_session_id", hint)
+        self.assertIn("copied backend session output", hint)
+        self.assertIn("AI/digital-employee handoff evidence", hint)
+        self.assertIn("same GUI/agent-bound backend_session_id when used", hint)
+        self.assertIn("preview the handoff with", hint)
+        self.assertIn(
+            release_evidence_commands.release_handoff_command(dry_run=True),
             hint,
         )
         for expected in [
@@ -491,7 +528,15 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             android_hint,
         )
         self.assertIn(
-            f"then run `{release_evidence_commands.qa_preflight_command(scope='android')}`",
+            "then run `"
+            + release_evidence_commands.qa_preflight_command(
+                scope="android",
+                log=release_evidence_commands.preflight_log_path(
+                    "1.0.0+42",
+                    scope="android",
+                ),
+            )
+            + "`",
             android_hint,
         )
         self.assertIn(
@@ -690,6 +735,12 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             release_evidence_commands.qa_preflight_command(
                 scope="android",
                 records_dir="custom-records",
+            ),
+        )
+        self.assertEqual(
+            "python3 tool/qa_preflight.py --scope android-ios --log docs/qa-builds/preflight-1.0.0+42.log",
+            release_evidence_commands.qa_preflight_command(
+                log=release_evidence_commands.preflight_log_path("1.0.0+42"),
             ),
         )
 
@@ -1038,6 +1089,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             for fragment in [
                 f"--scope android-ios --version {version}",
                 f'--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-{version}.md"',
+                f'--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-{version}.log"',
                 f'--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-{version}.log"',
                 f'--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-{version}.log"',
             ]:

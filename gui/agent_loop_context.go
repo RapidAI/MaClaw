@@ -85,6 +85,11 @@ type LoopContext struct {
 	// model output before it reaches workflow persistence or UI.
 	WorkflowPhaseID string
 
+	// SkipWorkflowDocCapture is set for workflow-launched execution paths whose
+	// response is already a terminal execution report rather than a reviewable
+	// phase document, such as coding_subagent/remote_coding_subagent templates.
+	SkipWorkflowDocCapture bool
+
 	// WorkflowWrittenFiles tracks files produced during a workflow agent loop,
 	// regardless of which tool created them. Sources:
 	//   - write_file: file written directly to disk

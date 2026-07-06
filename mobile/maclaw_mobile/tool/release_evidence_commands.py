@@ -73,6 +73,10 @@ def final_decision_prefills(
             "release_handoff.py output saved to "
             f"{handoff_evidence_path(version, scope=scope, records_dir=records_dir)}"
         ),
+        "Preflight result": (
+            "qa_preflight.py: Result READY for signed-build QA preparation; "
+            f"log: {preflight_log_path(version, scope=scope, records_dir=records_dir)}"
+        ),
         "Runtime boundary verification result": (
             "MaClaw Mobile runtime boundary verified. "
             f"log: {records_dir}/runtime-boundary-{version}.log"
@@ -95,6 +99,7 @@ def create_record_command(
     command = (
         f"python3 tool/create_qa_build_record.py --scope {scope} --version {version} "
         f'--release-handoff-result "{prefills["Release handoff result"]}" '
+        f'--preflight-result "{prefills["Preflight result"]}" '
         f'--runtime-boundary-result "{prefills["Runtime boundary verification result"]}" '
         f'--automated-gates-result "{prefills["Automated release gates result"]}"'
     )
@@ -128,6 +133,7 @@ def release_handoff_command(
     export_method: str | None = DEFAULT_EXPORT_METHOD,
     output: str | None = None,
     records_dir: str = DEFAULT_QA_RECORDS_DIR,
+    dry_run: bool = False,
 ) -> str:
     scope = validate_scope(scope)
     output = output or handoff_evidence_path(
@@ -141,6 +147,8 @@ def release_handoff_command(
         command += f" --export-method {export_method or DEFAULT_EXPORT_METHOD}"
     if records_dir != DEFAULT_QA_RECORDS_DIR:
         command += f" --records-dir {records_dir}"
+    if dry_run:
+        command += " --dry-run"
     command += f" --output {output}"
     return command
 
@@ -151,6 +159,7 @@ def qa_preflight_command(
     team_id: str | None = None,
     export_method: str | None = None,
     records_dir: str = DEFAULT_QA_RECORDS_DIR,
+    log: str | None = None,
 ) -> str:
     scope = validate_scope(scope)
     command = f"python3 tool/qa_preflight.py --scope {scope}"
@@ -160,6 +169,8 @@ def qa_preflight_command(
         command += f" --export-method {export_method}"
     if records_dir != DEFAULT_QA_RECORDS_DIR:
         command += f" --records-dir {records_dir}"
+    if log:
+        command += f" --log {log}"
     return command
 
 
@@ -195,6 +206,18 @@ def runtime_boundary_command(
         "python3 tool/verify_runtime_boundary.py --log "
         f"{records_dir}/runtime-boundary-{version}.log"
     )
+
+
+def preflight_log_path(
+    version: str = DEFAULT_VERSION,
+    *,
+    scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
+) -> str:
+    scope = validate_scope(scope)
+    if scope != DEFAULT_SCOPE:
+        return f"{records_dir}/preflight-{scope}-{version}.log"
+    return f"{records_dir}/preflight-{version}.log"
 
 
 def release_gates_command(
@@ -475,19 +498,33 @@ def signed_qa_record_hint(
         artifact_hint = "; " + "; ".join(artifact_hints)
     preflight_team_id = team_id if scope_covers_ios(scope) else None
     preflight_export_method = export_method if scope_covers_ios(scope) else None
+    preflight_log = preflight_log_path(
+        version,
+        scope=scope,
+        records_dir=records_dir,
+    )
     return (
         "no completed signed-build QA records yet; release handoff is only a "
-        "QA plan, not a completed QA record; run "
+        "QA plan, not a completed QA record; preview the handoff with "
+        f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir, dry_run=True)}`; run "
         f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir)}`; "
         + "; ".join(setup_hints)
         + "; "
-        f"then run `{qa_preflight_command(scope=scope, team_id=preflight_team_id, export_method=preflight_export_method, records_dir=records_dir)}`; "
+        f"then run `{qa_preflight_command(scope=scope, team_id=preflight_team_id, export_method=preflight_export_method, records_dir=records_dir, log=preflight_log)}`; "
         "then capture "
         f"`{runtime_boundary_command(version, records_dir=records_dir)}` "
         "and "
         f"`{release_gates_command(version, records_dir=records_dir)}`; "
         f"create the record with `{create_record_command(scope=scope, version=version, records_dir=records_dir)}`"
         f"{artifact_hint}; "
+        "complete the signed-build QA record with real-device share/permission, "
+        "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence including "
+        "the same GUI/agent-bound backend_session_id, GUI/agent claim "
+        "or worker handoff plus explicit worker claim/update evidence and "
+        "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
+        "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend "
+        "session output, and AI/digital-employee handoff evidence tied to that "
+        "same GUI/agent-bound backend_session_id when used; "
         "after completing evidence validate it with "
         f"`{validate_qa_build_record_command(record)}`; "
         "if validation fails inspect gaps with "

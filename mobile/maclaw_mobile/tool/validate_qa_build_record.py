@@ -24,9 +24,20 @@ AI_ASSISTANT_QUERY_FIELD = "AI assistant query"
 LEGACY_AI_SEARCH_QUERY_FIELD = "AI search query"
 DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD = "Document draft created from assistant result"
 LEGACY_DOCUMENT_DRAFT_FROM_SEARCH_FIELD = "Document draft created from search"
+SERVER_PROFILE_METADATA_RETAINED_FIELD = "Server-profile metadata retained after local reset"
+LEGACY_SERVER_CREDENTIALS_RETAINED_FIELD = "Server credentials retained after local reset"
+SERVER_PROFILE_CACHE_CLEAR_FIELD = "Server-profile cache clear confirmation"
+LEGACY_SERVER_CREDENTIALS_CLEAR_FIELD = "Server profiles/SSH credentials clear confirmation"
+BACKEND_SSH_CACHE_CLEAR_FIELD = "Backend SSH server-profile cache clear confirmation"
+LEGACY_CREDENTIAL_DELETION_FIELD = "Credential deletion confirmation"
 FIELD_ALIASES = {
     LEGACY_AI_SEARCH_QUERY_FIELD: AI_ASSISTANT_QUERY_FIELD,
     LEGACY_DOCUMENT_DRAFT_FROM_SEARCH_FIELD: DOCUMENT_DRAFT_FROM_ASSISTANT_FIELD,
+}
+DEPRECATED_FIELD_REPLACEMENTS = {
+    LEGACY_SERVER_CREDENTIALS_RETAINED_FIELD: SERVER_PROFILE_METADATA_RETAINED_FIELD,
+    LEGACY_SERVER_CREDENTIALS_CLEAR_FIELD: SERVER_PROFILE_CACHE_CLEAR_FIELD,
+    LEGACY_CREDENTIAL_DELETION_FIELD: BACKEND_SSH_CACHE_CLEAR_FIELD,
 }
 RUNNER_BUNDLE_ID = "top.mypapers.maclaw.mobile"
 SHARE_EXTENSION_BUNDLE_ID = "top.mypapers.maclaw.mobile.ShareExtension"
@@ -66,8 +77,8 @@ NETWORK_RECOVERY_TRACE_RE = re.compile(
 COMMAND_DRAFT_ID_RE = re.compile(
     r"(?i)\bcommand-draft:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
-CREDENTIAL_CLEAR_ID_RE = re.compile(
-    r"(?i)\bcredential-clear:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+SERVER_PROFILE_CACHE_CLEAR_ID_RE = re.compile(
+    r"(?i)\b(?:server-profile-cache-clear|credential-clear):[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
 REDACTION_CHECK_ID_RE = re.compile(
     r"(?i)\bredaction-check:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
@@ -206,20 +217,23 @@ REQUIRED_FIELDS = [
     "Network offline/recovery evidence",
     "Theme and speech language change result",
     "Local work records reset confirmation",
-    "Server credentials retained after local reset",
-    "Server profiles/SSH credentials clear confirmation",
+    SERVER_PROFILE_METADATA_RETAINED_FIELD,
+    SERVER_PROFILE_CACHE_CLEAR_FIELD,
     "Host type",
     "Auth mode",
     "Connect result",
     "Read-only command",
     "Command output excerpt",
+    "SSH realtime incremental output evidence",
+    "Interrupt result",
     "Disconnect result",
     "Reconnect result",
-    "Copied output evidence",
+    "Copied backend session output evidence",
     "AI analysis confirmation and sensitive-data warning",
     "AI explanation / command draft result",
-    "Credential deletion confirmation",
+    BACKEND_SSH_CACHE_CLEAR_FIELD,
     "Release handoff result",
+    "Preflight result",
     "Runtime boundary verification result",
     "Automated release gates result",
     "Automated gates passed",
@@ -443,8 +457,8 @@ SSH_AI_RESULT_FIELDS = {
     "AI explanation / command draft result",
 }
 
-CREDENTIAL_DELETION_FIELDS = {
-    "Credential deletion confirmation",
+BACKEND_SSH_CACHE_CLEAR_FIELDS = {
+    BACKEND_SSH_CACHE_CLEAR_FIELD,
 }
 
 ACCOUNT_PREFERENCE_FIELDS = {
@@ -455,18 +469,18 @@ LOCAL_WORK_RECORDS_RESET_FIELDS = {
     "Local work records reset confirmation",
 }
 
-SERVER_CREDENTIAL_RETENTION_FIELDS = {
-    "Server credentials retained after local reset",
+SERVER_PROFILE_METADATA_RETENTION_FIELDS = {
+    SERVER_PROFILE_METADATA_RETAINED_FIELD,
 }
 
-SERVER_CREDENTIAL_CLEAR_FIELDS = {
-    "Server profiles/SSH credentials clear confirmation",
+SERVER_PROFILE_CACHE_CLEAR_FIELDS = {
+    SERVER_PROFILE_CACHE_CLEAR_FIELD,
 }
 
 ACCOUNT_PRIVACY_SERVER_PROFILE_LINK_FIELDS = (
     LOCAL_WORK_RECORDS_RESET_FIELDS
-    | SERVER_CREDENTIAL_RETENTION_FIELDS
-    | SERVER_CREDENTIAL_CLEAR_FIELDS
+    | SERVER_PROFILE_METADATA_RETENTION_FIELDS
+    | SERVER_PROFILE_CACHE_CLEAR_FIELDS
 )
 
 STATUS_POLLING_FIELDS = {
@@ -531,12 +545,19 @@ SSH_EVIDENCE_FIELDS = {
     "Connect result": ("connect", "connected", "ssh"),
     "Read-only command": ("read-only", "readonly", "whoami", "uptime", "pwd", "ls ", "df ", "free "),
     "Command output excerpt": ("output", "excerpt", "stdout", "whoami", "uptime"),
+    "SSH realtime incremental output evidence": ("ssh_session", "output_chunk", "output_seq", "realtime"),
+    "Interrupt result": ("interrupt", "ctrl+c", "control-c", "中断", "cancel"),
     "Disconnect result": ("disconnect", "disconnected", "closed"),
     "Reconnect result": ("reconnect", "reconnected", "connected again"),
-    "Copied output evidence": ("copy", "copied", "clipboard", "terminal output"),
+    "Copied backend session output evidence": ("copy", "copied", "clipboard", "backend session output"),
 }
 
-SSH_PROFILE_LINK_FIELDS = set(SSH_EVIDENCE_FIELDS) | SSH_AI_ANALYSIS_WARNING_FIELDS | SSH_AI_RESULT_FIELDS | CREDENTIAL_DELETION_FIELDS
+SSH_PROFILE_LINK_FIELDS = (
+    set(SSH_EVIDENCE_FIELDS)
+    | SSH_AI_ANALYSIS_WARNING_FIELDS
+    | SSH_AI_RESULT_FIELDS
+    | BACKEND_SSH_CACHE_CLEAR_FIELDS
+)
 
 DOCUMENT_UPLOAD_TASK_FIELDS = {
     "Document upload task ID",
@@ -598,26 +619,30 @@ MANUAL_EVIDENCE_FIELDS = {
     "Network offline/recovery evidence",
     "Theme and speech language change result",
     "Local work records reset confirmation",
-    "Server credentials retained after local reset",
-    "Server profiles/SSH credentials clear confirmation",
+    SERVER_PROFILE_METADATA_RETAINED_FIELD,
+    SERVER_PROFILE_CACHE_CLEAR_FIELD,
     "Host type",
     "Auth mode",
     "Connect result",
     "Read-only command",
     "Command output excerpt",
+    "SSH realtime incremental output evidence",
+    "Interrupt result",
     "Disconnect result",
     "Reconnect result",
-    "Copied output evidence",
+    "Copied backend session output evidence",
     "AI analysis confirmation and sensitive-data warning",
     "AI explanation / command draft result",
-    "Credential deletion confirmation",
+    BACKEND_SSH_CACHE_CLEAR_FIELD,
     "Release handoff result",
+    "Preflight result",
     "Runtime boundary verification result",
     "Automated release gates result",
 }
 
 FINAL_AUTOMATED_EVIDENCE_FIELDS = {
     "Release handoff result": "must reference release_handoff.py output or saved handoff evidence",
+    "Preflight result": "must reference qa_preflight.py READY output or saved preflight log evidence",
     "Runtime boundary verification result": "must reference verify_runtime_boundary.py verified output or log evidence",
     "Automated release gates result": "must reference run_release_gates.py gate count and saved log evidence",
 }
@@ -892,6 +917,25 @@ def _is_release_handoff_evidence(value: str) -> bool:
     )
 
 
+def _is_preflight_result_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and "preflight" in normalized
+        and (
+            "qa_preflight.py" in normalized
+            or "preflight-" in normalized
+            or "qa preflight" in normalized
+        )
+        and (
+            "result ready" in normalized
+            or "result: ready" in normalized
+            or "ready for signed-build qa preparation" in normalized
+        )
+        and any(marker in normalized for marker in (".log", "docs/qa-builds", "attachment"))
+    )
+
+
 def _is_runtime_boundary_result_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -925,6 +969,27 @@ def _is_automated_release_gates_evidence(value: str) -> bool:
         )
         and any(marker in normalized for marker in (".log", "docs/qa-builds", "attachment"))
     )
+
+
+def _has_versioned_qa_artifact_reference(value: str) -> bool:
+    normalized = value.strip().lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "handoff-",
+            "preflight-",
+            "runtime-boundary-",
+            "release-gates-",
+            "final-release-evidence-",
+            "docs/qa-builds/",
+        )
+    )
+
+
+def _qa_artifact_reference_matches_version(value: str, version_build: str) -> bool:
+    if not _has_versioned_qa_artifact_reference(value):
+        return True
+    return version_build.lower() in value.strip().lower()
 
 
 def _is_device_os_note(value: str) -> bool:
@@ -992,6 +1057,8 @@ def _is_local_network_ssh_evidence(value: str) -> bool:
         _is_permission_evidence(value, ("local network", "ssh", "private-network", "server"))
         and "ssh" in normalized
         and SERVER_PROFILE_PAYLOAD_RE.search(value) is not None
+        and _has_gui_agent_backend_session_ref(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
         and any(marker in normalized for marker in ("connect", "connected", "connection"))
         and any(marker in normalized for marker in ("read-only", "readonly", "whoami", "uptime", "pwd"))
     )
@@ -1233,6 +1300,7 @@ def _is_ssh_ai_analysis_warning_evidence(value: str) -> bool:
             marker in normalized
             for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
         )
+        and _has_gui_agent_backend_session_ref(value)
     )
 
 
@@ -1250,17 +1318,18 @@ def _is_ssh_ai_result_evidence(value: str) -> bool:
             marker in normalized
             for marker in ("redact", "redacted", "sanitized", "masked", "scrubbed")
         )
+        and _has_gui_agent_backend_session_ref(value)
     )
 
 
-def _is_credential_deletion_evidence(value: str) -> bool:
+def _is_backend_ssh_cache_clear_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("delete", "deleted", "clear", "cleared", "removed"))
         and any(
             marker in normalized
-            for marker in ("credential", "password", "private key", "passphrase", "secure storage", "vault")
+            for marker in ("server profile", "server-profile", "profile cache", "cached profile", "phone-side", "mobile access")
         )
     )
 
@@ -1293,27 +1362,26 @@ def _is_local_work_records_reset_evidence(value: str) -> bool:
     )
 
 
-def _is_server_credential_retention_evidence(value: str) -> bool:
+def _is_server_profile_metadata_retention_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("remain", "retained", "still available", "preserved"))
-        and any(marker in normalized for marker in ("server profile", "server profiles"))
-        and any(marker in normalized for marker in ("ssh credential", "ssh credentials", "password", "private key"))
-        and any(marker in normalized for marker in ("secure storage", "secure vault", "vault"))
-        and any(marker in normalized for marker in ("local reset", "local clear", "work records", "cache clear"))
+        and any(marker in normalized for marker in ("server profile", "server profiles", "server-profile"))
+        and any(marker in normalized for marker in ("metadata", "sanitized", "cache", "cached", "host", "auth mode"))
+        and any(marker in normalized for marker in ("local reset", "local clear", "work records", "work-record", "cache clear"))
     )
 
 
-def _is_server_credential_clear_evidence(value: str) -> bool:
+def _is_server_profile_cache_clear_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
         _is_auditable_note(value)
         and any(marker in normalized for marker in ("clear", "cleared", "delete", "deleted", "revoked", "removed"))
-        and any(marker in normalized for marker in ("server profile", "server profiles"))
-        and any(marker in normalized for marker in ("ssh credential", "ssh credentials", "password", "private key"))
+        and any(marker in normalized for marker in ("server profile", "server profiles", "server-profile"))
+        and any(marker in normalized for marker in ("cache", "cached", "phone-side", "mobile access", "metadata"))
         and any(marker in normalized for marker in ("separate", "explicit", "account"))
-        and CREDENTIAL_CLEAR_ID_RE.search(value) is not None
+        and SERVER_PROFILE_CACHE_CLEAR_ID_RE.search(value) is not None
     )
 
 
@@ -1381,6 +1449,7 @@ def _is_digital_employee_handoff_warning(value: str) -> bool:
         and any(marker in normalized for marker in ("handoff", "digital employee"))
         and any(marker in normalized for marker in ("warning", "confirm", "confirmation", "preview"))
         and any(marker in normalized for marker in ("terminal", "ssh", "pasted output", "copied output", "log"))
+        and _has_gui_agent_backend_session_ref(value)
     )
 
 
@@ -1650,6 +1719,329 @@ def _is_ssh_evidence(value: str, markers: tuple[str, ...]) -> bool:
     return _is_auditable_note(value) and _contains_any(value, markers)
 
 
+def _is_ssh_realtime_incremental_output_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["SSH realtime incremental output evidence"])
+        and "ssh_session" in normalized
+        and "output_chunk" in normalized
+        and "output_seq" in normalized
+        and _has_gui_agent_backend_manager_evidence(value)
+        and _has_backend_ssh_worker_claim_update_evidence(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+        and _has_gui_agent_backend_session_ref(value)
+    )
+
+
+def _is_ssh_interrupt_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and any(
+            marker in normalized
+            for marker in ("ctrl+c", "control-c", "中断", "cancel")
+        )
+        and _has_hub_backend_ssh_control_request(
+            value,
+            ("interrupt", "interrupt_requested", "/interrupt", "ctrl+c", "control-c"),
+        )
+        and _has_gui_agent_ctrl_c_handling(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+        and _has_gui_agent_backend_session_ref(value)
+    )
+
+
+def _is_backend_ssh_connect_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Connect result"])
+        and any(
+            marker in normalized
+            for marker in (
+                "create",
+                "created",
+                "attach",
+                "attached",
+                "connect",
+                "connected",
+            )
+        )
+        and _has_hub_backend_ssh_control_request(
+            value,
+            (
+                "create",
+                "created",
+                "attach",
+                "attached",
+                "connect",
+                "connected",
+                "/api/mobile/ssh/sessions",
+            ),
+        )
+        and _has_gui_agent_backend_manager_evidence(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+        and _has_gui_agent_backend_session_ref(value)
+    )
+
+
+def _is_backend_ssh_disconnect_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Disconnect result"])
+        and any(
+            marker in normalized
+            for marker in (
+                "disconnect",
+                "disconnected",
+                "close",
+                "closed",
+                "delete",
+                "deleted",
+            )
+        )
+        and _has_hub_backend_ssh_control_request(
+            value,
+            (
+                "disconnect",
+                "disconnected",
+                "close",
+                "closed",
+                "delete",
+                "deleted",
+                "/api/mobile/ssh/sessions",
+            ),
+        )
+        and _has_gui_agent_backend_manager_evidence(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+        and _has_gui_agent_backend_session_ref(value)
+    )
+
+
+def _is_backend_ssh_reconnect_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Reconnect result"])
+        and any(
+            marker in normalized
+            for marker in (
+                "reconnect",
+                "reconnected",
+                "reconnect_requested",
+                "/reconnect",
+            )
+        )
+        and _has_hub_backend_ssh_control_request(
+            value,
+            (
+                "reconnect",
+                "reconnected",
+                "reconnect_requested",
+                "/reconnect",
+                "/api/mobile/ssh/sessions",
+            ),
+        )
+        and _has_gui_agent_backend_manager_evidence(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+        and _has_gui_agent_backend_session_ref(value)
+    )
+
+
+def _is_backend_ssh_server_profile_metadata_evidence(
+    value: str,
+    markers: tuple[str, ...],
+) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, markers)
+        and SERVER_PROFILE_PAYLOAD_RE.search(value) is not None
+        and any(
+            marker in normalized
+            for marker in (
+                "server profile",
+                "server-profile",
+                "profile metadata",
+                "server metadata",
+            )
+        )
+        and any(
+            marker in normalized
+            for marker in (
+                "sanitized",
+                "hub-synced",
+                "hub synced",
+                "published by maclaw gui",
+                "published by gui",
+                "gui/agent",
+                "desktop/agent",
+            )
+        )
+        and any(
+            marker in normalized
+            for marker in (
+                "no ssh credential",
+                "no credentials",
+                "without credentials",
+                "without ssh credentials",
+                "credentials stay",
+                "not phone-side credential",
+                "not phone-side ssh credential",
+            )
+        )
+    )
+
+
+def _has_gui_agent_backend_manager_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    has_gui_agent = any(
+        marker in normalized
+        for marker in ("gui", "agent", "desktop", "worker", "machine")
+    )
+    has_claim_or_manager = any(
+        marker in normalized
+        for marker in (
+            "claimed_by",
+            "claim",
+            "claimed",
+            "worker handoff",
+            "sshsessionmanager",
+            "ssh session manager",
+            "backend-managed",
+            "agent/backend-managed",
+            "gui/agent-managed",
+            "desktop/agent-managed",
+            "managed ssh session",
+            "managed by maclaw",
+        )
+    )
+    return has_gui_agent and has_claim_or_manager
+
+
+def _has_backend_ssh_worker_claim_update_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    has_worker_endpoint = re.search(
+        r"(?i)/api/mobile/ssh/sessions/(?:\{session_id\}|[A-Za-z0-9:._-]+)/worker\b",
+        value,
+    ) is not None
+    return has_worker_endpoint or any(
+        marker in normalized
+        for marker in (
+            "claimed_by",
+            "worker handoff",
+            "worker update",
+            "worker claim/update",
+            "worker-side",
+            "worker side",
+            "claim response",
+            "/api/mobile/ssh/sessions/claim",
+        )
+    )
+
+
+def _has_hub_backend_ssh_control_request(
+    value: str,
+    intent_markers: tuple[str, ...],
+) -> bool:
+    normalized = value.strip().lower()
+    has_hub = "hub" in normalized
+    has_intent = any(marker in normalized for marker in intent_markers)
+    has_control_record = any(
+        marker in normalized
+        for marker in (
+            "queued",
+            "control record",
+            "session intent",
+            "/api/mobile/ssh/sessions/",
+        )
+    )
+    return has_hub and has_intent and has_control_record
+
+
+def _has_gui_agent_ctrl_c_handling(value: str) -> bool:
+    normalized = value.strip().lower()
+    has_gui_agent = any(
+        marker in normalized for marker in ("gui", "agent", "desktop", "worker")
+    )
+    has_ctrl_c = any(marker in normalized for marker in ("ctrl+c", "control-c"))
+    has_handling = any(
+        marker in normalized
+        for marker in (
+            "handled",
+            "applied",
+            "sent",
+            "processed",
+            "sshsessionmanager",
+            "ssh session manager",
+        )
+    )
+    return has_gui_agent and has_ctrl_c and has_handling
+
+
+def _rejects_phone_local_ssh_client_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "not phone-local",
+            "not phone local",
+            "not a phone-local",
+            "not a phone local",
+            "not mobile-local",
+            "not mobile local",
+            "not local ssh client",
+            "not ad hoc terminal",
+            "not an ad hoc terminal",
+            "instead of phone-local",
+            "rather than phone-local",
+            "agent/backend-managed",
+            "backend-managed",
+            "gui/agent-managed",
+            "desktop/agent-managed",
+            "sshsessionmanager",
+            "ssh session manager",
+        )
+    )
+
+
+def _has_backend_ssh_session_ref(value: str) -> bool:
+    return (
+        SERVER_PROFILE_PAYLOAD_RE.search(value) is not None
+        or re.search(
+            r"(?i)\b(?:mobssh|mobile-ssh|backend[-_ ]?session)[A-Za-z0-9:._-]*\d[A-Za-z0-9:._-]*\b",
+            value,
+        )
+        is not None
+    )
+
+
+def _has_gui_agent_backend_session_ref(value: str) -> bool:
+    return (
+        re.search(
+            r"(?i)\b(?:mobssh|mobile-ssh|backend[-_ ]?session|backend_session_id)[A-Za-z0-9:._-]*\d[A-Za-z0-9:._-]*\b",
+            value,
+        )
+        is not None
+    )
+
+
+def _is_ssh_copied_output_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_auditable_note(value)
+        and any(marker in normalized for marker in ("copy", "copied", "clipboard"))
+        and any(
+            marker in normalized
+            for marker in (
+                "backend session output",
+                "backend ssh session",
+                "ssh_session",
+                "server-profile",
+            )
+        )
+        and _has_gui_agent_backend_session_ref(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+    )
+
+
 def _is_read_only_ssh_command_evidence(value: str) -> bool:
     normalized = f" {value.strip().lower()} "
     if not _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Read-only command"]):
@@ -1692,7 +2084,30 @@ def _is_read_only_ssh_command_evidence(value: str) -> bool:
         r"\bps(?:\s|$)",
         r"\btop\s+-b",
     )
-    return any(re.search(pattern, normalized) for pattern in read_only_patterns)
+    return (
+        any(re.search(pattern, normalized) for pattern in read_only_patterns)
+        and _has_gui_agent_backend_session_ref(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+    )
+
+
+def _is_backend_ssh_command_output_evidence(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        _is_ssh_evidence(value, SSH_EVIDENCE_FIELDS["Command output excerpt"])
+        and any(
+            marker in normalized
+            for marker in (
+                "backend session output",
+                "backend ssh session",
+                "ssh_session",
+                "output_chunk",
+                "stdout",
+            )
+        )
+        and _has_gui_agent_backend_session_ref(value)
+        and _rejects_phone_local_ssh_client_evidence(value)
+    )
 
 
 def _android_major_version(value: str) -> int | None:
@@ -1926,6 +2341,11 @@ def missing_required_fields(
 ) -> list[str]:
     missing = []
     values = scoped_values(values, scope)
+    for old_field, new_field in DEPRECATED_FIELD_REPLACEMENTS.items():
+        if any(value for value in values.get(old_field, [])):
+            missing.append(
+                f"{old_field} is deprecated; use {new_field} and do not record phone-side SSH credentials"
+            )
     llm_modes = [value for value in values.get("LLM access mode", []) if value]
     for field, required_count in sorted(required_field_counts_for_scope(scope).items()):
         filled_count = _filled_count(values, field)
@@ -2045,6 +2465,7 @@ def missing_required_fields(
             missing.append(f"{field} must contain auditable QA evidence, not a placeholder")
     final_automated_checks = {
         "Release handoff result": _is_release_handoff_evidence,
+        "Preflight result": _is_preflight_result_evidence,
         "Runtime boundary verification result": _is_runtime_boundary_result_evidence,
         "Automated release gates result": _is_automated_release_gates_evidence,
     }
@@ -2052,6 +2473,24 @@ def missing_required_fields(
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(check(value) for value in field_values):
             missing.append(f"{field} {FINAL_AUTOMATED_EVIDENCE_FIELDS[field]}")
+    version_build_values = [value for value in values.get("Version/build number", []) if value]
+    record_versions = [
+        version
+        for value in version_build_values
+        for version in [_canonical_version_build(value)]
+        if version is not None
+    ]
+    if record_versions:
+        record_version = record_versions[0]
+        for field in sorted(final_automated_checks):
+            field_values = [value for value in values.get(field, []) if value]
+            if field_values and not all(
+                _qa_artifact_reference_matches_version(value, record_version)
+                for value in field_values
+            ):
+                missing.append(
+                    f"{field} artifact reference must include the record Version/build number {record_version}"
+                )
     for field, markers in sorted(PERMISSION_EVIDENCE_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
         if field in {"Local network / SSH scenario", "Local network permission", "Media/file access"}:
@@ -2071,7 +2510,7 @@ def missing_required_fields(
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(_is_local_network_ssh_evidence(value) for value in field_values):
             missing.append(
-                f"{field} must describe local-network permission evidence tied to a real SSH connection and read-only command"
+                f"{field} must describe local-network permission evidence tied to the same GUI/agent-managed backend_session_id and read-only command"
             )
     for field, markers in sorted(MOBILE_ASSISTANT_PERMISSION_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
@@ -2160,7 +2599,7 @@ def missing_required_fields(
             _is_ssh_ai_analysis_warning_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe preview confirmation and sensitive-data warning evidence"
+                f"{field} must describe preview confirmation, sensitive-data warning evidence, and the same GUI/agent-bound backend_session_id"
             )
     for field in sorted(SSH_AI_RESULT_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2168,15 +2607,15 @@ def missing_required_fields(
             _is_ssh_ai_result_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe AI explanation, command drafts, manual execution evidence, and redacted SSH output context"
+                f"{field} must describe AI explanation, command drafts, manual execution evidence, redacted backend session output context, and the same GUI/agent-bound backend_session_id"
             )
-    for field in sorted(CREDENTIAL_DELETION_FIELDS):
+    for field in sorted(BACKEND_SSH_CACHE_CLEAR_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
-            _is_credential_deletion_evidence(value) for value in field_values
+            _is_backend_ssh_cache_clear_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe cleared SSH credential storage evidence"
+                f"{field} must describe phone-side server-profile cache clearing evidence"
             )
     for field in sorted(ACCOUNT_PREFERENCE_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2192,21 +2631,21 @@ def missing_required_fields(
             missing.append(
                 f"{field} must describe clearing local work records and app preferences"
             )
-    for field in sorted(SERVER_CREDENTIAL_RETENTION_FIELDS):
+    for field in sorted(SERVER_PROFILE_METADATA_RETENTION_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
-            _is_server_credential_retention_evidence(value) for value in field_values
+            _is_server_profile_metadata_retention_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe server profiles and SSH credentials retained after local reset"
+                f"{field} must describe sanitized server-profile metadata retained after local reset"
             )
-    for field in sorted(SERVER_CREDENTIAL_CLEAR_FIELDS):
+    for field in sorted(SERVER_PROFILE_CACHE_CLEAR_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
         if field_values and not all(
-            _is_server_credential_clear_evidence(value) for value in field_values
+            _is_server_profile_cache_clear_evidence(value) for value in field_values
         ):
             missing.append(
-                f"{field} must describe separate explicit server profile and SSH credential clearing"
+                f"{field} must describe separate explicit phone-side server-profile cache clearing"
             )
     for field in sorted(STATUS_POLLING_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2239,7 +2678,7 @@ def missing_required_fields(
         _is_digital_employee_handoff_warning(value) for value in handoff_values
     ):
         missing.append(
-            "Digital employee handoff warning, if used must describe Hub/tenant handoff warning evidence"
+            "Digital employee handoff warning, if used must describe Hub/tenant handoff warning evidence tied to the same GUI/agent-bound backend_session_id"
         )
     for field in sorted(ACCOUNT_HUB_TENANT_FIELDS):
         field_values = [value for value in values.get(field, []) if value]
@@ -2346,8 +2785,24 @@ def missing_required_fields(
     for field, markers in sorted(SSH_EVIDENCE_FIELDS.items()):
         field_values = [value for value in values.get(field, []) if value]
         validator = (
-            _is_read_only_ssh_command_evidence
+            (lambda value, expected=markers: _is_backend_ssh_server_profile_metadata_evidence(value, expected))
+            if field in ("Host type", "Auth mode")
+            else _is_backend_ssh_connect_evidence
+            if field == "Connect result"
+            else _is_backend_ssh_disconnect_evidence
+            if field == "Disconnect result"
+            else _is_backend_ssh_reconnect_evidence
+            if field == "Reconnect result"
+            else _is_read_only_ssh_command_evidence
             if field == "Read-only command"
+            else _is_backend_ssh_command_output_evidence
+            if field == "Command output excerpt"
+            else _is_ssh_realtime_incremental_output_evidence
+            if field == "SSH realtime incremental output evidence"
+            else _is_ssh_interrupt_evidence
+            if field == "Interrupt result"
+            else _is_ssh_copied_output_evidence
+            if field == "Copied backend session output evidence"
             else lambda value, expected=markers: _is_ssh_evidence(value, expected)
         )
         if field_values and not all(validator(value) for value in field_values):
@@ -2799,7 +3254,7 @@ def missing_required_fields(
             for value in account_privacy_profile_values
         ):
             missing.append(
-                "Account privacy server credential evidence must reference the recorded server-profile notification ID"
+                "Account privacy server-profile evidence must reference the recorded server-profile notification ID"
             )
     network_values = [
         value for value in values.get("Network offline/recovery evidence", []) if value

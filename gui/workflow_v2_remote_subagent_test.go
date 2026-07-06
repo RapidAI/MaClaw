@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -160,52 +159,52 @@ func TestInferRemoteProjectDirFromSSHSessionHandlesCommonLaunchCommands(t *testi
 	}
 }
 
-func TestDirectRemoteCodingSessionUsableOnlyAllowsInteractiveStates(t *testing.T) {
-	allowed := []remote.SessionStatus{remote.SessionRunning, remote.SessionWaitingInput}
-	for _, status := range allowed {
-		if !directRemoteCodingSessionUsable(status) {
-			t.Fatalf("status %s should be usable", status)
-		}
+func TestCodingWorkflowChoiceCommandsUseTemplateTypes(t *testing.T) {
+	choiceID := "wc_test"
+	simple := buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID)
+	choice, gotChoiceID, ok := parseWorkflowChoiceCommand(simple)
+	if !ok {
+		t.Fatalf("coding_subagent choice command should parse")
+	}
+	if gotChoiceID != choiceID || choice != "coding_subagent" {
+		t.Fatalf("coding_subagent choice = (%q,%q), want (coding_subagent,%s)", choice, gotChoiceID, choiceID)
 	}
 
-	blocked := []remote.SessionStatus{remote.SessionStarting, remote.SessionBusy, remote.SessionExited, remote.SessionError}
-	for _, status := range blocked {
-		if directRemoteCodingSessionUsable(status) {
-			t.Fatalf("status %s should not be usable", status)
-		}
+	remote := buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID)
+	choice, gotChoiceID, ok = parseWorkflowChoiceCommand(remote)
+	if !ok {
+		t.Fatalf("remote coding choice command should parse")
+	}
+	if gotChoiceID != choiceID || choice != "remote_coding_subagent" {
+		t.Fatalf("remote coding choice = (%q,%q), want (remote_coding_subagent,%s)", choice, gotChoiceID, choiceID)
 	}
 }
 
-func TestDirectRemoteCodingSessionSelectableRequiresIDAndInteractiveState(t *testing.T) {
-	tests := []struct {
-		name    string
-		session *remote.SSHManagedSession
-		want    bool
-	}{
-		{name: "nil session", session: nil, want: false},
-		{name: "empty id", session: &remote.SSHManagedSession{Status: remote.SessionRunning}, want: false},
-		{name: "blank id", session: &remote.SSHManagedSession{ID: "   ", Status: remote.SessionRunning}, want: false},
-		{name: "busy", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionBusy}, want: false},
-		{name: "running", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionRunning}, want: true},
-		{name: "waiting input", session: &remote.SSHManagedSession{ID: "ssh-1", Status: remote.SessionWaitingInput}, want: true},
+func TestCodingWorkflowChoicePanelIncludesRemoteTemplateOption(t *testing.T) {
+	h := &IMMessageHandler{}
+	result := h.askWorkflowConfirmChoice(IMUserMessage{UserID: "u", Text: "修复远程项目登录接口"}, &v2.RouteResult{
+		Target:       v2.RouteToWorkflow,
+		WorkflowType: "coding",
+	})
+	if result.Response == nil {
+		t.Fatalf("expected choice response")
+	}
+	if !strings.Contains(result.Response.Text, "远程编程") || !strings.Contains(result.Response.Text, "主机、端口、用户名、密码、默认工作目录和项目描述") {
+		t.Fatalf("choice panel text should explain remote coding template, got %q", result.Response.Text)
 	}
 
-	for _, tt := range tests {
-		if got := directRemoteCodingSessionSelectable(tt.session); got != tt.want {
-			t.Fatalf("%s: got %v want %v", tt.name, got, tt.want)
+	foundRemoteAction := false
+	for _, action := range result.Response.Actions {
+		choice, _, ok := parseWorkflowChoiceCommand(action.Command)
+		if ok && choice == workflowChoiceRemoteCoding {
+			foundRemoteAction = true
+			if !strings.Contains(action.Label, "远程编程") {
+				t.Fatalf("remote action label = %q, want 远程编程", action.Label)
+			}
 		}
 	}
-}
-
-func TestDirectCodingPanelPlaceholderOnlyMatchesPanelLaunchText(t *testing.T) {
-	if !isDirectCodingPanelPlaceholder("启动简化编程任务") {
-		t.Fatalf("quick coding panel launch text should be treated as placeholder")
-	}
-	if !isDirectCodingPanelPlaceholder(" 启动远程编程任务 ") {
-		t.Fatalf("remote coding panel launch text should be treated as placeholder")
-	}
-	if isDirectCodingPanelPlaceholder("请修改登录页样式") {
-		t.Fatalf("real user task should not be treated as placeholder")
+	if !foundRemoteAction {
+		t.Fatalf("expected remote_coding_subagent action, got %#v", result.Response.Actions)
 	}
 }
 
@@ -213,7 +212,7 @@ func TestScrubActivePhaseSensitiveFormDataRemovesSecretsOnly(t *testing.T) {
 	state := &v2.WorkflowState{
 		Phases: []v2.Phase{
 			{
-				ID: "remote_direct_coding",
+				ID: "remote_coding_subagent_execution",
 				InputSchema: &v2.PhaseInputSchema{
 					Fields: []v2.PhaseInputField{
 						{Name: "ssh_host", Label: "主机", Type: "text"},
@@ -251,45 +250,82 @@ func TestScrubActivePhaseSensitiveFormDataRemovesSecretsOnly(t *testing.T) {
 	}
 }
 
-func TestHasPendingDirectSubAgentExecutionRequiresDirectContext(t *testing.T) {
+func TestHasPendingTemplateSubAgentExecutionRequiresTemplateExecutionContext(t *testing.T) {
 	h := &IMMessageHandler{}
-	if h.hasPendingDirectSubAgentExecution("u") {
-		t.Fatalf("empty handler state should not be pending direct execution")
+	if h.hasPendingTemplateSubAgentExecution("u") {
+		t.Fatalf("empty handler state should not be pending template execution")
 	}
 
 	h.pendingV2SubAgentExecution.Store("u", true)
-	if h.hasPendingDirectSubAgentExecution("u") {
-		t.Fatalf("generic pending v2 execution without direct context should not be treated as direct")
+	if h.hasPendingTemplateSubAgentExecution("u") {
+		t.Fatalf("generic pending v2 execution without coding template context should not be treated as pending")
 	}
 
-	h.pendingDirectCodingProjectPath.Store("u", "D:/repo")
-	if !h.hasPendingDirectSubAgentExecution("u") {
-		t.Fatalf("local direct coding context should be pending direct execution")
+	h.pendingTemplateCodingProjectPath.Store("u", "D:/repo")
+	if !h.hasPendingTemplateSubAgentExecution("u") {
+		t.Fatalf("coding_subagent context should be pending template execution")
 	}
-	h.pendingDirectCodingProjectPath.Delete("u")
+	h.pendingTemplateCodingProjectPath.Delete("u")
 
-	h.pendingDirectRemoteCoding.Store("u", directRemoteCodingContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
-	if !h.hasPendingDirectSubAgentExecution("u") {
-		t.Fatalf("remote direct coding context should be pending direct execution")
+	h.pendingTemplateRemoteCoding.Store("u", remoteCodingTemplateContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
+	if !h.hasPendingTemplateSubAgentExecution("u") {
+		t.Fatalf("remote_coding_subagent context should be pending template execution")
 	}
 }
 
-func TestClearPerUserSessionStateClearsDirectSubAgentPendingState(t *testing.T) {
+func TestPrepareCodingTemplateSubAgentExecutionUsesFormDescriptionForContinue(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "u"
+	state := &v2.WorkflowState{
+		Type:        "coding_subagent",
+		ProjectPath: ".",
+		Summary:     "original summary",
+		Phases: []v2.Phase{
+			{
+				ID:       "coding_subagent_execution",
+				ExecMode: v2.ExecModeSubAgent,
+				FormData: map[string]interface{}{
+					"work_dir":            "D:/test",
+					"project_description": "使用c++编写一个hello world1",
+				},
+			},
+		},
+		CurrentPhase: 0,
+	}
+
+	requestText := h.prepareCodingTemplateSubAgentExecution(userID, state)
+	if requestText != "使用c++编写一个hello world1" {
+		t.Fatalf("requestText = %q, want form project description", requestText)
+	}
+	if state.ProjectPath != "D:/test" {
+		t.Fatalf("state.ProjectPath = %q, want form work_dir", state.ProjectPath)
+	}
+	if !h.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatalf("template execution should be pending after form submit preparation")
+	}
+
+	got := h.agentLoopUserTextForWorkflow(IMUserMessage{UserID: userID, Text: "继续"}, true)
+	if got != "使用c++编写一个hello world1" {
+		t.Fatalf("agent loop user text = %q, want form project description instead of continue", got)
+	}
+}
+
+func TestClearPerUserSessionStateClearsTemplateSubAgentPendingState(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "u"
 	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingDirectCodingProjectPath.Store(userID, "D:/repo")
-	h.pendingDirectRemoteCoding.Store(userID, directRemoteCodingContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
+	h.pendingTemplateCodingProjectPath.Store(userID, "D:/repo")
+	h.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
 
 	h.clearPerUserSessionState(userID)
 
 	if _, ok := h.pendingV2SubAgentExecution.Load(userID); ok {
 		t.Fatalf("pendingV2SubAgentExecution should be cleared")
 	}
-	if _, ok := h.pendingDirectCodingProjectPath.Load(userID); ok {
-		t.Fatalf("pendingDirectCodingProjectPath should be cleared")
+	if _, ok := h.pendingTemplateCodingProjectPath.Load(userID); ok {
+		t.Fatalf("pendingTemplateCodingProjectPath should be cleared")
 	}
-	if _, ok := h.pendingDirectRemoteCoding.Load(userID); ok {
-		t.Fatalf("pendingDirectRemoteCoding should be cleared")
+	if _, ok := h.pendingTemplateRemoteCoding.Load(userID); ok {
+		t.Fatalf("pendingTemplateRemoteCoding should be cleared")
 	}
 }

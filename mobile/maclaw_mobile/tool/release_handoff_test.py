@@ -258,6 +258,32 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("Runtime boundary verifier result", output)
         self.assertIn("AI assistant answer with citations", output)
         self.assertNotIn("Assistant search with citations", output)
+        self.assertIn(
+            "traceable GUI/agent-managed backend SSH session smoke target",
+            output,
+        )
+        self.assertIn(
+            "same GUI/agent-bound backend_session_id",
+            output,
+        )
+        self.assertNotIn("safe GUI/agent-managed SSH session smoke target", output)
+        self.assertIn("GUI-equivalent backend-managed SSH session evidence", output)
+        self.assertIn("GUI/agent-bound backend_session_id", output)
+        self.assertIn("GUI/agent claim or worker handoff", output)
+        self.assertIn("explicit worker claim/update evidence", output)
+        self.assertIn("`ssh_session` realtime events", output)
+        self.assertIn("`output_chunk`", output)
+        self.assertIn("`output_seq`", output)
+        self.assertIn("not phone-local/ad hoc terminal evidence", output)
+        self.assertIn("phone-initiated interrupt evidence", output)
+        self.assertIn("Hub control record", output)
+        self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
+        self.assertIn("GUI/agent Ctrl+C handling", output)
+        self.assertIn("copied backend session output", output)
+        self.assertIn(
+            "AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id",
+            output,
+        )
         self.assertIn("Digital employee list", output)
         self.assertIn("Do not store signing secrets", output)
         self.assertIn("Missing completed signed-build QA record", output)
@@ -404,6 +430,7 @@ class ReleaseHandoffTest(unittest.TestCase):
                 release_evidence_commands.qa_preflight_command(
                     team_id="ABCDE12345",
                     export_method="ad-hoc",
+                    log=release_evidence_commands.preflight_log_path("1.0.0+42"),
                 ),
                 release_evidence_commands.runtime_boundary_command("1.0.0+42"),
                 release_evidence_commands.android_release_build_command(
@@ -536,6 +563,11 @@ class ReleaseHandoffTest(unittest.TestCase):
             release_evidence_commands.qa_preflight_command(
                 scope="android",
                 records_dir="tmp/qa-builds",
+                log=release_evidence_commands.preflight_log_path(
+                    "1.0.0+42",
+                    scope="android",
+                    records_dir="tmp/qa-builds",
+                ),
             ),
             commands,
         )
@@ -690,7 +722,13 @@ class ReleaseHandoffTest(unittest.TestCase):
         )
         self.assertNotIn("--scope android --team-id", android_output)
         self.assertIn(
-            release_evidence_commands.qa_preflight_command(scope="android"),
+            release_evidence_commands.qa_preflight_command(
+                scope="android",
+                log=release_evidence_commands.preflight_log_path(
+                    "1.0.0+42",
+                    scope="android",
+                ),
+            ),
             android_output,
         )
         self.assertIn(
@@ -779,6 +817,10 @@ class ReleaseHandoffTest(unittest.TestCase):
                 scope="ios",
                 team_id="ABCDE12345",
                 export_method="ad-hoc",
+                log=release_evidence_commands.preflight_log_path(
+                    "1.0.0+42",
+                    scope="ios",
+                ),
             ),
             ios_output,
         )
@@ -1049,6 +1091,138 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("MaClaw Mobile Release Handoff", target.read_text(encoding="utf-8"))
         self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
 
+    def test_main_force_preserves_current_local_evidence_snapshot(self) -> None:
+        root = self.make_root()
+        target = root / "handoff.md"
+        target.write_text(
+            "\n".join(
+                [
+                    "# Old handoff",
+                    "",
+                    "## Current Local Evidence Snapshot",
+                    "",
+                    "- Automated release gate transcript: `docs/qa-builds/release-gates-existing.log`.",
+                    "- Runtime boundary transcript: `docs/qa-builds/runtime-boundary-existing.log`.",
+                    "",
+                    "## Notes",
+                    "",
+                    "- old note",
+                ],
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stdout = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.ready_status
+            with redirect_stdout(stdout):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                        "--force",
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        text = target.read_text(encoding="utf-8")
+        self.assertEqual(0, exit_code)
+        self.assertIn("MaClaw Mobile Release Handoff", text)
+        self.assertNotIn("# Old handoff", text)
+        self.assertIn("## Current Local Evidence Snapshot", text)
+        self.assertIn("release-gates-existing.log", text)
+        self.assertIn("runtime-boundary-existing.log", text)
+        self.assertIn("## Notes", text)
+        self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
+
+    def test_main_dry_run_prints_output_without_overwriting_existing_file(self) -> None:
+        root = self.make_root()
+        target = root / "docs" / "qa-builds" / "handoff-1.0.0+42.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("existing handoff evidence", encoding="utf-8")
+        stdout = StringIO()
+        stderr = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.ready_status
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                        "--dry-run",
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual("existing handoff evidence", target.read_text(encoding="utf-8"))
+        self.assertIn("MaClaw Mobile Release Handoff", stdout.getvalue())
+        self.assertIn("--team-id ABCDE12345", stdout.getvalue())
+        self.assertNotIn("pass --force to overwrite", stderr.getvalue())
+        self.assertNotIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
+
+    def test_main_dry_run_preserves_snapshot_in_preview_without_overwriting(self) -> None:
+        root = self.make_root()
+        target = root / "docs" / "qa-builds" / "handoff-1.0.0+42.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        original = (
+            "# Old handoff\n\n"
+            "## Current Local Evidence Snapshot\n\n"
+            "- Automated release gate transcript: `docs/qa-builds/release-gates-existing.log`.\n"
+            "- Runtime boundary transcript: `docs/qa-builds/runtime-boundary-existing.log`.\n\n"
+            "## Notes\n\n"
+            "- old note\n"
+        )
+        target.write_text(original, encoding="utf-8")
+        stdout = StringIO()
+        stderr = StringIO()
+        original_build_status = release_handoff.release_status_report.build_status
+        try:
+            release_handoff.release_status_report.build_status = self.ready_status
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = release_handoff.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--version",
+                        "1.0.0+42",
+                        "--team-id",
+                        "ABCDE12345",
+                        "--output",
+                        str(target),
+                        "--dry-run",
+                    ],
+                )
+        finally:
+            release_handoff.release_status_report.build_status = original_build_status
+
+        preview = stdout.getvalue()
+        self.assertEqual(0, exit_code)
+        self.assertEqual(original, target.read_text(encoding="utf-8"))
+        self.assertIn("MaClaw Mobile Release Handoff", preview)
+        self.assertIn("## Current Local Evidence Snapshot", preview)
+        self.assertIn("release-gates-existing.log", preview)
+        self.assertIn("runtime-boundary-existing.log", preview)
+        self.assertNotIn("# Old handoff", preview)
+        self.assertNotIn("Wrote MaClaw Mobile release handoff", preview)
+        self.assertEqual("", stderr.getvalue())
+
     def test_main_prints_ready_handoff_to_stdout(self) -> None:
         root = self.make_root()
         stdout = StringIO()
@@ -1119,6 +1293,14 @@ class ReleaseHandoffTest(unittest.TestCase):
             text,
         )
         self.assertIn("Replace it with the real 10-character Apple Team ID", text)
+        self.assertIn(
+            "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
+            text,
+        )
+        self.assertIn(
+            "for dry-run previews with placeholders, wrap placeholder arguments in quotes",
+            text,
+        )
         self.assertIn("Wrote MaClaw Mobile release handoff", stdout.getvalue())
 
     def test_format_handoff_omits_placeholder_note_when_team_id_is_concrete(self) -> None:
@@ -1136,6 +1318,7 @@ class ReleaseHandoffTest(unittest.TestCase):
             "<APPLE_TEAM_ID>` is allowed only for planning/status commands",
             output,
         )
+        self.assertNotIn("PowerShell treats unquoted `<...>` placeholders", output)
 
     def test_main_allows_android_handoff_without_team_id(self) -> None:
         root = self.make_root()

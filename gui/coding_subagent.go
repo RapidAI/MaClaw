@@ -188,6 +188,9 @@ type codingToolExecutionResult struct {
 var codingSubAgentFreeformSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)((?:"|')?authorization(?:"|')?\s*[:=]\s*(?:"|')?(?:bearer|basic)\s+)[^\s,"';]+`),
 	regexp.MustCompile(`(?i)((?:"|')?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)(?:"|')?\s*[:=]\s*(?:"|')?)[^\s,"';]+`),
+	regexp.MustCompile(`(?i)((?:--|/)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s+")[^"\r\n]*`),
+	regexp.MustCompile(`(?i)((?:--|/)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s+')[^'\r\n]*`),
+	regexp.MustCompile(`(?i)((?:--|/)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s+(?:"|')?)[^\s,"';]+`),
 }
 
 // NewCodingSubAgent creates a SubAgent bound to the host's tool implementations.
@@ -299,15 +302,16 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
 	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
 	verificationStatus, verificationSummary := summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
+	unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
 	status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
 	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
-	status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, allGuardrailViolations)
+	status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
 	summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
 	cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
-	if len(allGuardrailViolations) > 0 {
-		summary = appendSubAgentGuardrailSummary(summary, allGuardrailViolations)
+	if len(unresolvedGuardrailViolations) > 0 {
+		summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
 	}
-	cb.emitGuardrailSummaryEvent(allGuardrailViolations)
+	cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
 	if explorationSummary != "" {
 		summary = appendSubAgentExplorationSummary(summary, explorationStatus, explorationSummary)
 	}
@@ -756,7 +760,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	c.emitToolStartedEvent(name)
 	defer func() {
 		duration := time.Since(toolStartedAt)
-		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, duration)
+		c.emitToolFinishedEvent(name, argsJSON, toolResult.Text, toolResult.Outcome, duration)
 		if toolResult.Outcome != codingToolOutcomeSuccess {
 			logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, duration)
 			if !toolResult.SkipRejectedDynamicToolRecord {
@@ -1576,7 +1580,11 @@ func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSO
 			taskTitle = compactSubAgentTaskTitle(c.task.Title)
 		}
 	}
-	log.Printf("[coding-subagent] operation failed: tool=%s outcome=%s duration=%s task=%d title=%q project=%q args=%s result=%s",
+	if codingSubAgentFailedToolLogIsDiagnostic(name, argsJSON, result) {
+		return
+	}
+	log.Printf("[coding-subagent] %s: tool=%s outcome=%s duration=%s task=%d title=%q project=%q args=%s result=%s",
+		"operation failed",
 		name,
 		result.Outcome,
 		duration,
@@ -1586,6 +1594,18 @@ func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSO
 		compactCodingSubAgentArgsLogText(argsJSON, 500),
 		compactCodingSubAgentLogText(result.Text, 500),
 	)
+}
+
+func codingSubAgentFailedToolLogIsDiagnostic(name, argsJSON string, result codingToolExecutionResult) bool {
+	if canonicalCodingSubAgentToolName(name) != "bash" || result.Outcome != codingToolOutcomeFailed {
+		return false
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return false
+	}
+	command, _ := args["command"].(string)
+	return subAgentCommandFailureCanBeResolvedByLaterVerification(CodingSubAgentCommandResult{Command: command, Summary: result.Text})
 }
 
 func compactCodingSubAgentArgsLogText(argsJSON string, maxRunes int) string {
@@ -2420,9 +2440,10 @@ func normalizeShellCommandToken(field string) string {
 }
 
 func normalizeShellExecutableToken(token string) string {
+	lower := strings.ToLower(token)
 	for _, suffix := range []string{".exe", ".cmd", ".bat", ".ps1"} {
-		if strings.HasSuffix(token, suffix) {
-			return strings.TrimSuffix(token, suffix)
+		if strings.HasSuffix(lower, suffix) {
+			return token[:len(token)-len(suffix)]
 		}
 	}
 	return token
@@ -4062,10 +4083,14 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 	if len(commands) == 0 {
 		return summary
 	}
+	summaryCommands := filterResolvedSubAgentCommandSummaryEntries(commands)
+	if len(summaryCommands) == 0 {
+		return summary
+	}
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(summary))
 	b.WriteString("\n\n## 命令验证\n\n")
-	shownCommands := selectSubAgentCommandSummaryEntries(commands, codingSubAgentCommandSummaryMax)
+	shownCommands := selectSubAgentCommandSummaryEntries(summaryCommands, codingSubAgentCommandSummaryMax)
 	for _, cmd := range shownCommands {
 		status := subAgentCommandSummaryStatus(cmd)
 		b.WriteString("- ")
@@ -4086,10 +4111,45 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 		}
 		b.WriteString("\n")
 	}
-	if remaining := len(commands) - len(shownCommands); remaining > 0 {
+	if remaining := len(summaryCommands) - len(shownCommands); remaining > 0 {
 		b.WriteString(fmt.Sprintf("- ... 还有 %d 条命令记录未展开\n", remaining))
 	}
 	return b.String()
+}
+
+func filterResolvedSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	laterSucceeded := make(map[string]bool, len(commands))
+	laterVerificationSucceeded := false
+	reversed := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for i := len(commands) - 1; i >= 0; i-- {
+		cmd := commands[i]
+		key := subAgentCommandFailureResolutionKey(cmd)
+		if cmd.Succeeded && !subAgentCommandSuccessLooksEmpty(cmd) {
+			if key != "" {
+				laterSucceeded[key] = true
+			}
+			if isSubAgentVerificationCommand(cmd.Command) {
+				laterVerificationSucceeded = true
+			}
+			reversed = append(reversed, cmd)
+			continue
+		}
+		if !cmd.Succeeded && key != "" && laterSucceeded[key] {
+			continue
+		}
+		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
+			continue
+		}
+		reversed = append(reversed, cmd)
+	}
+	filtered := make([]CodingSubAgentCommandResult, len(reversed))
+	for i := range reversed {
+		filtered[len(reversed)-1-i] = reversed[i]
+	}
+	return filtered
 }
 
 func selectSubAgentCommandSummaryEntries(commands []CodingSubAgentCommandResult, maxItems int) []CodingSubAgentCommandResult {
@@ -4317,9 +4377,10 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 	if len(commands) == 0 {
 		return codingSubAgentQualityNone, "no bash commands run"
 	}
-	skippedDiffChecks := countSoftNonGitDiffSelfCheckFailures(commands)
-	failed := filterSoftNonGitDiffSelfCheckFailures(failedSubAgentCommands(commands))
-	emptySuccesses := emptySuccessSubAgentCommands(commands)
+	summaryCommands := filterResolvedSubAgentCommandSummaryEntries(commands)
+	skippedDiffChecks := countSoftNonGitDiffSelfCheckFailures(summaryCommands)
+	failed := filterSoftNonGitDiffSelfCheckFailures(failedSubAgentCommands(summaryCommands))
+	emptySuccesses := emptySuccessSubAgentCommands(summaryCommands)
 	problems := append(append([]CodingSubAgentCommandResult{}, failed...), emptySuccesses...)
 	if len(problems) == 0 {
 		if skippedDiffChecks > 0 {
@@ -4369,10 +4430,12 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	filesModified = uniqueSortedSubAgentStrings(filesModified)
 	var failed []string
 	var warnings []string
-	if len(guardrails) > 0 {
-		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(guardrails)))
+	postEditCommandsWithBlocked := filterPostEditSubAgentCommands(commands, lastEditSeq)
+	unresolvedGuardrails := unresolvedSubAgentGuardrailViolations(guardrails, postEditCommandsWithBlocked)
+	if len(unresolvedGuardrails) > 0 {
+		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(unresolvedGuardrails)))
 	}
-	postEditCommands := filterGuardrailBlockedSubAgentCommands(filterPostEditSubAgentCommands(commands, lastEditSeq), guardrails)
+	postEditCommands := filterGuardrailBlockedSubAgentCommands(postEditCommandsWithBlocked, guardrails)
 	failedCommands := unresolvedFailedSubAgentCommands(postEditCommands)
 	failedCommandSummary := ""
 	if len(failedCommands) > 0 {
@@ -5530,11 +5593,18 @@ func subAgentPriorSegmentsAreShellWrappers(segments [][]string, index int) bool 
 		return true
 	}
 	for _, segment := range segments[:index] {
-		if !subAgentSegmentIsShellWrapperPrefix(segment) {
+		if !subAgentSegmentIsShellWrapperPrefix(segment) && !subAgentSegmentIsDirectoryChangePrefix(segment) {
 			return false
 		}
 	}
 	return true
+}
+
+func subAgentSegmentIsDirectoryChangePrefix(segment []string) bool {
+	if len(segment) == 0 {
+		return false
+	}
+	return commandNameBase(segment[0]) == "cd"
 }
 
 func subAgentSegmentIsShellWrapperPrefix(segment []string) bool {
@@ -5562,8 +5632,25 @@ func normalizeSubAgentCommandFieldsForEvidence(fields []string) string {
 		return ""
 	}
 	normalized := make([]string, 0, len(fields))
+	commandPosition := true
 	for _, field := range fields {
+		field = normalizeShellCommandToken(field)
+		if field == "" {
+			continue
+		}
+		if field == "&" && commandPosition {
+			continue
+		}
+		if isShellCommandBoundary(field) {
+			normalized = append(normalized, field)
+			commandPosition = true
+			continue
+		}
 		field = normalizeShellExecutableToken(field)
+		if commandPosition {
+			field = commandNameBase(field)
+			commandPosition = false
+		}
 		if field != "" {
 			normalized = append(normalized, field)
 		}
@@ -5980,6 +6067,67 @@ func filterGuardrailBlockedSubAgentCommands(commands []CodingSubAgentCommandResu
 	return filtered
 }
 
+func unresolvedSubAgentGuardrailViolations(guardrails []CodingSubAgentGuardrailViolation, commands []CodingSubAgentCommandResult) []CodingSubAgentGuardrailViolation {
+	if len(guardrails) == 0 {
+		return nil
+	}
+	unresolved := make([]CodingSubAgentGuardrailViolation, 0, len(guardrails))
+	for _, violation := range guardrails {
+		if subAgentGuardrailViolationResolvedByCommandSuccess(violation, commands) {
+			continue
+		}
+		unresolved = append(unresolved, violation)
+	}
+	return unresolved
+}
+
+func subAgentGuardrailViolationResolvedByCommandSuccess(violation CodingSubAgentGuardrailViolation, commands []CodingSubAgentCommandResult) bool {
+	if len(commands) == 0 || !subAgentGuardrailViolationCanBeResolvedByCommandSuccess(violation) {
+		return false
+	}
+	key := normalizeSubAgentCommandForFailureResolution(violation.Command)
+	for _, command := range commands {
+		if !command.Succeeded || subAgentCommandSuccessLooksEmpty(command) || !subAgentCommandHappenedAfterGuardrail(command, violation) {
+			continue
+		}
+		commandKey := normalizeSubAgentCommandForFailureResolution(command.Command)
+		if key != "" && commandKey == key {
+			return true
+		}
+		if subAgentGuardrailViolationCanBeResolvedByLaterVerification(violation) && isSubAgentVerificationCommand(command.Command) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentCommandHappenedAfterGuardrail(command CodingSubAgentCommandResult, violation CodingSubAgentGuardrailViolation) bool {
+	return command.seq == 0 || violation.seq == 0 || command.seq > violation.seq
+}
+
+func subAgentGuardrailViolationCanBeResolvedByCommandSuccess(violation CodingSubAgentGuardrailViolation) bool {
+	if violation.Category != codingSubAgentGuardrailCategoryCommand {
+		return false
+	}
+	summary := strings.ToLower(violation.Summary)
+	return strings.Contains(summary, "powershell command compatibility") ||
+		strings.Contains(summary, "bash-only syntax") ||
+		strings.Contains(summary, "powershell exception") ||
+		strings.Contains(summary, "about_execution_policies") ||
+		strings.Contains(summary, "running scripts is disabled") ||
+		strings.Contains(summary, "无法加载文件") ||
+		strings.Contains(summary, "禁止运行脚本")
+}
+
+func subAgentGuardrailViolationCanBeResolvedByLaterVerification(violation CodingSubAgentGuardrailViolation) bool {
+	summary := strings.ToLower(violation.Summary)
+	return strings.Contains(summary, "powershell exception") ||
+		strings.Contains(summary, "about_execution_policies") ||
+		strings.Contains(summary, "running scripts is disabled") ||
+		strings.Contains(summary, "无法加载文件") ||
+		strings.Contains(summary, "禁止运行脚本")
+}
+
 func subAgentGuardrailBlockedCommandKey(command string) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -6038,18 +6186,25 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		return nil
 	}
 	laterSucceeded := make(map[string]bool, len(commands))
+	laterVerificationSucceeded := false
 	unresolvedReversed := make([]CodingSubAgentCommandResult, 0)
 	for i := len(commands) - 1; i >= 0; i-- {
 		cmd := commands[i]
 		key := subAgentCommandFailureResolutionKey(cmd)
 		if key == "" {
-			if !cmd.Succeeded && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+			if !cmd.Succeeded && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) && !(laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd)) {
 				unresolvedReversed = append(unresolvedReversed, cmd)
 			}
 			continue
 		}
 		if cmd.Succeeded && !subAgentCommandSuccessLooksEmpty(cmd) {
 			laterSucceeded[key] = true
+			if isSubAgentVerificationCommand(cmd.Command) {
+				laterVerificationSucceeded = true
+			}
+			continue
+		}
+		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
 			continue
 		}
 		if !laterSucceeded[key] && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
@@ -6073,6 +6228,201 @@ func subAgentCommandFailureResolutionKey(cmd CodingSubAgentCommandResult) string
 		return key
 	}
 	return key + "\x00" + workingDir
+}
+
+func subAgentCommandFailureCanBeResolvedByLaterVerification(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded || isSubAgentVerificationCommand(cmd.Command) {
+		return false
+	}
+	if subAgentDiagnosticProbeFailureResultLooksHard(cmd.Summary) {
+		return false
+	}
+	command := strings.ToLower(strings.Join(strings.Fields(cmd.Command), " "))
+	if command == "" {
+		return false
+	}
+	return subAgentDiagnosticProbeCommand(command)
+}
+
+func subAgentDiagnosticProbeFailureResultLooksHard(result string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(result), " "))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"assert",
+		"access denied",
+		"build stopped",
+		"check(",
+		"check (",
+		"expected",
+		"fatal error",
+		"fail at",
+		"failed test",
+		"linker command failed",
+		"lnk",
+		"ninja:",
+		"panic:",
+		"permission denied",
+		"pytest",
+		"test failed",
+		"traceback",
+		"undefined reference",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentDiagnosticProbeCommand(command string) bool {
+	segments := shellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, segment := range segments {
+		if !subAgentDiagnosticProbeCommandSegment(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+func subAgentDiagnosticProbeCommandSegment(segment []string) bool {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return false
+	}
+	cmd := commandNameBase(segment[0])
+	args := segment[1:]
+	if cmd == "echo" {
+		return subAgentDiagnosticEchoSeparator(args)
+	}
+	if subAgentDiagnosticBareProbeTool(cmd) && subAgentDiagnosticProbeArgsAreOnlyRedirection(args) {
+		return true
+	}
+	if subAgentDiagnosticBareProbeTool(cmd) && subAgentDiagnosticCompilerProbeArgs(args) {
+		return true
+	}
+	if cmd == "dir" {
+		return subAgentDiagnosticProbeArgsContain(args, "/s") && subAgentDiagnosticProbeArgsContain(args, "/b")
+	}
+	switch cmd {
+	case "get-command", "where", "where.exe", "vswhere", "get-childitem", "test-path", "select-object":
+		return true
+	}
+	return subAgentDiagnosticVersionProbeArgs(args)
+}
+
+func subAgentDiagnosticVersionProbeArgs(args []string) bool {
+	sawVersionArg := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		arg = strings.TrimSpace(normalizeShellCommandToken(arg))
+		if arg == "" || arg == "2>&1" {
+			continue
+		}
+		if consumes := subAgentDiagnosticProbeSecretArgConsumesValue(arg); consumes >= 0 {
+			i += consumes
+			continue
+		}
+		switch arg {
+		case "--version", "-version", "/?":
+			sawVersionArg = true
+			continue
+		}
+		return false
+	}
+	return sawVersionArg
+}
+
+func subAgentDiagnosticCompilerProbeArgs(args []string) bool {
+	sawProbeArg := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		arg = strings.TrimSpace(normalizeShellCommandToken(arg))
+		if arg == "" || arg == "2>&1" {
+			continue
+		}
+		if consumes := subAgentDiagnosticProbeSecretArgConsumesValue(arg); consumes >= 0 {
+			i += consumes
+			continue
+		}
+		switch arg {
+		case "--version", "-v", "-print-search-dirs":
+			sawProbeArg = true
+			continue
+		}
+		return false
+	}
+	return sawProbeArg
+}
+
+func subAgentDiagnosticProbeSecretArgConsumesValue(arg string) int {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	if arg == "" {
+		return -1
+	}
+	for _, prefix := range []string{"--", "/"} {
+		if !strings.HasPrefix(arg, prefix) {
+			continue
+		}
+		flag := strings.TrimPrefix(arg, prefix)
+		for _, name := range []string{"api-key", "api_key", "access-token", "access_token", "refresh-token", "refresh_token", "token", "password", "passwd", "secret"} {
+			if flag == name {
+				return 1
+			}
+			if strings.HasPrefix(flag, name+"=") || strings.HasPrefix(flag, name+":") {
+				return 0
+			}
+		}
+	}
+	return -1
+}
+
+func subAgentDiagnosticBareProbeTool(cmd string) bool {
+	switch cmd {
+	case "cc", "gcc", "g++", "c++", "clang", "clang++", "cl":
+		return true
+	}
+	return false
+}
+
+func subAgentDiagnosticProbeArgsAreOnlyRedirection(args []string) bool {
+	for _, arg := range args {
+		token := strings.TrimSpace(normalizeShellCommandToken(arg))
+		if token == "" || token == "2>&1" {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func subAgentDiagnosticEchoSeparator(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	text := strings.Trim(strings.Join(args, " "), `"'`)
+	if text == "" {
+		return true
+	}
+	for _, r := range text {
+		if r != '-' && r != '=' && r != '_' && r != '.' && !unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func subAgentDiagnosticProbeArgsContain(args []string, target string) bool {
+	for _, arg := range args {
+		if strings.TrimSpace(normalizeShellCommandToken(arg)) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSubAgentWorkingDirForEvidence(workingDir string) string {
@@ -6463,6 +6813,9 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	if hasInteractiveVerificationArg(args) {
 		return false
 	}
+	if cmd == "test" && subAgentCommandTokenLooksLikePath(segment[0]) {
+		return false
+	}
 	switch cmd {
 	case "go":
 		return goRunsVerification(args)
@@ -6536,6 +6889,8 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return ctestRunsVerification(args)
 	case "ninja", "ninja-build":
 		return ninjaRunsVerification(args)
+	case "cc", "gcc", "g++", "c++", "clang", "clang++", "cl", "cl.exe":
+		return cCompilerRunsVerification(args)
 	case "dotnet":
 		return dotnetRunsVerification(args)
 	case "composer":
@@ -6552,6 +6907,17 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return rakeRunsVerification(args)
 	}
 	return cmd == "test" || isVerificationRunnerCommand(cmd, args)
+}
+
+func subAgentCommandTokenLooksLikePath(token string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" {
+		return false
+	}
+	if strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") || strings.HasPrefix(token, "/") || strings.HasPrefix(token, `.\`) || strings.HasPrefix(token, `..\`) {
+		return true
+	}
+	return len(token) >= 3 && token[1] == ':' && (token[2] == '\\' || token[2] == '/')
 }
 
 func commandNameBase(token string) string {
@@ -7049,6 +7415,35 @@ func isRakeVerificationTask(task string) bool {
 
 func swiftRunsVerification(args []string) bool {
 	return firstArgIn(args, "test", "build")
+}
+
+func cCompilerRunsVerification(args []string) bool {
+	for _, arg := range args {
+		normalized := strings.Trim(strings.TrimSpace(normalizeShellExecutableToken(arg)), `"'`)
+		if normalized == "" || strings.HasPrefix(normalized, "-") || isShellEnvAssignment(normalized) {
+			continue
+		}
+		if cCompilerArgLooksLikeSourceFile(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func cCompilerArgLooksLikeSourceFile(arg string) bool {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	if arg == "" {
+		return false
+	}
+	if idx := strings.LastIndexAny(arg, `/\`); idx >= 0 {
+		arg = arg[idx+1:]
+	}
+	for _, ext := range []string{".c", ".cc", ".cpp", ".cxx", ".c++", ".m", ".mm"} {
+		if strings.HasSuffix(arg, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func zigRunsVerification(args []string) bool {
@@ -8975,7 +9370,7 @@ func (c *codingSubAgentCallbacks) codeSessionID() string {
 	return "subagent-workflow"
 }
 
-func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, outcome codingToolOutcome, duration time.Duration) {
+func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result string, outcome codingToolOutcome, duration time.Duration) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -8989,6 +9384,9 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, out
 	event.Outcome = string(outcome)
 	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
+		if codingSubAgentFailedToolLogIsDiagnostic(name, argsJSON, codingToolExecutionResult{Text: result, Outcome: outcome}) {
+			event.Severity = "diagnostic"
+		}
 	}
 	durationMS := duration.Milliseconds()
 	if durationMS == 0 {

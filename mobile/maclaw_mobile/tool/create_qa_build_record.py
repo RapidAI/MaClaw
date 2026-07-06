@@ -14,6 +14,7 @@ VALID_SCOPES = release_evidence_commands.VALID_SCOPES
 VERSION_BUILD_RE = re.compile(r"^\d+(?:\.\d+){1,3}\+\d+$")
 FINAL_DECISION_PREFILL_FIELDS = {
     "release_handoff_result": "Release handoff result",
+    "preflight_result": "Preflight result",
     "runtime_boundary_result": "Runtime boundary verification result",
     "automated_gates_result": "Automated release gates result",
 }
@@ -208,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional handoff output path, transcript reference, or attachment ID to prefill.",
     )
     parser.add_argument(
+        "--preflight-result",
+        help="Optional qa_preflight.py READY output/log reference to prefill.",
+    )
+    parser.add_argument(
         "--runtime-boundary-result",
         help="Optional runtime-boundary verifier output/log reference to prefill.",
     )
@@ -238,6 +243,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Created QA build record: {target}")
+    print(
+        "Complete manual evidence before validation: real-device share/permission, "
+        "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence with "
+        "the same GUI/agent-bound backend_session_id, GUI/agent claim "
+        "or worker handoff plus explicit worker claim/update evidence and "
+        "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
+        "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, and "
+        "AI/digital-employee handoff evidence tied to that same GUI/agent-bound backend_session_id "
+        "when used.",
+    )
     records_dir_arg = records_dir_command_arg(args.records_dir)
     if release_evidence_commands.scope_covers_android(args.scope):
         print(

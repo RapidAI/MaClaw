@@ -27,8 +27,8 @@ export function getAllWorkflowShortcuts(localizeText: LocalizeText): WorkflowSho
             category: localizeText("Software & Development", "软件与开发", "軟體與開發"),
             items: [
                 { type: "coding", icon: "💻", label: localizeText("Coding", "编程开发", "程式開發"), description: localizeText("Full-stack coding workflow", "完整编码开发流程", "完整編碼開發流程") },
-                { type: "coding_subagent", icon: "⌨️", label: localizeText("Quick Coding", "简化编程", "簡化程式"), description: localizeText("Direct CodingSubAgent execution", "直接进入编程智能体", "直接進入程式智能體") },
-                { type: "remote_coding_subagent", icon: "🖥️", label: localizeText("Remote Coding", "远程编程", "遠端程式"), description: localizeText("Direct RemoteCodingSubAgent execution", "直接进入远程编程智能体", "直接進入遠端程式智能體") },
+                { type: "coding_subagent", icon: "⌨️", label: localizeText("Quick Coding", "简化编程", "簡化程式"), description: localizeText("Template form, then CodingSubAgent", "填写模板表单后启动编程智能体", "填寫模板表單後啟動程式智能體") },
+                { type: "remote_coding_subagent", icon: "🖥️", label: localizeText("Remote Coding", "远程编程", "遠端程式"), description: localizeText("Template form, then remote CodingSubAgent", "填写远程模板表单后启动编程智能体", "填寫遠端模板表單後啟動程式智能體") },
                 { type: "testing", icon: "🧪", label: localizeText("Testing", "测试", "測試"), description: localizeText("Test strategy & execution", "测试策略与执行", "測試策略與執行") },
                 { type: "ops_maintenance", icon: "🔧", label: localizeText("Ops & Maintenance", "运维", "運維"), description: localizeText("Operations maintenance", "运维管理", "運維管理") },
                 { type: "maintenance", icon: "🔨", label: localizeText("Refactor", "重构改造", "重構改造"), description: localizeText("Refactoring & migration", "架构重构与技术迁移", "架構重構與技術遷移") },

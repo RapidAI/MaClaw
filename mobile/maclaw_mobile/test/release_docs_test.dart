@@ -12,6 +12,7 @@ void main() {
         readDoc('docs/release_audit.md'),
         readDoc('docs/qa_device_checklist.md'),
         readDoc('docs/qa_build_record_template.md'),
+        readDoc('docs/backend_ssh_session_design.md'),
         readDoc('docs/qa-builds/README.md'),
       ].join('\n');
 
@@ -72,6 +73,24 @@ void main() {
     }
   }
 
+  void expectScopedPreflightCommandsWriteLogs(
+    Map<String, String> docsByName,
+  ) {
+    final commandPattern = RegExp(
+      r'python3 tool/qa_preflight\.py [^`\n]*--scope [^`\n]*',
+    );
+    final commands = <String>[];
+    for (final entry in docsByName.entries) {
+      for (final match in commandPattern.allMatches(entry.value)) {
+        final command = match.group(0)!;
+        commands.add('${entry.key}: $command');
+        expect(command, contains('--log docs/qa-builds/preflight-'));
+        expect(command, contains('.log'));
+      }
+    }
+    expect(commands, isNotEmpty);
+  }
+
   const assistantTab = 'AI助手';
   const webLookup = '发送给 AI 助手';
   const documentsTab = '\u6587\u6863';
@@ -124,6 +143,7 @@ void main() {
     expect(qa, contains('tool/verify_runtime_boundary.py'));
     expect(qa, contains('tool/run_release_gates.py'));
     expect(qa, contains('Release handoff result'));
+    expect(qa, contains('Preflight result'));
     expect(qa, contains('Runtime boundary verification result'));
     expect(qa, contains('Automated release gates result'));
     expect(
@@ -177,8 +197,20 @@ void main() {
       qa,
       contains('validator cannot mistake the handoff plan'),
     );
+    final qaBuildsReadme = readDoc('docs/qa-builds/README.md');
+    expect(qaBuildsReadme, contains('Current Local Evidence Snapshot'));
+    expect(qaBuildsReadme, contains('dry-run preview preserves that snapshot'));
+    expect(qaBuildsReadme, contains('saved file unchanged'));
     expect(qa, contains('completed signed-build QA'));
     expectHandoffCommandsWriteEvidence(qa);
+    expectScopedPreflightCommandsWriteLogs({
+      'docs/release_evidence.md': evidence,
+      'docs/release_checklist.md': readDoc('docs/release_checklist.md'),
+      'docs/qa_device_checklist.md': qa,
+      'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
+      'docs/qa-builds/handoff-0.1.0+1.md':
+          readDoc('docs/qa-builds/handoff-0.1.0+1.md'),
+    });
     expect(releaseDocCorpus(), contains('tool/create_qa_build_record.py'));
     expect(qa, contains('tool/validate_qa_build_records_dir.py'));
     expect(qa, contains('tool/verify_final_release_evidence.py'));
@@ -199,6 +231,10 @@ void main() {
       'MaClaw GUI-like multi-tab AI assistant',
       'typed or voice input',
       'assistant online answers with citations',
+      'GUI/agent-managed backend SSH session management',
+      'phone creates or',
+      'controls Hub records',
+      'MaClaw desktop/agent owns the real SSH session',
       'only the three preset official HubCenter endpoints',
       'assistant history',
     ]) {
@@ -211,6 +247,10 @@ void main() {
       'does not embed or directly call the Go `corelib` package',
       'official Hub or on authorized remote desktop/server digital employees',
       'AI assistant, emergency documents, backend SSH session management, digital employees',
+      'SSH passwords, private keys, and passphrases stay on the authorized MaClaw GUI/agent side',
+      'secure token storage',
+      'GUI/agent-managed session contract',
+      'remaining real-device QA needed for release evidence',
     ]) {
       expect(readmeText, contains(expected));
     }
@@ -219,6 +259,9 @@ void main() {
       'source-backed lookup',
       'search history',
       'information lookup',
+      'SSH credentials stay in secure storage',
+      'secure credential storage',
+      'remaining Hub/agent work needed',
     ]) {
       expect(readmeText, isNot(contains(forbidden)));
     }
@@ -415,6 +458,10 @@ void main() {
     ]) {
       expect(checklistText, contains(expected));
     }
+    final evidence = readDoc('docs/release_evidence.md');
+    expect(evidence, contains('phone-side SSH credential save/read API'));
+    expect(evidence, contains('saveServerPassword'));
+    expect(evidence, contains('readServerPrivateKey'));
   });
 
   test('release docs keep handoff commands scoped and evidence-writing', () {
@@ -592,6 +639,20 @@ void main() {
         ),
         reason: entry.key,
       );
+      expect(
+        normalized,
+        contains(
+          'PowerShell treats unquoted `<...>` placeholders as redirection syntax',
+        ),
+        reason: entry.key,
+      );
+      expect(
+        normalized,
+        contains(
+          'for dry-run previews with placeholders, wrap placeholder arguments in quotes',
+        ),
+        reason: entry.key,
+      );
     }
 
     final signingDocs = {
@@ -754,6 +815,8 @@ void main() {
   test('QA checklist covers service and SSH smoke evidence', () {
     final qa = readDoc('docs/qa_device_checklist.md');
     final qaText = qa.replaceAll(RegExp(r'\s+'), ' ');
+    final releaseDocsText =
+        releaseDocCorpus().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
 
     for (final expected in [
       'Hub Discovery And Service Smoke Test',
@@ -796,32 +859,63 @@ void main() {
       'Backend SSH Session Smoke Test',
       'agent/backend-managed SSH session',
       'session list/status surface',
+      'output_chunk',
+      'output_seq',
+      'claimed_by',
+      '/api/mobile/ssh/sessions/claim',
+      'worker claim/update evidence',
+      'interrupt',
       'Disconnect and reconnect',
       'sensitive-data warning',
       'command drafts',
       'not-auto-executed',
-      'pasted/copied output',
-      'Delete the server profile',
+      'pasted/copied backend session output',
+      'Clear the phone-side server-profile cache',
       'approver different from the tester',
       'Account Privacy And Local Data',
       'Change theme and speech language',
       'Clear local work records',
-      'server profiles and SSH',
+      'server-profile metadata',
       'separate explicit account',
     ]) {
       expect(qa, contains(expected));
     }
     expect(qaText, contains('optional account/settings action'));
     expect(qaText, contains('arbitrary third-party endpoint'));
+    expect(qaText, contains('server-profile cache'));
+    expect(qaText, contains('phone-side server-profile cache'));
     expect(qa, isNot(contains('Search query')));
+    for (final forbidden in [
+      'retained server credentials after local reset',
+      'retained server credential',
+      'server credential clearing',
+      'server credentials clear confirmation',
+      'credential deletion confirmation',
+    ]) {
+      expect(qaText, isNot(contains(forbidden)));
+      expect(releaseDocsText, isNot(contains(forbidden)));
+    }
   });
 
   test('release docs lock backend SSH session evidence fields', () {
     final qa = readDoc('docs/qa_device_checklist.md');
     final template = readDoc('docs/qa_build_record_template.md');
+    final design = readDoc('docs/backend_ssh_session_design.md');
+    final guide = readDoc('docs/user_guide.md');
     final evidence = readDoc('docs/release_evidence.md');
     final audit = readDoc('docs/release_audit.md');
+    final pubspec = readDoc('pubspec.yaml').toLowerCase();
+    final pubspecLock = readDoc('pubspec.lock').toLowerCase();
+    final runtimeSource = Directory('lib')
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.dart'))
+        .map((file) => file.readAsStringSync())
+        .join('\n')
+        .toLowerCase();
     final qaText = qa.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final designText = design.replaceAll(RegExp(r'\s+'), ' ');
+    final guideText = guide.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
     final evidenceText = evidence.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
     final auditText = audit.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
 
@@ -832,13 +926,242 @@ void main() {
       'connect result',
       'read-only command',
       'command output excerpt',
+      'ssh realtime incremental output evidence',
+      'gui/agent claim',
+      'worker handoff',
       'disconnect result',
       'reconnect result',
-      'copied output evidence',
+      'copied backend session output evidence',
     ]) {
       expect(qaText, contains(expected));
       expect(evidenceText, contains(expected));
       expect(auditText, contains(expected));
+    }
+    expect(qaText, contains('interrupt result'));
+    expect(qaText, contains('ctrl+c'));
+    expect(qaText, contains('copy backend session output'));
+    expect(qaText, contains('copied backend session output evidence'));
+    expect(
+      template.toLowerCase(),
+      contains('copied backend session output evidence'),
+    );
+    expect(template.toLowerCase(), contains('generic terminal screenshot'));
+    expect(evidenceText, contains('interrupt/ctrl+c evidence'));
+    expect(evidenceText, contains('explicit worker claim/update evidence'));
+    expect(auditText, contains('interrupt/ctrl+c evidence'));
+    expect(evidenceText, contains('backend session output copy'));
+    expect(
+      evidenceText,
+      contains(
+        'ui labels for copy/clear actions that say backend session output instead of terminal output',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'server/desktop log-analysis shortcut using backend session output and key logs wording',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'backend session output/log ai-analysis confirmation wording in account privacy',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains('backend session/log output before ai analysis'),
+    );
+    expect(
+      evidenceText,
+      isNot(contains('terminal or log output before ai analysis')),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'legacy ssh credential residues without exposing phone-side ssh credential save/read apis',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'rejection of deprecated ssh credential qa fields in favor of server-profile metadata/cache evidence',
+      ),
+    );
+    expect(
+      evidenceText,
+      contains(
+        'credential-residue cleanup and without writing phone-side ssh secrets',
+      ),
+    );
+    expect(evidenceText, contains('copied backend session output'));
+    expect(
+      evidenceText,
+      contains(
+        'ai/digital-employee handoff evidence tied to the same gui/agent-bound `backend_session_id`',
+      ),
+    );
+    expect(auditText, contains('copied backend session output evidence'));
+    expect(
+      auditText,
+      contains(
+        'ai/digital-employee handoff tied to the same gui/agent-bound `backend_session_id`',
+      ),
+    );
+    for (final expected in [
+      'gui-like backend ssh session management',
+      'agent/backend session manager',
+      'not act as a standalone phone-local ssh terminal client',
+      'mobile foreground assistant',
+      'hub control record',
+      'authorized maclaw gui/agent worker claims that record',
+      'sync server profiles published by maclaw gui/agent',
+      'does not collect ssh passwords, private keys, or passphrases',
+      'backend session output',
+      'gui/agent-managed background server tasks',
+      'check, wait for, list, or kill those tasks',
+      'backend file listing, upload, and download operations',
+      'gui/agent sftp path',
+      'before backend session output is sent to ai',
+      'submitted as a digital employee task',
+      'line/character counts',
+      'local redaction',
+    ]) {
+      expect(guideText, contains(expected));
+    }
+    expect(guideText, isNot(contains('before terminal output is sent to ai')));
+    expect(pubspec, isNot(contains('dartssh2')));
+    expect(pubspecLock, isNot(contains('dartssh2')));
+    for (final forbidden in [
+      'package:dartssh2',
+      'sshclient',
+      'sshsocket',
+      'sftpclient',
+      'dartssh2',
+    ]) {
+      expect(runtimeSource, isNot(contains(forbidden)));
+    }
+
+    for (final expected in [
+      'test/backend_ssh_command_test.dart',
+      'test/mobile_realtime_client_test.dart',
+      'test/mobile_realtime_bridge_test.dart',
+      'flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart --concurrency=1 --reporter compact',
+      '21 realtime and backend server controller tests',
+      '`ssh_task`',
+      '`ssh_file_operation`',
+      'bridge dispatch of backend ssh task events',
+      'per-session task cache',
+      'queueing create, attach, reconnect, interrupt, input, and close control records',
+      'preserving terminal input carriage returns',
+      'flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact',
+      '60 mobile backend ssh control-plane tests',
+      'request gui/agent-managed `exec_background`',
+      '`check_task`, `wait_task`, `list_tasks`, `kill_task`, and backend file',
+      'caches gui/agent background task status in the server controller',
+      'mobile screen button that submits a command as a gui/agent background task',
+      'rather than phone-local sftp',
+      'phone-side foreground path using tenant hub apis',
+      'create, attach, interrupt, reconnect, send input to, and close gui/agent-managed backend ssh sessions',
+      'keeps backend command payloads queued for hub/agent execution rather than phone-local ssh execution',
+      'go test ./hub/internal/httpapi -run "testmobile.*(ssh|backendssh|realtimebackendssh)" -count=1',
+      'go test ./gui -run "testremotehubclient.*mobilebackendssh|testresolvemobile|testmobileserverprofiles"',
+      '13 gui backend ssh worker/profile tests',
+      'process-level handling that waits for the desktop',
+      'mobile-to-core background task id mapping',
+      'bounded default wait timeout behavior',
+      'phone-local sftp',
+      'official hub mobile bootstrap advertising `backend_ssh_sessions`',
+      'not advertising the legacy `local_ssh` field',
+      'preserving sanitized `source_machine_id` and `updated_at` provenance metadata',
+    ]) {
+      expect(evidenceText, contains(expected));
+    }
+    expect(auditText, contains('test/backend_ssh_command_test.dart'));
+    expect(
+      auditText,
+      contains(
+        'go test ./gui -run "testremotehubclient.*mobilebackendssh|testresolvemobile|testmobileserverprofiles" -count=1',
+      ),
+    );
+
+    for (final expected in [
+      'Tenant Hub mobile-facing endpoints',
+      '`GET /api/mobile/server-profiles`',
+      'Machine-authenticated desktop/agent worker endpoints',
+      '`POST /api/mobile/ssh/sessions/claim`',
+      '`PUT /api/mobile/server-profiles` publishes sanitized desktop `SSHHosts` metadata',
+      'not a phone-side credential or server-profile editor',
+      'Phone-side removal of a server profile only clears local cached metadata',
+      'Foreground Agent Flow',
+      'foreground control-plane agent',
+      'authorized MaClaw GUI/agent worker claims it with machine authentication',
+      'reports `backend_session_id`, status, output preview, `output_chunk`, and `output_seq` back to Hub',
+      'It must not present itself as owning the SSH transport or credentials',
+      'the phone is the emergency operator interface',
+      'Hub is the coordination queue',
+      'MaClaw GUI/agent plus `SSHSessionManager` remain the backend session owner',
+      'GUI-Equivalent Management Contract',
+      'Session ownership stays with the desktop GUI/agent worker',
+      'foreground mobile agent can create the Hub control record',
+      'authorized GUI/agent worker claims it',
+      'backend managed SSH session',
+      '`SSHSessionManager`',
+      '`SSHPool` connections',
+      'PTY handles',
+      '`pollMobileBackendSSHSessionsOnce` asks the tenant Hub for a claimable',
+      '`claimMobileBackendSSHSession` uses the machine-authenticated worker path',
+      '`processMobileBackendSSHSession` resolves the sanitized mobile',
+      'creates or reuses the `SSHSessionManager` session',
+      'reports the GUI/core `backend_session_id`',
+      '`updateMobileBackendSSHSession` sends worker state back through',
+      '`mobileBackendSSHOutputChunk` tracks the output delta',
+      '`pollMobileBackendSSHTasksOnce` claims mobile-created',
+      '`processMobileBackendSSHTask` maps the mobile task ID',
+      '`SSHBackgroundTaskManager` task ID',
+      '`wait_requested` uses the bounded default',
+      'ordinary `running` polls refresh status once',
+      '`pollMobileBackendSSHFileOperationsOnce`',
+      '`processMobileBackendSSHFileOperation` run file control records',
+      '`SFTPTransfer` path',
+      'remote `stat` and `list` use read-only commands',
+      '`exec_background`',
+      '`check_task`',
+      '`wait_task`',
+      '`list_tasks`',
+      '`kill_task`',
+      '`upload`',
+      '`download`',
+      'remote server management',
+      'managed background tasks with task IDs',
+      'GUI/agent SFTP path',
+      'Backend task management',
+      'streams status/log tails back to Hub',
+      'File operations',
+      'not as an embedded terminal library',
+      'incremental `output_chunk`',
+      'monotonic `output_seq`',
+      'backend session ID linkage',
+      'Digital employee handoff context must include the GUI/agent-bound `backend_session_id`',
+      'not merely the Hub control-record `session_id`',
+      'tie analysis, command drafts, and follow-up actions back to the same `backend_session_id`',
+      '`WriteInputChecked`',
+      '`InterruptByID`',
+      '`ReconnectByID`',
+      '`RemoveSession`',
+      '`CheckShellResponsive`',
+      '`probeShell`',
+      'consecutive execution-failure tracking',
+      'active backend session ID included for traceability',
+      'simple SSH client',
+    ]) {
+      expect(designText, contains(expected));
+    }
+    for (final forbidden in [
+      '`POST /api/mobile/server-profiles`',
+      '`DELETE /api/mobile/server-profiles/{profile_id}`',
+    ]) {
+      expect(designText, isNot(contains(forbidden)));
     }
 
     for (final expected in [
@@ -847,9 +1170,13 @@ void main() {
       'Connect result',
       'Read-only command',
       'Command output excerpt',
+      'SSH realtime incremental output evidence',
+      'claimed_by',
+      'claim/worker handoff evidence',
+      'Interrupt result',
       'Disconnect result',
       'Reconnect result',
-      'Copied output evidence',
+      'Copied backend session output evidence',
     ]) {
       expect(template, contains(expected));
     }
@@ -871,6 +1198,7 @@ void main() {
       'iOS real-device/TestFlight share-to-app',
       'iOS runtime permission prompts',
       'Real backend SSH session smoke test',
+      'interrupt/Ctrl+C evidence',
       'Hub discovery smoke test',
       'MaClaw logo splash',
       'Flutter placeholder',
@@ -1026,17 +1354,20 @@ void main() {
       'Theme and speech language change result',
       'Local work records reset confirmation',
       'assistant history',
-      'Server credentials retained after local reset',
-      'Server profiles/SSH credentials clear confirmation',
+      'Server-profile metadata retained after local reset',
+      'Server-profile cache clear confirmation',
       'Connect result',
+      'Interrupt result',
       'Reconnect result',
       'AI analysis confirmation and sensitive-data warning',
       'AI explanation, command drafts',
       'manual/not-auto-executed',
-      'pasted/copied output',
-      'Credential deletion confirmation',
+      'pasted/copied backend session output',
+      'Backend SSH server-profile cache clear confirmation',
       'Release handoff result',
       'handoff output path, attachment ID, or command transcript reference',
+      'Preflight result',
+      'python3 tool/qa_preflight.py --log',
       'Runtime boundary verification result',
       'python3 tool/verify_runtime_boundary.py',
       'Automated release gates result',
@@ -1106,7 +1437,7 @@ void main() {
       'python3 tool/verify_android_release_signing.py',
       'python3 tool/verify_ios_wrapper.py',
       'python3 tool/verify_runtime_boundary.py',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
       'flutter pub get',
       'flutter analyze',
@@ -1158,7 +1489,7 @@ void main() {
     expect(
       checklist,
       contains(
-        'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
+        'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       ),
     );
     expect(checklist, contains('tool/run_release_gates.py'));
@@ -1166,6 +1497,7 @@ void main() {
     expect(checklist, contains('tool/run_release_gates_test.py'));
     expect(checklist, contains('tool/verify_runtime_boundary.py'));
     expect(checklist, contains('Release handoff result'));
+    expect(checklist, contains('Preflight result'));
     expect(checklist, contains('Runtime boundary verification result'));
     expect(checklist, contains('Automated release gates result'));
     expect(checklist, contains('python3 tool/verify_debug_apk_evidence.py'));
@@ -1240,6 +1572,14 @@ void main() {
     expect(evidence, contains('tool/create_qa_build_record_test.py'));
     expect(evidence, contains('tool/qa_build_record_report.py'));
     expect(evidence, contains('tool/qa_build_record_report_test.py'));
+    expect(
+      evidence,
+      contains(
+        'phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling',
+      ),
+    );
+    expect(evidence, contains('phone-initiated interrupt evidence'));
+    expect(evidence, contains('GUI/agent Ctrl+C handling'));
     expect(evidence, contains('handoff evidence paths being rejected'));
     expect(
       evidence,
@@ -1265,6 +1605,10 @@ void main() {
     expect(evidence, contains('tool/qa_preflight_test.py'));
     expect(evidence, contains('tool/release_evidence_commands.py'));
     expect(evidence, contains('tool/release_evidence_commands_test.py'));
+    expect(
+      evidence,
+      contains('`release_handoff.py --dry-run --output ...` preview'),
+    );
     expect(evidence, contains('tool/setup_android_signing.py'));
     expect(evidence, contains('tool/setup_android_signing_test.py'));
     expect(evidence, contains('tool/release_status_report.py'));
@@ -1308,8 +1652,8 @@ void main() {
 
     expectInOrder(checklist, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
       'python3 -m unittest tool/create_qa_build_record_test.py',
@@ -1354,8 +1698,8 @@ void main() {
 
     expectInOrder(evidence, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1',
       'cd mobile/maclaw_mobile',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
@@ -1403,12 +1747,14 @@ void main() {
       readDoc('docs/release_audit.md'),
       readDoc('docs/qa_device_checklist.md'),
       readDoc('docs/qa_build_record_template.md'),
+      readDoc('docs/user_guide.md'),
+      readDoc('docs/backend_ssh_session_design.md'),
       readDoc('docs/qa-builds/README.md'),
     ].join('\n');
 
     final referencedPaths = <String>{};
     final fileRefPattern = RegExp(
-      r'(?<![A-Za-z0-9_./-])((?:\.\.\/\.\.\/)?(?:\.github\/workflows\/maclaw-mobile\.yml|\.gitignore|README\.md|pubspec\.yaml|android\/key\.properties\.example|android\/app\/src\/main\/AndroidManifest\.xml|ios\/ExportOptions\.plist\.example|ios\/ShareExtension\/?|docs\/[A-Za-z0-9_./-]+\.(?:md)|test\/[A-Za-z0-9_./-]+\.(?:dart)|tool\/[A-Za-z0-9_./-]+\.(?:py)))',
+      r'(?<![A-Za-z0-9_./-])((?:\.\.\/\.\.\/)?(?:\.github\/workflows\/maclaw-mobile\.yml|\.gitignore|README\.md|pubspec\.(?:yaml|lock)|android\/key\.properties\.example|android\/app\/src\/main\/AndroidManifest\.xml|ios\/ExportOptions\.plist\.example|ios\/ShareExtension\/?|docs\/[A-Za-z0-9_./-]+\.(?:md)|test\/[A-Za-z0-9_./-]+\.(?:dart)|tool\/[A-Za-z0-9_./-]+\.(?:py)))',
     );
 
     for (final match in fileRefPattern.allMatches(docs)) {
@@ -1469,6 +1815,8 @@ void main() {
       'python3 tool/verify_runtime_boundary.py',
       'python3 tool/run_release_gates.py',
       'Release handoff result',
+      'Preflight result',
+      '--preflight-result',
       'Runtime boundary verification result',
       'no embedded Go corelib',
       'Dart FFI',
@@ -1594,14 +1942,14 @@ void main() {
     final handoff = readDoc('docs/qa-builds/handoff-0.1.0+1.md');
 
     for (final expected in [
-      'run on 2026-07-05 passed all',
-      'final-release-evidence-continuation3-20260705.log',
-      'runtime-boundary-continuation3-20260705.log',
+      'run on 2026-07-06 passed all',
+      'final-release-evidence-20260706-backend-ssh-realtime.log',
+      'runtime-boundary-20260706-backend-ssh-realtime.log',
       'The local transcript was saved under `docs/qa-builds/`',
       'attach the versioned `release-gates-<version+build>.log`',
       'from signed-build QA as external evidence',
-      'Refreshed after the 2026-07-05 continuation automated release gate run.',
-      'DED02B715DEF9356AE1CB5A9564BBD838EFF69292FE506DF74A07B60C99D7692',
+      'Refreshed after the 2026-07-06 preflight log guard automated release gate run.',
+      '7082525FC4AFE286A87EB14C17B22E3D15176DED7F5F83EF53902F42C0F536CB',
       'These cannot be proven by local unit tests or the unsigned debug APK',
       'Android signed internal build',
       'Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result',
@@ -1609,14 +1957,41 @@ void main() {
       expect(evidence, contains(expected));
     }
     final gateLogMatches =
-        RegExp(r'release-gates-continuation\d+-20260705\.log')
+        RegExp(r'release-gates-20260706-preflight-log-guard-rerun\.log')
             .allMatches(evidence)
             .map((match) => match.group(0)!)
             .toSet();
     expect(gateLogMatches, hasLength(1));
     final gateLogName = gateLogMatches.single;
     expect(handoff, contains('Current Local Evidence Snapshot'));
+    expect(
+      handoff,
+      contains(
+        'python3 tool/release_handoff.py --version 0.1.0+1 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-0.1.0+1.md',
+      ),
+    );
     expect(handoff, contains(gateLogName));
+    expect(handoff, contains('explicit worker claim/update evidence'));
+    expect(
+      handoff,
+      contains('GUI/agent claim or worker handoff plus explicit worker'),
+    );
+    expect(
+      handoff,
+      contains('GUI-equivalent backend SSH session management smoke'),
+    );
+    expect(
+      handoff,
+      contains('traceable GUI/agent-managed backend SSH session smoke target'),
+    );
+    expect(
+      handoff,
+      contains('same GUI/agent-bound backend_session_id'),
+    );
+    expect(
+      handoff,
+      isNot(contains('safe GUI/agent-managed SSH session smoke target')),
+    );
     final latestGateLog = File('docs/qa-builds/$gateLogName');
     expect(latestGateLog.existsSync(), isTrue);
     expect(
@@ -1625,9 +2000,13 @@ void main() {
         'All MaClaw Mobile automated release gates passed: 38 gates passed.',
       ),
     );
-    expect(handoff, contains('runtime-boundary-continuation3-20260705.log'));
-    final runtimeBoundaryLog =
-        File('docs/qa-builds/runtime-boundary-continuation3-20260705.log');
+    expect(
+      handoff,
+      contains('runtime-boundary-20260706-backend-ssh-realtime.log'),
+    );
+    final runtimeBoundaryLog = File(
+      'docs/qa-builds/runtime-boundary-20260706-backend-ssh-realtime.log',
+    );
     expect(runtimeBoundaryLog.existsSync(), isTrue);
     expect(
       runtimeBoundaryLog.readAsStringSync(),
@@ -1635,10 +2014,10 @@ void main() {
     );
     expect(
       handoff,
-      contains('final-release-evidence-continuation3-20260705.log'),
+      contains('final-release-evidence-20260706-backend-ssh-realtime.log'),
     );
     final finalEvidenceLog = File(
-      'docs/qa-builds/final-release-evidence-continuation3-20260705.log',
+      'docs/qa-builds/final-release-evidence-20260706-backend-ssh-realtime.log',
     );
     expect(finalEvidenceLog.existsSync(), isTrue);
     expect(

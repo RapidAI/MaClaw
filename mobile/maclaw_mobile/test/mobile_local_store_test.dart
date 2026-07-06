@@ -50,16 +50,18 @@ void main() {
     final store = MobileLocalStore(documentsDirectory: () async => dir);
     final now = DateTime.utc(2026, 7, 1);
 
-    await store.saveServerProfiles(const [
-      ServerProfile(
-        id: 'srv-1',
-        name: 'prod',
-        host: '10.0.0.8',
-        port: 22,
-        username: 'ops',
-        authMode: serverAuthModePassword,
-      ),
-    ]);
+	    await store.saveServerProfiles([
+	      ServerProfile(
+	        id: 'srv-1',
+	        name: 'prod',
+	        host: '10.0.0.8',
+	        port: 22,
+	        username: 'ops',
+	        authMode: serverAuthModePassword,
+	        sourceMachineId: 'desktop-agent-1',
+	        updatedAt: DateTime.utc(2026, 7, 6, 8, 30),
+	      ),
+	    ]);
     await store.saveSearchHistory([
       SearchHistoryEntry(
         id: 'search-1',
@@ -142,7 +144,10 @@ void main() {
       await File('${dir.path}/maclaw_mobile/maclaw_mobile.sqlite').exists(),
       isTrue,
     );
-    expect(await store.loadServerProfiles(), isNotEmpty);
+    final serverProfiles = await store.loadServerProfiles();
+    expect(serverProfiles, isNotEmpty);
+    expect(serverProfiles.single.sourceMachineId, 'desktop-agent-1');
+    expect(serverProfiles.single.updatedAt, DateTime.utc(2026, 7, 6, 8, 30));
     final searchHistory = await store.loadSearchHistory();
     expect(searchHistory.single.answerPreview, 'ok token=[REDACTED_SECRET]');
     expect(

@@ -114,6 +114,10 @@ export function ProbeRemoteHub(arg1, arg2) {
   return window['go']['main']['App']['ProbeRemoteHub'](arg1, arg2);
 }
 
+export function GetRemoteRegistrationProfile() {
+  return window['go']['main']['App']['GetRemoteRegistrationProfile']();
+}
+
 export function SendRemoteRegistrationSMS(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2, arg3);
 }
@@ -671,8 +675,8 @@ export function StartWorkflowDirect(arg1, arg2) {
   return window['go']['main']['App']['StartWorkflowDirect'](arg1, arg2);
 }
 
-export function StartWorkflowDirectWithInput(arg1, arg2, arg3) {
-  return window['go']['main']['App']['StartWorkflowDirectWithInput'](arg1, arg2, arg3);
+export function StartWorkflowTemplate(arg1, arg2) {
+  return window['go']['main']['App']['StartWorkflowTemplate'](arg1, arg2);
 }
 
 export function RefreshWorkflowV2StateForTab(arg1, ...arg2) {

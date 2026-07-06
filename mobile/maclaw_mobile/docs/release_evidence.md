@@ -31,8 +31,8 @@ Run these before handing a build to QA:
 
 ```bash
 go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
-go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1
-go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1
+go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1
+go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1
 cd mobile/maclaw_mobile
 python3 -m unittest tool/configure_platforms_test.py
 python3 -m unittest tool/validate_qa_build_record_test.py
@@ -79,9 +79,11 @@ automated gate sequence end to end; run
 order and total count without starting Go, Flutter, or Android build commands.
 For signed-build QA, run `python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+build>.log`
 so the completed QA record can reference the saved automated-gate transcript.
+Run `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-<version+build>.log`
+before signed-build QA so the current preflight result is saved as evidence.
 Run `python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log`
 for the matching runtime-boundary evidence file.
-The latest local `python tool\run_release_gates.py` run on 2026-07-05 passed all
+The latest local `python tool\run_release_gates.py` run on 2026-07-06 passed all
 38 automated release gates, including Flutter analysis, the full Flutter test
 suite, runtime boundary verification, native wrapper regeneration/configuration,
 Go mobile API tests, QA build record scaffold tests, QA record directory
@@ -92,7 +94,7 @@ verifier tests, manual release gate verification, Android release signing
 verification, Android release build helper tests, iOS wrapper verification, iOS
 release plan helper tests, iOS export options setup helper tests, and Android
 debug APK build. The local transcript was saved under `docs/qa-builds/` as
-`release-gates-continuation6-20260705.log`, which is ignored by default;
+`release-gates-20260706-preflight-log-guard-rerun.log`, which is ignored by default;
 attach the versioned `release-gates-<version+build>.log`
 from signed-build QA as external evidence when preparing a release package.
 After a local debug APK build, run `python3 tool/update_debug_apk_evidence.py`
@@ -110,8 +112,10 @@ evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename, and existing logs require `--force`
 before they can be overwritten.
 The current continuation run is intentionally still blocked before signed-build
-QA records exist; the verifier failure transcript was saved as
-`docs/qa-builds/final-release-evidence-continuation3-20260705.log` and confirms
+QA records exist; the preflight blocker transcript was saved as
+`docs/qa-builds/preflight-20260706-backend-ssh-realtime.log`, and the final
+evidence verifier failure transcript was saved as
+`docs/qa-builds/final-release-evidence-20260706-backend-ssh-realtime.log` and confirms
 that final release evidence still requires at least one completed signed-build
 QA record.
 
@@ -129,10 +133,10 @@ QA record.
 
 | Area | Evidence |
 | --- | --- |
-| Official HubCenter discovery only | `test/official_service_test.dart`, `test/official_service_surface_test.dart`, `test/auth_service_test.dart`, `test/mobile_realtime_client_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)"` |
+| Official HubCenter discovery only | `test/official_service_test.dart`, `test/official_service_surface_test.dart`, `test/auth_service_test.dart`, `test/mobile_realtime_client_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts"` |
 | Mobile API contracts | `test/mobile_api_contract_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*"` |
 | Native Android/iOS wrapper settings | `tool/configure_platforms_test.py`, `test/platform_permissions_test.dart` |
-| Runtime boundary: no embedded Go `corelib`, FFI, gomobile, or native corelib bridge | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart`; signed-build QA can save `--log` output as evidence |
+| Runtime boundary: no embedded Go `corelib`, FFI, gomobile, native corelib bridge, phone-local SSH dependency, or phone-side SSH credential save/read API | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart`; signed-build QA can save `--log` output as evidence |
 | Signed-build QA record completeness | `tool/validate_qa_build_record.py`, `tool/validate_qa_build_record_test.py`, `docs/qa_build_record_template.md` |
 | Signed-build QA preflight, release status, release handoff, record scaffold, gap report, release evidence command helper, release evidence link helper, and directory validation | `tool/release_status_report.py`, `tool/release_status_report_test.py`, `tool/release_handoff.py`, `tool/release_handoff_test.py`, `tool/qa_preflight.py`, `tool/qa_preflight_test.py`, `tool/release_evidence_commands.py`, `tool/release_evidence_commands_test.py`, `tool/create_qa_build_record.py`, `tool/create_qa_build_record_test.py`, `tool/qa_build_record_report.py`, `tool/qa_build_record_report_test.py`, `tool/qa_release_evidence_links.py`, `tool/qa_release_evidence_links_test.py`, `tool/validate_qa_build_records_dir.py`, `tool/validate_qa_build_records_dir_test.py`, `docs/qa-builds/README.md` |
 | Automated gate sequence integrity | `tool/run_release_gates.py`, `tool/run_release_gates_test.py` |
@@ -142,11 +146,11 @@ QA record.
 | iOS wrapper, Share Extension wiring, export options, and archive planning | `tool/verify_ios_wrapper.py`, `tool/verify_ios_wrapper_test.py`, `tool/setup_ios_export_options.py`, `tool/setup_ios_export_options_test.py`, `tool/plan_ios_release.py`, `tool/plan_ios_release_test.py`, `ios/ExportOptions.plist.example`, `ios/Runner/Info.plist`, `ios/ShareExtension/Info.plist`, `ios/Runner/Runner.entitlements`, `ios/ShareExtension/ShareExtension.entitlements` |
 | Manual release gate documentation parity | `tool/verify_manual_release_gates.py`, `tool/verify_manual_release_gates_test.py`, `docs/release_audit.md`, `docs/release_evidence.md`, `docs/qa_device_checklist.md`, `docs/qa_build_record_template.md` |
 | Final signed-build evidence package readiness | `tool/verify_final_release_evidence.py`, `tool/verify_final_release_evidence_test.py`, `docs/release_evidence.md`, `docs/qa-builds/README.md`, `docs/qa_device_checklist.md` |
-| GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, shared links, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
+| GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, redacted shared links/text, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Emergency document templates, import, AI actions, edit helpers, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
-| Backend SSH session profiles, session output copy, AI analysis confirmation, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart` |
-| Digital employee task submission, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown"` |
+| GUI-equivalent backend SSH session management, Hub-synced sanitized desktop server metadata, GUI/agent-bound `backend_session_id`, SSH realtime incremental output evidence through `ssh_session` `output_chunk`/`output_seq` events, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, copied backend session output, AI analysis and AI/digital-employee handoff evidence tied to the same GUI/agent-bound `backend_session_id`, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/backend_ssh_command_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart`, `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`, `go test ./gui -run "TestRemoteHubClient.*MobileBackendSSH|TestResolveMobile|TestMobileServerProfiles"` |
+| Digital employee task submission, redacted mobile prompt handoff, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts"` |
 | Account settings, notification request entry, cache clearing, credential separation | `test/account_screen_test.dart`, `test/app_preferences_test.dart`, `test/mobile_notification_service_test.dart`, `test/mobile_local_store_test.dart`, `test/secure_vault_test.dart` |
 | Realtime document/digital employee updates | `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart` |
 
@@ -222,15 +226,15 @@ QA record.
     exist in the current workspace.
 - `docs/qa_device_checklist.md`
   - Added signed Android/iOS, share-to-app, runtime permissions, official
-    service smoke, backend SSH session smoke, and evidence-package steps for QA.
+    service smoke, GUI-equivalent backend SSH session management smoke, and evidence-package steps for QA.
   - Checked that the checklist includes text, URL, image, PDF, Word, Excel,
-    CSV, runtime permissions, Hub discovery smoke, backend SSH session smoke,
+    CSV, runtime permissions, Hub discovery smoke, GUI-equivalent backend SSH session management smoke,
     selected HubCenter, discovered Hub, tenant, LLM mode, Share Extension
     bundle ID, and app group.
 - `docs/qa_build_record_template.md`
   - Added a per-build evidence template for signed Android/iOS artifacts,
     share-to-app payloads, runtime permissions, Hub discovery smoke,
-    realtime status, backend SSH session smoke, credential deletion, and final release
+    realtime status, GUI-equivalent backend SSH session management smoke, server-profile cache clearing, and final release
     approval.
   - Documents the `docs/qa-builds/` storage location and validator-enforced
     record filename format so copied QA templates keep the same directory
@@ -317,26 +321,28 @@ QA record.
     `not-used-official-mode` sentinel, and the LLM access evidence must match
     the selected mode and recorded Tenant ID.
   - Requires manual device evidence fields, including install results, share
-    payloads, permissions, Hub smoke, and backend SSH session smoke results, to contain
+    payloads, permissions, Hub smoke, and GUI-equivalent backend SSH session management smoke results, to contain
     auditable notes instead of placeholders such as `ok`, `yes`, or `done`.
-  - Requires backend SSH session smoke fields to describe the specific tested
+  - Requires GUI-equivalent backend SSH session management smoke fields to describe the specific tested
     action: host type, auth mode, session creation/attach, connect result,
     read-only command, command output
-    excerpt, disconnect result, reconnect result, and copied output evidence.
-  - Requires backend SSH session smoke evidence to reference the recorded
+    excerpt, disconnect result, reconnect result, and copied backend session
+    output evidence.
+  - Requires GUI-equivalent backend SSH session management smoke evidence to reference the recorded
     `server-profile:<id>` notification payload when server abnormal
     notification evidence is present.
   - Requires SSH AI analysis evidence to mention preview confirmation, the
-    sensitive-data warning, and redacted/masked/sanitized terminal or log
+    sensitive-data warning, and redacted/masked/sanitized backend session/log
     output before AI analysis; requires AI result evidence to include
     explanation, `command-draft:<id>`, manual/not-auto-executed proof, and
-    redacted backend SSH session terminal/log output context; and
-    requires credential deletion evidence to mention cleared
-    password/private-key or secure-storage state.
+    redacted backend SSH session/log output context; and
+    requires backend SSH cache-clear evidence to mention phone-side
+    server-profile cache clearing.
   - Requires status polling and realtime update evidence to identify task/job or
     document status changes and reference a recorded task/job ID, and requires
     digital employee handoff warnings to mention Hub/tenant confirmation plus
-    backend SSH session or pasted/copied output context when recorded.
+    backend SSH session or pasted/copied backend session output context when
+    recorded.
   - Requires notification delivery evidence for document/export completion,
     digital employee task completion, and SSH abnormal/disconnect scenarios,
     including typed payload or tap/open target proof for document,
@@ -360,9 +366,9 @@ QA record.
     proving the post-verification LLM call was charged to the recorded
     `phone:<digits>` MaClaw official credits account.
   - Requires account privacy and local-data evidence to record theme/speech
-    language changes, local work-record clearing, retained server credentials
-    in secure storage/vault after local reset, and separate explicit
-    server/SSH credential clearing with `credential-clear:<id>`,
+    language changes, local work-record clearing, retained sanitized
+    server-profile metadata after local reset, and separate explicit
+    phone-side server-profile cache clearing with `server-profile-cache-clear:<id>`,
     tied to any recorded `server-profile:<id>` notification payload.
   - Requires HubCenter probe evidence to list the exact three official
     HubCenters, discovered Hub evidence to include Hub URL plus tenant, and LLM
@@ -401,14 +407,15 @@ QA record.
     the matching feature scenario, including camera/photo and photo-library
     permission evidence tied to real photo/image/screenshot assistant input,
     microphone and speech-recognition permission evidence tied to voice
-    assistant question transcription, media/file import, local-network SSH, or
+    assistant question transcription, media/file import, platform local-network
+    prompt if applicable to Hub/backend-session operation, or
     notification permission evidence tied to real document export, digital
     employee, or SSH abnormal notification delivery/open flows; media/file
     access evidence must prove real file picker or share-to-app document
     import/upload coverage for PDF, Word, Excel, CSV, and image/photo payloads;
-    local-network permission evidence must be tied to a real SSH connection
-    against a recorded `server-profile:<id>` and a read-only command result;
-    every runtime permission evidence line must include a trackable
+    local-network permission evidence must not be used as phone-local SSH proof
+    or as a substitute for GUI/agent-bound `backend_session_id` evidence; every
+    runtime permission evidence line must include a trackable
     `permission-grant:<id>` record.
   - Requires signed-build device evidence to name device model plus Android/iOS
     OS version, with both Android and iOS devices represented and at least one
@@ -418,7 +425,7 @@ QA record.
   - Validates optional attachment, known issue/waiver, and digital employee
     handoff warning evidence when those optional QA fields are used; handoff
     warnings must identify Hub/tenant confirmation and backend SSH session or
-    pasted/copied output context, while attachment evidence fields must
+    pasted/copied backend session output context, while attachment evidence fields must
     reference a traceable evidence file or attachment ID.
   - Requires `Date` and `Approval date` to be valid `YYYY-MM-DD` calendar
     dates that are not in the future, requires `Approval date` to be on or
@@ -450,12 +457,22 @@ QA record.
   - Prints the follow-up `tool/validate_qa_build_record.py` command so the
     generated file moves directly into the evidence validation path after QA
     fills it.
+  - Prints a manual-evidence reminder before validation so generated records are
+    not mistaken for complete evidence until real-device share/permission, Hub
+    discovery, notification, and backend-managed SSH GUI/agent claim or worker
+    handoff plus `ssh_session` `output_chunk`/`output_seq` proof,
+    not-phone-local/ad hoc terminal evidence rejection, and phone-initiated
+    interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling are filled in.
 - `tool/qa_build_record_report.py`
   - Added a grouped gap report for in-progress signed-build QA records.
   - Reuses `tool/validate_qa_build_record.py` validation rules and reports
     path/filename issues, secret redaction failures, missing or invalid
     evidence fields, and local artifact hash mismatches without relaxing final
     release evidence requirements.
+  - GUI-equivalent backend SSH session management smoke hints now call out not-phone-local/ad hoc terminal
+    evidence rejection, phone-initiated interrupt evidence through a Hub control record or interrupt endpoint, and GUI/agent
+    Ctrl+C handling, so incomplete records do not look like phone-local SSH
+    client smoke tests.
 - `tool/qa_release_evidence_links.py`
   - Added a release evidence link helper that prints Markdown links only for
     QA build records that already pass directory validation.
@@ -508,6 +525,8 @@ QA record.
   - Those QA entry points also require runtime-boundary verification and the
     full automated release gate runner before signed-build QA evidence is
     recorded.
+  - Handoff evidence to attach now includes phone-initiated interrupt evidence
+    through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling for backend-managed SSH sessions.
   - Handoff evidence output now explicitly maps handoff transcript,
     runtime-boundary verifier output, and release-gate results to the QA record
     final decision fields.
@@ -557,7 +576,7 @@ QA record.
 - `flutter test test/release_docs_test.dart --concurrency=1 --reporter expanded`
   - Passed: 32 release documentation integrity tests.
   - Covers release doc cross-links, signed-build manual gates, required
-    share/permission payloads, service/backend SSH session smoke steps, and explicit remaining
+    share/permission payloads, service/GUI-equivalent backend SSH session management smoke steps, and explicit remaining
     blockers.
   - Covers signed-QA command examples keeping local preflight before saved
     runtime-boundary and release-gates logs, matching the shared release
@@ -568,10 +587,11 @@ QA record.
   - Requires every Python unittest gate in `tool/run_release_gates.py` to have a
     matching release-evidence test-count entry, so gate additions cannot silently
     drift away from this document.
-  - Locks backend SSH session smoke documentation to action-specific evidence
+  - Locks GUI-equivalent backend SSH session management smoke documentation to action-specific evidence
     fields: host type, auth mode, session creation/attach, connect result,
     read-only command, command output
-    excerpt, disconnect result, reconnect result, and copied output evidence.
+    excerpt, disconnect result, reconnect result, and copied backend session
+    output evidence.
   - Covers the user guide's mobile product decisions: MaClaw logo startup,
     phone registration/login as the first unauthenticated screen, configured
     sessions opening the assistant, optional MaClaw desktop GUI QR authorization
@@ -614,8 +634,13 @@ QA record.
   - Passed.
   - Covers ready document export download, generated local file path handoff,
     and system file-share invocation with the draft title.
+- `flutter test test/documents_screen_test.dart --plain-name "documents screen redacts sensitive export share text" --concurrency=1 --reporter compact`
+  - Passed.
+  - Covers system share-sheet text redaction for exported document titles, so
+    `token=` and `password=` title fragments are replaced before the share
+    payload leaves the app surface.
 - `flutter test test/official_service_test.dart test/official_service_surface_test.dart test/api_client_test.dart test/documents_state_test.dart --concurrency=1 --reporter compact`
-  - Passed: 31 official service, API client, document state, and service
+  - Passed: 43 official service, API client, document state, and service
     surface tests.
   - Covers document export download URL safety: relative paths resolve against
     the discovered Hub, same-Hub absolute URLs are accepted, external absolute
@@ -632,7 +657,7 @@ QA record.
   - Covers absence of custom Hub URL configuration and redemption-code login
     surfaces in the mobile runtime.
   - Covers backend SSH session API requests for tenant-Hub session creation,
-    command input, reconnect, and close operations.
+    command input, interrupt, reconnect, and close operations.
 - `flutter test test/auth_service_test.dart test/api_client_test.dart test/login_screen_test.dart test/account_screen_test.dart --concurrency=1 --reporter compact`
   - Passed: 31 phone login, desktop GUI QR settings, API client, and account
     settings tests.
@@ -655,25 +680,29 @@ QA record.
     binding and new phone-identity enrollment, so mobile official LLM usage can
     be tied to the verified phone account.
 - `flutter test test/documents_screen_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 12 document workflow widget tests.
+  - Passed: 14 document workflow widget tests.
   - Covers long-running import refresh, failed-import retry, and failed-export
-    retry controls wiring through the mobile document UI.
+    retry controls wiring through the mobile document UI, plus export file-share
+    handoff and sensitive share-title redaction.
 - `flutter test test/assistant_screen_test.dart --plain-name "assistant result can become every document template with citations" --concurrency=1 --reporter expanded`
   - Passed.
   - Covers turning an AI assistant result with citations into every mobile
     document template type: notice, report, email, proposal, meeting minutes,
     and statement.
 - `flutter test test/assistant_screen_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 22 assistant workflow widget/model tests.
+  - Passed: 25 assistant workflow widget/model tests.
   - Covers AI assistant conversation, shared-link processing, multi-tab
     assistant state, voice/file/camera/gallery handoff, citation copy/share,
-    creating document drafts from assistant results, history cleanup
-    confirmation, and local assistant history redaction for both prompt text
-    and answer previews.
+    creating document drafts from assistant results with redacted draft titles,
+    history cleanup confirmation, and local assistant history redaction for both
+    prompt text and answer previews.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter expanded`
-  - Passed: 14 shared-intent classification and controller tests.
+  - Passed: 16 shared-intent classification and controller tests.
   - Covers routing shared PDF, Word, Excel, and CSV files into the document
     import flow instead of the AI assistant text flow.
+  - Covers redacting shared assistant text prompts, shared link URLs with
+    embedded credentials, and shared link message secrets before they are handed
+    to the AI assistant.
   - Covers file and image shares that include a URL in the platform message:
     the URL remains available as context, but the payload still enters document
     import instead of being misrouted to assistant conversation.
@@ -689,7 +718,7 @@ QA record.
     rejects known mojibake/replacement markers, and verifies the iOS Runner
     bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 571 Python release tool tests.
+  - Passed: 614 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
@@ -703,10 +732,29 @@ QA record.
   - Covers iOS Runner bundle display/name regeneration as `MaClaw Mobile`
     instead of the Flutter template name.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 203 QA record validator tests.
+  - Passed: 226 QA record validator tests.
   - Covers incomplete template rejection, completed record acceptance,
     HubCenter discovery enforcement, exact HubCenter candidate enforcement,
-    tenant Hub versus HubCenter URL separation,
+    tenant Hub versus HubCenter URL separation, SSH realtime incremental output
+    evidence requiring GUI/agent claim or worker handoff plus explicit worker
+    claim/update evidence, rejecting generic mobile session API/input calls as
+    worker proof, `ssh_session`, `output_chunk`, and `output_seq`,
+    backend SSH connect/disconnect/reconnect evidence requiring Hub
+    control-record lifecycle proof plus GUI/agent `SSHSessionManager`
+    ownership,
+    host/auth evidence requiring sanitized Hub-synced server-profile metadata
+    without phone-side SSH credential storage,
+    read-only command and command-output evidence requiring the same backend
+    session/output context instead of generic terminal screenshots,
+    copied backend session output evidence rejecting phone-local/ad hoc terminal
+    copy context,
+    rejection of phone-local/ad hoc terminal evidence for GUI-equivalent backend SSH session management smoke
+    records, and phone-initiated interrupt evidence requiring Hub interrupt
+    control-record or interrupt-endpoint proof plus GUI/agent Ctrl+C handling,
+    rejection of deprecated SSH credential QA fields in favor of
+    server-profile metadata/cache evidence,
+    preflight evidence requiring `qa_preflight.py` READY output and a saved log,
+    final decision artifact references matching the record `Version/build number`,
     duplicate Android/iOS field enforcement and platform order,
     required field overfill rejection,
     duplicate formatted-field rejection,
@@ -745,10 +793,10 @@ QA record.
     document-draft citation and `document-draft:<id>` linkage
     smoke evidence semantics, manual and optional evidence placeholder rejection,
     rejection of legacy redemption-code LLM setup evidence,
-    backend SSH session smoke action-specific evidence validation, recorded
-    server-profile ID linkage for backend SSH session smoke and account privacy server credential evidence,
-    `credential-clear:<id>` linkage for separate server/SSH credential clearing,
-    SSH AI analysis preview/sensitive-data warning/redacted-output evidence, `command-draft:<id>`/manual execution with redacted SSH output context, and credential deletion evidence,
+    GUI-equivalent backend SSH session management smoke action-specific evidence validation, recorded
+    server-profile ID linkage for GUI-equivalent backend SSH session management smoke and account privacy server-profile evidence,
+    `server-profile-cache-clear:<id>` linkage for separate phone-side server-profile cache clearing,
+    backend SSH AI analysis preview/sensitive-data warning/redacted-output evidence, `command-draft:<id>`/manual execution with redacted backend session output context, and backend SSH cache-clear evidence,
     status polling/realtime task update ID linkage, typed notification payload
     evidence tied to recorded document export and digital employee task IDs
     plus redacted notification message preview proof,
@@ -789,10 +837,10 @@ QA record.
   - Passed: 15 QA build record scaffold tests.
   - Covers validator-compatible record filenames, date/version prefilling,
     optional Final Release Decision evidence prefilling with the same
-    handoff/runtime-boundary/release-gates artifact semantics enforced by the
+    handoff/preflight/runtime-boundary/release-gates artifact semantics enforced by the
     validator, overwrite protection, forced regeneration, invalid version/build
     rejection, and printed validation, gap-report, signed artifact evidence,
-    and release evidence link update hints.
+    manual-evidence reminder, and release evidence link update hints.
   - Covers scope-specific Android/iOS artifact evidence helper hints after QA
     record creation, so Android-only records do not prompt for iOS evidence.
   - Covers scoped record scaffolding that removes out-of-scope Android/iOS
@@ -835,7 +883,7 @@ QA record.
     `qa_build_record_report.py <failed-record>` for grouped gaps, redaction
     remediation, and signed artifact hints.
 - `python -m unittest tool\qa_build_record_report_test.py`
-  - Passed: 21 QA build record report tests.
+  - Passed: 24 QA build record report tests.
   - Covers passing completed records, missing evidence summaries, invalid
     HubCenter values, filename errors, missing handoff/runtime-boundary/release
     gate evidence, local artifact SHA256 mismatches, missing local iOS
@@ -934,16 +982,24 @@ QA record.
     record as `docs/qa-builds/...`, and so follow-up final verifier commands
     use the same custom QA record directory.
 - `python -m unittest tool\qa_preflight_test.py`
-  - Passed: 23 QA preflight helper tests.
+  - Passed: 29 QA preflight helper tests.
   - Covers ready summaries, Android signing input blockers, iOS wrapper
     blockers, missing or invalid iOS export options blockers, invalid existing
-    QA records, missing QA record directories, and CLI stdout/stderr behavior.
+    QA records, missing QA record directories, saved `--log` preflight
+    transcripts, overwrite protection, explicit `--force` regeneration, and CLI
+    stdout/stderr behavior.
+  - Covers PowerShell placeholder guidance on blocked iOS-scoped preflight
+    commands, while omitting it for Android-only scope or concrete Apple Team ID
+    and export method values.
   - Covers manual release gate documentation as a preflight blocker when the
     release audit, QA checklist, QA record template, or final evidence log
     command drift out of alignment.
   - Covers automated release gate documentation as a preflight blocker when the
     GitHub workflow, release checklist, or release evidence command sequence
     drifts away from `tool/run_release_gates.py`.
+  - Covers runtime-boundary verification as a preflight blocker when mobile
+    runtime code or dependency locks reintroduce corelib/native bridge access
+    or phone-local SSH dependencies.
   - Covers ready/status output naming QA record validation/redaction rules and
     the requirement that completed QA evidence has no secret redaction failures.
   - Covers ready/status output naming scoped internal QA command parity so
@@ -970,6 +1026,10 @@ QA record.
     `--team-id`, `--output`, runtime-boundary log, and release-gates log flow.
   - Covers preserving supplied iOS Team ID/export method values in signed-QA
     record next-action hints.
+  - Covers release status next-action SSH evidence reminders that include
+    not-phone-local/ad hoc terminal evidence rejection, GUI/agent claim,
+    explicit worker claim/update evidence, `ssh_session`
+    `output_chunk`/`output_seq`, and GUI/agent Ctrl+C handling.
   - Covers that the preflight hint includes a copyable
     `create_qa_build_record.py` command with validator-compatible
     release-handoff, runtime-boundary, and release-gates evidence strings.
@@ -991,7 +1051,15 @@ QA record.
     checks for the same version/build do not overwrite each other.
   - Covers that the default signed-QA-record next-action hint continues past
     record creation into signed artifact evidence generation, record validation,
-    gap reporting, and release evidence link updates.
+    gap reporting, and release evidence link updates, while explicitly
+    reminding operators to complete real-device share/permission, Hub
+    discovery, notification, and backend-managed SSH GUI/agent claim or worker
+    handoff plus `ssh_session` `output_chunk`/`output_seq` evidence,
+    not-phone-local/ad hoc terminal evidence rejection, and phone-initiated
+    interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling before validation.
+  - Covers a `release_handoff.py --dry-run --output ...` preview before the
+    write-to-file handoff command, so operators can inspect the plan without
+    overwriting existing handoff evidence.
   - Covers next-action hints that explicitly distinguish release handoff plans
     from completed signed-build QA records, so operators do not treat
     `handoff-*.md` files as final release evidence.
@@ -1090,13 +1158,16 @@ QA record.
     errors, and refusing to write `key.properties` when placeholders are still
     present.
 - `python -m unittest tool\release_status_report_test.py`
-  - Passed: 19 release status report helper tests.
+  - Passed: 21 release status report helper tests.
   - Covers grouped not-ready output, ready output, current empty-fixture CLI
     failure, and ready CLI stdout behavior.
   - Covers passing the requested platform scope into final release evidence
     verification so Android-only and iOS-only QA checks stay scope-aware.
   - Covers not-ready next actions that include the required release handoff
     `--version`, `--team-id`, `--export-method`, and `--output` arguments.
+  - Covers runtime-boundary preflight visibility in release status output, so
+    corelib/native bridge or phone-local SSH dependency regressions remain
+    visible before signed-build QA.
   - Covers the not-ready next action's copyable QA record creation command with
     the same validator-compatible Final Release Decision evidence strings used
     by handoff, preflight, and the QA record creator.
@@ -1112,7 +1183,13 @@ QA record.
   - Covers preflight-blocker next actions listing the concrete blocking checks
     and deferring the signed-build QA record creation flow until preflight
     passes, with Android/iOS preflight rerun commands preserving Team ID and
-    export method placeholders when no concrete values were supplied.
+    export method placeholders when no concrete values were supplied, while
+    still reminding operators that signed-build QA must later capture
+    real-device share/permission, Hub discovery, notification, and
+    backend-managed SSH GUI/agent claim or worker handoff plus explicit worker
+    claim/update evidence, `ssh_session` realtime `output_chunk`/`output_seq`
+    evidence and phone-initiated
+    interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling.
   - Covers scoped status output that separates in-scope valid QA records from
     out-of-scope valid records, so Android-only and iOS-only status reports do
     not make the wrong platform's evidence look sufficient.
@@ -1132,9 +1209,13 @@ QA record.
     generation, including copyable custom-directory Android final-verifier
     rerun commands.
 - `python -m unittest tool\release_handoff_test.py`
-  - Passed: 23 release handoff helper tests.
+  - Passed: 26 release handoff helper tests.
   - Covers blocker summaries, ready output, operator command generation, output
     file writing, and blocked/ready CLI exit codes.
+  - Covers `--dry-run` preview with `--output`, so operators can inspect a
+    handoff without overwriting an existing evidence file or passing `--force`.
+  - Covers `--dry-run --output` preserving an existing `Current Local Evidence
+    Snapshot` in stdout while leaving the saved handoff file unchanged.
   - Covers real release version/build, Apple Team ID, and iOS export method CLI
     validation before generating copyable signed-build evidence commands.
   - Covers forwarding the handoff Team ID/export method into release status
@@ -1170,6 +1251,10 @@ QA record.
     remediation and missing guarded release-evidence QA record links.
   - Covers handoff status output pointing invalid QA build records to
     `qa_build_record_report.py` for gap analysis.
+  - Covers backend SSH handoff evidence reminders that require not-phone-local
+    ad hoc terminal rejection, GUI/agent claim or worker handoff, explicit
+    worker claim/update evidence, `ssh_session` `output_chunk`/`output_seq`,
+    and Hub interrupt control-record or endpoint proof plus GUI/agent Ctrl+C handling.
   - Covers rejecting non-`handoff-*.md` handoff output filenames when writing
     directly into the QA build records directory, so release handoff plans do
     not get mistaken for completed signed-build QA records.
@@ -1200,7 +1285,10 @@ QA record.
   - Passed: 0 completed signed-build QA record(s) currently present in the
     ignored local records directory.
 - `python -m unittest tool\run_release_gates_test.py`
-  - Passed: 15 release gate runner tests.
+  - Passed: 16 release gate runner tests.
+  - Covers release-gates evidence log output normalization for Windows-captured
+    Flutter success lines so `Built ...app-debug.apk` remains readable in QA
+    attachments.
   - Covers gate order, working directories, critical command coverage, and
     numbered dry-run output.
   - Covers that the QA evidence gate-count constant matches the actual
@@ -1244,11 +1332,16 @@ QA record.
     a completed QA build record and accepted by the QA record validator.
     example.
 - `python -m unittest tool\verify_manual_release_gates_test.py`
-  - Passed: 15 manual release gate parity tests.
+  - Passed: 18 manual release gate parity tests.
   - Covers the canonical manual release gate list, release audit remaining
     blockers, QA device checklist execution steps, and QA build record final
     decision fields so signed-build, real-device, Hub discovery, and SSH manual
     gates stay aligned across release documentation.
+  - Requires backend SSH manual gates to include not-phone-local
+    backend-managed evidence, GUI/agent claim evidence, worker claim/update
+    evidence, `ssh_session` `output_chunk`/`output_seq`, and Hub interrupt control-record or endpoint proof plus GUI/agent Ctrl+C handling, so release
+    audit, release evidence, device-checklist, and QA-record template SSH smoke
+    steps keep the GUI/agent backend-session management requirement visible.
   - Covers the release audit rule that completed signed-build QA records must
     pass validation without secret redaction failures before they can count as
     release evidence.
@@ -1406,7 +1499,7 @@ QA record.
 - `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
-- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)" -count=1`
+- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
   - Passed; revalidated on the current worktree after the desktop GUI QR
     HubCenter proxy updates.
   - Covers the legacy mobile service-redemption compatibility endpoint resolving
@@ -1425,38 +1518,75 @@ QA record.
     with explicit default ports such as `https://host:443` and `http://host:80`.
   - Covers rejecting registered but non-HTTPS QR Hub URLs before proxy
     dispatch, matching the mobile app's HTTPS-only discovered Hub requirement.
-- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown" -count=1`
+- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1`
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
+- `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`
+  - Passed; revalidated after aligning MaClaw Mobile server maintenance language
+    and QA evidence around GUI/agent-managed backend SSH sessions.
+  - Covers the tenant Hub backend SSH session APIs and realtime
+    `ssh_session` event payloads used by mobile to create/attach sessions,
+    receive incremental `output_chunk`/`output_seq` output, and keep evidence
+    tied to the same GUI/agent-bound `backend_session_id`.
+- `go test ./gui -run "TestRemoteHubClient.*MobileBackendSSH|TestResolveMobile|TestMobileServerProfiles" -count=1`
+  - Passed; revalidated after aligning the mobile SSH model with MaClaw GUI
+    `SSHSessionManager` behavior.
+  - Passed: 13 GUI backend SSH worker/profile tests.
+  - Covers GUI/agent server-profile publication, mobile backend SSH session
+    claim/worker handling, profile resolution from desktop `SSHHosts`, output
+    delta tracking, mobile-to-core background task ID mapping, background task
+    status payloads, bounded default wait timeout behavior for mobile
+    `wait_task`, and process-level handling that waits for the desktop
+    `SSHSessionManager` managed session before running mobile-created backend
+    task/file control records.
+  - Confirms the desktop-side worker path is used instead of phone-local SSH
+    credentials, direct phone connections, or phone-local SFTP.
 - `python -m unittest tool\configure_platforms_test.py`
   - Passed: 17 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
-  - Passed: 203 QA record validator tests.
+  - Passed: 226 QA record validator tests.
+  - Covers final automated evidence artifact references matching the record
+    `Version/build number`, so stale handoff/preflight/runtime-boundary/release
+    gate logs from another build cannot validate the signed QA record.
+  - Covers local-network permission evidence requiring the same
+    GUI/agent-managed `backend_session_id`, read-only command output, and
+    explicit rejection of phone-local/ad hoc terminal evidence.
 - `python -m unittest tool\create_qa_build_record_test.py`
   - Passed: 15 QA build record scaffold tests.
 - `python -m unittest tool\verify_runtime_boundary_test.py`
-  - Passed: 6 runtime boundary verifier tests.
+  - Passed: 8 runtime boundary verifier tests.
   - Covers the current mobile runtime source tree and negative fixtures for
     Dart FFI, dynamic-library loading, and Go `corelib` references while
     ignoring docs/tests-only mentions.
+  - Covers `pubspec.lock` scanning and rejects phone-local SSH dependencies
+    such as `dartssh2`.
+  - Covers mobile runtime source scanning and rejects phone-side SSH credential
+    save/read APIs such as `saveServerPassword` and `readServerPrivateKey`.
   - Covers success and violation `--log` output plus overwrite protection and
     explicit `--force` regeneration for signed-build QA evidence.
 - `python -m unittest tool\run_release_gates_test.py`
-  - Passed: 15 release gate runner tests.
+  - Passed: 16 release gate runner tests.
+  - Covers release-gates evidence log output normalization for Windows-captured
+    Flutter success lines so `Built ...app-debug.apk` remains readable in QA
+    attachments.
 - `python tool\verify_runtime_boundary.py`
   - Passed.
   - Confirms current mobile runtime source under `lib`, `android`, `ios`, and
-    `pubspec.yaml` does not embed or bridge Go `corelib`.
+    `pubspec.yaml` does not embed or bridge Go `corelib`, depend on
+    phone-local SSH, or expose phone-side SSH credential save/read APIs.
   - Saved continuation evidence:
-    `docs/qa-builds/runtime-boundary-continuation3-20260705.log`.
+    `docs/qa-builds/runtime-boundary-20260706-backend-ssh-realtime.log`.
 - `flutter test test/mobile_local_store_test.dart test/assistant_screen_test.dart test/digital_employees_screen_test.dart --concurrency=1 --reporter compact`
-  - Passed: 34 focused storage, assistant, and digital employee widget/model
+  - Passed: 38 focused storage, assistant, and digital employee widget/model
     tests.
   - Covers SQLite-backed mobile local cache, legacy JSON migration, shared-link
     assistant answers, disabled-Hub assistant fallback, quick emergency prompts,
     multi-tab assistant behavior, voice/file/camera handoff,
     digital employee task submission with Hub/tenant/HubCenter/LLM credits
-    context, and recent task restore.
+    context, redaction of common secrets before mobile prompts are handed to
+    remote digital employees, recent task restore, and digital employee result
+    document drafts redacting prompt, message, result, and claimed-by metadata
+    before saving.
 - `flutter test test/mobile_local_store_test.dart --concurrency=1 --reporter compact`
   - Passed: 6 local storage tests after tightening digital employee task cache
     redaction.
@@ -1477,6 +1607,13 @@ QA record.
     `search` feature flag, and the backend SSH session feature preferring the
     new `backend_ssh_sessions` bootstrap field while accepting legacy
     `local_ssh` from older Hub responses.
+- `go test ./hub/internal/httpapi -run "TestMobileBootstrapPayloadIncludesServiceStatuses" -count=1`
+  - Passed as part of the Go mobile API gate.
+  - Covers the official Hub mobile bootstrap advertising
+    `backend_ssh_sessions` for GUI/agent-managed backend SSH sessions and not
+    advertising the legacy `local_ssh` field, so new mobile clients and QA
+    evidence do not treat remote-server maintenance as a phone-local SSH
+    client feature.
 - `flutter test test/mobile_credits_test.dart --concurrency=1 --reporter compact`
   - Passed: 2 shared mobile credits helper tests.
   - Covers the common trusted credits rule used by startup routing, account
@@ -1485,26 +1622,30 @@ QA record.
     rejected, and bootstrap-level lookup falls back from LLM credits to the
     verified user phone credits.
 - `flutter test test/digital_employee_test.dart test/digital_employees_screen_test.dart test/digital_employees_controller_test.dart --concurrency=1 --reporter compact`
-  - Passed: 15 digital employee model, widget, and controller tests.
-  - Covers mobile emergency handoff prompts, remote server/desktop task context
-    with Hub, tenant, HubCenter, trusted `phone:<digits>` LLM credits, malformed
-    `phone:` credits being omitted from remote task context, and
-    machine-readable execution boundaries requiring draft-only handling until
-    the mobile user confirms high-risk operations.
+  - Passed: 18 digital employee model, widget, and controller tests.
+  - Covers mobile emergency handoff prompts, redaction of common secrets before
+    submitting mobile prompt text to remote digital employees, remote
+    server/desktop task context with Hub, tenant, HubCenter, trusted
+    `phone:<digits>` LLM credits, malformed `phone:` credits being omitted from
+    remote task context, and machine-readable execution boundaries requiring
+    draft-only handling until the mobile user confirms high-risk operations.
+  - Covers the server/desktop log-analysis shortcut using backend session output
+    and key logs wording, so the digital employee entry does not imply a
+    phone-local terminal output source.
 - `flutter analyze`
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 278 tests.
+  - Passed: 303 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
 - `flutter build apk --debug`
   - Passed.
   - Artifact: `build\app\outputs\flutter-apk\app-debug.apk`.
-  - Size: `207869054` bytes.
-  - SHA256: `DED02B715DEF9356AE1CB5A9564BBD838EFF69292FE506DF74A07B60C99D7692`.
-  - Refreshed after the 2026-07-05 continuation automated release gate run.
+  - Size: `182128306` bytes.
+  - SHA256: `7082525FC4AFE286A87EB14C17B22E3D15176DED7F5F83EF53902F42C0F536CB`.
+  - Refreshed after the 2026-07-06 preflight log guard automated release gate run.
   - CI artifact name: `maclaw-mobile-debug-apk`.
 - `python3 tool/verify_debug_apk_evidence.py`
   - Passed.
@@ -1520,7 +1661,7 @@ QA record.
     release or internal builds require local `android/key.properties` with
     `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`.
 - `flutter test test/mobile_feature_flags_test.dart test/app_smoke_test.dart test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
-  - Passed: 35 app shell, startup, feature flag, and shared-intent tests.
+  - Passed: 38 app shell, startup, feature flag, and shared-intent tests.
   - Covers readable bottom navigation labels for `AI助手`, `文档`, `远程`,
     `员工`, and `我的`; configured sessions opening the assistant; feature
     flags keeping the primary `AI助手` workspace when optional search is
@@ -1533,26 +1674,32 @@ QA record.
     and shared file intents
     preferring documents when available while avoiding the assistant fallback
     when document handling is disabled.
-  - Covers notification-open recovery from typed task payloads and URL payloads,
-    including redaction of embedded URL credentials and query secrets before the
-    recovery prompt is shown in the app shell.
+  - Covers notification-open recovery from typed task payloads, including
+    `server-profile:<id>` server alerts opening the remote maintenance tab, and
+    URL payloads, including redaction of embedded URL credentials and query
+    secrets before the recovery prompt is shown in the app shell.
 - `flutter test test/app_smoke_test.dart --concurrency=1 --reporter compact`
-  - Passed: 10 app shell and startup smoke tests.
+  - Passed: 11 app shell and startup smoke tests.
   - Covers unknown or unrouteable notification payloads being ignored before
     they can fake task recovery, while valid typed payloads and redacted URL
-    payloads still recover to the expected feature tab.
+    payloads still recover to the expected feature tab, and feature-disabled
+    server notification fallback messaging does not claim the remote tab opened.
 - `flutter test test/documents_state_test.dart --concurrency=1 --reporter compact`
-  - Passed: 15 document state/controller tests.
+  - Passed: 18 document state/controller tests.
   - Covers mobile shared-document uploads rejecting unsupported file types
     before calling the Hub upload API, while accepting supported emergency
     document formats such as PDF, Word, Excel, CSV, and images through the same
-    allowlist used by the manual file picker.
+    allowlist used by the manual file picker; export downloads use phone-safe
+    filenames and redact sensitive title fragments before writing files that can
+    be shared outside the app.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
-  - Passed: 14 mobile shared-intent model/controller tests.
+  - Passed: 16 mobile shared-intent model/controller tests.
   - Covers multi-payload share batches where a text caption or context URL is
     delivered before the actual file payload: supported files and images still
     route to document import, while empty file paths with only message text
     fall back to assistant conversation instead of attempting an empty document upload.
+  - Covers redacting shared text, shared link credentials, and shared link
+    message secrets before those prompts are handed to the AI assistant.
   - Covers unsupported shared attachments with message/link context falling
     back to assistant conversation, while mixed batches still prefer a later supported
     document over an unsupported file.
@@ -1560,60 +1707,120 @@ QA record.
     media load and live share stream while still allowing the same file or link
     to be shared again after the duplicate window.
 - `flutter test test/mobile_network_status_test.dart test/assistant_retry_test.dart test/mobile_realtime_client_test.dart --concurrency=1 --reporter compact`
-  - Passed: 17 weak-network, assistant retry, and realtime client tests.
+  - Passed: 19 weak-network, assistant retry, and realtime client tests.
   - Covers offline and restored network banners, HubCenter DNS fallback,
     conversion of unexpected probe failures into offline snapshots instead of
     stream errors, restored status after the next successful probe, assistant
-    retry affordances, official discovered-Hub realtime ping/event parsing, and
-    external realtime paths being rejected before the mobile client opens a
-    websocket outside the discovered Hub.
+    retry affordances, official discovered-Hub realtime ping/event parsing,
+    backend `ssh_session` status/output payload parsing, incremental
+    `output_chunk`/`output_seq` parsing, and external realtime paths being
+    rejected before the mobile client opens a websocket outside the discovered
+    Hub.
 - `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/documents_state_test.dart test/digital_employees_controller_test.dart --concurrency=1 --reporter compact`
-  - Passed: 28 realtime, document state, and digital employee controller tests.
-  - Covers realtime bridge dispatch for document and digital employee events,
-    parsing sparse realtime frames that put task/job ID and status at the top
-    level while the nested payload only contains result fields, and applying
-    those updates without losing typed notification IDs or task cache linkage.
+  - Passed: 32 realtime, document state, and digital employee controller tests.
+  - Covers realtime bridge dispatch for document, digital employee, and backend
+    SSH session events, parsing sparse realtime frames that put task/job/session
+    ID and status at the top level while the nested payload only contains result
+    fields, and applying those updates without losing typed notification IDs,
+    SSH session IDs, or task cache linkage.
+- `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart --concurrency=1 --reporter compact`
+  - Passed: 21 realtime and backend server controller tests.
+  - Covers Hub realtime parsing for `ssh_session`, `ssh_task`, and
+    `ssh_file_operation` events, bridge dispatch of backend SSH task events to
+    the server task controller, and sparse backend SSH task realtime updates
+    being merged into the per-session task cache without losing command or
+    GUI/agent-bound `backend_session_id` context. Also covers the backend SSH
+    session controller queueing create, attach, reconnect, interrupt, input,
+    and close control records for GUI/agent handling while preserving terminal
+    input carriage returns.
+- `flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact`
+  - Passed: 60 mobile backend SSH control-plane tests.
+  - Covers the phone-side foreground path using tenant Hub APIs to create,
+    attach, interrupt, reconnect, send input to, and close GUI/agent-managed
+    backend SSH sessions; request GUI/agent-managed `exec_background`,
+    `check_task`, `wait_task`, `list_tasks`, `kill_task`, and backend file
+    operation control records through the same tenant Hub session path; caches
+    GUI/agent background task status in the server controller, exposes a
+    mobile screen button that submits a command as a GUI/agent background task
+    without using phone-local SSH execution, and keeps file
+    operation requests as Hub control-plane results rather than phone-local
+    SFTP; parses `ssh_session` realtime updates with
+    `output_chunk`/`output_seq`, preserves worker `created_at`/`updated_at`
+    timing metadata, and merges sparse realtime frames without dropping the
+    existing GUI/agent-bound `backend_session_id` or `claimed_by`; updates the
+    server surface from the realtime bridge; copies and redacts backend session
+    output before AI or digital
+    employee handoff; and keeps backend command payloads queued for Hub/agent
+    execution rather than phone-local SSH execution; and sends/displays the
+    GUI/agent-bound `backend_session_id` with backend session output AI
+    analysis when one is active; and issues deduplicated, redacted mobile
+    notifications for failed/error/disconnected backend SSH realtime states.
 - `flutter test test/account_screen_test.dart test/app_preferences_test.dart test/mobile_notification_service_test.dart test/mobile_local_store_test.dart test/secure_vault_test.dart --concurrency=1 --reporter compact`
-  - Passed: 25 account settings, notification, local storage, and secure-vault
+  - Passed: 30 account settings, notification, local storage, and secure-vault
     tests.
   - Covers Hub/tenant/credits visibility, notification permission request
     success, denial, and plugin-failure feedback, masked display of phone-bound
     official credits accounts, malformed `phone:` credits being omitted from
     account-screen official credits display, theme/speech-language settings,
     clearing local work records without deleting server access data, separate
-    server profile and SSH credential deletion, local cache migration, and
-    secure storage cleanup.
+    server-profile cache clearing, backend session output/log AI-analysis
+    confirmation wording in account privacy, local cache migration, and secure
+    storage cleanup for login tokens plus legacy SSH credential residues without
+    exposing phone-side SSH credential save/read APIs.
 - `flutter test test/mobile_notification_service_test.dart --concurrency=1 --reporter compact`
-  - Passed: 7 mobile notification service tests.
+  - Passed: 8 mobile notification service tests.
   - Covers typed notification payload routing for document, digital employee,
     and server alerts requiring a non-empty trackable ID after the prefix, while
     retaining legacy URL payload routing for document recovery. Invalid typed
     payloads and unknown raw IDs are ignored at notification-open time and do
-    not replace a valid pending notification payload.
+    not replace a valid pending notification payload. System notification title
+    and body text is locally redacted for common passwords, tokens,
+    Authorization headers, and private key blocks before reaching the OS
+    notification center.
 - `flutter analyze`
   - Passed after restoring readable app shell tab/share text and replacing
     mojibake-prone UI assertions with Unicode-safe test constants.
-- `flutter test test/servers_controller_test.dart test/servers_screen_test.dart test/ssh_risk_test.dart test/mobile_terminal_command_test.dart --concurrency=1 --reporter compact`
-  - Passed: 24 server maintenance widget/model tests.
-  - Covers server profile validation before storage or secure-credential writes,
-    SSH port range validation, private-key mode requiring a private key,
-    readable high-risk command confirmation dialogs, manual save/send
-    confirmation, terminal-output AI analysis confirmation with preview,
-    redacted output, redacted server profile metadata before SSH-output handoff
-    to a digital employee, including server name, host, username, tag, and note
-    fields, password/Token/private-key warning, plus environment-variable and
+- `flutter test test/servers_controller_test.dart test/servers_screen_test.dart test/ssh_risk_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact`
+  - Passed: 36 server maintenance widget/model tests.
+  - Covers Hub-synced sanitized server profile metadata merging from desktop
+    `SSHHosts` with local fallback, the server screen presenting those profiles
+    as backend MaClaw GUI/agent-managed server records instead of phone-local
+    SSH credential entry, preserving sanitized `source_machine_id` and
+    `updated_at` provenance metadata in the phone-side cache, Hub
+    refresh/cache clearing with only legacy
+    credential-residue cleanup and without writing phone-side SSH secrets,
+    existing backend SSH session listing and attach/resume through
+    Hub session APIs, interrupt requests queued through Hub for GUI/agent
+    Ctrl+C handling, backend GUI/agent task control-record state management,
+    backend file operation control-record requests,
+    Ctrl+C handling, visible `claimed_by`, `backend_session_id`, and pending
+    input metadata, worker timing metadata, output sequence evidence, and
+    sparse realtime-frame merge behavior for GUI/agent-managed sessions,
+    deduplicated redacted notifications for backend SSH abnormal realtime states,
+    readable high-risk command
+    confirmation dialogs,
+    manual save/send confirmation, backend session output AI analysis confirmation
+    with preview, redacted output, redacted server profile metadata
+    before backend session output handoff to a digital employee, backend GUI/agent realtime
+    `ssh_session` `output_chunk`/`output_seq` rendering in the mobile server console,
+    backend session ID propagation from the mobile server console to AI analysis,
+    including server name,
+    host, username, tag, and note fields, password/Token/private-key warning,
+    plus environment-variable and
     long-option secret redaction such as `MYSQL_PWD=...`,
     `AWS_SECRET_ACCESS_KEY=...`, `--password ...`, and quoted values like
     `password="..."`, `API_KEY='...'`, and `--token '...'`; embedded URL
     credentials in `https://`, `postgres://`, `redis://`, and `ssh://`
     payloads; API-boundary redaction after session initialization, command
-    draft non-execution, terminal output copy, reconnect profile selection,
-    credential deletion, and SSH risk classification, including recursive-force
-    `rm` variants such as `-fr`, split `-r -f`, `--` separators, and uppercase
-    `-Rf` flags.
+    draft non-execution, backend session output copy with local clipboard
+    redaction before secrets leave the app surface, UI labels for copy/clear
+    actions that say backend session output instead of terminal output,
+    reconnect profile selection, phone-side cached profile cleanup, and SSH risk
+    classification, including recursive-force `rm` variants such as `-fr`,
+    split `-r -f`, `--` separators, and uppercase `-Rf` flags.
 - `flutter analyze`
   - Passed after restoring readable SSH safety dialogs and digital-employee
-    SSH-output prompt text.
+    backend session output prompt text.
 
 ## Manual Release Gates
 
@@ -1623,11 +1830,11 @@ These cannot be proven by local unit tests or the unsigned debug APK:
 | --- | --- |
 | Android signed internal build | Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result on at least one Android 13+ device |
 | Android share-to-app | Device log or QA notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
-| Android runtime permissions | QA notes/screenshots for notification, camera, microphone, media/file access, and local network/SSH scenario if applicable, with `permission-grant:<id>` evidence |
+| Android runtime permissions | QA notes/screenshots for notification, camera, microphone, media/file access, and any platform local-network prompt if applicable, with `permission-grant:<id>` evidence; local-network evidence is not phone-local SSH proof |
 | iOS Share Extension target | Xcode project with `top.mypapers.maclaw.mobile.ShareExtension`, official Team ID, provisioning profile, and `group.top.mypapers.maclaw.mobile` enabled for Runner and Share Extension |
 | iOS share-to-app | TestFlight or development install notes showing text, URL, image, PDF, Word, Excel, and CSV shared into MaClaw Mobile |
 | iOS runtime permissions | QA notes/screenshots for camera, microphone, speech recognition, photo library, local network, and notifications, with `permission-grant:<id>` evidence |
-| Backend SSH session against real server | Host type, auth mode, session creation/attach, connect result, read-only command, command output excerpt, disconnect result, reconnect result, copied output evidence, AI analysis confirmation, and credential deletion confirmation |
+| Backend SSH session against real server | GUI-equivalent backend SSH session management evidence: host type, auth mode, session creation/attach, GUI/agent-bound `backend_session_id`, not phone-local/ad hoc terminal evidence, GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, `ssh_session` realtime `output_chunk`/`output_seq` evidence tied to the same `backend_session_id`, connect result, read-only command, command output excerpt, interrupt/Ctrl+C evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, disconnect result, reconnect result, copied backend session output evidence, AI analysis confirmation tied to the same GUI/agent-bound `backend_session_id`, AI/digital-employee handoff evidence tied to the same `backend_session_id` if used, and phone-side server-profile cache clear confirmation |
 | Hub discovery smoke test | Account used, selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result, cold-start MaClaw logo splash evidence with no Flutter placeholder/template branding, signed-in `AI助手` first-screen evidence with visible `主对话`/secondary-tab controls, microphone/voice input, and no legacy `查信息` entry, AI assistant query with citations, voice transcription, photo/image assistant input, shared result, document draft, document upload/export task IDs, digital employee task ID, realtime status, notification delivery, network offline/recovery, API base URL, and realtime Hub URL confirmation |
 
 ## Build Record Template

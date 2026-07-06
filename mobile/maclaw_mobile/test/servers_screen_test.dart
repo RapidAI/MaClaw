@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
+import 'package:maclaw_mobile/core/api/mobile_realtime_client.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
 import 'package:maclaw_mobile/core/security/mobile_redaction.dart';
@@ -34,36 +35,6 @@ class _OneServerProfileController extends ServerProfilesController {
           note: 'primary API node',
         ),
       ];
-}
-
-class _RecordingServerProfilesController extends ServerProfilesController {
-  static final added = <({
-    ServerProfile profile,
-    String password,
-    String privateKey,
-    String privateKeyPassphrase,
-  })>[];
-
-  @override
-  Future<List<ServerProfile>> build() async => const [];
-
-  @override
-  Future<void> addProfile(
-    ServerProfile profile, {
-    String password = '',
-    String privateKey = '',
-    String privateKeyPassphrase = '',
-  }) async {
-    added.add(
-      (
-        profile: profile,
-        password: password,
-        privateKey: privateKey,
-        privateKeyPassphrase: privateKeyPassphrase,
-      ),
-    );
-    state = AsyncData([profile]);
-  }
 }
 
 class _TestServerCommandsController extends ServerCommandsController {
@@ -104,18 +75,21 @@ class _TestSSHAnalysisWithDraftController extends SSHAnalysisController {
         summary: 'nginx 配置需要检查',
         recommendation: '先验证配置，再考虑重载服务。',
         commandDraft: 'nginx -t',
+        backendSessionId: 'mobile-ssh:sess-analysis',
       );
 }
 
 class _RecordingSSHAnalysisController extends SSHAnalysisController {
   static final outputs = <String>[];
+  static final backendSessionIds = <String?>[];
 
   @override
   Future<MobileSSHAnalysis?> build() async => null;
 
   @override
-  Future<void> analyze(String output) async {
+  Future<void> analyze(String output, {String? backendSessionId}) async {
     outputs.add(output.trim());
+    backendSessionIds.add(backendSessionId);
     state = const AsyncData(
       MobileSSHAnalysis(
         summary: '发现 502 错误',
@@ -129,11 +103,37 @@ class _RecordingSSHAnalysisController extends SSHAnalysisController {
 class _FakeBackendSSHApiClient extends ApiClient {
   final Object? createError;
   final createdProfileIds = <String>[];
+  final attachedSessionIds = <String>[];
+  final interruptedSessionIds = <String>[];
+  List<MobileBackendSSHSession> backendSessions;
   final inputs = <({String sessionId, String input})>[];
+  final backgroundTasks =
+      <({String sessionId, String command, int? tailLines})>[];
+  final fileOperations = <({
+    String sessionId,
+    String action,
+    String localPath,
+    String remotePath,
+  })>[];
+  final listedTaskSessions = <String>[];
+  final waitedTasks = <({
+    String sessionId,
+    String taskId,
+    int? timeoutSeconds,
+    int? tailLines
+  })>[];
+  final killedTasks = <({String sessionId, String taskId})>[];
   final closedSessionIds = <String>[];
 
-  _FakeBackendSSHApiClient({this.createError})
-      : super(hubUrl: 'https://tenant-a.maclaw.top');
+  _FakeBackendSSHApiClient({
+    this.createError,
+    this.backendSessions = const [],
+  }) : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<List<MobileBackendSSHSession>> listBackendSSHSessions() async {
+    return backendSessions;
+  }
 
   @override
   Future<MobileBackendSSHSession> createBackendSSHSession({
@@ -145,7 +145,10 @@ class _FakeBackendSSHApiClient extends ApiClient {
     return MobileBackendSSHSession(
       sessionId: 'ssh-session-$serverProfileId',
       serverProfileId: serverProfileId,
+      backendSessionId: 'mobile-ssh:ssh-session-$serverProfileId',
       status: 'connected',
+      state: 'running',
+      claimedBy: 'desktop-agent-1',
       recentOutput: 'backend session ready\n',
     );
   }
@@ -163,6 +166,37 @@ class _FakeBackendSSHApiClient extends ApiClient {
   }
 
   @override
+  Future<MobileBackendSSHSession> attachBackendSSHSession(
+    String sessionId,
+  ) async {
+    attachedSessionIds.add(sessionId);
+    return MobileBackendSSHSession(
+      sessionId: sessionId,
+      serverProfileId: 'srv-prod',
+      backendSessionId: 'mobile-ssh:$sessionId',
+      status: 'connected',
+      state: 'running',
+      claimedBy: 'desktop-agent-1',
+      recentOutput: 'attached existing backend session\n',
+      outputSeq: 2,
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHSession> interruptBackendSSHSession(
+    String sessionId,
+  ) async {
+    interruptedSessionIds.add(sessionId);
+    return MobileBackendSSHSession(
+      sessionId: sessionId,
+      serverProfileId: 'srv-prod',
+      status: 'interrupt_requested',
+      state: 'interrupting',
+      message: 'Interrupt queued for MaClaw GUI agent',
+    );
+  }
+
+  @override
   Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
     required String sessionId,
     required String input,
@@ -172,6 +206,117 @@ class _FakeBackendSSHApiClient extends ApiClient {
       sessionId: sessionId,
       output: 'ran: ${input.trim()}\n',
       status: 'accepted',
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHTask> startBackendSSHBackgroundTask({
+    required String sessionId,
+    required String command,
+    int? tailLines,
+  }) async {
+    backgroundTasks.add(
+      (
+        sessionId: sessionId,
+        command: command,
+        tailLines: tailLines,
+      ),
+    );
+    return MobileBackendSSHTask(
+      taskId: 'task-1',
+      sessionId: sessionId,
+      backendSessionId: 'mobile-ssh:$sessionId',
+      command: command,
+      status: 'running',
+      logTail: 'background task accepted\n',
+      claimedBy: 'desktop-agent-1',
+    );
+  }
+
+  @override
+  Future<List<MobileBackendSSHTask>> listBackendSSHBackgroundTasks(
+    String sessionId,
+  ) async {
+    listedTaskSessions.add(sessionId);
+    return [
+      MobileBackendSSHTask(
+        taskId: 'task-1',
+        sessionId: sessionId,
+        backendSessionId: 'mobile-ssh:$sessionId',
+        command: backgroundTasks.isEmpty
+            ? 'journalctl -u app -n 200 --no-pager'
+            : backgroundTasks.last.command,
+        status: 'running',
+        logTail: 'background task accepted\n',
+      ),
+    ];
+  }
+
+  @override
+  Future<MobileBackendSSHTask> waitBackendSSHBackgroundTask({
+    required String sessionId,
+    required String taskId,
+    int? timeoutSeconds,
+    int? tailLines,
+  }) async {
+    waitedTasks.add(
+      (
+        sessionId: sessionId,
+        taskId: taskId,
+        timeoutSeconds: timeoutSeconds,
+        tailLines: tailLines,
+      ),
+    );
+    return MobileBackendSSHTask(
+      taskId: taskId,
+      sessionId: sessionId,
+      backendSessionId: 'mobile-ssh:$sessionId',
+      status: 'completed',
+      exitCode: 0,
+      logTail: 'task completed\n',
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHTask> killBackendSSHBackgroundTask({
+    required String sessionId,
+    required String taskId,
+  }) async {
+    killedTasks.add((sessionId: sessionId, taskId: taskId));
+    return MobileBackendSSHTask(
+      taskId: taskId,
+      sessionId: sessionId,
+      backendSessionId: 'mobile-ssh:$sessionId',
+      status: 'killed',
+      message: 'terminated',
+    );
+  }
+
+  @override
+  Future<MobileBackendSSHFileOperation> requestBackendSSHFileOperation({
+    required String sessionId,
+    required String action,
+    String localPath = '',
+    String remotePath = '',
+  }) async {
+    fileOperations.add(
+      (
+        sessionId: sessionId,
+        action: action,
+        localPath: localPath,
+        remotePath: remotePath,
+      ),
+    );
+    return MobileBackendSSHFileOperation(
+      operationId: 'file-op-1',
+      sessionId: sessionId,
+      backendSessionId: 'mobile-ssh:$sessionId',
+      action: action,
+      localPath: localPath,
+      remotePath: remotePath,
+      status: 'queued',
+      message: 'file operation queued for GUI agent',
+      claimedBy: 'desktop-agent-1',
     );
   }
 
@@ -252,7 +397,8 @@ class _RecordingDigitalEmployeeTaskController
 }
 
 void main() {
-  test('mobile SSH output submission summary counts lines and truncates', () {
+  test('backend session output submission summary counts lines and truncates',
+      () {
     final summary = mobileSSHOutputSubmissionSummary(
       '${'a' * 430}\nsecond line',
     );
@@ -263,7 +409,7 @@ void main() {
     expect(summary.preview.length, 423);
   });
 
-  test('mobile SSH output redaction removes common secrets', () {
+  test('backend session output redaction removes common secrets', () {
     final redacted = redactMobileSensitiveText(
       'Authorization: Bearer secret-token\n'
       'password=super-secret token: abc123 api_key=key-1\n'
@@ -306,9 +452,19 @@ void main() {
     expect(redacted, isNot(contains('root:ssh-pass')));
   });
 
-  test('mobile SSH output handoff context marks server maintenance source', () {
+  test('digital employee output prompt uses backend session wording', () {
+    final prompt = digitalEmployeeOutputPrompt('systemctl status nginx');
+
+    expect(prompt, contains('MaClaw GUI/agent'));
+    expect(prompt, contains('\u540e\u53f0 SSH \u4f1a\u8bdd\u8f93\u51fa'));
+    expect(prompt, isNot(contains('SSH \u7ec8\u7aef\u8f93\u51fa')));
+  });
+
+  test('backend session output handoff context marks server maintenance source',
+      () {
     final context = mobileSSHOutputTaskContext(
       'first line\nsecond line',
+      backendSessionId: 'mobile-ssh:sess-123',
       profile: const ServerProfile(
         id: 'srv-prod',
         name: 'prod-api',
@@ -324,6 +480,7 @@ void main() {
     expect(context, containsPair('source', 'maclaw_mobile'));
     expect(context, containsPair('handoff', 'ssh_output'));
     expect(context, containsPair('task_surface', 'servers'));
+    expect(context, containsPair('backend_session_id', 'mobile-ssh:sess-123'));
     expect(context, containsPair('line_count', '2'));
     expect(context, containsPair('char_count', '22'));
     expect(context, containsPair('manual_confirmation_required', 'true'));
@@ -351,10 +508,12 @@ void main() {
     expect(context, containsPair('server_note', 'primary API node'));
   });
 
-  test('mobile SSH output handoff context redacts profile metadata secrets',
+  test(
+      'backend session output handoff context redacts profile metadata secrets',
       () {
     final context = mobileSSHOutputTaskContext(
       'service failed',
+      backendSessionId: 'mobile-ssh:sess token: backend-secret',
       profile: const ServerProfile(
         id: 'srv-prod',
         name: 'prod-api token: name-secret',
@@ -367,6 +526,10 @@ void main() {
       ),
     );
 
+    expect(
+      context['backend_session_id'],
+      'mobile-ssh:sess token=[REDACTED_SECRET]',
+    );
     expect(context['server_name'], 'prod-api token=[REDACTED_SECRET]');
     expect(
       context['server_host'],
@@ -385,6 +548,7 @@ void main() {
     expect(context['server_tag'], isNot(contains('tag-secret')));
     expect(context['server_note'], isNot(contains('admin:pass')));
     expect(context['server_note'], isNot(contains('note-secret')));
+    expect(context['backend_session_id'], isNot(contains('backend-secret')));
   });
 
   testWidgets('servers screen exposes emergency maintenance controls',
@@ -419,195 +583,115 @@ void main() {
     await tester.pump();
 
     expect(find.text('应急服务器'), findsOneWidget);
-    expect(find.text('服务器配置'), findsOneWidget);
-
-    await tester.drag(find.byType(ListView), const Offset(0, -900));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('后台 SSH 会话'), findsOneWidget);
-    expect(find.text('命令风险预检'), findsOneWidget);
-    expect(find.text('保存常用'), findsOneWidget);
-    expect(find.text('发送到会话'), findsOneWidget);
-
-    await tester.drag(find.byType(ListView), const Offset(0, -900));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('AI 分析终端输出'), findsOneWidget);
-  });
-
-  testWidgets('servers screen adds profile with tag note and password',
-      (tester) async {
-    final store = MobileLocalStore(executor: NativeDatabase.memory());
-    _RecordingServerProfilesController.added.clear();
-    addTearDown(store.close);
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          mobileLocalStoreProvider.overrideWithValue(store),
-          serverProfilesProvider.overrideWith(
-            _RecordingServerProfilesController.new,
-          ),
-          serverCommandsProvider.overrideWith(
-            _TestServerCommandsController.new,
-          ),
-          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
-          mobileNetworkStatusProvider.overrideWith(
-            (ref) => Stream.value(
-              MobileNetworkSnapshot(
-                quality: MobileNetworkQuality.online,
-                message: 'ok',
-                checkedAt: DateTime.utc(2026, 7, 2),
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.enterText(
-      find.widgetWithText(TextField, '名称'),
-      '生产入口',
-    );
-    await tester.enterText(find.widgetWithText(TextField, '标签'), '生产');
-    await tester.enterText(
-      find.widgetWithText(TextField, '备注'),
-      '值班维护入口',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Host'),
-      '10.0.0.7',
-    );
-    await tester.enterText(find.widgetWithText(TextField, '端口'), '2222');
-    await tester.enterText(find.widgetWithText(TextField, '用户名'), 'ops');
-    await tester.enterText(
-      find.widgetWithText(TextField, '密码'),
-      'server-password',
+    expect(
+      find.text('\u540e\u53f0\u670d\u52a1\u5668\u6863\u6848'),
+      findsOneWidget,
     );
 
-    await tester.tap(find.text('添加服务器'));
-    await tester.pump();
-
-    final added = _RecordingServerProfilesController.added.single;
-    expect(added.password, 'server-password');
-    expect(added.privateKey, isEmpty);
-    expect(added.privateKeyPassphrase, isEmpty);
-    expect(added.profile.name, '生产入口');
-    expect(added.profile.host, '10.0.0.7');
-    expect(added.profile.port, 2222);
-    expect(added.profile.username, 'ops');
-    expect(added.profile.tag, '生产');
-    expect(added.profile.note, '值班维护入口');
-    expect(added.profile.authMode, serverAuthModePassword);
-    expect(find.text('生产入口'), findsWidgets);
-    expect(find.textContaining('ops@10.0.0.7:2222'), findsOneWidget);
-    expect(find.textContaining('值班维护入口'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pump(const Duration(milliseconds: 50));
-  });
-
-  testWidgets('servers screen rejects invalid port before saving profile',
-      (tester) async {
-    final store = MobileLocalStore(executor: NativeDatabase.memory());
-    _RecordingServerProfilesController.added.clear();
-    addTearDown(store.close);
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          mobileLocalStoreProvider.overrideWithValue(store),
-          serverProfilesProvider.overrideWith(
-            _RecordingServerProfilesController.new,
-          ),
-          serverCommandsProvider.overrideWith(
-            _TestServerCommandsController.new,
-          ),
-          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
-          mobileNetworkStatusProvider.overrideWith(
-            (ref) => Stream.value(
-              MobileNetworkSnapshot(
-                quality: MobileNetworkQuality.online,
-                message: 'ok',
-                checkedAt: DateTime.utc(2026, 7, 2),
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Host'),
-      '10.0.0.7',
-    );
-    await tester.enterText(find.widgetWithText(TextField, '端口'), '70000');
-    await tester.enterText(find.widgetWithText(TextField, '用户名'), 'ops');
-    await tester.tap(find.text('添加服务器'));
-    await tester.pump();
-
-    expect(_RecordingServerProfilesController.added, isEmpty);
-    expect(find.text('请输入 1-65535 范围内的 SSH 端口。'), findsOneWidget);
-  });
-
-  testWidgets('servers screen requires private key in private-key mode',
-      (tester) async {
-    final store = MobileLocalStore(executor: NativeDatabase.memory());
-    _RecordingServerProfilesController.added.clear();
-    addTearDown(store.close);
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          mobileLocalStoreProvider.overrideWithValue(store),
-          serverProfilesProvider.overrideWith(
-            _RecordingServerProfilesController.new,
-          ),
-          serverCommandsProvider.overrideWith(
-            _TestServerCommandsController.new,
-          ),
-          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
-          mobileNetworkStatusProvider.overrideWith(
-            (ref) => Stream.value(
-              MobileNetworkSnapshot(
-                quality: MobileNetworkQuality.online,
-                message: 'ok',
-                checkedAt: DateTime.utc(2026, 7, 2),
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Host'),
-      '10.0.0.7',
-    );
-    await tester.enterText(find.widgetWithText(TextField, '端口'), '22');
-    await tester.enterText(find.widgetWithText(TextField, '用户名'), 'ops');
-    await tester.tap(find.text('私钥'));
-    await tester.pump();
     await tester.scrollUntilVisible(
-      find.text('添加服务器'),
+      find.text('GUI/agent 后台 SSH 会话', skipOffstage: false),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('添加服务器'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
 
-    expect(_RecordingServerProfilesController.added, isEmpty);
-    expect(find.text('私钥登录需要填写或导入私钥。'), findsOneWidget);
+    expect(find.text('GUI/agent 后台 SSH 会话'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('GUI/agent 文件操作', skipOffstage: false),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('GUI/agent 文件操作'), findsOneWidget);
+    final commandRiskTitle = find.text(
+      '\u547d\u4ee4\u98ce\u9669\u9884\u68c0',
+      skipOffstage: false,
+    );
+    await tester.scrollUntilVisible(
+      commandRiskTitle,
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('命令风险预检'), findsOneWidget);
+    expect(find.text('保存常用'), findsOneWidget);
+    expect(find.text('投递到后台会话'), findsOneWidget);
+
+    await tester.drag(find.byType(ListView), const Offset(0, -600));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('AI 分析后台会话输出'), findsOneWidget);
   });
 
-  testWidgets('servers screen copies captured terminal output', (tester) async {
+  testWidgets('servers screen uses Hub-synced backend server profiles only',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.text('\u540e\u53f0\u670d\u52a1\u5668\u6863\u6848'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('\u540c\u6b65\u670d\u52a1\u5668\u6863\u6848'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        '\u624b\u673a\u53ea\u53d1\u8d77\u540e\u53f0\u4f1a\u8bdd\u3001\u53d1\u9001\u786e\u8ba4\u540e\u7684\u8f93\u5165\u5e76\u67e5\u770b\u8f93\u51fa',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('MaClaw GUI/agent \u6388\u6743\u914d\u7f6e'),
+      findsOneWidget,
+    );
+    expect(find.text('未接管'), findsOneWidget);
+    expect(find.text('连接中'), findsNothing);
+    expect(find.text('已连接'), findsNothing);
+    expect(find.text('未连接'), findsNothing);
+    expect(find.text('prod-api'), findsOneWidget);
+    expect(find.textContaining('ops@10.0.0.8:2222'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Host'), findsNothing);
+    expect(find.widgetWithText(TextField, '\u7aef\u53e3'), findsNothing);
+    expect(find.widgetWithText(TextField, '\u7528\u6237\u540d'), findsNothing);
+    expect(find.widgetWithText(TextField, '\u5bc6\u7801'), findsNothing);
+    expect(find.text('\u79c1\u94a5'), findsNothing);
+    expect(
+      find.byTooltip('\u6e05\u9664\u672c\u673a\u7f13\u5b58'),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('\u5220\u9664\u670d\u52a1\u5668'), findsNothing);
+  });
+
+  testWidgets('servers screen copies captured backend session output',
+      (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     final copied = <String>[];
     addTearDown(store.close);
@@ -616,8 +700,11 @@ void main() {
       ProviderScope(
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
-          mobileSshTerminalInitialOutputProvider.overrideWithValue(
-            'nginx[1]: upstream timed out\nsystemd[1]: app.service failed',
+          mobileBackendSshInitialOutputProvider.overrideWithValue(
+            'nginx[1]: upstream timed out\n'
+            'systemd[1]: app.service failed\n'
+            'Authorization: Bearer backend-output-token\n'
+            'password=backend-output-password',
           ),
           mobileClipboardWriterProvider.overrideWithValue((text) async {
             copied.add(text);
@@ -644,10 +731,19 @@ void main() {
     );
     await tester.pump();
 
-    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.drag(find.byType(ListView), const Offset(0, -300));
     await tester.pump(const Duration(milliseconds: 300));
 
-    final copyButton = find.byTooltip('复制终端输出');
+    expect(
+      find.byTooltip('\u590d\u5236\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa'),
+      findsOneWidget,
+    );
+    expect(
+      find.byTooltip('\u590d\u5236\u7ec8\u7aef\u8f93\u51fa'),
+      findsNothing,
+    );
+
+    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
     await tester.ensureVisible(copyButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(copyButton);
@@ -655,9 +751,14 @@ void main() {
 
     expect(
       copied.single,
-      'nginx[1]: upstream timed out\nsystemd[1]: app.service failed',
+      'nginx[1]: upstream timed out\n'
+      'systemd[1]: app.service failed\n'
+      'Authorization: Bearer [REDACTED_TOKEN]\n'
+      'password=[REDACTED_SECRET]',
     );
-    expect(find.text('终端输出已复制'), findsOneWidget);
+    expect(copied.single, isNot(contains('backend-output-token')));
+    expect(copied.single, isNot(contains('backend-output-password')));
+    expect(find.text('后台会话输出已复制'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 50));
@@ -704,7 +805,7 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
 
-    final connectButton = find.text('创建/附着会话');
+    final connectButton = find.text('请求后台会话');
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
@@ -714,6 +815,465 @@ void main() {
     expect(notifications.shown.single.title, contains('SSH'));
     expect(notifications.shown.single.body, contains('prod-api'));
     expect(notifications.shown.single.payload, 'server-profile:srv-prod');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
+
+  testWidgets('servers screen appends backend agent realtime output',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final api = _FakeBackendSSHApiClient();
+    final copied = <String>[];
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(api),
+          mobileClipboardWriterProvider.overrideWithValue((text) async {
+            copied.add(text);
+          }),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final connectButton = find.text('请求后台会话');
+    await tester.ensureVisible(connectButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connectButton);
+    await tester.pumpAndSettle();
+
+    final context = tester.element(find.byType(ServersScreen));
+    final container = ProviderScope.containerOf(context);
+    await container
+        .read(backendSshSessionsProvider.notifier)
+        .applyRealtimeEvent(
+          const MobileRealtimeEvent(
+            type: 'ssh_session',
+            payload: {
+              'session_id': 'ssh-session-srv-prod',
+              'server_profile_id': 'srv-prod',
+              'status': 'connected',
+              'state': 'running',
+              'claimed_by': 'MaClaw GUI agent worker',
+              'output_chunk': 'agent output chunk\n',
+              'output_seq': 1,
+            },
+          ),
+        );
+    await tester.pump();
+
+    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
+    await tester.ensureVisible(copyButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(copyButton);
+    await tester.pump();
+
+    expect(copied.single, contains('backend session ready'));
+    expect(copied.single, contains('agent output chunk'));
+  });
+
+  testWidgets('servers screen sends backend session id with AI analysis',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final api = _FakeBackendSSHApiClient();
+    _RecordingSSHAnalysisController.outputs.clear();
+    _RecordingSSHAnalysisController.backendSessionIds.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(api),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(
+            _RecordingSSHAnalysisController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 6),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final connectButton = find.text('请求后台会话');
+    await tester.ensureVisible(connectButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connectButton);
+    await tester.pumpAndSettle();
+
+    final context = tester.element(find.byType(ServersScreen));
+    final container = ProviderScope.containerOf(context);
+    await container
+        .read(backendSshSessionsProvider.notifier)
+        .applyRealtimeEvent(
+          const MobileRealtimeEvent(
+            type: 'ssh_session',
+            payload: {
+              'session_id': 'ssh-session-srv-prod',
+              'server_profile_id': 'srv-prod',
+              'backend_session_id': 'mobile-ssh:ssh-session-srv-prod',
+              'status': 'connected',
+              'state': 'running',
+              'output_chunk': 'journalctl output chunk\n',
+              'output_seq': 1,
+            },
+          ),
+        );
+    await tester.pump();
+
+    final analyzeButton = find.text('交给 AI 分析');
+    await tester.ensureVisible(analyzeButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(analyzeButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('发送后台会话输出给 AI？'), findsOneWidget);
+    await tester.tap(find.text('确认发送'));
+    await tester.pumpAndSettle();
+
+    expect(
+      _RecordingSSHAnalysisController.outputs.single,
+      contains('journalctl output chunk'),
+    );
+    expect(
+      _RecordingSSHAnalysisController.backendSessionIds.single,
+      'mobile-ssh:ssh-session-srv-prod',
+    );
+  });
+
+  testWidgets('servers screen lists and attaches existing backend session',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final api = _FakeBackendSSHApiClient(
+      backendSessions: [
+        MobileBackendSSHSession(
+          sessionId: 'ssh-existing-1',
+          serverProfileId: 'srv-prod',
+          backendSessionId: 'mobile-ssh:ssh-existing-1',
+          status: 'connected',
+          state: 'running',
+          pendingInputCount: 1,
+          claimedBy: 'desktop-agent-1',
+          message: 'Managed by MaClaw GUI agent',
+          recentOutput: 'previous backend output\n',
+          outputSeq: 7,
+          createdAt: DateTime(2026, 7, 6, 9, 30),
+          updatedAt: DateTime(2026, 7, 6, 9, 59),
+          lastActivityAt: DateTime(2026, 7, 6, 10),
+        ),
+      ],
+    );
+    final copied = <String>[];
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(api),
+          mobileClipboardWriterProvider.overrideWithValue((text) async {
+            copied.add(text);
+          }),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 6),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final attachButton = find.text('\u9644\u7740');
+    expect(find.text('ssh-existing-1'), findsOneWidget);
+    expect(find.textContaining('状态 connected'), findsOneWidget);
+    expect(find.textContaining('desktop-agent-1'), findsOneWidget);
+    expect(find.textContaining('mobile-ssh:ssh-existing-1'), findsOneWidget);
+    expect(find.textContaining('创建 2026-07-06 09:30'), findsOneWidget);
+    expect(find.textContaining('更新 2026-07-06 09:59'), findsOneWidget);
+    expect(find.textContaining('最后活动'), findsOneWidget);
+    expect(find.textContaining('输出序号 7'), findsOneWidget);
+    expect(find.textContaining('待处理输入 1'), findsOneWidget);
+    await tester.ensureVisible(attachButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(attachButton);
+    await tester.pumpAndSettle();
+
+    expect(api.attachedSessionIds, ['ssh-existing-1']);
+
+    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
+    await tester.ensureVisible(copyButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(copyButton);
+    await tester.pump();
+
+    expect(copied.single, contains('attached existing backend session'));
+  });
+
+  testWidgets('servers screen queues backend SSH interrupt through Hub',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final api = _FakeBackendSSHApiClient();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(api),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 6),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final connectButton = find.text('请求后台会话');
+    await tester.ensureVisible(connectButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connectButton);
+    await tester.pump();
+
+    final interruptButton = find.text('\u4e2d\u65ad');
+    await tester.ensureVisible(interruptButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(interruptButton);
+    await tester.pump();
+
+    expect(api.interruptedSessionIds, ['ssh-session-srv-prod']);
+  });
+
+  testWidgets('servers screen starts GUI agent background task from command',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final api = _FakeBackendSSHApiClient();
+    _RecordingServerCommandsController.recorded.clear();
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(api),
+          serverProfilesProvider.overrideWith(
+            _OneServerProfileController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _RecordingServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 6),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -900));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final connectButton = find.text('请求后台会话');
+    await tester.ensureVisible(connectButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connectButton);
+    await tester.pumpAndSettle();
+
+    final commandField = find.widgetWithText(
+      TextField,
+      '命令草稿',
+      skipOffstage: false,
+    );
+    await tester.scrollUntilVisible(
+      commandField,
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(commandField, 'journalctl -u app -n 200 --no-pager');
+    await tester.pump();
+
+    final taskButton = find.text('作为后台任务运行');
+    await tester.ensureVisible(taskButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(taskButton);
+    await tester.pumpAndSettle();
+
+    expect(api.backgroundTasks, [
+      (
+        sessionId: 'ssh-session-srv-prod',
+        command: 'journalctl -u app -n 200 --no-pager',
+        tailLines: 80,
+      ),
+    ]);
+    expect(api.inputs, isEmpty);
+    expect(
+      _RecordingServerCommandsController.recorded.single,
+      (
+        command: 'journalctl -u app -n 200 --no-pager',
+        favorite: false,
+      ),
+    );
+    expect(find.text('后台任务请求已提交给 GUI/agent'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('GUI/agent 后台任务', skipOffstage: false),
+      -240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('GUI/agent 后台任务'), findsOneWidget);
+    expect(find.text('task-1'), findsOneWidget);
+    expect(find.textContaining('状态 running'), findsOneWidget);
+
+    final refreshTasksButton = find.byTooltip('刷新后台任务');
+    await tester.ensureVisible(refreshTasksButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(refreshTasksButton);
+    await tester.pumpAndSettle();
+
+    expect(api.listedTaskSessions, ['ssh-session-srv-prod']);
+
+    final waitButton = find.text('等待');
+    await tester.ensureVisible(waitButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(waitButton);
+    await tester.pumpAndSettle();
+
+    expect(
+      api.waitedTasks.single,
+      (
+        sessionId: 'ssh-session-srv-prod',
+        taskId: 'task-1',
+        timeoutSeconds: 30,
+        tailLines: 120,
+      ),
+    );
+    expect(find.textContaining('状态 completed'), findsOneWidget);
+
+    final killButton = find.text('终止');
+    await tester.ensureVisible(killButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(killButton);
+    await tester.pumpAndSettle();
+
+    expect(
+      api.killedTasks.single,
+      (
+        sessionId: 'ssh-session-srv-prod',
+        taskId: 'task-1',
+      ),
+    );
+    expect(find.textContaining('状态 killed'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('GUI/agent 文件操作', skipOffstage: false),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final remotePathField = find.widgetWithText(
+      TextField,
+      '远端路径',
+      skipOffstage: false,
+    );
+    await tester.enterText(remotePathField, '/var/log/app.log');
+    await tester.pump();
+
+    final fileOperationButton = find.text('请求文件操作');
+    await tester.ensureVisible(fileOperationButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(fileOperationButton);
+    await tester.pumpAndSettle();
+
+    expect(
+      api.fileOperations.single,
+      (
+        sessionId: 'ssh-session-srv-prod',
+        action: 'stat',
+        localPath: '',
+        remotePath: '/var/log/app.log',
+      ),
+    );
+    expect(api.inputs, isEmpty);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 50));
@@ -757,6 +1317,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('nginx -t'), findsOneWidget);
+    expect(find.text('后台会话：mobile-ssh:sess-analysis'), findsOneWidget);
     expect(
       find.text('AI 只提供命令草案，不会自动执行；请先放入风险预检或复制后手动确认。'),
       findsOneWidget,
@@ -824,7 +1385,7 @@ void main() {
     await tester.ensureVisible(saveButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(saveButton);
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(
       find.text(
@@ -894,7 +1455,7 @@ void main() {
     await tester.enterText(
       find.widgetWithText(
         TextField,
-        '\u7ec8\u7aef\u8f93\u51fa\u6216\u9519\u8bef\u65e5\u5fd7',
+        '\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u6216\u9519\u8bef\u65e5\u5fd7',
       ),
       'nginx[1]: upstream timed out\nAuthorization: Bearer secret-token',
     );
@@ -905,7 +1466,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('\u53d1\u9001\u7ec8\u7aef\u8f93\u51fa\u7ed9 AI\uff1f'),
+      find.text(
+        '\u53d1\u9001\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u7ed9 AI\uff1f',
+      ),
       findsOneWidget,
     );
     expect(

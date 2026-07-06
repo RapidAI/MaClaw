@@ -23,6 +23,7 @@ type CodingAgentEvent struct {
 	Ts         string   `json:"ts,omitempty"`
 	Detail     string   `json:"detail,omitempty"`
 	Outcome    string   `json:"outcome,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
 	Summary    string   `json:"summary,omitempty"`
 	DurationMS int64    `json:"duration_ms,omitempty"`
 	Count      int      `json:"count,omitempty"`
@@ -96,6 +97,7 @@ type codingAgentEventPayload struct {
 	Ts         string   `json:"ts,omitempty"`
 	Detail     string   `json:"detail,omitempty"`
 	Outcome    string   `json:"outcome,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
 	Summary    string   `json:"summary,omitempty"`
 	DurationMS *int64   `json:"duration_ms,omitempty"`
 	Count      *int     `json:"count,omitempty"`
@@ -104,19 +106,20 @@ type codingAgentEventPayload struct {
 
 func codingAgentEventWire(event CodingAgentEvent) codingAgentEventPayload {
 	payload := codingAgentEventPayload{
-		Version: event.Version,
-		Agent:   event.Agent,
-		Event:   event.Event,
-		Phase:   event.Phase,
-		TaskID:  event.TaskID,
-		Title:   event.Title,
-		RunID:   event.RunID,
-		TurnID:  event.TurnID,
-		Ts:      event.Ts,
-		Detail:  event.Detail,
-		Outcome: event.Outcome,
-		Summary: event.Summary,
-		Files:   event.Files,
+		Version:  event.Version,
+		Agent:    event.Agent,
+		Event:    event.Event,
+		Phase:    event.Phase,
+		TaskID:   event.TaskID,
+		Title:    event.Title,
+		RunID:    event.RunID,
+		TurnID:   event.TurnID,
+		Ts:       event.Ts,
+		Detail:   event.Detail,
+		Outcome:  event.Outcome,
+		Severity: event.Severity,
+		Summary:  event.Summary,
+		Files:    event.Files,
 	}
 	if event.DurationMS > 0 || codingAgentEventCarriesDuration(event.Event) {
 		durationMS := event.DurationMS

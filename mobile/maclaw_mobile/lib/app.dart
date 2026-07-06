@@ -106,19 +106,24 @@ String mobileNotificationRecoveryMessage(String payload, String? targetPath) {
     '/servers' => '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
     _ => '已打开任务提醒',
   };
-  if (value.startsWith(mobileDocumentExportNotificationPrefix)) {
+  if (targetPath == '/documents' &&
+      value.startsWith(mobileDocumentExportNotificationPrefix)) {
     return '已打开任务提醒：请在文档页查看导出任务状态';
   }
-  if (value.startsWith(mobileDocumentUploadNotificationPrefix)) {
+  if (targetPath == '/documents' &&
+      value.startsWith(mobileDocumentUploadNotificationPrefix)) {
     return '已打开任务提醒：请在文档页查看导入任务状态';
   }
-  if (value.startsWith(mobileDocumentDraftNotificationPrefix)) {
+  if (targetPath == '/documents' &&
+      value.startsWith(mobileDocumentDraftNotificationPrefix)) {
     return '已打开任务提醒：请在文档页查看草稿';
   }
-  if (value.startsWith(mobileDigitalEmployeeTaskNotificationPrefix)) {
+  if (targetPath == '/employees' &&
+      value.startsWith(mobileDigitalEmployeeTaskNotificationPrefix)) {
     return '已打开任务提醒：请在数字员工页查看远程任务状态';
   }
-  if (value.startsWith(mobileServerProfileNotificationPrefix)) {
+  if (targetPath == '/servers' &&
+      value.startsWith(mobileServerProfileNotificationPrefix)) {
     return '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料';
   }
   return detail;

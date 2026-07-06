@@ -67,7 +67,8 @@ class MobileLocalStore {
     final db = await _db();
     final rows = await db
         .customSelect(
-          'SELECT id, name, host, port, username, auth_mode, tag, note '
+          'SELECT id, name, host, port, username, auth_mode, tag, note, '
+          'source_machine_id, updated_at '
           'FROM server_profiles ORDER BY name COLLATE NOCASE, host',
         )
         .get();
@@ -82,6 +83,10 @@ class MobileLocalStore {
           authMode: row.read<String>('auth_mode'),
           tag: row.readNullable<String>('tag'),
           note: row.readNullable<String>('note'),
+          sourceMachineId: row.readNullable<String>('source_machine_id') ?? '',
+          updatedAt: DateTime.tryParse(
+            row.readNullable<String>('updated_at') ?? '',
+          ),
         ),
     ];
   }
@@ -488,7 +493,20 @@ class MobileLocalStore {
       'CREATE TABLE IF NOT EXISTS server_profiles ('
       'id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL, '
       'port INTEGER NOT NULL, username TEXT NOT NULL, auth_mode TEXT NOT NULL, '
-      'tag TEXT, note TEXT)',
+      'tag TEXT, note TEXT, source_machine_id TEXT NOT NULL DEFAULT "", '
+      'updated_at TEXT NOT NULL DEFAULT "")',
+    );
+    await _ensureColumn(
+      db,
+      table: 'server_profiles',
+      column: 'source_machine_id',
+      definition: 'TEXT NOT NULL DEFAULT ""',
+    );
+    await _ensureColumn(
+      db,
+      table: 'server_profiles',
+      column: 'updated_at',
+      definition: 'TEXT NOT NULL DEFAULT ""',
     );
     await db.customStatement(
       'CREATE TABLE IF NOT EXISTS search_history ('
@@ -644,12 +662,15 @@ class MobileLocalStore {
   ) {
     return db.customStatement(
       'INSERT INTO server_profiles '
-      '(id, name, host, port, username, auth_mode, tag, note) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?) '
+      '(id, name, host, port, username, auth_mode, tag, note, '
+      'source_machine_id, updated_at) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) '
       'ON CONFLICT(id) DO UPDATE SET '
       'name = excluded.name, host = excluded.host, port = excluded.port, '
       'username = excluded.username, auth_mode = excluded.auth_mode, '
-      'tag = excluded.tag, note = excluded.note',
+      'tag = excluded.tag, note = excluded.note, '
+      'source_machine_id = excluded.source_machine_id, '
+      'updated_at = excluded.updated_at',
       [
         profile.id,
         profile.name,
@@ -659,6 +680,8 @@ class MobileLocalStore {
         profile.authMode,
         profile.tag,
         profile.note,
+        profile.sourceMachineId,
+        profile.updatedAt == null ? '' : _dateWireValue(profile.updatedAt!),
       ],
     );
   }

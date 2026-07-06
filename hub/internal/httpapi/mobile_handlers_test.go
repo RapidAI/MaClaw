@@ -69,13 +69,46 @@ func TestMobileRealtimeBackendSSHSessionEventShape(t *testing.T) {
 		"session_id":        "mobssh_1",
 		"status":            "input_queued",
 		"server_profile_id": "prod",
+		"output_chunk":      "line 1",
+		"output_seq":        int64(3),
 	})
 
 	if event["type"] != "ssh_session" || event["session_id"] != "mobssh_1" || event["status"] != "input_queued" {
 		t.Fatalf("event = %#v, want backend ssh session fields", event)
 	}
+	if event["output_chunk"] != "line 1" || event["output_seq"] != int64(3) {
+		t.Fatalf("event = %#v, want top-level output delta fields", event)
+	}
 	if session, ok := event["session"].(map[string]any); !ok || session["server_profile_id"] != "prod" {
 		t.Fatalf("session payload = %#v, want nested session", event["session"])
+	}
+}
+
+func TestMobileRealtimeBackendSSHTaskAndFileOperationEventShape(t *testing.T) {
+	taskEvent := mobileRealtimeBackendSSHTaskEvent(map[string]any{
+		"task_id":    "task-1",
+		"session_id": "mobssh_1",
+		"status":     "completed",
+		"log_tail":   "done",
+	})
+	if taskEvent["type"] != "ssh_task" || taskEvent["task_id"] != "task-1" || taskEvent["session_id"] != "mobssh_1" || taskEvent["status"] != "completed" {
+		t.Fatalf("task event = %#v, want top-level task fields", taskEvent)
+	}
+	if task, ok := taskEvent["task"].(map[string]any); !ok || task["log_tail"] != "done" {
+		t.Fatalf("task payload = %#v, want nested task", taskEvent["task"])
+	}
+
+	fileEvent := mobileRealtimeBackendSSHFileOperationEvent(map[string]any{
+		"operation_id":      "file-op-1",
+		"session_id":        "mobssh_1",
+		"status":            "completed",
+		"bytes_transferred": int64(42),
+	})
+	if fileEvent["type"] != "ssh_file_operation" || fileEvent["operation_id"] != "file-op-1" || fileEvent["session_id"] != "mobssh_1" || fileEvent["status"] != "completed" {
+		t.Fatalf("file event = %#v, want top-level operation fields", fileEvent)
+	}
+	if operation, ok := fileEvent["operation"].(map[string]any); !ok || operation["bytes_transferred"] != int64(42) {
+		t.Fatalf("operation payload = %#v, want nested operation", fileEvent["operation"])
 	}
 }
 
@@ -178,6 +211,16 @@ func TestMobileBootstrapPayloadIncludesServiceStatuses(t *testing.T) {
 	llmAccess, ok := payload["llm_access"].(map[string]any)
 	if !ok || llmAccess["mode"] != "maclaw_official" {
 		t.Fatalf("llm_access = %#v, want maclaw_official", payload["llm_access"])
+	}
+	features, ok := payload["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("features payload = %#v, want map", payload["features"])
+	}
+	if features["backend_ssh_sessions"] != true {
+		t.Fatalf("features = %#v, want backend SSH session management flag", features)
+	}
+	if _, ok := features["local_ssh"]; ok {
+		t.Fatalf("features = %#v, must not advertise phone-local SSH", features)
 	}
 }
 
@@ -606,6 +649,149 @@ func TestMobileSSHAnalyzeHandlerRequiresViewerToken(t *testing.T) {
 	}
 }
 
+func TestMobileSSHAnalyzeHandlerEchoesBackendSessionID(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-ssh-analysis@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/analyze", strings.NewReader(`{
+		"output":"systemctl status app",
+		"backend_session_id":"mobile-ssh:mobssh_1"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+
+	MobileSSHAnalyzeHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := body["backend_session_id"]; got != "mobile-ssh:mobssh_1" {
+		t.Fatalf("backend_session_id = %#v, want mobile-ssh:mobssh_1", got)
+	}
+	if got := body["status"]; got != "ready" {
+		t.Fatalf("status = %#v, want ready; body = %#v", got, body)
+	}
+}
+
+func TestMobileServerProfilesHandlerRequiresAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "list", method: http.MethodGet},
+		{name: "publish", method: http.MethodPut, body: `{"profiles":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/api/mobile/server-profiles", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			MobileServerProfilesHandler(nil).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestMobileServerProfilesWorkerPublishesSanitizedProfiles(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-server-profile@example.com")
+	clearMobileServerProfilesForTest(t)
+
+	publishReq := httptest.NewRequest(http.MethodPut, "/api/mobile/server-profiles", strings.NewReader(`{
+		"profiles": [
+			{"id":"prod","name":"Prod","host":"10.0.0.10","port":2222,"username":"deploy","auth_mode":"key","tag":"ops","note":"read only metadata","password":"secret","private_key":"secret"},
+			{"id":"bad","name":"Bad","host":"","port":22,"username":"root"}
+		]
+	}`))
+	publishReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	publishReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	publishRec := httptest.NewRecorder()
+	MobileServerProfilesHandler(identity).ServeHTTP(publishRec, publishReq)
+	if publishRec.Code != http.StatusOK {
+		t.Fatalf("publish status = %d body=%s", publishRec.Code, publishRec.Body.String())
+	}
+	var published struct {
+		Status string `json:"status"`
+		Count  int    `json:"count"`
+	}
+	if err := json.Unmarshal(publishRec.Body.Bytes(), &published); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if published.Status != "ok" || published.Count != 1 {
+		t.Fatalf("published = %+v, want one sanitized profile", published)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/server-profiles", nil)
+	listReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	listRec := httptest.NewRecorder()
+	MobileServerProfilesHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Profiles []map[string]any `json:"profiles"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Profiles) != 1 {
+		t.Fatalf("profiles = %#v, want one", listed.Profiles)
+	}
+	profile := listed.Profiles[0]
+	if profile["id"] != "prod" || profile["name"] != "Prod" || profile["host"] != "10.0.0.10" || profile["username"] != "deploy" || profile["auth_mode"] != "private_key" {
+		t.Fatalf("profile = %#v, want sanitized prod profile", profile)
+	}
+	if profile["source_machine_id"] != enroll.MachineID {
+		t.Fatalf("source_machine_id = %v, want %s", profile["source_machine_id"], enroll.MachineID)
+	}
+	if _, ok := profile["password"]; ok {
+		t.Fatalf("profile leaked password: %#v", profile)
+	}
+	if _, ok := profile["private_key"]; ok {
+		t.Fatalf("profile leaked private key: %#v", profile)
+	}
+}
+
+func TestMobileServerProfilesAreOwnerScoped(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, ownerEnroll := issueViewerToken(t, identity, "mobile-server-profile-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "mobile-server-profile-other@example.com")
+	clearMobileServerProfilesForTest(t)
+
+	publishReq := httptest.NewRequest(http.MethodPut, "/api/mobile/server-profiles", strings.NewReader(`{"profiles":[{"id":"prod","name":"Prod","host":"10.0.0.10","port":22,"username":"root"}]}`))
+	publishReq.Header.Set("Authorization", "Bearer "+ownerEnroll.MachineToken)
+	publishReq.Header.Set("X-Machine-ID", ownerEnroll.MachineID)
+	publishRec := httptest.NewRecorder()
+	MobileServerProfilesHandler(identity).ServeHTTP(publishRec, publishReq)
+	if publishRec.Code != http.StatusOK {
+		t.Fatalf("publish status = %d body=%s", publishRec.Code, publishRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/server-profiles", nil)
+	listReq.Header.Set("Authorization", "Bearer "+otherToken)
+	listRec := httptest.NewRecorder()
+	MobileServerProfilesHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Profiles []map[string]any `json:"profiles"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Profiles) != 0 {
+		t.Fatalf("other user profiles = %#v, want none", listed.Profiles)
+	}
+}
+
 func TestMobileBackendSSHSessionHandlersRequireViewerToken(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -647,10 +833,29 @@ func TestMobileBackendSSHSessionHandlersRequireViewerToken(t *testing.T) {
 			handler: MobileBackendSSHSessionReconnectHandler(nil),
 		},
 		{
+			name:    "interrupt",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions/mobssh_1/interrupt",
+			handler: MobileBackendSSHSessionInterruptHandler(nil),
+		},
+		{
 			name:    "close",
 			method:  http.MethodDelete,
 			path:    "/api/mobile/ssh/sessions/mobssh_1",
 			handler: MobileBackendSSHSessionCloseHandler(nil),
+		},
+		{
+			name:    "worker claim",
+			method:  http.MethodPost,
+			path:    "/api/mobile/ssh/sessions/claim",
+			handler: MobileBackendSSHSessionClaimHandler(nil),
+		},
+		{
+			name:    "worker update",
+			method:  http.MethodPatch,
+			path:    "/api/mobile/ssh/sessions/mobssh_1/worker",
+			body:    `{"status":"connected"}`,
+			handler: MobileBackendSSHSessionUpdateHandler(nil),
 		},
 	}
 	for _, tt := range tests {
@@ -763,6 +968,27 @@ func TestMobileBackendSSHSessionLifecycleQueuesBackendControl(t *testing.T) {
 		t.Fatalf("reconnected session = %+v, want reconnect requested", reconnected.Session)
 	}
 
+	interruptReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/interrupt", nil)
+	interruptReq.SetPathValue("sessionId", sessionID)
+	interruptReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	interruptRec := httptest.NewRecorder()
+	MobileBackendSSHSessionInterruptHandler(identity).ServeHTTP(interruptRec, interruptReq)
+	if interruptRec.Code != http.StatusOK {
+		t.Fatalf("interrupt status = %d body=%s", interruptRec.Code, interruptRec.Body.String())
+	}
+	var interrupted struct {
+		Session struct {
+			Status string `json:"status"`
+			State  string `json:"state"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(interruptRec.Body.Bytes(), &interrupted); err != nil {
+		t.Fatalf("decode interrupt response: %v", err)
+	}
+	if interrupted.Session.Status != "interrupt_requested" || interrupted.Session.State != "interrupting" {
+		t.Fatalf("interrupted session = %+v, want interrupt requested", interrupted.Session)
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/ssh/sessions", nil)
 	listReq.Header.Set("Authorization", "Bearer "+viewerToken)
 	listRec := httptest.NewRecorder()
@@ -791,10 +1017,459 @@ func TestMobileBackendSSHSessionLifecycleQueuesBackendControl(t *testing.T) {
 		t.Fatalf("close status = %d body=%s", closeRec.Code, closeRec.Body.String())
 	}
 	mobileBackendSSHSessions.Lock()
-	_, exists := mobileBackendSSHSessions.sessions[sessionID]
+	closedRecord, exists := mobileBackendSSHSessions.sessions[sessionID]
 	mobileBackendSSHSessions.Unlock()
-	if exists {
-		t.Fatalf("session still exists after close")
+	if !exists || closedRecord.Status != "close_requested" || closedRecord.State != "closing" {
+		t.Fatalf("closed record = %#v exists=%v, want close_requested queued for worker", closedRecord, exists)
+	}
+}
+
+func TestMobileBackendSSHTasksAndFilesQueueControlRecords(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-backend-ssh-tasks@example.com")
+	clearMobileBackendSSHSessionsForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions", strings.NewReader(`{"server_profile_id":"prod-root"}`))
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Session struct {
+			SessionID string `json:"session_id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := created.Session.SessionID
+	mobileBackendSSHSessions.Lock()
+	record := mobileBackendSSHSessions.sessions[sessionID]
+	record.BackendSessionID = "mobile-ssh:" + sessionID
+	record.ClaimedBy = enroll.MachineID
+	mobileBackendSSHSessions.sessions[sessionID] = record
+	mobileBackendSSHSessions.Unlock()
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/tasks", strings.NewReader(`{"action":"exec_background","command":"journalctl -u app -n 200","tail_lines":80}`))
+	startReq.SetPathValue("sessionId", sessionID)
+	startReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	startRec := httptest.NewRecorder()
+	MobileBackendSSHSessionTasksHandler(identity).ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("start task status = %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	var started struct {
+		Task struct {
+			TaskID           string `json:"task_id"`
+			SessionID        string `json:"session_id"`
+			BackendSessionID string `json:"backend_session_id"`
+			Command          string `json:"command"`
+			Status           string `json:"status"`
+			LogTail          string `json:"log_tail"`
+			TailLines        int    `json:"tail_lines"`
+			ClaimedBy        string `json:"claimed_by"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(startRec.Body.Bytes(), &started); err != nil {
+		t.Fatalf("decode started task: %v", err)
+	}
+	if started.Task.TaskID == "" || started.Task.SessionID != sessionID || started.Task.BackendSessionID != "mobile-ssh:"+sessionID {
+		t.Fatalf("started task = %+v, want session-bound task", started.Task)
+	}
+	if started.Task.Status != "queued" || started.Task.Command != "journalctl -u app -n 200" || started.Task.TailLines != 80 || started.Task.ClaimedBy != enroll.MachineID {
+		t.Fatalf("started task = %+v, want queued GUI/agent task", started.Task)
+	}
+	if !strings.Contains(started.Task.LogTail, "did not execute") {
+		t.Fatalf("task log tail = %q, want no local execution marker", started.Task.LogTail)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/ssh/sessions/"+sessionID+"/tasks", nil)
+	listReq.SetPathValue("sessionId", sessionID)
+	listReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	listRec := httptest.NewRecorder()
+	MobileBackendSSHSessionTasksHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list task status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Tasks []struct {
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listed tasks: %v", err)
+	}
+	if len(listed.Tasks) != 1 || listed.Tasks[0].TaskID != started.Task.TaskID {
+		t.Fatalf("listed tasks = %+v, want created task", listed.Tasks)
+	}
+
+	waitReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/tasks/"+started.Task.TaskID+"/wait", strings.NewReader(`{"timeout":30,"tail_lines":120}`))
+	waitReq.SetPathValue("sessionId", sessionID)
+	waitReq.SetPathValue("taskId", started.Task.TaskID)
+	waitReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	waitRec := httptest.NewRecorder()
+	MobileBackendSSHSessionTaskWaitHandler(identity).ServeHTTP(waitRec, waitReq)
+	if waitRec.Code != http.StatusAccepted {
+		t.Fatalf("wait task status = %d body=%s", waitRec.Code, waitRec.Body.String())
+	}
+	var waited struct {
+		Task struct {
+			Status  string `json:"status"`
+			Timeout int    `json:"timeout"`
+			Tail    int    `json:"tail_lines"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(waitRec.Body.Bytes(), &waited); err != nil {
+		t.Fatalf("decode waited task: %v", err)
+	}
+	if waited.Task.Status != "wait_requested" || waited.Task.Timeout != 30 || waited.Task.Tail != 120 {
+		t.Fatalf("waited task = %+v, want wait request persisted", waited.Task)
+	}
+
+	killReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/tasks/"+started.Task.TaskID+"/kill", nil)
+	killReq.SetPathValue("sessionId", sessionID)
+	killReq.SetPathValue("taskId", started.Task.TaskID)
+	killReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	killRec := httptest.NewRecorder()
+	MobileBackendSSHSessionTaskKillHandler(identity).ServeHTTP(killRec, killReq)
+	if killRec.Code != http.StatusAccepted {
+		t.Fatalf("kill task status = %d body=%s", killRec.Code, killRec.Body.String())
+	}
+	var killed struct {
+		Task struct {
+			Status string `json:"status"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(killRec.Body.Bytes(), &killed); err != nil {
+		t.Fatalf("decode killed task: %v", err)
+	}
+	if killed.Task.Status != "kill_requested" {
+		t.Fatalf("killed task = %+v, want kill request persisted", killed.Task)
+	}
+
+	fileReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/files", strings.NewReader(`{"action":"download","remote_path":"/var/log/app.log","local_path":"mobile-downloads/app.log"}`))
+	fileReq.SetPathValue("sessionId", sessionID)
+	fileReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	fileRec := httptest.NewRecorder()
+	MobileBackendSSHSessionFilesHandler(identity).ServeHTTP(fileRec, fileReq)
+	if fileRec.Code != http.StatusAccepted {
+		t.Fatalf("file operation status = %d body=%s", fileRec.Code, fileRec.Body.String())
+	}
+	var fileOp struct {
+		Operation struct {
+			OperationID      string `json:"operation_id"`
+			SessionID        string `json:"session_id"`
+			BackendSessionID string `json:"backend_session_id"`
+			Action           string `json:"action"`
+			RemotePath       string `json:"remote_path"`
+			LocalPath        string `json:"local_path"`
+			Status           string `json:"status"`
+			ClaimedBy        string `json:"claimed_by"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(fileRec.Body.Bytes(), &fileOp); err != nil {
+		t.Fatalf("decode file operation: %v", err)
+	}
+	if fileOp.Operation.OperationID == "" || fileOp.Operation.SessionID != sessionID || fileOp.Operation.BackendSessionID != "mobile-ssh:"+sessionID {
+		t.Fatalf("file operation = %+v, want session-bound operation", fileOp.Operation)
+	}
+	if fileOp.Operation.Action != "download" || fileOp.Operation.RemotePath != "/var/log/app.log" || fileOp.Operation.LocalPath != "mobile-downloads/app.log" || fileOp.Operation.Status != "queued" || fileOp.Operation.ClaimedBy != enroll.MachineID {
+		t.Fatalf("file operation = %+v, want queued GUI/agent file operation", fileOp.Operation)
+	}
+
+	claimTaskReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/tasks/claim", nil)
+	claimTaskReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimTaskReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimTaskRec := httptest.NewRecorder()
+	MobileBackendSSHTaskClaimHandler(identity).ServeHTTP(claimTaskRec, claimTaskReq)
+	if claimTaskRec.Code != http.StatusOK {
+		t.Fatalf("claim task status = %d body=%s", claimTaskRec.Code, claimTaskRec.Body.String())
+	}
+	var claimedTask struct {
+		Status string `json:"status"`
+		Task   struct {
+			TaskID    string `json:"task_id"`
+			Status    string `json:"status"`
+			ClaimedBy string `json:"claimed_by"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimTaskRec.Body.Bytes(), &claimedTask); err != nil {
+		t.Fatalf("decode claimed task: %v", err)
+	}
+	if claimedTask.Status != "claimed" || claimedTask.Task.TaskID != started.Task.TaskID || claimedTask.Task.ClaimedBy != enroll.MachineID {
+		t.Fatalf("claimed task = %+v, want machine claim", claimedTask)
+	}
+
+	updateTaskReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/ssh/tasks/"+started.Task.TaskID+"/worker", strings.NewReader(`{"status":"completed","message":"done","log_tail":"task output\n","exit_code":0,"backend_session_id":"mobile-ssh:`+sessionID+`"}`))
+	updateTaskReq.SetPathValue("taskId", started.Task.TaskID)
+	updateTaskReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateTaskReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateTaskRec := httptest.NewRecorder()
+	MobileBackendSSHTaskUpdateHandler(identity).ServeHTTP(updateTaskRec, updateTaskReq)
+	if updateTaskRec.Code != http.StatusOK {
+		t.Fatalf("update task status = %d body=%s", updateTaskRec.Code, updateTaskRec.Body.String())
+	}
+	var updatedTask struct {
+		Task struct {
+			Status   string `json:"status"`
+			LogTail  string `json:"log_tail"`
+			ExitCode int    `json:"exit_code"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(updateTaskRec.Body.Bytes(), &updatedTask); err != nil {
+		t.Fatalf("decode updated task: %v", err)
+	}
+	if updatedTask.Task.Status != "completed" || updatedTask.Task.ExitCode != 0 || updatedTask.Task.LogTail != "task output" {
+		t.Fatalf("updated task = %+v, want worker result", updatedTask.Task)
+	}
+
+	claimFileReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/files/claim", nil)
+	claimFileReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimFileReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimFileRec := httptest.NewRecorder()
+	MobileBackendSSHFileOperationClaimHandler(identity).ServeHTTP(claimFileRec, claimFileReq)
+	if claimFileRec.Code != http.StatusOK {
+		t.Fatalf("claim file status = %d body=%s", claimFileRec.Code, claimFileRec.Body.String())
+	}
+	var claimedFile struct {
+		Status    string `json:"status"`
+		Operation struct {
+			OperationID string `json:"operation_id"`
+			Status      string `json:"status"`
+			ClaimedBy   string `json:"claimed_by"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(claimFileRec.Body.Bytes(), &claimedFile); err != nil {
+		t.Fatalf("decode claimed file: %v", err)
+	}
+	if claimedFile.Status != "claimed" || claimedFile.Operation.OperationID != fileOp.Operation.OperationID || claimedFile.Operation.ClaimedBy != enroll.MachineID {
+		t.Fatalf("claimed file operation = %+v, want machine claim", claimedFile)
+	}
+
+	updateFileReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/ssh/files/"+fileOp.Operation.OperationID+"/worker", strings.NewReader(`{"status":"completed","message":"download ready","bytes_transferred":42,"download_url":"/api/mobile/ssh/files/`+fileOp.Operation.OperationID+`/download","backend_session_id":"mobile-ssh:`+sessionID+`"}`))
+	updateFileReq.SetPathValue("operationId", fileOp.Operation.OperationID)
+	updateFileReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateFileReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateFileRec := httptest.NewRecorder()
+	MobileBackendSSHFileOperationUpdateHandler(identity).ServeHTTP(updateFileRec, updateFileReq)
+	if updateFileRec.Code != http.StatusOK {
+		t.Fatalf("update file status = %d body=%s", updateFileRec.Code, updateFileRec.Body.String())
+	}
+	var updatedFile struct {
+		Operation struct {
+			Status           string `json:"status"`
+			BytesTransferred int64  `json:"bytes_transferred"`
+			DownloadURL      string `json:"download_url"`
+		} `json:"operation"`
+	}
+	if err := json.Unmarshal(updateFileRec.Body.Bytes(), &updatedFile); err != nil {
+		t.Fatalf("decode updated file: %v", err)
+	}
+	if updatedFile.Operation.Status != "completed" || updatedFile.Operation.BytesTransferred != 42 || updatedFile.Operation.DownloadURL == "" {
+		t.Fatalf("updated file operation = %+v, want worker result", updatedFile.Operation)
+	}
+}
+
+func TestMobileBackendSSHSessionWorkerClaimsAndUpdatesSession(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-backend-ssh-worker@example.com")
+	clearMobileBackendSSHSessionsForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions", strings.NewReader(`{"server_profile_id":"prod-root"}`))
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileBackendSSHSessionsHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Session struct {
+			SessionID string `json:"session_id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID := created.Session.SessionID
+	if sessionID == "" {
+		t.Fatal("created session missing id")
+	}
+
+	inputReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/input", strings.NewReader(`{"input":"uptime"}`))
+	inputReq.SetPathValue("sessionId", sessionID)
+	inputReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	inputRec := httptest.NewRecorder()
+	MobileBackendSSHSessionInputHandler(identity).ServeHTTP(inputRec, inputReq)
+	if inputRec.Code != http.StatusAccepted {
+		t.Fatalf("input status = %d body=%s", inputRec.Code, inputRec.Body.String())
+	}
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileBackendSSHSessionClaimHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim status = %d body=%s", claimRec.Code, claimRec.Body.String())
+	}
+	var claimed struct {
+		Status  string `json:"status"`
+		Session struct {
+			SessionID       string   `json:"session_id"`
+			ServerProfileID string   `json:"server_profile_id"`
+			PendingInput    []string `json:"pending_input"`
+			ClaimedBy       string   `json:"claimed_by"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if claimed.Status != "claimed" || claimed.Session.SessionID != sessionID || claimed.Session.ServerProfileID != "prod-root" {
+		t.Fatalf("claimed = %+v, want backend ssh session", claimed)
+	}
+	if len(claimed.Session.PendingInput) != 1 || claimed.Session.PendingInput[0] != "uptime" || claimed.Session.ClaimedBy != enroll.MachineID {
+		t.Fatalf("claimed pending input = %+v", claimed.Session)
+	}
+
+	realtime := &mobileRealtimeFakeWriter{}
+	mobileBackendSSHSessions.Lock()
+	realtimeRecord := mobileBackendSSHSessions.sessions[sessionID]
+	mobileBackendSSHSessions.Unlock()
+	_, cleanupRealtime := mobileRealtimeRegister(realtimeRecord.TenantID, realtimeRecord.OwnerID, realtime)
+	defer cleanupRealtime()
+
+	invalidChunkReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/ssh/sessions/"+sessionID+"/worker", strings.NewReader(`{"status":"connecting","state":"connecting","recent_output":"booting","output_chunk":"booting"}`))
+	invalidChunkReq.SetPathValue("sessionId", sessionID)
+	invalidChunkReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	invalidChunkReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	invalidChunkRec := httptest.NewRecorder()
+	MobileBackendSSHSessionUpdateHandler(identity).ServeHTTP(invalidChunkRec, invalidChunkReq)
+	if invalidChunkRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid output chunk update status = %d body=%s", invalidChunkRec.Code, invalidChunkRec.Body.String())
+	}
+	if !strings.Contains(invalidChunkRec.Body.String(), "backend_session_id") {
+		t.Fatalf("invalid output chunk update body = %s, want backend_session_id error", invalidChunkRec.Body.String())
+	}
+	if len(realtime.messages) != 0 {
+		t.Fatalf("realtime messages after invalid output chunk = %#v, want none", realtime.messages)
+	}
+	mobileBackendSSHSessions.Lock()
+	unboundRecord := mobileBackendSSHSessions.sessions[sessionID]
+	mobileBackendSSHSessions.Unlock()
+	if unboundRecord.BackendSessionID != "" || unboundRecord.OutputSeq != 0 || unboundRecord.OutputChunk != "" {
+		t.Fatalf("unbound record mutated by invalid output chunk = %+v", unboundRecord)
+	}
+
+	invalidConnectedReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/ssh/sessions/"+sessionID+"/worker", strings.NewReader(`{"status":"connected","state":"running","recent_output":"connected","output_chunk":"connected"}`))
+	invalidConnectedReq.SetPathValue("sessionId", sessionID)
+	invalidConnectedReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	invalidConnectedReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	invalidConnectedRec := httptest.NewRecorder()
+	MobileBackendSSHSessionUpdateHandler(identity).ServeHTTP(invalidConnectedRec, invalidConnectedReq)
+	if invalidConnectedRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid connected update status = %d body=%s", invalidConnectedRec.Code, invalidConnectedRec.Body.String())
+	}
+	if !strings.Contains(invalidConnectedRec.Body.String(), "backend_session_id") {
+		t.Fatalf("invalid connected update body = %s, want backend_session_id error", invalidConnectedRec.Body.String())
+	}
+	if len(realtime.messages) != 0 {
+		t.Fatalf("realtime messages after invalid update = %#v, want none", realtime.messages)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/ssh/sessions/"+sessionID+"/worker", strings.NewReader(`{"status":"connected","state":"running","backend_session_id":"ssh-prod","recent_output":"connected\n$ uptime\n1 day","output_chunk":"\n$ uptime\n1 day","clear_pending_input":true}`))
+	updateReq.SetPathValue("sessionId", sessionID)
+	updateReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateRec := httptest.NewRecorder()
+	MobileBackendSSHSessionUpdateHandler(identity).ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
+	}
+	var updated struct {
+		SessionID        string `json:"session_id"`
+		BackendSessionID string `json:"backend_session_id"`
+		Status           string `json:"status"`
+		State            string `json:"state"`
+		RecentOutput     string `json:"recent_output"`
+		OutputChunk      string `json:"output_chunk"`
+		OutputSeq        int64  `json:"output_seq"`
+		PendingCount     int    `json:"pending_input_count"`
+		ClaimedBy        string `json:"claimed_by"`
+	}
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if updated.SessionID != sessionID || updated.BackendSessionID != "ssh-prod" || updated.Status != "connected" || updated.State != "running" {
+		t.Fatalf("updated = %+v, want connected backend session", updated)
+	}
+	if updated.RecentOutput != "connected\n$ uptime\n1 day" || updated.OutputChunk != "$ uptime\n1 day" || updated.OutputSeq != 1 || updated.PendingCount != 0 || updated.ClaimedBy != enroll.MachineID {
+		t.Fatalf("updated output/pending = %+v", updated)
+	}
+	if len(realtime.messages) != 1 {
+		t.Fatalf("realtime messages = %#v, want one update", realtime.messages)
+	}
+	if realtime.messages[0]["type"] != "ssh_session" || realtime.messages[0]["session_id"] != sessionID || realtime.messages[0]["output_seq"] != int64(1) {
+		t.Fatalf("realtime update = %#v, want ssh output seq", realtime.messages[0])
+	}
+	nested, ok := realtime.messages[0]["session"].(map[string]any)
+	if !ok || nested["output_chunk"] != "$ uptime\n1 day" {
+		t.Fatalf("realtime nested session = %#v, want output chunk", realtime.messages[0]["session"])
+	}
+
+	activeClaimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/claim", nil)
+	activeClaimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	activeClaimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	activeClaimRec := httptest.NewRecorder()
+	MobileBackendSSHSessionClaimHandler(identity).ServeHTTP(activeClaimRec, activeClaimReq)
+	if activeClaimRec.Code != http.StatusOK {
+		t.Fatalf("active claim status = %d body=%s", activeClaimRec.Code, activeClaimRec.Body.String())
+	}
+	var activeClaimed struct {
+		Status  string `json:"status"`
+		Session struct {
+			SessionID string `json:"session_id"`
+			Status    string `json:"status"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(activeClaimRec.Body.Bytes(), &activeClaimed); err != nil {
+		t.Fatalf("decode active claim response: %v", err)
+	}
+	if activeClaimed.Status != "claimed" || activeClaimed.Session.SessionID != sessionID || activeClaimed.Session.Status != "connected" {
+		t.Fatalf("active claim = %+v, want same connected session for continuous output polling", activeClaimed)
+	}
+
+	interruptReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/interrupt", nil)
+	interruptReq.SetPathValue("sessionId", sessionID)
+	interruptReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	interruptRec := httptest.NewRecorder()
+	MobileBackendSSHSessionInterruptHandler(identity).ServeHTTP(interruptRec, interruptReq)
+	if interruptRec.Code != http.StatusOK {
+		t.Fatalf("interrupt status = %d body=%s", interruptRec.Code, interruptRec.Body.String())
+	}
+	interruptClaimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/claim", nil)
+	interruptClaimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	interruptClaimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	interruptClaimRec := httptest.NewRecorder()
+	MobileBackendSSHSessionClaimHandler(identity).ServeHTTP(interruptClaimRec, interruptClaimReq)
+	if interruptClaimRec.Code != http.StatusOK {
+		t.Fatalf("interrupt claim status = %d body=%s", interruptClaimRec.Code, interruptClaimRec.Body.String())
+	}
+	var interruptClaimed struct {
+		Status  string `json:"status"`
+		Session struct {
+			SessionID string `json:"session_id"`
+			Status    string `json:"status"`
+			State     string `json:"state"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(interruptClaimRec.Body.Bytes(), &interruptClaimed); err != nil {
+		t.Fatalf("decode interrupt claim response: %v", err)
+	}
+	if interruptClaimed.Status != "claimed" || interruptClaimed.Session.SessionID != sessionID || interruptClaimed.Session.Status != "interrupt_requested" || interruptClaimed.Session.State != "interrupting" {
+		t.Fatalf("interrupt claim = %+v, want interrupt_requested session", interruptClaimed)
 	}
 }
 
@@ -1152,10 +1827,37 @@ func clearMobileBackendSSHSessionsForTest(t *testing.T) {
 	previous := mobileBackendSSHSessions.sessions
 	mobileBackendSSHSessions.sessions = make(map[string]mobileBackendSSHSessionRecord)
 	mobileBackendSSHSessions.Unlock()
+	mobileBackendSSHTasks.Lock()
+	previousTasks := mobileBackendSSHTasks.tasks
+	mobileBackendSSHTasks.tasks = make(map[string]mobileBackendSSHTaskRecord)
+	mobileBackendSSHTasks.Unlock()
+	mobileBackendSSHFileOperations.Lock()
+	previousFileOperations := mobileBackendSSHFileOperations.operations
+	mobileBackendSSHFileOperations.operations = make(map[string]mobileBackendSSHFileOperationRecord)
+	mobileBackendSSHFileOperations.Unlock()
 	t.Cleanup(func() {
 		mobileBackendSSHSessions.Lock()
 		mobileBackendSSHSessions.sessions = previous
 		mobileBackendSSHSessions.Unlock()
+		mobileBackendSSHTasks.Lock()
+		mobileBackendSSHTasks.tasks = previousTasks
+		mobileBackendSSHTasks.Unlock()
+		mobileBackendSSHFileOperations.Lock()
+		mobileBackendSSHFileOperations.operations = previousFileOperations
+		mobileBackendSSHFileOperations.Unlock()
+	})
+}
+
+func clearMobileServerProfilesForTest(t *testing.T) {
+	t.Helper()
+	mobileServerProfiles.Lock()
+	previous := mobileServerProfiles.profiles
+	mobileServerProfiles.profiles = make(map[string]mobileServerProfileRecord)
+	mobileServerProfiles.Unlock()
+	t.Cleanup(func() {
+		mobileServerProfiles.Lock()
+		mobileServerProfiles.profiles = previous
+		mobileServerProfiles.Unlock()
 	})
 }
 

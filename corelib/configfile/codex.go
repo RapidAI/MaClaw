@@ -1142,11 +1142,43 @@ Get-CimInstance Win32_Process | ForEach-Object {
     "$($_.ProcessId)$([char]9)$($name)$([char]9)$($cmd -replace $([char]9), ' ')"
   }
 }`
-	out, err := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script).Output()
+	out, err := exec.Command(windowsPowerShellPath(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script).Output()
 	if err != nil {
 		return nil, err
 	}
 	return parseCodexProcessLines(string(out)), nil
+}
+
+func windowsPowerShellPath() string {
+	return windowsSystemExecutablePath("powershell.exe")
+}
+
+func windowsSystemExecutablePath(name string) string {
+	candidates := []string{name}
+	if strings.HasSuffix(strings.ToLower(name), ".exe") {
+		candidates = append(candidates, strings.TrimSuffix(name, filepath.Ext(name)))
+	}
+	for _, candidate := range candidates {
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path
+		}
+	}
+	for _, root := range []string{os.Getenv("SystemRoot"), os.Getenv("WINDIR")} {
+		if root == "" {
+			continue
+		}
+		path := filepath.Join(root, "System32", name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		if strings.EqualFold(name, "powershell.exe") {
+			path := filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+	return name
 }
 
 func findCodexProcessesUnix() ([]codexProcess, error) {
@@ -1208,6 +1240,12 @@ func parseCodexProcessLines(out string) []codexProcess {
 }
 
 func isCodexProcessCandidate(name, commandLine string) bool {
+	cmd := strings.ToLower(commandLine)
+	normalized := strings.NewReplacer("\\", "/", "\"", " ", "'", " ").Replace(cmd)
+	if strings.Contains(normalized, "/windowsapps/openai.codex_") {
+		return false
+	}
+
 	base := strings.ToLower(filepath.Base(strings.TrimSpace(name)))
 	base = strings.TrimSuffix(base, ".exe")
 	base = strings.TrimSuffix(base, ".cmd")
@@ -1215,12 +1253,7 @@ func isCodexProcessCandidate(name, commandLine string) bool {
 		return true
 	}
 
-	cmd := strings.ToLower(commandLine)
-	normalized := strings.NewReplacer("\\", "/", "\"", " ", "'", " ").Replace(cmd)
 	if strings.Contains(normalized, "/@openai/codex/bin/codex.js") {
-		return true
-	}
-	if strings.Contains(normalized, "/openai.codex_") {
 		return true
 	}
 	fields := strings.Fields(normalized)
@@ -1259,7 +1292,7 @@ func isCodexCommandToken(fields []string, index int) bool {
 
 func killProcessTree(pid int) error {
 	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
+		return exec.Command(windowsSystemExecutablePath("taskkill.exe"), "/PID", strconv.Itoa(pid), "/T", "/F").Run()
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {

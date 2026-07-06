@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession, PatchConfigFields } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, GetRemoteRegistrationProfile, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession, PatchConfigFields } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
@@ -34,6 +34,12 @@ type BrandInfo = {
 };
 
 type RemoteProbeIdentity = {
+    tenant_id?: string;
+    tenant_name?: string;
+    phone_number?: string;
+};
+
+type RemoteRegistrationProfile = {
     tenant_id?: string;
     tenant_name?: string;
     phone_number?: string;
@@ -163,6 +169,7 @@ export function AboutPanel({
         name: String(config?.remote_tenant_name || ''),
     });
     const [probedMobile, setProbedMobile] = useState('');
+    const [profileLookupAttemptedKey, setProfileLookupAttemptedKey] = useState('');
 
     useEffect(() => {
         setRemoteTenant({
@@ -178,10 +185,43 @@ export function AboutPanel({
     const probeIdentity = registrationProbeIdentityFromConfig(config?.remote_email, (config as any)?.remote_mobile);
     const configuredMobile = registrationPhoneFromConfig((config as any)?.remote_mobile, config?.remote_email);
     const hasRegisteredMachine = String(config?.remote_machine_id || '').trim() !== '' && String(config?.remote_machine_token || '').trim() !== '';
+    const machineProfileLookupKey = hasRegisteredMachine
+        ? [
+            String(config?.remote_hub_url || '').trim(),
+            String(config?.remote_machine_id || '').trim(),
+            String(config?.remote_machine_token || '').trim(),
+        ].join('\n')
+        : '';
     useEffect(() => {
         const hubURL = String(config?.remote_hub_url || '').trim();
         const needsTenant = !remoteTenant.id && !remoteTenant.name;
         const needsMobile = hasRegisteredMachine && !configuredMobile && !String(probedMobile || '').trim();
+        if (!hubURL || !hasRegisteredMachine || !machineProfileLookupKey || profileLookupAttemptedKey === machineProfileLookupKey || (!needsTenant && !needsMobile)) return;
+        let cancelled = false;
+        GetRemoteRegistrationProfile()
+            .then((result: RemoteRegistrationProfile) => {
+                if (cancelled) return;
+                const id = String(result?.tenant_id || '').trim();
+                const name = String(result?.tenant_name || '').trim();
+                if (id || name) setRemoteTenant({ id, name });
+                const phoneNumber = String(result?.phone_number || '').trim();
+                if (phoneNumber && !configuredMobile) {
+                    setProbedMobile(phoneNumber);
+                    onRegistrationContactUpdated?.();
+                }
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                if (!cancelled) setProfileLookupAttemptedKey(machineProfileLookupKey);
+            });
+        return () => { cancelled = true; };
+    }, [config?.remote_hub_url, remoteTenant.id, remoteTenant.name, configuredMobile, probedMobile, hasRegisteredMachine, machineProfileLookupKey, profileLookupAttemptedKey, onRegistrationContactUpdated]);
+    useEffect(() => {
+        const hubURL = String(config?.remote_hub_url || '').trim();
+        const needsTenant = !remoteTenant.id && !remoteTenant.name;
+        const needsMobile = hasRegisteredMachine && !configuredMobile && !String(probedMobile || '').trim();
+        const waitingForMachineProfile = hasRegisteredMachine && machineProfileLookupKey !== '' && profileLookupAttemptedKey !== machineProfileLookupKey && (needsTenant || needsMobile);
+        if (waitingForMachineProfile) return;
         if (!hubURL || !probeIdentity || (!needsTenant && !needsMobile)) return;
         let cancelled = false;
         ProbeRemoteHub(hubURL, probeIdentity)
@@ -200,7 +240,7 @@ export function AboutPanel({
             })
             .catch(() => undefined);
         return () => { cancelled = true; };
-    }, [config?.remote_hub_url, probeIdentity, remoteTenant.id, remoteTenant.name, configuredMobile, probedMobile, hasRegisteredMachine, onRegistrationContactUpdated]);
+    }, [config?.remote_hub_url, probeIdentity, remoteTenant.id, remoteTenant.name, configuredMobile, probedMobile, hasRegisteredMachine, machineProfileLookupKey, profileLookupAttemptedKey, onRegistrationContactUpdated]);
 
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
     const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
@@ -736,7 +776,6 @@ export function AboutPanel({
                 <div className="modal-overlay" {...mobileAuthQRBackdropProps}>
                     <div
                         className="modal-content about-mobile-auth-qr-dialog"
-                        style={{ width: '360px', maxWidth: '92vw' }}
                         {...mobileAuthQRDialogProps}
                     >
                         <div className="about-contact-dialog__header">
@@ -744,31 +783,21 @@ export function AboutPanel({
                             <button className="modal-close" onClick={() => setShowMobileAuthQR(false)}>&times;</button>
                         </div>
                         <p className="about-contact-dialog__desc">{t("aboutMobileAuthQRDesc")}</p>
-                        <div style={{
-                            minHeight: 244,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            background: 'var(--theme-surface-muted)',
-                            border: '1px solid var(--theme-border)',
-                            borderRadius: 8,
-                            margin: '14px 0',
-                            padding: 12,
-                        }}>
+                        <div className="about-mobile-auth-qr-dialog__frame">
                             {mobileAuthQRLoading ? (
-                                <div style={{ color: 'var(--theme-text-muted)', fontSize: '0.85rem' }}>{t("loading")}...</div>
+                                <div className="about-mobile-auth-qr-dialog__status">{t("loading")}...</div>
                             ) : mobileAuthQRValue ? (
-                                <div style={{ background: '#fff', padding: 10, borderRadius: 8 }}>
+                                <div className="about-mobile-auth-qr-dialog__code-card">
                                     <QRCodeSVG value={mobileAuthQRValue} size={220} level="M" bgColor="#ffffff" fgColor="#111111" />
                                 </div>
                             ) : (
-                                <div style={{ color: 'var(--theme-danger)', fontSize: '0.82rem', lineHeight: 1.5, textAlign: 'center' }}>
+                                <div className="about-mobile-auth-qr-dialog__error">
                                     {mobileAuthQRError || t("aboutMobileAuthQRFailed")}
                                 </div>
                             )}
                         </div>
                         {mobileAuthQRExpiresAt && (
-                            <div style={{ color: 'var(--theme-text-muted)', fontSize: '0.76rem', textAlign: 'center', marginBottom: 12 }}>
+                            <div className="about-mobile-auth-qr-dialog__expires">
                                 {t("aboutMobileAuthQRExpiresAt").replace("{time}", mobileAuthQRExpiresAt)}
                             </div>
                         )}

@@ -65,7 +65,7 @@ class _SecretDigitalEmployeeTaskController
         result: 'service ok\nAuthorization: Bearer remote-secret-token\n'
             'password=prod-password',
         message: '远程巡检已完成 token: message-secret',
-        claimedBy: 'srv-1',
+        claimedBy: 'srv-1 token=claimed-secret',
       );
 }
 
@@ -279,6 +279,25 @@ void main() {
     expect(prompt, contains('高风险命令只生成命令草案'));
   });
 
+  test('digital employee mobile prompt redacts common secrets', () {
+    final prompt = buildDigitalEmployeeMobilePrompt(
+      type: DigitalEmployeeMobileTaskType.serverMaintenance,
+      prompt: 'check outage token=raw-task-token password=raw-task-password\n'
+          'Authorization: Bearer raw-task-bearer\n'
+          '-----BEGIN PRIVATE KEY-----\nraw-task-key\n'
+          '-----END PRIVATE KEY-----',
+    );
+
+    expect(prompt, contains('token=[REDACTED_SECRET]'));
+    expect(prompt, contains('password=[REDACTED_SECRET]'));
+    expect(prompt, contains('Authorization: Bearer [REDACTED_TOKEN]'));
+    expect(prompt, contains('[REDACTED_PRIVATE_KEY]'));
+    expect(prompt, isNot(contains('raw-task-token')));
+    expect(prompt, isNot(contains('raw-task-password')));
+    expect(prompt, isNot(contains('raw-task-bearer')));
+    expect(prompt, isNot(contains('raw-task-key')));
+  });
+
   test('digital employee mobile task context carries remote policy metadata',
       () {
     const employee = DigitalEmployee(
@@ -430,6 +449,24 @@ void main() {
     expect(find.text('发起任务'), findsNWidgets(2));
     expect(find.byTooltip('分析日志/输出'), findsNWidgets(2));
 
+    await tester
+        .tap(find.byTooltip('\u5206\u6790\u65e5\u5fd7/\u8f93\u51fa').first);
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining(
+        '\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u548c\u5173\u952e\u65e5\u5fd7',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        '\u5173\u952e\u65e5\u5fd7\u548c\u7ec8\u7aef\u8f93\u51fa',
+      ),
+      findsNothing,
+    );
+    Navigator.of(tester.element(find.byType(DigitalEmployeesScreen))).pop();
+    await tester.pumpAndSettle();
+
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -488,6 +525,10 @@ void main() {
     );
     expect(
       _RecordingDocumentsController.created.single.content,
+      contains('srv-1 token=[REDACTED_SECRET]'),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
       isNot(contains('remote-secret-token')),
     );
     expect(
@@ -497,6 +538,10 @@ void main() {
     expect(
       _RecordingDocumentsController.created.single.content,
       isNot(contains('message-secret')),
+    );
+    expect(
+      _RecordingDocumentsController.created.single.content,
+      isNot(contains('claimed-secret')),
     );
   });
 

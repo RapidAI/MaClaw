@@ -124,6 +124,21 @@ interface SendMessageOptions {
     recentMessages?: AIAssistantContextMessage[];
 }
 
+type ShowConfirm = (
+    message: string,
+    title?: string,
+    options?: { confirmText?: string; cancelText?: string; confirmVariant?: 'primary' | 'danger' },
+) => Promise<boolean>;
+
+interface UseAIAssistantOptions {
+    refreshSessionsOnly?: () => Promise<void>;
+    activeSessionKey?: string;
+    lang?: string;
+    showConfirm?: ShowConfirm;
+}
+
+const nativeShowConfirm: ShowConfirm = async (message: string) => window.confirm(message);
+
 function projectPathFromSessionKey(sessionKey?: string): string {
     return normalizedProjectPathFromSessionKey(sessionKey);
 }
@@ -348,7 +363,7 @@ interface AIAssistantPreferences {
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
-    kind?: 'news' | 'trace';
+    kind?: 'news' | 'trace' | 'guideReceipt' | 'guideRejection';
     content: string;
     /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
     reasoning?: string;
@@ -2361,11 +2376,50 @@ function buildBackgroundLaunchNotice(result: AIAssistantBackgroundLaunchResult):
     return detailLines.join("\n");
 }
 
-function createSystemMessage(content: string, sessionKey?: string): ChatMessage {
+function formatGuideReferenceQuote(text: string): string {
+    return text
+        .trim()
+        .split(/\r?\n/)
+        .map(line => `> ${line}`)
+        .join("\n");
+}
+
+export function buildGuideReferenceAcceptedNotice(text: string, lang: string): string {
+    const quoted = formatGuideReferenceQuote(text);
+    return `${localizeText(
+        lang,
+        "Added to the running task:",
+        "这条补充已接上当前任务：",
+        "這條補充已接上目前任務：",
+    )}\n${quoted}\n\n${localizeText(
+        lang,
+        "The next step will work from this point.",
+        "下一步会顺着这点继续。",
+        "下一步會順著這點繼續。",
+    )}`;
+}
+
+export function buildGuideReferenceRejectedNotice(text: string, lang: string): string {
+    const quoted = formatGuideReferenceQuote(text);
+    return `${localizeText(
+        lang,
+        "I heard you, but I could not attach this to the current task yet:",
+        "我听到了，但这条补充暂时还没接上当前任务：",
+        "我聽到了，但這條補充暫時還沒接上目前任務：",
+    )}\n${quoted}\n\n${localizeText(
+        lang,
+        "Once the assistant is idle, send it as a normal message and I will handle it directly.",
+        "等助手空闲后，把它作为普通消息发出就可以，我会直接处理。",
+        "等助手空閒後，把它作為普通訊息發出就可以，我會直接處理。",
+    )}`;
+}
+
+function createSystemMessage(content: string, sessionKey?: string, kind?: ChatMessage['kind']): ChatMessage {
     const ownerSessionKey = normalizeRuntimeSessionKey(sessionKey || getActiveSessionKey() || 'desktop-user');
     return {
         id: nextId(),
         role: 'system',
+        kind,
         content,
         sessionKey: ownerSessionKey,
         timestamp: Date.now(),
@@ -2487,8 +2541,9 @@ function normalizeAgentTimeoutSeconds(value: unknown): number {
     return Math.min(MAX_AGENT_TIMEOUT_SEC, Math.max(MIN_AGENT_TIMEOUT_SEC, Math.floor(seconds)));
 }
 
-export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string; lang?: string }) {
+export function useAIAssistant(options?: UseAIAssistantOptions) {
     const uiLang = options?.lang || "en";
+    const showConfirm = options?.showConfirm || nativeShowConfirm;
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
@@ -4277,12 +4332,22 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
             // "中止": requires user confirmation before sending
             if (action === 'abort') {
+                const confirmTitle = localizeText(uiLang,
+                    "Abort current workflow?",
+                    "\u4e2d\u6b62\u5f53\u524d\u5de5\u4f5c\u6d41\uff1f",
+                    "\u4e2d\u6b62\u7576\u524d\u5de5\u4f5c\u6d41\uff1f",
+                );
                 const confirmMsg = localizeText(uiLang,
                     "Are you sure you want to abort the current workflow?\n\nAll progress will be lost and you'll need to start over.",
                     "\u786e\u5b9a\u8981\u4e2d\u6b62\u5f53\u524d\u5de5\u4f5c\u6d41\u5417\uff1f\n\n\u4e2d\u6b62\u540e\u5f53\u524d\u8fdb\u5ea6\u5c06\u88ab\u6e05\u9664\uff0c\u65e0\u6cd5\u7ee7\u7eed\uff0c\u53ea\u80fd\u91cd\u65b0\u53d1\u8d77\u3002",
                     "\u78ba\u5b9a\u8981\u4e2d\u6b62\u7576\u524d\u5de5\u4f5c\u6d41\u55ce\uff1f\n\n\u4e2d\u6b62\u5f8c\u7576\u524d\u9032\u5ea6\u5c07\u88ab\u6e05\u9664\uff0c\u7121\u6cd5\u7e7c\u7e8c\uff0c\u53ea\u80fd\u91cd\u65b0\u767c\u8d77\u3002",
                 );
-                if (!window.confirm(confirmMsg)) {
+                const confirmed = await showConfirm(confirmMsg, confirmTitle, {
+                    confirmText: localizeText(uiLang, "Abort", "\u4e2d\u6b62", "\u4e2d\u6b62"),
+                    cancelText: localizeText(uiLang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88"),
+                    confirmVariant: 'danger',
+                });
+                if (!confirmed) {
                     return; // user cancelled — buttons stay clickable
                 }
                 setMessages(prev => disableActionsForCommand(prev, command));
@@ -4324,7 +4389,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         // one-shot (mutually exclusive choices or single confirm/cancel).
         setMessages(prev => disableActionsForCommand(prev, command));
         return sendMessage(command, { uiAction: true });
-    }, [activeSessionKeyForEvents, sendMessage, uiLang]);
+    }, [activeSessionKeyForEvents, sendMessage, showConfirm, uiLang]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -4628,13 +4693,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const normalizedSessionKey = sessionKey?.trim() || 'desktop-user';
             const accepted = await InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey);
             if (accepted && normalizedSessionKey === 'desktop-user') {
-                setMessages(prev => [...prev, createSystemMessage("引导已注入下一轮：\n" + text, 'desktop-user')]);
+                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceAcceptedNotice(text, uiLang), 'desktop-user', 'guideReceipt')]);
+            } else if (!accepted && normalizedSessionKey === 'desktop-user') {
+                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceRejectedNotice(text, uiLang), 'desktop-user', 'guideRejection')]);
             }
             return accepted;
         } catch {
+            const normalizedSessionKey = sessionKey?.trim() || 'desktop-user';
+            if (normalizedSessionKey === 'desktop-user') {
+                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceRejectedNotice(text, uiLang), 'desktop-user', 'guideRejection')]);
+            }
             return false;
         }
-    }, []);
+    }, [uiLang]);
 
     const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
         const isWorkflowFormSubmit = typeof viewId === 'string' && viewId.startsWith('workflow:form:');

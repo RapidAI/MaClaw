@@ -11,7 +11,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
 import { normalizeProjectSessionPath } from "../aiAssistantPanelSessionUtils";
-import { CloseProjectTabSession, CreateProjectTabSession, LoadProjectTabIndex } from "../../../../wailsjs/go/main/App";
+import { CloseProjectTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -23,7 +23,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
-    LoadProjectTabConversation: vi.fn().mockResolvedValue(null),
+    LoadProjectTabConversation: vi.fn().mockResolvedValue([]),
 }));
 
 // Arbitrary for generating valid project paths (non-empty strings)
@@ -35,10 +35,13 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
     // (loadPersistedProjectTabs reads from localStorage on hook mount)
     beforeEach(() => {
         localStorage.clear();
+        vi.useRealTimers();
         vi.clearAllMocks();
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
         vi.mocked(CloseProjectTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("");
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
+        vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
     });
     /**
      * Property 1: Tab creation produces correct structure
@@ -366,6 +369,74 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
 
         await waitFor(() => {
             expect(result.current.tabState.tabs.find(t => t.projectPath === "D:/tasks/weather-fork")?.title).toBe("北京天气");
+        });
+    });
+
+    it("does not restore transient guide receipts from persisted project tab history", async () => {
+        const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
+            { id: "proj-guide", title: "Guide task", projectPath: "D:/tasks/guide" },
+        ]));
+        localStorage.setItem("ai_assistant_project_tab_histories", JSON.stringify({
+            "proj-guide": [
+                { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
+                realMessage,
+            ],
+        }));
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-guide", type: "project", title: "Guide task", projectPath: "D:/tasks/guide", lastActiveAt: 1, archived: false },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        expect(result.current.getTabState("proj-guide")?.history).toEqual([realMessage]);
+    });
+
+    it("does not persist transient guide receipts in project tab conversation history", async () => {
+        vi.useFakeTimers();
+        const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        const { result } = renderHook(() => useAITabManager());
+
+        let tab: ReturnType<typeof result.current.createProjectTab> = null;
+        act(() => {
+            tab = result.current.createProjectTab("D:/tasks/guide-save", "Guide save");
+        });
+        expect(tab).not.toBeNull();
+
+        act(() => {
+            result.current.saveTabState(tab!.id, {
+                history: [
+                    { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
+                    { id: "rejection-1", role: "system", kind: "guideRejection", content: "我听到了，但这条补充暂时还没接上当前任务", timestamp: 1 },
+                    realMessage,
+                ],
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(600);
+            await Promise.resolve();
+        });
+
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [realMessage]);
+    });
+
+    it("cleans transient guide receipts from backend-restored project tab history", async () => {
+        const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-guide-backend", type: "project", title: "Guide backend", projectPath: "D:/tasks/guide-backend", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue([
+            { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
+            { id: "rejection-1", role: "system", kind: "guideRejection", content: "我听到了，但这条补充暂时还没接上当前任务", timestamp: 1 },
+            realMessage,
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            expect(result.current.getTabState("proj-guide-backend")?.history).toEqual([realMessage]);
+            expect(SaveProjectTabConversation).toHaveBeenCalledWith("proj-guide-backend", [realMessage]);
         });
     });
 

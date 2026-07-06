@@ -176,7 +176,9 @@ func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 
 const guideLaunchReferenceMarker = "[\u5f15\u5bfc\u53d1\u5c04\u53c2\u8003]"
 
-const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
+const guideLaunchReferenceInstructionPrefix = "The following text was fired by the user from the pre-input buffer via the guide-launch button."
+
+const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. In the next visible assistant response, weave in a concise acknowledgement that fits the current context: briefly refer to the user's point or quote the relevant phrase, make clear it is now guiding the work, then continue with the task. Vary the wording naturally and avoid formulaic canned acknowledgement. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
 
 func buildGuideLaunchInjection(text string) string {
 	text = strings.TrimSpace(text)
@@ -202,7 +204,12 @@ func isGuideLaunchReferenceInjection(text string) bool {
 func isGuideLaunchReferenceHeader(lines []string, i int) bool {
 	return i+1 < len(lines) &&
 		strings.TrimSpace(lines[i]) == guideLaunchReferenceMarker &&
-		strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction
+		isGuideLaunchReferenceInstructionLine(lines[i+1])
+}
+
+func isGuideLaunchReferenceInstructionLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, guideLaunchReferenceInstructionPrefix)
 }
 
 func (h *IMMessageHandler) hasPendingGuideReferenceInjection(userID string) bool {

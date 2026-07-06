@@ -1556,6 +1556,82 @@ func TestRemoteCodingSubAgentConfirmationGateRequiresPostEditRead(t *testing.T) 
 	}
 }
 
+func TestRemoteCodingSubAgentLogsFailedShellCommandDetails(t *testing.T) {
+	var buf bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	}()
+
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		sessionID:  "ssh_root@example.com:22_1",
+		projectDir: "/repo",
+	}, task: "build remote project with token=task-secret"}
+	cb.trackRemoteCommand("cmake --build build --token secret-token", "/repo", "fatal error LNK1120: unresolved externals\npassword=hunter2\nEXIT: 1", false)
+
+	got := buf.String()
+	for _, want := range []string{
+		"[remote-subagent] shell command failed",
+		"tool=ssh_bash",
+		"outcome=failed",
+		`session="ssh_root@example.com:22_1"`,
+		`project="/repo"`,
+		`task="build remote project with token=[redacted]"`,
+		`workdir="/repo"`,
+		`command="cmake --build build --token [redacted]"`,
+		"cmake --build build --token [redacted]",
+		`result="fatal error LNK1120: unresolved externals password=[redacted] EXIT: 1"`,
+		"LNK1120",
+		"password=[redacted]",
+		"EXIT: 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("failed remote shell command log missing %q in %q", want, got)
+		}
+	}
+	for _, leaked := range []string{"secret-token", "hunter2", "task-secret"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("failed remote shell command log leaked secret %q in %q", leaked, got)
+		}
+	}
+
+	buf.Reset()
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "ok\nEXIT: 0", true)
+	if got := buf.String(); got != "" {
+		t.Fatalf("successful remote shell command should not log failure details, got %q", got)
+	}
+
+	cb.trackRemoteCommand("g++ --version 2>&1", "/repo", "bash: g++: command not found\nEXIT: 127", false)
+	if got := buf.String(); got != "" {
+		t.Fatalf("diagnostic remote shell probe should not log failure details, got %q", got)
+	}
+	if len(cb.commandsRun) != 3 || cb.commandsRun[2].Command != "g++ --version 2>&1" || cb.commandsRun[2].Succeeded {
+		t.Fatalf("diagnostic remote shell probe should remain in command audit, got %#v", cb.commandsRun)
+	}
+	unresolved := unresolvedFailedSubAgentCommands(cb.commandsRun[2:])
+	if len(unresolved) != 1 || unresolved[0].Command != "g++ --version 2>&1" {
+		t.Fatalf("diagnostic probe without later verification should remain an unresolved command, got %#v", unresolved)
+	}
+
+	cb.trackRemoteCommand("gcc -v", "/repo", "bash: gcc: command not found\nEXIT: 127", false)
+	if got := buf.String(); got != "" {
+		t.Fatalf("compiler diagnostic remote shell probe should not log failure details, got %q", got)
+	}
+
+	cb.trackRemoteCommand("python3 --version && pytest tests", "/repo", "FAILED tests/test_app.py::TestApp\npassword=hunter2\nEXIT: 1", false)
+	got = buf.String()
+	if !strings.Contains(got, "[remote-subagent] shell command failed") || !strings.Contains(got, "python3 --version && pytest tests") || !strings.Contains(got, "FAILED tests/test_app.py::TestApp") {
+		t.Fatalf("mixed diagnostic plus verification failure should be logged, got %q", got)
+	}
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("mixed failure log leaked secret in %q", got)
+	}
+}
+
 func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 	cb := &remoteCodingCallbacks{}
 	cb.trackRemoteFileRead("/repo/main.py")
@@ -1671,6 +1747,7 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		"git diff",
 		"git diff --stat",
 		"git status --short",
+		"git status --short; git diff --stat",
 		"bash -lc \"git diff -- src/main.py\"",
 	}
 	for _, command := range positives {
@@ -1688,6 +1765,22 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		if isRemoteDiffSelfCheckCommand(command) {
 			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = true, want false", command)
 		}
+	}
+}
+
+func TestRemoteDiffSelfCheckCommandAllowedByWindowsShellGuard(t *testing.T) {
+	previous := remotePlatformGOOS
+	remotePlatformGOOS = func() string { return "windows" }
+	t.Cleanup(func() { remotePlatformGOOS = previous })
+
+	if msg := rejectDisallowedCodingBashCommand("git status --short; git diff --stat"); msg != "" {
+		t.Fatalf("semicolon remote diff self-check should pass Windows shell guard, got %q", msg)
+	}
+	if msg := rejectDisallowedCodingBashCommand("git status --short && git diff --stat"); msg == "" {
+		t.Fatal("ampersand remote diff self-check should still be rejected by Windows shell guard")
+	}
+	if msg := rejectDisallowedCodingBashCommand("git reset --hard HEAD"); msg == "" {
+		t.Fatal("destructive git command should remain rejected")
 	}
 }
 
@@ -2317,6 +2410,21 @@ func TestRemoteCodingSubAgentToolFinishedEventUsesFailureOutcomeClassifier(t *te
 	}
 	if !strings.Contains(finished.Summary, "handler unavailable") {
 		t.Fatalf("failed tool event should include diagnostic summary, got %#v", finished)
+	}
+}
+
+func TestRemoteCodingToolFailureDiagnosticSeverityClassifier(t *testing.T) {
+	if !remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"g++ --version 2>&1; cmake --version 2>&1"}`, "g++: command not found", "failed") {
+		t.Fatal("remote diagnostic probe failure should be marked diagnostic")
+	}
+	if remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"cmake --build build"}`, "fatal error LNK1120: unresolved externals", "failed") {
+		t.Fatal("remote build failure should not be marked diagnostic")
+	}
+	if remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"g++ --version 2>&1"}`, "permission denied while opening /srv/app/config.yml", "failed") {
+		t.Fatal("remote hard failure result should override diagnostic probe command")
+	}
+	if remoteCodingToolFailureIsDiagnostic("ssh_read_file", `{"path":"main.go"}`, "read failed", "failed") {
+		t.Fatal("non-bash remote failure should not be marked diagnostic")
 	}
 }
 
@@ -3045,13 +3153,52 @@ func TestCodingSubAgentToolFinishedEventPrefersStderrDiagnostic(t *testing.T) {
 		},
 	}
 
-	cb.emitToolFinishedEvent("bash", "ordinary prelude\n[stderr] compiler: missing symbol\ncommand exited with code 2", codingToolOutcomeFailed, 25*time.Millisecond)
+	cb.emitToolFinishedEvent("bash", "", "ordinary prelude\n[stderr] compiler: missing symbol\ncommand exited with code 2", codingToolOutcomeFailed, 25*time.Millisecond)
 
 	joined := strings.Join(progress, "\n")
 	if !strings.Contains(joined, `"event":"tool_finished"`) ||
 		!strings.Contains(joined, `"outcome":"failed"`) ||
 		!strings.Contains(joined, `"summary":"compiler: missing symbol"`) {
 		t.Fatalf("failed tool event should surface stderr diagnostic, got %#v", progress)
+	}
+}
+
+func TestCodingSubAgentToolFinishedEventMarksDiagnosticProbeSeverity(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 7, Title: "Probe compiler"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	cb.emitToolFinishedEvent("bash", `{"command":"g++ --version 2>&1; cmake --version 2>&1"}`, "PowerShell exception: 无法将“g++”项识别为 cmdlet", codingToolOutcomeFailed, 25*time.Millisecond)
+
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, `"event":"tool_finished"`) ||
+		!strings.Contains(joined, `"outcome":"failed"`) ||
+		!strings.Contains(joined, `"severity":"diagnostic"`) {
+		t.Fatalf("diagnostic probe tool event should carry diagnostic severity, got %#v", progress)
+	}
+
+	progress = nil
+	cb.emitToolFinishedEvent("bash", `{"command":"cmake --build build"}`, "fatal error LNK1120: unresolved externals", codingToolOutcomeFailed, 25*time.Millisecond)
+	if joined := strings.Join(progress, "\n"); strings.Contains(joined, `"severity":"diagnostic"`) {
+		t.Fatalf("real build failure should not carry diagnostic severity, got %#v", progress)
+	}
+
+	progress = nil
+	cb.emitToolFinishedEvent("bash", `{"command":"g++ --version 2>&1"}`, "permission denied while opening /srv/app/config.yml", codingToolOutcomeFailed, 25*time.Millisecond)
+	if joined := strings.Join(progress, "\n"); strings.Contains(joined, `"severity":"diagnostic"`) {
+		t.Fatalf("hard failure result should override diagnostic probe command, got %#v", progress)
+	}
+
+	progress = nil
+	cb.emitToolFinishedEvent("bash", `{"command":"g++ --version 2>&1"}`, `FAIL at D:\test\test_hello.cpp:11: CHECK (result == "Hello, World!")`, codingToolOutcomeFailed, 25*time.Millisecond)
+	if joined := strings.Join(progress, "\n"); strings.Contains(joined, `"severity":"diagnostic"`) {
+		t.Fatalf("test assertion failure should override diagnostic probe command, got %#v", progress)
 	}
 }
 
@@ -3066,7 +3213,7 @@ func TestCodingSubAgentToolFinishedEventPrefersLikelyStderrFailure(t *testing.T)
 		},
 	}
 
-	cb.emitToolFinishedEvent("bash", "[stderr] running package github.com/acme/app\n[stderr] src/main.go:12: error: missing symbol\ncommand exited with code 2", codingToolOutcomeFailed, 25*time.Millisecond)
+	cb.emitToolFinishedEvent("bash", "", "[stderr] running package github.com/acme/app\n[stderr] src/main.go:12: error: missing symbol\ncommand exited with code 2", codingToolOutcomeFailed, 25*time.Millisecond)
 
 	joined := strings.Join(progress, "\n")
 	if !strings.Contains(joined, `"summary":"src/main.go:12: error: missing symbol"`) || strings.Contains(joined, `"summary":"running package`) {
@@ -5556,6 +5703,21 @@ func TestCommandResultSummaryAndStatus(t *testing.T) {
 	}
 }
 
+func TestAppendSubAgentCommandSummaryHidesResolvedFailures(t *testing.T) {
+	summary := appendSubAgentCommandSummary("完成", []CodingSubAgentCommandResult{
+		{Command: `cmake --build D:\test\build --config Debug`, Succeeded: false, Summary: "PowerShell compatibility failed", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 2},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 3},
+	})
+	if strings.Contains(summary, "FAIL:") || strings.Contains(summary, "PowerShell compatibility failed") {
+		t.Fatalf("resolved failed command should be hidden from command summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "PASS: `& \"C:\\Program Files\\CMake\\bin\\cmake.exe\" --build D:\\test\\build --config Debug`") ||
+		!strings.Contains(summary, "PASS: `& \"C:\\Program Files\\CMake\\bin\\ctest.exe\" --test-dir D:\\test\\build -C Debug --output-on-failure`") {
+		t.Fatalf("successful verification commands should remain visible, got %q", summary)
+	}
+}
+
 func TestAppendSubAgentCommandSummaryCapsLongLists(t *testing.T) {
 	var commands []CodingSubAgentCommandResult
 	for i := 0; i < codingSubAgentCommandSummaryMax+3; i++ {
@@ -5821,6 +5983,24 @@ func TestSummarizeSubAgentCommands(t *testing.T) {
 	}
 
 	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmake --build D:\test\build --config Debug`, Succeeded: false, Summary: "PowerShell compatibility failed", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 2},
+	})
+	if status != "passed" || !strings.Contains(summary, "2 bash commands run, no failures") || strings.Contains(summary, "PowerShell compatibility failed") {
+		t.Fatalf("resolved failed command should not make command progress summary fail, got %q, %q", status, summary)
+	}
+
+	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `g++ --version 2>&1; echo "---"; cmake --version 2>&1`, Succeeded: false, Summary: "PowerShell exception: 无法将“g++”项识别为 cmdlet", seq: 1},
+		{Command: `cl.exe 2>&1; where cl.exe 2>&1`, Succeeded: false, Summary: "PowerShell exception: 无法将“cl.exe”项识别为 cmdlet", seq: 2},
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 3},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 4},
+	})
+	if status != "passed" || strings.Contains(summary, "g++") || strings.Contains(summary, "cl.exe") {
+		t.Fatalf("resolved environment probe failures should not make command progress summary fail, got %q, %q", status, summary)
+	}
+
+	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: true, Summary: "no tests collected in 0.01s"},
 	})
 	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "1 empty success") || !strings.Contains(summary, "pytest tests: no tests collected") {
@@ -6021,6 +6201,75 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "Set-Content src\\a.go x", Succeeded: false, Summary: "blocked"}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash", Command: "Set-Content src\\a.go x"}}, nil)
 	if status != "failed" || count != 1 || !strings.Contains(summary, "guardrail") || strings.Contains(summary, "command(s) failed") {
 		t.Fatalf("guardrail-blocked command should not be duplicated as command failure, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, nil, nil, []CodingSubAgentCommandResult{
+		{Command: `cd D:\test\build && cmake --build D:\test\build --config Debug`, Succeeded: false, Summary: "blocked", seq: 2},
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 4},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 5},
+	}, 0, []CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryCommand,
+		Command:  `cd D:\test\build && cmake --build D:\test\build --config Debug`,
+		Summary:  "PowerShell command compatibility: uses bash-only syntax such as `&&`.",
+		seq:      3,
+	}}, nil)
+	if status != "passed" || count != 0 || strings.Contains(summary, "guardrail") || strings.Contains(summary, "command(s) failed") {
+		t.Fatalf("resolved PowerShell compatibility guardrail should not fail no-change quality, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, nil, nil, []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 4},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 5},
+	}, 0, []CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryCommand,
+		Command:  `& "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 2>&1; Get-Command cl.exe`,
+		Summary:  `PowerShell exception: 无法加载文件 C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\Launch-VsDevShell.ps1，因为在此系统上禁止运行脚本。about_Execution_Policies`,
+		seq:      3,
+	}}, nil)
+	if status != "passed" || count != 0 || strings.Contains(summary, "guardrail") {
+		t.Fatalf("PowerShell execution-policy setup guardrail should be resolved by later successful verification, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, nil, nil, []CodingSubAgentCommandResult{
+		{Command: "Get-ChildItem .", Succeeded: true, Summary: "CMakeLists.txt", seq: 4},
+	}, 0, []CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryCommand,
+		Command:  `& "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64`,
+		Summary:  `PowerShell exception: running scripts is disabled on this system. about_Execution_Policies`,
+		seq:      3,
+	}}, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "guardrail") {
+		t.Fatalf("PowerShell setup guardrail should require later verification success, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, nil, nil, []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 2},
+	}, 0, []CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryCommand,
+		Command:  `cmake --build D:\test\build --config Debug`,
+		Summary:  "PowerShell command compatibility: uses bash-only syntax such as `&&`.",
+		seq:      3,
+	}}, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "guardrail") {
+		t.Fatalf("earlier success should not resolve later guardrail, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, nil, nil, []CodingSubAgentCommandResult{
+		{Command: "git reset --hard HEAD", Succeeded: false, Summary: "blocked", seq: 2},
+		{Command: "git status", Succeeded: true, Summary: "clean", seq: 3},
+	}, 0, []CodingSubAgentGuardrailViolation{{
+		Tool:     "bash",
+		Category: codingSubAgentGuardrailCategoryGit,
+		Command:  "git reset --hard HEAD",
+		Summary:  "blocked destructive git command",
+		seq:      2,
+	}}, nil)
+	if status != "failed" || count != 1 || !strings.Contains(summary, "guardrail") {
+		t.Fatalf("destructive guardrail should remain blocking, got %q, %q, %d", status, summary, count)
 	}
 
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{{Command: "Git   reset --hard HEAD", Succeeded: false, Summary: "blocked"}}, 0, []CodingSubAgentGuardrailViolation{{Tool: "bash", Command: "git reset --hard head"}}, nil)
@@ -6720,6 +6969,21 @@ func TestSummarizeSubAgentClaimedVerificationEvidence(t *testing.T) {
 		t.Fatalf("equivalent quoted verification command should match audit log, got %q", warning)
 	}
 
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: `cmake --build D:\\test\\build --config Debug` passed.\nVerification: `ctest --test-dir D:\\test\\build -C Debug --output-on-failure` passed.", []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded"},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed"},
+	})
+	if warning != "" {
+		t.Fatalf("PowerShell full-path cmake verification commands should match summary commands, got %q", warning)
+	}
+
+	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: D:\\test\nVerification: cmake --build D:\\test\\build --config Debug passed.", []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded"},
+	})
+	if warning != "" {
+		t.Fatalf("Windows work directory line should not be treated as a claimed test command, got %q", warning)
+	}
+
 	warning = summarizeSubAgentClaimedVerificationEvidence("Verification: `go test ./gui -run TestParser` passed.", []CodingSubAgentCommandResult{
 		{Command: `bash -lc "go test ./gui -run TestParser"`, Succeeded: true},
 	})
@@ -6930,6 +7194,112 @@ func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *te
 	}
 
 	commands = []CodingSubAgentCommandResult{
+		{Command: "cmake --build D:\\test\\build --config Debug", Succeeded: false, Summary: "PowerShell rejected && syntax", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later PowerShell full-path cmake success should resolve failed shorthand command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio\2019" -ErrorAction SilentlyContinue 2>&1`, Succeeded: false, Summary: "PowerShell error: 找不到路径", seq: 1},
+		{Command: `dir "C:\Program Files\Microsoft Visual Studio" /s /b 2>&1`, Succeeded: false, Summary: "PowerShell exception: 找不到接受实际参数“/b”的位置形式参数。", seq: 2},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 3},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later verification success should resolve environment probe failures, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `cmake --version 2>&1; node --version 2>&1`, Succeeded: false, Summary: "node not found", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("plain version probes should resolve as probe noise after later verification, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `node --version --token secret-token`, Succeeded: false, Summary: "node not found", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("version probe with secret flag should resolve as probe noise after later verification, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `cmake --version > version.txt`, Succeeded: false, Summary: "write failed", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Command, "version.txt") {
+		t.Fatalf("version probe with file-writing redirection should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `node --version extra`, Succeeded: false, Summary: "unexpected arg", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Command, "extra") {
+		t.Fatalf("version probe with extra args should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `gcc -v 2>&1`, Succeeded: false, Summary: "gcc: command not found", seq: 1},
+		{Command: `clang++ -print-search-dirs 2>&1`, Succeeded: false, Summary: "clang++: command not found", seq: 2},
+		{Command: `g++ -o hello hello.cpp`, Succeeded: true, Summary: "compiled", seq: 3},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later compiler verification success should resolve compiler probe failures, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `cl 2> probe.err; where cl.exe`, Succeeded: false, Summary: "cl not found", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Command, "probe.err") {
+		t.Fatalf("compiler probe with file-writing redirection should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `gcc -v hello.c 2>&1; where gcc 2>&1`, Succeeded: false, Summary: "fatal error: hello.c: No such file", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Summary, "hello.c") {
+		t.Fatalf("compiler diagnostic flag with source args should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `g++ hello.cpp 2>&1; where g++ 2>&1`, Succeeded: false, Summary: "fatal error: hello.cpp: No such file", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Summary, "hello.cpp") {
+		t.Fatalf("compiler command with source args should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `g++ --version 2>&1; echo not-a-separator; cmake --version 2>&1`, Succeeded: false, Summary: "PowerShell exception", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Command, "not-a-separator") {
+		t.Fatalf("non-separator echo segment should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `git reset --hard HEAD; where cl.exe`, Succeeded: false, Summary: "blocked destructive command", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || unresolved[0].Command != `git reset --hard HEAD; where cl.exe` {
+		t.Fatalf("mixed real command and diagnostic probe should not be resolved as probe noise, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: false, Summary: "fatal error LNK1120: unresolved externals", seq: 1},
+		{Command: `& "C:\Program Files\CMake\bin\ctest.exe" --test-dir D:\test\build -C Debug --output-on-failure`, Succeeded: true, Summary: "100% tests passed", seq: 2},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 1 || !strings.Contains(unresolved[0].Summary, "LNK1120") {
+		t.Fatalf("real build failure should not be resolved by different later verification, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
 		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "gui"), Succeeded: false, Summary: "FAIL", seq: 1},
 		{Command: "go test ./...", WorkingDir: filepath.Join("repo", "api"), Succeeded: true, Summary: "ok github.com/RapidAI/CodeClaw/api 0.1s", seq: 2},
 	}
@@ -7006,6 +7376,33 @@ func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *te
 	unresolved = unresolvedFailedSubAgentCommands(commands)
 	if len(unresolved) != 2 {
 		t.Fatalf("empty-success verification should not resolve failed command and should remain actionable, got %#v", unresolved)
+	}
+}
+
+func TestUnresolvedSubAgentGuardrailViolationsKeepsOnlyBlockingItems(t *testing.T) {
+	guardrails := []CodingSubAgentGuardrailViolation{
+		{
+			Tool:     "bash",
+			Category: codingSubAgentGuardrailCategoryCommand,
+			Command:  `cd D:\test\build && cmake --build D:\test\build --config Debug`,
+			Summary:  "PowerShell command compatibility: uses bash-only syntax such as `&&`.",
+			seq:      2,
+		},
+		{
+			Tool:     "bash",
+			Category: codingSubAgentGuardrailCategoryGit,
+			Command:  "git reset --hard HEAD",
+			Summary:  "blocked destructive git command",
+			seq:      3,
+		},
+	}
+	commands := []CodingSubAgentCommandResult{
+		{Command: `& "C:\Program Files\CMake\bin\cmake.exe" --build D:\test\build --config Debug`, Succeeded: true, Summary: "Build succeeded", seq: 4},
+	}
+
+	unresolved := unresolvedSubAgentGuardrailViolations(guardrails, commands)
+	if len(unresolved) != 1 || unresolved[0].Command != "git reset --hard HEAD" {
+		t.Fatalf("resolved PowerShell compatibility guardrail should be filtered while destructive guardrail remains, got %#v", unresolved)
 	}
 }
 
@@ -7781,6 +8178,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"ninja -C build test",
 		"ninja -C build all",
 		"ninja",
+		"g++ -o hello hello.cpp",
+		"gcc -Wall -Wextra main.c -o main",
+		"clang++ -std=c++17 src/main.cc -o app",
+		"cc -c src/module.c",
+		"cl /EHsc hello.cpp",
 		"make lint",
 		"dotnet build",
 		"dotnet test --no-build",
@@ -7951,6 +8353,11 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"make -C build clean",
 		"make clean",
 		"make install",
+		"g++ --version",
+		"gcc -v",
+		"clang++ -print-search-dirs",
+		"cc -o hello hello.o",
+		"cl /?",
 		"dotnet run",
 		"dotnet watch test",
 		"dotnet tool restore",
@@ -8629,12 +9036,101 @@ func TestCodingSubAgentLogsFailedOperationWithRedactedArgs(t *testing.T) {
 		t.Fatalf("freeform log text should preserve non-secret diagnostics, got: %s", freeform)
 	}
 
+	quotedCLI := compactCodingSubAgentLogText(`failed: --token "abc def" /password 'one two' --api-key=key-123 --secret secret-value`, 500)
+	for _, leaked := range []string{"abc def", "one two", "key-123", "secret-value"} {
+		if strings.Contains(quotedCLI, leaked) {
+			t.Fatalf("freeform CLI flag log text should redact quoted/inline secret %q, got: %s", leaked, quotedCLI)
+		}
+	}
+	if !strings.Contains(quotedCLI, `--token "[redacted]"`) || !strings.Contains(quotedCLI, `/password '[redacted]'`) || !strings.Contains(quotedCLI, "--api-key=[redacted]") || !strings.Contains(quotedCLI, "--secret [redacted]") {
+		t.Fatalf("freeform CLI flag log text should keep useful flag names with redaction markers, got: %s", quotedCLI)
+	}
+
 	invalidArgsText := compactCodingSubAgentArgsLogText(`{"path":"out.go","content":"secret-token-value`+strings.Repeat("x", 1024), 500)
 	if strings.Contains(invalidArgsText, "secret-token-value") || strings.Contains(invalidArgsText, strings.Repeat("x", 128)) {
 		t.Fatalf("invalid JSON arg text should redact content, got: %s", invalidArgsText)
 	}
 	if !strings.Contains(invalidArgsText, "invalid JSON redacted") || !strings.Contains(invalidArgsText, "content_field=true") {
 		t.Fatalf("invalid JSON arg text should include redacted diagnostic summary, got: %s", invalidArgsText)
+	}
+}
+
+func TestCodingSubAgentSkipsDiagnosticProbeFailureLog(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+	}()
+
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Index: 3, Title: "probe compiler"},
+	}
+	args, _ := json.Marshal(map[string]string{"command": `g++ --version 2>&1; cmake --version 2>&1`})
+	logCodingSubAgentOperationFailure(cb, "bash", string(args), codingToolExecutionResult{
+		Text:    "PowerShell exception: 无法将“g++”项识别为 cmdlet",
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	if got := buf.String(); got != "" {
+		t.Fatalf("diagnostic probe failure should not be written to the main log, got %q", got)
+	}
+	cb.trackCommandResult(map[string]interface{}{"command": `g++ --version 2>&1; cmake --version 2>&1`}, "PowerShell exception: 无法将“g++”项识别为 cmdlet", false)
+	if len(cb.commandsRun) != 1 || cb.commandsRun[0].Command != `g++ --version 2>&1; cmake --version 2>&1` || cb.commandsRun[0].Succeeded {
+		t.Fatalf("diagnostic probe failure should remain in local command audit, got %#v", cb.commandsRun)
+	}
+	unresolved := unresolvedFailedSubAgentCommands(cb.commandsRun)
+	if len(unresolved) != 1 || unresolved[0].Command != `g++ --version 2>&1; cmake --version 2>&1` {
+		t.Fatalf("diagnostic probe without later verification should remain unresolved, got %#v", unresolved)
+	}
+
+	logCodingSubAgentOperationFailure(cb, "bash", `{"command":"clang++ -print-search-dirs"}`, codingToolExecutionResult{
+		Text:    "clang++: command not found",
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	if got := buf.String(); got != "" {
+		t.Fatalf("compiler diagnostic probe failure should not be written to the main log, got %q", got)
+	}
+
+	logCodingSubAgentOperationFailure(cb, "bash", `{"command":"node --version && npm test"}`, codingToolExecutionResult{
+		Text:    "FAIL src/app.test.ts: expected true to be false",
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	logText := buf.String()
+	if !strings.Contains(logText, "[coding-subagent] operation failed") || !strings.Contains(logText, "node --version") || !strings.Contains(logText, "npm test") || !strings.Contains(logText, "FAIL src/app.test.ts") {
+		t.Fatalf("mixed diagnostic plus verification failure should still be logged, got %q", logText)
+	}
+	buf.Reset()
+
+	logCodingSubAgentOperationFailure(cb, "bash", `{"command":"where.exe cl.exe"}`, codingToolExecutionResult{
+		Text:    `FAIL at D:\test\test_hello.cpp:11: CHECK (result == "Hello, World!")`,
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	logText = buf.String()
+	if !strings.Contains(logText, "[coding-subagent] operation failed") || !strings.Contains(logText, "CHECK (result") {
+		t.Fatalf("diagnostic-looking command with test assertion failure should still be logged, got %q", logText)
+	}
+	buf.Reset()
+
+	logCodingSubAgentOperationFailure(cb, "bash", `{"command":"cmake --build build"}`, codingToolExecutionResult{
+		Text:    "fatal error LNK1120: unresolved externals",
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	logText = buf.String()
+	if !strings.Contains(logText, "[coding-subagent] operation failed") || !strings.Contains(logText, "cmake --build build") || !strings.Contains(logText, "LNK1120") {
+		t.Fatalf("real bash failure should still be logged, got %q", logText)
+	}
+
+	buf.Reset()
+	logCodingSubAgentOperationFailure(cb, "bash", `{"command":"git reset --hard HEAD; where cl.exe"}`, codingToolExecutionResult{
+		Text:    "blocked destructive command",
+		Outcome: codingToolOutcomeFailed,
+	}, time.Millisecond)
+	if logText := buf.String(); !strings.Contains(logText, "[coding-subagent] operation failed") || !strings.Contains(logText, "git reset --hard HEAD") {
+		t.Fatalf("mixed real command and diagnostic probe should still be logged, got %q", logText)
 	}
 }
 

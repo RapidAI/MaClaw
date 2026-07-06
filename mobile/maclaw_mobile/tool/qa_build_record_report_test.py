@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import sys
@@ -213,6 +213,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
             text = self.complete_record_with_local_artifact(root)
             for field in (
                 "Release handoff result",
+                "Preflight result",
                 "Runtime boundary verification result",
                 "Automated release gates result",
             ):
@@ -226,11 +227,12 @@ class QaBuildRecordReportTest(unittest.TestCase):
 
             self.assertFalse(report.passed)
             self.assertIn(
-                f"Required evidence: {REQUIRED_EVIDENCE_COUNT - 3}/{REQUIRED_EVIDENCE_COUNT} occurrences filled",
+                f"Required evidence: {REQUIRED_EVIDENCE_COUNT - 4}/{REQUIRED_EVIDENCE_COUNT} occurrences filled",
                 output,
             )
             self.assertIn("Evidence fields and values:", output)
             self.assertIn("- Release handoff result", output)
+            self.assertIn("- Preflight result", output)
             self.assertIn("- Runtime boundary verification result", output)
             self.assertIn("- Automated release gates result", output)
             self.assertIn("How to fill release decision evidence:", output)
@@ -238,6 +240,12 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 "- Release handoff result: Use `release_handoff.py output saved to "
                 + str(record.parent)
                 + "/handoff-1.0.0+42.md`",
+                output,
+            )
+            self.assertIn(
+                "- Preflight result: Use `qa_preflight.py: Result READY for signed-build QA preparation; log: "
+                + str(record.parent)
+                + "/preflight-1.0.0+42.log`",
                 output,
             )
             self.assertIn(
@@ -257,6 +265,10 @@ class QaBuildRecordReportTest(unittest.TestCase):
                     version="1.0.0+42",
                     records_dir=str(record.parent),
                 ),
+                output,
+            )
+            self.assertIn(
+                "Artifact/log filenames must include the same Version/build number as the QA record.",
                 output,
             )
 
@@ -358,7 +370,8 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("permission-grant:<id>", output)
             self.assertIn("AI助手 voice/photo input", output)
             self.assertIn("real task notification open", output)
-            self.assertIn("real SSH read-only command", output)
+            self.assertIn("backend-managed SSH read-only command", output)
+            self.assertIn("GUI/agent session manager", output)
             self.assertIn("How to fill share-to-app evidence:", output)
             self.assertIn("OS share sheet", output)
             self.assertIn("URL/citation evidence", output)
@@ -391,6 +404,81 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("notification delivery/open evidence", output)
             self.assertIn("exported-document sharing", output)
 
+    def test_report_points_notification_gaps_to_typed_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root)
+            text = text.replace(
+                "Notification delivery evidence: Notification delivered and shown for document export completion, digital employee task completion, and SSH abnormal disconnect; tap opened typed payloads document-export:pdf-export-job-id-12345, digital-employee-task:digital-employee-task-id-12345, and server-profile:srv-prod for the matching task or export; notification message previews were redacted before display; screenshot notification-delivery-42",
+                "Notification delivery evidence: Notification delivered and opened during QA; screenshot notification-delivery-42",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("How to fill notification delivery evidence:", output)
+            self.assertIn("document-export:<id>", output)
+            self.assertIn("digital-employee-task:<id>", output)
+            self.assertIn("server-profile:<id>", output)
+            self.assertIn("tap/open target", output)
+            self.assertIn("redacted message preview", output)
+
+    def test_report_points_network_recovery_gaps_to_hub_and_task_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root)
+            text = text.replace(
+                "Network offline/recovery evidence: Network offline warning shown when HubCenter was unreachable; network-recovery-id-12345 captured the offline and restored probes; after recovery selected HubCenter https://hubs.maclaw.top and discovered Hub https://tenant-a.maclaw.top for tenant tenant-a returned online status, while assistant online answers, document export pdf-export-job-id-12345, digital employee task digital-employee-task-id-12345, and realtime surfaces resumed; screenshot network-recovery-42",
+                "Network offline/recovery evidence: Network went offline and then recovered; screenshot network-recovery-42",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("How to fill network recovery evidence:", output)
+            self.assertIn("selected HubCenter", output)
+            self.assertIn("discovered Hub URL", output)
+            self.assertIn("tenant ID", output)
+            self.assertIn("document/export/digital-employee task or job ID", output)
+
+    def test_report_points_account_privacy_gaps_to_separate_profile_cache_actions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root)
+            text = text.replace(
+                "Local work records reset confirmation: Cleared local work records cache including assistant history, document drafts, command history, digital employee prompts, and app preferences while preserving server-profile:srv-prod; screenshot local-reset-42",
+                "Local work records reset confirmation: Cache cleared screenshot captured",
+            )
+            text = text.replace(
+                "Server-profile metadata retained after local reset: After local work-record reset, sanitized server-profile metadata with host, auth mode, tag, and note remained cached for server-profile:srv-prod; screenshot server-profile-retain-42",
+                "Server-profile metadata retained after local reset: Metadata screenshot captured",
+            )
+            text = text.replace(
+                "Server-profile cache clear confirmation: Separate explicit account action cleared phone-side cached server-profile metadata for server-profile:srv-prod with server-profile-cache-clear:server-clear-12345; screenshot server-profile-cache-clear-42",
+                "Server-profile cache clear confirmation: Cleanup screenshot captured",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("How to fill account privacy evidence:", output)
+            self.assertIn("theme/speech-language changes", output)
+            self.assertIn("local work-record clearing", output)
+            self.assertIn("assistant history", output)
+            self.assertIn("document drafts", output)
+            self.assertIn("digital employee prompts/tasks", output)
+            self.assertIn("server-profile:<id>", output)
+            self.assertIn("server-profile-cache-clear:<id>", output)
+            self.assertIn("phone-side server-profile cache clear action", output)
+
     def test_report_points_ssh_gaps_to_manual_smoke_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -400,12 +488,12 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 "Connect result: SSH connection checked during QA",
             )
             text = text.replace(
-                "AI analysis confirmation and sensitive-data warning: SSH terminal output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
+                "AI analysis confirmation and sensitive-data warning: Backend SSH session output preview from server-profile:srv-prod was redacted before AI analysis confirmation after sensitive-data warning; screenshot ssh-ai-analysis-warning-42",
                 "AI analysis confirmation and sensitive-data warning: AI analysis checked",
             )
             text = text.replace(
-                "Credential deletion confirmation: Deleted server profile and cleared password/private key credentials for server-profile:srv-prod from secure storage; screenshot credential-delete-42",
-                "Credential deletion confirmation: Credentials cleaned up",
+                "Backend SSH server-profile cache clear confirmation: Cleared phone-side server-profile cache for server-profile:srv-prod after backend SSH smoke and revoked mobile access; screenshot server-profile-cache-clear-42",
+                "Backend SSH server-profile cache clear confirmation: Cache cleanup checked",
             )
             record = self.write_record(root, text)
 
@@ -413,16 +501,42 @@ class QaBuildRecordReportTest(unittest.TestCase):
             output = qa_build_record_report.format_report(report)
 
             self.assertFalse(report.passed)
-            self.assertIn("How to fill backend SSH session smoke evidence:", output)
+            self.assertIn(
+                "How to fill GUI-equivalent backend SSH session management smoke evidence:",
+                output,
+            )
             self.assertIn("server profile ID", output)
-            self.assertIn("backend session ID", output)
-            self.assertIn("attach/create evidence", output)
+            self.assertIn("GUI/agent-bound backend_session_id", output)
+            self.assertIn("mobile create/attach control request", output)
+            self.assertIn("visible claim/worker owner", output)
+            self.assertIn("claimed_by", output)
+            self.assertIn("GUI/agent claim or worker handoff evidence", output)
+            self.assertIn("explicit worker claim/update evidence", output)
+            self.assertIn("not phone-local/ad hoc terminal evidence", output)
             self.assertIn("host/auth mode", output)
-            self.assertIn("read-only command and output", output)
-            self.assertIn("disconnect/reconnect", output)
-            self.assertIn("redacted AI analysis", output)
+            self.assertIn("backend-managed read-only command and output", output)
+            self.assertIn("`ssh_session` realtime event", output)
+            self.assertIn("`output_chunk`/`output_seq`", output)
+            self.assertIn(
+                "`ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id",
+                output,
+            )
+            self.assertIn("phone-initiated interrupt evidence", output)
+            self.assertIn("Hub control record", output)
+            self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
+            self.assertIn("GUI/agent Ctrl+C handling", output)
+            self.assertIn("disconnect/reconnect through the managed session path", output)
+            self.assertIn("copied backend session output", output)
+            self.assertIn(
+                "redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used",
+                output,
+            )
             self.assertIn("manual command draft ID", output)
-            self.assertIn("credential deletion confirmation", output)
+            self.assertIn(
+                "digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used",
+                output,
+            )
+            self.assertIn("phone-side server-profile cache clear confirmation", output)
 
     def test_report_points_hub_llm_gaps_to_official_setup_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

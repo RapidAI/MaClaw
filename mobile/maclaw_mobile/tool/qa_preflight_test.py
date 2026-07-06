@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qa_preflight
 import release_evidence_commands
 import validate_qa_build_records_dir
+import verify_runtime_boundary
 
 
 def ok_android_config(_: Path) -> list[str]:
@@ -37,6 +38,17 @@ def ok_manual_gates(_: Path) -> list[str]:
 
 def ok_automated_gates(_: Path) -> list[str]:
     return []
+
+
+def ok_runtime_boundary(_: Path) -> list[verify_runtime_boundary.BoundaryViolation]:
+    return []
+
+
+def runtime_boundary_rule(name: str) -> verify_runtime_boundary.BoundaryRule:
+    for rule in verify_runtime_boundary.RULES:
+        if rule.name == name:
+            return rule
+    raise AssertionError(f"missing runtime boundary rule: {name}")
 
 
 def write_export_options(
@@ -74,6 +86,7 @@ class QaPreflightTest(unittest.TestCase):
             records_dir_validator=empty_records,
             automated_gate_validator=ok_automated_gates,
             manual_gate_validator=ok_manual_gates,
+            runtime_boundary_validator=ok_runtime_boundary,
         )
         output = qa_preflight.format_preflight(checks)
 
@@ -81,6 +94,9 @@ class QaPreflightTest(unittest.TestCase):
         self.assertIn("[OK] Android local signing inputs", output)
         self.assertIn("[OK] Manual release gate documentation", output)
         self.assertIn("[OK] Automated release gate documentation", output)
+        self.assertIn("[OK] Runtime boundary verification", output)
+        self.assertIn("phone-local SSH dependencies", output)
+        self.assertIn("phone-side SSH credential save/read APIs", output)
         self.assertIn("38 automated release gates in runner order", output)
         self.assertIn("QA record validation/redaction rules", output)
         self.assertIn("scoped internal QA commands", output)
@@ -239,12 +255,91 @@ class QaPreflightTest(unittest.TestCase):
             + release_evidence_commands.qa_preflight_command(
                 team_id=release_evidence_commands.DEFAULT_TEAM_ID,
                 export_method=release_evidence_commands.DEFAULT_EXPORT_METHOD,
+                log=release_evidence_commands.preflight_log_path(),
             )
             + "`",
             output,
         )
+        self.assertIn(
+            "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
+            output,
+        )
         self.assertNotIn(release_evidence_commands.release_handoff_command(), output)
         self.assertIn("Result: BLOCKED (2 blocker check(s)).", output)
+
+    def test_runtime_boundary_violation_is_preflight_blocker(self) -> None:
+        violation = verify_runtime_boundary.BoundaryViolation(
+            path=Path("pubspec.lock"),
+            line=3,
+            rule=runtime_boundary_rule("phone-local ssh dependency"),
+            text="dartssh2:",
+        )
+        checks = qa_preflight.run_preflight(
+            self.make_root(),
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            ios_wrapper_validator=ok_ios,
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
+            records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+            runtime_boundary_validator=lambda _: [violation],
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        self.assertTrue(any(check.is_blocker for check in checks))
+        self.assertIn("[BLOCKER] Runtime boundary verification", output)
+        self.assertIn("pubspec.lock:3: phone-local ssh dependency: dartssh2:", output)
+
+    def test_phone_side_ssh_credential_api_is_preflight_blocker(self) -> None:
+        violation = verify_runtime_boundary.BoundaryViolation(
+            path=Path("lib/core/storage/secure_vault.dart"),
+            line=34,
+            rule=runtime_boundary_rule("phone-side ssh credential api"),
+            text="Future<void> saveServerPassword(...)",
+        )
+        checks = qa_preflight.run_preflight(
+            self.make_root(),
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            ios_wrapper_validator=ok_ios,
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
+            records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+            runtime_boundary_validator=lambda _: [violation],
+        )
+        output = qa_preflight.format_preflight(checks)
+        normalized_output = output.replace("\\", "/")
+
+        self.assertTrue(any(check.is_blocker for check in checks))
+        self.assertIn("[BLOCKER] Runtime boundary verification", output)
+        self.assertIn(
+            "lib/core/storage/secure_vault.dart:34: phone-side ssh credential api",
+            normalized_output,
+        )
+        self.assertIn("saveServerPassword", output)
+
+    def test_blocked_preflight_omits_powershell_placeholder_note_for_real_ios_values(self) -> None:
+        checks = qa_preflight.run_preflight(
+            self.make_root(),
+            ios_team_id="ABCDE12345",
+            ios_export_method="development",
+            android_config_validator=ok_android_config,
+            android_key_validator=lambda _: ({}, ["Missing Android signing file"]),
+            ios_wrapper_validator=ok_ios,
+            ios_export_options_validator=lambda *_args, **_kwargs: [],
+            records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        self.assertIn("--team-id ABCDE12345", output)
+        self.assertNotIn(
+            "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
+            output,
+        )
 
     def test_android_scope_skips_ios_preflight_checks(self) -> None:
         checks = qa_preflight.run_preflight(
@@ -266,6 +361,10 @@ class QaPreflightTest(unittest.TestCase):
         self.assertNotIn("iOS wrapper", output)
         self.assertNotIn("iOS export options", output)
         self.assertIn("python3 tool/qa_preflight.py --scope android", output)
+        self.assertNotIn(
+            "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
+            output,
+        )
 
     def test_android_scope_treats_ios_only_records_as_out_of_scope(self) -> None:
         root = self.make_root()
@@ -536,6 +635,52 @@ class QaPreflightTest(unittest.TestCase):
 
         self.assertEqual(1, exit_code)
         self.assertIn("MaClaw Mobile QA preflight:", stderr.getvalue())
+
+    def test_main_writes_blocked_preflight_log(self) -> None:
+        root = self.make_root()
+        log = root / "docs" / "qa-builds" / "preflight-current.log"
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = qa_preflight.main(
+                ["--root", str(root), "--log", str(log)],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertTrue(log.exists())
+        self.assertEqual(stderr.getvalue(), log.read_text(encoding="utf-8"))
+        self.assertIn("[BLOCKER] Android local signing inputs", log.read_text(encoding="utf-8"))
+        self.assertIn("Result: BLOCKED", log.read_text(encoding="utf-8"))
+
+    def test_main_refuses_to_overwrite_preflight_log_without_force(self) -> None:
+        root = self.make_root()
+        log = root / "docs" / "qa-builds" / "preflight-current.log"
+        log.write_text("keep me", encoding="utf-8")
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = qa_preflight.main(
+                ["--root", str(root), "--log", str(log)],
+            )
+
+        self.assertEqual(2, exit_code)
+        self.assertEqual("keep me", log.read_text(encoding="utf-8"))
+        self.assertIn("Refusing to overwrite existing preflight log", stderr.getvalue())
+
+    def test_main_force_overwrites_preflight_log(self) -> None:
+        root = self.make_root()
+        log = root / "docs" / "qa-builds" / "preflight-current.log"
+        log.write_text("old", encoding="utf-8")
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = qa_preflight.main(
+                ["--root", str(root), "--log", str(log), "--force"],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("MaClaw Mobile QA preflight:", log.read_text(encoding="utf-8"))
+        self.assertNotEqual("old", log.read_text(encoding="utf-8"))
 
     def test_main_checks_expected_ios_export_options(self) -> None:
         stderr = StringIO()

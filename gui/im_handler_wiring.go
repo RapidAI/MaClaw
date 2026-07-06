@@ -229,17 +229,18 @@ type IMMessageHandler struct {
 	// the system prompt builder's LoadAndDelete).
 	pendingV2SubAgentExecution sync.Map
 
-	// pendingDirectCodingProjectPath stores the project path for direct coding
-	// (RouteToDirectCoding) — simple tasks that skip SDD and go straight to SubAgent.
-	pendingDirectCodingProjectPath sync.Map
+	// pendingTemplateCodingProjectPath stores the project path after the
+	// coding_subagent workflow form is submitted; the next agent loop runs
+	// CodingSubAgent instead of the normal chat loop.
+	pendingTemplateCodingProjectPath sync.Map
 
-	// pendingDirectRemoteCoding stores context for direct remote coding tasks
-	// that skip SDD and run RemoteCodingSubAgent against an existing SSH session.
-	pendingDirectRemoteCoding sync.Map
+	// pendingTemplateRemoteCoding stores context after the remote_coding_subagent
+	// workflow form connects SSH; the next agent loop runs RemoteCodingSubAgent.
+	pendingTemplateRemoteCoding sync.Map
 
 	// pendingWorkflowChoice stores the original message and route result while
 	// waiting for the user to choose how to handle a detected workflow task
-	// (full workflow / simple coding / skip). Keyed by userID.
+	// (full workflow / simplified coding template / remote coding template / skip). Keyed by userID.
 	pendingWorkflowChoice sync.Map
 
 	// workflowReviewExperienceContext carries the trace/task context of the

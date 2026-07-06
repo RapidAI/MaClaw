@@ -59,12 +59,13 @@ func TestCodingTurnContextWrapProgressPreservesToolOutcome(t *testing.T) {
 	})
 
 	emitCodingAgentEvent(wrapped, CodingAgentEvent{
-		Version: 1,
-		Agent:   "coding",
-		Event:   "tool_finished",
-		Phase:   "running",
-		Detail:  "bash",
-		Outcome: "blocked",
+		Version:  1,
+		Agent:    "coding",
+		Event:    "tool_finished",
+		Phase:    "running",
+		Detail:   "bash",
+		Outcome:  "blocked",
+		Severity: "diagnostic",
 	})
 
 	if len(progress) != 1 {
@@ -72,6 +73,7 @@ func TestCodingTurnContextWrapProgressPreservesToolOutcome(t *testing.T) {
 	}
 	if !strings.Contains(progress[0], `"event":"tool_finished"`) ||
 		!strings.Contains(progress[0], `"outcome":"blocked"`) ||
+		!strings.Contains(progress[0], `"severity":"diagnostic"`) ||
 		!strings.Contains(progress[0], `"turn_id":"coding-turn-8-T1"`) {
 		t.Fatalf("expected wrapped tool outcome event, got %q", progress[0])
 	}

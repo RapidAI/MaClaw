@@ -72,8 +72,8 @@ func TestSubAgentRouteRequiresPassedIntegrationBeforeWorkflowSave(t *testing.T) 
 	}
 }
 
-func TestDirectCodingSubAgentRouteDisabled(t *testing.T) {
-	// bug_fix intent no longer routes directly to CodingSubAgent (steering #102).
+func TestCodingSubAgentLegacyRouteDisabled(t *testing.T) {
+	// bug_fix intent no longer bypasses workflow templates into CodingSubAgent.
 	// routeSubAgentExecution only routes when orchestrator is active (ShouldUseSubAgent).
 	// Without an active orchestrator, the function returns (nil, history, false).
 	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {

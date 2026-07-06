@@ -127,6 +127,121 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	return handler, cb
 }
 
+func TestResolveIMEntryContextRoutesPendingRemoteTemplateWhenWorkflowToggleDisabled(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "test-remote-template-disabled-toggle"
+	handler.app.workflowDisabled.Store(true)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID:  "ssh-test",
+		WorkDir:    "/home/test",
+		ProjectDir: "/home/test",
+	})
+
+	trimmed := "开发一个 C++ hello world"
+	result := handler.resolveIMEntryContext(imEntryContextOptions{
+		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
+		Trimmed: &trimmed,
+	})
+
+	if result.Response != nil {
+		t.Fatalf("pending remote template should route to workflow loop, got response %#v", result.Response)
+	}
+	if !result.WorkflowAgentLoop {
+		t.Fatalf("WorkflowAgentLoop = false, want true so remote CodingSubAgent executes despite disabled cold-start routing: %#v", result)
+	}
+	if result.WorkflowDocPhase {
+		t.Fatalf("WorkflowDocPhase = true, want false for remote coding execution")
+	}
+}
+
+func TestResolveIMEntryContextRoutesActiveWorkflowWhenWorkflowToggleDisabled(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "other"})
+	engine := handler.app.workflowEngine
+	userID := "test-active-workflow-disabled-toggle"
+	workflowType := v2.WorkflowType("gui_active_workflow_disabled_toggle")
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
+		Type:        workflowType,
+		Name:        "active workflow disabled toggle",
+		Description: "test template",
+		Phases: []v2.PhaseSpec{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
+		},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "build a project"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, reviewStateValidContentGUI()); err != nil || phaseID != "plan" {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("workflow should be awaiting review before disabled-toggle confirmation")
+	}
+	handler.app.workflowDisabled.Store(true)
+
+	trimmed := "ok"
+	result := handler.resolveIMEntryContext(imEntryContextOptions{
+		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
+		Trimmed: &trimmed,
+	})
+
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("active workflow should continue despite disabled cold-start routing, got %#v", result)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
+		t.Fatalf("workflow should advance to execute, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	}
+}
+
+func TestResolveIMEntryContextRoutesEngineOnlyActiveWorkflowWhenWorkflowToggleDisabled(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "other"})
+	engine := handler.app.workflowEngine
+	userID := "test-engine-only-workflow-disabled-toggle"
+	workflowType := v2.WorkflowType("gui_engine_only_workflow_disabled_toggle")
+	if err := engine.GetRegistry().Register(&v2.TemplateSpec{
+		Type:        workflowType,
+		Name:        "engine only workflow disabled toggle",
+		Description: "test template",
+		Phases: []v2.PhaseSpec{
+			{ID: "plan", Name: "Plan", Prompt: "make plan", Deliverable: "plan", NeedsConfirm: true, ToolPolicy: v2.ToolFilterDocOnly},
+			{ID: "execute", Name: "Execute", Prompt: "execute", Deliverable: "execution", ToolPolicy: v2.ToolFilterFull, Kind: v2.PhaseKindExecution, MutationScope: v2.MutationScopeProject},
+		},
+	}); err != nil {
+		t.Fatalf("Register workflow template: %v", err)
+	}
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: workflowType, Summary: "build a project"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if phaseID, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, reviewStateValidContentGUI()); err != nil || phaseID != "plan" {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance phase=%q err=%v", phaseID, err)
+	}
+	if wf := handler.getWorkflowV2(); wf == nil || wf.machine == nil {
+		t.Fatal("test requires workflow v2 machine")
+	} else if err := wf.machine.Cancel(userID); err != nil {
+		t.Fatalf("Cancel machine workflow failed: %v", err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("engine workflow should remain awaiting review after machine state is absent")
+	}
+	handler.app.workflowDisabled.Store(true)
+
+	trimmed := "ok"
+	result := handler.resolveIMEntryContext(imEntryContextOptions{
+		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
+		Trimmed: &trimmed,
+	})
+
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("engine-only active workflow should continue despite disabled cold-start routing, got %#v", result)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.CurrentPhase != "execute" || engine.IsAwaitingReview(userID) {
+		t.Fatalf("engine workflow should advance to execute, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	}
+}
+
 // syncPhaseToV2Machine advances the V2 StateMachine state to match the engine
 // state's PhaseIndex. Called after test code manually sets state.PhaseIndex.
 func syncPhaseToV2Machine(handler *IMMessageHandler, userID string, phaseIndex int) {
@@ -1084,6 +1199,122 @@ func TestWorkflowToolExecutionGuardBlocksDisallowedTool(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "not allowed") {
 		t.Fatalf("expected rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowPlanningToolExecutionGuardAllowsWriteFileOnly(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "planning-write-guard-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, v2.StructuredIntent{
+		Category: v2.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowCoding)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == v2.PhaseCodingTaskBreakdown {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+	syncPhaseToV2Machine(handler, userID, state.PhaseIndex)
+
+	if !handler.isWorkflowToolAllowedForOwner(userID, "write_file") {
+		t.Fatal("planning phase should allow write_file for reviewable planning artifacts")
+	}
+	if allowed, reason := handler.isWorkflowToolCallAllowedForOwner(userID, "write_file", `{"path":"PLAN.md","content":"plan"}`); !allowed {
+		t.Fatalf("planning phase should allow write_file execution, reason=%q", reason)
+	}
+	if handler.isWorkflowToolAllowedForOwner(userID, "edit_file") {
+		t.Fatal("planning phase should still block edit_file implementation")
+	}
+	if allowed, _ := handler.isWorkflowToolCallAllowedForOwner(userID, "edit_file", `{"path":"main.go","old":"x","new":"y"}`); allowed {
+		t.Fatal("planning phase should still reject edit_file execution")
+	}
+}
+
+func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "template-coding-consume-user"
+	projectPath := t.TempDir()
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	var capturedTask string
+	var capturedProject string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		if task != nil {
+			capturedTask = task.Description
+		}
+		capturedProject = projectPath
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "done"}
+	}
+
+	resp, handled := handler.consumePendingTemplateSubAgentExecution(
+		IMUserMessage{UserID: userID, Text: "continue", Platform: "desktop"},
+		"build from form",
+		NewLoopContext("template-coding-test", 1, nil),
+		"req-template-coding-test",
+		nil,
+		nil,
+	)
+
+	if !handled || resp == nil {
+		t.Fatalf("pending coding template should be consumed, handled=%v resp=%#v", handled, resp)
+	}
+	if !strings.Contains(capturedTask, "build from form") || capturedProject != projectPath {
+		t.Fatalf("coding template runner received task=%q project=%q", capturedTask, capturedProject)
+	}
+	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); pending {
+		t.Fatal("pendingV2SubAgentExecution should be cleared after coding template consumption")
+	}
+	if _, pending := handler.pendingTemplateCodingProjectPath.Load(userID); pending {
+		t.Fatal("pendingTemplateCodingProjectPath should be cleared after coding template consumption")
+	}
+}
+
+func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "template-remote-coding-consume-user"
+	remoteCtx := remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"}
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCtx)
+
+	original := remoteCodingTemplateRunner
+	t.Cleanup(func() { remoteCodingTemplateRunner = original })
+	var capturedTask string
+	var capturedRemote remoteCodingTemplateContext
+	remoteCodingTemplateRunner = func(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, ctx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
+		capturedTask = userText
+		capturedRemote = ctx
+		return &RemoteCodingSubAgentResult{Status: "success", Summary: "remote done", ToolCalls: 1}
+	}
+
+	resp, handled := handler.consumePendingTemplateSubAgentExecution(
+		IMUserMessage{UserID: userID, Text: "continue", Platform: "desktop"},
+		"deploy from form",
+		NewLoopContext("template-remote-coding-test", 1, nil),
+		"req-template-remote-coding-test",
+		nil,
+		nil,
+	)
+
+	if !handled || resp == nil {
+		t.Fatalf("pending remote template should be consumed, handled=%v resp=%#v", handled, resp)
+	}
+	if capturedTask != "deploy from form" || capturedRemote != remoteCtx {
+		t.Fatalf("remote template runner received task=%q remote=%#v", capturedTask, capturedRemote)
+	}
+	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); pending {
+		t.Fatal("pendingV2SubAgentExecution should be cleared after remote template consumption")
+	}
+	if _, pending := handler.pendingTemplateRemoteCoding.Load(userID); pending {
+		t.Fatal("pendingTemplateRemoteCoding should be cleared after remote template consumption")
 	}
 }
 
@@ -2449,6 +2680,82 @@ func TestSchedulePostLoopSideEffectsUsesRuntimeOwnerForV2SyncCapture(t *testing.
 	}
 	if desktopState := handler.app.workflowV2.machine.GetActive(desktopID); desktopState != nil {
 		t.Fatalf("message user workflow must not be created or captured, got %#v", desktopState)
+	}
+}
+
+func TestSchedulePostLoopSideEffectsPreservesRemoteSubAgentTriggerHint(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowV2 = buildWorkflowV2State(v2.NewMemoryStore())
+
+	userID := "paper-reproduction-remote-trigger"
+	projectPath, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	state, err := handler.app.workflowV2.machine.Create(userID, "paper_reproduction", projectPath, "reproduce paper")
+	if err != nil {
+		t.Fatalf("Create v2 workflow failed: %v", err)
+	}
+	for i := range state.Phases {
+		state.Phases[i].Status = v2.PhasePending
+	}
+	state.CurrentPhase = 3 // baseline_reproduction, immediately before iterative_improvement(remote_subagent)
+	state.Phases[0].Status = v2.PhaseCompleted
+	state.Phases[1].Status = v2.PhaseCompleted
+	state.Phases[2].Status = v2.PhaseCompleted
+	state.Phases[3].Status = v2.PhaseRunning
+
+	ctx := &LoopContext{
+		ID:                "paper-reproduction-remote-trigger",
+		WorkflowAgentLoop: true,
+		Runtime:           RuntimeContext{RequestID: "req-paper-reproduction-remote-trigger", PolicyOwnerID: userID},
+	}
+	resp := &IMAgentResponse{Text: "baseline reproduced successfully"}
+
+	handler.schedulePostLoopSideEffects(IMUserMessage{UserID: userID}, ctx, resp, true)
+
+	if !strings.Contains(resp.Text, "回复「开始迭代」启动自动迭代改进循环") {
+		t.Fatalf("visible response should include remote subagent trigger hint, got %q", resp.Text)
+	}
+	updated := handler.app.workflowV2.machine.GetActive(userID)
+	if updated == nil || updated.ActivePhase() == nil || updated.ActivePhase().ID != "iterative_improvement" {
+		t.Fatalf("workflow should advance to remote subagent phase, got %#v", updated)
+	}
+}
+
+func TestSchedulePostLoopSideEffectsSkipsWorkflowDocCaptureForTemplateSubAgentReport(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.app.workflowV2 = buildWorkflowV2State(v2.NewMemoryStore())
+
+	userID := "template-subagent-report-skip-capture"
+	projectPath, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	if _, err := handler.app.workflowV2.machine.Create(userID, "coding", projectPath, "build hello world"); err != nil {
+		t.Fatalf("Create v2 workflow failed: %v", err)
+	}
+	ctx := &LoopContext{
+		ID:                     "template-subagent-report",
+		WorkflowAgentLoop:      true,
+		SkipWorkflowDocCapture: true,
+		Runtime:                RuntimeContext{RequestID: "req-template-subagent-report", PolicyOwnerID: userID},
+	}
+	resp := &IMAgentResponse{Text: "远程编程已完成：创建 /home/test_demo/hello.cpp，编译和运行成功。"}
+
+	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: userID, Text: "开发 hello world c++ 版本"}, ctx, resp, true)
+	if state := handler.app.workflowV2.machine.GetActive(userID); state == nil || state.ActivePhase() == nil || state.ActivePhase().Output != "" {
+		t.Fatalf("direct workflow doc capture must respect template SubAgent skip flag, got %#v", state)
+	}
+
+	handler.schedulePostLoopSideEffects(IMUserMessage{UserID: userID, Text: "开发 hello world c++ 版本"}, ctx, resp, true)
+
+	state := handler.app.workflowV2.machine.GetActive(userID)
+	if state == nil || state.ActivePhase() == nil {
+		t.Fatalf("workflow should remain active, got %#v", state)
+	}
+	if state.ActivePhase().Output != "" {
+		t.Fatalf("template SubAgent terminal report must not be captured as workflow phase output, got %q", state.ActivePhase().Output)
 	}
 }
 

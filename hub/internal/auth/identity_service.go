@@ -88,6 +88,7 @@ type EnrollmentResult struct {
 	Message      string `json:"message,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	Email        string `json:"email,omitempty"`
+	PhoneNumber  string `json:"phone_number,omitempty"`
 	SN           string `json:"sn,omitempty"`
 	MachineID    string `json:"machine_id,omitempty"`
 	MachineToken string `json:"machine_token,omitempty"`
@@ -510,6 +511,14 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 	if result != nil && !strings.EqualFold(user.Email, email) {
 		result.Email = email
+	}
+	if result != nil {
+		phoneNumber, err := s.boundPhoneNumberForUser(ctx, user)
+		if err != nil {
+			log.Printf("[enrollment] lookup bound phone failed for user=%s tenant=%s: %v", user.ID, user.TenantID, err)
+		} else {
+			result.PhoneNumber = phoneNumber
+		}
 	}
 	return result, nil
 }

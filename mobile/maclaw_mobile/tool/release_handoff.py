@@ -190,6 +190,30 @@ def _status_lines(
     return lines
 
 
+def _extract_current_local_evidence_snapshot(text: str) -> str:
+    marker = "## Current Local Evidence Snapshot"
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    next_heading = text.find("\n## ", start + len(marker))
+    if next_heading < 0:
+        return text[start:].strip()
+    return text[start:next_heading].strip()
+
+
+def _with_current_local_evidence_snapshot(output: str, snapshot: str) -> str:
+    snapshot = snapshot.strip()
+    if not snapshot:
+        return output
+    if "## Current Local Evidence Snapshot" in output:
+        return output
+    notes = "\n## Notes"
+    insert_at = output.find(notes)
+    if insert_at < 0:
+        return output.rstrip() + "\n\n" + snapshot + "\n"
+    return output[:insert_at].rstrip() + "\n\n" + snapshot + "\n" + output[insert_at:]
+
+
 def format_handoff(handoff: ReleaseHandoff) -> str:
     record_path = release_evidence_commands.qa_record_path_placeholder(
         scope=handoff.scope,
@@ -275,11 +299,17 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         output=handoff_evidence_path,
         records_dir=handoff.records_dir,
     )
+    preflight_log = release_evidence_commands.preflight_log_path(
+        handoff.version,
+        scope=handoff.scope,
+        records_dir=handoff.records_dir,
+    )
     qa_preflight_command = release_evidence_commands.qa_preflight_command(
         scope=handoff.scope,
         team_id=handoff.team_id if release_evidence_commands.scope_covers_ios(handoff.scope) else None,
         export_method=handoff.export_method if release_evidence_commands.scope_covers_ios(handoff.scope) else None,
         records_dir=handoff.records_dir,
+        log=preflight_log,
     )
     android_build_dry_run_command = release_evidence_commands.android_release_build_command(
         handoff.version,
@@ -367,6 +397,12 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
             "`setup_ios_export_options.py`, `plan_ios_release.py`, or "
             "`signed_artifact_evidence.py`.",
         )
+        placeholder_notes.append(
+            "- PowerShell treats unquoted `<...>` placeholders as redirection syntax, "
+            "so replace all angle-bracket placeholders with real values before copying "
+            "commands there; for dry-run previews with placeholders, wrap placeholder "
+            "arguments in quotes.",
+        )
 
     lines = [
         "# MaClaw Mobile Release Handoff",
@@ -390,8 +426,8 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         *platform_inputs,
         "- Signed "
         + "/".join(device_targets)
-        + " test devices with camera, microphone, photo library, file share, notification, SSH, and weak-network coverage.",
-        "- Official MaClaw account, Hub tenant access, desktop QR source for third-party LLM access when required, and a safe SSH smoke target.",
+        + " test devices with camera, microphone, photo library, file share, notification, GUI-equivalent backend SSH session management smoke, and weak-network coverage.",
+        "- Official MaClaw account, Hub tenant access, desktop QR source for third-party LLM access when required, and a traceable GUI/agent-managed backend SSH session smoke target using the same GUI/agent-bound backend_session_id.",
         "",
         "## Command Sequence",
         "",
@@ -419,7 +455,12 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         "- HubCenter discovery result, discovered Hub URL, tenant, LLM access mode, and mobile bootstrap result.",
         "- AI assistant answer with citations, voice query, image/screenshot query, and share-to-app payload results.",
         "- Document import, AI transform, export/share, and notification evidence.",
-        "- SSH login, read-only command output, reconnect, copied log, AI analysis, and credential deletion evidence.",
+        "- GUI-equivalent backend-managed SSH session evidence: login/session using the same GUI/agent-bound backend_session_id, "
+        "GUI/agent claim or worker handoff with explicit worker claim/update evidence, "
+        "`ssh_session` realtime events with `output_chunk` and `output_seq`, "
+        "not phone-local/ad hoc terminal evidence, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, read-only command output, reconnect, "
+        "copied backend session output, AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id when used, "
+        "and phone-side server-profile cache clear evidence.",
         "- Digital employee list, remote target invocation, completion/failure result, and notification evidence.",
         "- Weak-network/offline recovery evidence with timestamps.",
         "",
@@ -468,6 +509,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite an existing handoff output file.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the generated handoff without writing --output.",
+    )
     args = parser.parse_args(argv)
     if release_evidence_commands.scope_covers_ios(args.scope) and not args.team_id:
         args.team_id = release_evidence_commands.DEFAULT_TEAM_ID
@@ -481,6 +527,13 @@ def main(argv: list[str] | None = None) -> int:
         records_dir=args.records_dir,
     )
     output = format_handoff(handoff)
+    if args.output and args.output.exists():
+        output = _with_current_local_evidence_snapshot(
+            output,
+            _extract_current_local_evidence_snapshot(
+                args.output.read_text(encoding="utf-8"),
+            ),
+        )
     if args.output:
         output_errors = validate_output_path(
             args.root.resolve(),
@@ -492,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
             for error in output_errors:
                 print(f"- {error}", file=sys.stderr)
             return 1
+    if args.output and not args.dry_run:
         if args.output.exists() and not args.force:
             print(
                 f"Release handoff output already exists: {args.output}; pass --force to overwrite.",
