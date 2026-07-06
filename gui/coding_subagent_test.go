@@ -25,7 +25,7 @@ import (
 func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
 	var nilAgent *CodingSubAgent
 	result := nilAgent.ExecuteTask(&TaskItem{Index: 1, Title: "Task"}, "", "", nil)
-	if result.Status != TaskExecFailed || result.Error == "" || !strings.Contains(result.Summary, "任务执行失败") || result.QualityStatus != codingSubAgentQualityFailed || result.QualityIssueCount != 1 {
+	if result.Status != TaskExecFailed || result.Error == "" || !strings.Contains(result.Summary, "任务运行错误") || result.QualityStatus != codingSubAgentQualityFailed || result.QualityIssueCount != 1 {
 		t.Fatalf("nil subagent should return complete failed result, got %#v", result)
 	}
 	if !strings.Contains(result.Summary, "## 质量审计") || strings.Count(result.Summary, "## 质量审计") != 1 {
@@ -5372,7 +5372,7 @@ func TestFallbackSubAgentTaskSummaryReflectsStatus(t *testing.T) {
 		t.Fatalf("passed fallback summary should report completion, got %q", passed)
 	}
 	failed := fallbackSubAgentTaskSummary(TaskExecFailed, task, 5, 6)
-	if !strings.Contains(failed, "任务执行失败 T2") || strings.Contains(failed, "执行完成") {
+	if !strings.Contains(failed, "任务运行错误 T2") || strings.Contains(failed, "执行完成") {
 		t.Fatalf("failed fallback summary should not claim completion, got %q", failed)
 	}
 	skipped := fallbackSubAgentTaskSummary(TaskExecSkipped, task, 1, 0)
@@ -5381,7 +5381,7 @@ func TestFallbackSubAgentTaskSummaryReflectsStatus(t *testing.T) {
 	}
 
 	rebased := rebaseFallbackSubAgentTaskSummary(passed+"\n\n## 验证状态\n\nmissing", TaskExecFailed, task, 3, 4)
-	if !strings.Contains(rebased, "任务执行失败 T2") || strings.Contains(rebased, "任务执行完成") || !strings.Contains(rebased, "## 验证状态") {
+	if !strings.Contains(rebased, "任务运行错误 T2") || strings.Contains(rebased, "任务执行完成") || !strings.Contains(rebased, "## 验证状态") {
 		t.Fatalf("rebased fallback summary should reflect final failure and preserve sections, got %q", rebased)
 	}
 }
@@ -6058,7 +6058,7 @@ func TestCompactFailedVerificationCommandResultsPrefersDiagnosticsOverExitStatus
 	if strings.Contains(summary, "go test ./pkg/01") || strings.Contains(summary, "go test ./pkg/02") {
 		t.Fatalf("summary should omit older exit-status-only failures when capped, got %q", summary)
 	}
-	if !strings.Contains(summary, "还有 2 条失败命令未展开") {
+	if !strings.Contains(summary, "还有 2 条未通过命令未展开") {
 		t.Fatalf("summary should report omitted command failures, got %q", summary)
 	}
 }
@@ -8675,7 +8675,7 @@ func TestSummarizeSubAgentVerificationCapsFailedCommands(t *testing.T) {
 	if strings.Contains(summary, "go test ./pkg/06") {
 		t.Fatalf("failed verification summary should be capped, got %q", summary)
 	}
-	if !strings.Contains(summary, "还有 2 条失败命令未展开") {
+	if !strings.Contains(summary, "还有 2 条未通过命令未展开") {
 		t.Fatalf("expected remaining failed command count, got %q", summary)
 	}
 }

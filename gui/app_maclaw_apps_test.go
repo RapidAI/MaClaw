@@ -6623,8 +6623,8 @@ func TestPlanMaclawAppInstallMarksNameBasedRuntimeDependencyInstallable(t *testi
 		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
 	}
 	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
-	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "name_based_lookup" || dep.Action != "install" || dep.Health != "missing" {
-		t.Fatalf("name-based runtime dependency should be installable without a hard blocker: %#v", dep)
+	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "target_resolved" || dep.Action != "install" || dep.Health != "missing" {
+		t.Fatalf("name-based runtime dependency with alias should resolve target and be installable: %#v", dep)
 	}
 	if !plan.HasMissingRequired || plan.HasBlockingDependency {
 		t.Fatalf("name-based runtime dependency should remain missing but not blocking: %#v", plan)

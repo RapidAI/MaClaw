@@ -227,7 +227,7 @@ func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
 	}
 	result := &CodingSubAgentResult{
 		Status:            TaskExecFailed,
-		Summary:           "任务执行失败：" + errMsg,
+		Summary:           "任务运行错误：" + errMsg,
 		Error:             errMsg,
 		QualityStatus:     codingSubAgentQualityFailed,
 		QualitySummary:    errMsg,
@@ -3801,7 +3801,7 @@ func fallbackSubAgentTaskSummary(status TaskExecStatus, task *TaskItem, iteratio
 	prefix := "任务"
 	switch status {
 	case TaskExecFailed:
-		prefix = "任务执行失败"
+		prefix = "任务运行错误"
 	case TaskExecSkipped:
 		prefix = "任务已跳过"
 	default:
@@ -6598,9 +6598,9 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 	}
 	if len(failed) > 0 {
 		if len(failed) == 1 {
-			return codingSubAgentQualityFailed, fmt.Sprintf("有 1 条验证命令失败：%s", compactFailedVerificationCommandResults(failed))
+			return codingSubAgentQualityFailed, fmt.Sprintf("有 1 条验证命令未通过：%s", compactFailedVerificationCommandResults(failed))
 		}
-		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommandResults(failed))
+		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令未通过：%s", len(failed), compactFailedVerificationCommandResults(failed))
 	}
 	var empty []CodingSubAgentCommandResult
 	for _, cmd := range verificationCommands {
@@ -6620,7 +6620,7 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 			successful = append(successful, cmd)
 		}
 	}
-	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条有效 bash 验证命令，未检测到未解决失败：%s", len(successful), compactSubAgentVerificationCommandList(successful))
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条有效 bash 验证命令，未检测到未解决错误：%s", len(successful), compactSubAgentVerificationCommandList(successful))
 }
 
 func compactSubAgentVerificationCommandList(commands []CodingSubAgentCommandResult) string {
@@ -8928,7 +8928,7 @@ func compactFailedVerificationCommands(commands []string) string {
 		parts = append(parts, truncateRunesForSubAgent(command, 160))
 	}
 	if remaining := len(commands) - shown; remaining > 0 {
-		parts = append(parts, fmt.Sprintf("还有 %d 条失败命令未展开", remaining))
+		parts = append(parts, fmt.Sprintf("还有 %d 条未通过命令未展开", remaining))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -8945,7 +8945,7 @@ func compactFailedVerificationCommandResults(commands []CodingSubAgentCommandRes
 		parts = append(parts, text)
 	}
 	if remaining := len(commands) - len(entries); remaining > 0 {
-		parts = append(parts, fmt.Sprintf("还有 %d 条失败命令未展开", remaining))
+		parts = append(parts, fmt.Sprintf("还有 %d 条未通过命令未展开", remaining))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -9152,7 +9152,7 @@ func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg string, veri
 	switch verificationStatus {
 	case codingSubAgentQualityFailed:
 		if strings.TrimSpace(verificationSummary) == "" {
-			verificationSummary = "验证命令失败"
+			verificationSummary = "验证命令未通过"
 		}
 		return TaskExecFailed, compactSubAgentErrorSummary(verificationSummary)
 	case codingSubAgentQualityMissing:

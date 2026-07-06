@@ -53,7 +53,7 @@ describe('CodingAgentCompactStatus', () => {
         expect(status.textContent).toContain('Apply patch');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
-        expect(status.getAttribute('aria-label')).toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u5931\u8d25 | T4 | Apply patch');
+        expect(status.getAttribute('aria-label')).toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u8fd0\u884c\u9519\u8bef | T4 | Apply patch');
         expect(status.getAttribute('data-active')).toBe('false');
         expect(status.getAttribute('data-phase')).toBe('failed');
         expect(status.getAttribute('data-terminal')).toBe('true');

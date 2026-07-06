@@ -1444,7 +1444,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			}
 		}
 		stepCopy = withSkillPreferredShell(stepCopy, preparedEntry.PreferredShell)
-		resolvedStep, resolveErr := resolveSkillStep(stepCopy, vars, preparedEntry.SkillDir, prep.Params)
+		resolvedStep, _, resolveErr := resolveSkillStep(stepCopy, vars, preparedEntry.SkillDir, prep.Params)
 		if resolveErr != nil {
 			hasFailure = true
 			errMsg := fmt.Sprintf("step %d (%s) parameter binding failed: %s", i+1, step.Action, resolveErr.Error())
@@ -4428,6 +4428,18 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 		return "", fmt.Errorf("skill runner not initialized")
 	}
 	runID, err := a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		// Auto-install fallback: when an app-initiated skill run fails because
+		// the dependency skill was never installed, attempt to install it from
+		// the hub/skillmarket before giving up.
+		if installed := a.tryAutoInstallAppDependencySkill(skillName); installed {
+			log.Printf("[skill-app] RunNLSkillAsync auto-installed dependency %q, retrying", skillName)
+			runID, err = a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
+		} else {
+			// Replace the cryptic "not found" error with an actionable message.
+			err = fmt.Errorf("应用依赖的 Skill「%s」未安装且自动安装失败。请在应用详情页点击「安装依赖」或检查网络连接后重试", skillName)
+		}
+	}
 	if err != nil {
 		log.Printf("[skill-app] RunNLSkillAsync FAILED skill=%q err=%v", skillName, err)
 		// Detailed diagnostic for AI tools: log the full runArgs values (not just keys)
@@ -4463,6 +4475,70 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	}
 	log.Printf("[skill-app] RunNLSkillAsync OK skill=%q run_id=%s", skillName, runID)
 	return runID, nil
+}
+
+// tryAutoInstallAppDependencySkill attempts to install a missing skill dependency
+// that an app requires. It uses the dependency alias registry to resolve the
+// skill name to an installable hub target, then installs via the configured
+// source hierarchy. Returns true if the skill was successfully installed.
+//
+// This is a best-effort fallback for when the normal dependency installation
+// (via InstallMaclawAppDependencies called by the frontend) was never triggered
+// or failed silently. The primary fix is in maclawAppImplicitHubSkillResolution
+// which now correctly resolves source="local" dependencies.
+func (a *App) tryAutoInstallAppDependencySkill(skillName string) bool {
+	if a == nil {
+		return false
+	}
+	// Build a synthetic dependency entry to leverage the existing alias resolution.
+	// Use empty source to match the broadest set of alias registry entries.
+	dep := maclawAppInstallPlanDependency{
+		ID:   skillName,
+		Kind: "runtime_skill",
+	}
+	resolved, ok := maclawAppImplicitHubSkillResolution(dep)
+	if !ok {
+		log.Printf("[skill-app] auto-install: no alias resolution for %q", skillName)
+		return false
+	}
+	target := resolved.Target
+	if target == "" {
+		target = skillName
+	}
+	log.Printf("[skill-app] auto-install: attempting to install %q (resolved target=%q)", skillName, target)
+
+	// Try sources in priority order: enterprise hub → skillmarket → hub.
+	// Enterprise hub is tried first because enterprise-only policies reject
+	// other sources. Skip sources that are clearly unavailable.
+	type installAttempt struct {
+		source string
+		label  string
+	}
+	attempts := []installAttempt{
+		{"skillmarket", "SkillMarket"},
+		{"hub", "SkillHub"},
+	}
+	// Prepend enterprise hub if configured AND connected.
+	// Skip if hub is not connected to avoid 45s timeout on unreachable enterprise hub.
+	if cfg, err := a.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteHubURL) != "" {
+		if hc := a.hubClient(); hc != nil && hc.IsConnected() {
+			attempts = append([]installAttempt{{"enterprise_hub", "Enterprise Hub"}}, attempts...)
+		}
+	}
+
+	for _, attempt := range attempts {
+		if err := a.InstallMixedSkill(attempt.source, target, target); err != nil {
+			log.Printf("[skill-app] auto-install: %s install failed for %q: %v", attempt.label, target, err)
+			continue
+		}
+		log.Printf("[skill-app] auto-install: successfully installed %q from %s", target, attempt.label)
+		// Invalidate skill cache so the next loadSkills() picks up the new skill.
+		if a.skillExecutor != nil {
+			a.skillExecutor.invalidateSkillCache()
+		}
+		return true
+	}
+	return false
 }
 
 func markMaclawAppSkillRunArgs(runArgs map[string]interface{}) map[string]interface{} {
@@ -4892,9 +4968,6 @@ func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) e
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to package link: %s", path)
-		}
 		rel, err := filepath.Rel(srcAbs, path)
 		if err != nil {
 			return err
@@ -4912,6 +4985,37 @@ func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) e
 		target := filepath.Join(dstAbs, rel)
 		if !pathWithinDir(dstAbs, target) {
 			return fmt.Errorf("illegal copy target: %s", target)
+		}
+		// Handle symlinks: dereference and copy the target content instead of
+		// rejecting. npm's node_modules/.bin/ uses symlinks extensively; refusing
+		// them would make workspace isolation fail for all npm-based skills.
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil {
+				// Broken symlink — skip silently (non-critical).
+				return nil
+			}
+			// Security: resolved target must be within the source tree.
+			if !pathWithinDir(srcAbs, resolved) {
+				// Symlink points outside the skill dir — skip for safety.
+				return nil
+			}
+			resolvedInfo, statErr := os.Stat(resolved)
+			if statErr != nil {
+				return nil
+			}
+			if resolvedInfo.IsDir() {
+				// Symlink to directory: create the directory in target and
+				// let WalkDir traverse it naturally (it won't — WalkDir
+				// doesn't follow dir symlinks). Copy recursively.
+				return copyDirContentsWithOptions(resolved, target, includeRuntimeArtifacts)
+			}
+			// Symlink to file: copy the resolved file content.
+			data, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				return readErr
+			}
+			return os.WriteFile(target, data, resolvedInfo.Mode().Perm())
 		}
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)

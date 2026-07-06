@@ -463,7 +463,7 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(card.textContent).toContain('Blocked (1)');
         expect(screen.getByTestId('sidebar-coding-agent-guardrail').getAttribute('data-guardrail-summary')).toBe('blocked | bash | category:git');
         expect(card.textContent).toContain('Commands');
-        expect(card.textContent).toContain('Failed (2)');
+        expect(card.textContent).toContain('Not Passed (2)');
         expect(screen.getByTestId('sidebar-coding-agent-commands').getAttribute('data-command-summary')).toBe('2 bash commands run, 1 failed: npm test');
         expect(card.textContent).toContain('Activity');
         expect(card.textContent).toContain('Changed (read 2 / modified 1 / created 1)');

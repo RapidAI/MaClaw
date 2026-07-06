@@ -5,7 +5,6 @@ const badgeBaseStyle: CSSProperties = {
     position: 'absolute',
     top: '-8px',
     right: '0px',
-    color: 'white',
     fontSize: '10px',
     padding: '1px 6px',
     borderRadius: '999px',
@@ -34,17 +33,18 @@ export const ToolConfiguration = ({
         return <div style={{ padding: '15px', color: 'var(--theme-text-muted, #6b7280)' }}>{t("loadingConfig")}</div>;
     }
 
-    const getBadge = (model: any): { bg: string; label: string } | null => {
+    const getBadge = (model: any): { bg: string; fg: string; label: string } | null => {
         const name = model.model_name.toLowerCase();
-        if (model.model_name === "Original") return { bg: 'var(--theme-primary, #2f5f98)', label: t("originalFlag") };
-        if (model.has_subscription) return { bg: 'var(--theme-primary-strong, #183b63)', label: t("subscription") };
+        const themed = 'var(--theme-on-primary, #ffffff)';
+        if (model.model_name === "Original") return { bg: 'var(--theme-primary, #2f5f98)', fg: themed, label: t("originalFlag") };
+        if (model.has_subscription) return { bg: 'var(--theme-primary-strong, #183b63)', fg: themed, label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
-            return { bg: 'var(--theme-primary-strong, #183b63)', label: t("monthly") };
-        if (name.includes("deepseek")) return { bg: 'var(--theme-text-muted, #64748b)', label: t("premium") };
-        if (name.includes("xiaomi")) return { bg: 'var(--theme-text-muted, #64748b)', label: t("bigSpender") };
-        if (model.is_custom) return { bg: 'var(--theme-text-muted, #64748b)', label: t("customized") };
+            return { bg: 'var(--theme-primary-strong, #183b63)', fg: themed, label: t("monthly") };
+        if (name.includes("deepseek")) return { bg: '#64748b', fg: '#ffffff', label: t("premium") };
+        if (name.includes("xiaomi")) return { bg: '#64748b', fg: '#ffffff', label: t("bigSpender") };
+        if (model.is_custom) return { bg: '#64748b', fg: '#ffffff', label: t("customized") };
         if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "coderelay"].some(p => name.includes(p)))
-            return { bg: 'var(--theme-success, #4f7f6f)', label: t("forward") };
+            return { bg: 'var(--theme-success, #4f7f6f)', fg: '#ffffff', label: t("forward") };
         return null;
     };
 
@@ -68,12 +68,12 @@ export const ToolConfiguration = ({
                             className={`model-btn ${toolCfg.current_model === model.model_name ? 'selected' : ''}`}
                             onClick={() => handleModelSwitch(model.model_name)}
                             style={{
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '2px solid var(--primary-color)' : '1px solid var(--theme-border)'
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '2px solid var(--theme-primary)' : '1px solid var(--theme-border)'
                             }}
                         >
                             {model.model_name === "Original" ? t("original") : getModelDisplayName(model.model_name, lang)}
                             {badge && (
-                                <span style={{ ...badgeBaseStyle, backgroundColor: badge.bg }}>
+                                <span style={{ ...badgeBaseStyle, backgroundColor: badge.bg, color: badge.fg }}>
                                     {badge.label}
                                 </span>
                             )}

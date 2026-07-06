@@ -99,7 +99,7 @@ const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh
     starting: { en: "Starting", zh: "\u542f\u52a8\u4e2d" },
     running: { en: "Running", zh: "\u6267\u884c\u4e2d" },
     completed: { en: "Completed", zh: "\u5df2\u5b8c\u6210" },
-    failed: { en: "Failed", zh: "\u5931\u8d25" },
+    failed: { en: "Run Error", zh: "\u8fd0\u884c\u9519\u8bef" },
     retrying: { en: "Retrying", zh: "\u91cd\u8bd5\u4e2d" },
     skipped: { en: "Skipped", zh: "\u5df2\u8df3\u8fc7" },
     result: { en: "Result", zh: "\u7ed3\u679c" },
@@ -626,14 +626,14 @@ export function codingAgentToolOutcomeLabel(outcome: string | undefined, lang: s
     if (lang.startsWith("zh")) {
         switch (normalized) {
             case "success": return "\u6210\u529f";
-            case "failed": return "\u5931\u8d25";
+            case "failed": return "\u8fd0\u884c\u9519\u8bef";
             case "blocked": return "\u5df2\u963b\u65ad";
             default: return "\u672a\u77e5";
         }
     }
     switch (normalized) {
         case "success": return "Success";
-        case "failed": return "Failed";
+        case "failed": return "Run Error";
         case "blocked": return "Blocked";
         default: return "Unknown";
     }
@@ -733,14 +733,14 @@ export function codingAgentCommandStatusLabel(status: string | undefined, lang: 
     if (lang.startsWith("zh")) {
         switch (normalized) {
             case "passed": return "\u5df2\u901a\u8fc7";
-            case "failed": return "\u5931\u8d25";
+            case "failed": return "\u672a\u901a\u8fc7";
             case "none": return "\u672a\u8fd0\u884c";
             default: return "\u672a\u77e5";
         }
     }
     switch (normalized) {
         case "passed": return "Passed";
-        case "failed": return "Failed";
+        case "failed": return "Not Passed";
         case "none": return "None";
         default: return "Unknown";
     }
@@ -806,14 +806,14 @@ export function codingAgentQualityStatusLabel(status: string | undefined, lang: 
         switch (normalized) {
             case "passed": return "\u5df2\u901a\u8fc7";
             case "warning": return "\u8b66\u544a";
-            case "failed": return "\u5931\u8d25";
+            case "failed": return "\u672a\u901a\u8fc7";
             default: return "\u672a\u77e5";
         }
     }
     switch (normalized) {
         case "passed": return "Passed";
         case "warning": return "Warning";
-        case "failed": return "Failed";
+        case "failed": return "Not Passed";
         default: return "Unknown";
     }
 }
@@ -879,7 +879,7 @@ export function codingAgentVerificationStatusLabel(status: string | undefined, l
     if (lang.startsWith("zh")) {
         switch (normalized) {
             case "passed": return "\u5df2\u901a\u8fc7";
-            case "failed": return "\u5931\u8d25";
+            case "failed": return "\u672a\u901a\u8fc7";
             case "missing": return "\u672a\u8fd0\u884c";
             case "not_needed": return "\u4e0d\u9700\u8981";
             default: return "\u672a\u77e5";
@@ -887,7 +887,7 @@ export function codingAgentVerificationStatusLabel(status: string | undefined, l
     }
     switch (normalized) {
         case "passed": return "Passed";
-        case "failed": return "Failed";
+        case "failed": return "Not Passed";
         case "missing": return "Not run";
         case "not_needed": return "Not needed";
         default: return "Unknown";

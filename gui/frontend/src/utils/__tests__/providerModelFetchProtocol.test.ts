@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { inferProviderModelFetchProtocol } from '../providerModelFetchProtocol';
 
 describe('inferProviderModelFetchProtocol', () => {
-    it('uses Anthropic for Claude regardless of endpoint', () => {
+    it('uses Anthropic for Claude with non-CodeGen endpoints', () => {
         expect(inferProviderModelFetchProtocol('claude', 'https://api.example.com/v1')).toBe('anthropic');
+        expect(inferProviderModelFetchProtocol('claude', 'https://api.anthropic.com')).toBe('anthropic');
+    });
+
+    it('uses OpenAI for Claude with CodeGen endpoint (hybrid gateway)', () => {
+        expect(inferProviderModelFetchProtocol('claude', 'https://codegen.qianxin-inc.cn/api')).toBe('openai');
+        expect(inferProviderModelFetchProtocol('claude', 'https://codegen.qianxin-inc.cn/api/v1')).toBe('openai');
     });
 
     it('uses OpenAI for ordinary OpenAI-compatible endpoints', () => {

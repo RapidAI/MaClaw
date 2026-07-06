@@ -2479,6 +2479,12 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
 
+	maskedKey := "***"
+	if len(apiKey) > 8 {
+		maskedKey = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
+	}
+	log.Printf("[FetchProviderModels] start: url=%q protocol=%q userAgent=%q keyLen=%d key=%s", baseURL, protocol, userAgent, len(apiKey), maskedKey)
+
 	if baseURL == "" {
 		return nil, fmt.Errorf("API 地址为空，请先填写 API Endpoint")
 	}
@@ -2486,8 +2492,19 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
 	}
 
+	// Model discovery protocol override for hybrid gateways. CodeGen speaks
+	// Anthropic wire protocol for chat (/v1/messages) but its /v1/models
+	// endpoint only accepts OpenAI-style Bearer token auth. The Anthropic SDK
+	// sends x-api-key + anthropic-version headers which CodeGen rejects (400).
+	// Override to OpenAI so doFetchModelsRequest uses Authorization: Bearer.
+	if strings.EqualFold(protocol, "anthropic") && corelib.IsCodeGenURL(baseURL) {
+		log.Printf("[FetchProviderModels] protocol override: %q -> \"openai\" (CodeGen hybrid gateway)", protocol)
+		protocol = "openai"
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	if strings.EqualFold(protocol, "anthropic") {
+		log.Printf("[FetchProviderModels] using Anthropic SDK for model listing")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		models, err := llm.ListAnthropicModelsWithSDK(ctx, corelib.MaclawLLMConfig{
@@ -2497,6 +2514,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 			AgentType: userAgent,
 		}, client)
 		if err != nil {
+			log.Printf("[FetchProviderModels] Anthropic SDK error: %v", err)
 			return nil, fmt.Errorf("fetch anthropic models with sdk: %w", err)
 		}
 		items := make([]ProviderModelItem, 0, len(models))
@@ -2508,6 +2526,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
 		}
 		if len(items) == 0 {
+			log.Printf("[FetchProviderModels] Anthropic SDK returned empty model list")
 			return nil, fmt.Errorf("anthropic sdk returned empty model list")
 		}
 		if sortModels {
@@ -2515,39 +2534,49 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 				return items[i].ID < items[j].ID
 			})
 		}
+		log.Printf("[FetchProviderModels] success via Anthropic SDK: %d models", len(items))
 		return items, nil
 	}
 
 	candidates := openAIModelsEndpointCandidates(normalizeOpenAIProbeBaseURL(baseURL, userAgent), protocol)
+	log.Printf("[FetchProviderModels] using OpenAI protocol, endpoint candidates: %v", candidates)
 
 	var resp *http.Response
 	var err error
 	for _, endpoint := range candidates {
+		log.Printf("[FetchProviderModels] trying endpoint: %s", endpoint)
 		r, e := a.doFetchModelsRequest(client, endpoint, apiKey, protocol, userAgent)
 		if e != nil {
+			log.Printf("[FetchProviderModels] endpoint %s failed: %v", endpoint, e)
 			err = e
 			continue
 		}
 		if r.StatusCode == http.StatusNotFound {
+			log.Printf("[FetchProviderModels] endpoint %s returned 404, trying next", endpoint)
 			r.Body.Close()
 			continue
 		}
+		log.Printf("[FetchProviderModels] endpoint %s returned HTTP %d", endpoint, r.StatusCode)
 		resp = r
 		break
 	}
 	if resp == nil {
 		if err != nil {
+			log.Printf("[FetchProviderModels] all endpoints failed, last error: %v", err)
 			return nil, fmt.Errorf("获取模型列表失败: %w", err)
 		}
+		log.Printf("[FetchProviderModels] all endpoints returned 404")
 		return nil, fmt.Errorf("服务器返回 HTTP 404: 模型列表端点不存在，请检查 API 地址是否正确")
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		log.Printf("[FetchProviderModels] auth failed: HTTP %d, body=%s", resp.StatusCode, truncateCodeGenStr(string(body), 200))
 		return nil, fmt.Errorf("认证失败 (HTTP %d)，请检查 API Key 是否正确", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[FetchProviderModels] unexpected status: HTTP %d, body=%s", resp.StatusCode, truncateCodeGenStr(string(body), 200))
 		return nil, fmt.Errorf("服务器返回 HTTP %d: %s", resp.StatusCode, truncateCodeGenStr(string(body), 256))
 	}
 
@@ -2597,6 +2626,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	}
 
 	if len(items) == 0 {
+		log.Printf("[FetchProviderModels] parsed response but got 0 models, bodyLen=%d", len(body))
 		return nil, fmt.Errorf("服务商返回了空的模型列表")
 	}
 
@@ -2607,6 +2637,14 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		})
 	}
 
+	modelIDs := make([]string, 0, min(len(items), 5))
+	for i, item := range items {
+		if i >= 5 {
+			break
+		}
+		modelIDs = append(modelIDs, item.ID)
+	}
+	log.Printf("[FetchProviderModels] success: %d models, first5=%v", len(items), modelIDs)
 	return items, nil
 }
 

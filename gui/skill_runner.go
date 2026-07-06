@@ -177,6 +177,12 @@ type SkillRunner struct {
 	// Entries are consumed (deleted) after being injected into the prompt.
 	recentRepairs sync.Map
 
+	// repairingSkills tracks skill names currently undergoing self-repair.
+	// StartRunForOwner checks this before starting a new run to prevent
+	// executing a skill whose definition is being actively modified by the
+	// repair goroutine. Key: skill name (string), Value: time.Time (start).
+	repairingSkills sync.Map
+
 	// prepProgressByOwner stores per-owner progress callbacks for reporting
 	// dependency installation during PrepareRunnerExecution. Set by toolRunSkill
 	// before calling StartRunForOwner, cleared after. Using sync.Map (keyed by
@@ -492,6 +498,20 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
 	}
 
+	// Guard: reject runs for skills currently undergoing self-repair.
+	// The repair goroutine modifies skill steps and persists to disk; running
+	// a skill during repair may execute partially-updated definitions or
+	// conflict with the repair's sandbox verification.
+	if startedAt, repairing := r.repairingSkills.Load(target.Name); repairing {
+		repairStart, _ := startedAt.(time.Time)
+		if time.Since(repairStart) < 5*time.Minute {
+			return "", fmt.Errorf("skill %q is currently being auto-repaired (started %s ago). Please retry in a moment [action: retry]",
+				skillName, time.Since(repairStart).Round(time.Second))
+		}
+		// Stale repair marker (>5 min) — the repair goroutine likely crashed
+		// or timed out. Clear it and proceed.
+		r.repairingSkills.Delete(target.Name)
+	}
 	// Migrate legacy .cceasy paths to .maclaw ? crafted skills from older
 	// versions may reference scripts in the old directory structure.
 	migrateLegacyCceasyPaths(target)
@@ -1371,16 +1391,16 @@ func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]str
 	return result
 }
 
-func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, error) {
+func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, []string, error) {
 	// Delegate to the shared corelib ResolveStep, passing the GUI's
 	// platform-aware quoteSkillInputForShell as the quoting function.
 	// This ensures alias resolution, CLI args, craft_tool injection,
 	// and working_dir resolution all use the single shared code path.
 	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForStep(step))
 	if err != nil {
-		return step, err
+		return step, nil, err
 	}
-	return result.Step, nil
+	return result.Step, result.BindResult.Warnings, nil
 }
 
 func withSkillPreferredShell(step corelib.NLSkillStep, preferredShell string) corelib.NLSkillStep {
@@ -1760,9 +1780,27 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 		return
 	}
 
-	// Collect stdout from the last successful step. For multi-step skills,
-	// intermediate steps typically output progress/setup info, while only the
-	// final step produces the actual result content.
+	// Strategy 1: Scan ALL successful steps for JSON output containing a file
+	// path matching the expected extension. Multi-step skills often produce the
+	// artifact in an intermediate step (e.g. step 1 generates the file, step 2
+	// logs a confirmation message). Scanning only the last step would miss it.
+	expectedExt := filepath.Ext(expectedOutput)
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if step.LifecycleStatus() != skillStepStatusSuccess {
+			continue
+		}
+		output := strings.TrimSpace(step.Output)
+		if output == "" {
+			continue
+		}
+		if r.materializeArtifactFileFromStepOutput(expectedOutput, output) {
+			return
+		}
+	}
+
+	// Strategy 2: Fall back to last successful step's text content for
+	// stdout-only skills (e.g. OCR output → .txt file).
 	var content string
 	for i := len(steps) - 1; i >= 0; i-- {
 		step := steps[i]
@@ -1783,9 +1821,6 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 		return
 	}
 
-	if r.materializeArtifactFileFromStepOutput(expectedOutput, content) {
-		return
-	}
 	if !canMaterializePlainStdoutToOutput(expectedOutput) {
 		log.Printf("[skill-runner] materialize stdout: skip plain stdout for non-text expected output path=%q", expectedOutput)
 		return
@@ -1795,7 +1830,7 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 	// like a JSON response with a "text" field, extract the text value.
 	// This handles OCR-type skills that output structured JSON to stdout while
 	// the user selected "TXT" output format expecting readable text.
-	if strings.ToLower(filepath.Ext(expectedOutput)) == ".txt" {
+	if strings.ToLower(expectedExt) == ".txt" {
 		if extracted := extractTextFieldFromJSON(content); extracted != "" {
 			content = extracted
 		}
@@ -2803,7 +2838,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		r.mu.Unlock()
 
 		step = withSkillPreferredShell(step, skill.PreferredShell)
-		resolvedStep, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
+		resolvedStep, bindWarnings, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
+		if len(bindWarnings) > 0 {
+			r.mu.Lock()
+			run.status.Warnings = append(run.status.Warnings, bindWarnings...)
+			r.mu.Unlock()
+		}
 		if resolveErr != nil {
 			r.mu.Lock()
 			run.status.Steps[i].Status = skillStepStatusFailed
@@ -3213,7 +3253,9 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 // markSelfRepairPending sets SelfRepairPending=true on the most recent run
 // for the given skill name. This tells the LLM (via appendSkillRunSummary)
 // that a repair is in progress and it should wait before retrying.
+// Also sets repairingSkills marker to block new StartRunForOwner calls.
 func (r *SkillRunner) markSelfRepairPending(skillName string) {
+	r.repairingSkills.Store(skillName, time.Now())
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, run := range r.runs {
@@ -3233,9 +3275,12 @@ func (r *SkillRunner) canStartRepairSkill(entry *corelib.NLSkillEntry) bool {
 // method runs in a goroutine and must not hold any locks.
 func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	if !cskill.ShouldAttemptRepair(entry) {
+		r.repairingSkills.Delete(entry.Name)
 		return
 	}
-
+	// Ensure the repair marker is cleared when this goroutine exits,
+	// regardless of success/failure/panic.
+	defer r.repairingSkills.Delete(entry.Name)
 	repairer := r.buildSkillRepairer()
 	if repairer == nil {
 		return

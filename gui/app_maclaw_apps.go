@@ -8346,9 +8346,12 @@ func maclawAppDependencySupportsHubCenterLookup(dep maclawAppInstallPlanDependen
 		return false
 	}
 	source := strings.ToLower(strings.TrimSpace(dep.Source))
+	if !maclawAppSourceAllowsImplicitHubResolution(source) {
+		return false
+	}
+	// HubCenter lookup only applies to hub-type sources, not market sources.
 	switch source {
-	case "", "hub", "skillhub":
-	default:
+	case "market", "skillmarket", "hubcenter":
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(dep.InstallRefStatus))
@@ -8772,21 +8775,21 @@ var maclawAppDependencyAliasRegistry = []maclawAppDependencyAliasRegistryEntry{
 		Target:     "rapidocr",
 		Aliases:    []string{"RapidOCR", "rapidocr-runtime"},
 		LocalNames: []string{"rapidocr-runtime"},
-		Sources:    []string{"", "hub", "skillhub"},
+		Sources:    []string{"", "hub", "skillhub", "local"},
 		Kinds:      []string{"", "runtime_skill", "app_skill", "skill"},
 	},
 	{
 		Target:     "paper_pdf_translator",
 		Aliases:    []string{"paper-pdf-translator", "pdf-paper-translator", "pdf_paper_translator"},
 		LocalNames: []string{"paper_pdf_translator", "paper-pdf-translator", "pdf-paper-translator"},
-		Sources:    []string{"", "hub", "skillhub", "market", "skillmarket", "hubcenter"},
+		Sources:    []string{"", "hub", "skillhub", "market", "skillmarket", "hubcenter", "local"},
 		Kinds:      []string{"", "runtime_skill", "app_skill", "skill", "tool_skill"},
 	},
 }
 
 func maclawAppImplicitHubSkillResolution(dep maclawAppInstallPlanDependency) (maclawAppDependencyImplicitResolution, bool) {
 	source := strings.ToLower(strings.TrimSpace(dep.Source))
-	if source != "" && source != "hub" && source != "skillhub" && source != "market" && source != "skillmarket" && source != "hubcenter" {
+	if source != "" && !maclawAppSourceAllowsImplicitHubResolution(source) {
 		return maclawAppDependencyImplicitResolution{}, false
 	}
 	kind := strings.ToLower(strings.TrimSpace(dep.Kind))
@@ -9846,6 +9849,21 @@ func maclawAppInstallSkillSource(source string) (string, bool) {
 		return "", false
 	}
 }
+
+// maclawAppSourceAllowsImplicitHubResolution reports whether a dependency source
+// value allows the alias registry and implicit hub target resolution to resolve
+// the dependency name to an installable target. This is the single source of
+// truth for the source whitelist used by maclawAppImplicitHubSkillResolution,
+// maclawAppDependencySupportsHubCenterLookup, and the alias registry Sources.
+func maclawAppSourceAllowsImplicitHubResolution(source string) bool {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "local", "hub", "skillhub", "market", "skillmarket", "hubcenter":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeMaclawAppKind(kind string) string {
 	kind = strings.TrimSpace(kind)
 	if kind == "enterprise_app" {

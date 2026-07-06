@@ -324,7 +324,7 @@ describe('CodingAgentProgressStatus', () => {
     it('normalizes coding-agent quality labels and tones', () => {
         expect(codingAgentQualityStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentQualityStatusLabel('warning', 'en')).toBe('Warning');
-        expect(codingAgentQualityStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
+        expect(codingAgentQualityStatusLabel('failed', 'zh-Hans')).toBe('\u672a\u901a\u8fc7');
         expect(codingAgentQualityStatusTone('passed').accent).toBe('#4f7f6f');
         expect(codingAgentQualityStatusTone('warning').accent).toBe('#64748b');
         expect(codingAgentQualityStatusTone('failed').accent).toBe('#c43d34');
@@ -341,7 +341,7 @@ describe('CodingAgentProgressStatus', () => {
     it('normalizes coding-agent verification labels and tones', () => {
         expect(codingAgentVerificationStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentVerificationStatusLabel('missing', 'en')).toBe('Not run');
-        expect(codingAgentVerificationStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
+        expect(codingAgentVerificationStatusLabel('failed', 'zh-Hans')).toBe('\u672a\u901a\u8fc7');
         expect(codingAgentVerificationStatusTone('failed').accent).toBe('#c43d34');
         expect(codingAgentVerificationStatusTone('missing').accent).toBe('#64748b');
     });
@@ -356,7 +356,7 @@ describe('CodingAgentProgressStatus', () => {
 
     it('normalizes coding-agent tool outcome labels and tones', () => {
         expect(codingAgentToolOutcomeLabel('success', 'en')).toBe('Success');
-        expect(codingAgentToolOutcomeLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
+        expect(codingAgentToolOutcomeLabel('failed', 'zh-Hans')).toBe('\u8fd0\u884c\u9519\u8bef');
         expect(codingAgentToolOutcomeLabel('blocked', 'zh-Hans')).toBe('\u5df2\u963b\u65ad');
         expect(codingAgentToolOutcomeLabel('other', 'en')).toBe('Unknown');
         expect(codingAgentToolOutcomeTone('success').accent).toBe('#4f7f6f');
@@ -611,8 +611,8 @@ describe('CodingAgentProgressStatus', () => {
     });
 
     it('uses localized labels and product-friendly display separators', () => {
-        expect(codingAgentStatusLabel('failed', 'en')).toBe('Failed');
-        expect(codingAgentStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
+        expect(codingAgentStatusLabel('failed', 'en')).toBe('Run Error');
+        expect(codingAgentStatusLabel('failed', 'zh-Hans')).toBe('\u8fd0\u884c\u9519\u8bef');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'en'))
             .toBe('Coding Agent | Running | T2 | Fix stale edit guard');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
