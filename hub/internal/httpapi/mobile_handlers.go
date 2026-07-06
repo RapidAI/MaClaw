@@ -56,6 +56,27 @@ var mobileBackendSSHSessions = struct {
 	sessions: make(map[string]mobileBackendSSHSessionRecord),
 }
 
+var mobileBackendSSHTasks = struct {
+	sync.Mutex
+	tasks map[string]mobileBackendSSHTaskRecord
+}{
+	tasks: make(map[string]mobileBackendSSHTaskRecord),
+}
+
+var mobileBackendSSHFileOperations = struct {
+	sync.Mutex
+	operations map[string]mobileBackendSSHFileOperationRecord
+}{
+	operations: make(map[string]mobileBackendSSHFileOperationRecord),
+}
+
+var mobileServerProfiles = struct {
+	sync.Mutex
+	profiles map[string]mobileServerProfileRecord
+}{
+	profiles: make(map[string]mobileServerProfileRecord),
+}
+
 var mobileLlmAuthorizations = struct {
 	sync.Mutex
 	authorizations map[string]mobileLlmAuthorizationRecord
@@ -138,18 +159,72 @@ type mobileDigitalEmployeeTaskRecord struct {
 }
 
 type mobileBackendSSHSessionRecord struct {
-	SessionID       string
+	SessionID        string
+	TenantID         string
+	OwnerID          string
+	ServerProfileID  string
+	BackendSessionID string
+	Status           string
+	State            string
+	Message          string
+	RecentOutput     string
+	OutputChunk      string
+	OutputSeq        int64
+	PendingInput     []string
+	ClaimedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type mobileBackendSSHTaskRecord struct {
+	TaskID           string
+	SessionID        string
+	TenantID         string
+	OwnerID          string
+	BackendSessionID string
+	Action           string
+	Command          string
+	Status           string
+	Message          string
+	LogTail          string
+	ExitCode         *int
+	TailLines        int
+	TimeoutSeconds   int
+	ClaimedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type mobileBackendSSHFileOperationRecord struct {
+	OperationID      string
+	SessionID        string
+	TenantID         string
+	OwnerID          string
+	BackendSessionID string
+	Action           string
+	LocalPath        string
+	RemotePath       string
+	Status           string
+	Message          string
+	BytesTransferred int64
+	DownloadURL      string
+	ClaimedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type mobileServerProfileRecord struct {
+	ProfileID       string
 	TenantID        string
 	OwnerID         string
-	ServerProfileID string
-	BackendSessionID string
-	Status          string
-	State           string
-	Message         string
-	RecentOutput    string
-	PendingInput    []string
-	ClaimedBy       string
-	CreatedAt       time.Time
+	SourceMachineID string
+	Name            string
+	Host            string
+	Port            int
+	Username        string
+	AuthMode        string
+	Tag             string
+	Note            string
 	UpdatedAt       time.Time
 }
 
@@ -508,11 +583,11 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 		},
 		"llm_access": llmAccess,
 		"features": map[string]any{
-			"search":             true,
-			"documents":          true,
-			"local_ssh":          true,
-			"digital_employees":  true,
-			"push_notifications": false,
+			"search":               true,
+			"documents":            true,
+			"backend_ssh_sessions": true,
+			"digital_employees":    true,
+			"push_notifications":   false,
 		},
 		"services": map[string]any{
 			"hub_status":               "online",
@@ -1249,7 +1324,8 @@ type mobileDocumentUploadResultRequest struct {
 }
 
 type mobileSSHAnalyzeRequest struct {
-	Output string `json:"output"`
+	Output           string `json:"output"`
+	BackendSessionID string `json:"backend_session_id,omitempty"`
 }
 
 type mobileBackendSSHSessionRequest struct {
@@ -1260,15 +1336,69 @@ type mobileBackendSSHInputRequest struct {
 	Input string `json:"input"`
 }
 
+type mobileBackendSSHTaskRequest struct {
+	Action    string `json:"action"`
+	Command   string `json:"command"`
+	TailLines int    `json:"tail_lines,omitempty"`
+}
+
+type mobileBackendSSHTaskWaitRequest struct {
+	TimeoutSeconds int `json:"timeout,omitempty"`
+	TailLines      int `json:"tail_lines,omitempty"`
+}
+
+type mobileBackendSSHTaskUpdateRequest struct {
+	Status           string `json:"status"`
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+	LogTail          string `json:"log_tail,omitempty"`
+	Output           string `json:"output,omitempty"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	BackendSessionID string `json:"backend_session_id,omitempty"`
+}
+
+type mobileBackendSSHFileOperationRequest struct {
+	Action     string `json:"action"`
+	LocalPath  string `json:"local_path,omitempty"`
+	RemotePath string `json:"remote_path,omitempty"`
+}
+
+type mobileBackendSSHFileOperationUpdateRequest struct {
+	Status           string `json:"status"`
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+	LocalPath        string `json:"local_path,omitempty"`
+	RemotePath       string `json:"remote_path,omitempty"`
+	BytesTransferred int64  `json:"bytes_transferred,omitempty"`
+	DownloadURL      string `json:"download_url,omitempty"`
+	BackendSessionID string `json:"backend_session_id,omitempty"`
+}
+
 type mobileBackendSSHSessionUpdateRequest struct {
-	Status             string `json:"status"`
-	State              string `json:"state,omitempty"`
-	Message            string `json:"message,omitempty"`
-	Error              string `json:"error,omitempty"`
-	RecentOutput       string `json:"recent_output,omitempty"`
-	BackendSessionID   string `json:"backend_session_id,omitempty"`
-	ClearPendingInput  bool   `json:"clear_pending_input,omitempty"`
-	AppliedInputCount  int    `json:"applied_input_count,omitempty"`
+	Status            string `json:"status"`
+	State             string `json:"state,omitempty"`
+	Message           string `json:"message,omitempty"`
+	Error             string `json:"error,omitempty"`
+	RecentOutput      string `json:"recent_output,omitempty"`
+	OutputChunk       string `json:"output_chunk,omitempty"`
+	BackendSessionID  string `json:"backend_session_id,omitempty"`
+	ClearPendingInput bool   `json:"clear_pending_input,omitempty"`
+	AppliedInputCount int    `json:"applied_input_count,omitempty"`
+}
+
+type mobileServerProfileRequest struct {
+	Profiles []mobileServerProfilePayload `json:"profiles"`
+}
+
+type mobileServerProfilePayload struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	AuthMode string `json:"auth_mode"`
+	Tag      string `json:"tag,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 type mobileDigitalEmployeeTaskRequest struct {
@@ -1309,6 +1439,8 @@ func mobileBackendSSHSessionPayload(record mobileBackendSSHSessionRecord) map[st
 		"state":               record.State,
 		"message":             record.Message,
 		"recent_output":       record.RecentOutput,
+		"output_chunk":        record.OutputChunk,
+		"output_seq":          record.OutputSeq,
 		"pending_input_count": len(record.PendingInput),
 		"claimed_by":          record.ClaimedBy,
 		"created_at":          record.CreatedAt.Format(time.RFC3339),
@@ -1325,10 +1457,125 @@ func mobileBackendSSHWorkerSessionPayload(record mobileBackendSSHSessionRecord) 
 	return payload
 }
 
+func mobileBackendSSHTaskPayload(record mobileBackendSSHTaskRecord) map[string]any {
+	payload := map[string]any{
+		"task_id":            record.TaskID,
+		"session_id":         record.SessionID,
+		"backend_session_id": record.BackendSessionID,
+		"action":             record.Action,
+		"command":            record.Command,
+		"status":             record.Status,
+		"message":            record.Message,
+		"log_tail":           record.LogTail,
+		"tail_lines":         record.TailLines,
+		"timeout":            record.TimeoutSeconds,
+		"claimed_by":         record.ClaimedBy,
+		"created_at":         record.CreatedAt.Format(time.RFC3339),
+		"updated_at":         record.UpdatedAt.Format(time.RFC3339),
+	}
+	if record.ExitCode != nil {
+		payload["exit_code"] = *record.ExitCode
+	}
+	return payload
+}
+
+func mobileBackendSSHFileOperationPayload(record mobileBackendSSHFileOperationRecord) map[string]any {
+	return map[string]any{
+		"operation_id":       record.OperationID,
+		"session_id":         record.SessionID,
+		"backend_session_id": record.BackendSessionID,
+		"action":             record.Action,
+		"local_path":         record.LocalPath,
+		"remote_path":        record.RemotePath,
+		"status":             record.Status,
+		"message":            record.Message,
+		"bytes_transferred":  record.BytesTransferred,
+		"download_url":       record.DownloadURL,
+		"claimed_by":         record.ClaimedBy,
+		"created_at":         record.CreatedAt.Format(time.RFC3339),
+		"updated_at":         record.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func mobileServerProfileResponse(record mobileServerProfileRecord) map[string]any {
+	return map[string]any{
+		"id":                record.ProfileID,
+		"name":              record.Name,
+		"host":              record.Host,
+		"port":              record.Port,
+		"username":          record.Username,
+		"auth_mode":         record.AuthMode,
+		"tag":               record.Tag,
+		"note":              record.Note,
+		"source_machine_id": record.SourceMachineID,
+		"updated_at":        record.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func normalizeMobileServerProfileAuthMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "key", "private_key", "private-key":
+		return "private_key"
+	case "agent":
+		return "agent"
+	default:
+		return "password"
+	}
+}
+
+func sanitizeMobileServerProfileText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit > 0 && len([]rune(value)) > limit {
+		runes := []rune(value)
+		value = string(runes[:limit])
+	}
+	return value
+}
+
 func mobileRealtimeBackendSSHSessionEvent(payload map[string]any) map[string]any {
 	event := map[string]any{
 		"type":    "ssh_session",
 		"session": payload,
+	}
+	if sessionID, _ := payload["session_id"].(string); sessionID != "" {
+		event["session_id"] = sessionID
+	}
+	if status, _ := payload["status"].(string); status != "" {
+		event["status"] = status
+	}
+	if outputChunk, _ := payload["output_chunk"].(string); outputChunk != "" {
+		event["output_chunk"] = outputChunk
+	}
+	if outputSeq, ok := payload["output_seq"]; ok {
+		event["output_seq"] = outputSeq
+	}
+	return event
+}
+
+func mobileRealtimeBackendSSHTaskEvent(payload map[string]any) map[string]any {
+	event := map[string]any{
+		"type": "ssh_task",
+		"task": payload,
+	}
+	if taskID, _ := payload["task_id"].(string); taskID != "" {
+		event["task_id"] = taskID
+	}
+	if sessionID, _ := payload["session_id"].(string); sessionID != "" {
+		event["session_id"] = sessionID
+	}
+	if status, _ := payload["status"].(string); status != "" {
+		event["status"] = status
+	}
+	return event
+}
+
+func mobileRealtimeBackendSSHFileOperationEvent(payload map[string]any) map[string]any {
+	event := map[string]any{
+		"type":      "ssh_file_operation",
+		"operation": payload,
+	}
+	if operationID, _ := payload["operation_id"].(string); operationID != "" {
+		event["operation_id"] = operationID
 	}
 	if sessionID, _ := payload["session_id"].(string); sessionID != "" {
 		event["session_id"] = sessionID
@@ -3037,7 +3284,115 @@ func MobileSSHAnalyzeHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "output is required")
 			return
 		}
-		writeJSON(w, http.StatusOK, mobileSSHAnalysisPayload(output))
+		payload := mobileSSHAnalysisPayload(output)
+		if backendSessionID := sanitizeMobileServerProfileText(req.BackendSessionID, 160); backendSessionID != "" {
+			payload["backend_session_id"] = backendSessionID
+		}
+		writeJSON(w, http.StatusOK, payload)
+	}
+}
+
+// MobileServerProfilesHandler lets mobile viewers list tenant-scoped,
+// sanitized SSH profile metadata and lets authorized desktop agents publish
+// the SSHHosts they can service. No passwords, private keys, or passphrases are
+// accepted or returned by this API.
+func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			principal, err := authenticateViewerRequest(r, identity)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return
+			}
+			profiles := make([]map[string]any, 0)
+			mobileServerProfiles.Lock()
+			for _, record := range mobileServerProfiles.profiles {
+				if record.TenantID != principal.TenantID || record.OwnerID != principal.UserID {
+					continue
+				}
+				profiles = append(profiles, mobileServerProfileResponse(record))
+			}
+			mobileServerProfiles.Unlock()
+			sort.Slice(profiles, func(i, j int) bool {
+				leftName, _ := profiles[i]["name"].(string)
+				rightName, _ := profiles[j]["name"].(string)
+				if leftName == rightName {
+					leftID, _ := profiles[i]["id"].(string)
+					rightID, _ := profiles[j]["id"].(string)
+					return leftID < rightID
+				}
+				return strings.ToLower(leftName) < strings.ToLower(rightName)
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"profiles": profiles})
+		case http.MethodPut, http.MethodPost:
+			principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+				return
+			}
+			var req mobileServerProfileRequest
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+				return
+			}
+			sourceMachineID := strings.TrimSpace(principal.MachineID)
+			if sourceMachineID == "" {
+				sourceMachineID = strings.TrimSpace(principal.UserID)
+			}
+			now := time.Now().UTC()
+			next := make(map[string]mobileServerProfileRecord)
+			for _, item := range req.Profiles {
+				profileID := sanitizeMobileServerProfileText(item.ID, 128)
+				host := sanitizeMobileServerProfileText(item.Host, 255)
+				username := sanitizeMobileServerProfileText(item.Username, 128)
+				if profileID == "" || host == "" || username == "" {
+					continue
+				}
+				port := item.Port
+				if port == 0 {
+					port = 22
+				}
+				if port < 1 || port > 65535 {
+					continue
+				}
+				name := sanitizeMobileServerProfileText(item.Name, 128)
+				if name == "" {
+					name = profileID
+				}
+				key := principal.TenantID + "\x00" + principal.UserID + "\x00" + sourceMachineID + "\x00" + profileID
+				next[key] = mobileServerProfileRecord{
+					ProfileID:       profileID,
+					TenantID:        principal.TenantID,
+					OwnerID:         principal.UserID,
+					SourceMachineID: sourceMachineID,
+					Name:            name,
+					Host:            host,
+					Port:            port,
+					Username:        username,
+					AuthMode:        normalizeMobileServerProfileAuthMode(item.AuthMode),
+					Tag:             sanitizeMobileServerProfileText(item.Tag, 64),
+					Note:            sanitizeMobileServerProfileText(item.Note, 256),
+					UpdatedAt:       now,
+				}
+			}
+			mobileServerProfiles.Lock()
+			for key, record := range mobileServerProfiles.profiles {
+				if record.TenantID == principal.TenantID && record.OwnerID == principal.UserID && record.SourceMachineID == sourceMachineID {
+					delete(mobileServerProfiles.profiles, key)
+				}
+			}
+			for key, record := range next {
+				mobileServerProfiles.profiles[key] = record
+			}
+			mobileServerProfiles.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"count":  len(next),
+			})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET, POST, or PUT")
+		}
 	}
 }
 
@@ -3111,6 +3466,10 @@ func MobileBackendSSHSessionAttachHandler(identity *auth.IdentityService) http.H
 
 func MobileBackendSSHSessionReconnectHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "reconnect_requested", "reconnecting", "Reconnect request queued for the backend SSH session.")
+}
+
+func MobileBackendSSHSessionInterruptHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "interrupt_requested", "interrupting", "Interrupt request queued for the backend SSH session.")
 }
 
 func mobileBackendSSHSessionTransitionHandler(identity *auth.IdentityService, method, status, state, message string) http.HandlerFunc {
@@ -3215,6 +3574,505 @@ func MobileBackendSSHSessionInputHandler(identity *auth.IdentityService) http.Ha
 	}
 }
 
+func mobileBackendSSHOwnedSession(sessionID string, principal *auth.ViewerPrincipal) (mobileBackendSSHSessionRecord, bool) {
+	mobileBackendSSHSessions.Lock()
+	defer mobileBackendSSHSessions.Unlock()
+	record, ok := mobileBackendSSHSessions.sessions[sessionID]
+	if !ok || record.OwnerID != principal.UserID || record.TenantID != principal.TenantID {
+		return mobileBackendSSHSessionRecord{}, false
+	}
+	return record, true
+}
+
+func MobileBackendSSHSessionTasksHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		session, ok := mobileBackendSSHOwnedSession(sessionID, principal)
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			mobileBackendSSHTasks.Lock()
+			tasks := make([]map[string]any, 0)
+			for _, task := range mobileBackendSSHTasks.tasks {
+				if task.SessionID == sessionID && task.OwnerID == principal.UserID && task.TenantID == principal.TenantID {
+					tasks = append(tasks, mobileBackendSSHTaskPayload(task))
+				}
+			}
+			mobileBackendSSHTasks.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+		case http.MethodPost:
+			var req mobileBackendSSHTaskRequest
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+				return
+			}
+			action := strings.ToLower(strings.TrimSpace(req.Action))
+			if action == "" {
+				action = "exec_background"
+			}
+			if action != "exec_background" {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "unsupported backend SSH task action")
+				return
+			}
+			command := strings.TrimSpace(req.Command)
+			if command == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "command is required")
+				return
+			}
+			now := time.Now().UTC()
+			task := mobileBackendSSHTaskRecord{
+				TaskID:           fmt.Sprintf("mobsshtask_%d", now.UnixNano()),
+				SessionID:        sessionID,
+				TenantID:         principal.TenantID,
+				OwnerID:          principal.UserID,
+				BackendSessionID: session.BackendSessionID,
+				Action:           action,
+				Command:          command,
+				Status:           "queued",
+				Message:          "Background task request queued for MaClaw GUI/agent.",
+				LogTail:          "Queued for GUI/agent; the mobile app did not execute this command locally.",
+				TailLines:        req.TailLines,
+				ClaimedBy:        session.ClaimedBy,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+			}
+			mobileBackendSSHTasks.Lock()
+			mobileBackendSSHTasks.tasks[task.TaskID] = task
+			mobileBackendSSHTasks.Unlock()
+			payload := mobileBackendSSHTaskPayload(task)
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+			writeJSON(w, http.StatusAccepted, map[string]any{"task": payload})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
+		}
+	}
+}
+
+func mobileBackendSSHOwnedTask(sessionID, taskID string, principal *auth.ViewerPrincipal) (mobileBackendSSHTaskRecord, bool) {
+	mobileBackendSSHTasks.Lock()
+	defer mobileBackendSSHTasks.Unlock()
+	task, ok := mobileBackendSSHTasks.tasks[taskID]
+	if !ok || task.SessionID != sessionID || task.OwnerID != principal.UserID || task.TenantID != principal.TenantID {
+		return mobileBackendSSHTaskRecord{}, false
+	}
+	return task, true
+}
+
+func MobileBackendSSHSessionTaskStatusHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		if sessionID == "" || taskID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id and task id are required")
+			return
+		}
+		task, ok := mobileBackendSSHOwnedTask(sessionID, taskID, principal)
+		if !ok {
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "backend SSH task not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"task": mobileBackendSSHTaskPayload(task)})
+	}
+}
+
+func MobileBackendSSHSessionTaskWaitHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileBackendSSHSessionTaskTransitionHandler(identity, "wait_requested", "Wait request queued for MaClaw GUI/agent.")
+}
+
+func MobileBackendSSHSessionTaskKillHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileBackendSSHSessionTaskTransitionHandler(identity, "kill_requested", "Kill request queued for MaClaw GUI/agent.")
+}
+
+func mobileBackendSSHSessionTaskTransitionHandler(identity *auth.IdentityService, status, message string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		if sessionID == "" || taskID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id and task id are required")
+			return
+		}
+		var req mobileBackendSSHTaskWaitRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req)
+		}
+		now := time.Now().UTC()
+		var task mobileBackendSSHTaskRecord
+		mobileBackendSSHTasks.Lock()
+		existing, ok := mobileBackendSSHTasks.tasks[taskID]
+		if ok && (existing.SessionID != sessionID || existing.OwnerID != principal.UserID || existing.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if ok {
+			existing.Status = status
+			existing.Message = message
+			existing.TimeoutSeconds = req.TimeoutSeconds
+			if req.TailLines > 0 {
+				existing.TailLines = req.TailLines
+			}
+			existing.UpdatedAt = now
+			mobileBackendSSHTasks.tasks[taskID] = existing
+			task = existing
+		}
+		mobileBackendSSHTasks.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "backend SSH task not found")
+			return
+		}
+		payload := mobileBackendSSHTaskPayload(task)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+		writeJSON(w, http.StatusAccepted, map[string]any{"task": payload})
+	}
+}
+
+func MobileBackendSSHSessionFilesHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		session, ok := mobileBackendSSHOwnedSession(sessionID, principal)
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		var req mobileBackendSSHFileOperationRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(req.Action))
+		switch action {
+		case "stat", "list", "download", "upload":
+		default:
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "unsupported backend SSH file operation")
+			return
+		}
+		localPath := strings.TrimSpace(req.LocalPath)
+		remotePath := strings.TrimSpace(req.RemotePath)
+		if localPath == "" && remotePath == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "local_path or remote_path is required")
+			return
+		}
+		now := time.Now().UTC()
+		operation := mobileBackendSSHFileOperationRecord{
+			OperationID:      fmt.Sprintf("mobsshfile_%d", now.UnixNano()),
+			SessionID:        sessionID,
+			TenantID:         principal.TenantID,
+			OwnerID:          principal.UserID,
+			BackendSessionID: session.BackendSessionID,
+			Action:           action,
+			LocalPath:        localPath,
+			RemotePath:       remotePath,
+			Status:           "queued",
+			Message:          "File operation request queued for MaClaw GUI/agent.",
+			ClaimedBy:        session.ClaimedBy,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		mobileBackendSSHFileOperations.Lock()
+		mobileBackendSSHFileOperations.operations[operation.OperationID] = operation
+		mobileBackendSSHFileOperations.Unlock()
+		payload := mobileBackendSSHFileOperationPayload(operation)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHFileOperationEvent(payload))
+		writeJSON(w, http.StatusAccepted, map[string]any{"operation": payload})
+	}
+}
+
+func mobileBackendSSHWorkerID(principal mobileDigitalEmployeeWorkerPrincipal) string {
+	if strings.TrimSpace(principal.MachineID) != "" {
+		return strings.TrimSpace(principal.MachineID)
+	}
+	return strings.TrimSpace(principal.UserID)
+}
+
+func MobileBackendSSHTaskClaimHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+		now := time.Now().UTC()
+		workerID := mobileBackendSSHWorkerID(principal)
+		claimable := map[string]bool{
+			"queued":         true,
+			"wait_requested": true,
+			"kill_requested": true,
+			"agent_claimed":  true,
+			"running":        true,
+		}
+		var claimed mobileBackendSSHTaskRecord
+		mobileBackendSSHTasks.Lock()
+		for taskID, task := range mobileBackendSSHTasks.tasks {
+			if task.TenantID != principal.TenantID || task.OwnerID != principal.UserID || !claimable[task.Status] {
+				continue
+			}
+			if task.ClaimedBy != "" && task.ClaimedBy != workerID {
+				continue
+			}
+			task.ClaimedBy = workerID
+			if task.Status == "queued" {
+				task.Status = "agent_claimed"
+				task.Message = "Authorized MaClaw GUI/agent claimed the backend SSH task."
+			}
+			task.UpdatedAt = now
+			mobileBackendSSHTasks.tasks[taskID] = task
+			claimed = task
+			break
+		}
+		mobileBackendSSHTasks.Unlock()
+		if claimed.TaskID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"task": nil, "status": "empty"})
+			return
+		}
+		payload := mobileBackendSSHTaskPayload(claimed)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"task": payload, "status": "claimed"})
+	}
+}
+
+func MobileBackendSSHTaskUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		if taskID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "task id is required")
+			return
+		}
+		var req mobileBackendSSHTaskUpdateRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		if status == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "status is required")
+			return
+		}
+		message := strings.TrimSpace(req.Message)
+		if message == "" {
+			message = strings.TrimSpace(req.Error)
+		}
+		workerID := mobileBackendSSHWorkerID(principal)
+		now := time.Now().UTC()
+		var task mobileBackendSSHTaskRecord
+		mobileBackendSSHTasks.Lock()
+		existing, ok := mobileBackendSSHTasks.tasks[taskID]
+		if ok && (existing.TenantID != principal.TenantID || existing.OwnerID != principal.UserID) {
+			ok = false
+		}
+		if ok && existing.ClaimedBy != "" && existing.ClaimedBy != workerID {
+			ok = false
+		}
+		if ok {
+			existing.ClaimedBy = workerID
+			existing.Status = status
+			if message != "" {
+				existing.Message = message
+			}
+			if logTail := strings.TrimSpace(req.LogTail); logTail != "" {
+				existing.LogTail = logTail
+			} else if output := strings.TrimSpace(req.Output); output != "" {
+				existing.LogTail = output
+			}
+			if req.ExitCode != nil {
+				existing.ExitCode = req.ExitCode
+			}
+			if backendSessionID := strings.TrimSpace(req.BackendSessionID); backendSessionID != "" {
+				existing.BackendSessionID = backendSessionID
+			}
+			existing.UpdatedAt = now
+			mobileBackendSSHTasks.tasks[taskID] = existing
+			task = existing
+		}
+		mobileBackendSSHTasks.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "backend SSH task not found")
+			return
+		}
+		payload := mobileBackendSSHTaskPayload(task)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"task": payload})
+	}
+}
+
+func MobileBackendSSHFileOperationClaimHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+		now := time.Now().UTC()
+		workerID := mobileBackendSSHWorkerID(principal)
+		claimable := map[string]bool{
+			"queued":        true,
+			"agent_claimed": true,
+			"running":       true,
+		}
+		var claimed mobileBackendSSHFileOperationRecord
+		mobileBackendSSHFileOperations.Lock()
+		for operationID, operation := range mobileBackendSSHFileOperations.operations {
+			if operation.TenantID != principal.TenantID || operation.OwnerID != principal.UserID || !claimable[operation.Status] {
+				continue
+			}
+			if operation.ClaimedBy != "" && operation.ClaimedBy != workerID {
+				continue
+			}
+			operation.ClaimedBy = workerID
+			if operation.Status == "queued" {
+				operation.Status = "agent_claimed"
+				operation.Message = "Authorized MaClaw GUI/agent claimed the backend SSH file operation."
+			}
+			operation.UpdatedAt = now
+			mobileBackendSSHFileOperations.operations[operationID] = operation
+			claimed = operation
+			break
+		}
+		mobileBackendSSHFileOperations.Unlock()
+		if claimed.OperationID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"operation": nil, "status": "empty"})
+			return
+		}
+		payload := mobileBackendSSHFileOperationPayload(claimed)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHFileOperationEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"operation": payload, "status": "claimed"})
+	}
+}
+
+func MobileBackendSSHFileOperationUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+		operationID := strings.TrimSpace(r.PathValue("operationId"))
+		if operationID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "operation id is required")
+			return
+		}
+		var req mobileBackendSSHFileOperationUpdateRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		if status == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "status is required")
+			return
+		}
+		message := strings.TrimSpace(req.Message)
+		if message == "" {
+			message = strings.TrimSpace(req.Error)
+		}
+		workerID := mobileBackendSSHWorkerID(principal)
+		now := time.Now().UTC()
+		var operation mobileBackendSSHFileOperationRecord
+		mobileBackendSSHFileOperations.Lock()
+		existing, ok := mobileBackendSSHFileOperations.operations[operationID]
+		if ok && (existing.TenantID != principal.TenantID || existing.OwnerID != principal.UserID) {
+			ok = false
+		}
+		if ok && existing.ClaimedBy != "" && existing.ClaimedBy != workerID {
+			ok = false
+		}
+		if ok {
+			existing.ClaimedBy = workerID
+			existing.Status = status
+			if message != "" {
+				existing.Message = message
+			}
+			if localPath := strings.TrimSpace(req.LocalPath); localPath != "" {
+				existing.LocalPath = localPath
+			}
+			if remotePath := strings.TrimSpace(req.RemotePath); remotePath != "" {
+				existing.RemotePath = remotePath
+			}
+			if req.BytesTransferred > 0 {
+				existing.BytesTransferred = req.BytesTransferred
+			}
+			if downloadURL := strings.TrimSpace(req.DownloadURL); downloadURL != "" {
+				existing.DownloadURL = downloadURL
+			}
+			if backendSessionID := strings.TrimSpace(req.BackendSessionID); backendSessionID != "" {
+				existing.BackendSessionID = backendSessionID
+			}
+			existing.UpdatedAt = now
+			mobileBackendSSHFileOperations.operations[operationID] = existing
+			operation = existing
+		}
+		mobileBackendSSHFileOperations.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "OPERATION_NOT_FOUND", "backend SSH file operation not found")
+			return
+		}
+		payload := mobileBackendSSHFileOperationPayload(operation)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHFileOperationEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"operation": payload})
+	}
+}
+
 func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -3239,12 +4097,12 @@ func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.Ha
 			ok = false
 		}
 		if ok {
-			existing.Status = "closed"
-			existing.State = "closed"
-			existing.Message = "Close request recorded for the backend SSH session."
+			existing.Status = "close_requested"
+			existing.State = "closing"
+			existing.Message = "Close request queued for the backend SSH session."
 			existing.UpdatedAt = now
 			record = existing
-			delete(mobileBackendSSHSessions.sessions, sessionID)
+			mobileBackendSSHSessions.sessions[sessionID] = existing
 		}
 		mobileBackendSSHSessions.Unlock()
 		if !ok {
@@ -3253,6 +4111,179 @@ func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.Ha
 		}
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(mobileBackendSSHSessionPayload(record)))
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// MobileBackendSSHSessionClaimHandler lets an authorized desktop/agent claim
+// one pending mobile backend SSH control request. The agent binds it to the
+// local corelib SSHSessionManager and reports status through the update handler.
+func MobileBackendSSHSessionClaimHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+
+		now := time.Now().UTC()
+		claimedBy := principal.MachineID
+		if claimedBy == "" {
+			claimedBy = principal.UserID
+		}
+		claimable := map[string]bool{
+			"queued":              true,
+			"attach_requested":    true,
+			"reconnect_requested": true,
+			"interrupt_requested": true,
+			"input_queued":        true,
+			"close_requested":     true,
+			"agent_claimed":       true,
+			"connecting":          true,
+			"connected":           true,
+			"running":             true,
+			"attached":            true,
+		}
+		var claimed mobileBackendSSHSessionRecord
+		mobileBackendSSHSessions.Lock()
+		for sessionID, record := range mobileBackendSSHSessions.sessions {
+			if record.TenantID != principal.TenantID || record.OwnerID != principal.UserID || !claimable[record.Status] {
+				continue
+			}
+			if record.ClaimedBy != "" && record.ClaimedBy != claimedBy {
+				continue
+			}
+			record.ClaimedBy = claimedBy
+			if record.Status == "queued" {
+				record.Status = "agent_claimed"
+				record.State = "agent_handling"
+				record.Message = "Authorized MaClaw agent claimed the backend SSH session request."
+			}
+			record.UpdatedAt = now
+			mobileBackendSSHSessions.sessions[sessionID] = record
+			claimed = record
+			break
+		}
+		mobileBackendSSHSessions.Unlock()
+		if claimed.SessionID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"session": nil,
+				"status":  "empty",
+			})
+			return
+		}
+		payload := mobileBackendSSHWorkerSessionPayload(claimed)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"session": payload,
+			"status":  "claimed",
+		})
+	}
+}
+
+// MobileBackendSSHSessionUpdateHandler lets the authorized desktop/agent report
+// the actual SSHSessionManager state and recent output back to mobile.
+func MobileBackendSSHSessionUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+			return
+		}
+		principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		var req mobileBackendSSHSessionUpdateRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		if status == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "status is required")
+			return
+		}
+		message := strings.TrimSpace(req.Message)
+		if message == "" {
+			message = strings.TrimSpace(req.Error)
+		}
+		workerID := principal.MachineID
+		if workerID == "" {
+			workerID = principal.UserID
+		}
+		now := time.Now().UTC()
+		invalidMessage := ""
+		mobileBackendSSHSessions.Lock()
+		record, ok := mobileBackendSSHSessions.sessions[sessionID]
+		if ok && (record.TenantID != principal.TenantID || record.OwnerID != principal.UserID) {
+			ok = false
+		}
+		if ok && record.ClaimedBy != "" && record.ClaimedBy != workerID {
+			ok = false
+		}
+		if ok {
+			nextState := strings.TrimSpace(req.State)
+			if nextState == "" {
+				nextState = status
+			}
+			outputChunk := strings.TrimSpace(req.OutputChunk)
+			backendSessionID := strings.TrimSpace(req.BackendSessionID)
+			if backendSessionID == "" {
+				backendSessionID = strings.TrimSpace(record.BackendSessionID)
+			}
+			if backendSessionID == "" && (status == "connected" || strings.EqualFold(nextState, "running") || outputChunk != "") {
+				invalidMessage = "backend_session_id is required for connected backend SSH session updates"
+			} else {
+				record.ClaimedBy = workerID
+				record.Status = status
+				record.State = nextState
+				if message != "" {
+					record.Message = message
+				}
+				if output := strings.TrimSpace(req.RecentOutput); output != "" {
+					record.RecentOutput = output
+				}
+				record.OutputChunk = outputChunk
+				if outputChunk != "" {
+					record.OutputSeq++
+				}
+				if backendSessionID := strings.TrimSpace(req.BackendSessionID); backendSessionID != "" {
+					record.BackendSessionID = backendSessionID
+				}
+				if req.ClearPendingInput {
+					record.PendingInput = nil
+				} else if req.AppliedInputCount > 0 {
+					if req.AppliedInputCount >= len(record.PendingInput) {
+						record.PendingInput = nil
+					} else {
+						record.PendingInput = append([]string(nil), record.PendingInput[req.AppliedInputCount:]...)
+					}
+				}
+				record.UpdatedAt = now
+				mobileBackendSSHSessions.sessions[sessionID] = record
+			}
+		}
+		mobileBackendSSHSessions.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		if invalidMessage != "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", invalidMessage)
+			return
+		}
+		payload := mobileBackendSSHSessionPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+		writeJSON(w, http.StatusOK, payload)
 	}
 }
 

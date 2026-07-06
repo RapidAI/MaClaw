@@ -369,6 +369,129 @@ func TestSubmitMaclawAppPackagePersistsSourceVersionKeyInstallRefs(t *testing.T)
 		t.Fatalf("submitted app entry should persist bundled dependency refs: %#v", apps[0])
 	}
 }
+
+func TestSubmitMaclawAppPackagePreservesFriendlyDependencyIDAndResolvedMarketRef(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const marketID = "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b"
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "RapidOCR")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# RapidOCR\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			if strings.EqualFold(r.URL.Query().Get("q"), "rapidocr") {
+				_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{
+					ID:                 marketID,
+					Name:               "RapidOCR",
+					InstallRef:         marketID,
+					Version:            "10",
+					PackageSHA256:      "sha256-rapidocr",
+					PackageSignature:   "sig-rapidocr",
+					PackageDownloadURL: server.URL + "/api/v1/skills/" + marketID + "/download",
+				}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	cfg := corelib.AppConfig{
+		RemoteHubCenterURL: server.URL,
+		NLSkills: []corelib.NLSkillEntry{{
+			Name:       "RapidOCR",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillmarket",
+			HubSkillID: marketID,
+			HubVersion: "10",
+		}},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "rapidocr-wrapper",
+				"name": "RapidOCR Wrapper",
+				"kind": "tool_app",
+				"dependencies": { "skills": [
+					{ "id": "RapidOCR", "version": "10", "kind": "runtime_skill", "required": true, "source": "hub" }
+				] },
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"tool_workspace", "template":"document_workspace", "regionCount":2, "regions":[{"id":"input", "role":"input", "placement":"left"}, {"id":"output", "role":"output", "placement":"right"}]},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencyCount":1, "hasMissingRequired":false, "hasBlockingDependency":false, "dependencies":[{"id":"RapidOCR", "version":"10", "kind":"runtime_skill", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-rapidocr","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-rapidocr", "runId":"run-rapidocr", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+				}
+			}
+		}]
+	}`
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+
+	result, err := app.SubmitMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("SubmitMaclawAppPackage error: %v", err)
+	}
+	if result["dependency_count"] != 1 {
+		t.Fatalf("expected dependency count in result: %#v", result)
+	}
+
+	data, err := os.ReadFile(app.maclawAppSubmissionQueuePath())
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var queue maclawAppSubmissionQueue
+	if err := json.Unmarshal(data, &queue); err != nil {
+		t.Fatalf("decode queue: %v", err)
+	}
+	if len(queue.Submissions) != 1 || len(queue.Submissions[0].Dependencies) != 1 {
+		t.Fatalf("unexpected queue dependencies: %#v", queue)
+	}
+	auditDep := queue.Submissions[0].Dependencies[0]
+	if auditDep.ID != "RapidOCR" || auditDep.InstallRef != marketID || auditDep.InstallRefKind != "skillmarket" || auditDep.InstallRefTarget != marketID {
+		t.Fatalf("submission audit dependency should preserve friendly id and resolved SkillMarket ref: %#v", auditDep)
+	}
+
+	resolved := anySlice(queue.Submissions[0].Package["resolved_dependencies"])
+	if len(resolved) != 1 {
+		t.Fatalf("submitted package should persist resolved dependency refs: %#v", queue.Submissions[0].Package)
+	}
+	dep := anyMap(resolved[0])
+	if dep["id"] != "RapidOCR" || dep["install_ref"] != marketID || dep["install_ref_kind"] != "skillmarket" || dep["install_ref_target"] != marketID {
+		t.Fatalf("resolved dependency should keep declared id separate from download ref: %#v", dep)
+	}
+
+	apps := anySlice(queue.Submissions[0].Package["apps"])
+	entryResolved := anySlice(anyMap(apps[0])["resolved_dependencies"])
+	if len(entryResolved) != 1 || anyMap(entryResolved[0])["id"] != "RapidOCR" || anyMap(entryResolved[0])["install_ref"] != marketID {
+		t.Fatalf("submitted app entry should persist resolved dependency refs: %#v", apps[0])
+	}
+}
+
 func TestMaclawAppSubmissionSummaryIncludesReviewEvidence(t *testing.T) {
 	record := maclawAppSubmissionRecord{
 		SubmissionID: "local-review-expense-approval-1",
@@ -5672,8 +5795,11 @@ func TestPlanMaclawAppInstallSingleAppChecksDependencies(t *testing.T) {
 	if dep := maclawAppPlanDepForTest(plan, "expense-approval-app"); dep == nil || !dep.Installed || dep.Action != "skip" || dep.Kind != "app_skill" {
 		t.Fatalf("super app skill should be installed: %#v", dep)
 	}
-	if dep := maclawAppPlanDepForTest(plan, "expense-approval-workflow"); dep == nil || dep.Installed || dep.Action != "blocked" || !dep.Required {
-		t.Fatalf("required workflow should block: %#v", dep)
+	if plan.HasBlockingDependency {
+		t.Fatalf("missing installable workflow should not hard block the install plan: %#v", plan)
+	}
+	if dep := maclawAppPlanDepForTest(plan, "expense-approval-workflow"); dep == nil || dep.Installed || dep.Action != "install" || !dep.Required {
+		t.Fatalf("required workflow should be queued for install: %#v", dep)
 	}
 	if dep := maclawAppPlanDepForTest(plan, "expense-exporter"); dep == nil || dep.Action != "optional_missing" || dep.Required {
 		t.Fatalf("optional dependency should not block: %#v", dep)
@@ -5897,7 +6023,7 @@ func TestPlanMaclawAppInstallPackDedupesDependenciesAndNormalizesLegacyKind(t *t
 		t.Fatalf("legacy kind was not normalized: %#v", plan.Apps)
 	}
 	dep := maclawAppPlanDepForTest(plan, "shared-workflow")
-	if dep == nil || dep.Action != "blocked" || len(dep.AppIDs) != 2 {
+	if dep == nil || dep.Action != "install" || len(dep.AppIDs) != 2 || plan.HasBlockingDependency {
 		t.Fatalf("shared dependency should be deduped across apps: %#v", dep)
 	}
 }
@@ -6276,8 +6402,8 @@ func TestPlanMaclawAppInstallKeepsHubDirectDownloadWhenHubCenterLookupMisses(t *
 	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "target_resolved" || dep.PreflightStage != "install_ref" || dep.InstallRefTarget != "direct-only-runtime" {
 		t.Fatalf("hub direct download dependency should not be blocked by a SkillMarket lookup miss: %#v", dep)
 	}
-	if !plan.HasMissingRequired || !plan.HasBlockingDependency {
-		t.Fatalf("missing dependency should still report blocking install state until installed: %#v", plan)
+	if !plan.HasMissingRequired || plan.HasBlockingDependency || dep.Action != "install" {
+		t.Fatalf("missing installable dependency should be queued for install without blocking: %#v", plan)
 	}
 }
 
@@ -6295,8 +6421,282 @@ func TestMaclawAppHubCenterLookupPreflightChoosesExactAliasMatch(t *testing.T) {
 		{ID: "unrelated-id", Name: "rapidocr-tools", InstallRef: "unrelated-id", Version: "10"},
 		{ID: "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b", Name: "RapidOCR", InstallRef: "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b", Version: "10"},
 	})
-	if !matched || dep.PreflightStatus != "ready" || dep.InstallRefTarget != "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b" {
+	if !matched || dep.Source != "skillmarket" || dep.PreflightStatus != "ready" || dep.InstallRefTarget != "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b" {
 		t.Fatalf("HubCenter lookup should choose the exact RapidOCR alias match: matched=%v dep=%#v", matched, dep)
+	}
+}
+
+func TestMaclawAppSkillMarketPreflightMatchesDeclaredAliases(t *testing.T) {
+	dep := maclawAppInstallPlanDependency{
+		ID:          "OCR Runtime",
+		Version:     "10",
+		Kind:        "runtime_skill",
+		Required:    true,
+		Source:      "skillmarket",
+		CanonicalID: "rapidocr-runtime",
+		Aliases:     []string{"RapidOCR", "rapidocr"},
+	}
+	maclawAppApplyPublicSkillMarketPreflight(&dep, []SkillSearchResult{{
+		ID:         "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b",
+		Name:       "RapidOCR",
+		InstallRef: "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b",
+		Version:    "10",
+	}})
+	if dep.PreflightStatus != "ready" || dep.InstallRefTarget != "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b" {
+		t.Fatalf("SkillMarket preflight should match declared aliases and persist UUID install_ref: %#v", dep)
+	}
+}
+
+func TestMaclawAppSkillMarketPreflightMatchesInstallRefURIWithoutAliases(t *testing.T) {
+	dep := maclawAppInstallPlanDependency{
+		ID:         "Friendly OCR Name",
+		Version:    "1.0.0",
+		Kind:       "runtime_skill",
+		Required:   true,
+		Source:     "hub",
+		InstallRef: "skillmarket://skills/exact-market-name@1.0.0",
+	}
+	maclawAppApplyPublicSkillMarketPreflight(&dep, []SkillSearchResult{{
+		ID:         "alias-market-id",
+		Name:       "exact-market-name",
+		InstallRef: "alias-market-id",
+		Version:    "1.0.0",
+	}})
+	if dep.Source != "skillmarket" || dep.PreflightStatus != "ready" || dep.InstallRefTarget != "alias-market-id" {
+		t.Fatalf("SkillMarket preflight should match URI target and normalize source: %#v", dep)
+	}
+}
+
+func TestPlanMaclawAppInstallSearchesSkillMarketByDeclaredAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const marketID = "alias-market-id"
+	var queries []string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			query := r.URL.Query().Get("q")
+			queries = append(queries, query)
+			if query == "exact-market-name" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{
+					ID: marketID, Name: "exact-market-name", InstallRef: marketID, Version: "1.0.0",
+				}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "alias-search-app",
+			"name": "Alias Search App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "Friendly OCR Name", "canonical_id": "missing-canonical-name", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "skillmarket", "aliases": ["exact-market-name"] }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "Friendly OCR Name")
+	if dep == nil || dep.PreflightStatus != "ready" || dep.InstallRefTarget != marketID {
+		t.Fatalf("dependency should search by declared alias and persist market UUID: queries=%v dep=%#v", queries, dep)
+	}
+	joinedQueries := "," + strings.Join(queries, ",") + ","
+	if !strings.Contains(joinedQueries, ",missing-canonical-name,") || !strings.Contains(joinedQueries, ",exact-market-name,") {
+		t.Fatalf("expected SkillMarket search to try canonical and declared alias, got %v", queries)
+	}
+	if !plan.HasMissingRequired || plan.HasBlockingDependency || dep.Action != "install" {
+		t.Fatalf("resolved missing SkillMarket dependency should be installable without blocking: %#v", plan)
+	}
+}
+
+func TestPlanMaclawAppInstallKeepsAliasPreflightErrorPending(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var queries []string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			query := r.URL.Query().Get("q")
+			queries = append(queries, query)
+			if query == "exact-market-name" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"results":`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "alias-search-app",
+			"name": "Alias Search App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "Friendly OCR Name", "canonical_id": "missing-canonical-name", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "skillmarket", "aliases": ["exact-market-name"] }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "Friendly OCR Name")
+	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "remote_preflight_unavailable" || dep.Action != "install" {
+		t.Fatalf("partial SkillMarket search failure should stay pending and installable: queries=%v dep=%#v", queries, dep)
+	}
+	joinedQueries := "," + strings.Join(queries, ",") + ","
+	if !strings.Contains(joinedQueries, ",missing-canonical-name,") || !strings.Contains(joinedQueries, ",exact-market-name,") {
+		t.Fatalf("expected SkillMarket search to try canonical and declared alias, got %v", queries)
+	}
+	if !plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("partial SkillMarket search failure should not hard-block install plan: %#v", plan)
+	}
+}
+
+func TestPlanMaclawAppInstallMarksNameBasedRuntimeDependencyInstallable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "ocr-app",
+			"name": "OCR App",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "RapidOCR", "version": "10", "kind": "runtime_skill", "required": true, "source": "local" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "RapidOCR")
+	if dep == nil || dep.PreflightStatus != "pending" || dep.PreflightCode != "name_based_lookup" || dep.Action != "install" || dep.Health != "missing" {
+		t.Fatalf("name-based runtime dependency should be installable without a hard blocker: %#v", dep)
+	}
+	if !plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("name-based runtime dependency should remain missing but not blocking: %#v", plan)
+	}
+}
+
+func TestPlanMaclawAppInstallDoesNotBlockSkillMarketTargetWithoutChecksum(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const marketID = "8d597bd7-c33f-44e8-bd70-21d28805770b"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{
+				ID:         marketID,
+				Name:       "paper_pdf_translator",
+				InstallRef: marketID,
+				Version:    "1.0.0",
+			}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "pdf-translator-app",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"dependencies": { "skills": [
+				{ "id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "skillmarket" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || dep.PreflightStatus != "ready" || dep.PreflightCode != "skillmarket_target_ready" || dep.IntegrityStatus != "missing" || dep.IntegrityCode != "checksum_unavailable" || dep.Action != "install" || dep.InstallRefTarget != marketID {
+		t.Fatalf("SkillMarket target without checksum should be installable with integrity warning: %#v", dep)
+	}
+	if !plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("missing checksum metadata should not make the install plan blocking: %#v", plan)
+	}
+}
+
+func TestMaclawAppDependencySkillMarketSearchQueriesNormalizeInstallRefURI(t *testing.T) {
+	queries := maclawAppDependencySkillMarketSearchQueries(maclawAppInstallPlanDependency{
+		ID:          "Friendly OCR Name",
+		Source:      "hub",
+		InstallRef:  "skillmarket://skills/exact-market-name@1.0.0",
+		CanonicalID: "exact-market-name",
+		Aliases:     []string{"Friendly OCR Name"},
+	})
+	if got, want := strings.Join(queries, ","), "exact-market-name,Friendly OCR Name"; got != want {
+		t.Fatalf("SkillMarket search queries should normalize URI refs and dedupe aliases, got %q want %q", got, want)
 	}
 }
 
@@ -6458,6 +6858,9 @@ func TestInstallMixedSkillUsesHubCenterDownloadLocator(t *testing.T) {
 	}
 	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Name != "locator_dep" {
 		t.Fatalf("locator-installed skill should be registered: %#v", cfg.NLSkills)
+	}
+	if cfg.NLSkills[0].Source != "skillmarket" || cfg.NLSkills[0].HubSkillID != "wrong-id" {
+		t.Fatalf("locator-installed SkillMarket skill should preserve installer source and ref: %#v", cfg.NLSkills[0])
 	}
 }
 
@@ -6970,6 +7373,77 @@ func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalDependencyTarget(t *te
 	}
 }
 
+func TestMaclawAppDependencyUpdatePreservesSkillMarketSource(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	const marketID = "market-dep-uuid"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{}, "nodes": []any{}})
+		case "/api/v1/skills/" + marketID + "/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"market_dep","name":"market_dep","description":"new market dep","version":"2.0.0","trust_level":"trusted","steps":[{"action":"bash","params":{"command":"echo market"},"on_error":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "market_dep")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# market_dep\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile SKILL.md: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+		NLSkills: []corelib.NLSkillEntry{{
+			Name:       "market_dep",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     "skillmarket",
+			HubSkillID: marketID,
+			HubVersion: "1.0.0",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	dep := maclawAppInstallPlanDependency{
+		ID:               "market_dep",
+		Source:           "hub",
+		InstallRefKind:   "skillmarket",
+		InstallRefTarget: marketID,
+		InstalledName:    "market_dep",
+		InstalledDir:     skillDir,
+	}
+	updated, err := app.updateInstalledMaclawAppDependency(&dep)
+	if err != nil || !updated {
+		t.Fatalf("updateInstalledMaclawAppDependency() updated=%v err=%v", updated, err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].Source != "skillmarket" || cfg.NLSkills[0].HubSkillID != marketID || cfg.NLSkills[0].HubVersion != "2.0.0" {
+		t.Fatalf("SkillMarket dependency update should preserve registered source and UUID: %#v", cfg.NLSkills)
+	}
+}
+
 func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalWorkflowDependencyTarget(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -7030,14 +7504,20 @@ func TestInstallMaclawAppDependenciesUsesDeclaredCanonicalWorkflowDependencyTarg
 
 func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
 	enriched := []maclawAppInstallPlanDependency{{
-		ID:          "Approval Workflow",
-		InstallRef:  "approval-flow",
-		Source:      "hub",
-		Kind:        "workflow_skill",
-		Required:    true,
-		Version:     "2.0.0",
-		CanonicalID: "approval-flow",
-		Aliases:     []string{"ApprovalFlow", "approval-flow-local"},
+		ID:                 "Approval Workflow",
+		InstallRef:         "approval-flow",
+		Source:             "hub",
+		Kind:               "workflow_skill",
+		Required:           true,
+		Version:            "2.0.0",
+		CanonicalID:        "approval-flow",
+		Aliases:            []string{"ApprovalFlow", "approval-flow-local"},
+		InstallRefKind:     "skillmarket",
+		InstallRefTarget:   "approval-flow",
+		InstallRefVersion:  "2.0.0",
+		PackageSHA256:      "sha256-approval-flow",
+		PackageSignature:   "sig-approval-flow",
+		PackageDownloadURL: "https://hub.example/approval-flow/download",
 	}}
 	serialized := maclawAppSerializableResolvedDeps(enriched)
 	if len(serialized) != 1 || serialized[0]["canonical_id"] != "approval-flow" {
@@ -7046,6 +7526,12 @@ func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
 	aliases, ok := serialized[0]["aliases"].([]string)
 	if !ok || len(aliases) != 2 || aliases[0] != "ApprovalFlow" || aliases[1] != "approval-flow-local" {
 		t.Fatalf("resolved dependency should serialize aliases: %#v", serialized)
+	}
+	if serialized[0]["install_ref_kind"] != "skillmarket" || serialized[0]["install_ref_target"] != "approval-flow" || serialized[0]["install_ref_version"] != "2.0.0" {
+		t.Fatalf("resolved dependency should serialize install_ref metadata: %#v", serialized[0])
+	}
+	if serialized[0]["package_sha256"] != "sha256-approval-flow" || serialized[0]["package_signature"] != "sig-approval-flow" || serialized[0]["package_download_url"] != "https://hub.example/approval-flow/download" {
+		t.Fatalf("resolved dependency should serialize package integrity metadata: %#v", serialized[0])
 	}
 
 	deps := []maclawAppInstallPlanDependency{{
@@ -7056,12 +7542,18 @@ func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
 	}}
 	applyResolvedDependenciesToPlan(deps, map[string]any{"resolved_dependencies": []interface{}{
 		map[string]interface{}{
-			"id":           "Approval Workflow",
-			"install_ref":  "approval-flow",
-			"source":       "hub",
-			"version":      "2.0.0",
-			"canonical_id": "approval-flow",
-			"aliases":      []interface{}{"ApprovalFlow", "approval-flow-local"},
+			"id":                   "Approval Workflow",
+			"install_ref":          "approval-flow",
+			"source":               "hub",
+			"version":              "2.0.0",
+			"canonical_id":         "approval-flow",
+			"aliases":              []interface{}{"ApprovalFlow", "approval-flow-local"},
+			"install_ref_kind":     "skillmarket",
+			"install_ref_target":   "approval-flow",
+			"install_ref_version":  "2.0.0",
+			"package_sha256":       "sha256-approval-flow",
+			"package_signature":    "sig-approval-flow",
+			"package_download_url": "https://hub.example/approval-flow/download",
 		},
 	}})
 	if deps[0].InstallRef != "approval-flow" || deps[0].Source != "hub" || deps[0].Version != "2.0.0" || deps[0].CanonicalID != "approval-flow" {
@@ -7069,6 +7561,156 @@ func TestMaclawAppResolvedDependenciesPreserveCanonicalMetadata(t *testing.T) {
 	}
 	if len(deps[0].Aliases) != 2 || deps[0].Aliases[0] != "ApprovalFlow" || deps[0].Aliases[1] != "approval-flow-local" {
 		t.Fatalf("resolved dependency should apply aliases: %#v", deps[0])
+	}
+	if deps[0].InstallRefKind != "skillmarket" || deps[0].InstallRefTarget != "approval-flow" || deps[0].InstallRefVersion != "2.0.0" {
+		t.Fatalf("resolved dependency should apply install_ref metadata: %#v", deps[0])
+	}
+	if deps[0].PackageSHA256 != "sha256-approval-flow" || deps[0].PackageSignature != "sig-approval-flow" || deps[0].PackageDownloadURL != "https://hub.example/approval-flow/download" {
+		t.Fatalf("resolved dependency should apply package integrity metadata: %#v", deps[0])
+	}
+}
+
+func TestMaclawAppResolvedDependenciesOverrideDeclaredAliasInstallRef(t *testing.T) {
+	const marketID = "5ce9973a-a8cd-465a-a3a3-a8d95d2eb69b"
+	deps := []maclawAppInstallPlanDependency{{
+		ID:                "RapidOCR",
+		Kind:              "runtime_skill",
+		Required:          true,
+		Source:            "hub",
+		InstallRef:        "rapidocr",
+		InstallRefKind:    "hub",
+		InstallRefTarget:  "rapidocr",
+		InstallRefVersion: "10",
+	}}
+	applyResolvedDependenciesToPlan(deps, map[string]any{"resolved_dependencies": []interface{}{
+		map[string]interface{}{
+			"id":                  "RapidOCR",
+			"install_ref":         marketID,
+			"source":              "skillmarket",
+			"version":             "10",
+			"install_ref_kind":    "skillmarket",
+			"install_ref_target":  marketID,
+			"install_ref_version": "10",
+		},
+	}})
+	if deps[0].Source != "skillmarket" || deps[0].InstallRef != marketID || deps[0].InstallRefKind != "skillmarket" || deps[0].InstallRefTarget != marketID {
+		t.Fatalf("resolved dependency should override declared alias ref with concrete SkillMarket ref: %#v", deps[0])
+	}
+	maclawAppValidateDependencyInstallRefs(deps)
+	if deps[0].InstallRefKind != "skillmarket" || deps[0].InstallRefTarget != marketID || deps[0].InstallRefStatus != "ok" {
+		t.Fatalf("bare resolved SkillMarket UUID should retain SkillMarket install_ref kind after validation: %#v", deps[0])
+	}
+}
+
+func TestMaclawAppResolvedDependenciesRespectAppIDScopeForSameDependencyID(t *testing.T) {
+	deps := []maclawAppInstallPlanDependency{
+		{
+			ID:               "RapidOCR",
+			Kind:             "runtime_skill",
+			Required:         true,
+			Source:           "hub",
+			InstallRef:       "rapidocr",
+			InstallRefKind:   "hub",
+			InstallRefTarget: "rapidocr",
+			AppIDs:           []string{"public-ocr-app"},
+		},
+		{
+			ID:               "RapidOCR",
+			Kind:             "runtime_skill",
+			Required:         true,
+			Source:           "hub",
+			InstallRef:       "rapidocr",
+			InstallRefKind:   "hub",
+			InstallRefTarget: "rapidocr",
+			AppIDs:           []string{"private-ocr-app"},
+		},
+	}
+	applyResolvedDependenciesToPlan(deps, map[string]any{"resolved_dependencies": []interface{}{
+		map[string]interface{}{
+			"id":                  "RapidOCR",
+			"app_ids":             []interface{}{"public-ocr-app"},
+			"install_ref":         "public-market-uuid",
+			"source":              "skillmarket",
+			"install_ref_kind":    "skillmarket",
+			"install_ref_target":  "public-market-uuid",
+			"install_ref_version": "10",
+		},
+		map[string]interface{}{
+			"id":                  "RapidOCR",
+			"app_ids":             []interface{}{"private-ocr-app"},
+			"install_ref":         "private-hub-uuid",
+			"source":              "hub",
+			"install_ref_kind":    "hub",
+			"install_ref_target":  "private-hub-uuid",
+			"install_ref_version": "10",
+		},
+	}})
+	if deps[0].InstallRef != "public-market-uuid" || deps[0].Source != "skillmarket" || deps[0].InstallRefKind != "skillmarket" {
+		t.Fatalf("public app dependency should use public scoped resolved ref: %#v", deps[0])
+	}
+	if deps[1].InstallRef != "private-hub-uuid" || deps[1].Source != "hub" || deps[1].InstallRefKind != "hub" {
+		t.Fatalf("private app dependency should use private scoped resolved ref: %#v", deps[1])
+	}
+}
+
+func TestMaclawAppInjectsEntryScopedResolvedAndBundledDependencies(t *testing.T) {
+	pkg := map[string]any{
+		"apps": []any{
+			map[string]any{"app": map[string]any{"id": "public-ocr-app"}},
+			map[string]any{"app": map[string]any{"id": "private-ocr-app"}},
+		},
+	}
+	resolved := []map[string]any{
+		{"id": "RapidOCR", "install_ref": "public-market-uuid", "app_ids": []string{"public-ocr-app"}},
+		{"id": "RapidOCR", "install_ref": "private-hub-uuid", "app_ids": []string{"private-ocr-app"}},
+		{"id": "SharedRuntime", "install_ref": "shared-runtime-uuid"},
+	}
+	injectResolvedDepsIntoAppEntries(pkg, resolved)
+
+	data, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatalf("marshal scoped resolved package: %v", err)
+	}
+	var resolvedRoundTrip map[string]any
+	if err := json.Unmarshal(data, &resolvedRoundTrip); err != nil {
+		t.Fatalf("unmarshal scoped resolved package: %v", err)
+	}
+	apps := anySlice(resolvedRoundTrip["apps"])
+	publicResolved := anySlice(anyMap(apps[0])["resolved_dependencies"])
+	privateResolved := anySlice(anyMap(apps[1])["resolved_dependencies"])
+	if len(publicResolved) != 2 || anyMap(publicResolved[0])["install_ref"] != "public-market-uuid" || anyMap(publicResolved[1])["install_ref"] != "shared-runtime-uuid" {
+		t.Fatalf("public app entry should only carry scoped and global resolved deps: %#v", publicResolved)
+	}
+	if len(privateResolved) != 2 || anyMap(privateResolved[0])["install_ref"] != "private-hub-uuid" || anyMap(privateResolved[1])["install_ref"] != "shared-runtime-uuid" {
+		t.Fatalf("private app entry should only carry scoped and global resolved deps: %#v", privateResolved)
+	}
+
+	injectBundledDepsIntoAppEntries(pkg, maclawAppBundledDependencies{
+		Schema: "maclaw.app.bundled_dependencies.v1",
+		Skills: []maclawAppBundledSkillEntry{
+			{StableID: "public", Name: "RapidOCR", SHA256: "public-sha", Files: map[string]string{"skill.md": "public"}, AppIDs: []string{"public-ocr-app"}},
+			{StableID: "private", Name: "RapidOCR", SHA256: "private-sha", Files: map[string]string{"skill.md": "private"}, AppIDs: []string{"private-ocr-app"}},
+			{StableID: "shared", Name: "SharedRuntime", SHA256: "shared-sha", Files: map[string]string{"skill.md": "shared"}},
+		},
+	})
+	data, err = json.Marshal(pkg)
+	if err != nil {
+		t.Fatalf("marshal scoped package: %v", err)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatalf("unmarshal scoped package: %v", err)
+	}
+	apps = anySlice(roundTrip["apps"])
+	publicBundled := anyMap(anyMap(apps[0])["bundled_dependencies"])
+	privateBundled := anyMap(anyMap(apps[1])["bundled_dependencies"])
+	publicSkills := anySlice(publicBundled["skills"])
+	privateSkills := anySlice(privateBundled["skills"])
+	if len(publicSkills) != 2 || anyMap(publicSkills[0])["stable_id"] != "public" || anyMap(publicSkills[1])["stable_id"] != "shared" {
+		t.Fatalf("public app entry should only carry scoped and global bundled deps: %#v", publicBundled)
+	}
+	if len(privateSkills) != 2 || anyMap(privateSkills[0])["stable_id"] != "private" || anyMap(privateSkills[1])["stable_id"] != "shared" {
+		t.Fatalf("private app entry should only carry scoped and global bundled deps: %#v", privateBundled)
 	}
 }
 
@@ -7270,10 +7912,10 @@ func TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanMaclawAppInstall() initial error = %v", err)
 	}
-	if !initialPlan.HasMissingRequired || !initialPlan.HasBlockingDependency {
-		t.Fatalf("initial plan should block on missing workflow dependency: %#v", initialPlan)
+	if !initialPlan.HasMissingRequired || initialPlan.HasBlockingDependency {
+		t.Fatalf("initial plan should report missing installable workflow dependency without hard blocking: %#v", initialPlan)
 	}
-	if dep := maclawAppPlanDepForTest(initialPlan, "expense-workflow"); dep == nil || dep.Action != "blocked" || dep.Health != "missing" {
+	if dep := maclawAppPlanDepForTest(initialPlan, "expense-workflow"); dep == nil || dep.Action != "install" || dep.Health != "missing" {
 		t.Fatalf("workflow dependency should be missing before repair: %#v", dep)
 	}
 	if _, err := app.RecordMaclawAppInstall(packageJSON, "enterprise_hub"); err == nil || !strings.Contains(err.Error(), "required Skill dependencies") {
@@ -8044,7 +8686,7 @@ func TestPlanMaclawAppInstallTreatsBindingSkillAsDependency(t *testing.T) {
 		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
 	}
 	dep := maclawAppPlanDepForTest(plan, "doc-archive")
-	if dep == nil || dep.Kind != "runtime_skill" || !dep.Required || dep.Action != "blocked" {
+	if dep == nil || dep.Kind != "runtime_skill" || !dep.Required || dep.Action != "install" || plan.HasBlockingDependency {
 		t.Fatalf("binding.skill should be a required runtime dependency: %#v", dep)
 	}
 }
@@ -8091,14 +8733,17 @@ func TestPlanMaclawAppInstallScopesSharedDependencyRequirementPerApp(t *testing.
 			optionalDep = dep
 		}
 	}
-	if requiredDep == nil || len(requiredDep.AppIDs) != 1 || requiredDep.AppIDs[0] != "required-app" || requiredDep.Action != "blocked" {
-		t.Fatalf("required app should retain its blocking shared dependency: %#v", plan.Dependencies)
+	if requiredDep == nil || len(requiredDep.AppIDs) != 1 || requiredDep.AppIDs[0] != "required-app" || requiredDep.Action != "install" {
+		t.Fatalf("required app should retain its installable shared dependency: %#v", plan.Dependencies)
 	}
 	if optionalDep == nil || len(optionalDep.AppIDs) != 1 || optionalDep.AppIDs[0] != "optional-app" || optionalDep.Action != "optional_missing" || optionalDep.Required {
 		t.Fatalf("optional app should retain optional shared dependency: %#v", plan.Dependencies)
 	}
 	if hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, "optional-app") {
 		t.Fatalf("optional app should not be blocked by required app dependency: %#v", plan.Dependencies)
+	}
+	if hasBlockingMaclawAppRequiredDependencyForApp(plan.Dependencies, "required-app") {
+		t.Fatalf("installable required app dependency should not be a hard blocker: %#v", plan.Dependencies)
 	}
 }
 
@@ -8183,7 +8828,7 @@ func TestPlanMaclawAppInstallTreatsApprovalBindingsAsWorkflowDependencies(t *tes
 		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
 	}
 	dep := maclawAppPlanDepForTest(plan, "binding-workflow")
-	if dep == nil || dep.Kind != "workflow_skill" || dep.Version != "3.0.0" || !dep.Required || dep.Action != "blocked" {
+	if dep == nil || dep.Kind != "workflow_skill" || dep.Version != "3.0.0" || !dep.Required || dep.Action != "install" || plan.HasBlockingDependency {
 		t.Fatalf("approval binding workflow should be a required dependency: %#v", dep)
 	}
 }
