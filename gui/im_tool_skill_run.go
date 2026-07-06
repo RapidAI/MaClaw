@@ -110,14 +110,16 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 			}
 			if step.Error != "" {
 				errSnippet := step.Error
-				if len(errSnippet) > 80 {
-					errSnippet = errSnippet[:80] + "..."
+				if len(errSnippet) > 200 {
+					errSnippet = errSnippet[:200] + "..."
 				}
 				line += fmt.Sprintf(" [error: %s]", errSnippet)
 			}
 			b.WriteString(line + "\n")
 			// Return step output so the LLM can see actual results (e.g.
 			// weather data, API responses) instead of just "success".
+			// Truncation takes from the TAIL: error messages, file paths,
+			// and final status lines typically appear at the end of output.
 			if stepOut := strings.TrimSpace(step.Output); stepOut != "" && totalOutputLen < maxTotalOutputLen {
 				remaining := maxTotalOutputLen - totalOutputLen
 				limit := maxStepOutputLen
@@ -127,8 +129,11 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 				runes := []rune(stepOut)
 				b.WriteString("```\n")
 				if len(runes) > limit {
-					b.WriteString(string(runes[:limit]))
-					b.WriteString("\n... (truncated)\n")
+					b.WriteString("... (truncated, showing last ")
+					b.WriteString(fmt.Sprintf("%d", limit))
+					b.WriteString(" chars)\n")
+					b.WriteString(string(runes[len(runes)-limit:]))
+					b.WriteString("\n")
 					totalOutputLen += limit
 				} else {
 					b.WriteString(stepOut)
@@ -136,6 +141,28 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 					totalOutputLen += len(runes)
 				}
 				b.WriteString("```\n")
+			}
+			// For failed steps: surface dedicated stderr lines if available.
+			// Stderr contains the most diagnostic content (tracebacks, compile
+			// errors) but may be drowned out by verbose stdout in the combined
+			// output. Showing it separately ensures the LLM can diagnose.
+			if step.IsFailed() && len(step.StderrLastLines) > 0 && totalOutputLen < maxTotalOutputLen {
+				stderrText := strings.TrimSpace(strings.Join(step.StderrLastLines, "\n"))
+				if stderrText != "" {
+					remaining := maxTotalOutputLen - totalOutputLen
+					limit := 512
+					if remaining < limit {
+						limit = remaining
+					}
+					runes := []rune(stderrText)
+					if len(runes) > limit {
+						stderrText = string(runes[len(runes)-limit:])
+					}
+					b.WriteString("stderr:\n```\n")
+					b.WriteString(stderrText)
+					b.WriteString("\n```\n")
+					totalOutputLen += len([]rune(stderrText))
+				}
 			}
 		}
 	}
@@ -466,6 +493,11 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 		log.Printf("[get_skill_run] done run=%s owner=%q status=%q elapsed=%s", runID, ownerID, statusLabel, time.Since(startedAt).Round(time.Millisecond))
 	}
 	if err != nil {
+		// Distinguish "not found" (may have been pruned after completion) from
+		// other errors to avoid confusing the LLM into thinking the skill crashed.
+		if strings.Contains(err.Error(), "not found") {
+			return fmt.Sprintf("run_id %q 不存在（可能已执行完毕并被清理）。如果 Skill 之前已返回成功结果，无需再次查询。", runID)
+		}
 		return fmt.Sprintf("读取 Skill 状态失败: %s（run_id=%s）", err.Error(), runID)
 	}
 	var b strings.Builder

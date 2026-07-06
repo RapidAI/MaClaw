@@ -853,6 +853,15 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 		return browserAutomationSkillRejectedError(skills[idx].Name)
 	}
 
+	// Invalidate the security scan cache: the content hash changed (new steps),
+	// so the next StartRunForOwner → ensureSkillSecurityScanned will trigger a
+	// fresh scan before execution. Without this, a stale "allowed" cache from
+	// the previous version could let new (potentially malicious) steps execute
+	// without re-scanning.
+	if skillDir := strings.TrimSpace(skills[idx].SkillDir); skillDir != "" {
+		_ = removeSkillScanCacheFile(skillDir, skills[idx].Name)
+	}
+
 	return e.saveSkills(skills)
 }
 
@@ -1444,7 +1453,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			}
 		}
 		stepCopy = withSkillPreferredShell(stepCopy, preparedEntry.PreferredShell)
-		resolvedStep, _, resolveErr := resolveSkillStep(stepCopy, vars, preparedEntry.SkillDir, prep.Params)
+		resolvedStep, resolveErr := resolveSkillStep(stepCopy, vars, preparedEntry.SkillDir, prep.Params)
 		if resolveErr != nil {
 			hasFailure = true
 			errMsg := fmt.Sprintf("step %d (%s) parameter binding failed: %s", i+1, step.Action, resolveErr.Error())
@@ -4950,6 +4959,13 @@ func copyDirContentsForSkillRun(src, dst string) error {
 }
 
 func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) error {
+	return copyDirContentsRecursive(src, dst, includeRuntimeArtifacts, nil)
+}
+
+// copyDirContentsRecursive is the internal recursive implementation.
+// visitedDirs tracks real paths of directories we've already copied to
+// detect circular symlinks (e.g., pnpm's node_modules structure).
+func copyDirContentsRecursive(src, dst string, includeRuntimeArtifacts bool, visitedDirs map[string]bool) error {
 	srcAbs, err := filepath.Abs(src)
 	if err != nil {
 		return err
@@ -4960,6 +4976,20 @@ func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) e
 	}
 	srcAbs = filepath.Clean(srcAbs)
 	dstAbs = filepath.Clean(dstAbs)
+
+	// Cycle detection: prevent infinite recursion from circular symlinks.
+	if visitedDirs == nil {
+		visitedDirs = make(map[string]bool)
+	}
+	realSrc := srcAbs
+	if resolved, err := filepath.EvalSymlinks(srcAbs); err == nil {
+		realSrc = resolved
+	}
+	if visitedDirs[realSrc] {
+		// Already copied this directory — circular symlink detected, skip.
+		return nil
+	}
+	visitedDirs[realSrc] = true
 	return filepath.WalkDir(srcAbs, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -5008,7 +5038,7 @@ func copyDirContentsWithOptions(src, dst string, includeRuntimeArtifacts bool) e
 				// Symlink to directory: create the directory in target and
 				// let WalkDir traverse it naturally (it won't — WalkDir
 				// doesn't follow dir symlinks). Copy recursively.
-				return copyDirContentsWithOptions(resolved, target, includeRuntimeArtifacts)
+				return copyDirContentsRecursive(resolved, target, includeRuntimeArtifacts, visitedDirs)
 			}
 			// Symlink to file: copy the resolved file content.
 			data, readErr := os.ReadFile(resolved)

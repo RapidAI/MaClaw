@@ -65,12 +65,23 @@ type repetitionFilter struct {
 
 	halted          bool
 	suppressedRunes int
+	inCodeBlock     bool // code blocks (``` fenced) bypass repetition detection
 }
 
 func newRepetitionFilter(downstream llm.TokenCallback) *repetitionFilter {
 	return &repetitionFilter{downstream: downstream}
 }
 
+// trackCodeBlockFences toggles inCodeBlock when a ``` fence is encountered.
+// Counts occurrences of ``` in the text (each toggles the state).
+func (f *repetitionFilter) trackCodeBlockFences(text string) {
+	for i := 0; i < len(text)-2; i++ {
+		if text[i] == '`' && text[i+1] == '`' && text[i+2] == '`' {
+			f.inCodeBlock = !f.inCodeBlock
+			i += 2 // skip past the 3 backticks
+		}
+	}
+}
 func (f *repetitionFilter) Write(delta string) {
 	if f.halted {
 		f.suppressedRunes += utf8.RuneCountInString(delta)
@@ -135,8 +146,17 @@ func (f *repetitionFilter) drainSentence(text string, sentEnd int) {
 	f.pending.Reset()
 	f.pending.WriteString(remainder)
 
+	// Toggle code block state on ``` fences.
+	f.trackCodeBlockFences(sentence)
+
 	// Emit first, detect after (same as original design).
 	f.downstream(sentence)
+
+	// Skip repetition tracking inside code blocks — legitimate data (CSV,
+	// tables, logs) often has repeated rows that aren't LLM degeneration.
+	if f.inCodeBlock {
+		return
+	}
 
 	normalized := normalizeSentence(sentence)
 	if utf8.RuneCountInString(normalized) < repMinSentenceRunes {
@@ -172,8 +192,16 @@ func (f *repetitionFilter) drainParagraph(text string, breakStart int) {
 	f.pending.Reset()
 	f.pending.WriteString(remainder)
 
+	// Toggle code block state on ``` fences.
+	f.trackCodeBlockFences(emitPart)
+
 	// Emit the content including the break whitespace.
 	f.downstream(emitPart)
+
+	// Skip repetition tracking inside code blocks.
+	if f.inCodeBlock {
+		return
+	}
 
 	// Track the paragraph (content before the break, not the break itself).
 	paraText := text[:breakStart]

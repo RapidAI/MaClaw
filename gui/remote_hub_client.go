@@ -1415,7 +1415,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			return
 		}
 
-		// Interrupt check: if the agent loop is already running (chatLoopMu held)
+		// Interrupt check: if the agent loop is already running (session mutex held)
 		// and this message is a cancel/merge/status signal, handle it immediately
 		// without waiting for the lock.
 		if handler.shouldTryInlineInterrupt(payload) {
@@ -1449,7 +1449,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			}
 			if result.Queued && result.Reply != "" {
 				// Queue - send instant feedback, then fall through
-				// to HandleIMMessageWithProgress (which will block on chatLoopMu
+				// to HandleIMMessageWithProgress (which will block on the session mutex
 				// until the current loop finishes, then process normally).
 				resp := &IMAgentResponse{
 					Text:        result.Reply,

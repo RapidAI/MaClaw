@@ -75,6 +75,15 @@ func (r *stubUserRepo) UpdateSmartRoute(_ context.Context, _ string, _ bool) err
 func (r *stubUserRepo) MarkEmailVerified(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (r *stubUserRepo) GetByTenantIdentity(_ context.Context, _, _, _ string) (*store.User, error) {
+	return nil, nil
+}
+func (r *stubUserRepo) ListIdentitiesByUser(_ context.Context, _, _ string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (r *stubUserRepo) UpsertIdentity(_ context.Context, _ *store.UserIdentity) error {
+	return nil
+}
 
 func TestNewReturnsNotifierWithNilBot(t *testing.T) {
 	n := New("", "", &stubUserRepo{}, nil, nil)

@@ -389,9 +389,31 @@ func defaultCheckNpmInstalledInDir(name, dir string) bool {
 // installNpmPkgInDir installs an npm package, optionally in a specific
 // directory. When dir is non-empty, `npm install` runs with Dir set,
 // installing locally to that directory (no elevated permissions needed).
+//
+// Concurrent installs to the same directory are serialized via npmDirLocks
+// to prevent node_modules corruption (npm is not concurrency-safe).
 var installNpmPkgInDir = defaultInstallNpmPkgInDir
 
+// npmDirLocks serializes npm install operations per directory.
+// npm's node_modules management is not concurrency-safe — concurrent
+// installs to the same directory can corrupt package-lock.json and
+// node_modules structure.
+var npmDirLocks sync.Map // map[string]*sync.Mutex
+
+func npmDirLock(dir string) *sync.Mutex {
+	key := strings.ToLower(filepath.Clean(strings.TrimSpace(dir)))
+	if key == "" {
+		key = "__cwd__"
+	}
+	actual, _ := npmDirLocks.LoadOrStore(key, &sync.Mutex{})
+	return actual.(*sync.Mutex)
+}
+
 func defaultInstallNpmPkgInDir(pkg, dir string) error {
+	mu := npmDirLock(dir)
+	mu.Lock()
+	defer mu.Unlock()
+
 	cmd := coretool.Command("npm", "install", "--silent", pkg)
 	if dir != "" {
 		cmd.Dir = dir

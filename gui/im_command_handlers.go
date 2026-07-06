@@ -365,7 +365,7 @@ func localizedIMCancelMessage(lang, kind, preview string) string {
 // The query runs with a minimal tool set (web_search, web_fetch, read_file,
 // memory) and does not pollute the main conversation with intermediate steps.
 //
-// Concurrency: /btw runs before chatLoopMu (by design 鈥?side queries should
+// Concurrency: /btw runs outside the per-session loop mutex (by design — side queries should
 // not block on the main loop). Results are NOT appended to the main history
 // to avoid racing with a concurrent main loop's Save.
 func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {

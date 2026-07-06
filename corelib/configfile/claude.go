@@ -132,6 +132,11 @@ func writeAnthropicSettings(settingsPath, apiKey, baseURL, modelID string) error
 		delete(env, "API_TIMEOUT_MS")
 	}
 	if modelID != "" {
+		// Normalize CodeGen "auto" alias → "qax-codegen/Auto" for Anthropic
+		// protocol settings. The Anthropic endpoint requires the canonical name.
+		if corelib.IsCodeGenURL(baseURL) {
+			modelID = corelib.NormalizeCodeGenModel(modelID)
+		}
 		env["ANTHROPIC_MODEL"] = modelID
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelID
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelID

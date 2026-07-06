@@ -150,7 +150,7 @@ func (a *ScriptPluginAdapter) execute(args map[string]interface{}) (string, erro
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmdArgs := append(a.scriptArgs[:len(a.scriptArgs):len(a.scriptArgs)])
+	cmdArgs := append([]string(nil), a.scriptArgs...)
 	cmd := exec.Command(a.command, cmdArgs...)
 
 	// Set working directory to plugin dir if available.

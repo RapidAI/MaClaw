@@ -40,6 +40,13 @@ func (r tenantEmailTestUsers) DeleteByEmail(context.Context, string) error      
 func (r tenantEmailTestUsers) DeleteByTenantEmail(context.Context, string, string) error { return nil }
 func (r tenantEmailTestUsers) UpdateSmartRoute(context.Context, string, bool) error      { return nil }
 func (r tenantEmailTestUsers) MarkEmailVerified(context.Context, string, string) error   { return nil }
+func (r tenantEmailTestUsers) GetByTenantIdentity(context.Context, string, string, string) (*store.User, error) {
+	return nil, nil
+}
+func (r tenantEmailTestUsers) ListIdentitiesByUser(context.Context, string, string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+func (r tenantEmailTestUsers) UpsertIdentity(context.Context, *store.UserIdentity) error { return nil }
 
 func TestResolveUniqueTenantByEmail(t *testing.T) {
 	repo := tenantEmailTestUsers{users: []*store.User{

@@ -1,0 +1,11 @@
+# 2026/07/03 06:39:05.891817 [TestProperty3_RevokedNotificationInvisibility] [rapid] draw numNotifs: 2
+# 2026/07/03 06:39:05.891817 [TestProperty3_RevokedNotificationInvisibility] [rapid] draw shouldRevoke: false
+# 2026/07/03 06:39:05.891817 [TestProperty3_RevokedNotificationInvisibility] [rapid] draw shouldRevoke: false
+# 2026/07/03 06:39:05.891817 [TestProperty3_RevokedNotificationInvisibility] get unread: SQL logic error: no such table: machines (1)
+# 
+v0.4.8#3423067160337597991
+0x0
+0x0
+0x0
+0x0
+0x0

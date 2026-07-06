@@ -387,14 +387,6 @@ func (a *App) ensureRemoteInfra() {
 	})
 }
 
-// initRemoteInfra initializes ALL subsystems (Layer 0 + Layer 1 + Layer 2).
-// Kept for backward compatibility -goes through the proper Once guards.
-func (a *App) initRemoteInfra() {
-	a.ensureRemoteInfra()
-	a.ensureInteractionInfra()
-	a.initOnDemandInfra()
-}
-
 // ---------------------------------------------------------------------------
 // Layer 0 -Core infrastructure: minimal set needed for Hub connection and
 // basic IM message routing. Initialized at startup.
@@ -584,31 +576,6 @@ func (a *App) initInteractionInfra() {
 	a.logMemorySnapshot("initInteractionInfra:critical-done")
 
 	// Non-critical interaction services now initialize on-demand via ensure* helpers.
-}
-
-// initDeferredInteractionInfra remains as a compatibility no-op. Non-critical
-// interaction components are now created lazily at first use instead of in the
-// background during idle startup/bind flows.
-func (a *App) initDeferredInteractionInfra() {
-}
-
-// ---------------------------------------------------------------------------
-// Layer 2 -On-demand infrastructure: heavy or rarely-used components
-// initialized only when the user explicitly accesses the feature.
-// ---------------------------------------------------------------------------
-func (a *App) initOnDemandInfra() {
-	a.ensureInteractionInfra()
-	a.ensureScheduledTaskManager()
-	a.ensureMCPAutoDiscovery()
-	a.ensureTemplateManager()
-	a.ensureMDNSScanner()
-	a.ensureTaskOrchestrator2()
-}
-
-// ensureFullInfra initializes all layers. Alias for initRemoteInfra
-// that goes through proper Once guards.
-func (a *App) ensureFullInfra() {
-	a.initRemoteInfra()
 }
 
 // --- Fine-grained ensure helpers for Layer 2 components ---
@@ -2382,10 +2349,18 @@ func (a *App) buildClaudeLaunchEnv(
 			env["ANTHROPIC_BASE_URL"] = strings.TrimSpace(selectedModel.ModelUrl)
 		}
 		if selectedModel.ModelId != "" {
-			env["ANTHROPIC_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
-			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
-			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
-			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
+			modelID := strings.TrimSpace(selectedModel.ModelId)
+			// CodeGen's model list includes both "auto" (OpenAI shorthand) and
+			// "qax-codegen/Auto" (canonical name). Claude Code uses Anthropic
+			// protocol which requires the canonical form. Normalize here so
+			// users who pick "auto" from the model list don't get a 400.
+			if corelib.IsCodeGenURL(selectedModel.ModelUrl) {
+				modelID = corelib.NormalizeCodeGenModel(modelID)
+			}
+			env["ANTHROPIC_MODEL"] = modelID
+			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelID
+			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelID
+			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelID
 		}
 	}
 
@@ -3635,8 +3610,10 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		}
 	case modelProviderCodegen:
 		// CodeGen: use the configured Anthropic-compatible provider directly.
+		// Normalize "auto" → "qax-codegen/Auto" since the Anthropic endpoint
+		// requires the canonical model name.
 		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
-		modelId := selectedModel.ModelId
+		modelId := corelib.NormalizeCodeGenModel(selectedModel.ModelId)
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId

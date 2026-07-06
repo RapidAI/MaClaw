@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
 	"regexp"
@@ -385,7 +386,19 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 			if len(raw) > 32000 {
 				raw = raw[:32000] + "\n...(truncated)"
 			}
-			if summary := summarizer(raw); summary != "" {
+			// Summarizer is an LLM call — protect against hangs with a timeout.
+			// If the summarizer doesn't return within 15s, fall back to the
+			// static placeholder. This prevents the agent loop from blocking
+			// indefinitely when the LLM API is overloaded/unreachable.
+			summaryCh := make(chan string, 1)
+			go func() { summaryCh <- summarizer(raw) }()
+			var summary string
+			select {
+			case summary = <-summaryCh:
+			case <-time.After(15 * time.Second):
+				log.Printf("[trim-conversation] summarizer timed out after 15s, using fallback placeholder")
+			}
+			if summary != "" {
 				// Cap summary to ~2000 tokens (~5000 chars) to avoid blowing the budget.
 				if len(summary) > 5000 {
 					runes := []rune(summary)

@@ -21,7 +21,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 		return "", fmt.Errorf("no active session to cancel")
 	}
 	ctx.Cancel()
-	// Wait for the loop goroutine to finish so the chatLoopMu is released
+	// Wait for the loop goroutine to finish so the per-session mutex is released
 	// before the caller sends a new message.
 	select {
 	case <-ctx.DoneC:

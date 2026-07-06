@@ -119,7 +119,6 @@ type IMMessageHandler struct {
 	currentLoopCtx *LoopContext
 	lastUserText   string
 	lastUserID     string
-	chatLoopMu     sync.Mutex // DEPRECATED global fallback; per-session mutex in sessionLoops takes precedence
 
 	// Background loop manager and session monitor (lazily initialized via setters).
 	bgManager      *BackgroundLoopManager

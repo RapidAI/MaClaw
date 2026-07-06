@@ -9152,6 +9152,26 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     setRunState('error');
                     return;
                 }
+                // Auto-install uninstalled dependencies (action="install") before running.
+                // Without this, the plan says "installable" but no install is triggered,
+                // and RunNLSkillAsync fails with "skill not found".
+                const appIDs = appDependencyVerificationAppIDs(app);
+                const needsAutoInstall = (dependencyPlan?.dependencies || []).some((dep: any) => {
+                    if (!backendDependencyMatchesAppIDs(dep, appIDs)) return false;
+                    return !dep.installed && String(dep.action || '').trim() === 'install' && dep.required !== false;
+                });
+                if (needsAutoInstall) {
+                    setValidationMessage(text.installingDependencies);
+                    const installResult = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
+                    setRuntimeDependencyPlan(installResult || null);
+                    activeRunDependencyPlanRef.current = installResult || null;
+                    if (runtimeInstallPlanBlocked(installResult, app)) {
+                        setRuntimeDependencyCheckState('blocked');
+                        setValidationMessage(runtimeInstallPlanBlockMessage(app, installResult, text, lang));
+                        setRunState('error');
+                        return;
+                    }
+                }
                 setRuntimeDependencyCheckState('ready');
             } catch (error: any) {
                 setRuntimeDependencyPlan(null);

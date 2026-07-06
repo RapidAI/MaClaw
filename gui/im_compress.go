@@ -1,33 +1,26 @@
 package main
 
-// /compress command handler and auto-compression integration for the GUI agent loop.
+// /compress command handler for the GUI agent loop.
 //
 // This module bridges the corelib/context.Compressor with the GUI's conversation
-// memory system. It provides:
-//   - handleCompressCommand: manual /compress slash command
-//   - autoCompressConversation: auto-compression check before each LLM call
+// memory system, providing the handleCompressCommandWithLang function for the
+// manual /compress slash command.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+
 	ctxcompress "github.com/RapidAI/CodeClaw/corelib/context"
 )
-
-// handleCompressCommand handles the /compress slash command.
-// It loads the current conversation history, compresses it using the
-// corelib/context.Compressor, and saves the compressed history back.
-func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse {
-	return h.handleCompressCommandWithLang(userID, "zh-Hans")
-}
 
 func (h *IMMessageHandler) handleCompressCommandWithLang(userID, lang string) *IMAgentResponse {
 	history := h.memory.Load(userID)
@@ -100,82 +93,6 @@ func localizedIMCompressSuccessMessage(lang, marker string) string {
 	}
 }
 
-// autoCompressConversation checks if the conversation should be auto-compressed
-// before an LLM call. If compression is needed, it compresses the conversation
-// in-place and returns the compressed version. Otherwise returns the original.
-//
-// This is called alongside trimConversation in the agent loop. The corelib
-// compressor provides intelligent summarization-based compression, while
-// trimConversation handles the final token budget enforcement.
-//
-// IMPORTANT: The ctxcompress.Message type only carries {Role, Content}. The
-// round-trip through the compressor strips reasoning_content, tool_calls, and
-// tool_call_id. DeepSeek V4+ thinking mode requires reasoning_content to be
-// passed back on ALL assistant messages when tools are present in the request
-// (not just on messages with tool_calls). To avoid breaking this API contract,
-// we bypass compression entirely when any message in the conversation carries
-// tool_calls. The compressor is a best-effort optimization; trimConversation
-// is the authoritative budget enforcer and handles these messages correctly
-// (it drops whole groups rather than corrupting individual fields).
-func autoCompressConversation(
-	conversation []interface{},
-	cfg corelib.MaclawLLMConfig,
-	httpClient *http.Client,
-) []interface{} {
-	if len(conversation) <= 5 {
-		return conversation
-	}
-
-	// Skip compression if any assistant message has tool_calls. The lossy
-	// Message{Role,Content} round-trip strips reasoning_content entirely
-	// (field disappears from the map). DeepSeek V4+ thinking mode requires
-	// reasoning_content on ALL assistant messages when tools are present —
-	// a missing field causes HTTP 400, even if the value would be empty.
-	// Empirically verified: field present with "" → 200; field absent → 400.
-	for _, m := range conversation {
-		mm, ok := m.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if role, _ := mm["role"].(string); role != "assistant" {
-			continue
-		}
-		if mm["tool_calls"] != nil {
-			// This conversation has a tool-call turn. The round-trip
-			// through ctxcompress.Message would strip reasoning_content
-			// and tool_calls fields. Skip compression entirely.
-			return conversation
-		}
-	}
-
-	// Convert to context.Message for the compressor.
-	messages := interfaceSliceToContextMessages(conversation)
-	if len(messages) == 0 {
-		return conversation
-	}
-
-	compressor := ctxcompress.NewCompressor(ctxcompress.CompressConfig{
-		ThresholdRatio:   0.80,
-		ProtectedTurns:   5,
-		MaxContextTokens: cfg.EffectiveContextTokens(),
-	}, makeSummarizeCallback(cfg, httpClient))
-
-	if !compressor.ShouldCompress(messages) {
-		return conversation
-	}
-
-	result, err := compressor.Compress(messages)
-	if err != nil {
-		log.Printf("[auto-compress] compression failed, skipping: %v", err)
-		return conversation
-	}
-
-	log.Printf("[auto-compress] %s", result.MarkerText)
-
-	// Convert back to []interface{} for the agent loop.
-	return contextMessagesToInterfaceSlice(result.Messages)
-}
-
 // makeSummarizeCallback creates an LLM summarization callback for the compressor.
 func makeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) (string, error) {
 	return func(text string) (string, error) {
@@ -234,28 +151,6 @@ func conversationToContextMessages(entries []agent.ConversationEntry) []ctxcompr
 	return messages
 }
 
-// interfaceSliceToContextMessages converts []interface{} (agent loop format)
-// to []context.Message for the compressor.
-// IMPORTANT: This conversion is lossy — it strips reasoning_content, tool_calls,
-// and tool_call_id. The compressor only operates on text content for
-// summarization purposes. The caller (autoCompressConversation) must preserve
-// messages that carry API-contract fields (reasoning_content + tool_calls)
-// by excluding them from compression.
-func interfaceSliceToContextMessages(msgs []interface{}) []ctxcompress.Message {
-	messages := make([]ctxcompress.Message, 0, len(msgs))
-	for _, m := range msgs {
-		role, content := extractRoleContent(m)
-		if role == "" {
-			continue
-		}
-		messages = append(messages, ctxcompress.Message{
-			Role:    role,
-			Content: content,
-		})
-	}
-	return messages
-}
-
 // contextMessagesToConversation converts []context.Message back to []agent.ConversationEntry.
 func contextMessagesToConversation(messages []ctxcompress.Message) []agent.ConversationEntry {
 	entries := make([]agent.ConversationEntry, 0, len(messages))
@@ -266,19 +161,6 @@ func contextMessagesToConversation(messages []ctxcompress.Message) []agent.Conve
 		})
 	}
 	return entries
-}
-
-// contextMessagesToInterfaceSlice converts []context.Message to []interface{}
-// for the agent loop conversation format.
-func contextMessagesToInterfaceSlice(messages []ctxcompress.Message) []interface{} {
-	result := make([]interface{}, 0, len(messages))
-	for _, m := range messages {
-		result = append(result, map[string]string{
-			"role":    m.Role,
-			"content": m.Content,
-		})
-	}
-	return result
 }
 
 // entryContentToString extracts a string representation from a agent.ConversationEntry's Content field.
@@ -295,26 +177,5 @@ func entryContentToString(content interface{}) string {
 			return fmt.Sprintf("%v", v)
 		}
 		return string(data)
-	}
-}
-
-// extractRoleContent extracts role and content from an interface{} message.
-func extractRoleContent(m interface{}) (string, string) {
-	switch v := m.(type) {
-	case map[string]interface{}:
-		role, _ := v["role"].(string)
-		switch c := v["content"].(type) {
-		case string:
-			return role, c
-		case nil:
-			return role, ""
-		default:
-			data, _ := json.Marshal(c)
-			return role, string(data)
-		}
-	case map[string]string:
-		return v["role"], v["content"]
-	default:
-		return "", ""
 	}
 }

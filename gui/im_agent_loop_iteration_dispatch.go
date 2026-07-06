@@ -206,7 +206,6 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		ConfigMax:               opts.ConfigMax,
 		ChatFinalizeGrace:       opts.ChatFinalizeGrace,
 		Config:                  opts.Config,
-		HTTPClient:              opts.HTTPClient,
 		Conversation:            *opts.Conversation,
 		Tools:                   *opts.Tools,
 		ToolsTokenBudget:        *opts.ToolsTokenBudget,

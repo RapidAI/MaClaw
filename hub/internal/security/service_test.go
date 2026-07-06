@@ -156,6 +156,18 @@ func (m *mockUserRepo) MarkEmailVerified(_ context.Context, _, _ string) error {
 	return nil
 }
 
+func (m *mockUserRepo) GetByTenantIdentity(_ context.Context, _, _, _ string) (*store.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserRepo) ListIdentitiesByUser(_ context.Context, _, _ string) ([]*store.UserIdentity, error) {
+	return nil, nil
+}
+
+func (m *mockUserRepo) UpsertIdentity(_ context.Context, _ *store.UserIdentity) error {
+	return nil
+}
+
 // --- Test helpers ---
 
 func newTestService(t *testing.T) (*SecurityService, *mockAuditRepo) {

@@ -2323,7 +2323,7 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	}
 	// Cancel any active agent loop first, so it does not write back into
 	// memory after we clear it. This mirrors IM-channel behavior where /clear
-	// is serialized behind chatLoopMu and only runs after the loop exits.
+	// is serialized behind the per-session mutex and only runs after the loop exits.
 	_, _ = handler.CancelSessionForUser(targetUserID)
 	handler.memory.Clear(targetUserID)
 	handler.clearPerUserSessionState(targetUserID)

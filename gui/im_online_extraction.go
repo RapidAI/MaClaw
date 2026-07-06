@@ -54,7 +54,7 @@ func (h *IMMessageHandler) triggerOnlineExtraction(userID string, history []agen
 }
 
 // triggerOnlineExtractionDeferred is like triggerOnlineExtraction but waits
-// for chatLoopMu before starting the LLM call. This ensures the extraction
+// for the per-session loop mutex before starting the LLM call. This ensures the extraction
 // yields to any new user message that arrives before it begins, preventing
 // background LLM calls from competing with the main agent loop for API bandwidth.
 func (h *IMMessageHandler) triggerOnlineExtractionDeferred(userID string, history []agent.ConversationEntry) {

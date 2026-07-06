@@ -591,6 +591,33 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		}
 	}
 
+	// Pre-flight: validate OpenAI proxy availability early (synchronous path)
+	// so the LLM receives an immediate actionable error instead of discovering
+	// the failure asynchronously after polling run status.
+	if r.executor != nil && r.executor.app != nil {
+		// Use the same step selection that PrepareRunnerExecution will compute,
+		// to avoid false positives for api_workflow skills where only some
+		// operations need the proxy.
+		selectedForProbe, _ := cskill.ResolveSelectedStepLabels(target, runArgs)
+		probeSteps := cskill.PrecheckExecutableSteps(
+			cskill.SelectedExecutableSteps(target.Steps, selectedForProbe), templateVars)
+		if corelib.NeedsOpenAIProxyAuto(target.RequiredEnv, extraEnv, probeSteps, target.SkillDir) {
+			llmCfg := r.executor.app.GetMaclawLLMConfig()
+			proxyCfg := corelib.OpenAIProxyConfig{
+				URL:      llmCfg.URL,
+				Key:      llmCfg.Key,
+				Model:    llmCfg.Model,
+				Protocol: llmCfg.Protocol,
+				WireAPI:  llmCfg.WireAPI,
+				AuthType: llmCfg.AuthType,
+			}
+			if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
+				return "", fmt.Errorf("skill %q requires OpenAI-compatible API access, but %s [action: configure_llm]",
+					skillName, err)
+			}
+		}
+	}
+
 	// Shared runner preparation handles step selection, parameter completion,
 	// requirements, implicit placeholders, and local file diagnostics.
 	prepStart := time.Now()
@@ -1001,6 +1028,15 @@ func (r *SkillRunner) ListRuns() []SkillRunStatus {
 
 // CleanupFinished removes old finished run records, keeping the newest maxKeep items.
 func (r *SkillRunner) CleanupFinished(maxKeep int) {
+	// Fast path: cheap read-lock size check avoids write-lock contention
+	// when no pruning is needed (the common case for most users).
+	r.mu.RLock()
+	needsPrune := len(r.runs) > maxKeep
+	r.mu.RUnlock()
+	if !needsPrune {
+		return
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.runs) <= maxKeep {
@@ -1391,11 +1427,22 @@ func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]str
 	return result
 }
 
-func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, []string, error) {
+func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, error) {
 	// Delegate to the shared corelib ResolveStep, passing the GUI's
 	// platform-aware quoteSkillInputForShell as the quoting function.
 	// This ensures alias resolution, CLI args, craft_tool injection,
 	// and working_dir resolution all use the single shared code path.
+	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForStep(step))
+	if err != nil {
+		return step, err
+	}
+	return result.Step, nil
+}
+
+// resolveSkillStepWithWarnings is like resolveSkillStep but also returns
+// parameter binding warnings (e.g. "参数 'foo' 未被 Skill 声明"). Used by
+// executeAsync to propagate bind warnings into the run status for LLM visibility.
+func resolveSkillStepWithWarnings(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, []string, error) {
 	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForStep(step))
 	if err != nil {
 		return step, nil, err
@@ -1746,6 +1793,11 @@ func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycle
 		run.status.Warnings = append(run.status.Warnings, err.Error())
 		r.mu.Unlock()
 	}
+
+	// Prune old finished runs to prevent unbounded memory growth.
+	// Each skillRun holds step outputs, templateVars, runArgs, liveOutput.
+	// Without pruning, hundreds of runs accumulate over a long session.
+	r.CleanupFinished(50)
 }
 
 func runHasVerifiedArtifactLocked(status *SkillRunStatus) bool {
@@ -2379,33 +2431,46 @@ func prepareSkillRunWorkspace(runID, skillName, skillDir string) (string, func()
 	return workspace, cleanup, nil
 }
 
-var cleanupStaleSkillRunWorkspacesOnce sync.Once
+// cleanupStaleSkillRunWorkspacesLastRun tracks the last cleanup time.
+// Cleanup runs at most once per hour (not sync.Once) to handle:
+// 1. Retained workspaces (artifacts) that are later pruned from r.runs by CleanupFinished
+// 2. Long-running maclaw sessions where orphaned workspaces accumulate
+var (
+	cleanupStaleSkillRunWorkspacesMu      sync.Mutex
+	cleanupStaleSkillRunWorkspacesLastRun time.Time
+)
 
 func cleanupStaleSkillRunWorkspaces() {
-	cleanupStaleSkillRunWorkspacesOnce.Do(func() {
-		root := skillRunWorkspaceRoot()
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return
+	cleanupStaleSkillRunWorkspacesMu.Lock()
+	if time.Since(cleanupStaleSkillRunWorkspacesLastRun) < time.Hour {
+		cleanupStaleSkillRunWorkspacesMu.Unlock()
+		return
+	}
+	cleanupStaleSkillRunWorkspacesLastRun = time.Now()
+	cleanupStaleSkillRunWorkspacesMu.Unlock()
+
+	root := skillRunWorkspaceRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		cutoff := time.Now().Add(-24 * time.Hour)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			path := filepath.Join(root, entry.Name())
-			info, err := entry.Info()
-			if err != nil || info.ModTime().After(cutoff) {
-				continue
-			}
-			if !pathWithinDir(root, path) {
-				continue
-			}
-			if err := os.RemoveAll(path); err != nil {
-				log.Printf("[skill-runner] stale workspace cleanup failed dir=%q err=%v", path, err)
-			}
+		path := filepath.Join(root, entry.Name())
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
 		}
-	})
+		if !pathWithinDir(root, path) {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("[skill-runner] stale workspace cleanup failed dir=%q err=%v", path, err)
+		}
+	}
 }
 
 func skillRunWorkspaceRoot() string {
@@ -2838,10 +2903,23 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		r.mu.Unlock()
 
 		step = withSkillPreferredShell(step, skill.PreferredShell)
-		resolvedStep, bindWarnings, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
+		resolvedStep, bindWarnings, resolveErr := resolveSkillStepWithWarnings(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
 		if len(bindWarnings) > 0 {
 			r.mu.Lock()
-			run.status.Warnings = append(run.status.Warnings, bindWarnings...)
+			// De-duplicate: same param mismatch warning appears for every step
+			// sharing the same schema. Only add if not already present.
+			for _, w := range bindWarnings {
+				isDuplicate := false
+				for _, existing := range run.status.Warnings {
+					if existing == w {
+						isDuplicate = true
+						break
+					}
+				}
+				if !isDuplicate {
+					run.status.Warnings = append(run.status.Warnings, w)
+				}
+			}
 			r.mu.Unlock()
 		}
 		if resolveErr != nil {
@@ -3556,58 +3634,6 @@ func (r *SkillRunner) buildSkillRepairer() cskill.LLMRepairer {
 	return repairer
 }
 
-// RecordSkillOutcome records an execution outcome for a skill by name.
-// outcome must be one of "success", "failure", or "workaround".
-//
-// NOTE: This method is no longer called from the agent loop to avoid
-// double-counting with updateUsageStats(). For workaround recording,
-// use RecordWorkaround() instead. Retained for backward compatibility
-// and potential external callers.
-func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
-	if skillName == "" {
-		return
-	}
-	shouldEmit := false
-
-	r.executor.mu.Lock()
-	skills := r.executor.loadSkills()
-	for i, s := range skills {
-		if s.MatchesName(skillName) {
-			switch normalizeSkillOutcomeStatus(outcome) {
-			case skillOutcomeStatusSuccess:
-				skills[i].SuccessCount++
-				skills[i].LastError = ""
-			case skillOutcomeStatusFailure:
-				skills[i].FailureCount++
-				if lastError != "" {
-					skills[i].LastError = lastError
-				}
-			case skillOutcomeStatusWorkaround:
-				skills[i].WorkaroundCount++
-				if lastError != "" {
-					skills[i].LastError = lastError
-				}
-			default:
-				r.executor.mu.Unlock()
-				return // unknown outcome, skip
-			}
-			skills[i].UsageCount++
-			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
-			_ = r.executor.saveSkills(skills)
-			log.Printf("[skill-runner] outcome recorded for %q: outcome=%s usage=%d success=%d failure=%d workaround=%d",
-				skillName, outcome, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
-			shouldEmit = true
-			break
-		}
-	}
-	r.executor.mu.Unlock()
-
-	// Notify frontend to refresh skill list with updated stats (outside lock).
-	if shouldEmit && r.executor.app != nil {
-		r.executor.app.emitEvent("skill:usage_updated")
-	}
-}
-
 // RecordWorkaround records a workaround outcome for a skill without
 // incrementing UsageCount. This is called from the agent loop when a skill
 // failed but the LLM resolved the task through alternative tools. The
@@ -3999,6 +4025,19 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	}
 
 	stepCtx, stepCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	// Warn if the step's declared timeout is capped by the parent (global)
+	// context deadline. Go's context.WithTimeout cannot exceed the parent's
+	// deadline, so the step will be killed earlier than its declared timeout.
+	// This makes timeout failures diagnosable: the LLM sees a concrete warning
+	// explaining why the step was killed before its own timeout expired.
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		stepDuration := time.Duration(timeout) * time.Second
+		if stepDuration > remaining+time.Second {
+			log.Printf("[skill-runner] step timeout %ds exceeds remaining global timeout %s — step will be capped at global deadline",
+				timeout, remaining.Round(time.Second))
+		}
+	}
 	defer stepCancel()
 
 	// [Bug #1 fix] On Windows, convert backslash paths to forward slashes
@@ -4612,20 +4651,6 @@ var python3NeedsMapping = sync.OnceValue(func() bool {
 func mapBarePipToModule(command string) string {
 	return cskill.MapBarePipToModule(command)
 }
-
-// replacePipInLine is kept for backward compatibility with tests.
-func replacePipInLine(line string) string {
-	// Delegate to the shared implementation — this function only exists
-	// to avoid breaking any test that references it directly.
-	lines := strings.Split(cskill.MapBarePipToModule(line), "\n")
-	if len(lines) > 0 {
-		return lines[0]
-	}
-	return line
-}
-
-// pipNeedsModuleMapping delegates to the shared corelib implementation.
-var pipNeedsModuleMapping = cskill.PipNeedsModuleMapping
 
 // migrateLegacyCceasyPaths replaces references to the old .cceasy directory
 // with the current .maclaw directory in skill step commands. This fixes

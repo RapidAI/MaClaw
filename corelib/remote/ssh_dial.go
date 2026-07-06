@@ -26,7 +26,7 @@ func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 		Timeout:         cfg.ConnectTimeout,
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 
 	// 先建立 TCP 连接并启用 TCP keepalive，再在其上建立 SSH
 	tcpConn, err := net.DialTimeout("tcp", addr, cfg.ConnectTimeout)

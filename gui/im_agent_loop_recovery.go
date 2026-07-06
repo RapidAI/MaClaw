@@ -474,7 +474,7 @@ func findLastAssistantContent(history []agent.ConversationEntry) string {
 
 // incrementCompactionCount increments and returns the compaction count for
 // the given user. Safe for concurrent use (sync.Map), though in practice
-// saveConversationHistoryTimed is serialized per user by chatLoopMu.
+// saveConversationHistoryTimed is serialized per user by the per-session loop mutex.
 func (h *IMMessageHandler) incrementCompactionCount(userID string) int {
 	val, _ := h.compactionCount.LoadOrStore(userID, 0)
 	newCount := val.(int) + 1

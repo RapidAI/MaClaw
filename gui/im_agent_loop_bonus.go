@@ -62,7 +62,7 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 		opts.SendProgress("Reasoning rounds are exhausted, but coding sessions are still active. Checking status...")
 	}
 
-	conversation := autoCompressConversation(opts.Conversation, opts.Config, opts.HTTPClient)
+	conversation := opts.Conversation
 	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, nil)
 	if opts.OnNewRound != nil {
 		opts.OnNewRound()

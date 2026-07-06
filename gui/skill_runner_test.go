@@ -2731,7 +2731,7 @@ func TestIsInstructionOnlySkillStatus(t *testing.T) {
 	status := &SkillRunStatus{Steps: []StepResult{{
 		Action: "craft_tool",
 		Status: "success",
-		Output: "📝 脚本语言: python\n📁 脚本路径: /tmp/tool.py\n\n�?脚本执行成功",
+		Output: "\xf0\x9f\x93\x9d 脚本语言: python\n\xf0\x9f\x93\x81 脚本路径: /tmp/tool.py\n\n\xe2\x9c\x85 脚本执行成功",
 	}}}
 	if !isInstructionOnlySkillStatus(status) {
 		t.Fatal("expected craft_tool output with script metadata to require artifact verification")
@@ -2914,10 +2914,10 @@ func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 
 func TestNormalizeSkillRunVars_CanonicalizesKeyShape(t *testing.T) {
 	got := normalizeSkillRunVars(map[string]interface{}{
-		"User Prompt": "请查询成都天�?,
+		"User Prompt": "请查询成都天气",
 		"Args":        map[string]interface{}{"Input-File": "report.md"},
 	})
-	if got["user_prompt"] != "请查询成都天�? || got["input_file"] != "report.md" {
+	if got["user_prompt"] != "请查询成都天气" || got["input_file"] != "report.md" {
 		t.Fatalf("normalizeSkillRunVars() = %#v, want canonical key shapes", got)
 	}
 }
@@ -2932,9 +2932,9 @@ func TestApplySkillRunInputInference_DoesNotGuessRequiredCityFromInput(t *testin
 }
 
 func TestApplySkillRunInputInference_FillsRequiredArgFromNamedPrompt(t *testing.T) {
-	vars := normalizeSkillRunVars(map[string]interface{}{"user_prompt": "请查�?city: 上海 的天�?})
+	vars := normalizeSkillRunVars(map[string]interface{}{"user_prompt": "请查询 city: 上海 的天气"})
 	skill := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
-	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"user_prompt": "请查�?city: 上海 的天�?})
+	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"user_prompt": "请查询 city: 上海 的天气"})
 	if vars["city"] != "上海" {
 		t.Fatalf("city = %q, want named value", vars["city"])
 	}
@@ -3009,7 +3009,7 @@ func TestDetectArtifactPathFromTextAcceptsNonPDFArtifacts(t *testing.T) {
 
 func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 	skillDir := filepath.Join("base", "skill")
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command":     "printf '%s %s' {{input}} ${output}",
@@ -3047,7 +3047,7 @@ func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
 }
 
 func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "craft_tool",
 		Params: map[string]interface{}{
 			"instructions": "Generate slides.",
@@ -3068,7 +3068,7 @@ func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
 }
 
 func TestResolveSkillStep_StripsMissingOptionalPlaceholder(t *testing.T) {
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node ./tool.mjs {{input}} {{output}}",
@@ -3109,7 +3109,7 @@ func TestQuoteSkillInputForShell_EscapesQuotes(t *testing.T) {
 }
 
 func TestResolveSkillStepUsesPreferredShellQuoting(t *testing.T) {
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command":         "echo {{text}}",
@@ -3228,14 +3228,14 @@ func TestSubstituteSkillVariables_DedupsQuotedPlaceholder(t *testing.T) {
 	vars := map[string]string{"text": "Hello, how are you today?"}
 	quoted := quoteSkillInputForShell("Hello, how are you today?")
 
-	// Template with placeholder already in double quotes �?common in SKILL.md
+	// Template with placeholder already in double quotes — common in SKILL.md
 	got := substituteSkillVariables(`python translate.py --text "{{text}}"`, vars)
 	want := `python translate.py --text ` + quoted
 	if got != want {
 		t.Fatalf("substituteSkillVariables() double-quoted dedup:\n  got  = %q\n  want = %q", got, want)
 	}
 
-	// Template with placeholder NOT in quotes �?should still get quoted
+	// Template with placeholder NOT in quotes — should still get quoted
 	got2 := substituteSkillVariables(`python translate.py --text {{text}}`, vars)
 	want2 := `python translate.py --text ` + quoted
 	if got2 != want2 {
@@ -3332,7 +3332,7 @@ func TestDetectImplicitRequiredArgs_SingleBrace(t *testing.T) {
 	steps := []corelib.NLSkillStep{
 		{Action: "bash", Params: map[string]interface{}{"command": "python ocr.py {input}"}},
 	}
-	// No vars provided �?{input} should be detected as missing.
+	// No vars provided — {input} should be detected as missing.
 	missing := detectImplicitRequiredArgs(steps, nil)
 	if len(missing) != 1 || missing[0] != "input" {
 		t.Fatalf("detectImplicitRequiredArgs() = %v, want [input]", missing)
@@ -3375,11 +3375,11 @@ func TestDetectImplicitRequiredArgs_MixedBraceStyles(t *testing.T) {
 
 func TestResolveSkillStep_WithParamBinding_AliasResolution(t *testing.T) {
 	// Skill declares "description" with alias "content".
-	// LLM passes "content" �?BindParams resolves to "description".
+	// LLM passes "content" — BindParams resolves to "description".
 	params := []corelib.NLSkillParam{
 		{Name: "description", Aliases: []string{"content", "input"}},
 	}
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node gen.js --desc {{description}}",
@@ -3416,7 +3416,7 @@ func TestResolveSkillStep_WithParamBinding_DefaultValue(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "format", Default: "png"},
 	}
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "convert --format {{format}}",
@@ -3435,7 +3435,7 @@ func TestResolveSkillStep_WithParamBinding_CLIFlagAppend(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "format", CLIFlag: "--format"},
 	}
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node gen.js",
@@ -3456,7 +3456,7 @@ func TestResolveSkillStep_WithParamBinding_CLIFlagNotDuplicated(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "format", CLIFlag: "--format"},
 	}
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "node gen.js --format {{format}}",
@@ -3475,7 +3475,7 @@ func TestResolveSkillStep_WithParamBinding_CLIFlagNotDuplicated(t *testing.T) {
 
 func TestResolveSkillStep_NilParams_BackwardCompatible(t *testing.T) {
 	// When params is nil, resolveSkillStep should work exactly as before.
-	resolved, _, err := resolveSkillStep(corelib.NLSkillStep{
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
 		Action: "bash",
 		Params: map[string]interface{}{
 			"command": "echo {{name}}",

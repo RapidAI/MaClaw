@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -19,7 +18,6 @@ type agentLoopRoundPrepOptions struct {
 	ConfigMax               int
 	ChatFinalizeGrace       int
 	Config                  corelib.MaclawLLMConfig
-	HTTPClient              *http.Client
 	Conversation            []interface{}
 	Tools                   []map[string]interface{}
 	ToolsTokenBudget        int
@@ -121,7 +119,6 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	}
 
 	prepStartedAt := time.Now()
-	conversation = autoCompressConversation(conversation, opts.Config, opts.HTTPClient)
 
 	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
 	conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)

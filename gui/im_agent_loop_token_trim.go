@@ -49,5 +49,18 @@ func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []i
 			effectiveTokenLimit = emptyTrimLimit
 		}
 	}
+	// Spiral protection: ensure the effective limit never drops below the
+	// system prompt size + a minimum conversation margin (3000 tokens).
+	// Without this, repeated empty responses can shrink the limit below
+	// what's needed to fit the system prompt, causing degenerate behavior.
+	if len(conversation) > 0 {
+		systemPromptTokens := estimateSingleMsgTokens(conversation[0])
+		minLimit := systemPromptTokens + 3000
+		if effectiveTokenLimit < minLimit {
+			log.Printf("[trim-spiral-guard] effective limit %d < system_prompt(%d)+3000, raising to %d",
+				effectiveTokenLimit, systemPromptTokens, minLimit)
+			effectiveTokenLimit = minLimit
+		}
+	}
 	return effectiveTokenLimit, estimated
 }

@@ -29,8 +29,6 @@ const legacyHubServiceProviderName = "MaClaw\u6a21\u578b\u670d\u52a1"
 
 const zhipuCodingProviderName = "智谱编程"
 const volcengineAgentPlanProviderName = "\u706b\u5c71\u5f15\u64ce Agent Plan"
-const volcengineTokenPlanProviderName = volcengineAgentPlanProviderName
-const volcengineTokenPlanAnthropicProviderName = volcengineAgentPlanProviderName
 const legacyVolcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
 const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
 const legacyVolcengineTokenPlanAnthropicProviderNameAlt = "\u706b\u5c71\u5f15\u64ceTokenPlan Anthropic"
@@ -2628,6 +2626,21 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	if len(items) == 0 {
 		log.Printf("[FetchProviderModels] parsed response but got 0 models, bodyLen=%d", len(body))
 		return nil, fmt.Errorf("服务商返回了空的模型列表")
+	}
+
+	// CodeGen returns both "auto" (unusable shorthand) and "qax-codegen/Auto"
+	// (canonical name). Filter out the bare "auto" to avoid user confusion —
+	// selecting it would cause 400 errors on both OpenAI and Anthropic endpoints.
+	if corelib.IsCodeGenURL(baseURL) {
+		filtered := items[:0]
+		for _, item := range items {
+			if !strings.EqualFold(item.ID, corelib.CodeGenAutoModelAlias) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			items = filtered
+		}
 	}
 
 	if sortModels {

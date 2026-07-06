@@ -61,6 +61,13 @@ func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iterat
 	if driftPreview.Drifted && driftPreview.NeedHumanHelp {
 		return effectiveMax
 	}
+	// Do not auto-extend if drift was already detected at least once in this
+	// loop. Extending gives the drifting LLM 30 more iterations to repeat
+	// before the drift detector fires NeedHumanHelp on the second occurrence.
+	if loopDriftDetector.ReplanCount() > 0 {
+		log.Printf("[AgentLoop] auto-extend suppressed: drift already detected (replanCount=%d) loop=%s", loopDriftDetector.ReplanCount(), ctx.ID)
+		return effectiveMax
+	}
 	autoExtendCap := config.MaxAgentIterationsCap * 2
 	autoExtended := effectiveMax + 30
 	if autoExtended > autoExtendCap {

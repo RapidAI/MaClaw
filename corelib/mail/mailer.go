@@ -62,7 +62,7 @@ func Send(ctx context.Context, cfg Config, to []string, subject, body string) er
 	}
 
 	message := buildMessage(cfg.FromName, fromEmail, recipients, subject, body)
-	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
+	addr := net.JoinHostPort(cfg.SMTPHost, fmt.Sprintf("%d", cfg.SMTPPort))
 	if useImplicitTLS(cfg) {
 		return sendWithImplicitTLS(ctx, addr, cfg, fromEmail, recipients, message)
 	}

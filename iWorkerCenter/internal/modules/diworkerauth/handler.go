@@ -171,7 +171,7 @@ func (h *Handler) handleLDAPTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func ldapBind(cfg *LDAPConfig, username, password string) error {
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 	bindDN := strings.ReplaceAll(cfg.BindFmt, "{user}", username)
 
 	var conn net.Conn

@@ -1376,14 +1376,52 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	if metrics != nil {
 		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
+
+	// Apply the same filter chain as the OpenAI path: role-prefix, repetition.
+	// Without this, Anthropic-protocol responses (via OpenRouter, etc.) are
+	// vulnerable to Browser: hallucinations and repetition degeneration.
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
+	repf := newRepetitionFilter(rpf.Write)
+
 	httpDoStartedAt := time.Now()
-	resp, err := llm.DoAnthropicRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
+	resp, err := llm.DoAnthropicRequestStream(reqCtx, cfg, messages, tools, httpClient, repf.Write)
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 		if metrics.FirstSSEWaitNanos == 0 {
 			metrics.FirstSSEWaitNanos = metrics.HTTPDoNanos
 		}
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	repf.Flush()
+	rpf.Flush()
+	if repf.Halted() {
+		log.Printf("[LLM Stream] anthropic repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] anthropic role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
+	}
+
+	// Apply filteredBuf content to msg.Content for data flow consistency
+	// (same mechanism as Fix #50 for OpenAI path).
+	if resp != nil && len(resp.Choices) > 0 && filteredBuf.Len() > 0 {
+		msg := resp.Choices[0].Message
+		filtered := filteredBuf.String()
+		if filtered != "" && (msg.Content == "" || len(filtered) <= len(msg.Content)) {
+			msg.Content = filtered
+			resp.Choices[0].Message = msg
+		}
+	}
+
 	return resp, err
 }
 

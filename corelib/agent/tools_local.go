@@ -1183,10 +1183,6 @@ func walkSearchFilesFilteredCtx(ctx context.Context, base, pattern, excludePatte
 		}
 		return err
 	})
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	return err
 }
 
 // walkDirCtx reads directories in small batches so cancellation is not blocked by filepath.WalkDir's full-directory ReadDir.

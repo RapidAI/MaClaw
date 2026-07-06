@@ -406,6 +406,17 @@ func skillScanCachePath(skillDir, skillName string) string {
 	return filepath.Join(skillDir, skillScanCacheFileName)
 }
 
+// removeSkillScanCacheFile deletes the on-disk scan cache for a skill,
+// forcing the next ensureSkillSecurityScanned call to perform a fresh scan.
+// Used after hub updates to ensure new steps are re-scanned before execution.
+func removeSkillScanCacheFile(skillDir, skillName string) error {
+	cachePath := skillScanCachePath(skillDir, skillName)
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func signSkillScanCacheRecord(rec skillScanCacheRecord) (string, error) {
 	key, err := skillScanCacheSigningKey()
 	if err != nil {

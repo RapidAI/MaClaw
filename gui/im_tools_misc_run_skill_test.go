@@ -539,8 +539,8 @@ func TestToolGetSkillRun_UnknownRunID(t *testing.T) {
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
 	got := h.toolGetSkillRun(map[string]interface{}{"run_id": "run-missing"})
-	if !strings.Contains(got, "读取 Skill 状态失败") || !strings.Contains(got, `run "run-missing" not found`) {
-		t.Fatalf("expected missing run status error, got %s", got)
+	if !strings.Contains(got, "不存在") || !strings.Contains(got, "run-missing") {
+		t.Fatalf("expected pruned/missing run message, got %s", got)
 	}
 }
 

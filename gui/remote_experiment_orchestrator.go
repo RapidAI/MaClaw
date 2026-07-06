@@ -471,7 +471,7 @@ func (o *RemoteExperimentOrchestrator) buildProgressSummary() string {
 	sb.WriteString(fmt.Sprintf("完成 %d 轮改进，耗时 %s\n", len(state.Rounds), formatDuration(time.Since(state.StartedAt))))
 	sb.WriteString(fmt.Sprintf("最佳结果: %.4f (第 %d 轮)\n", state.BestMetric, state.BestRound+1))
 	sb.WriteString(fmt.Sprintf("论文值: %.4f, 基线复现: %.4f\n", state.Params.BaselineMetricValue, state.BaselineRepro))
-	if best := bestRoundFromState(state); best != nil {
+	if best := bestRoundFromState(&state); best != nil {
 		sb.WriteString(fmt.Sprintf("最佳轮次详情: 第%d轮 %s=%.4f (Δpaper=%.4f)\n", best.RoundNumber, state.Params.BaselineMetricName, best.MetricValue, best.DeltaFromPaper))
 		if strings.TrimSpace(best.Modification) != "" {
 			sb.WriteString(fmt.Sprintf("最佳修改: %s\n", best.Modification))
@@ -496,7 +496,7 @@ func (o *RemoteExperimentOrchestrator) buildProgressSummary() string {
 	return sb.String()
 }
 
-func bestRoundFromState(state ExperimentOrchestratorState) *ExperimentRoundResult {
+func bestRoundFromState(state *ExperimentOrchestratorState) *ExperimentRoundResult {
 	if state.BestRound < 0 || state.BestRound >= len(state.Rounds) {
 		return nil
 	}

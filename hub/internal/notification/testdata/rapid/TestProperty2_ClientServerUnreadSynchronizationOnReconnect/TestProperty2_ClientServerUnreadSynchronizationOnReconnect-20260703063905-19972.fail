@@ -1,0 +1,15 @@
+# 2026/07/03 06:39:05.880470 [TestProperty2_ClientServerUnreadSynchronizationOnReconnect] [rapid] draw numNotifications: 1
+# 2026/07/03 06:39:05.880470 [TestProperty2_ClientServerUnreadSynchronizationOnReconnect] [rapid] draw statusIdx: 0
+# 2026/07/03 06:39:05.880470 [TestProperty2_ClientServerUnreadSynchronizationOnReconnect] [rapid] draw isExpired: false
+# 2026/07/03 06:39:05.880470 [TestProperty2_ClientServerUnreadSynchronizationOnReconnect] [rapid] draw isRead: false
+# 2026/07/03 06:39:05.880470 [TestProperty2_ClientServerUnreadSynchronizationOnReconnect] SQL logic error: no such table: machines (1)
+# 
+v0.4.8#6744656481901659815
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
