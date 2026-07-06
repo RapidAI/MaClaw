@@ -174,6 +174,63 @@ func TestListSkillAppManifestsReadsSingleMaclawAppDefinition(t *testing.T) {
 	}
 }
 
+func TestListSkillAppManifestsKeepsWrapperSkillIDWhenBindingNamesDependency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "rapidocr-wrapper")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.app.json"), []byte(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "rapidocr-app-tool-app",
+			"name": "图片文字识别",
+			"kind": "tool_app",
+			"binding": {
+				"skill": {
+					"id": "RapidOCR",
+					"inputMode": "file",
+					"outputModes": ["txt", "json"]
+				}
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile maclaw.app.json: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "rapidocr-wrapper", SkillDir: skillDir, Status: "active"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	items := app.ListSkillAppManifests()
+	if len(items) != 1 {
+		t.Fatalf("items len=%d want 1: %#v", len(items), items)
+	}
+	got := items[0]
+	if got.SkillID != "rapidocr-wrapper" {
+		t.Fatalf("SkillID = %q, want wrapper skill id rapidocr-wrapper", got.SkillID)
+	}
+	appDef, _ := got.AppDefinition["app"].(map[string]interface{})
+	binding, _ := appDef["binding"].(map[string]interface{})
+	skillBinding, _ := binding["skill"].(map[string]interface{})
+	if skillBindingID := strings.TrimSpace(stringMapValue(skillBinding, "id")); skillBindingID != "RapidOCR" {
+		t.Fatalf("binding skill id = %q, want RapidOCR", skillBindingID)
+	}
+	if got.InputMode != "file" || len(got.OutputModes) != 2 || got.OutputModes[0] != "txt" || got.OutputModes[1] != "json" {
+		t.Fatalf("unexpected binding metadata: %#v", got)
+	}
+}
+
 func TestListSkillAppManifestsHonorsAddToAppPanelFalse(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

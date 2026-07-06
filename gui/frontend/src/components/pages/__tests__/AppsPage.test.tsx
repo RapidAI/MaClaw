@@ -12571,4 +12571,65 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('\u5173\u95ed'));
         expect(screen.getAllByText('文档脱敏 Plus').length).toBeGreaterThan(0);
     });
+
+    it('runs skill maclaw.app.json wrappers with the installed skill id, not the bound dependency id', async () => {
+        listSkillAppManifestsMock.mockResolvedValue([
+            {
+                id: 'rapidocr-app-tool-app',
+                skill_id: 'rapidocr-wrapper',
+                name: '图片文字识别',
+                description: 'OCR wrapper app',
+                category: '工具',
+                icon: 'pdf',
+                input_mode: 'form',
+                output_modes: ['txt', 'json'],
+                app_definition_file: 'maclaw.app.json',
+                app_definition: {
+                    schema: 'maclaw.app.v1',
+                    privateMarker: 'x_maclaw_apps',
+                    app: {
+                        id: 'rapidocr-app-tool-app',
+                        name: '图片文字识别',
+                        kind: 'tool_app',
+                        binding: {
+                            skill: {
+                                id: 'RapidOCR',
+                                source: 'local',
+                                inputMode: 'form',
+                                outputModes: ['txt', 'json'],
+                            },
+                        },
+                    },
+                },
+            },
+        ]);
+
+        render(<AppsPage lang="zh-Hans" />);
+        fireEvent.click(getStudioButton());
+
+        await waitFor(() => expect(screen.getByText('图片文字识别')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText('\u5df2\u52a0\u5165\u9762\u677f')).not.toBeNull());
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('图片文字识别')[0]);
+        fireEvent.click(screen.getByText('\u6267\u884c'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('rapidocr-wrapper', expect.objectContaining({
+            app_id: 'skill-app-rapidocr-wrapper-rapidocr-app-tool-app',
+            app_kind: 'tool_app',
+        })));
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalledWith('RapidOCR', expect.anything());
+        const planPayload = JSON.parse(planMaclawAppInstallMock.mock.calls.at(-1)?.[0] as string);
+        expect(planPayload.app.appSkill.id).toBe('rapidocr-wrapper');
+        expect(planPayload.app.binding.skill.id).toBe('RapidOCR');
+        expect(planPayload.app.binding.skill.source).toBe('local');
+        await waitFor(() => expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith(
+            'rapidocr-wrapper',
+            'skill-app-rapidocr-wrapper-rapidocr-app-tool-app',
+            expect.any(String),
+            'run-test-1',
+            expect.any(String),
+            expect.any(String),
+        ));
+        expect(recordMaclawAppRunEvidenceForSkillMock).not.toHaveBeenCalledWith('RapidOCR', expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything());
+    });
 });

@@ -20,6 +20,9 @@ set "TOOL_NAME=tigerclaw-tool"
 set "OUTPUT_DIR=%~dp0dist"
 set "NSIS_PATH=C:\Program Files (x86)\NSIS\makensis.exe"
 set "GOVERSIONINFO_PATH=%USERPROFILE%\go\bin\goversioninfo.exe"
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
+set "GO_EXE=C:\Program Files\Go\bin\go.exe"
 
 REM -- Icon: use tigerclaw.ico from assets --
 set "ICON_PATH=%~dp0assets\tigerclaw.ico"
@@ -30,7 +33,8 @@ if not exist "%ICON_PATH%" (
 
 REM -- Ensure Go tools are in PATH --
 set "GOPATH=%USERPROFILE%\go"
-set "PATH=%GOPATH%\bin;%PATH%"
+set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin;%PATH%"
+set "GOMAXPROCS=1"
 
 REM -- Clean previous TigerClaw build artifacts (preserve MaClaw files) --
 echo [Step 1/9] Cleaning previous TigerClaw build...
@@ -69,26 +73,26 @@ del /q "%~dp0temp_BUILD_NUM.txt" "%~dp0temp_VERSION.txt" "%~dp0temp_PRODUCT_NAME
 
 REM -- Write NSIS build_params.nsh.tmp (same approach as build_win.bat) --
 setlocal DisableDelayedExpansion
-powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\%TUI_NAME%_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\%TUI_NAME%_arm64.exe''','!define MUI_ICON_PATH ''%ICON_PATH%''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\%TUI_NAME%_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\%TUI_NAME%_arm64.exe''','!define MUI_ICON_PATH ''%ICON_PATH%''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 echo [INFO] Building TigerClaw Version: %VERSION%
 
 REM -- Sync version with frontend --
 echo [Step 3/9] Syncing version with frontend...
-powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
+"%POWERSHELL_EXE%" -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
 echo [Step 4/9] Building frontend...
-cd "%~dp0gui\frontend"
+cd /d "%~dp0gui\frontend"
 if not exist "node_modules" (
-    call npm.cmd install --cache ./.npm_cache
+    call "%NPM_CMD%" install --cache ./.npm_cache
     if !errorlevel! neq 0 (
         echo [ERROR] npm install failed.
         goto :error
     )
 )
 if exist "dist" ( rmdir /s /q "dist" )
-call npm.cmd run build
+call "%NPM_CMD%" run build
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend build failed.
     goto :error
@@ -105,14 +109,14 @@ del /q "%~dp0build\windows\wails.exe.manifest.tmp" 2>nul
 del /q "%~dp0build\windows\versioninfo.json.tmp" 2>nul
 if not exist "%GOVERSIONINFO_PATH%" (
     echo [INFO] goversioninfo not found. Installing...
-    go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+    "%GO_EXE%" install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
     if !errorlevel! neq 0 (
         echo [ERROR] Failed to install goversioninfo.
         goto :error
     )
 )
 
-powershell -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', 'TigerClaw').Replace('{{.Info.ProductVersion}}', '%VERSION%'); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = [int]$parts[3] }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = [int]$parts[3] } }; StringFileInfo = @{ Comments = 'TigerClaw: Secure coding assistant by QianXin'; CompanyName = 'QianXin'; FileDescription = 'TigerClaw'; FileVersion = '%VERSION%'; InternalName = 'TigerClaw'; LegalCopyright = 'Copyright (C) 2026 QianXin'; OriginalFilename = '%APP_NAME%.exe'; ProductName = 'TigerClaw'; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
+"%POWERSHELL_EXE%" -NoProfile -Command "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json; $parts = '%VERSION%'.Split('.'); if ($parts.Length -ne 4) { throw 'Version must contain 4 numeric parts for Windows resources.' }; $manifest = Get-Content '%~dp0build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}', 'TigerClaw').Replace('{{.Info.ProductVersion}}', '%VERSION%'); [System.IO.File]::WriteAllText('%~dp0build\windows\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = [int]$parts[3] }; ProductVersion = @{ Major = [int]$parts[0]; Minor = [int]$parts[1]; Patch = [int]$parts[2]; Build = [int]$parts[3] } }; StringFileInfo = @{ Comments = 'TigerClaw: Secure coding assistant by QianXin'; CompanyName = 'QianXin'; FileDescription = 'TigerClaw'; FileVersion = '%VERSION%'; InternalName = 'TigerClaw'; LegalCopyright = 'Copyright (C) 2026 QianXin'; OriginalFilename = '%APP_NAME%.exe'; ProductName = 'TigerClaw'; ProductVersion = '%VERSION%' }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%~dp0build\windows\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare Windows version resource inputs.
     goto :error
@@ -133,7 +137,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
     goto :error
 )
-go build -tags %GUI_AMD64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
+"%GO_EXE%" build -tags %GUI_AMD64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI amd64 failed.
     goto :error
@@ -146,7 +150,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
     goto :error
 )
-go build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
+"%GO_EXE%" build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI arm64 failed.
     goto :error
@@ -159,13 +163,13 @@ REM -- Build TUI/CLI Binaries --
 echo [Step 7/9] Compiling TigerClaw TUI/CLI binaries...
 set "CGO_ENABLED=0"
 set "GOARCH=amd64"
-go build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TUI_NAME%_amd64.exe" ./tui/
+"%GO_EXE%" build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TUI_NAME%_amd64.exe" ./tui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw TUI amd64 failed.
     goto :error
 )
 set "GOARCH=arm64"
-go build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TUI_NAME%_arm64.exe" ./tui/
+"%GO_EXE%" build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TUI_NAME%_arm64.exe" ./tui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw TUI arm64 failed.
     goto :error
@@ -174,13 +178,13 @@ if !errorlevel! neq 0 (
 REM -- Build tigerclaw-tool Binary --
 echo [Step 8/9] Compiling tigerclaw-tool binaries...
 set "GOARCH=amd64"
-go build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TOOL_NAME%_amd64.exe" ./cmd/maclaw-tool/
+"%GO_EXE%" build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TOOL_NAME%_amd64.exe" ./cmd/maclaw-tool/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for tigerclaw-tool amd64 failed.
     goto :error
 )
 set "GOARCH=arm64"
-go build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TOOL_NAME%_arm64.exe" ./cmd/maclaw-tool/
+"%GO_EXE%" build -tags oem_qianxin -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%TOOL_NAME%_arm64.exe" ./cmd/maclaw-tool/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for tigerclaw-tool arm64 failed.
     goto :error
@@ -225,7 +229,7 @@ if exist "%OUTPUT_DIR%\%TOOL_NAME%.exe" (
 )
 
 echo   - Creating Windows portable zip...
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip'; if (Test-Path $zip) { Remove-Item $zip -Force }; $tmp = Join-Path $env:TEMP ('tigerclaw_zip_' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp | Out-Null; Copy-Item '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\%TUI_NAME%.exe','%OUTPUT_DIR%\%TOOL_NAME%.exe' -Destination $tmp; [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip); Remove-Item $tmp -Recurse -Force; Write-Host '[INFO] Portable zip created.'"
+"%POWERSHELL_EXE%" -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip'; if (Test-Path $zip) { Remove-Item $zip -Force }; $tmp = Join-Path $env:TEMP ('tigerclaw_zip_' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp | Out-Null; Copy-Item '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\%TUI_NAME%.exe','%OUTPUT_DIR%\%TOOL_NAME%.exe' -Destination $tmp; [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip); Remove-Item $tmp -Recurse -Force; Write-Host '[INFO] Portable zip created.'"
 
 goto :success
 

@@ -148,7 +148,7 @@ QA record.
 | Final signed-build evidence package readiness | `tool/verify_final_release_evidence.py`, `tool/verify_final_release_evidence_test.py`, `docs/release_evidence.md`, `docs/qa-builds/README.md`, `docs/qa_device_checklist.md` |
 | GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, redacted shared links/text, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
-| Emergency document templates, import, AI actions, edit helpers, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
+| Emergency document templates, import, AI actions, edit helpers, API-boundary redaction, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
 | GUI-equivalent backend SSH session management, Hub-synced sanitized desktop server metadata, GUI/agent-bound `backend_session_id`, SSH realtime incremental output evidence through `ssh_session` `output_chunk`/`output_seq` events, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, copied backend session output, AI analysis and AI/digital-employee handoff evidence tied to the same GUI/agent-bound `backend_session_id`, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/backend_ssh_command_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart`, `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`, `go test ./gui -run "TestRemoteHubClient.*MobileBackendSSH|TestResolveMobile|TestMobileServerProfiles"` |
 | Digital employee task submission, redacted mobile prompt handoff, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts"` |
 | Account settings, notification request entry, cache clearing, credential separation | `test/account_screen_test.dart`, `test/app_preferences_test.dart`, `test/mobile_notification_service_test.dart`, `test/mobile_local_store_test.dart`, `test/secure_vault_test.dart` |
@@ -1636,7 +1636,7 @@ QA record.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 303 tests.
+  - Passed: 304 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
@@ -1685,13 +1685,14 @@ QA record.
     payloads still recover to the expected feature tab, and feature-disabled
     server notification fallback messaging does not claim the remote tab opened.
 - `flutter test test/documents_state_test.dart --concurrency=1 --reporter compact`
-  - Passed: 18 document state/controller tests.
+  - Passed: 19 document state/controller tests.
   - Covers mobile shared-document uploads rejecting unsupported file types
     before calling the Hub upload API, while accepting supported emergency
     document formats such as PDF, Word, Excel, CSV, and images through the same
-    allowlist used by the manual file picker; export downloads use phone-safe
-    filenames and redact sensitive title fragments before writing files that can
-    be shared outside the app.
+    allowlist used by the manual file picker; document draft creation and edit
+    saves redact common secrets before sending title/content/markdown to the Hub;
+    export downloads use phone-safe filenames and redact sensitive title
+    fragments before writing files that can be shared outside the app.
 - `flutter test test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
   - Passed: 16 mobile shared-intent model/controller tests.
   - Covers multi-payload share batches where a text caption or context URL is
@@ -1717,7 +1718,7 @@ QA record.
     rejected before the mobile client opens a websocket outside the discovered
     Hub.
 - `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/documents_state_test.dart test/digital_employees_controller_test.dart --concurrency=1 --reporter compact`
-  - Passed: 32 realtime, document state, and digital employee controller tests.
+  - Passed: 33 realtime, document state, and digital employee controller tests.
   - Covers realtime bridge dispatch for document, digital employee, and backend
     SSH session events, parsing sparse realtime frames that put task/job/session
     ID and status at the top level while the nested payload only contains result

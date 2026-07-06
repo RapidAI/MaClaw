@@ -3305,9 +3305,6 @@ func readMaclawAppDefinitionAsSkillApp(path string, fallbackSkillID string) (Ski
 			skillBinding, _ = binding["appSkill"].(map[string]interface{})
 		}
 		if skillBinding != nil {
-			if skillID := strings.TrimSpace(stringMapValue(skillBinding, "id")); skillID != "" {
-				entry.SkillID = skillID
-			}
 			entry.InputMode = firstNonEmptySkillAppString(stringMapValue(skillBinding, "inputMode"), stringMapValue(skillBinding, "input_mode"))
 			entry.MultipleFiles = boolMapValue(skillBinding, "multipleFiles") || boolMapValue(skillBinding, "multiple_files")
 			entry.OutputModes = stringSliceMapValue(skillBinding, "outputModes")

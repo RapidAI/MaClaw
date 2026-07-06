@@ -227,7 +227,7 @@ void main() {
     );
   });
 
-  test('digital employee prompt history redacts secrets without changing task',
+  test('digital employee task creation redacts secrets at API boundary',
       () async {
     final store = _FakeMobileLocalStore();
     final apiClient = _RecordingApiClient();
@@ -243,21 +243,39 @@ void main() {
 
     await container.read(digitalEmployeeTaskProvider.future);
 
-    const prompt = '请排查服务器，token=raw-secret-token password=prod-password';
+    const prompt = 'check server token=raw-secret-token password=prod-password';
     await container.read(digitalEmployeeTaskProvider.notifier).createTask(
       employeeId: 'employee-1',
       prompt: prompt,
       taskType: 'server_maintenance',
-      context: const {'source': 'maclaw_mobile'},
+      context: const {
+        'source': 'maclaw_mobile',
+        'log_tail': 'Authorization: Bearer raw-context-token',
+        'private_key':
+            '-----BEGIN PRIVATE KEY-----\nraw-key\n-----END PRIVATE KEY-----',
+      },
     );
 
     expect(apiClient.createdEmployeeId, 'employee-1');
-    expect(apiClient.createdPrompt, prompt);
-    expect(apiClient.createdPrompt, contains('raw-secret-token'));
-    expect(apiClient.createdPrompt, contains('prod-password'));
+    expect(apiClient.createdPrompt, contains('token=[REDACTED_SECRET]'));
+    expect(apiClient.createdPrompt, contains('password=[REDACTED_SECRET]'));
+    expect(apiClient.createdPrompt, isNot(contains('raw-secret-token')));
+    expect(apiClient.createdPrompt, isNot(contains('prod-password')));
     expect(apiClient.createdTaskType, 'server_maintenance');
-    expect(apiClient.createdContext, {'source': 'maclaw_mobile'});
-    expect(store.lastTask?.prompt, prompt);
+    expect(apiClient.createdContext['source'], 'maclaw_mobile');
+    expect(
+      apiClient.createdContext['log_tail'],
+      contains('Bearer [REDACTED_TOKEN]'),
+    );
+    expect(
+      apiClient.createdContext['private_key'],
+      '[REDACTED_PRIVATE_KEY]',
+    );
+    expect(apiClient.createdContext.toString(),
+        isNot(contains('raw-context-token')));
+    expect(apiClient.createdContext.toString(), isNot(contains('raw-key')));
+    expect(store.lastTask?.prompt, apiClient.createdPrompt);
+    expect(store.lastTask?.context, apiClient.createdContext);
     expect(store.prompts, hasLength(1));
     expect(store.prompts.single.prompt, contains('token=[REDACTED_SECRET]'));
     expect(store.prompts.single.prompt, contains('password=[REDACTED_SECRET]'));

@@ -2577,6 +2577,10 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     return Array.from(merged.values());
 }
 
+function appRunnableSkillID(app?: AppEntry | null): string {
+    return String(app?.manifest?.appSkill?.id || app?.manifest?.skill?.id || '').trim();
+}
+
 function makeAutomationManifest(): AppManifestBinding {
     return {
         schema: 'maclaw.app.v1',
@@ -4029,7 +4033,7 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
             launchMode,
             datasrv: normalizeAppDataSrv(datasrvBinding),
             mis: normalizeAppMIS(binding?.mis || app?.mis),
-            appSkill: binding?.appSkill || app?.appSkill || (isEnterpriseAppKind(kind) ? { id: skillID, version: '1.0.0', source: 'local' } : undefined),
+            appSkill: binding?.appSkill || app?.appSkill || { id: skillID, version: '1.0.0', source: 'local' },
             dependencies: normalizeAppDependencies(binding?.dependencies || app?.dependencies),
             ui: normalizeAppWorkspaceLayout(binding?.ui || app?.ui, kind),
             resultContract,
@@ -9018,8 +9022,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                         dependencyVerification,
                         approvalInstance,
                     });
-                    if (app?.source === 'skill' && app.manifest?.skill?.id) {
-                        void RecordMaclawAppRunEvidenceForSkill(app.manifest.skill.id, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
+                    const evidenceSkillID = appRunnableSkillID(app);
+                    if (app?.source === 'skill' && evidenceSkillID) {
+                        void RecordMaclawAppRunEvidenceForSkill(evidenceSkillID, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
                 } else if (lifecycle === 'error') {
                     const businessError = structuredBusinessErrorFromUnknown(skillRunErrorMessage(status));
@@ -9176,7 +9181,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 setRunState('error');
                 return;
             }
-            const skillID = app.manifest?.skill?.id;
+            const skillID = appRunnableSkillID(app);
             if (skillID) {
                 setRunState('running');
                 setCurrentRunContext({ inputSummary: toolInputSummary, outputMode });
@@ -11098,7 +11103,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
 }
 
 function skillDefinitionAppId(app: AppEntry): string {
-    const skillID = String(app.manifest?.skill?.id || '').trim();
+    const skillID = appRunnableSkillID(app);
     const prefixedID = skillID ? `skill-app-${skillID}-` : '';
     return prefixedID && app.id.startsWith(prefixedID) ? app.id.slice(prefixedID.length) : app.id;
 }
@@ -11110,6 +11115,7 @@ function appSkillRuntimeBinding(manifest?: AppManifestBinding, skillIDOverride?:
     if (!skillID) return existing;
     const outputModes = normalizeOutputModes(existing?.outputModes || manifest.resultContract?.outputModes);
     return {
+        ...existing,
         id: skillID,
         appDefinitionFile: existing?.appDefinitionFile || 'maclaw.app.json',
         inputMode: existing?.inputMode || 'form',
@@ -14998,7 +15004,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             installEvidence: undefined,
             workflowContract: undefined,
         };
-        const skillID = String(updatedApp.manifest?.skill?.id || '').trim();
+        const skillID = appRunnableSkillID(updatedApp);
         const appDefinitionFile = String(updatedApp.manifest?.skill?.appDefinitionFile || '').trim();
         const isWritableSkillAppDefinition = updatedApp.kind === 'tool_app'
             ? (appDefinitionFile === 'maclaw.app.json' || appDefinitionFile === 'maclaw.apps.json')

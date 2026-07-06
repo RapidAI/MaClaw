@@ -199,6 +199,55 @@ void _useFakeTemporaryPath(String path) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('document draft create and edit redact secrets before API', () async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final client = _RecordingDraftApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    addTearDown(store.close);
+    await container.read(documentsControllerProvider.future);
+
+    await container.read(documentsControllerProvider.notifier).createDraft(
+          title: 'incident token=raw-title-token',
+          template: DocumentTemplate.report,
+          content: 'password=raw-content-password\n'
+              'Authorization: Bearer raw-content-bearer',
+        );
+    await container.read(documentsControllerProvider.notifier).saveDraftEdits(
+          title: 'updated token=raw-edit-token',
+          markdown: 'secret=raw-edit-secret\n'
+              '-----BEGIN PRIVATE KEY-----\nraw-edit-key\n'
+              '-----END PRIVATE KEY-----',
+        );
+
+    expect(client.created.single.title, contains('token=[REDACTED_SECRET]'));
+    expect(
+      client.created.single.content,
+      contains('password=[REDACTED_SECRET]'),
+    );
+    expect(
+      client.created.single.content,
+      contains('Authorization: Bearer [REDACTED_TOKEN]'),
+    );
+    expect(client.updated.single.title, contains('token=[REDACTED_SECRET]'));
+    expect(client.updated.single.markdown, contains('secret=[REDACTED_SECRET]'));
+    expect(client.updated.single.markdown, contains('[REDACTED_PRIVATE_KEY]'));
+    final outbound = '${client.created.single.title}\n'
+        '${client.created.single.content}\n'
+        '${client.updated.single.title}\n'
+        '${client.updated.single.markdown}';
+    expect(outbound, isNot(contains('raw-title-token')));
+    expect(outbound, isNot(contains('raw-content-password')));
+    expect(outbound, isNot(contains('raw-content-bearer')));
+    expect(outbound, isNot(contains('raw-edit-token')));
+    expect(outbound, isNot(contains('raw-edit-secret')));
+    expect(outbound, isNot(contains('raw-edit-key')));
+  });
   test(
     'document upload retry is available only for failed imports with source path',
     () {

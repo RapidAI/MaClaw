@@ -123,6 +123,8 @@ class DigitalEmployeeTaskController
   }) async {
     final text = prompt.trim();
     if (text.isEmpty) return;
+    final safeText = redactMobileSensitiveText(text);
+    final safeContext = _redactDigitalEmployeeContext(context);
     final client = ref.read(apiClientProvider);
     if (client == null) {
       state = AsyncError(StateError('请先登录官方服务。'), StackTrace.current);
@@ -132,13 +134,13 @@ class DigitalEmployeeTaskController
     final next = await AsyncValue.guard(() async {
       await ref.read(digitalEmployeePromptHistoryProvider.notifier).record(
             employeeId: employeeId,
-            prompt: text,
+            prompt: safeText,
           );
       final task = await client.createDigitalEmployeeTask(
         employeeId: employeeId,
-        prompt: text,
+        prompt: safeText,
         taskType: taskType,
-        context: context,
+        context: safeContext,
       );
       await ref
           .read(mobileLocalStoreProvider)
@@ -246,4 +248,12 @@ class DigitalEmployeeTaskController
     }
     return '任务 ${task.taskId} 状态：${task.status}，$message';
   }
+}
+
+Map<String, String> _redactDigitalEmployeeContext(Map<String, String> context) {
+  if (context.isEmpty) return const {};
+  return {
+    for (final entry in context.entries)
+      entry.key: redactMobileSensitiveText(entry.value.trim()),
+  };
 }
