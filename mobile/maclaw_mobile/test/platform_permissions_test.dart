@@ -70,7 +70,7 @@ void main() {
     expect(plist, isNot(contains('?/string>')));
     expect(plist, isNot(contains('鐢')));
     expect(plist, isNot(contains('閻')));
-    expect(plist, isNot(contains('�')));
+    expect(plist, isNot(contains('\uFFFD')));
   });
 
   test('ios wrapper keeps official URL schemes and app group wiring', () {
