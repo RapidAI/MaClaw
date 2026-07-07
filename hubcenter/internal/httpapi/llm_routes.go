@@ -41,6 +41,7 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(adminService, adminListLLMProviders(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/providers", RequireAdmin(adminService, adminAddLLMProvider(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/providers/probe-models", RequireAdmin(adminService, adminProbeLLMProviderModels(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/providers/test-chat", RequireAdmin(adminService, adminTestLLMProviderChat(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminUpdateLLMProvider(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
 

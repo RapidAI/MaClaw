@@ -41,6 +41,8 @@ export async function openCurrentTenantCardStore(loadConfig: () => Promise<CardS
 
 interface AssistantTitleBarProps {
     clearHistory: () => void;
+    /** When true, the "New conversation" button is disabled to prevent clearing an in-progress session. */
+    clearHistoryDisabled?: boolean;
     inline: boolean;
     lang: string;
     maximized: boolean;
@@ -82,7 +84,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     handler();
 };
-export function AssistantTitleBar({ clearHistory, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, onToggleWorkflow, previewPanelOpen, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable, workflowActive, workflowEnabled }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, onToggleWorkflow, previewPanelOpen, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch, updateAvailable, workflowActive, workflowEnabled }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
 
@@ -157,7 +159,7 @@ export function AssistantTitleBar({ clearHistory, inline, lang, maximized, onClo
                     {onOpenKnowledge && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(onOpenKnowledge) } : { onClick: onOpenKnowledge })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Knowledge Base" : "\u77e5\u8bc6\u5e93"}><TitleBarToolIcon name="book" /></button>}
                     {onOpenTutorial && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Tutorial" : "\u6559\u7a0b"}><TitleBarToolIcon name="guide" /></button>}
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Refresh news" : "\u5237\u65b0\u6d88\u606f"}><TitleBarToolIcon name="refresh" /></button>
-                    <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "New conversation" : "\u5f00\u59cb\u65b0\u5bf9\u8bdd"}><TitleBarToolIcon name="eraser" /></button>
+                    <button className="ai-titlebar-tool" disabled={!!clearHistoryDisabled} {...(inline ? { onMouseDown: clearHistoryDisabled ? undefined : clearHistory } : { onClick: clearHistoryDisabled ? undefined : clearHistory })} style={{ ...getTitleBarToolButtonStyle(t), ...(clearHistoryDisabled ? { opacity: 0.4, cursor: "not-allowed" } : {}) }} title={clearHistoryDisabled ? (lang === "en" ? "Please wait for the current task to finish" : "\u8bf7\u7b49\u5f85\u5f53\u524d\u4efb\u52a1\u5b8c\u6210") : (lang === "en" ? "New conversation" : "\u5f00\u59cb\u65b0\u5bf9\u8bdd")}><TitleBarToolIcon name="eraser" /></button>
                 </div>
                 <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", flexShrink: 0, boxSizing: "border-box", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
                     {inline && onHideWindow && <button className="ai-window-control" onMouseDown={stopMouse(onHideWindow)} data-testid="ai-hide-toggle" aria-label={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"} style={getWindowControlButtonStyle(t, "hide")} title={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"}><WindowCloseIcon /></button>}

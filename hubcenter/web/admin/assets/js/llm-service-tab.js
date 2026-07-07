@@ -394,6 +394,45 @@ if (typeof I18N_EN !== 'undefined') {
   // ---------------------------------------------------------------------------
   // SERVICE GROUPS
   // ---------------------------------------------------------------------------
+
+  var _testingGroupId = '';
+  window.testLLMServiceGroup = async function(groupId) {
+    if (_testingGroupId) { toast(isZh() ? '\u6d4b\u8bd5\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019...' : 'Test in progress, please wait...', 'info'); return; }
+    var group = serviceGroups.find(function(g) { return g.id === groupId; });
+    if (!group) { toast(isZh() ? '\u670d\u52a1\u7ec4\u4e0d\u5b58\u5728' : 'Service group not found', 'error'); return; }
+    // Find the first provider from the first route model in this group
+    var firstModel = (group.models || [])[0];
+    var providerID = '';
+    if (firstModel) {
+      var pids = firstModel.provider_ids || [];
+      var pconfigs = firstModel.provider_configs || [];
+      if (pconfigs.length) providerID = pconfigs[0].provider_id || '';
+      if (!providerID && pids.length) providerID = pids[0];
+    }
+    if (!providerID) { toast(isZh() ? '\u670d\u52a1\u7ec4\u6ca1\u6709\u914d\u7f6e\u670d\u52a1\u5546\uff0c\u65e0\u6cd5\u6d4b\u8bd5' : 'No provider configured in this service group', 'error'); return; }
+    var provider = providers.find(function(p) { return p.id === providerID; });
+    if (!provider) { toast(isZh() ? '\u670d\u52a1\u5546 ' + providerID + ' \u672a\u627e\u5230' : 'Provider ' + providerID + ' not found', 'error'); return; }
+    _testingGroupId = groupId;
+    toast(isZh() ? '\u6b63\u5728\u6d4b\u8bd5 ' + (provider.name || provider.id) + '...' : 'Testing ' + (provider.name || provider.id) + '...', 'info');
+    try {
+      var data = await api('/api/admin/llm/providers/test-chat', { method: 'POST', body: JSON.stringify({
+        provider_id: provider.id,
+        api_url: provider.api_url,
+        model: (provider.models && provider.models[0]) || '',
+        protocol: provider.protocol || 'openai'
+      }) });
+      if (data.success) {
+        toast((isZh() ? '\u2705 Provider \u7aef\u53ef\u7528\uff01\u8017\u65f6 ' : '\u2705 Provider OK! Latency: ') + (data.latency_ms || 0) + 'ms' + (data.reply ? ' \u00b7 reply: ' + data.reply : '') + (isZh() ? '\u3002\u5982\u5ba2\u6237\u7aef\u4ecd\u4e0d\u53ef\u7528\uff0c\u8bf7\u68c0\u67e5\u670d\u52a1\u7ec4\u8def\u7531\u914d\u7f6e\u548c\u6388\u6743\u3002' : '. If client still fails, check service group routing and grants.'), 'success');
+      } else {
+        toast((isZh() ? '\u274c \u670d\u52a1\u4e0d\u53ef\u7528: ' : '\u274c Unavailable: ') + (data.error || 'unknown'), 'error');
+      }
+    } catch(e) {
+      toast((isZh() ? '\u274c \u6d4b\u8bd5\u5931\u8d25: ' : '\u274c Test failed: ') + e.message, 'error');
+    } finally {
+      _testingGroupId = '';
+    }
+  };
+
   async function loadServiceGroups() {
     try { var data = await api('/api/admin/llm/service-groups'); serviceGroups = data.service_groups || []; } catch(e) { serviceGroups = []; }
     renderServiceGroups();
@@ -411,6 +450,7 @@ if (typeof I18N_EN !== 'undefined') {
         + '<span class="data-row-meta">' + esc(agentName) + ' \u00b7 ' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
         + ' \u00b7 ' + (g.models||[]).length + ' route(s)</span></div>'
         + '<div class="data-row-actions">'
+        + '<button class="btn-ghost" onclick="testLLMServiceGroup(\'' + esc(g.id) + '\')">' + esc(t('testProvider')) + '</button>'
         + '<button class="btn-ghost" onclick="editLLMServiceGroup(\'' + esc(g.id) + '\')">' + esc(t('editGroup')) + '</button>'
         + '<button class="btn-danger-ghost" onclick="deleteLLMServiceGroup(\'' + esc(g.id) + '\')">' + esc(t('deleteGroup')) + '</button>'
         + '</div></div>';

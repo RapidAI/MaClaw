@@ -105,7 +105,8 @@
     return '<div class="item-meta maclaw-app-evidence" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:5px;margin-top:4px;font-size:10px">' + rows.map(function(row) { return '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>' + esc(row[0]) + ':</strong> ' + esc(row[1]) + '</span>'; }).join('') + '</div>';
   }
   function firstID(item) { return item.id || item.capability_id || item.skill_id || item.name || item.key || ''; }
-  function firstName(item) { return item.display_name || item.name || item.title || item.id || item.capability_id || item.skill_id || '-'; }
+  function firstName(item) { return item.display_name || item.name || item.title || extractReadableName(item.capability_id || item.id) || item.capability_id || item.skill_id || '-'; }
+  function extractReadableName(id) { if (!id) return ''; var parts = String(id).split('/'); if (parts.length >= 3) return parts[2]; if (parts.length === 2) return parts[1]; return ''; }
   function pricing(item) { const p = item.pricing || item.price_type || item.billing || item.charge_type || ''; return typeof p === 'string' ? (p || 'free') : (p && (p.type || p.mode || p.pricing)) || 'free'; }
   function priceObject(item) { return item.price && typeof item.price === 'object' ? item.price : (item.pricing && typeof item.pricing === 'object' ? item.pricing : null); }
   function licenseObject(item) { return item.license && typeof item.license === 'object' ? item.license : null; }
@@ -131,12 +132,40 @@
       var metadata = metadataOf(item);
       var workflowId = item.capability_type === 'approval_workflow' ? (metadata.workflow_id || item.capability_id || '') : '';
       var maclawEvidence = maclawAppEvidenceSummary(item, metadata);
-      var workflowAction = workflowId ? '<a class="btn-ghost" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;display:inline-flex;align-items:center;text-decoration:none" href="/approval_workflow/?workflow_id=' + encodeURIComponent(workflowId) + '">' + esc(mp('workflowReviewOpenDesigner')) + '</a>' : '';
+      var isApp = isMaclawAppCapability(item, metadata);
       var itemId = jsArg(item.id);
       var versionKey = jsArg(item.current_version_key || '');
-      var mcpAction = item.capability_type === 'mcp' ? '<button class="btn-ghost" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="useCapabilityForMCP(\'' + itemId + '\')">' + esc(mp('marketplaceUseSelected')) + '</button>' : '';
-      var maclawReviewAction = isMaclawAppCapability(item, metadata) && (item.status === 'pending_review' || item.status === 'review_failed') ? '<button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppReject')) + '</button>' : '';
-      return '<div class="item" style="padding:12px 14px;border-radius:14px;gap:6px;min-height:160px;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease"><div class="item-head" style="margin-bottom:0"><div style="min-width:0"><div class="item-title" style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(item.display_name || item.capability_id || item.id) + '">' + esc(item.display_name || item.capability_id || item.id) + '</div></div><span class="badge info" style="font-size:9px;padding:3px 7px">' + esc(item.capability_type) + '</span></div><div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(item.id) + '">' + esc(item.id) + '</div><div class="item-meta" style="font-size:10px">' + esc(item.source || '-') + ' | ' + esc(item.status || '-') + ' | ' + esc(item.current_version_key || '-') + '</div>' + maclawEvidence + '<div class="actions" style="margin-top:auto;padding-top:4px;gap:4px;flex-wrap:wrap">' + maclawReviewAction + '<button class="btn-secondary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="createMarketplaceDeployment(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRequired')) + '</button><button class="btn-ghost" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="createMarketplaceRecommendation(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRecommended')) + '</button>' + (item.capability_type === 'skill' ? '<button class="btn-ghost" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;color:#2563eb" type="button" onclick="uploadCapabilityToMarket(\'' + itemId + '\')">' + esc(mp('marketplaceUploadToMarket')) + '</button>' : '') + mcpAction + workflowAction + '<button class="btn-ghost" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;color:#dc2626" type="button" onclick="deleteCapability(\'' + itemId + '\')">' + esc(mp('marketplaceDelete')) + '</button></div></div>';
+      // Type badge color
+      var typeBadgeClass = 'info';
+      var typeLabel = item.capability_type || 'skill';
+      if (item.capability_type === 'approval_workflow') { typeBadgeClass = 'warn'; typeLabel = '审批工作流'; }
+      else if (isApp) { typeBadgeClass = 'ok'; typeLabel = 'APP'; }
+      else if (item.capability_type === 'mcp') { typeBadgeClass = 'info'; typeLabel = 'MCP'; }
+      else { typeLabel = 'SKILL'; }
+      // Status badge
+      var statusBadgeClass = item.status === 'approved' ? 'ok' : item.status === 'pending_review' ? 'warn' : 'info';
+      // Build 2x2 button grid
+      var btns = [];
+      btns.push('<button class="mp-card-btn mp-card-btn-secondary" type="button" onclick="createMarketplaceDeployment(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRequired')) + '</button>');
+      btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="createMarketplaceRecommendation(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRecommended')) + '</button>');
+      if (item.capability_type === 'skill' || isApp) {
+        btns.push('<button class="mp-card-btn mp-card-btn-link" type="button" onclick="uploadCapabilityToMarket(\'' + itemId + '\')">' + esc(mp('marketplaceUploadToMarket')) + '</button>');
+      } else if (item.capability_type === 'mcp') {
+        btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="useCapabilityForMCP(\'' + itemId + '\')">' + esc(mp('marketplaceUseSelected')) + '</button>');
+      } else if (workflowId) {
+        btns.push('<a class="mp-card-btn mp-card-btn-ghost" href="/approval_workflow/?workflow_id=' + encodeURIComponent(workflowId) + '">' + esc(mp('workflowReviewOpenDesigner')) + '</a>');
+      } else {
+        btns.push('<span></span>');
+      }
+      btns.push('<button class="mp-card-btn mp-card-btn-danger" type="button" onclick="deleteCapability(\'' + itemId + '\')">' + esc(mp('marketplaceDelete')) + '</button>');
+      var btnGrid = '<div class="mp-card-btn-grid">' + btns.join('') + '</div>';
+      // MaClaw App review actions (above button grid if applicable)
+      var reviewActions = '';
+      if (isApp && (item.status === 'pending_review' || item.status === 'review_failed')) {
+        reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppReject')) + '</button></div>';
+      }
+      var cardName = firstName(item);
+      return '<div class="item mp-cap-card"><div class="mp-cap-card-header"><div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name" title="' + esc(cardName) + '">' + esc(cardName) + '</div>' + (item.current_version_key ? '<span class="mp-card-version">v' + esc(item.current_version_key) + '</span>' : '') + '</div><span class="badge ' + typeBadgeClass + '" style="font-size:9px;padding:3px 7px;font-weight:700">' + esc(typeLabel) + '</span></div>' + (item.description ? '<div class="mp-cap-card-desc">' + esc(item.description) + '</div>' : '') + '<div class="mp-cap-card-meta">' + esc(item.source || '-') + ' | <span class="badge-inline ' + statusBadgeClass + '">' + esc(item.status || '-') + '</span></div>' + maclawEvidence + reviewActions + btnGrid + '</div>';
     }).join('') + (hasMore ? '<div class="hint" style="grid-column:1/-1;text-align:center;font-size:12px">' + esc(mp('marketplaceShowingFirst', {total: activeCapabilities.length, count: maxShow})) + '</div>' : '');
   }
   function renderExternalResults() {
@@ -177,9 +206,15 @@
   function setWorkflowRejectError(message) { var box = el('workflowRejectReasonError'); var input = el('workflowRejectReason'); if (!box || !input) return; box.textContent = message || ''; box.style.display = message ? '' : 'none'; input.setAttribute('aria-invalid', message ? 'true' : 'false'); }
   function workflowRejectReason() { var input = el('workflowRejectReason'); return input ? String(input.value || '').trim() : ''; }
   function validateWorkflowRejectReason() { var reason = workflowRejectReason(); if (reason.length < 10 || reason.length > 2000) { setWorkflowRejectError(mp('workflowReviewRejectReasonInvalid')); return false; } setWorkflowRejectError(''); return true; }
-  function rerenderMarketplace() { renderPolicy(); renderRequests(); renderCapabilities(); renderExternalResults(); renderBilling(); renderWorkflowReviews(); renderWorkflowReviewDetail(); }
+  function rerenderMarketplace() { renderPolicy(); renderRequests(); renderCapabilities(); renderExternalResults(); renderBilling(); renderWorkflowReviews(); renderWorkflowReviewDetail(); var allBtn = el('mpTypeAll'); if (allBtn) allBtn.textContent = mp('marketplaceCapabilityAll'); var wfBtn = el('mpTypeWorkflow'); if (wfBtn) wfBtn.textContent = mp('marketplaceTypeWorkflow') || '\u5ba1\u6279\u5de5\u4f5c\u6d41'; }
   async function loadPolicy() { const data = await api('/api/admin/capability-market/policy'); state.policy = data.policy || {}; renderPolicy(); }
-  async function loadCapabilities() { const type = el('marketplaceCapabilityType') ? el('marketplaceCapabilityType').value : ''; const data = await api('/api/admin/capabilities' + (type ? '?type=' + encodeURIComponent(type) : '')); state.capabilities = Array.isArray(data.items) ? data.items : []; renderCapabilities(); }
+  async function loadCapabilities() { const type = el('marketplaceCapabilityType') ? el('marketplaceCapabilityType').value : ''; var apiType = (type === 'maclaw_app' || type === 'approval_workflow') ? '' : type; const data = await api('/api/admin/capabilities' + (apiType ? '?type=' + encodeURIComponent(apiType) : '')); var items = Array.isArray(data.items) ? data.items : []; if (type === 'skill') { items = items.filter(function(item) { if (item.capability_type !== 'skill') return false; var meta = metadataOf(item); return !isMaclawAppCapability(item, meta); }); } else if (type === 'maclaw_app') { items = items.filter(function(item) { var meta = metadataOf(item); if (!isMaclawAppCapability(item, meta)) return false; var appCat = String(meta.maclaw_app_category || item.maclaw_app_category || '').toLowerCase(); return appCat.indexOf('approval') === -1 && appCat.indexOf('workflow') === -1 && appCat !== 'enterprise_approval_app'; }); } else if (type === 'approval_workflow') { items = items.filter(function(item) { if (item.capability_type === 'approval_workflow') return true; var meta = metadataOf(item); if (!isMaclawAppCapability(item, meta)) return false; var appCat = String(meta.maclaw_app_category || item.maclaw_app_category || '').toLowerCase(); return appCat.indexOf('approval') !== -1 || appCat.indexOf('workflow') !== -1 || appCat === 'enterprise_approval_app'; }); } state.capabilities = items; renderCapabilities(); }
+  global.switchMarketplaceType = function(type) {
+    var sel = el('marketplaceCapabilityType'); if (sel) sel.value = type;
+    var tabs = [{id:'mpTypeAll',val:''},{id:'mpTypeSkill',val:'skill'},{id:'mpTypeMcp',val:'mcp'},{id:'mpTypeWorkflow',val:'approval_workflow'},{id:'mpTypeApp',val:'maclaw_app'}];
+    tabs.forEach(function(t){ var btn = el(t.id); if(btn){ btn.className = t.val === type ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t.val === type ? 'true' : 'false'); } });
+    loadCapabilities();
+  };
   async function loadRequests() { const status = el('marketplaceRequestStatus') ? el('marketplaceRequestStatus').value : 'pending_review'; const data = await api('/api/admin/capability-market/acquisition-requests' + (status ? '?status=' + encodeURIComponent(status) : '')); state.requests = Array.isArray(data.items) ? data.items : []; renderRequests(); }
   async function loadWorkflowReviewsInternal() { const data = await api('/api/v1/admin/reviews?page=1'); state.workflowReviews = Array.isArray(data.submissions) ? data.submissions : []; renderWorkflowReviews(); }
   async function loadWorkflowReviewsQuietly() { try { await loadWorkflowReviewsInternal(); } catch (_) { state.workflowReviews = []; renderWorkflowReviews(); } }

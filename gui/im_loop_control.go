@@ -120,6 +120,7 @@ func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
 	}
 	h.cancelledTaskBoundary.Store(userID, time.Now())
 	h.pendingInjection.Delete(userID)
+	h.pendingPreLoopGuide.Delete(userID)
 	if h.interruptHandler != nil {
 		h.interruptHandler.ClearTracker(userID)
 	}
@@ -161,16 +162,32 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 // steering directive for the next agent loop iteration. Unlike a normal
 // supplementary message, this guides replanning without becoming an independent
 // chat turn or causing the current session to finalize by itself.
+//
+// When a loop is actively running, the guide is injected as a system message
+// with replan instruction (re-evaluate current plan). When no loop is running
+// yet (message is in preflight/intent-classification), the guide is stored as
+// a pre-loop supplement and injected at iteration 0 as user-role context —
+// because there is no "current plan" to re-evaluate.
 func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
-	injection := buildGuideLaunchInjection(text)
-	if injection == "" || !h.canAcceptGuideReferenceForUser(userID) {
+	text = strings.TrimSpace(text)
+	if text == "" || !h.canAcceptGuideReferenceForUser(userID) {
 		return false
 	}
-	h.accumulateInjection(userID, injection)
+
 	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
+		// Loop is running — use system injection + replan (existing behavior).
+		injection := buildGuideLaunchInjection(text)
+		if injection == "" {
+			return false
+		}
+		h.accumulateInjection(userID, injection)
 		ctx.RequestReplan()
+		log.Printf("[inject-guide-reference] user=%s text_len=%d mode=replan", userID, len([]rune(text)))
+	} else {
+		// Loop not yet started — store as pre-loop guide (user-role supplement).
+		h.accumulatePreLoopGuide(userID, text)
+		log.Printf("[inject-guide-reference] user=%s text_len=%d mode=pre-loop", userID, len([]rune(text)))
 	}
-	log.Printf("[inject-guide-reference] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
 }
 
@@ -282,6 +299,42 @@ func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
 		oldText, _ := existing.(string)
 		combined := oldText + "\n" + prefixedText
 		if h.pendingInjection.CompareAndSwap(userID, existing, combined) {
+			return
+		}
+	}
+}
+
+// preLoopGuideEntry holds guide-launch text with a creation timestamp.
+// Consumed at iteration 0; discarded if older than preLoopGuideMaxAge.
+type preLoopGuideEntry struct {
+	Text      string
+	CreatedAt time.Time
+}
+
+const preLoopGuideMaxAge = 30 * time.Second
+
+// accumulatePreLoopGuide stores guide-launch text that arrived before the
+// agent loop started. Multiple fires accumulate with newline separator.
+// Consumed at iteration 0 as user-role supplement.
+func (h *IMMessageHandler) accumulatePreLoopGuide(userID, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	entry := &preLoopGuideEntry{Text: text, CreatedAt: time.Now()}
+	for {
+		existing, loaded := h.pendingPreLoopGuide.Load(userID)
+		if !loaded {
+			if _, raced := h.pendingPreLoopGuide.LoadOrStore(userID, entry); !raced {
+				return
+			}
+			continue
+		}
+		old := existing.(*preLoopGuideEntry)
+		combined := &preLoopGuideEntry{
+			Text:      old.Text + "\n" + text,
+			CreatedAt: old.CreatedAt, // keep original timestamp
+		}
+		if h.pendingPreLoopGuide.CompareAndSwap(userID, existing, combined) {
 			return
 		}
 	}

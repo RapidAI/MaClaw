@@ -138,3 +138,34 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 .approval-subject-row small{display:block;margin-top:2px;color:#657386;font-size:11px;line-height:1.35}
 @media (max-width:1180px){#tab-security{--sec-sidebar:280px}#tab-security #secTopBar{grid-template-columns:1fr!important}#tab-security #secManagementPane>div:nth-of-type(2){grid-template-columns:280px minmax(0,1fr)!important}#tab-approvalroles .approval-role-layout{grid-template-columns:260px minmax(0,1fr)}#tab-approvalroles .approval-role-subjects{grid-column:1 / -1;min-height:0}#tab-approvalroles .approval-role-subject-list{grid-template-columns:repeat(3,minmax(0,1fr));max-height:220px}}
 @media (max-width:860px){#tab-security #secTopBar>div:first-child,#tab-security #secManagementPane>div:nth-of-type(2),#tab-approvalroles .approval-role-layout,#tab-approvalroles .approval-role-head,#tab-approvalroles .approval-role-row,#tab-approvalroles .approval-role-assignee-control,.approval-subject-toolbar{grid-template-columns:1fr!important}#tab-security #secSubTabs{width:100%}#tab-security #secSubTabs button{flex:1}#tab-approvalroles .approval-role-sidebar,#tab-approvalroles .approval-role-subjects{min-height:0}#tab-approvalroles .approval-role-head{display:none}#tab-approvalroles .approval-role-scope-list{max-height:240px}#tab-approvalroles .approval-role-subject-list{grid-template-columns:1fr;max-height:240px}.approval-subject-toolbar .item-meta{justify-self:start}}
+
+
+/* --- Marketplace Capability Cards (enhanced 2x2 button grid) --- */
+.mp-cap-card{padding:18px 20px!important;border-radius:16px!important;gap:0!important;min-height:200px;display:flex!important;flex-direction:column;border:1px solid var(--line);background:var(--panel-strong);box-shadow:0 1px 3px rgba(31,34,48,.04);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.mp-cap-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(31,34,48,.09);border-color:rgba(37,99,235,.16)}
+.mp-cap-card-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.mp-cap-card-title-row{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.mp-cap-card-dot{width:9px;height:9px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#2563eb);flex-shrink:0;box-shadow:0 2px 4px rgba(37,99,235,.25)}
+.mp-cap-card-name{font-size:15px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.4;letter-spacing:-.01em}
+.mp-card-version{font-size:9px;padding:2px 6px;border-radius:5px;background:var(--primary-soft);color:var(--primary);font-weight:600;white-space:nowrap;letter-spacing:.02em}
+.mp-cap-card-id{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;letter-spacing:.01em;opacity:.7}
+.mp-cap-card-meta{font-size:11px;color:var(--muted);margin-bottom:6px;line-height:1.5}
+.mp-cap-card-meta .badge-inline{font-size:10px;font-weight:600}
+.mp-cap-card-meta .badge-inline.ok{color:#059669}
+.mp-cap-card-meta .badge-inline.warn{color:#d97706}
+.mp-cap-card-meta .badge-inline.info{color:var(--primary)}
+.mp-cap-card-desc{font-size:11px;line-height:1.5;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
+.mp-card-stats{display:flex;flex-wrap:wrap;gap:8px 12px;font-size:10px;color:var(--muted);margin-bottom:4px}
+.mp-card-stats strong{color:var(--text);font-weight:600}
+.mp-card-btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:auto;padding-top:14px;border-top:1px solid var(--line)}
+.mp-card-btn{display:flex;align-items:center;justify-content:center;height:34px;padding:0 12px;font-size:12px;font-weight:500;border-radius:9px;border:1px solid var(--line);background:var(--panel-strong);color:var(--text);cursor:pointer;transition:all .15s ease;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mp-card-btn:hover{background:var(--soft)}
+.mp-card-btn:active{transform:scale(.97)}
+.mp-card-btn-secondary{border-color:var(--line);color:var(--text)}
+.mp-card-btn-secondary:hover{border-color:rgba(37,99,235,.4);color:var(--primary);background:var(--primary-soft)}
+.mp-card-btn-ghost{border-color:var(--line);color:var(--muted)}
+.mp-card-btn-ghost:hover{border-color:var(--line-strong);color:var(--text);background:var(--soft)}
+.mp-card-btn-link{border-color:rgba(37,99,235,.2);color:var(--primary);font-weight:500}
+.mp-card-btn-link:hover{border-color:var(--primary);background:var(--primary-soft)}
+.mp-card-btn-danger{border-color:rgba(220,38,38,.15);color:#dc2626}
+.mp-card-btn-danger:hover{border-color:rgba(220,38,38,.4);background:rgba(220,38,38,.04)}

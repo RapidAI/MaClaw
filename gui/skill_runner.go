@@ -1885,6 +1885,12 @@ func (r *SkillRunner) materializeStdoutToExpectedOutput(run *skillRun) {
 	if strings.ToLower(expectedExt) == ".txt" {
 		if extracted := extractTextFieldFromJSON(content); extracted != "" {
 			content = extracted
+		} else if looksLikeJSONObject(content) {
+			// Content is valid JSON but has no usable "text" field (e.g. OCR
+			// returned {"ok":true,"text":"","lines":[]} for a blank image).
+			// Don't write raw JSON to a .txt file — it's not useful to the user.
+			log.Printf("[skill-runner] materialize stdout: skip empty-text JSON for .txt output (content=%d bytes)", len(content))
+			return
 		}
 	}
 
@@ -2259,6 +2265,20 @@ func stripSkillRunnerMetadataFromOutput(output string) string {
 			continue
 		}
 		if isSkillRunnerMetadataLine(trimmed) {
+			// Exception: [stderr] lines containing structured JSON data should
+			// be treated as content, not metadata. Some CLI tools (e.g.
+			// rapidocr_onnxruntime v1.4+) output valid results to stderr via
+			// Python logging frameworks.
+			if strings.HasPrefix(trimmed, "[stderr] ") {
+				stderrContent := strings.TrimSpace(strings.TrimPrefix(trimmed, "[stderr] "))
+				if stderrContent != "" && (stderrContent[0] == '{' || stderrContent[0] == '[') {
+					// Replace this line with the stripped content (without [stderr] prefix)
+					// so downstream JSON parsers can consume it directly.
+					lines[i] = stderrContent
+					contentStart = i
+					break
+				}
+			}
 			contentStart = i + 1
 			continue
 		}
@@ -2270,6 +2290,9 @@ func stripSkillRunnerMetadataFromOutput(output string) string {
 		return ""
 	}
 	// Also strip trailing [stderr] and [error] blocks that the runner appends.
+	// Exception: if a [stderr] line contains structured JSON output (starts with
+	// '{' after the prefix), preserve it — some CLI tools (e.g. rapidocr v1.4+)
+	// output valid results to stderr via logging frameworks.
 	contentEnd := len(lines)
 	for i := len(lines) - 1; i >= contentStart; i-- {
 		trimmed := strings.TrimSpace(lines[i])
@@ -2277,7 +2300,18 @@ func stripSkillRunnerMetadataFromOutput(output string) string {
 			contentEnd = i
 			continue
 		}
-		if strings.HasPrefix(trimmed, "[stderr] ") || strings.HasPrefix(trimmed, "[error] ") {
+		if strings.HasPrefix(trimmed, "[error] ") {
+			contentEnd = i
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[stderr] ") {
+			// Check if the stderr content after the prefix looks like useful data
+			stderrContent := strings.TrimSpace(strings.TrimPrefix(trimmed, "[stderr] "))
+			if stderrContent != "" && (stderrContent[0] == '{' || stderrContent[0] == '[') {
+				// Structured data in stderr — strip prefix and keep as content
+				lines[i] = stderrContent
+				break
+			}
 			contentEnd = i
 			continue
 		}
@@ -2293,6 +2327,7 @@ func stripSkillRunnerMetadataFromOutput(output string) string {
 // extractTextFieldFromJSON attempts to extract the "text" field from a JSON
 // string. Returns the extracted text or empty string if the content is not
 // JSON or doesn't have a usable "text" field.
+// Falls back to joining the "lines" array if "text" is empty but "lines" exists.
 func extractTextFieldFromJSON(content string) string {
 	content = strings.TrimSpace(content)
 	if len(content) < 2 || content[0] != '{' {
@@ -2302,11 +2337,35 @@ func extractTextFieldFromJSON(content string) string {
 	if err := json.Unmarshal([]byte(content), &obj); err != nil {
 		return ""
 	}
-	text, ok := obj["text"].(string)
-	if !ok || strings.TrimSpace(text) == "" {
-		return ""
+	// Primary: use "text" field
+	if text, ok := obj["text"].(string); ok && strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
 	}
-	return strings.TrimSpace(text)
+	// Fallback: join "lines" array
+	if linesRaw, ok := obj["lines"].([]interface{}); ok && len(linesRaw) > 0 {
+		var parts []string
+		for _, item := range linesRaw {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return ""
+}
+
+// looksLikeJSONObject returns true if content starts with '{' and is valid JSON.
+// Used to distinguish structured JSON output (that should not be written as-is
+// to .txt files) from plain text output.
+func looksLikeJSONObject(content string) bool {
+	content = strings.TrimSpace(content)
+	if len(content) < 2 || content[0] != '{' {
+		return false
+	}
+	var obj map[string]interface{}
+	return json.Unmarshal([]byte(content), &obj) == nil
 }
 
 func isSkillRunnerMetadataLine(line string) bool {

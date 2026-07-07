@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ocrServerPy is the Python sidecar script embedded as a Go string.
@@ -220,6 +221,7 @@ func (s *RapidOCRSidecar) installLocked() error {
 		"--target", libDir,
 		"--no-warn-script-location",
 		"rapidocr-onnxruntime")
+	coretool.HideCommandWindow(cmd)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
@@ -258,6 +260,7 @@ func (s *RapidOCRSidecar) startLocked() error {
 	}
 
 	cmd := exec.Command(pythonPath, scriptPath)
+	coretool.HideCommandWindow(cmd)
 	// Set PYTHONPATH so the sidecar can find rapidocr in our private lib dir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+libDir)
 

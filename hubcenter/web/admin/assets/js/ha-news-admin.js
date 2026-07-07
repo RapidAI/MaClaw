@@ -1171,17 +1171,23 @@ Object.assign(I18N_EN, {
     let mcpCatalogData = [];
     let mcpEditMode = 'remote'; // 'remote' | 'local'
     let mcpCurrentValidateId = '';
-    let catalogActiveSubTab = 'skill'; // 'skill' | 'mcp'
+    let catalogActiveSubTab = 'all'; // 'all' | 'skill' | 'mcp' | 'workflow' | 'app'
 
     function switchCatalogSubTab(tab) {
       catalogActiveSubTab = tab;
-      document.getElementById('catalogSubTabSkill').className = tab === 'skill' ? 'btn-secondary' : 'btn-ghost';
-      document.getElementById('catalogSubTabMCP').className = tab === 'mcp' ? 'btn-secondary' : 'btn-ghost';
-      document.getElementById('catalogSubTabSkill').setAttribute('aria-pressed', tab === 'skill' ? 'true' : 'false');
-      document.getElementById('catalogSubTabMCP').setAttribute('aria-pressed', tab === 'mcp' ? 'true' : 'false');
-      document.getElementById('catalogSubViewSkill').classList.toggle('hidden-view', tab !== 'skill');
+      var tabs = ['all', 'skill', 'mcp', 'workflow', 'app'];
+      tabs.forEach(function(t) {
+        var btn = document.getElementById('catalogSubTab' + t.charAt(0).toUpperCase() + t.slice(1));
+        if (btn) {
+          btn.className = t === tab ? 'btn-secondary' : 'btn-ghost';
+          btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false');
+        }
+      });
+      // Show/hide the MCP-specific view vs the unified catalog view
+      document.getElementById('catalogSubViewSkill').classList.toggle('hidden-view', tab === 'mcp');
       document.getElementById('catalogSubViewMCP').classList.toggle('hidden-view', tab !== 'mcp');
       if (tab === 'mcp') loadMCPCatalog();
+      else if (typeof loadSkillHubList === 'function') { loadSkillHubList(); if (typeof applyImportI18n === 'function') applyImportI18n(); }
     }
 
     function reloadCurrentCatalogSubTab() {

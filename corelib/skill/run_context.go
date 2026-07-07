@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
@@ -1292,6 +1293,14 @@ func BuildCommandEnv(base []string, params map[string]interface{}) []string {
 		}
 		env = upsertCommandEnv(env, key, extra[key])
 	}
+
+	// On Windows, inject a sitecustomize.py that patches subprocess.Popen to
+	// add CREATE_NO_WINDOW, preventing skill Python scripts from flashing
+	// visible console windows when they spawn child processes.
+	// This MUST be after extra_env processing so that if a skill defines its
+	// own PYTHONPATH, our no-window directory is prepended to it (not replaced by it).
+	env = coretool.AppendNoWindowEnv(env)
+
 	return env
 }
 

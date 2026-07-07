@@ -488,6 +488,7 @@ var findRealPythonViaCMD = sync.OnceValue(func() string {
 	for _, name := range []string{"python3", "python"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		cmd := exec.CommandContext(ctx, "cmd", "/c", "where", name)
+		hideCommandWindow(cmd)
 		out, err := cmd.Output()
 		cancel()
 		if err != nil {

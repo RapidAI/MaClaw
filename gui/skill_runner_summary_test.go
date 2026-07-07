@@ -811,3 +811,66 @@ func TestSkillRunnerGetRunStatus_IncludesSummary(t *testing.T) {
 		t.Fatalf("expected session binding summary, got %#v", status.Summary)
 	}
 }
+
+
+func TestMaterializeStdoutToExpectedOutputSkipsEmptyTextJSON(t *testing.T) {
+	// When a skill outputs JSON with "text":"" (e.g. OCR found no text in image),
+	// the runner should NOT write the raw JSON to the .txt file.
+	dir := t.TempDir()
+	expectedPath := filepath.Join(dir, "output.txt")
+	runner := NewSkillRunner(nil)
+	run := &skillRun{status: SkillRunStatus{
+		RunID:          "run-empty-text-json",
+		ExpectedOutput: expectedPath,
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "bash",
+			Status: skillStepStatusSuccess,
+			Output: "shell: cmd.exe\nelapsed: 2s\n\U0001F4C2 /tmp/test\ncommand: node ocr.js\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{\"ok\":true,\"text\":\"\",\"lines\":[],\"boxes\":[],\"scores\":[],\"source\":\"C:\\\\test.png\"}",
+		}},
+	}}
+
+	runner.materializeStdoutToExpectedOutput(run)
+
+	if _, err := os.Stat(expectedPath); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(expectedPath)
+		t.Fatalf("empty-text JSON should not be materialized to .txt, got %d bytes: %s", len(data), string(data))
+	}
+}
+
+func TestExtractTextFieldFromJSONFallsBackToLines(t *testing.T) {
+	// When JSON has "lines" array but no "text" field, extract from lines.
+	content := `{"ok":true,"lines":["Hello World","Line 2"],"scores":[0.98,0.99]}`
+	extracted := extractTextFieldFromJSON(content)
+	if extracted != "Hello World\nLine 2" {
+		t.Fatalf("expected lines joined, got %q", extracted)
+	}
+}
+
+func TestExtractTextFieldFromJSONPrefersTextOverLines(t *testing.T) {
+	// "text" field takes priority over "lines" array
+	content := `{"ok":true,"text":"combined text","lines":["Hello","World"]}`
+	extracted := extractTextFieldFromJSON(content)
+	if extracted != "combined text" {
+		t.Fatalf("expected 'combined text', got %q", extracted)
+	}
+}
+
+func TestStripSkillRunnerMetadataPreservesStderrJSON(t *testing.T) {
+	// When stdout is empty and stderr contains structured JSON (e.g. rapidocr v1.4+
+	// outputting via Python logging), the JSON should be preserved and its
+	// [stderr] prefix stripped.
+	output := "shell: cmd.exe\nelapsed: 7s\n\U0001F4C2 /tmp/skill\ncommand: node ocr.js\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n[stderr] {\"ok\":true,\"text\":\"Hello OCR\",\"lines\":[\"Hello OCR\"]}"
+	result := stripSkillRunnerMetadataFromOutput(output)
+	if !strings.Contains(result, "Hello OCR") {
+		t.Fatalf("expected stderr JSON preserved, got %q", result)
+	}
+	if strings.Contains(result, "[stderr]") {
+		t.Fatalf("expected [stderr] prefix stripped, got %q", result)
+	}
+	// Verify it's valid JSON
+	extracted := extractTextFieldFromJSON(result)
+	if extracted != "Hello OCR" {
+		t.Fatalf("expected extractTextFieldFromJSON to work on preserved stderr JSON, got %q", extracted)
+	}
+}

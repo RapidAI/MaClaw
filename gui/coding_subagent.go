@@ -2860,6 +2860,7 @@ func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{})
 
 func appendSubAgentUntrackedGitFiles(ctx context.Context, workDir, diffText string) string {
 	cmd := exec.CommandContext(ctx, passthroughRuntimeProgram("git"), "-C", workDir, "ls-files", "--others", "--exclude-standard", "--", ".")
+	hideCommandWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return diffText
@@ -2903,6 +2904,7 @@ func (c *codingSubAgentCallbacks) ensureGitWorkTree(workDir string) codingToolEx
 	ctx, cancel := c.toolContext()
 	defer cancel()
 	cmd := exec.CommandContext(ctx, passthroughRuntimeProgram("git"), "-C", workDir, "rev-parse", "--is-inside-work-tree")
+	hideCommandWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return codingToolExecutionResult{

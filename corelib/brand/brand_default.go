@@ -7,7 +7,7 @@ func init() {
 		ID:                  "maclaw",
 		DisplayName:         "MaClaw",
 		DisplayNameCN:       "码卡龙",
-		WindowTitle:         "码卡龙 6 MaClaw（程启）",
+		WindowTitle:         "码卡龙 6 MaClaw（破茧）",
 		TrayTooltip:         "MaClaw Dashboard",
 		Slogan:              "你的数智时代伙伴。",
 		Author:              "Dr. Daniel",

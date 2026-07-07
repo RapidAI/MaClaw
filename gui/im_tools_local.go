@@ -108,7 +108,7 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	cmd.Dir = workDir
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when commands output non-ASCII text.
-	cmd.Env = coretool.AppendUTF8Env(os.Environ())
+	cmd.Env = coretool.AppendNoWindowEnv(coretool.AppendUTF8Env(os.Environ()))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

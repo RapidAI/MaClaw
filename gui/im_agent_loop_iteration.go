@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
@@ -40,11 +41,51 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 		injectedText, _ = injected.(string)
 		if injectedText != "" {
-			conversation = append(conversation, map[string]string{
-				"role":    "system",
-				"content": injectedText,
-			})
-			log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
+			// At iteration 0, a guide reference in pendingInjection means it
+			// arrived during an active loop's final moment, survived cleanup
+			// (clearNonGuidePendingInjection preserves guide refs), and is now
+			// being consumed by the NEXT loop. At iteration 0 there is no
+			// "current plan" to re-evaluate, so downgrade to user-role supplement
+			// (same semantics as pendingPreLoopGuide).
+			if iteration == 0 && isGuideLaunchReferenceInjection(injectedText) {
+				guideUserText := stripInjectionPrefix(injectedText)
+				if guideUserText != "" {
+					conversation = append(conversation, map[string]string{
+						"role":    "user",
+						"content": "[用户补充说明] " + guideUserText,
+					})
+					log.Printf("[injection] user=%s guide reference at iteration 0 downgraded to user-role: %s", userID, truncateForLog(guideUserText, 50))
+				}
+			} else {
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": injectedText,
+				})
+				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
+			}
+		}
+	}
+	// Pre-loop guide: guide-launch text that arrived before the agent loop
+	// started (during preflight/intent-classification). Inject as user-role
+	// supplement at iteration 0 so LLM treats it as additional user intent
+	// rather than a mid-task replan directive. Discard if too old (stale from
+	// a previous message that didn't start a loop).
+	if preGuide, ok := h.pendingPreLoopGuide.LoadAndDelete(userID); ok {
+		if entry, isEntry := preGuide.(*preLoopGuideEntry); isEntry && entry != nil && entry.Text != "" {
+			if time.Since(entry.CreatedAt) <= preLoopGuideMaxAge {
+				conversation = append(conversation, map[string]string{
+					"role":    "user",
+					"content": "[用户补充说明] " + entry.Text,
+				})
+				if injectedText == "" {
+					injectedText = entry.Text
+				} else {
+					injectedText += "\n" + entry.Text
+				}
+				log.Printf("[injection] user=%s pre-loop guide supplement: %s", userID, truncateForLog(entry.Text, 50))
+			} else {
+				log.Printf("[injection] user=%s discarded stale pre-loop guide (age=%v): %s", userID, time.Since(entry.CreatedAt).Round(time.Second), truncateForLog(entry.Text, 50))
+			}
 		}
 	}
 	return conversation, false, injectedText

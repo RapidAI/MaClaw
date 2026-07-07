@@ -774,13 +774,26 @@ func (e *SkillExecutor) UpdateStatus(name, status string) error {
 	defer e.mu.Unlock()
 
 	skills := e.loadSkills()
+	idx := -1
 	for i, s := range skills {
 		if s.Name == name {
-			skills[i].Status = status
-			return e.saveSkills(skills)
+			idx = i
+			break
 		}
 	}
-	return fmt.Errorf("skill %q not found", name)
+	if idx < 0 {
+		for i, s := range skills {
+			if s.MatchesName(name) {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	skills[idx].Status = status
+	return e.saveSkills(skills)
 }
 
 // UpdateFromHub checks for a newer version of a Hub Skill and updates it locally.
@@ -797,6 +810,15 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 			skill = s
 			found = true
 			break
+		}
+	}
+	if !found {
+		for _, s := range skills {
+			if s.MatchesName(name) {
+				skill = s
+				found = true
+				break
+			}
 		}
 	}
 	e.mu.RUnlock()
@@ -840,6 +862,14 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 			break
 		}
 	}
+	if idx < 0 {
+		for i, s := range skills {
+			if s.MatchesName(name) {
+				idx = i
+				break
+			}
+		}
+	}
 	if idx == -1 {
 		return fmt.Errorf("skill %q was removed during update", name)
 	}
@@ -874,21 +904,35 @@ func (e *SkillExecutor) Delete(name string) error {
 	skills := e.loadSkills()
 	found := false
 	var targetSkillDir string
+
+	// Two-pass lookup: first try exact Name match (what the frontend sends),
+	// then fallback to MatchesName for case-insensitive / DirName / SkillDir
+	// basename matching. This prevents a false-positive deletion when another
+	// skill's DirName happens to match the target's Name.
+	idx := -1
 	for i, s := range skills {
 		if s.Name == name {
-			found = true
-			targetSkillDir = s.SkillDir // Record the precise directory before removal.
-			// Always remove from config regardless of source.
-			// Previously file-based skills were skipped here, leaving
-			// orphaned stats-only stubs in config.json when the on-disk
-			// directory was already deleted; the "ghost skill" bug.
-			skills = append(skills[:i], skills[i+1:]...)
-			if err := e.saveSkills(skills); err != nil {
-				return err
-			}
+			idx = i
 			break
 		}
 	}
+	if idx < 0 {
+		for i, s := range skills {
+			if s.MatchesName(name) {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx >= 0 {
+		found = true
+		targetSkillDir = skills[idx].SkillDir
+		skills = append(skills[:idx], skills[idx+1:]...)
+		if err := e.saveSkills(skills); err != nil {
+			return err
+		}
+	}
+
 	if !found {
 		return fmt.Errorf("skill %q not found", name)
 	}
@@ -896,7 +940,18 @@ func (e *SkillExecutor) Delete(name string) error {
 	// Prefer deleting the precise SkillDir recorded in the entry to avoid
 	// accidentally removing a same-named skill from a different root directory.
 	if targetSkillDir != "" {
-		_ = os.RemoveAll(targetSkillDir)
+		rmErr := os.RemoveAll(targetSkillDir)
+		if rmErr == nil || !dirExists(targetSkillDir) {
+			// Directory gone — remove from scanner cache for instant UI feedback.
+			if e.app != nil && e.app.cachedSkillScanner != nil {
+				e.app.cachedSkillScanner.RemoveByDir(targetSkillDir)
+			}
+		} else {
+			// Directory still present (file locked by antivirus, etc.).
+			// Log for diagnostics. The scanner will re-discover it on next scan,
+			// which is correct — the user will see it reappear and can retry.
+			log.Printf("[skill-delete] os.RemoveAll(%s) failed: %v", targetSkillDir, rmErr)
+		}
 	} else {
 		// Fallback: scan all roots by name (backward compatibility for
 		// old entries that have no SkillDir recorded).
@@ -916,13 +971,22 @@ func (e *SkillExecutor) removeSkillDirs(name string) {
 	cfg, _ := e.app.LoadConfig()
 	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
 		for _, s := range skill.ScanSkillDirAll(root) {
-			if s.Name == name || s.DirName == name {
+			if s.MatchesName(name) {
 				if s.SkillDir != "" {
-					_ = os.RemoveAll(s.SkillDir)
+					rmErr := os.RemoveAll(s.SkillDir)
+					if (rmErr == nil || !dirExists(s.SkillDir)) && e.app.cachedSkillScanner != nil {
+						e.app.cachedSkillScanner.RemoveByDir(s.SkillDir)
+					}
 				}
 			}
 		}
 	}
+}
+
+// dirExists returns true if path exists and is a directory.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // Rename changes the name of a skill. It updates the in-memory list,
@@ -956,6 +1020,14 @@ func (e *SkillExecutor) Rename(oldName, newName string) error {
 		if s.Name == oldName {
 			idx = i
 			break
+		}
+	}
+	if idx < 0 {
+		for i, s := range skills {
+			if s.MatchesName(oldName) {
+				idx = i
+				break
+			}
 		}
 	}
 	if idx == -1 {
@@ -3808,8 +3880,15 @@ func (a *App) DeleteNLSkill(name string) error {
 		return fmt.Errorf("skill executor not initialized")
 	}
 	err := a.skillExecutor.Delete(name)
-	if err == nil && a.hubUpdCache != nil {
-		a.hubUpdCache.invalidate()
+	if err == nil {
+		if a.hubUpdCache != nil {
+			a.hubUpdCache.invalidate()
+		}
+		// Refresh the tool router's skill index so that subsequent LLM
+		// Route() calls no longer include the deleted skill in matches.
+		if a.toolRouter != nil {
+			a.toolRouter.RefreshSkillIndex()
+		}
 	}
 	return err
 }

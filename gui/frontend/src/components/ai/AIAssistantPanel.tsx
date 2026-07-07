@@ -7,6 +7,7 @@ import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewSt
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
+import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import { getAssistantLightScheme } from "./assistantLightSchemes";
@@ -2201,6 +2202,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // (every 33ms). Without this cache, all N messages get full Markdown
     // re-parsing on every token batch flush.
     const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage> }>>(new Map());
+    // Incremental Markdown render state for the streaming (last) assistant message.
+    // This avoids re-parsing the entire message content on every 33ms token flush.
+    // Only the "active tail" (last incomplete paragraph) is re-parsed each frame;
+    // completed paragraphs are frozen as cached React nodes.
+    const incrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
+        messageId: '', state: createIncrementalRenderState(),
+    });
     // Track render-config: when theme/lang/callback change, invalidate entire cache
     // to avoid returning stale renders with old styles or stale closures.
     // NOTE: isBusy is NOT included here — it only affects the last assistant message's
@@ -2209,6 +2217,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
         prevRenderConfigRef.current = { t, lang, savedFileLabel, execAction: panelExecuteAction };
         msgRenderCacheRef.current.clear();
+        // Also invalidate incremental state on config change (theme colors affect rendered nodes)
+        incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
     }
     const renderedOtherMessages = useMemo(() => {
         const cache = msgRenderCacheRef.current;
@@ -2230,7 +2240,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
             }
-            const node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy);
+            // For the last assistant message during streaming (isBusy), use incremental
+            // Markdown rendering to avoid O(content.length) full re-parse every 33ms.
+            // The incremental renderer freezes completed paragraphs and only re-parses
+            // the active tail (~20 lines), keeping per-frame cost < 1ms regardless of
+            // total message length.
+            let node: ReturnType<typeof renderMessage>;
+            if (isLast && isBusy && msg.role === 'assistant' && msg.content && msg.content.length > 2000) {
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy, (formattedContent: string) => {
+                    // Incremental render callback: called by renderMessage for the
+                    // content section of the last streaming assistant message.
+                    const incRef = incrementalStateRef.current;
+                    if (incRef.messageId !== msg.id) {
+                        incRef.messageId = msg.id;
+                        incRef.state = createIncrementalRenderState();
+                    }
+                    return renderContentIncremental(formattedContent, t, incRef.state);
+                });
+            } else {
+                // Reset incremental state when streaming ends (isBusy becomes false)
+                // so the final render is a clean full parse (100% correct).
+                if (isLast && msg.role === 'assistant' && incrementalStateRef.current.messageId === msg.id && !isBusy) {
+                    incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
+                }
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy);
+            }
             cache.set(msg.id, { contentKey, node });
             return node;
         });
@@ -2246,7 +2280,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }} onDragOver={handleDragOver} onDrop={handleDrop}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />

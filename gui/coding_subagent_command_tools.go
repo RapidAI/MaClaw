@@ -269,7 +269,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 }
 
 func codingCommandEnv() []string {
-	env := coretool.AppendUTF8Env(os.Environ())
+	env := coretool.AppendNoWindowEnv(coretool.AppendUTF8Env(os.Environ()))
 	if runtime.GOOS != "windows" {
 		return env
 	}

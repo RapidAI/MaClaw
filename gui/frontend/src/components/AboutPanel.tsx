@@ -359,10 +359,10 @@ export function AboutPanel({
             return t("aboutProductName");
         }
         if (brandInfo.id === 'qianxin') {
-            return '\u864e\u722a 6 \u7a0b\u542f';
+            return '\u864e\u722a 6 \u7834\u8327';
         }
         if (brandInfo.id === 'metastaff') {
-            return '\u667a\u5458 6 \u7a0b\u542f';
+            return '\u667a\u5458 6 \u7834\u8327';
         }
         const cnName = String(brandInfo.displayNameCN || '').trim();
         const displayName = String(brandInfo.displayName || '').trim();

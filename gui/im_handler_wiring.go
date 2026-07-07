@@ -397,6 +397,14 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is string.
 	pendingInjection sync.Map
 
+	// pendingPreLoopGuide stores guide-launch text that arrived before the
+	// agent loop started (during preflight/intent-classification). Unlike
+	// pendingInjection (consumed as system role with replan instruction),
+	// this is consumed at iteration 0 as a user-role supplement — because
+	// there is no "current plan" to re-evaluate yet.
+	// Keyed by userID, value is *preLoopGuideEntry.
+	pendingPreLoopGuide sync.Map
+
 	// cancelledTaskBoundary records that a user explicitly cancelled the
 	// current task. The next normal user message must start a new task instead
 	// of being merged into or classified as a continuation of the cancelled

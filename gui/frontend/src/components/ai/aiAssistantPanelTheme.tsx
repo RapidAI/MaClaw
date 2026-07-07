@@ -374,8 +374,8 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         outline: 2px solid rgba(47, 95, 152, 0.48);
         outline-offset: 1px;
     }
-    .ai-titlebar-tool:hover { background: var(--ai-titlebar-tool-hover-bg, rgba(148, 163, 184, 0.12)) !important; }
-    .ai-titlebar-tool:active { filter: brightness(0.96); }
+    .ai-titlebar-tool:hover:not(:disabled) { background: var(--ai-titlebar-tool-hover-bg, rgba(148, 163, 184, 0.12)) !important; }
+    .ai-titlebar-tool:active:not(:disabled) { filter: brightness(0.96); }
     .ai-titlebar-tool:focus-visible {
         outline: 2px solid rgba(47, 95, 152, 0.38);
         outline-offset: 1px;

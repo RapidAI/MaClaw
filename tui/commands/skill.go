@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -162,21 +163,31 @@ func skillDelete(args []string) error {
 	}
 	name := fs.Arg(0)
 
-	// Use ScanSkillDirAll — the unfiltered variant of the same scanner
-	// that populates the skill list — so any format it can parse is
-	// automatically covered and platform-incompatible skills can still
-	// be deleted.
+	// Scan all roots once, then do two-pass lookup in memory:
+	// pass 1 = exact Name match, pass 2 = flexible MatchesName fallback.
+	var allSkills []corelib.NLSkillEntry
 	for _, root := range skill.SkillScanRoots() {
-		for _, s := range skill.ScanSkillDirAll(root) {
-			if s.Name == name || s.DirName == name {
-				if s.SkillDir != "" {
-					if err := os.RemoveAll(s.SkillDir); err != nil {
-						return fmt.Errorf("delete skill: %w", err)
-					}
-					fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
-					return nil
-				}
+		allSkills = append(allSkills, skill.ScanSkillDirAll(root)...)
+	}
+
+	// Pass 1: exact Name match.
+	for _, s := range allSkills {
+		if s.Name == name && s.SkillDir != "" {
+			if err := os.RemoveAll(s.SkillDir); err != nil {
+				return fmt.Errorf("delete skill: %w", err)
 			}
+			fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
+			return nil
+		}
+	}
+	// Pass 2: flexible MatchesName fallback.
+	for _, s := range allSkills {
+		if s.MatchesName(name) && s.SkillDir != "" {
+			if err := os.RemoveAll(s.SkillDir); err != nil {
+				return fmt.Errorf("delete skill: %w", err)
+			}
+			fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
+			return nil
 		}
 	}
 

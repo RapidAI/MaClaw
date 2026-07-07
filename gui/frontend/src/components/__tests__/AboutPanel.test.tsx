@@ -201,7 +201,7 @@ describe('AboutPanel', () => {
             />,
         );
 
-        expect(screen.getByRole('heading', { name: '智员 6 程启' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '智员 6 破茧' })).toBeTruthy();
     });
 
     it('renders current tenant and registered hub instance name', () => {

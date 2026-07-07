@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -222,6 +223,163 @@ func llmModelsEndpoint(apiURL, protocol string) (string, error) {
 	}
 	u.Path = path + "/models"
 	return u.String(), nil
+}
+
+// adminTestLLMProviderChat performs an end-to-end chat completion test against
+// a configured provider. Unlike probe-models (which only checks /v1/models
+// reachability), this sends an actual chat request and verifies a response is
+// returned — the same test the client would exercise.
+func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ProviderID string `json:"provider_id"`
+			APIURL     string `json:"api_url"`
+			APIKey     string `json:"api_key"`
+			Model      string `json:"model"`
+			Protocol   string `json:"protocol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		// Resolve API key from stored provider if not supplied
+		if req.APIKey == "" && req.ProviderID != "" && svc != nil {
+			existing, err := svc.GetProvider(r.Context(), req.ProviderID)
+			if err == nil && existing != nil {
+				req.APIKey = existing.APIKey
+				if req.APIURL == "" {
+					req.APIURL = existing.APIURL
+				}
+				if req.Model == "" && len(existing.Models) > 0 {
+					req.Model = existing.Models[0]
+				}
+				if req.Protocol == "" {
+					req.Protocol = existing.Protocol
+				}
+			}
+		}
+		if req.APIURL == "" || req.Model == "" {
+			writeJSONResp(w, http.StatusOK, map[string]any{
+				"success": false,
+				"error":   "api_url and model are required",
+			})
+			return
+		}
+		// Build chat completion request
+		chatEndpoint := llmChatEndpoint(req.APIURL, req.Protocol)
+		var payload map[string]any
+		if strings.EqualFold(req.Protocol, "anthropic") {
+			payload = map[string]any{
+				"model": req.Model,
+				"messages": []map[string]string{
+					{"role": "user", "content": "Reply with exactly: pong"},
+				},
+				"max_tokens": 16,
+			}
+		} else {
+			payload = map[string]any{
+				"model": req.Model,
+				"messages": []map[string]string{
+					{"role": "user", "content": "Reply with exactly: pong"},
+				},
+				"max_tokens":  16,
+				"temperature": 0,
+			}
+		}
+		body, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatEndpoint, bytes.NewReader(body))
+		if err != nil {
+			writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if strings.EqualFold(req.Protocol, "anthropic") {
+			if req.APIKey != "" {
+				httpReq.Header.Set("x-api-key", req.APIKey)
+			}
+			httpReq.Header.Set("anthropic-version", "2023-06-01")
+		} else if req.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+		}
+		start := time.Now()
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(httpReq)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			writeJSONResp(w, http.StatusOK, map[string]any{
+				"success":    false,
+				"error":      err.Error(),
+				"latency_ms": latencyMs,
+			})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errMsg := strings.TrimSpace(string(respBody))
+			if len(errMsg) > 500 {
+				errMsg = errMsg[:500]
+			}
+			if errMsg == "" {
+				errMsg = resp.Status
+			}
+			writeJSONResp(w, http.StatusOK, map[string]any{
+				"success":    false,
+				"error":      fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errMsg),
+				"latency_ms": latencyMs,
+			})
+			return
+		}
+		// Parse reply
+		var chatResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"` // Anthropic format
+		}
+		_ = json.Unmarshal(respBody, &chatResp)
+		reply := ""
+		if len(chatResp.Choices) > 0 {
+			reply = chatResp.Choices[0].Message.Content
+		} else if len(chatResp.Content) > 0 {
+			reply = chatResp.Content[0].Text
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"success":    true,
+			"reply":      reply,
+			"latency_ms": latencyMs,
+		})
+	}
+}
+
+// llmChatEndpoint derives the chat completions URL from a base API URL.
+func llmChatEndpoint(apiURL, protocol string) string {
+	u, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil {
+		return apiURL
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/messages") {
+		return u.String()
+	}
+	if strings.EqualFold(protocol, "anthropic") {
+		if !strings.HasSuffix(path, "/v1") {
+			path += "/v1"
+		}
+		u.Path = path + "/messages"
+		return u.String()
+	}
+	if !strings.HasSuffix(path, "/v1") {
+		path += "/v1"
+	}
+	u.Path = path + "/chat/completions"
+	return u.String()
 }
 
 func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {

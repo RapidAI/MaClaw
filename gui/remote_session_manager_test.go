@@ -241,9 +241,13 @@ func TestInjectGuideReferenceAcceptsRecentLoopEnd(t *testing.T) {
 	if !h.InjectGuideReference(desktopUserID, "late guide") {
 		t.Fatalf("recently finished desktop session should accept guide reference")
 	}
-	raw, ok := h.pendingInjection.Load(desktopUserID)
-	if !ok || !strings.Contains(raw.(string), "late guide") {
-		t.Fatalf("pending guide reference missing: %#v", raw)
+	raw, ok := h.pendingPreLoopGuide.Load(desktopUserID)
+	if !ok {
+		t.Fatalf("pending pre-loop guide reference missing")
+	}
+	entry := raw.(*preLoopGuideEntry)
+	if !strings.Contains(entry.Text, "late guide") {
+		t.Fatalf("pending pre-loop guide reference text mismatch: %#v", entry.Text)
 	}
 }
 
@@ -256,9 +260,13 @@ func TestInjectGuideReferenceAcceptsLoopStartingWindow(t *testing.T) {
 	if !h.InjectGuideReference(desktopUserID, "starting guide") {
 		t.Fatalf("session entering loop should accept guide reference")
 	}
-	raw, ok := h.pendingInjection.Load(desktopUserID)
-	if !ok || !strings.Contains(raw.(string), "starting guide") {
-		t.Fatalf("pending guide reference missing: %#v", raw)
+	raw, ok := h.pendingPreLoopGuide.Load(desktopUserID)
+	if !ok {
+		t.Fatalf("pending pre-loop guide reference missing")
+	}
+	entry := raw.(*preLoopGuideEntry)
+	if !strings.Contains(entry.Text, "starting guide") {
+		t.Fatalf("pending pre-loop guide reference text mismatch: %#v", entry.Text)
 	}
 }
 

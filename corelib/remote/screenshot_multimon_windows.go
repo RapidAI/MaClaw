@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Stubs for non-Windows platforms — the compiler needs these on Windows
@@ -48,6 +49,7 @@ func enumDisplaysWindows() ([]DisplayInfo, error) {
 		`$result | ConvertTo-Json -Compress`
 
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("enumDisplaysWindows: powershell failed: %w", err)

@@ -611,7 +611,7 @@ func skillUninstall(app *TUIApp, args map[string]interface{}) string {
 	dirRemoved := false
 	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
 		for _, s := range skill.ScanSkillDirAll(root) {
-			if s.Name == name || s.DirName == name {
+			if s.MatchesName(name) {
 				if s.SkillDir != "" {
 					if err := os.RemoveAll(s.SkillDir); err != nil {
 						log.Printf("[skill-uninstall] failed to remove %s: %v", s.SkillDir, err)

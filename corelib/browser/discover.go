@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ── managed browser process ──
@@ -444,7 +445,9 @@ func killManagedBrowserProcessesByDir(userDataDir string) bool {
 		return false
 	}
 	ps := browserProcessesByDirPowerShell(userDataDir, true)
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	coretool.HideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("[browser] 按 profile 清理托管浏览器失败: %v output=%s", err, summarizeStderr(string(out)))
 		return false
@@ -473,7 +476,9 @@ func browserProcessExistsForDir(userDataDir string) bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", browserProcessesByDirPowerShell(userDataDir, false)).CombinedOutput()
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", browserProcessesByDirPowerShell(userDataDir, false))
+	coretool.HideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
@@ -603,7 +608,11 @@ func isBrowserRunning(browserName string) bool {
 		} else {
 			procName = "msedge.exe"
 		}
-		out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", procName), "/NH").Output()
+		out, err := func() ([]byte, error) {
+			cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", procName), "/NH")
+			coretool.HideCommandWindow(cmd)
+			return cmd.Output()
+		}()
 		if err != nil {
 			return false
 		}
@@ -677,7 +686,9 @@ func discoverCDPAddrFromManagedProcess(userDataDir string) (string, bool) {
 	}
 	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
 	ps := fmt.Sprintf(`$needle = '%s'; Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf('--remote-debugging-port', [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { $_.CommandLine }`, needle)
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	coretool.HideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", false
 	}

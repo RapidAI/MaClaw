@@ -904,7 +904,7 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
 
 /* Render a single ChatMessage */
 
-export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en", isStreaming = false): React.ReactNode {
+export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en", isStreaming = false, incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[]): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -977,6 +977,11 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             );
                         }
                         const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
+                        // Use incremental renderer when provided (streaming long messages)
+                        // to avoid O(content.length) full re-parse every 33ms token flush.
+                        if (incrementalContentRenderer && formattedContent) {
+                            return incrementalContentRenderer(formattedContent);
+                        }
                         return renderContentWithCodeBlocks(formattedContent, t);
                     })()}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
