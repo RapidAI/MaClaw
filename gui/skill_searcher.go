@@ -24,6 +24,7 @@ type SkillSearchResult struct {
 	Score                        float64                  `json:"score"`
 	Price                        int                      `json:"price"`
 	Status                       skillSearchSourceKind    `json:"status"`
+	TrustLevel                   string                   `json:"trust_level,omitempty"`
 	InstallRef                   string                   `json:"install_ref,omitempty"`
 	AvgRating                    float64                  `json:"avg_rating"`
 	DownloadCount                int                      `json:"download_count"`
@@ -451,6 +452,10 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 }
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
 	source := string(r.SourceKind())
+	trustLevel := r.TrustLevel
+	if trustLevel == "" {
+		trustLevel = mixedTrustLevel(source)
+	}
 	return MixedSkillSearchResult{
 		ID:                 r.ID,
 		Name:               r.Name,
@@ -458,7 +463,7 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 		Tags:               r.Tags,
 		Source:             source,
 		SourceLabel:        mixedSourceLabel(source),
-		TrustLevel:         mixedTrustLevel(source),
+		TrustLevel:         trustLevel,
 		AvgRating:          r.AvgRating,
 		Downloads:          r.DownloadCount,
 		Score:              r.Score,

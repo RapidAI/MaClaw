@@ -10,7 +10,7 @@ type HubSkillMeta struct {
 	Version     string   `json:"version"`
 	SemVer      string   `json:"semver,omitempty"` // Semantic version from skill.yaml (e.g. "1.3.0")
 	Author      string   `json:"author"`
-	TrustLevel  string   `json:"trust_level"` // "official", "community", "unknown"
+	TrustLevel  string   `json:"trust_level"` // "builtin", "trusted", "official", "community", "agent-created"
 	Downloads   int      `json:"downloads"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`

@@ -825,6 +825,12 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	if freshCfg, loadErr := a.LoadConfig(); loadErr == nil {
 		if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
 			if status, statusErr := a.fetchHubLLMServiceStatusWithTimeout(freshCfg, hubServiceStatusTimeout); statusErr == nil {
+				// Update local cache so sidebar shows fresh status immediately.
+				hubServiceStatusCache.mu.Lock()
+				hubServiceStatusCache.status = status
+				hubServiceStatusCache.fetchedAt = time.Now()
+				hubServiceStatusCache.valid = true
+				hubServiceStatusCache.mu.Unlock()
 				if _, syncErr := a.syncHubLLMServiceStatusToConfig(status, true); syncErr != nil {
 					log.Printf("[onboarding] ActivateRemote hub_service_sync_failed err=%v", syncErr)
 				}
@@ -834,6 +840,10 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 						log.Printf("[onboarding] ActivateRemote hub_service_clear_failed err=%v", syncErr)
 					}
 				}
+				// Invalidate cache on auth error so next fetch tries fresh.
+				hubServiceStatusCache.mu.Lock()
+				hubServiceStatusCache.valid = false
+				hubServiceStatusCache.mu.Unlock()
 				log.Printf("[onboarding] ActivateRemote hub_service_status_failed err=%v", statusErr)
 			}
 		} else if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {

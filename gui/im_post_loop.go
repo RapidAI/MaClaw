@@ -321,12 +321,20 @@ func (h *IMMessageHandler) applyWorkflowAutoAdvanceResponse(userID string, advRe
 //  4. resp.Error (error message as last resort)
 //
 // Returns the document text and a source label for logging.
+//
+// All sources are passed through stripRolePrefixHallucination to remove
+// "Browser:" / "Tool:" role-prefix hallucinations that may appear in
+// LLM-generated document content (write_file content parameter, streaming
+// text buffer, or final response text). Without this, hallucinated prefixes
+// in write_file content reach the frontend doc preview panel unfiltered —
+// the streaming filter and post-processing only cover msg.Content, not
+// tool call argument payloads.
 func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (string, string) {
 	var docText string
 	source := "resp.Text"
 	if loopCtx != nil && len(loopCtx.WorkflowWrittenFiles) > 0 {
 		if fileContent := readWorkflowWrittenFiles(loopCtx.WorkflowWrittenFiles); fileContent != "" {
-			return fileContent, "written_files"
+			return stripRolePrefixHallucination(fileContent), "written_files"
 		}
 	}
 	if loopCtx != nil && loopCtx.WorkflowDocBuffer.Len() > 0 {
@@ -341,6 +349,9 @@ func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (s
 	if docText == "" && resp != nil && resp.Error != "" {
 		docText = "⚠️ 阶段执行出错: " + resp.Error
 		source = "error"
+	}
+	if docText != "" {
+		docText = stripRolePrefixHallucination(docText)
 	}
 	return docText, source
 }

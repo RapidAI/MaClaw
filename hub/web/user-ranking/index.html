@@ -283,7 +283,7 @@
     function formatDuration(s) {
       if (s >= 86400) { var d = Math.floor(s/86400), h = Math.floor((s%86400)/3600); return d + (isZh()?'天':'d') + (h > 0 ? ' '+h+(isZh()?'时':'h') : ''); }
       if (s >= 3600) return (s/3600).toFixed(1) + (isZh()?' 小时':'h');
-      if (s >= 60) return Math.floor(s/60) + (isZh()?' 分钟':'m');
+      if (s >= 60) return Math.floor(s/60) + (isZh()?' 分钟':' Min');
       return s + (isZh()?' 秒':'s');
     }
     function primaryMetric(row) { return currentDimension === 'duration' ? formatDuration(row.duration_seconds) : formatTokens(row.total_tokens); }

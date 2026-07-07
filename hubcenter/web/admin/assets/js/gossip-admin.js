@@ -109,14 +109,31 @@
     }
     function renderSkillHubCard(s, idx) {
       var cat = classifySkillCategory(s);
-      var name = escapeHtml(s.name || '-');
+      // Prefer human-readable display name over internal ID-like name
+      var rawName = s.maclaw_app_name || s.display_name || s.name || '-';
+      // If name looks like a skill_id format (publisher.skill-name): lowercase, no spaces, 2 dot-separated parts
+      if (/^[a-z0-9_-]+\.[a-z0-9_-]+$/.test(rawName) && rawName === (s.skill_id || s.name)) {
+        var parts = rawName.split('.');
+        rawName = parts[parts.length - 1];
+      }
+      // If name still looks like an internal ID (long hex/uuid or enterprise_hub_ prefix), try description first clause
+      if (/^[a-f0-9-]{20,}$/.test(rawName) || /^enterprise_hub[_.]/.test(rawName)) {
+        var descFallback = (s.description || '').split(/[,.;:，。；：\n]/)[0].trim();
+        if (descFallback && descFallback.length <= 60) rawName = descFallback;
+        else if (descFallback && descFallback.length > 60) rawName = descFallback.substring(0, 50) + '…';
+      }
+      var name = escapeHtml(rawName);
+      // Show skill_id or internal id below the name (secondary info)
+      var skillIdText = s.skill_id || (s.id && s.id !== rawName ? s.id : '');
+      var idLine = skillIdText ? '<div class="mp-cap-card-id" title="ID: ' + escapeHtml(skillIdText) + '">' + escapeHtml(skillIdText) + '</div>' : '';
       var verTag = (s.semver || s.version) ? '<span class="mp-card-version">v' + escapeHtml(s.semver || s.version) + '</span>' : '';
       var idArg = jsArg(s.id);
       var catBadge = skillCategoryBadge(cat);
       // Description (prominently displayed, with fallback)
       var description = s.description ? escapeHtml(s.description) : '<span style="opacity:.45">' + escapeHtml(shtr('noDescription')) + '</span>';
       // Source + status meta line (concise)
-      var sourceLabel = escapeHtml(s.source || s.trust_level || 'enterprise_hub');
+      var trustLabels = {trusted: currentLang==='zh'?'可信':'Trusted', official: currentLang==='zh'?'官方':'Official', builtin: currentLang==='zh'?'内置':'Built-in', community: currentLang==='zh'?'社区':'Community', 'agent-created': 'Agent'};
+      var sourceLabel = escapeHtml(s.source || trustLabels[s.trust_level] || s.trust_level || 'SkillHub');
       var statusBadgeClass = s.visible === false ? 'warn' : 'ok';
       var statusLabel = s.visible === false ? shtr('hidden') : shtr('visible');
       var metaLine = sourceLabel + ' | <span class="badge-inline ' + statusBadgeClass + '">' + escapeHtml(statusLabel) + '</span>';
@@ -135,12 +152,14 @@
           '<div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name" title="' + name + '">' + name + '</div>' + verTag + '</div>' +
           catBadge +
         '</div>' +
+        idLine +
         '<div class="mp-cap-card-desc">' + description + '</div>' +
         '<div class="mp-cap-card-meta">' + metaLine + '</div>' +
         statsHtml +
         '<div class="mp-card-btn-grid">' +
           '<button class="mp-card-btn mp-card-btn-secondary" onclick="skillhubSetVisibility(' + idArg + ',' + (s.visible === false) + ')">' + (s.visible === false ? shtr('show') : shtr('hide')) + '</button>' +
           '<button class="mp-card-btn mp-card-btn-ghost" onclick="skillhubSetRecommend(' + idArg + ')">' + shtr('recommend') + '</button>' +
+          '<button class="mp-card-btn mp-card-btn-ghost" onclick="skillhubSetTrustLevel(' + idArg + ')">' + (currentLang==='zh'?'信任等级':'Trust Level') + '</button>' +
           '<button class="mp-card-btn mp-card-btn-link" onclick="skillhubUploadToMarket(' + idArg + ')">' + shtr('uploadToMarket') + '</button>' +
           '<button class="mp-card-btn mp-card-btn-danger" onclick="skillhubDelete(' + idx + ')">' + shtr('delete') + '</button>' +
         '</div>' +
@@ -150,6 +169,7 @@
     function changeSkillHubPage(delta){loadSkillHubList(skillhubPage+delta)}
     async function skillhubSetVisibility(id,visible){try{await api('/api/admin/skillhub/visibility',{method:'POST',body:JSON.stringify({id,visible})});showToast(shtr('visibilityUpdated'),'success');loadSkillHubList()}catch(err){showToast(err.message,'error')}}
     async function skillhubSetRecommend(id){try{await api('/api/admin/skillhub/visibility',{method:'POST',body:JSON.stringify({id,visible:true,recommended:true})});showToast(currentLang==='zh'?'已设为推荐':'Marked as recommended','success');loadSkillHubList()}catch(err){showToast(err.message,'error')}}
+    async function skillhubSetTrustLevel(id){var levels=['trusted','official','community','builtin','agent-created'];var labels=currentLang==='zh'?['可信（默认）','官方','社区','内置','Agent生成']:['Trusted (default)','Official','Community','Built-in','Agent-created'];var msg=currentLang==='zh'?'选择信任等级：\n':'Choose trust level:\n';for(var i=0;i<levels.length;i++){msg+=(i+1)+'. '+labels[i]+'\n'}var choice=prompt(msg,1);if(!choice)return;var idx=parseInt(choice,10)-1;if(idx<0||idx>=levels.length){showToast(currentLang==='zh'?'无效选择':'Invalid choice','error');return}try{await api('/api/admin/skillhub/trust-level',{method:'POST',body:JSON.stringify({id:id,trust_level:levels[idx]})});showToast(currentLang==='zh'?'信任等级已更新为: '+labels[idx]:'Trust level updated to: '+labels[idx],'success');loadSkillHubList()}catch(err){showToast(err.message,'error')}}
     async function skillhubUploadToMarket(id){try{await api('/api/admin/skillhub/upload-to-market',{method:'POST',body:JSON.stringify({id})});showToast(currentLang==='zh'?'已上传到能力市场':'Uploaded to market','success');loadSkillHubList()}catch(err){showToast(err.message,'error')}}
     async function skillhubDelete(idx){const s=_skillhubSkills[idx];if(!s)return;const msg=shtr('deleteConfirm',{name:s.name});if(!confirm(msg))return;try{await api('/api/admin/skillhub/'+encodeURIComponent(s.id),{method:'DELETE'});showToast(shtr('deleted'),'success');loadSkillHubList()}catch(err){showToast(err.message,'error')}}
     const MOD_TEXT={en:{title:'LLM Content Moderation',desc:'Configure LLM-based automatic content moderation for the Gossip Wall. When enabled, new gossip posts are checked by the LLM and flagged if inappropriate.',enabled:'Enable Moderation',url:'LLM API URL',model:'Model Name',apiKey:'API Key',urlPlaceholder:'https://api.openai.com/v1',modelPlaceholder:'gpt-4o-mini',apiKeyPlaceholder:'sk-...',testLabel:'Test Content',testPlaceholder:'Enter test content...',emptyTestContent:'Enter test content',save:'Save Moderation Config',test:'Test',saved:'Moderation config saved.',saveFailed:'Save moderation config failed: {error}',loadFailed:'Load moderation config failed: {error}',testResult:'Result: {result}',testFailed:'Test failed: {error}',filterAll:'All Posts',filterFlagged:'Flagged Only',deleteFlagged:'Delete Flagged',deleteFlaggedConfirm:'Delete all flagged gossip posts? This cannot be undone.',flaggedDeleted:'Deleted {count} flagged post(s).',flag:'Flag',unflag:'Unflag',flagged:'Flagged',postFlagged:'Post flagged.',postUnflagged:'Post unflagged.'},zh:{title:'\u5185\u5bb9\u5ba1\u6838',desc:'\u914d\u7f6e\u57fa\u4e8e\u6a21\u578b\u7684\u5410\u69fd\u5899\u81ea\u52a8\u5185\u5bb9\u5ba1\u6838\u3002\u5f00\u542f\u540e\uff0c\u65b0\u53d1\u5e03\u7684\u5410\u69fd\u4f1a\u7ecf\u8fc7\u6a21\u578b\u68c0\u67e5\uff0c\u4e0d\u5408\u89c4\u5185\u5bb9\u4f1a\u81ea\u52a8\u6807\u8bb0\u4e3a\u5ba1\u6838\u72b6\u6001\uff0c\u4e0d\u5728\u524d\u53f0\u5c55\u793a\u3002',enabled:'\u542f\u7528\u5ba1\u6838',url:'\u63a5\u53e3\u5730\u5740',model:'\u6a21\u578b\u540d\u79f0',apiKey:'\u8bbf\u95ee\u5bc6\u94a5',urlPlaceholder:'https://api.openai.com/v1',modelPlaceholder:'gpt-4o-mini',apiKeyPlaceholder:'sk-...',testLabel:'\u6d4b\u8bd5\u5185\u5bb9',testPlaceholder:'\u8bf7\u8f93\u5165\u8981\u68c0\u6d4b\u7684\u5185\u5bb9...',emptyTestContent:'\u8bf7\u8f93\u5165\u6d4b\u8bd5\u5185\u5bb9',save:'\u4fdd\u5b58\u5ba1\u6838\u914d\u7f6e',test:'\u6d4b\u8bd5',saved:'\u5ba1\u6838\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002',saveFailed:'\u4fdd\u5b58\u5ba1\u6838\u914d\u7f6e\u5931\u8d25\uff1a{error}',loadFailed:'\u52a0\u8f7d\u5ba1\u6838\u914d\u7f6e\u5931\u8d25\uff1a{error}',testResult:'\u7ed3\u679c\uff1a{result}',testFailed:'\u6d4b\u8bd5\u5931\u8d25\uff1a{error}',filterAll:'\u5168\u90e8\u5e16\u5b50',filterFlagged:'\u4ec5\u770b\u5ba1\u6838',deleteFlagged:'\u5220\u9664\u5df2\u5ba1\u6838',deleteFlaggedConfirm:'\u786e\u5b9a\u5220\u9664\u6240\u6709\u5df2\u5ba1\u6838\u5410\u69fd\u5e16\u5417\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u64a4\u9500\u3002',flaggedDeleted:'\u5df2\u5220\u9664 {count} \u6761\u5df2\u5ba1\u6838\u5410\u69fd\u3002',flag:'\u6807\u8bb0\u5ba1\u6838',unflag:'\u53d6\u6d88\u5ba1\u6838',flagged:'\u5df2\u5ba1\u6838',postFlagged:'\u5e16\u5b50\u5df2\u6807\u8bb0\u4e3a\u5ba1\u6838\u3002',postUnflagged:'\u5e16\u5b50\u5df2\u53d6\u6d88\u5ba1\u6838\u6807\u8bb0\u3002'}};

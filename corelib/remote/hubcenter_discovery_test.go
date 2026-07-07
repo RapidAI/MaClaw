@@ -79,6 +79,7 @@ func TestDiscoverHubCenterURLs_MergesSeedsAndDiscoveredURLs(t *testing.T) {
 
 func TestSelectBestCenter_CacheIsScopedPerURLSet(t *testing.T) {
 	InvalidateCenterCache()
+	ResetFailureMemory()
 	a := discoveryServer(90, true, nil)
 	defer a.Close()
 	b := discoveryServer(80, true, nil)

@@ -116,7 +116,11 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		var shellName string
 		var shellArgs []string
 		if runtime.GOOS == "windows" {
-			shellName = "powershell"
+			psPath, psErr := coretool.ResolveWindowsPowerShell()
+			if psErr != nil {
+				return fmt.Errorf("screenshot: PowerShell not found: %w", psErr)
+			}
+			shellName = psPath
 			shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
 		} else {
 			shellName = "bash"
@@ -252,7 +256,11 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, psErr := coretool.ResolveWindowsPowerShell()
+		if psErr != nil {
+			return "", fmt.Errorf("screenshot: PowerShell not found: %w", psErr)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
 	} else {
 		shellName = "bash"
@@ -346,7 +354,11 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, psErr := coretool.ResolveWindowsPowerShell()
+		if psErr != nil {
+			return "", fmt.Errorf("screenshot: PowerShell not found: %w", psErr)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
 	} else {
 		shellName = "bash"
@@ -450,7 +462,11 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, psErr := coretool.ResolveWindowsPowerShell()
+		if psErr != nil {
+			return "", fmt.Errorf("screenshot: PowerShell not found: %w", psErr)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
 	} else {
 		shellName = "bash"

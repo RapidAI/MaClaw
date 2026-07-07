@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // RunNLSkill 执行 nlskill 子命令（NL 技能管理）。
@@ -360,7 +361,11 @@ func tui_executeBashStep(command string, params map[string]interface{}, skillDir
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, psErr := coretool.ResolveWindowsPowerShell()
+		if psErr != nil {
+			return "", fmt.Errorf("PowerShell not found: %w", psErr)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
 	} else {
 		shellName = "bash"

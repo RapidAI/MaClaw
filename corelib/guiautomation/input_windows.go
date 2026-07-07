@@ -14,7 +14,11 @@ type windowsInputSimulator struct{}
 func NewInputSimulator() InputSimulator { return &windowsInputSimulator{} }
 
 func runInputPS(script string) error {
-	cmd := coretool.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		return fmt.Errorf("input simulation: PowerShell not found: %w", err)
+	}
+	cmd := coretool.Command(psExe, "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("input simulation failed: %w (output: %s)", err, strings.TrimSpace(string(out)))

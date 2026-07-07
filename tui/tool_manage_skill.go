@@ -1123,7 +1123,11 @@ func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, di
 			}
 			sa = []string{"/d", "/s", "/c", cmd}
 		default:
-			sh, sa = "powershell", []string{"-NoProfile", "-NonInteractive", "-Command", cmd}
+			psPath, psErr := coretool.ResolveWindowsPowerShell()
+			if psErr != nil {
+				return "", fmt.Errorf("PowerShell not found for TUI skill step: %w", psErr)
+			}
+			sh, sa = psPath, []string{"-NoProfile", "-NonInteractive", "-Command", cmd}
 		}
 	} else {
 		sh, sa = "bash", []string{"-c", cmd}

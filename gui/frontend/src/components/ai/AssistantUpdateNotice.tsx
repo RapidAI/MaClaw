@@ -46,10 +46,13 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
     const firstMenuItemRef = useRef<HTMLButtonElement | null>(null);
     const hasUpdate = !!(updateAvailable?.has_update || updateAvailable?.HasUpdate);
     const latestVersion = String(updateAvailable?.latest_version || updateAvailable?.LatestVersion || "").trim();
+    const latestVersionDisplay = latestVersion.replace(/^[Vv]/, "");
     const title = latestVersion
         ? localizeText(lang, `New version ${latestVersion} available`, `\u53d1\u73b0\u65b0\u7248\u672c ${latestVersion}`, `\u767c\u73fe\u65b0\u7248\u672c ${latestVersion}`)
         : localizeText(lang, "New version available", "\u53d1\u73b0\u65b0\u7248\u672c", "\u767c\u73fe\u65b0\u7248\u672c");
-    const onlineText = localizeText(lang, "Online update", "\u5728\u7ebf\u66f4\u65b0", "\u5728\u7dda\u66f4\u65b0");
+    const onlineText = latestVersionDisplay
+        ? localizeText(lang, `Online update to ${latestVersion}`, `\u5728\u7ebf\u66f4\u65b0\u5230 ${latestVersionDisplay} \u7248\u672c`, `\u5728\u7dda\u66f4\u65b0\u5230 ${latestVersionDisplay} \u7248\u672c`)
+        : localizeText(lang, "Online update", "\u5728\u7ebf\u66f4\u65b0", "\u5728\u7dda\u66f4\u65b0");
     const skipText = localizeText(lang, "Do not remind this time", "\u6b64\u6b21\u4e0d\u63d0\u793a", "\u6b64\u6b21\u4e0d\u63d0\u793a");
 
     useEffect(() => {
@@ -101,7 +104,7 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
     };
     return <div ref={menuRef} style={{ position: "relative", display: "inline-flex" }}>
         <button className="ai-titlebar-tool ai-update-notice-button" {...toggleProps} aria-haspopup="menu" aria-expanded={open} aria-label={title} title={title} style={{ ...getTitleBarToolButtonStyle(t, "active"), color: triggerColor, background: themeMode === "dark" ? `color-mix(in srgb, ${t.btnColor} 14%, ${t.fieldBg})` : "rgba(47, 95, 152, 0.10)", boxShadow: "inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28)", position: "relative" }}><UpdateIcon /></button>
-        {open && <div role="menu" aria-label={title} style={{ position: "absolute", top: "32px", right: 0, minWidth: "156px", padding: "6px", borderRadius: "8px", border: `1px solid ${t.titleBarBorder}`, background: menuBackground, boxShadow: menuShadow, zIndex: 30040, color: t.text, "--wails-draggable": "no-drag" } as WailsDragStyle}>
+        {open && <div role="menu" aria-label={title} style={{ position: "absolute", top: "32px", right: 0, minWidth: "180px", padding: "6px", borderRadius: "8px", border: `1px solid ${t.titleBarBorder}`, background: menuBackground, boxShadow: menuShadow, zIndex: 30040, color: t.text, "--wails-draggable": "no-drag" } as WailsDragStyle}>
             <button ref={firstMenuItemRef} role="menuitem" className="ai-update-menu-item" onClick={handleOnlineUpdate} style={menuItemStyle(t.text)}><UpdateIcon /><span>{onlineText}</span></button>
             <button role="menuitem" className="ai-update-menu-item" onClick={handleDismiss} style={menuItemStyle(t.textMuted)}><DismissIcon /><span>{skipText}</span></button>
         </div>}
@@ -109,5 +112,5 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
 }
 
 const menuItemStyle = (color: string): CSSProperties => ({
-    width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", border: "none", borderRadius: "6px", background: "transparent", color, cursor: "pointer", fontSize: "12px", textAlign: "left",
+    width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", border: "none", borderRadius: "6px", background: "transparent", color, cursor: "pointer", fontSize: "12px", textAlign: "left", whiteSpace: "nowrap",
 });

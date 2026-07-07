@@ -392,6 +392,12 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 			if status, err := a.fetchHubLLMServiceStatusWithTimeout(syncCfg, hubServiceStatusTimeout); err == nil {
 				hubStatus = status
 				haveHubStatus = true
+				// Update local status cache so sidebar sees fresh state.
+				hubServiceStatusCache.mu.Lock()
+				hubServiceStatusCache.status = status
+				hubServiceStatusCache.fetchedAt = time.Now()
+				hubServiceStatusCache.valid = true
+				hubServiceStatusCache.mu.Unlock()
 				a.applyHubLLMServiceStatusToConfig(&syncCfg, status)
 				providers = syncCfg.MaclawLLMProviders
 			} else {

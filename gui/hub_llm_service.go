@@ -20,14 +20,32 @@ import (
 const (
 	hubServiceProviderName            = "MaClaw\u5b98\u65b9"
 	hubServiceAutoModel               = "auto"
-	hubServiceStatusTimeout           = 2 * time.Second
-	hubServiceAccountStatusMaxTimeout = 5 * time.Second
+	hubServiceStatusTimeout           = 5 * time.Second
+	hubServiceAccountStatusMaxTimeout = 8 * time.Second
 	hubViewerTokenRecoveryRetryDelay  = 5 * time.Minute
+
+	// hubServiceStatusLocalCacheTTL controls how long the client caches a
+	// successful Hub LLM service status response before re-fetching.
+	// This prevents the "1429 context deadline exceeded" pattern where every
+	// GetMaclawLLMProviders call (triggered by sidebar refresh, token usage
+	// events, etc.) hits the Hub network endpoint.
+	hubServiceStatusLocalCacheTTL = 30 * time.Second
 )
 
 // ensureViewerTokenMu serializes re-enroll attempts when multiple callers
 // discover a missing viewer token concurrently.
 var ensureViewerTokenMu sync.Mutex
+
+// hubServiceStatusCache caches the last successful Hub LLM service status
+// response on the client side. This avoids hitting the Hub server on every
+// GetMaclawLLMProviders call (which happens on every sidebar refresh, every
+// token usage event, every LLM call completion, etc.).
+var hubServiceStatusCache struct {
+	mu        sync.RWMutex
+	status    HubLLMServiceStatus
+	fetchedAt time.Time
+	valid     bool
+}
 
 // hubLLMSyncRespectLogThrottle suppresses the repetitive "respecting user
 // provider choice" log message. It fires at most once per minute.
@@ -207,7 +225,64 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
+	// Return cached status if fresh enough. This avoids a 30-second network
+	// request on every sidebar refresh (every 60s + debounced token events).
+	// The cache is populated/refreshed by:
+	// - syncHubLLMServiceStatusIntoConfig (first call on startup)
+	// - RedeemHubLLMService (after redeem)
+	// - RefreshHubLLMServiceStatus (user-initiated explicit refresh)
+	hubServiceStatusCache.mu.RLock()
+	if hubServiceStatusCache.valid && time.Since(hubServiceStatusCache.fetchedAt) < hubServiceStatusLocalCacheTTL {
+		cached := hubServiceStatusCache.status
+		hubServiceStatusCache.mu.RUnlock()
+		return cached, nil
+	}
+	hubServiceStatusCache.mu.RUnlock()
+
+	// Cache expired or empty — fetch fresh from Hub.
 	// Auto-recover missing viewer token before querying status.
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	status, err := a.fetchHubLLMServiceStatus(cfg)
+	if err != nil {
+		// On transient failure, return stale cache if available rather than error.
+		hubServiceStatusCache.mu.RLock()
+		if hubServiceStatusCache.valid {
+			stale := hubServiceStatusCache.status
+			hubServiceStatusCache.mu.RUnlock()
+			return stale, nil
+		}
+		hubServiceStatusCache.mu.RUnlock()
+		return HubLLMServiceStatus{}, err
+	}
+	// Update local cache with fresh data.
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.status = status
+	hubServiceStatusCache.fetchedAt = time.Now()
+	hubServiceStatusCache.valid = true
+	hubServiceStatusCache.mu.Unlock()
+
+	if _, err := a.syncHubLLMServiceStatusToConfig(status, false); err != nil {
+		return status, err
+	}
+	return status, nil
+}
+
+// RefreshHubLLMServiceStatus forces a fresh fetch from Hub, bypassing local
+// cache. Used by explicit user actions (e.g. opening Redeem panel, clicking
+// refresh button) where stale data is unacceptable.
+func (a *App) RefreshHubLLMServiceStatus() (HubLLMServiceStatus, error) {
+	// Invalidate cache so the next fetch actually hits the Hub.
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.valid = false
+	hubServiceStatusCache.mu.Unlock()
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
 	cfg, err = a.ensureViewerToken(cfg)
 	if err != nil {
 		return HubLLMServiceStatus{}, err
@@ -216,6 +291,12 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.status = status
+	hubServiceStatusCache.fetchedAt = time.Now()
+	hubServiceStatusCache.valid = true
+	hubServiceStatusCache.mu.Unlock()
+
 	if _, err := a.syncHubLLMServiceStatusToConfig(status, false); err != nil {
 		return status, err
 	}
@@ -282,6 +363,14 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	if err != nil {
 		return serviceStatus, err
 	}
+	// Update local cache so subsequent GetMaclawLLMProviders calls see
+	// the fresh post-redeem status immediately.
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.status = serviceStatus
+	hubServiceStatusCache.fetchedAt = time.Now()
+	hubServiceStatusCache.valid = true
+	hubServiceStatusCache.mu.Unlock()
+
 	// syncHubLLMServiceStatusToConfig only emits "hub-llm-service-changed" when
 	// config file changes. But credit grants (runtime data, not persisted in
 	// config) always change after a redeem. Emit unconditionally when sync
@@ -319,6 +408,21 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 			return
 		}
 	}
+	// Use local cache to avoid hammering the Hub on every GetMaclawLLMProviders
+	// call. The cache is invalidated after hubServiceStatusLocalCacheTTL (30s)
+	// or explicitly by redeem/provider-switch operations.
+	hubServiceStatusCache.mu.RLock()
+	if hubServiceStatusCache.valid && time.Since(hubServiceStatusCache.fetchedAt) < hubServiceStatusLocalCacheTTL {
+		hubServiceStatusCache.mu.RUnlock()
+		// Cache hit: config was already synced when the cache was populated.
+		// Just reload config to pick up any concurrent PatchConfig changes.
+		if freshCfg, err := a.LoadConfig(); err == nil {
+			*cfg = freshCfg
+		}
+		return
+	}
+	hubServiceStatusCache.mu.RUnlock()
+
 	status, err := a.fetchHubLLMServiceStatusWithTimeout(*cfg, hubServiceStatusTimeout)
 	if err != nil {
 		// Transient failure (503, timeout, network error). Preserve existing
@@ -326,6 +430,13 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 		log.Printf("[hub-llm-service] status fetch failed (transient), preserving config: %v", err)
 		return
 	}
+	// Cache the successful response.
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.status = status
+	hubServiceStatusCache.fetchedAt = time.Now()
+	hubServiceStatusCache.valid = true
+	hubServiceStatusCache.mu.Unlock()
+
 	// Only apply status if Hub explicitly returned a response.
 	// An empty/zero status (Active=false, no grants, no base URL) from a
 	// successful HTTP 200 response means the entitlement was genuinely revoked.

@@ -41,22 +41,25 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 		injectedText, _ = injected.(string)
 		if injectedText != "" {
-			// At iteration 0, a guide reference in pendingInjection means it
-			// arrived during an active loop's final moment, survived cleanup
-			// (clearNonGuidePendingInjection preserves guide refs), and is now
-			// being consumed by the NEXT loop. At iteration 0 there is no
-			// "current plan" to re-evaluate, so downgrade to user-role supplement
-			// (same semantics as pendingPreLoopGuide).
-			if iteration == 0 && isGuideLaunchReferenceInjection(injectedText) {
+			if isGuideLaunchReferenceInjection(injectedText) {
+				// Guide reference (from buffer queue fire button): always inject
+				// as user-role message regardless of iteration. This matches
+				// Codex's "steer" behavior — the user's steering text lands as
+				// a real user message so LLM treats it with full compliance.
+				// The guide is a supplement/correction to the current task, NOT
+				// a cancellation — the agent should complete the original
+				// request while incorporating this additional guidance.
 				guideUserText := stripInjectionPrefix(injectedText)
 				if guideUserText != "" {
 					conversation = append(conversation, map[string]string{
 						"role":    "user",
-						"content": "[用户补充说明] " + guideUserText,
+						"content": "[用户补充/纠正] " + guideUserText + "\n（请在完成当前任务的基础上，一并处理以上补充内容）",
 					})
-					log.Printf("[injection] user=%s guide reference at iteration 0 downgraded to user-role: %s", userID, truncateForLog(guideUserText, 50))
+					log.Printf("[injection] user=%s guide reference as user-role (iteration=%d): %s", userID, iteration, truncateForLog(guideUserText, 50))
 				}
 			} else {
+				// Non-guide injections (e.g. inline interrupt, agent view
+				// submit) keep the system-role behavior.
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
 					"content": injectedText,

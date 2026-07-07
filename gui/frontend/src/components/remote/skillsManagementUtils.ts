@@ -33,10 +33,13 @@ export const uploadBtnStyle: CSSProperties = {
 export const trustBadgeStyle = (level: string): CSSProperties => {
     const levelColors: Record<string, { bg: string; color: string; border: string }> = {
         official: { bg: colors.successBg, color: colors.success, border: colors.success },
+        builtin: { bg: colors.successBg, color: colors.success, border: colors.success },
+        trusted: { bg: colors.successBg, color: colors.success, border: colors.success },
+        enterprise: { bg: colors.successBg, color: colors.success, border: colors.success },
         community: { bg: colors.infoBg, color: colors.primary, border: colors.primary },
-        unknown: { bg: colors.surfaceMuted, color: colors.textMuted, border: colors.border },
+        "agent-created": { bg: colors.surfaceMuted, color: colors.textMuted, border: colors.border },
     };
-    const c = levelColors[level] || levelColors.unknown;
+    const c = levelColors[level] || levelColors.community;
     return {
         display: "inline-block",
         padding: "0px 6px",
@@ -48,6 +51,27 @@ export const trustBadgeStyle = (level: string): CSSProperties => {
         border: `1px solid ${c.border}`,
     };
 };
+
+export function trustLevelLabel(level: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): string {
+    switch (level) {
+        case "official":
+        case "builtin":
+            return localizeText("Official", "官方", "官方");
+        case "trusted":
+        case "enterprise":
+            return localizeText("Trusted", "可信", "可信");
+        case "community":
+            return localizeText("Community", "社区", "社區");
+        case "agent-created":
+            return localizeText("Agent", "Agent生成", "Agent生成");
+        default:
+            return localizeText("3rd-party", "第三方", "第三方");
+    }
+}
+
+export function shouldShowTrustBadge(level: string | undefined): boolean {
+    return !!level && level !== "unknown";
+}
 
 export function formatDownloads(n: number): string {
     if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, "") + "w";

@@ -266,7 +266,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 			Version:                      fmt.Sprintf("%d", versionNum),
 			SemVer:                       meta.Version, // semver from skill.yaml
 			Author:                       meta.Author,
-			TrustLevel:                   "community",
+			TrustLevel:                   "trusted",
 			CreatedAt:                    fmtTime(sub.CreatedAt),
 			UpdatedAt:                    fmtTime(sub.CreatedAt),
 			Visible:                      true,

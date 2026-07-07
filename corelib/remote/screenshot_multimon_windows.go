@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // Stubs for non-Windows platforms — the compiler needs these on Windows
@@ -48,7 +50,11 @@ func enumDisplaysWindows() ([]DisplayInfo, error) {
 		`};` +
 		`$result | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		return nil, fmt.Errorf("enumDisplaysWindows: %w", err)
+	}
+	cmd := exec.Command(psExe, "-NoProfile", "-NonInteractive", "-Command", psScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	out, err := cmd.Output()
 	if err != nil {

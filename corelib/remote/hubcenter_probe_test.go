@@ -51,6 +51,7 @@ func TestProbeCenterQuality_Unreachable(t *testing.T) {
 
 func TestSelectBestCenter_SortsByQuality(t *testing.T) {
 	InvalidateCenterCache()
+	ResetFailureMemory()
 
 	low := httptest.NewServer(qualityHandler(60, true))
 	defer low.Close()
@@ -75,6 +76,7 @@ func TestSelectBestCenter_SortsByQuality(t *testing.T) {
 
 func TestSelectBestCenter_PreferredBonus(t *testing.T) {
 	InvalidateCenterCache()
+	ResetFailureMemory()
 
 	a := httptest.NewServer(qualityHandler(90, true))
 	defer a.Close()
@@ -90,6 +92,7 @@ func TestSelectBestCenter_PreferredBonus(t *testing.T) {
 
 	// With a as preferred, a gets +5 → 95 > 92 → a wins.
 	InvalidateCenterCache()
+	ResetFailureMemory()
 	ordered = SelectBestCenter(context.Background(), http.DefaultClient,
 		[]string{a.URL, b.URL}, a.URL)
 	if ordered[0] != a.URL {
@@ -99,6 +102,7 @@ func TestSelectBestCenter_PreferredBonus(t *testing.T) {
 
 func TestSelectBestCenter_UnreachableNodesSortedLast(t *testing.T) {
 	InvalidateCenterCache()
+	ResetFailureMemory()
 
 	good := httptest.NewServer(qualityHandler(80, true))
 	defer good.Close()
@@ -116,6 +120,7 @@ func TestSelectBestCenter_UnreachableNodesSortedLast(t *testing.T) {
 
 func TestSelectBestCenter_CacheTTL(t *testing.T) {
 	InvalidateCenterCache()
+	ResetFailureMemory()
 
 	srv := httptest.NewServer(qualityHandler(99, true))
 	defer srv.Close()

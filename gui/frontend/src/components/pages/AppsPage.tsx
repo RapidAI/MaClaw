@@ -7663,11 +7663,11 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 </button>
                             )}
                         </div>
-                        <button className="apps-studio-button" type="button" title={text.appStudio} aria-label={text.appStudio} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
+                        <button className="apps-studio-button" type="button" title={isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'} aria-label={isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
                             <span className="apps-studio-button__icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M12 8v8M8 12h8" /></svg>
                             </span>
-                            <span className="apps-studio-button__label">{isZh(lang) ? '\u5de5\u4f5c\u5ba4' : 'Studio'}</span>
+                            <span className="apps-studio-button__label">{isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'}</span>
                         </button>
                     </div>
                     <div className="apps-filter-row">

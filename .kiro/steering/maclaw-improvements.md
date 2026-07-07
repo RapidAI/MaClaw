@@ -7079,3 +7079,49 @@ Hub 无 → 回退 install_ref(UUID)
 - patch 修改 id → 被拒绝
 - 依赖声明 `^1.2.0` + 本地 `1.3.0` → satisfied
 - 依赖声明 `>=2.0.0` + 本地 `1.3.0` → needsUpgrade
+
+
+### 118. Browser: 幻觉通过 write_file content 参数泄漏到工作流文档面板
+
+**来源**：用户截图——AI 助手面板中综合评价后出现 `Browser: 我已经完整地阅读了...` 幻觉文本。
+
+**根因**：LLM 在 `write_file` 的 `content` 参数中产生了 `Browser:` 角色前缀幻觉。所有三层防护（streaming filter + StripRolePrefixHallucination + frontend stripRolePrefixForDisplay）只作用于 `msg.Content`（LLM 文本输出流），不作用于 tool call 参数。write_file 将含幻觉的内容写入磁盘 → 工作流文档面板读取文件 → 通过 `workflow:doc_update` 事件发送到前端 → 未经任何 role prefix 过滤直接渲染。
+
+**泄漏路径**：
+```
+LLM 调用 write_file(content="...Browser: 幻觉...")
+  → 文件写入磁盘（无过滤）
+  → readWorkflowWrittenFiles() 读取原始内容（无过滤）
+  → recordWorkflowV2Output(userID, docText)（无过滤）
+  → emitDocUpdateV2(userID, phaseID, content)（无过滤）
+  → 前端 setPhaseDocuments(content)（无过滤）
+  → WorkflowDocPreview 渲染（无过滤）
+```
+
+**关键发现**：tool_route.log 确认**零 browser 工具被激活**——这是纯模型训练数据中的 multi-agent 角色模式被触发，与 browser 工具定义是否在 context 中完全无关。
+
+**修复（三层纵深防御）**：
+
+Layer 1 — 后端数据汇聚出口：
+- `gui/im_post_loop.go`：`resolveWorkflowPhaseDocText()` 所有返回路径加 `stripRolePrefixHallucination`（written_files 提前返回 + 通用 fallback）
+- 确保持久化到 SQLite 的 `phase.Output` 是干净的，防止 `BuildPhasePrompt` 将幻觉注入后续阶段 system prompt 导致二次幻觉
+
+Layer 2 — 后端发射出口（纵深）：
+- `gui/workflow_v2_integration.go`：`emitDocUpdateV2()` 发射前清理 content
+- `gui/app.go`：tab 恢复路径的 for 循环中清理 `p.Output`
+- `gui/workflow_adapter.go`：V1 适配器发射前清理 content
+
+Layer 3 — 前端接收点（纵深）：
+- `gui/frontend/src/components/ai/useWorkflowState.ts`：`normalizeWorkflowDocumentContent()` 加 `stripRolePrefixForDisplay`
+- 覆盖 `doc_update` 事件和 `phase_update` 事件中 `phase_outputs` 两条接收路径
+
+诊断增强：
+- `gui/im_tools_local.go`：`toolWriteFile()` 检测 `Browser:` 并记录 `[browser-diag] CP_WriteFile` 日志
+
+**验收标准**：
+- write_file 写入含 `Browser:` 的文档 → 工作流面板显示截断到 `Browser:` 前的有效内容
+- 持久化的 phase.Output 不含 `Browser:` → 后续阶段 BuildPhasePrompt 不注入幻觉
+- tab 切换恢复 → 已持久化的产出物经过清理显示
+- 代码块内的 `Browser:` → 不被误清理（已有 ``` 排除逻辑）
+- 无 browser 工具激活时仍然出现幻觉 → 日志可追踪（CP_WriteFile 记录）
+- Go `go vet` 零新增错误 + TypeScript `tsc --noEmit` 零新增错误

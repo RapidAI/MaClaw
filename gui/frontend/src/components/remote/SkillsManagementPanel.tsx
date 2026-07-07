@@ -11,6 +11,8 @@ import {
     statusDotStyle,
     uploadBtnStyle,
     trustBadgeStyle,
+    trustLevelLabel,
+    shouldShowTrustBadge,
     formatDownloads,
     formatDate,
     renderStars,
@@ -1544,6 +1546,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubFilterTrust} onChange={(e) => setHubFilterTrust(e.target.value)}>
                                 <option value="all">{localizeText("All Trust", "全部信任", "全部信任")}</option>
                                 <option value="official">{localizeText("Official", "官方", "官方")}</option>
+                                <option value="trusted">{localizeText("Trusted", "可信", "可信")}</option>
                                 <option value="community">{localizeText("Community", "社区", "社區")}</option>
                             </select>
                             <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubSortBy} onChange={(e) => setHubSortBy(e.target.value)}>
@@ -1597,9 +1600,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
                                                 <SkillSourceBadge skill={skill} localizeText={localizeText} />
                                                 <SkillProductBadge skill={skill} localizeText={localizeText} />
-                                                {skill.trust_level && (
-                                                    <span style={trustBadgeStyle(skill.trust_level)}>
-                                                        {skill.trust_level === "official" ? localizeText("Official", "官方", "官方") : skill.trust_level === "community" ? localizeText("Community", "社区", "社區") : localizeText("Unknown", "未知", "未知")}
+                                                {shouldShowTrustBadge(skill.trust_level) && (
+                                                    <span style={trustBadgeStyle(skill.trust_level!)}>
+                                                        {trustLevelLabel(skill.trust_level!, localizeText)}
                                                     </span>
                                                 )}
                                                 {skill.version && (
@@ -1693,6 +1696,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
                                                         <SkillSourceBadge skill={skill} localizeText={localizeText} />
                                                         <SkillProductBadge skill={skill} localizeText={localizeText} />
+                                                        {shouldShowTrustBadge(skill.trust_level) && (
+                                                            <span style={trustBadgeStyle(skill.trust_level!)}>
+                                                                {trustLevelLabel(skill.trust_level!, localizeText)}
+                                                            </span>
+                                                        )}
                                                         {skill.version && (
                                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
                                                         )}

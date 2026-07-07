@@ -155,7 +155,11 @@
 
 
 /* ─── Enhanced Skill Hub Cards (4-category catalog) ─── */
-.catalog-subtabs{flex-wrap:wrap;gap:6px}
+.catalog-subtabs{flex-wrap:wrap;gap:6px!important}
+.catalog-subtabs .btn-secondary{background:linear-gradient(135deg,#2563eb,#3b82f6)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 4px 12px rgba(37,99,235,.3)!important;transform:translateY(-1px)}
+.catalog-subtabs .btn-secondary:hover{box-shadow:0 6px 16px rgba(37,99,235,.35)!important;transform:translateY(-2px)}
+.catalog-subtabs .btn-ghost{background:rgba(255,255,255,.88);color:#475569;border:1px solid rgba(31,34,48,.1)}
+.catalog-subtabs .btn-ghost:hover{background:rgba(37,99,235,.06);color:#2563eb;border-color:rgba(37,99,235,.2)}
 /* ─── Unified Capability Card System (Hub + HubCenter shared) ─── */
 .mp-cap-card{padding:18px 20px!important;border-radius:16px!important;gap:0!important;min-height:200px;display:flex!important;flex-direction:column;border:1px solid rgba(31,34,48,.08);background:#fff;box-shadow:0 1px 3px rgba(31,34,48,.04);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
 .mp-cap-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(31,34,48,.09);border-color:rgba(37,99,235,.16)}

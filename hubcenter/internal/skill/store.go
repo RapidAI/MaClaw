@@ -190,6 +190,14 @@ func (s *SkillStore) RebuildIndex() error {
 		if sk.ID == "" {
 			continue
 		}
+		// Migrate legacy trust_level: empty or "unknown" → "trusted"
+		if sk.TrustLevel == "" || sk.TrustLevel == "unknown" {
+			sk.TrustLevel = "trusted"
+			// Persist migration to disk so it only happens once
+			if migrated, err := json.MarshalIndent(&sk, "", "  "); err == nil {
+				_ = os.WriteFile(filepath.Join(s.dir, entry.Name()), migrated, 0o644)
+			}
+		}
 		skills[sk.ID] = &sk
 	}
 	s.mu.Lock()

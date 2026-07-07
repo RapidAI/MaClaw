@@ -1005,7 +1005,10 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
-		serviceReg, err := llmservice.LoadRegistry(ctx, system)
+		// Use cached registry reads to avoid hitting the DB on every poll.
+		// The 3s TTL cache is sufficient since registry changes are rare
+		// (admin edits, redeem) while status polls are frequent (every few seconds per client).
+		serviceReg, err := loadCachedLLMServiceRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1015,7 +1018,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
@@ -1037,7 +1040,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		serviceReg, err := llmservice.LoadRegistry(ctx, system)
+		serviceReg, err := loadCachedLLMServiceRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1047,7 +1050,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
+		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return

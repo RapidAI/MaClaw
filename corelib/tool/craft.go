@@ -108,13 +108,21 @@ func ExecuteScript(scriptPath, language string, timeout int) (string, error) {
 	case "node", "javascript":
 		cmd = CommandContext(ctx, "node", scriptPath)
 	case "powershell":
-		cmd = CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+		psPath, err := ResolveWindowsPowerShell()
+		if err != nil {
+			return "", fmt.Errorf("PowerShell not found: %w", err)
+		}
+		cmd = CommandContext(ctx, psPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	default:
 		if runtime.GOOS == "windows" {
 			if _, err := exec.LookPath("bash"); err == nil {
 				cmd = CommandContext(ctx, "bash", scriptPath)
 			} else {
-				cmd = CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+				psPath, err := ResolveWindowsPowerShell()
+				if err != nil {
+					return "", fmt.Errorf("no shell available (bash not found, PowerShell not found): %w", err)
+				}
+				cmd = CommandContext(ctx, psPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 			}
 		} else {
 			cmd = CommandContext(ctx, "bash", scriptPath)
@@ -252,10 +260,20 @@ func BuildRunCommand(scriptPath, language string) string {
 	case "node", "javascript":
 		return fmt.Sprintf("node \"%s\"", scriptPath)
 	case "powershell":
-		return fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\"", scriptPath)
+		psPath, _ := ResolveWindowsPowerShell()
+		if psPath == "" {
+			// Best-effort: use bare name; exec will fail with a clear error
+			// if it truly doesn't exist.
+			psPath = "powershell"
+		}
+		return fmt.Sprintf("\"%s\" -NoProfile -ExecutionPolicy Bypass -File \"%s\"", psPath, scriptPath)
 	default:
 		if runtime.GOOS == "windows" {
-			return fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\"", scriptPath)
+			psPath, _ := ResolveWindowsPowerShell()
+			if psPath == "" {
+				psPath = "powershell"
+			}
+			return fmt.Sprintf("\"%s\" -NoProfile -ExecutionPolicy Bypass -File \"%s\"", psPath, scriptPath)
 		}
 		return fmt.Sprintf("bash \"%s\"", scriptPath)
 	}

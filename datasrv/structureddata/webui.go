@@ -675,31 +675,34 @@ const webConsoleHTML = `<!doctype html>
           <div class="dataset-list" id="datasetList" data-testid="dataset-list"></div>
         </div>
         <div class="tablist" id="tabs" role="tablist" aria-label="Administration modules">
-          <div class="nav-group" role="presentation" data-count="8">Operations</div>
+          <div class="nav-group" role="presentation" data-count="2">Overview</div>
           <button class="tab active" data-tab="overview" data-testid="tab-overview">Overview</button>
-          <button class="tab" data-tab="quickstart" data-testid="tab-quickstart">Quick Start Manual</button>
-          <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
-          <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
+          <button class="tab" data-tab="quickstart" data-testid="tab-quickstart">Quick Start</button>
+          <div class="nav-group" role="presentation" data-count="4">Schema</div>
           <button class="tab" data-tab="domains" data-testid="tab-domains">Domains</button>
+          <button class="tab" data-tab="dataset" data-testid="tab-dataset">Datasets</button>
+          <button class="tab" data-tab="fields" data-testid="tab-fields">Fields</button>
           <button class="tab" data-tab="relationships" data-testid="tab-relationships">Relationships</button>
+          <div class="nav-group" role="presentation" data-count="5">Data</div>
+          <button class="tab" data-tab="records" data-testid="tab-records">Records</button>
+          <button class="tab" data-tab="write" data-testid="tab-write">Editor</button>
           <button class="tab" data-tab="actions" data-testid="tab-actions">Actions</button>
           <button class="tab" data-tab="rules" data-testid="tab-rules">Rules</button>
+          <button class="tab" data-tab="inbox" data-testid="tab-inbox">Inbox</button>
           <div class="nav-group" role="presentation" data-count="4">Integration</div>
           <button class="tab" data-tab="connectors" data-testid="tab-connectors">Connectors</button>
           <button class="tab" data-tab="views" data-testid="tab-views">Views</button>
           <button class="tab" data-tab="dashboards" data-testid="tab-dashboards">Dashboards</button>
           <button class="tab" data-tab="reports" data-testid="tab-reports">Reports</button>
-          <div class="nav-group" role="presentation" data-count="7">Governance</div>
+          <div class="nav-group" role="presentation" data-count="7">Security</div>
+          <button class="tab" data-tab="apikeys" data-testid="tab-apikeys">🔑 API Keys</button>
+          <button class="tab" data-tab="admins" data-testid="tab-admins">Admins</button>
           <button class="tab" data-tab="quality" data-testid="tab-quality">Quality</button>
-          <button class="tab" data-tab="dataset" data-testid="tab-dataset">Dataset</button>
-          <button class="tab" data-tab="fields" data-testid="tab-fields">Fields</button>
-          <button class="tab" data-tab="write" data-testid="tab-write">Editor</button>
           <button class="tab" data-tab="backups" data-testid="tab-backups">Backups</button>
           <button class="tab" data-tab="events" data-testid="tab-events">Events</button>
           <button class="tab" data-tab="audit" data-testid="tab-audit">Audit</button>
-          <div class="nav-group" role="presentation" data-count="3">System</div>
           <button class="tab" data-tab="ops" data-testid="tab-ops">Ops</button>
-          <button class="tab" data-tab="access" data-testid="tab-access">Access</button>
+          <div class="nav-group" role="presentation" data-count="1">Dev</div>
           <button class="tab" data-tab="raw" data-testid="tab-raw">Response</button>
         </div>
       </nav>
@@ -707,9 +710,9 @@ const webConsoleHTML = `<!doctype html>
       <div class="workspace-body">
       <div class="module-header">
         <div>
-          <div class="module-kicker" id="moduleKicker">Operations</div>
+          <div class="module-kicker" id="moduleKicker">Overview</div>
           <div class="module-title" id="moduleTitle">Overview</div>
-          <div class="module-desc" id="moduleDesc">Start from common MIS workflows and service health.</div>
+          <div class="module-desc" id="moduleDesc">Service health, domain readiness, access risk, and recent activity at a glance.</div>
         </div>
         <div class="context-chip" id="moduleContext" data-i18n-key="Dataset: none selected">Dataset: none selected</div>
       </div>
@@ -815,7 +818,7 @@ const webConsoleHTML = `<!doctype html>
           <p>Managed API key risk summary from the authorization review API.</p>
           <div class="risk-grid" id="overviewAccessRisk" data-testid="overview-access-risk"></div>
           <div class="row">
-            <button class="primary quick-action" data-target-tab="access">Open access</button>
+            <button class="primary quick-action" data-target-tab="apikeys">Open API Keys</button>
             <button id="refreshOverviewAccessRisk" data-testid="refresh-overview-access-risk">Refresh risk</button>
           </div>
         </section>
@@ -863,7 +866,8 @@ const webConsoleHTML = `<!doctype html>
             <h3>Governance</h3>
             <p>Open access review, audit trails, quality checks, and backups before risky changes.</p>
             <div class="row">
-              <button class="primary quick-action" data-target-tab="access">Open access</button>
+              <button class="primary quick-action" data-target-tab="apikeys">Open API Keys</button>
+              <button class="quick-action" data-target-tab="admins">Open Admins</button>
               <button class="quick-action" data-target-tab="quality">Open quality</button>
               <button class="quick-action" data-target-tab="backups">Open backups</button>
             </div>
@@ -926,7 +930,7 @@ const webConsoleHTML = `<!doctype html>
               <span>5</span>
               <strong>做治理 / Govern Safely</strong>
               <p>高风险操作前检查质量、审计、访问权限并创建备份。 Before risky work, check quality, audit, access, and backups.</p>
-              <button class="quick-action" data-target-tab="access">打开访问控制 / Open access</button>
+              <button class="quick-action" data-target-tab="apikeys">打开 API Keys / Open API Keys</button>
             </div>
           </div>
         </section>
@@ -1530,7 +1534,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
       <div id="ops" class="tab-panel stack hide">
         <div class="row section-title-row">
-          <h2>Operations</h2>
+          <h2>Service Operations</h2>
           <button id="refreshStats" data-testid="refresh-stats">Refresh stats</button>
         </div>
         <div class="row">
@@ -1565,9 +1569,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         <pre class="result" id="rawOutput" data-testid="raw-output">{}</pre>
       </div>
 
-      <div id="access" class="tab-panel stack hide">
+      <div id="apikeys" class="tab-panel stack hide">
         <div class="row section-title-row">
-          <h2>Business Access</h2>
+          <h2>API Key Management</h2>
           <button id="refreshAccessCatalog" data-testid="refresh-access-catalog">Refresh catalog</button>
         </div>
         <section class="overview-card">
@@ -1686,6 +1690,31 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
             <div id="accessKeySecret" class="notice hide" data-testid="access-key-secret"></div>
           </div>
         </section>
+        <section class="overview-card">
+          <div class="row section-title-row">
+            <h3>Agent handoff</h3>
+            <button class="small" id="copyAgentHandoff" data-testid="copy-agent-handoff">Copy handoff</button>
+          </div>
+          <p>Share this with MaClaw or a scoped agent after the managed key is created. Secrets are only included immediately after create or rotate.</p>
+          <textarea id="accessAgentHandoff" data-testid="access-agent-handoff" spellcheck="false" placeholder="Create or load a managed API key, then generate the handoff."></textarea>
+          <div id="agentOnboardingChecklist" class="table-wrap" data-testid="agent-onboarding-checklist"></div>
+          <div id="agentReadinessResult" class="table-wrap" data-testid="agent-readiness-result"></div>
+          <div class="row section-title-row">
+            <h3>Onboarding packet</h3>
+            <div class="row">
+              <button class="small" id="copyAgentPacket" data-testid="copy-agent-packet">Copy packet</button>
+              <button class="small" id="downloadAgentPacket" data-testid="download-agent-packet">Download packet</button>
+            </div>
+          </div>
+          <textarea id="agentOnboardingPacket" data-testid="agent-onboarding-packet" spellcheck="false" placeholder="Generate a full onboarding packet after preparing the key."></textarea>
+        </section>
+        <div id="accessKeys" class="table-wrap" data-testid="access-keys"></div>
+      </div>
+
+      <div id="admins" class="tab-panel stack hide">
+        <div class="row section-title-row">
+          <h2>Administrator Management</h2>
+        </div>
         <section class="admin-ops-grid" aria-label="Administrator and Hub controls">
           <div class="admin-panel">
             <div class="admin-panel-header">
@@ -1739,25 +1768,6 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
             <div id="dataTenants" class="table-wrap" data-testid="data-tenants"></div>
           </div>
         </section>
-        <section class="overview-card">
-          <div class="row section-title-row">
-            <h3>Agent handoff</h3>
-            <button class="small" id="copyAgentHandoff" data-testid="copy-agent-handoff">Copy handoff</button>
-          </div>
-          <p>Share this with MaClaw or a scoped agent after the managed key is created. Secrets are only included immediately after create or rotate.</p>
-          <textarea id="accessAgentHandoff" data-testid="access-agent-handoff" spellcheck="false" placeholder="Create or load a managed API key, then generate the handoff."></textarea>
-          <div id="agentOnboardingChecklist" class="table-wrap" data-testid="agent-onboarding-checklist"></div>
-          <div id="agentReadinessResult" class="table-wrap" data-testid="agent-readiness-result"></div>
-          <div class="row section-title-row">
-            <h3>Onboarding packet</h3>
-            <div class="row">
-              <button class="small" id="copyAgentPacket" data-testid="copy-agent-packet">Copy packet</button>
-              <button class="small" id="downloadAgentPacket" data-testid="download-agent-packet">Download packet</button>
-            </div>
-          </div>
-          <textarea id="agentOnboardingPacket" data-testid="agent-onboarding-packet" spellcheck="false" placeholder="Generate a full onboarding packet after preparing the key."></textarea>
-        </section>
-        <div id="accessKeys" class="table-wrap" data-testid="access-keys"></div>
       </div>
       </div>
     </section>
@@ -1883,28 +1893,30 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     let i18nApplying = false;
     let i18nMutationSuppressed = false;
     const moduleMeta = {
-      overview: ["Operations", "Overview", "Start from common MIS workflows and service health."],
-      quickstart: ["Operations", "Quick Start Manual", "Concepts and first steps for using MaClawDataSrv safely."],
-      records: ["Operations", "Records", "Search, add, edit, delete, export, and inspect structured business records."],
-      inbox: ["Operations", "Inbox", "Review pending approvals, failed jobs, quality issues, and operational work."],
-      domains: ["Operations", "Business Domains", "Discover business capabilities by domain or natural-language intent."],
-      relationships: ["Operations", "Relationships", "Inspect controlled links between business datasets and records."],
-      actions: ["Operations", "Business Actions", "Run governed business actions for production writes; use raw record editing only for controlled admin and test changes."],
-      rules: ["Operations", "Rules", "Evaluate business rules and preflight checks before operational writes."],
+      overview: ["Overview", "Overview", "Service health, domain readiness, access risk, and recent activity at a glance."],
+      quickstart: ["Overview", "Quick Start", "First steps for administrators: core concepts, safe operating order, and governance checks."],
+      domains: ["Schema", "Business Domains", "Discover and manage business capability domains."],
+      dataset: ["Schema", "Datasets", "Create, manage, and configure dataset metadata and lifecycle."],
+      fields: ["Schema", "Fields", "Maintain schema fields and controlled schema improvement proposals."],
+      relationships: ["Schema", "Relationships", "Inspect controlled links between business datasets and records."],
+      records: ["Data", "Records", "Search, add, edit, delete, export, and inspect structured business records."],
+      write: ["Data", "Editor", "Validate, edit, import, approve, and recover individual business records."],
+      actions: ["Data", "Business Actions", "Run governed business actions for production writes with rule checks."],
+      rules: ["Data", "Rules", "Evaluate business rules and preflight checks before operational writes."],
+      inbox: ["Data", "Inbox", "Review pending approvals, failed jobs, quality issues, and operational work."],
       connectors: ["Integration", "Connectors", "Manage external CRM, ERP, HR, finance, and inventory integrations."],
       views: ["Integration", "Views", "Query curated business views without exposing raw dataset internals."],
       dashboards: ["Integration", "Dashboards", "Run operational dashboard summaries for company and domain views."],
       reports: ["Integration", "Reports", "Run built-in reports and controlled aggregate analysis."],
-      quality: ["Governance", "Quality", "Run data quality checks and inspect historical quality scans."],
-      dataset: ["Governance", "Dataset", "Manage dataset metadata and administrative lifecycle controls."],
-      fields: ["Governance", "Fields", "Maintain schema fields and controlled schema improvement proposals."],
-      write: ["Governance", "Editor", "Validate, edit, import, approve, and recover individual business records."],
-      backups: ["Governance", "Backups", "Create, download, and restore database recovery points."],
-      events: ["Governance", "Events", "Inspect event ingestion, dead letters, and retry workflows."],
-      audit: ["Governance", "Audit", "Search and export audit trails for compliance review."],
-      ops: ["System", "Ops", "Check service statistics and run controlled database maintenance."],
-      access: ["System", "Access", "Grant API keys by business capability, review risk, and plan remediation."],
-      raw: ["System", "Response", "Inspect the latest raw API response for debugging and verification."]
+      apikeys: ["Security", "API Keys", "Create and manage scoped API keys for agents and services. Review risk and rotate credentials."],
+      admins: ["Security", "Admins", "Create administrator accounts, manage sessions, and configure Hub registration."],
+      quality: ["Security", "Quality", "Run data quality checks and inspect historical quality scans."],
+      backups: ["Security", "Backups", "Create, download, and restore database recovery points."],
+      events: ["Security", "Events", "Inspect event ingestion, dead letters, and retry workflows."],
+      audit: ["Security", "Audit", "Search and export audit trails for compliance review."],
+      ops: ["Security", "Ops", "Check service statistics and run controlled database maintenance."],
+      access: ["Security", "API Keys", "Create and manage scoped API keys for agents and services. Review risk and rotate credentials."],
+      raw: ["Dev", "Response", "Inspect the latest raw API response for debugging and verification."]
     };
     const i18n = { zh: {
       "MaClawDataSrv MIS Admin Console": "MaClawDataSrv MIS 管理控制台",
@@ -1939,11 +1951,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Checking setup status": "正在检查初始化状态",
       "Password policy loading": "正在加载密码策略",
       "Operations": "运营",
+      "Service Operations": "服务运维",
       "Integration": "集成",
       "Governance": "治理",
       "System": "系统",
+      "Schema": "数据建模",
+      "Data": "数据操作",
+      "Security": "安全与治理",
+      "Dev": "开发",
       "Overview": "总览",
+      "Quick Start": "快速操作",
       "Quick Start Manual": "快速操作手册",
+      "First steps for administrators: core concepts, safe operating order, and governance checks.": "管理员快速入门：核心概念、安全操作顺序和治理检查。",
       "Concepts and first steps for using MaClawDataSrv safely.": "安全使用 MaClawDataSrv 的核心概念和快速步骤。",
       "Records": "记录",
       "Inbox": "收件箱",
@@ -1971,6 +1990,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Search, add, edit, delete, export, and inspect structured business records.": "搜索、新增、编辑、删除、导出并检查结构化业务记录。",
       "Review pending approvals, failed jobs, quality issues, and operational work.": "查看待审批、失败任务、质量问题和运营事项。",
       "Discover business capabilities by domain or natural-language intent.": "按业务域或自然语言意图发现业务能力。",
+      "Discover and manage business capability domains.": "发现和管理业务能力域。",
+      "Create, manage, and configure dataset metadata and lifecycle.": "创建、管理和配置数据集元数据及生命周期。",
+      "Run governed business actions for production writes with rule checks.": "使用规则检查执行受控业务写入动作。",
       "Inspect controlled links between business datasets and records.": "检查业务数据集和记录之间的受控关联。",
       "Run governed business actions for production writes; use raw record editing only for controlled admin and test changes.": "生产写入使用受控业务动作；原始记录编辑仅用于受控管理和测试变更。",
       "Evaluate business rules and preflight checks before operational writes.": "在运营写入前评估业务规则和预检查。",
@@ -1987,6 +2009,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Search and export audit trails for compliance review.": "搜索并导出审计轨迹用于合规复核。",
       "Check service statistics and run controlled database maintenance.": "检查服务统计并执行受控数据库维护。",
       "Grant API keys by business capability, review risk, and plan remediation.": "按业务能力授权 API Key，复核风险并规划整改。",
+      "Create and manage scoped API keys for agents and services. Review risk and rotate credentials.": "为 Agent 和服务创建、管理范围化 API Key。复核风险并轮换凭据。",
+      "Create administrator accounts, manage sessions, and configure Hub registration.": "创建管理员账户、管理会话并配置 Hub 注册。",
       "Inspect the latest raw API response for debugging and verification.": "查看最新原始 API 响应用于调试和验证。",
       "Datasets": "数据集",
       "Refresh": "刷新",
@@ -2056,12 +2080,18 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Open access review, audit trails, quality checks, and backups before risky changes.": "高风险变更前打开访问复核、审计轨迹、质量检查和备份入口。",
       "Review access": "复核访问",
       "Open access": "打开访问控制",
+      "Open API Keys": "打开 API Keys",
+      "Open Admins": "打开管理员",
       "Check quality": "检查质量",
       "Open quality": "打开质量",
       "Create backup": "创建备份",
       "Open backups": "打开备份",
       "Operational Health": "运营健康",
       "Access": "访问控制",
+      "API Keys": "API 密钥",
+      "API Key Management": "API 密钥管理",
+      "Admins": "管理员",
+      "Administrator Management": "管理员管理",
       "Governance evidence summary refreshed": "治理证据摘要已刷新",
       "No datasets": "暂无数据集",
       "Backup restored": "备份已恢复",
@@ -3332,9 +3362,9 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         ["Business views", (state.businessViews || []).length, "views"],
         ["Reports", (state.reports || []).length, "reports"],
         ["Dashboards", (state.dashboards || []).length, "dashboards"],
-        ["Access mode", access.scope_mode || "-", "access"],
-        ["Raw data", access.raw_dataset_allowed ? "Allowed" : "Blocked", "access"],
-        ["Admin scope", access.admin_allowed ? "Allowed" : "Blocked", "access"]
+        ["Access mode", access.scope_mode || "-", "apikeys"],
+        ["Raw data", access.raw_dataset_allowed ? "Allowed" : "Blocked", "apikeys"],
+        ["Admin scope", access.admin_allowed ? "Allowed" : "Blocked", "apikeys"]
       ];
       root.innerHTML = "";
       rows.forEach(row => {
@@ -3541,7 +3571,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (!recommendationRoot) return;
       const recommendations = [];
       if ((stats.backup_count || 0) === 0) recommendations.push(["Recovery", "Create a recovery backup before imports or schema changes.", "backups"]);
-      if (state.accessReviewUnavailable || (review.total || 0) === 0) recommendations.push(["Scoped keys", "Create scoped API keys for agents and employees.", "access"]);
+      if (state.accessReviewUnavailable || (review.total || 0) === 0) recommendations.push(["Scoped keys", "Create scoped API keys for agents and employees.", "apikeys"]);
       if ((stats.quality_run_count || 0) === 0) recommendations.push(["Quality", "Run a quality check on the active business datasets.", "quality"]);
       if (!state.inboxUnavailable && ((inbox.critical || 0) > 0 || (inbox.high || 0) > 0 || (inbox.overdue || 0) > 0)) recommendations.push(["Open work", "Review critical or high-priority MIS inbox items.", "inbox"]);
       if (!recommendations.length) recommendations.push(["Next actions", "Governance controls look ready for normal operations.", "ops"]);
@@ -3616,7 +3646,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
           done: (state.accessKeys || []).length > 0,
           label: "Admin access configured",
           desc: "Create scoped API keys before giving agents or employees access.",
-          target: "access"
+          target: "apikeys"
         },
         {
           done: ((state.stats || {}).backup_count || 0) > 0,
@@ -5778,8 +5808,6 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
 
     async function loadAccessWorkspace(showStatus = false) {
       await loadAccessCatalog();
-      await loadAdminAccounts(false);
-      await loadAdminSessions(false);
       try {
         await loadGovernanceEvidencePack();
         if (showStatus) setStatus("Governance evidence summary refreshed", "ok");
@@ -5787,6 +5815,12 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
         $("governanceEvidenceSummary").innerHTML = "<p class='muted'>Governance evidence summary requires data_admin with allow_admin.</p>";
         if (showStatus) setStatus(err.message, "err");
       }
+    }
+
+    async function loadAdminsWorkspace(showStatus = false) {
+      await loadAdminAccounts(showStatus);
+      await loadAdminSessions(false);
+      await loadHubRegistration(false);
     }
 
     async function loadOverviewStats(showStatus) {
@@ -7289,7 +7323,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       syncLanguageControls(lang);
       saveSettings();
       applyI18n(document.body);
-      if (activeModuleName() === "access" && state.governanceEvidence) {
+      if (activeModuleName() === "apikeys" && state.governanceEvidence) {
         loadGovernanceEvidencePack().catch(err => setStatus(err.message, "err"));
       }
       renderHubRegistration(state.hubRegistration);
@@ -8729,6 +8763,7 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
     }
 
     function switchTab(name) {
+      if (name === "access") name = "apikeys";
       syncTabAccessibility(name);
       updateModuleHeader(name);
       saveSettings();
@@ -8750,7 +8785,8 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       if (name === "events") listDataEvents();
       if (name === "audit") listAuditLogs();
       if (name === "ops") loadStats();
-      if (name === "access") loadAccessWorkspace(false);
+      if (name === "apikeys") loadAccessWorkspace(false);
+      if (name === "admins") loadAdminsWorkspace(false);
     }
 
     function handleTabKeydown(event) {

@@ -84,6 +84,7 @@
       noDescription: { zh: '暂无描述', en: 'No description' },
       updated: { zh: '更新于', en: 'Updated' },
       official: { zh: '官方', en: 'Official' },
+      trusted: { zh: '可信', en: 'Trusted' },
       community: { zh: '社区', en: 'Community' },
       unknown: { zh: '未知', en: 'Unknown' }
     };
@@ -121,9 +122,12 @@
 
     function trustMeta(level) {
       var raw = String(level || '').toLowerCase();
-      if (raw === 'official') return { cls:'trust-official', text:t('official') };
+      if (raw === 'official' || raw === 'builtin') return { cls:'trust-official', text:t('official') };
+      if (raw === 'trusted' || raw === 'enterprise') return { cls:'trust-official', text:t('trusted') };
       if (raw === 'community') return { cls:'trust-community', text:t('community') };
-      return { cls:'trust-unknown', text:t('unknown') };
+      if (raw === 'agent-created') return { cls:'trust-community', text:'Agent' };
+      if (!raw || raw === 'unknown') return { cls:'', text:'' };
+      return { cls:'trust-community', text:raw };
     }
 
     function applyI18n() {
@@ -154,8 +158,16 @@
       var ratingText = ratingCount > 0 ? (Number(skill.avg_rating || 0).toFixed(1) + ' (' + ratingCount + ' ' + t('ratings') + ')') : '-';
       var desc = escapeHtml(skill.description || t('noDescription'));
       var dateText = skill.updated_at && skill.updated_at !== skill.created_at ? t('updated') + ': ' + formatDate(skill.updated_at) : formatDate(skill.created_at);
-      return '<article class="card" role="listitem" aria-label="' + escapeHtml(skill.name || '-') + '">'
-        + '<div class="card-name">' + escapeHtml(skill.name || '-') + (skill.version ? ' <span style="font-size:12px;color:var(--muted);font-weight:500">v' + escapeHtml(skill.version) + '</span>' : '') + '</div>'
+      // Prefer human-readable display name over internal ID-like name
+      var displayName = skill.maclaw_app_name || skill.display_name || skill.name || '-';
+      if (/^[a-z0-9_-]+\.[a-z0-9_-]+$/.test(displayName) && displayName === (skill.skill_id || skill.name)) {
+        var parts = displayName.split('.');
+        displayName = parts[parts.length - 1];
+      }
+      var skillIdHtml = skill.skill_id ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(skill.skill_id) + '</div>' : '';
+      return '<article class="card" role="listitem" aria-label="' + escapeHtml(displayName) + '">'
+        + '<div class="card-name">' + escapeHtml(displayName) + (skill.version ? ' <span style="font-size:12px;color:var(--muted);font-weight:500">v' + escapeHtml(skill.version) + '</span>' : '') + '</div>'
+        + skillIdHtml
         + '<div><span class="trust ' + trust.cls + '">' + trust.text + '</span></div>'
         + '<div class="card-desc">' + desc + '</div>'
         + (tags ? '<div class="card-tags">' + tags + '</div>' : '')

@@ -77,6 +77,13 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 ) {
 	category := adaptiveRetry.Classify("llm_request", result.Err)
 	for retryAttempt := 0; result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
+		// If the request context is already cancelled (e.g. by RequestReplan),
+		// retrying is pointless — the next request will immediately fail with
+		// the same context.Canceled error. Exit early to avoid wasting the
+		// retry delay (1s+) on a deliberately-cancelled operation.
+		if reqCtx.Err() != nil {
+			return
+		}
 		decision := adaptiveRetry.Decide("llm_request", category, retryAttempt)
 		decision.ProviderName = strings.TrimSpace(cfg.ProviderName)
 		decision.Model = strings.TrimSpace(cfg.Model)
@@ -131,7 +138,7 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 	result *agentLoopLLMRetryResult,
 ) {
 	retryKind := classifyLLMRetryError(result.Err)
-	if !retryKind.Retryable() || ctx.IsCancelled() {
+	if !retryKind.Retryable() || ctx.IsCancelled() || reqCtx.Err() != nil {
 		return
 	}
 	isTransient := retryKind.TransientServer()

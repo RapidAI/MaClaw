@@ -23,6 +23,7 @@ type SearchResult struct {
 	Score                        float64                      `json:"score"`
 	Price                        int64                        `json:"price"`
 	Status                       string                       `json:"status"`
+	TrustLevel                   string                       `json:"trust_level,omitempty"`
 	AvgRating                    float64                      `json:"avg_rating"`
 	DownloadCount                int                          `json:"download_count"`
 	Version                      string                       `json:"version,omitempty"`
@@ -395,6 +396,9 @@ func (s *SearchService) enrichSearchResultWithSkillMeta(r *SearchResult) {
 	}
 	if r.ProductKind == "" {
 		r.ProductKind = meta.ProductKind
+	}
+	if r.TrustLevel == "" {
+		r.TrustLevel = meta.TrustLevel
 	}
 	r.IsMaclawApp = r.IsMaclawApp || meta.IsMaclawApp || strings.EqualFold(strings.TrimSpace(r.ProductKind), "maclaw_app_skill")
 	r.MaclawAppEntry = meta.MaclawAppEntry

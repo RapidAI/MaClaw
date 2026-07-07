@@ -635,7 +635,11 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, psErr := coretool.ResolveWindowsPowerShell()
+		if psErr != nil {
+			return "", fmt.Errorf("screenshot: PowerShell not found: %w", psErr)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
 	} else {
 		shellName = "bash"

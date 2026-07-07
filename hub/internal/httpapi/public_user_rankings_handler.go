@@ -65,8 +65,13 @@ func maskPhoneAccount(account string) string {
 }
 
 // GetPublicUserRankingsHandler returns a public (no auth) leaderboard with masked emails.
-// Uses default tenant and supports daily/weekly/monthly period.
-func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository) http.HandlerFunc {
+// Uses pre-computed ranking cache for instant response. Falls back to on-demand
+// computation if cache is nil or misses.
+func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository, rankingCacheOpt ...*RankingCache) http.HandlerFunc {
+	var rankingCache *RankingCache
+	if len(rankingCacheOpt) > 0 {
+		rankingCache = rankingCacheOpt[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
 			writeError(w, http.StatusServiceUnavailable, "RANKING_UNAVAILABLE", "ranking service unavailable")
@@ -103,7 +108,6 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.User
 			end = start.AddDate(0, 0, 1)
 			periodLabel = start.Format("2006-01-02")
 		case "weekly":
-			// ISO week: Monday as first day
 			weekday := int(now.Weekday())
 			if weekday == 0 {
 				weekday = 7
@@ -117,20 +121,37 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.User
 			periodLabel = start.Format("2006-01")
 		}
 
-		ctx := store.WithTenant(r.Context(), tenantID)
-		tokenRows, err := sessions.SummarizeUserTokenUsage(ctx, tenantID, start, end)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "RANKING_LOAD_FAILED", "failed to load ranking data")
-			return
-		}
-		durationRows, err := sessions.SummarizeUserDurations(ctx, tenantID, start, end, now)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "RANKING_LOAD_FAILED", "failed to load ranking data")
-			return
+		// Try pre-computed cache first for instant response.
+		var merged []userRankingRow
+		var generatedAt time.Time
+
+		if rankingCache != nil {
+			entry := rankingCache.GetOrCompute(r.Context(), tenantID, period, periodLabel, start, end)
+			if entry != nil {
+				merged = entry.Rows
+				generatedAt = entry.GeneratedAt
+			}
 		}
 
-		merged := mergeUserRankingRows(ctx, tenantID, users, tokenRows, durationRows)
-		assignUserRankingRanks(merged)
+		// Fallback to on-demand computation if cache unavailable.
+		if merged == nil {
+			ctx := store.WithTenant(r.Context(), tenantID)
+			tokenRows, err := sessions.SummarizeUserTokenUsage(ctx, tenantID, start, end)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "RANKING_LOAD_FAILED", "failed to load ranking data")
+				return
+			}
+			durationRows, err := sessions.SummarizeUserDurations(ctx, tenantID, start, end, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "RANKING_LOAD_FAILED", "failed to load ranking data")
+				return
+			}
+			merged = mergeUserRankingRows(ctx, tenantID, users, tokenRows, durationRows)
+			assignUserRankingRanks(merged)
+			generatedAt = now
+		}
+
+		// Sort by requested dimension (cache stores default token sort).
 		sortUserRankingRows(merged, dimension)
 
 		total := len(merged)
@@ -164,7 +185,7 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.User
 			PageSize:    pageSize,
 			Total:       total,
 			Rows:        publicRows,
-			GeneratedAt: now,
+			GeneratedAt: generatedAt,
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}

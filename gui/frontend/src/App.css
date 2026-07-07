@@ -12722,6 +12722,14 @@ body {
     color: inherit;
 }
 
+/* AI icon container: boost opacity in dark mode so white icon stays visible */
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai {
+    --ai-icon-inactive-bg: linear-gradient(135deg,
+        color-mix(in srgb, var(--theme-primary) 88%, var(--theme-surface)),
+        color-mix(in srgb, var(--theme-primary) 68%, var(--theme-surface)));
+    --ai-icon-inactive-shadow: 0 1px 6px rgba(0,0,0,0.25), 0 0 0 1px color-mix(in srgb, var(--theme-primary) 30%, transparent);
+}
+
 .main-container[data-ai-theme='dark'] {
     background: var(--theme-page-bg);
 }

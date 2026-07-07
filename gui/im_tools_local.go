@@ -95,7 +95,11 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, err := coretool.ResolveWindowsPowerShell()
+		if err != nil {
+			return fmt.Sprintf("[错误] 无法找到 PowerShell: %v。请确认系统 PATH 包含 PowerShell 路径，或安装 PowerShell 7 (https://aka.ms/powershell)", err)
+		}
+		shellName = psPath
 		// Prepend UTF-8 OutputEncoding to prevent GBK mojibake on Chinese Windows.
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command}
@@ -459,6 +463,13 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 			return err.Error()
 		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
+	}
+	// Diagnostic: detect role-prefix hallucination in write_file content.
+	// This is the path where Browser: hallucinations in tool call arguments
+	// bypass all streaming filters and reach disk (and potentially the
+	// workflow doc preview panel). Log for traceability.
+	if browserDiagHasBrowserRolePrefix(content) {
+		log.Printf("[browser-diag] CP_WriteFile: Browser: prefix detected in write_file content | path=%s content_len=%d", absPath, len(content))
 	}
 	resolvedMode, _ := coretool.NormalizeWriteModeKind(mode)
 	if resolvedMode == coretool.WriteModeAppend {

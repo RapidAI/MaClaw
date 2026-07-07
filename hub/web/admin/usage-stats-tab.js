@@ -174,8 +174,8 @@ function fmtDuration(seconds) {
   const total = Math.max(0, Number(seconds || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0) return hours + 'h ' + minutes + 'm';
-  return minutes + 'm';
+  if (hours > 0) return hours + 'h ' + minutes + ' Min';
+  return minutes + ' Min';
 }
 function isRankingEmail(value) {
   const email = String(value || '').trim();

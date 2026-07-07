@@ -1470,10 +1470,12 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 }
 
 // emitDocUpdateV2 sends document update to frontend preview panel.
+// Content is sanitized to remove role-prefix hallucinations before emission.
 func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 	if h.app == nil {
 		return
 	}
+	content = stripRolePrefixHallucination(content)
 	wf := h.getWorkflowV2()
 	projectPath := ""
 	workflowID := ""

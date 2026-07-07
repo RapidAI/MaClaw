@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { collectWorkflowPhases, normalizeWorkflowPhaseID, PhaseInfo, workflowPhaseExpectsDocument } from "./workflowPhase";
 import { isWorkflowActive } from "./workflowStatus";
+import { stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 export type { PhaseInfo } from "./workflowPhase";
 
@@ -43,7 +44,11 @@ export interface WorkflowUIState {
 const DEFAULT_SPLIT_RATIO = 0.6;
 
 function normalizeWorkflowDocumentContent(content: unknown): string {
-    return typeof content === "string" ? content.trim() : "";
+    if (typeof content !== "string") return "";
+    // Strip role-prefix hallucinations (Browser:/Tool:) that may leak through
+    // write_file content parameters. Backend emitDocUpdateV2 also sanitizes,
+    // but this provides frontend defense-in-depth.
+    return stripRolePrefixForDisplay(content.trim());
 }
 
 export function collectWorkflowPhaseDocuments(outputs: unknown): Map<string, string> {

@@ -20,7 +20,12 @@ type myRankingResponse struct {
 
 // GetMyRankingHandler returns the current authenticated user's usage stats
 // and ranking within their tenant. Uses viewer token auth (no admin required).
-func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSummarizer) http.HandlerFunc {
+// Leverages the pre-computed ranking cache for instant response.
+func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSummarizer, rankingCacheOpt ...*RankingCache) http.HandlerFunc {
+	var rankingCache *RankingCache
+	if len(rankingCacheOpt) > 0 {
+		rankingCache = rankingCacheOpt[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
 			writeError(w, http.StatusServiceUnavailable, "RANKING_UNAVAILABLE", "session repository is unavailable")
@@ -45,25 +50,37 @@ func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSumma
 		period := "monthly"
 		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		end := start.AddDate(0, 1, 0)
-		rankingCtx := store.WithTenant(r.Context(), tenantID)
+		periodLabel := start.Format("2006-01")
 
-		tokenRows, err := sessions.SummarizeUserTokenUsage(rankingCtx, tenantID, start, end)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "RANKING_TOKEN_LOAD_FAILED", err.Error())
-			return
-		}
-		durationRows, err := sessions.SummarizeUserDurations(rankingCtx, tenantID, start, end, now)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "RANKING_DURATION_LOAD_FAILED", err.Error())
-			return
+		// Try pre-computed cache first.
+		var merged []userRankingRow
+		if rankingCache != nil {
+			entry := rankingCache.GetOrCompute(r.Context(), tenantID, period, periodLabel, start, end)
+			if entry != nil {
+				merged = entry.Rows
+			}
 		}
 
-		var users store.UserRepository
-		if identity != nil {
-			users = identity.UsersRepo()
+		// Fallback to on-demand computation.
+		if merged == nil {
+			rankingCtx := store.WithTenant(r.Context(), tenantID)
+			tokenRows, err2 := sessions.SummarizeUserTokenUsage(rankingCtx, tenantID, start, end)
+			if err2 != nil {
+				writeError(w, http.StatusInternalServerError, "RANKING_TOKEN_LOAD_FAILED", err2.Error())
+				return
+			}
+			durationRows, err2 := sessions.SummarizeUserDurations(rankingCtx, tenantID, start, end, now)
+			if err2 != nil {
+				writeError(w, http.StatusInternalServerError, "RANKING_DURATION_LOAD_FAILED", err2.Error())
+				return
+			}
+			var users store.UserRepository
+			if identity != nil {
+				users = identity.UsersRepo()
+			}
+			merged = mergeUserRankingRows(rankingCtx, tenantID, users, tokenRows, durationRows)
+			assignUserRankingRanks(merged)
 		}
-		merged := mergeUserRankingRows(rankingCtx, tenantID, users, tokenRows, durationRows)
-		assignUserRankingRanks(merged)
 
 		// Find current user's row.
 		myAccount := strings.ToLower(strings.TrimSpace(principal.Email))

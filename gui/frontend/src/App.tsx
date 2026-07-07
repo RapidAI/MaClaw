@@ -2227,16 +2227,32 @@ function App() {
             delayedRefreshTimers.add(timer);
         };
         void refreshSidebarTokenUsage();
+        // Debounce token usage change events: during an active agent loop, the
+        // "llm-token-usage-changed" event fires after EVERY LLM call (potentially
+        // every 3-10 seconds). Each refresh triggers GetMaclawLLMProviders →
+        // syncHubLLMServiceStatusIntoConfig → Hub HTTP request. Without debounce,
+        // a 20-iteration agent loop generates 20 Hub requests in rapid succession.
+        // With debounce, we coalesce them into at most one refresh per 10 seconds.
+        let tokenUsageDebounceTimer: number | undefined;
         const onTokenUsageChanged = () => {
-            void refreshSidebarTokenUsage();
-            queueDelayedRefresh(2500);
+            if (tokenUsageDebounceTimer !== undefined) {
+                window.clearTimeout(tokenUsageDebounceTimer);
+            }
+            tokenUsageDebounceTimer = window.setTimeout(() => {
+                tokenUsageDebounceTimer = undefined;
+                void refreshSidebarTokenUsage();
+            }, 10_000);
         };
         const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", onTokenUsageChanged);
-        const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", onTokenUsageChanged);
+        const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", () => {
+            // hub-llm-service-changed is rare (redeem, provider switch) — refresh immediately.
+            void refreshSidebarTokenUsage();
+        });
         const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 60 * 1000);
         return () => {
             sidebarTokenUsageSeqRef.current += 1;
             window.clearInterval(usageRefreshTimer);
+            if (tokenUsageDebounceTimer !== undefined) window.clearTimeout(tokenUsageDebounceTimer);
             delayedRefreshTimers.forEach((timer) => window.clearTimeout(timer));
             if (typeof offTokenUsageChanged === 'function') offTokenUsageChanged(); else safeEventsOff("llm-token-usage-changed");
             if (typeof offHubLLMServiceChanged === 'function') offHubLLMServiceChanged(); else safeEventsOff("hub-llm-service-changed");

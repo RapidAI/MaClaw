@@ -153,6 +153,15 @@ func NewRouter(
 	fileRelay.SetParticipantValidator(groupDiscussionSvc)
 	fileRelay.Start(context.Background())
 	capabilitySvc := capability.NewService(hubDB)
+
+	// Pre-computed user ranking cache — refreshes every 5 minutes per tenant.
+	// Shared by public, admin, and my-ranking handlers for instant response.
+	var rankingCache *RankingCache
+	if sessionSvc != nil {
+		rankingCache = NewRankingCache(sessionSvc, platformUsers, tenantRepo, 5*time.Minute)
+		rankingCache.Start()
+	}
+
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /healthz/ready", ReadinessHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
@@ -433,7 +442,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/digital-employees/{employeeId}/tasks/claim", MobileDigitalEmployeeTaskClaimHandler(identity))
 	mux.HandleFunc("GET /api/mobile/digital-employees/tasks/{taskId}", MobileDigitalEmployeeTaskStatusHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/digital-employees/tasks/{taskId}", MobileDigitalEmployeeTaskUpdateHandler(identity))
-	mux.HandleFunc("GET /api/my-ranking", GetMyRankingHandler(identity, sessionSvc))
+	mux.HandleFunc("GET /api/my-ranking", GetMyRankingHandler(identity, sessionSvc, rankingCache))
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, securitySvc))
@@ -612,7 +621,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/capabilities/mcp-hub-secrets", MCPHubSecretUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/admin/billing/customer-account", requireTenantAdmin(AdminBillingCustomerAccountHandler(system, centerSvc)))
 	mux.HandleFunc("GET /api/admin/billing/licenses", requireTenantAdmin(AdminBillingLicensesHandler(system, centerSvc)))
-	mux.HandleFunc("GET /api/admin/user-rankings", requireTenantAdmin(GetUserRankingsHandler(sessionSvc, platformUsers)))
+	mux.HandleFunc("GET /api/admin/user-rankings", requireTenantAdmin(GetUserRankingsHandler(sessionSvc, platformUsers, rankingCache)))
 	mux.HandleFunc("GET /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyGetHandler(system)))
 	mux.HandleFunc("PUT /api/admin/capability-market/policy", requireTenantAdmin(AdminCapabilityMarketPolicyUpdateHandler(system)))
 	mux.HandleFunc("GET /api/admin/capability-market/acquisition-requests", requireTenantAdmin(AdminCapabilityAcquisitionRequestsHandler(capabilitySvc)))
@@ -856,7 +865,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/public/model_download/status", PublicModelDownloadStatusHandler(configPath))
 
 	// Public user ranking leaderboard (no auth, masked emails)
-	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc, platformUsers))
+	// Uses pre-computed ranking cache for instant response.
+	mux.HandleFunc("GET /api/public/user-rankings", GetPublicUserRankingsHandler(sessionSvc, platformUsers, rankingCache))
 
 	// ---------------------------------------------------------------------------
 	// Dynamic Notification System endpoints

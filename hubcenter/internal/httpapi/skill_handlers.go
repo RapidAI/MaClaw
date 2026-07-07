@@ -145,7 +145,7 @@ func (h *SkillHandlers) PublishSkill(w http.ResponseWriter, r *http.Request) {
 		skillError(w, http.StatusBadRequest, "id and name are required")
 		return
 	}
-	s.TrustLevel = "community"
+	s.TrustLevel = "trusted"
 	if err := h.store.Publish(s); err != nil {
 		skillError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -221,9 +221,9 @@ func (h *SkillHandlers) AdminSetTrustLevel(w http.ResponseWriter, r *http.Reques
 		skillError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	validLevels := map[string]bool{"builtin": true, "trusted": true, "community": true, "agent-created": true}
+	validLevels := map[string]bool{"builtin": true, "official": true, "trusted": true, "community": true, "agent-created": true}
 	if !validLevels[req.TrustLevel] {
-		skillError(w, http.StatusBadRequest, "trust_level must be one of: builtin, trusted, community, agent-created")
+		skillError(w, http.StatusBadRequest, "trust_level must be one of: builtin, official, trusted, community, agent-created")
 		return
 	}
 	if err := h.store.SetTrustLevel(req.ID, req.TrustLevel); err != nil {

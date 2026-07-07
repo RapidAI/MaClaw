@@ -48,7 +48,11 @@ type userUsageSummarizer interface {
 	userTokenSummarizer
 }
 
-func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository) http.HandlerFunc {
+func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserRepository, rankingCacheOpt ...*RankingCache) http.HandlerFunc {
+	var rankingCache *RankingCache
+	if len(rankingCacheOpt) > 0 {
+		rankingCache = rankingCacheOpt[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sessions == nil {
 			writeError(w, http.StatusServiceUnavailable, "USER_RANKINGS_UNAVAILABLE", "session repository is unavailable")
@@ -62,18 +66,35 @@ func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserReposi
 		page := parseUserRankingPositiveInt(r.URL.Query().Get("page"), 1, 1, 1000000)
 		pageSize := parseUserRankingPositiveInt(r.URL.Query().Get("page_size"), 100, 1, 100)
 
-		tokenRows, err := sessions.SummarizeUserTokenUsage(store.WithTenant(r.Context(), tenantID), tenantID, start, end)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "USER_RANKINGS_TOKEN_LOAD_FAILED", err.Error())
-			return
+		// Try pre-computed cache first.
+		var merged []userRankingRow
+		var generatedAt time.Time
+
+		if rankingCache != nil {
+			entry := rankingCache.GetOrCompute(r.Context(), tenantID, period, label, start, end)
+			if entry != nil {
+				merged = entry.Rows
+				generatedAt = entry.GeneratedAt
+			}
 		}
-		durationRows, err := sessions.SummarizeUserDurations(store.WithTenant(r.Context(), tenantID), tenantID, start, end, now)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "USER_RANKINGS_DURATION_LOAD_FAILED", err.Error())
-			return
+
+		// Fallback to on-demand computation if cache unavailable.
+		if merged == nil {
+			tokenRows, err := sessions.SummarizeUserTokenUsage(store.WithTenant(r.Context(), tenantID), tenantID, start, end)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "USER_RANKINGS_TOKEN_LOAD_FAILED", err.Error())
+				return
+			}
+			durationRows, err := sessions.SummarizeUserDurations(store.WithTenant(r.Context(), tenantID), tenantID, start, end, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "USER_RANKINGS_DURATION_LOAD_FAILED", err.Error())
+				return
+			}
+			merged = mergeUserRankingRows(store.WithTenant(r.Context(), tenantID), tenantID, users, tokenRows, durationRows)
+			assignUserRankingRanks(merged)
+			generatedAt = now
 		}
-		merged := mergeUserRankingRows(store.WithTenant(r.Context(), tenantID), tenantID, users, tokenRows, durationRows)
-		assignUserRankingRanks(merged)
+
 		sortUserRankingRows(merged, dimension)
 		total := len(merged)
 		startIdx := (page - 1) * pageSize
@@ -91,7 +112,7 @@ func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserReposi
 			PageSize:    pageSize,
 			Total:       total,
 			Rows:        merged[startIdx:endIdx],
-			GeneratedAt: now,
+			GeneratedAt: generatedAt,
 		}
 		if period == "daily" {
 			resp.Date = label

@@ -53,7 +53,12 @@ func (e *psElement) toElement() Element {
 // runPS executes a PowerShell snippet and returns stdout.
 // Returns ("", nil) if the command fails — graceful degradation.
 func runPS(script string) (string, error) {
-	cmd := coretool.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		// Graceful degradation: no PowerShell available.
+		return "", nil
+	}
+	cmd := coretool.Command(psExe, "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		// Graceful degradation: app may not expose accessibility info.

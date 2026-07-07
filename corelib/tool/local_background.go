@@ -122,7 +122,13 @@ func (m *LocalBackgroundTaskManager) SubmitWithOwner(command, workDir, role, own
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, err := ResolveWindowsPowerShell()
+		if err != nil {
+			lf.Close()
+			cancel()
+			return nil, fmt.Errorf("resolve PowerShell: %w", err)
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command}
 	} else {

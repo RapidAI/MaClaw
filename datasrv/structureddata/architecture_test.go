@@ -424,7 +424,7 @@ func TestWebConsoleResponsiveLayoutAndFirstScreenContracts(t *testing.T) {
 		`<nav class="tabs" aria-label="Administration navigation">`,
 		`<div class="tablist" id="tabs" role="tablist" aria-label="Administration modules">`,
 		`<div class="nav-dataset-panel" role="group" aria-label="Dataset selector">`,
-		`<div class="nav-group" role="presentation" data-count="8">Operations</div>`,
+		`<div class="nav-group" role="presentation" data-count="2">Overview</div>`,
 		`data-testid="tab-quickstart"`,
 		`data-testid="quickstart-entry"`,
 		`data-testid="open-quickstart-manual"`,

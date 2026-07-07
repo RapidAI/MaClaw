@@ -78,11 +78,12 @@ const runHistoryStorageKey = 'maclaw:apps-run-history:v1';
 const activeRunStorageKey = 'maclaw:apps-active-runs:v1';
 
 function getStudioButton() {
-    return screen.queryByTitle('App Studio')
+    return screen.queryByTitle('Create App')
+        || screen.queryByTitle('创建应用')
+        || screen.queryByTitle('App Studio')
         || screen.queryByTitle('MaClaw App Studio')
-        || screen.queryByTitle('MaClaw 应用工作室室')
         || screen.queryByTitle('MaClaw 应用工作室')
-        || screen.getByRole('button', { name: /MaClaw App Studio|App Studio|MaClaw 应用工作室|MaClaw 应用工作室室/ });
+        || screen.getByRole('button', { name: /Create App|创建应用|MaClaw App Studio|App Studio|MaClaw 应用工作室/ });
 }
 
 async function findRuntimeGovernancePanel() {
@@ -910,7 +911,7 @@ describe('AppsPage', () => {
         expect(screen.getByPlaceholderText('\u641c\u7d22\u5e94\u7528')).not.toBeNull();
         const studioEntry = getStudioButton();
         expect(studioEntry).not.toBeNull();
-        expect(studioEntry.textContent).toBe('\u5de5\u4f5c\u5ba4');
+        expect(studioEntry.textContent).toBe('\u521b\u5efa\u5e94\u7528');
         expect(studioEntry.closest('.apps-search-row')).not.toBeNull();
         expect(studioEntry.closest('.apps-ops')).toBeNull();
         expect(container.querySelector('.apps-ops__item--studio')).toBeNull();
@@ -2111,7 +2112,7 @@ describe('AppsPage', () => {
         render(<AppsPage lang="zh-Hans" />);
 
         await createAndRunLocalToolApp('合同归档');
-        fireEvent.click(screen.getByTitle('MaClaw 应用工作室'));
+        fireEvent.click(screen.getByTitle('创建应用'));
         fireEvent.click(screen.getByText('审核/发布'));
 
         expect(screen.getByText('\u53ef\u63d0\u4ea4')).not.toBeNull();

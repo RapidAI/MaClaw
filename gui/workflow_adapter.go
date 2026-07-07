@@ -229,6 +229,8 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 	if fileContent := a.readPersistedDoc(phaseID); fileContent != "" {
 		content = fileContent
 	}
+	// Sanitize role-prefix hallucinations before emission to frontend.
+	content = stripRolePrefixHallucination(content)
 	if a.app.ctx != nil {
 		a.mu.RLock()
 		wfID := a.activeWorkflowID

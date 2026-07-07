@@ -445,7 +445,12 @@ func killManagedBrowserProcessesByDir(userDataDir string) bool {
 		return false
 	}
 	ps := browserProcessesByDirPowerShell(userDataDir, true)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		log.Printf("[browser] PowerShell 不可用，跳过 profile 清理: %v", err)
+		return false
+	}
+	cmd := exec.Command(psExe, "-NoProfile", "-Command", ps)
 	coretool.HideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -476,7 +481,11 @@ func browserProcessExistsForDir(userDataDir string) bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", browserProcessesByDirPowerShell(userDataDir, false))
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command(psExe, "-NoProfile", "-Command", browserProcessesByDirPowerShell(userDataDir, false))
 	coretool.HideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) != ""
@@ -686,7 +695,11 @@ func discoverCDPAddrFromManagedProcess(userDataDir string) (string, bool) {
 	}
 	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
 	ps := fmt.Sprintf(`$needle = '%s'; Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf('--remote-debugging-port', [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { $_.CommandLine }`, needle)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		return "", false
+	}
+	cmd := exec.Command(psExe, "-NoProfile", "-Command", ps)
 	coretool.HideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

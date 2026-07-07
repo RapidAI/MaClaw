@@ -44,7 +44,7 @@
   function thisMonth(){return new Date().toISOString().slice(0,7)}
   function thisYear(){return String(new Date().getUTCFullYear())}
   function fmtInt(value){return Number(value||0).toLocaleString(currentLang==='zh'?'zh-CN':'en-US')}
-  function fmtDuration(seconds){const total=Math.max(0,Number(seconds||0));const h=Math.floor(total/3600);const m=Math.floor((total%3600)/60);return h>0?h+'h '+m+'m':m+'m'}
+  function fmtDuration(seconds){const total=Math.max(0,Number(seconds||0));const h=Math.floor(total/3600);const m=Math.floor((total%3600)/60);return h>0?h+'h '+m+' Min':m+' Min'}
   function labelHub(row){return row.hub_name||row.hub_id||'-'}
   function labelTenant(id){return id==='tenant_default'?t('defaultTenant'):(id||'-')}
 

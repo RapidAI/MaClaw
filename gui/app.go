@@ -3032,13 +3032,14 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabID ...string) 
 	// phase_update events from overwriting doc_update content during normal
 	// workflow operation after a tab switch.
 	// Emit directly instead of through emitDocUpdateV2 to avoid repeated store.Load.
+	// Content is sanitized to remove any persisted role-prefix hallucinations.
 	projectPath = workflowEventProjectPath(state)
 	workflowID := state.ID
 	for _, p := range state.Phases {
 		if p.Output != "" {
 			emitWorkflowV2Event(a, "workflow:doc_update", map[string]interface{}{
 				"phase_id":       p.ID,
-				"content":        p.Output,
+				"content":        stripRolePrefixHallucination(p.Output),
 				"project_path":   projectPath,
 				"workflow_id":    workflowID,
 				"event_scope_id": a.getEventScopeID(userID),
@@ -5549,6 +5550,21 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 
 	// ── HubCenter URLs (failover persistence) ──
 	incoming.RemoteHubCenterURLs = ondisk.RemoteHubCenterURLs
+
+	// ── LLM Token Usage (AccumulateLLMTokenUsageWithCache, ResetLLMTokenUsage) ──
+	// This field is only modified by backend via PatchConfig. A stale frontend
+	// snapshot must not overwrite accumulated token counts. Unconditionally
+	// restore from on-disk, same as other backend-owned fields.
+	if ondisk.LLMTokenUsage != nil && incoming.LLMTokenUsage != nil {
+		// Both non-nil: check if incoming would lose data (lower totals).
+		for k, ondiskStat := range ondisk.LLMTokenUsage {
+			if inStat, ok := incoming.LLMTokenUsage[k]; !ok || inStat == nil || inStat.TotalTokens < ondiskStat.TotalTokens {
+				restored = append(restored, "llm_token_usage")
+				break
+			}
+		}
+	}
+	incoming.LLMTokenUsage = ondisk.LLMTokenUsage
 
 	// ── Working directory (SetTabWorkingDir for local tab) ──
 	// Only PatchConfigFields should modify this. A stale frontend snapshot

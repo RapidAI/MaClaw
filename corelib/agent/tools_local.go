@@ -86,7 +86,11 @@ func ToolBashWithContext(parent context.Context, args map[string]interface{}, on
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
+		psPath, err := tool.ResolveWindowsPowerShell()
+		if err != nil {
+			return "[错误] 命令启动失败: " + err.Error()
+		}
+		shellName = psPath
 		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command}
 	} else {
