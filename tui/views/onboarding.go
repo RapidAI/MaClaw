@@ -62,6 +62,10 @@ type OnboardingSubmitSSOInputMsg struct {
 type OnboardingCancelSSOMsg struct{ FlowID string }
 type OnboardingSSOTickMsg struct{ FlowID string }
 type OnboardingStartWeixinMsg struct{}
+type OnboardingActivateRemoteMsg struct {
+	Email        string
+	HubCenterURL string
+}
 type OnboardingPollWeixinMsg struct{ Token string }
 type OnboardingWeixinTickMsg struct{ Token string }
 type OnboardingFinishMsg struct{}
