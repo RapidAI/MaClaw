@@ -147,7 +147,7 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 	m.StatusBar, sbCmd = m.StatusBar.Update(msg)
 
 	switch msg.(type) {
-	case OnboardingRemoteResultMsg, OnboardingSSOQRMsg, OnboardingSSOResultMsg, OnboardingSSOTickMsg, OnboardingWeixinQRMsg, OnboardingWeixinPollResultMsg, OnboardingWeixinTickMsg:
+	case OnboardingRemoteResultMsg, OnboardingResolveIdentityResultMsg, OnboardingVerifyCodeResultMsg, OnboardingSMSTickMsg, OnboardingSSOQRMsg, OnboardingSSOResultMsg, OnboardingSSOTickMsg, OnboardingWeixinQRMsg, OnboardingWeixinPollResultMsg, OnboardingWeixinTickMsg:
 		var onboardingCmd tea.Cmd
 		m.Onboarding, onboardingCmd = m.Onboarding.Update(msg)
 		if m.tab == TabOnboarding {

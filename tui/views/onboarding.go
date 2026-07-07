@@ -18,10 +18,38 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-type OnboardingActivateRemoteMsg struct {
-	Email        string
+type OnboardingResolveIdentityMsg struct {
+	Identity     string
 	HubCenterURL string
 }
+type OnboardingResolveIdentityResultMsg struct {
+	Success    bool
+	Message    string
+	Identity   string
+	Method     string // "email" or "phone"
+	HubURL     string
+	HubID      string
+	TenantID   string
+	CodeLength int
+}
+type OnboardingVerifyCodeMsg struct {
+	Identity     string
+	VerifyCode   string
+	Method       string
+	HubURL       string
+	HubID        string
+	TenantID     string
+	HubCenterURL string
+}
+type OnboardingVerifyCodeResultMsg struct {
+	Success         bool
+	Message         string
+	HubURL          string
+	MachineID       string
+	HubServiceReady bool
+	MachineReady    bool
+}
+type OnboardingSMSTickMsg struct{}
 type OnboardingStartSSOMsg struct{ FlowID string }
 type OnboardingPollSSOMsg struct {
 	FlowID string
@@ -92,6 +120,7 @@ type OnboardingModel struct {
 	height           int
 	cursor           int
 	emailInput       textinput.Model
+	smsCodeInput     textinput.Model
 	hubCenterInput   textinput.Model
 	ssoInput         textinput.Model
 	hubCenterOptions []string
@@ -103,6 +132,14 @@ type OnboardingModel struct {
 	remoteBusy       bool
 	remoteFailed     bool
 	remoteStatus     string
+	// Resolve + verify state (identity-first flow)
+	resolvedMethod   string // "email" or "phone" — from Hub
+	resolvedHubURL   string
+	resolvedHubID    string
+	resolvedTenantID string
+	codeSent         bool // verification code has been sent
+	codeCountdown    int
+	codeLength       int
 	weixinDone       bool
 	weixinBusy       bool
 	weixinStatus     string
@@ -161,9 +198,13 @@ func (m *OnboardingModel) ensureSSOTick() tea.Cmd {
 func NewOnboardingModel(lang string) OnboardingModel {
 	lang = i18n.NormalizeLang(lang)
 	emailInput := textinput.New()
-	emailInput.Placeholder = "you@example.com"
+	emailInput.Placeholder = "you@example.com / 13800138000"
 	emailInput.CharLimit = 160
 	emailInput.Width = 36
+	smsCodeInput := textinput.New()
+	smsCodeInput.Placeholder = "000000"
+	smsCodeInput.CharLimit = 8
+	smsCodeInput.Width = 12
 	ssoInput := textinput.New()
 	ssoInput.Placeholder = "paste returned URL or token"
 	ssoInput.CharLimit = 4096
@@ -186,6 +227,7 @@ func NewOnboardingModel(lang string) OnboardingModel {
 		lang:             lang,
 		width:            80,
 		emailInput:       emailInput,
+		smsCodeInput:     smsCodeInput,
 		hubCenterInput:   hubCenterInput,
 		ssoInput:         ssoInput,
 		hubCenterOptions: cloneOnboardingValues(remote.DefaultRemoteHubCenterURLs...),
@@ -194,6 +236,7 @@ func NewOnboardingModel(lang string) OnboardingModel {
 		weixinStatus:     onboardingText(lang, "notBound"),
 		tigerClaw:        onboardingTigerClawDefault,
 		ssoStatus:        onboardingText(lang, "ssoNotSignedIn"),
+		codeLength:       6,
 	}
 	if strings.TrimSpace(emailInput.Value()) != "" {
 		m.cursor = onboardingRowActivate
@@ -239,6 +282,9 @@ func (m *OnboardingModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 	m.hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	if strings.TrimSpace(m.emailInput.Value()) == "" && cfg.RemoteEmail != "" {
 		m.emailInput.SetValue(cfg.RemoteEmail)
+	}
+	if strings.TrimSpace(m.emailInput.Value()) == "" && cfg.RemoteMobile != "" {
+		m.emailInput.SetValue(cfg.RemoteMobile)
 	}
 	m.hubCenterOptions = hubCenterOnboardingOptions(cfg)
 	if strings.TrimSpace(m.hubCenterInput.Value()) == "" || m.hubCenterInput.Value() == remote.DefaultRemoteHubCenterURL {
@@ -328,7 +374,7 @@ func (m OnboardingModel) RemoteDoneForTest() bool {
 func (m OnboardingModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m OnboardingModel) IsEditing() bool {
-	return m.emailInput.Focused() || m.hubCenterInput.Focused() || m.hubCenterSelect || m.ssoQR != "" || m.weixinQR != ""
+	return m.emailInput.Focused() || m.smsCodeInput.Focused() || m.hubCenterInput.Focused() || m.hubCenterSelect || m.ssoQR != "" || m.weixinQR != ""
 }
 
 func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
@@ -345,6 +391,89 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 			m.remoteDone = false
 			m.remoteFailed = true
 			m.cursor = onboardingRowActivate
+			m.focusCursor()
+			return m, nil
+		}
+		m.remoteFailed = false
+		m.remoteDone = msg.HubServiceReady || msg.MachineReady
+		switch {
+		case msg.MachineReady:
+			m.remoteStatus = onboardingText(m.lang, "activated")
+			if strings.TrimSpace(msg.MachineID) != "" {
+				m.remoteStatus += ": " + strings.TrimSpace(msg.MachineID)
+			}
+		case msg.HubServiceReady:
+			m.remoteStatus = onboardingText(m.lang, "serviceReady")
+		default:
+			if strings.TrimSpace(m.remoteStatus) == "" {
+				m.remoteStatus = onboardingText(m.lang, "serviceIncomplete")
+			}
+		}
+		if m.remoteDone {
+			m.cursor = onboardingRowFinish
+			m.focusCursor()
+		}
+		return m, nil
+	case OnboardingResolveIdentityResultMsg:
+		m.remoteBusy = false
+		if !msg.Success {
+			m.remoteStatus = msg.Message
+			m.remoteFailed = true
+			return m, nil
+		}
+		m.resolvedMethod = msg.Method
+		m.resolvedHubURL = msg.HubURL
+		m.resolvedHubID = msg.HubID
+		m.resolvedTenantID = msg.TenantID
+		if msg.CodeLength > 0 {
+			m.codeLength = msg.CodeLength
+		}
+		if msg.Method == "phone" {
+			// Phone: code was sent, show verification input
+			m.codeSent = true
+			m.codeCountdown = 60
+			m.remoteFailed = false
+			m.remoteStatus = onboardingText(m.lang, "codeSent")
+			m.cursor = onboardingRowSMSCode
+			m.focusCursor()
+			return m, onboardingSMSTick()
+		}
+		// Email: no verification code needed, enroll directly
+		m.remoteBusy = true
+		m.remoteFailed = false
+		m.remoteStatus = onboardingText(m.lang, "activating")
+		identity := strings.TrimSpace(m.emailInput.Value())
+		hubCenterURL := normalizeOnboardingHubCenter(m.hubCenterInput.Value())
+		return m, func() tea.Msg {
+			return OnboardingVerifyCodeMsg{
+				Identity:     identity,
+				Method:       "email",
+				HubURL:       msg.HubURL,
+				HubID:        msg.HubID,
+				TenantID:     msg.TenantID,
+				HubCenterURL: hubCenterURL,
+			}
+		}
+	case OnboardingSMSTickMsg:
+		if m.codeCountdown > 0 {
+			m.codeCountdown--
+			if m.codeCountdown > 0 {
+				return m, onboardingSMSTick()
+			}
+		}
+		return m, nil
+	case OnboardingVerifyCodeResultMsg:
+		m.remoteBusy = false
+		m.remoteStatus = msg.Message
+		m.hubURL = strings.TrimRight(strings.TrimSpace(msg.HubURL), "/")
+		if !msg.Success {
+			m.remoteDone = false
+			m.remoteFailed = true
+			if m.codeSent {
+				m.cursor = onboardingRowSMSCode
+			} else {
+				m.cursor = onboardingRowEmail
+			}
 			m.focusCursor()
 			return m, nil
 		}
@@ -667,7 +796,28 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 					m.focusCursor()
 					return m, nil
 				}
-				return m.startRemoteActivation()
+				if m.codeSent && m.codeCountdown > 0 {
+					// Code recently sent, verify it
+					return m.startVerifyCode()
+				}
+				if m.codeSent && m.codeCountdown <= 0 {
+					// Countdown expired, resend code
+					m.codeSent = false
+					m.resolvedMethod = ""
+					m.resolvedHubURL = ""
+					m.smsCodeInput.SetValue("")
+					m.cursor = onboardingRowEmail
+					m.focusCursor()
+				}
+				// Resolve identity + send code
+				return m.startResolveIdentity()
+			case onboardingRowSMSCode:
+				if m.remoteDone {
+					m.cursor = onboardingRowFinish
+					m.focusCursor()
+					return m, nil
+				}
+				return m.startVerifyCode()
 			case onboardingRowWeixin:
 				m.weixinBusy = true
 				m.weixinRefreshes = 0
@@ -691,7 +841,19 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 		m.emailInput, cmd = m.emailInput.Update(msg)
 		if m.emailInput.Value() != before {
 			m.clearRemoteFailureAfterEdit()
+			// Reset resolve state if identity changed
+			if m.codeSent {
+				m.codeSent = false
+				m.resolvedMethod = ""
+				m.resolvedHubURL = ""
+				m.smsCodeInput.SetValue("")
+			}
 		}
+		return m, cmd
+	}
+	if m.cursor == onboardingRowSMSCode && !m.remoteBusy && !m.ssoBusy && !m.weixinBusy {
+		var cmd tea.Cmd
+		m.smsCodeInput, cmd = m.smsCodeInput.Update(msg)
 		return m, cmd
 	}
 	if m.cursor == onboardingRowHubCenter && m.hubCenterManual && !m.remoteBusy && !m.ssoBusy && !m.weixinBusy {
@@ -758,16 +920,11 @@ func (m OnboardingModel) View() string {
 	if m.tigerClaw {
 		b.WriteString(m.renderRow(onboardingRowSSO, onboardingText(m.lang, "sso"), m.ssoStatusText(), onboardingText(m.lang, "ssoHint")))
 	} else {
-		b.WriteString(m.renderRow(onboardingRowEmail, onboardingText(m.lang, "email"), m.emailInput.View(), ""))
-		b.WriteString(m.renderRow(onboardingRowHubCenter, onboardingText(m.lang, "hubCenter"), m.hubCenterInput.View(), onboardingText(m.lang, "hubCenterHint")))
-		if m.hubCenterSelect {
-			b.WriteString(m.renderHubCenterSelector())
+		b.WriteString(m.renderRow(onboardingRowEmail, onboardingText(m.lang, "identity"), m.emailInput.View(), onboardingText(m.lang, "identityHint")))
+		if m.codeSent {
+			b.WriteString(m.renderRow(onboardingRowSMSCode, onboardingText(m.lang, "verifyCode"), m.smsCodeInput.View(), m.codeHint()))
 		}
 		b.WriteString(m.renderRow(onboardingRowActivate, onboardingText(m.lang, "remote"), m.remoteStatus, onboardingText(m.lang, "remoteHint")))
-		if m.hubURL != "" {
-			prefix := onboardingText(m.lang, "hubURL") + ": "
-			b.WriteString("  " + onboardingDim.Render(prefix+fitOnboarding(m.hubURL, max(8, m.width-lipgloss.Width(prefix)-2))) + "\n")
-		}
 	}
 	b.WriteString(m.renderRow(onboardingRowWeixin, onboardingText(m.lang, "weixin"), m.weixinStatusText(), onboardingText(m.lang, "weixinHint")))
 	b.WriteString(m.renderRow(onboardingRowFinish, onboardingText(m.lang, "finish"), m.finishValue(), m.finishHint()))
@@ -818,14 +975,19 @@ func (m OnboardingModel) compactRows() []string {
 			m.renderRow(onboardingRowFinish, onboardingText(m.lang, "finish"), m.finishValue(), ""),
 		}
 	}
-	return []string{
+	rows := []string{
 		m.renderRow(onboardingRowLanguage, onboardingText(m.lang, "language"), onboardingLanguageDisplay(m.lang), ""),
-		m.renderRow(onboardingRowEmail, onboardingText(m.lang, "email"), m.emailInput.View(), ""),
-		m.renderRow(onboardingRowHubCenter, onboardingText(m.lang, "hubCenter"), m.hubCenterInput.View(), ""),
+		m.renderRow(onboardingRowEmail, onboardingText(m.lang, "identity"), m.emailInput.View(), ""),
+	}
+	if m.codeSent {
+		rows = append(rows, m.renderRow(onboardingRowSMSCode, onboardingText(m.lang, "verifyCode"), m.smsCodeInput.View(), ""))
+	}
+	rows = append(rows,
 		m.renderRow(onboardingRowActivate, onboardingText(m.lang, "remote"), m.remoteStatus, ""),
 		m.renderRow(onboardingRowWeixin, onboardingText(m.lang, "weixin"), m.weixinStatusText(), ""),
 		m.renderRow(onboardingRowFinish, onboardingText(m.lang, "finish"), m.finishValue(), ""),
-	}
+	)
+	return rows
 }
 
 func (m OnboardingModel) compactRowIndex(row int) int {
@@ -911,7 +1073,7 @@ func (m OnboardingModel) weixinStatusText() string {
 func onboardingRemoteStatusKeys() []string {
 	return []string{
 		"notActivated", "emailSaved", "activated", "serviceReady", "serviceIncomplete", "emailRequired", "emailInvalid",
-		"hubCenterInvalid", "activating",
+		"hubCenterInvalid", "activating", "identityRequired", "codeRequired", "codeSent", "resolving",
 	}
 }
 
@@ -938,33 +1100,69 @@ func translateOnboardingStatus(status, oldLang, newLang string, keys []string) s
 	return status
 }
 
-func (m OnboardingModel) startRemoteActivation() (OnboardingModel, tea.Cmd) {
-	email := normalizeOnboardingEmail(m.emailInput.Value())
-	if email == "" {
-		m.remoteStatus = onboardingText(m.lang, "emailRequired")
-		m.cursor = onboardingRowEmail
-		m.focusCursor()
-		return m, nil
-	}
-	if !validOnboardingEmail(email) {
-		m.remoteStatus = onboardingText(m.lang, "emailInvalid")
+func (m OnboardingModel) startResolveIdentity() (OnboardingModel, tea.Cmd) {
+	identity := strings.TrimSpace(m.emailInput.Value())
+	if identity == "" {
+		m.remoteStatus = onboardingText(m.lang, "identityRequired")
 		m.cursor = onboardingRowEmail
 		m.focusCursor()
 		return m, nil
 	}
 	hubCenterURL := normalizeOnboardingHubCenter(m.hubCenterInput.Value())
-	if !validOnboardingHubCenterURL(hubCenterURL) {
-		m.remoteStatus = onboardingText(m.lang, "hubCenterInvalid")
-		m.cursor = onboardingRowHubCenter
+	m.remoteBusy = true
+	m.remoteFailed = false
+	m.remoteStatus = onboardingText(m.lang, "resolving")
+	return m, func() tea.Msg { return OnboardingResolveIdentityMsg{Identity: identity, HubCenterURL: hubCenterURL} }
+}
+
+func (m OnboardingModel) startVerifyCode() (OnboardingModel, tea.Cmd) {
+	code := strings.TrimSpace(m.smsCodeInput.Value())
+	if code == "" {
+		m.remoteStatus = onboardingText(m.lang, "codeRequired")
+		m.cursor = onboardingRowSMSCode
 		m.focusCursor()
 		return m, nil
 	}
-	m.emailInput.SetValue(email)
-	m.hubCenterInput.SetValue(hubCenterURL)
+	identity := strings.TrimSpace(m.emailInput.Value())
+	hubCenterURL := normalizeOnboardingHubCenter(m.hubCenterInput.Value())
 	m.remoteBusy = true
 	m.remoteFailed = false
 	m.remoteStatus = onboardingText(m.lang, "activating")
-	return m, func() tea.Msg { return OnboardingActivateRemoteMsg{Email: email, HubCenterURL: hubCenterURL} }
+	return m, func() tea.Msg {
+		return OnboardingVerifyCodeMsg{
+			Identity:     identity,
+			VerifyCode:   code,
+			Method:       m.resolvedMethod,
+			HubURL:       m.resolvedHubURL,
+			HubID:        m.resolvedHubID,
+			TenantID:     m.resolvedTenantID,
+			HubCenterURL: hubCenterURL,
+		}
+	}
+}
+
+func (m OnboardingModel) codeHint() string {
+	if m.codeCountdown > 0 {
+		return fmt.Sprintf(onboardingText(m.lang, "codeCountdown"), m.codeLength, m.codeCountdown)
+	}
+	return onboardingText(m.lang, "codeExpiredHint")
+}
+
+func normalizeOnboardingPhone(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func onboardingSMSTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return OnboardingSMSTickMsg{}
+	})
 }
 
 func normalizeOnboardingEmail(value string) string {
@@ -1033,10 +1231,10 @@ func (m OnboardingModel) nextStepText() string {
 		if m.remoteFailed {
 			return onboardingText(m.lang, "nextActivateFailed")
 		}
-		if strings.TrimSpace(m.emailInput.Value()) == "" {
-			return onboardingText(m.lang, "nextEmail")
+		if m.codeSent {
+			return onboardingText(m.lang, "nextSMSCode")
 		}
-		return onboardingText(m.lang, "nextActivate")
+		return onboardingText(m.lang, "nextEmail")
 	}
 	if !m.weixinDone {
 		return onboardingText(m.lang, "nextRedeemOptionalWeixin")
@@ -1126,6 +1324,7 @@ func onboardingQRHalfBlock(topBlack, bottomBlack bool) string {
 const (
 	onboardingRowLanguage = iota
 	onboardingRowEmail
+	onboardingRowSMSCode
 	onboardingRowHubCenter
 	onboardingRowActivate
 	onboardingRowSSO
@@ -1138,7 +1337,12 @@ func (m OnboardingModel) activeRows() []int {
 	if m.tigerClaw {
 		return []int{onboardingRowLanguage, onboardingRowSSO, onboardingRowWeixin, onboardingRowFinish}
 	}
-	return []int{onboardingRowLanguage, onboardingRowEmail, onboardingRowHubCenter, onboardingRowActivate, onboardingRowWeixin, onboardingRowFinish}
+	rows := []int{onboardingRowLanguage, onboardingRowEmail}
+	if m.codeSent {
+		rows = append(rows, onboardingRowSMSCode)
+	}
+	rows = append(rows, onboardingRowActivate, onboardingRowWeixin, onboardingRowFinish)
+	return rows
 }
 
 func (m *OnboardingModel) moveCursor(delta int) {
@@ -1166,6 +1370,7 @@ func (m *OnboardingModel) moveCursor(delta int) {
 func (m *OnboardingModel) updateInputWidths() {
 	valueWidth := m.rowValueWidth(false, "")
 	m.emailInput.Width = min(36, max(12, valueWidth))
+	m.smsCodeInput.Width = min(12, max(8, valueWidth))
 	m.hubCenterInput.Width = min(46, max(14, valueWidth))
 }
 
@@ -1197,6 +1402,11 @@ func (m *OnboardingModel) focusCursor() {
 		m.emailInput.Focus()
 	} else {
 		m.emailInput.Blur()
+	}
+	if m.cursor == onboardingRowSMSCode {
+		m.smsCodeInput.Focus()
+	} else {
+		m.smsCodeInput.Blur()
 	}
 	if m.cursor == onboardingRowHubCenter && m.hubCenterManual && !m.hubCenterSelect {
 		m.hubCenterInput.Focus()
@@ -1386,17 +1596,27 @@ func onboardingText(lang, key string) string {
 	if i18n.NormalizeLang(lang) == "en" {
 		texts := map[string]string{
 			"title":                    "First-run Setup",
-			"subtitle":                 "Activate Hub, or continue to local LLM settings. WeChat binding is optional.",
+			"subtitle":                 "Register with email or phone to activate service. WeChat binding is optional.",
 			"language":                 "Language",
 			"languageHint":             "Space switches UI language",
-			"email":                    "Email",
+			"identity":                 "User ID",
+			"identityHint":             "email or phone; Enter to continue",
+			"identityRequired":         "enter email or phone number",
+			"verifyCode":               "Verify code",
+			"codeHint":                 "enter %d-digit code, then Enter",
+			"codeCountdown":            "%d-digit code; resend in %ds",
+			"codeResend":               "resend in %ds",
+			"codeExpiredHint":          "Enter on User ID row to resend",
+			"codeSent":                 "code sent, enter below",
+			"codeRequired":             "enter the verification code",
+			"resolving":                "resolving hub...",
 			"hubCenter":                "HubCenter",
 			"hubCenterHint":            "Enter chooses; Space cycles",
 			"hubCenterSelectFooter":    "Enter chooses, Esc closes; choose Manual input only for a private center.",
 			"manualInput":              "Manual input",
 			"hubURL":                   "Selected Hub",
-			"remote":                   "Hub activation",
-			"remoteHint":               "Enter activates; Done skips",
+			"remote":                   "Status",
+			"remoteHint":               "shows activation status",
 			"sso":                      "Enterprise SSO",
 			"ssoHint":                  "Enter signs in; Esc cancels",
 			"ssoNotSignedIn":           "not signed in",
@@ -1430,9 +1650,11 @@ func onboardingText(lang, key string) string {
 			"nextSSO":                  "Next: press Enter to sign in with enterprise SSO.",
 			"nextTigerWeixin":          "Next: WeChat binding is optional; finish when ready.",
 			"nextDone":                 "Next: finish onboarding and start using TigerClaw.",
-			"nextEmail":                "Next: enter email to activate Hub, or choose Done for local LLM settings.",
-			"nextActivate":             "Next: press Enter to activate Hub; Hub URL is selected automatically.",
-			"nextActivateFailed":       "Activation failed. Check email/HubCenter, then press Enter to retry.",
+			"nextEmail":                "Next: enter email or phone, then Enter to receive verification code.",
+			"nextPhone":                "Next: enter email or phone, then Enter to receive verification code.",
+			"nextSMSCode":              "Next: enter the verification code, then press Enter to activate.",
+			"nextActivate":             "Next: press Enter to activate.",
+			"nextActivateFailed":       "Activation failed. Check your input and press Enter to retry.",
 			"nextRedeemOptionalWeixin": "Next: finish to redeem MaClaw official service. WeChat can be bound later.",
 			"nextRedeem":               "Next: finish to redeem MaClaw official service.",
 			"scan":                     "Scan with WeChat",
@@ -1456,17 +1678,27 @@ func onboardingText(lang, key string) string {
 	}
 	texts := map[string]string{
 		"title":                    "首次设置",
-		"subtitle":                 "可在 TUI 内激活 Hub，也可直接进入本地 LLM 设置；微信绑定可选。",
+		"subtitle":                 "输入邮箱或手机号注册激活服务；微信绑定可选。",
 		"language":                 "界面语言",
 		"languageHint":             "Space 切换界面语言",
-		"email":                    "邮箱",
+		"identity":                 "用户ID",
+		"identityHint":             "邮箱或手机号；Enter 继续",
+		"identityRequired":         "请输入邮箱或手机号",
+		"verifyCode":               "验证码",
+		"codeHint":                 "输入 %d 位验证码，Enter 确认",
+		"codeCountdown":            "%d 位验证码；%d 秒后可重发",
+		"codeResend":               "%d 秒后可重发",
+		"codeExpiredHint":          "在用户ID行按 Enter 重发",
+		"codeSent":                 "验证码已发送，在下方输入",
+		"codeRequired":             "请输入验证码",
+		"resolving":                "正在连接服务...",
 		"hubCenter":                "HubCenter",
 		"hubCenterHint":            "Enter 选择；Space 切换",
 		"hubCenterSelectFooter":    "Enter 选中，Esc 关闭；只有私有中心才使用手动输入。",
 		"manualInput":              "手动输入",
 		"hubURL":                   "已选择 Hub",
-		"remote":                   "Hub 激活",
-		"remoteHint":               "Enter 激活；完成可跳过",
+		"remote":                   "状态",
+		"remoteHint":               "显示激活状态",
 		"sso":                      "企业 SSO",
 		"ssoHint":                  "Enter 登录；Esc 取消",
 		"ssoNotSignedIn":           "未登录",
@@ -1500,9 +1732,11 @@ func onboardingText(lang, key string) string {
 		"nextSSO":                  "下一步：按 Enter 进行企业 SSO 登录。",
 		"nextTigerWeixin":          "下一步：微信绑定可选；准备好后完成。",
 		"nextDone":                 "下一步：完成 onboarding，进入 TigerClaw。",
-		"nextEmail":                "下一步：输入邮箱激活 Hub，或选择完成进入本地 LLM 设置。",
-		"nextActivate":             "下一步：在 Hub 激活行按 Enter；Hub 地址会自动选择。",
-		"nextActivateFailed":       "激活失败。检查邮箱/HubCenter 后，按 Enter 重试。",
+		"nextEmail":                "下一步：输入邮箱或手机号，按 Enter 接收验证码。",
+		"nextPhone":                "下一步：输入邮箱或手机号，按 Enter 接收验证码。",
+		"nextSMSCode":              "下一步：输入验证码，按 Enter 激活。",
+		"nextActivate":             "下一步：按 Enter 激活。",
+		"nextActivateFailed":       "激活失败。检查输入后按 Enter 重试。",
 		"nextRedeemOptionalWeixin": "下一步：完成后去服务兑换。微信可稍后再绑定。",
 		"nextRedeem":               "下一步：完成后去服务兑换。",
 		"scan":                     "用微信扫码",

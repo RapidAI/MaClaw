@@ -239,26 +239,46 @@ func formatFixFailureMessage(req Requirement, err error) string {
 	if detail == "" {
 		detail = "unknown error"
 	}
+
+	// Classify the error for actionable diagnostics
+	diag := ClassifyInstallError(detail)
+	diagSuffix := FormatInstallDiagnosis(diag)
+
 	switch req.Type {
 	case "pip":
 		name := strings.TrimSpace(req.Name + req.Version)
 		if name == "" {
-			return fmt.Sprintf("failed to install Python package dependency: %s [action: install_dependency] Install the missing Python dependency, then retry the skill.", detail)
+			return fmt.Sprintf("failed to install Python package dependency: %s [action: install_dependency] Install the missing Python dependency, then retry the skill.%s", detail, diagSuffix)
 		}
-		return fmt.Sprintf("failed to install Python package %s: %s [action: install_dependency] Install Python package %s, then retry the skill.", name, detail, name)
+		return fmt.Sprintf("failed to install Python package %s: %s [action: install_dependency] Install Python package %s, then retry the skill.%s", name, detail, name, diagSuffix)
 	case "npm":
 		name := strings.TrimSpace(req.Name + req.Version)
 		if name == "" {
-			return fmt.Sprintf("failed to install Node package dependency: %s [action: install_dependency] Install the missing Node dependency, then retry the skill.", detail)
+			return fmt.Sprintf("failed to install Node package dependency: %s [action: install_dependency] Install the missing Node dependency, then retry the skill.%s", detail, diagSuffix)
 		}
-		return fmt.Sprintf("failed to install Node package %s: %s [action: install_dependency] Install Node package %s, then retry the skill.", name, detail, name)
+		return fmt.Sprintf("failed to install Node package %s: %s [action: install_dependency] Install Node package %s, then retry the skill.%s", name, detail, name, diagSuffix)
+	case "command":
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return fmt.Sprintf("failed to install command: %s [action: install_dependency] Install the command manually.%s", detail, diagSuffix)
+		}
+		return fmt.Sprintf("failed to install command %s: %s [action: install_dependency] %s%s", name, detail, platformInstallHint(name), diagSuffix)
 	default:
 		name := strings.TrimSpace(req.Name)
 		if name == "" {
-			return fmt.Sprintf("failed to repair dependency: %s [action: inspect_skill] Inspect the skill requirements and execution environment.", detail)
+			return fmt.Sprintf("failed to repair dependency: %s [action: inspect_skill] Inspect the skill requirements and execution environment.%s", detail, diagSuffix)
 		}
-		return fmt.Sprintf("failed to repair dependency %s: %s [action: inspect_skill] Inspect the skill requirements and execution environment.", name, detail)
+		return fmt.Sprintf("failed to repair dependency %s: %s [action: inspect_skill] Inspect the skill requirements and execution environment.%s", name, detail, diagSuffix)
 	}
+}
+
+// platformInstallHint returns a platform-aware manual install suggestion for a command.
+func platformInstallHint(name string) string {
+	recipe, ok := knownCommandInstallRecipes[strings.ToLower(name)]
+	if !ok {
+		return fmt.Sprintf("Install %s and ensure it is available on PATH.", name)
+	}
+	return recipe.ManualHint
 }
 
 // isTransientFixError distinguishes transient network errors (retry-worthy)
@@ -336,8 +356,25 @@ func PromoteRunnerBlockingViolations(violations []Violation) []Violation {
 	copy(promoted, violations)
 	for i := range promoted {
 		req := promoted[i].Requirement
+		// Promote inferred command requirements to errors (they'll definitely
+		// fail at runtime if missing).
 		if promoted[i].Severity == "warning" && req.Type == "command" && req.Source == "inferred" {
 			promoted[i].Severity = "error"
+		}
+		// Demote inferred_script pip requirements to warnings. These are
+		// best-effort guesses from scanning script files — false positives
+		// (local modules, uncommon package names) should not block execution.
+		// Layer 2 (runtime auto-install) handles any remaining misses.
+		if promoted[i].Severity == "error" && req.Type == "pip" && req.Source == "inferred_script" {
+			promoted[i].Severity = "warning"
+		}
+		// Demote manifest_file npm requirements to warnings. npm's `npm list`
+		// returns exit code 1 for peer dependency warnings even when the package
+		// IS installed (npm 7+ known issue). False positives would block skill
+		// execution unnecessarily. Layer 2 (runtime auto-install) handles true
+		// misses if the package really isn't available at runtime.
+		if promoted[i].Severity == "error" && req.Type == "npm" && req.Source == "manifest_file" {
+			promoted[i].Severity = "warning"
 		}
 	}
 	return promoted

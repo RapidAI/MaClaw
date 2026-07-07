@@ -46,6 +46,7 @@ const hubClientJSONMaxBytes = 5 << 20
 // MixedSkillSearchResult, etc.).
 type HubSearchResult struct {
 	ID                           string                 `json:"id"`
+	SkillID                      string                 `json:"skill_id,omitempty"` // publisher.skill-name stable identifier
 	Name                         string                 `json:"name"`
 	Description                  string                 `json:"description"`
 	Version                      string                 `json:"version"`
@@ -224,6 +225,7 @@ func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []
 	for _, s := range raw.Skills {
 		results = append(results, HubSearchResult{
 			ID:                           s.ID,
+			SkillID:                      s.SkillID,
 			Name:                         s.Name,
 			Description:                  s.Description,
 			Version:                      s.Version,
@@ -349,7 +351,8 @@ func (c *HubClient) DownloadSkillHub(ctx context.Context, hubURL, skillID string
 		trustLevel = "trusted"
 	}
 
-	return &corelib.NLSkillEntry{
+	entry := &corelib.NLSkillEntry{
+		SkillID:       full.SkillID, // propagate publisher.name if Hub returned it
 		Name:          full.Name,
 		Description:   full.Description,
 		Triggers:      full.Triggers,
@@ -359,8 +362,14 @@ func (c *HubClient) DownloadSkillHub(ctx context.Context, hubURL, skillID string
 		SourceProject: hubURL,
 		HubSkillID:    skillID,
 		HubVersion:    full.Version,
+		Version:       full.SemVer, // propagate semver if available
 		TrustLevel:    trustLevel,
-	}, nil
+	}
+	// Derive publisher from skill_id when available
+	if pub, _, ok := ParseSkillID(entry.SkillID); ok {
+		entry.Publisher = pub
+	}
+	return entry, nil
 }
 
 // DownloadClawHub downloads a skill from ClawHub mirror and returns an
@@ -427,6 +436,51 @@ func (c *HubClient) DownloadGitHub(ctx context.Context, installRef string) (*cor
 	return entry, nil
 }
 
+// DownloadBySkillID downloads a skill by its publisher.name skill_id from Hub.
+// This is the primary method for App dependency resolution — it uses the stable
+// external identifier rather than the internal UUID.
+// The optional versionConstraint parameter filters by semver range (e.g. ">=1.2.0").
+func (c *HubClient) DownloadBySkillID(ctx context.Context, hubURL, skillID, versionConstraint string) (*corelib.NLSkillEntry, error) {
+	if hubURL == "" || skillID == "" {
+		return nil, fmt.Errorf("hubURL and skillID are required")
+	}
+	endpoint := fmt.Sprintf("%s/api/v1/skills/by-skill-id/%s/download",
+		hubURL, url.PathEscape(skillID))
+	if versionConstraint != "" {
+		endpoint += "?constraint=" + url.QueryEscape(versionConstraint)
+	}
+
+	var full skillHubDownloadResponse
+	if err := c.getJSON(ctx, endpoint, &full); err != nil {
+		return nil, fmt.Errorf("download skill %s: %w", skillID, err)
+	}
+
+	trustLevel := full.TrustLevel
+	if trustLevel == "" || trustLevel == "community" {
+		trustLevel = "trusted"
+	}
+
+	entry := &corelib.NLSkillEntry{
+		SkillID:       skillID,
+		Name:          full.Name,
+		Description:   full.Description,
+		Triggers:      full.Triggers,
+		Status:        "active",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		Source:        "hub",
+		SourceProject: hubURL,
+		HubSkillID:    full.ID,
+		HubVersion:    full.Version,
+		Version:       full.SemVer,
+		TrustLevel:    trustLevel,
+	}
+	// Derive publisher from skill_id
+	if pub, _, ok := ParseSkillID(skillID); ok {
+		entry.Publisher = pub
+	}
+	return entry, nil
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Internal: HTTP helper + response types
 // ────────────────────────────────────────────────────────────────────────────
@@ -478,6 +532,8 @@ type skillHubSearchResponse struct {
 
 type skillHubItem struct {
 	ID                           string                 `json:"id"`
+	SkillID                      string                 `json:"skill_id,omitempty"` // publisher.skill-name (new)
+	SemVer                       string                 `json:"semver,omitempty"`   // semantic version (new)
 	Name                         string                 `json:"name"`
 	Description                  string                 `json:"description"`
 	Tags                         []string               `json:"tags"`

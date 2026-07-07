@@ -534,14 +534,38 @@ func CheckRunnerRequirementsWithProgress(entry *corelib.NLSkillEntry, extraEnv m
 }
 
 func CheckRunnerRequirementsWithProgressWithDataDir(dataDir string, entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string, progress FixProgressCallback) []Violation {
+	// Fast path: if the dependency cache is valid, skip the entire check+fix pipeline.
+	if entry != nil && entry.SkillDir != "" && DepsInstallCacheValid(entry.SkillDir) {
+		log.Printf("[requirement] deps cache valid for %q, skipping check+fix", entry.Name)
+		return nil
+	}
+
 	reqs := ExtractRequirements(entry, BuildRunCheckContextForRunnerWithDataDir(dataDir, entry, extraEnv, runner))
 	if len(reqs) == 0 {
 		return nil
 	}
 	registry := DefaultRegistry()
 	violations := registry.CheckAll(reqs)
+
+	// Batch install optimization: when manifest files exist (requirements.txt,
+	// package.json), attempt one-shot batch installation before per-package fix.
+	// This is 3-5x faster for skills with many dependencies.
+	if len(violations) > 0 && entry != nil {
+		skillDir := entry.SkillDir
+		if skillDir != "" {
+			violations = BatchInstallManifestDeps(violations, skillDir, progress)
+		}
+	}
+
 	remaining := registry.FixAllWithProgress(violations, progress)
-	return PromoteRunnerBlockingViolations(remaining)
+	promoted := PromoteRunnerBlockingViolations(remaining)
+
+	// Write the dependency cache if all requirements are satisfied (no errors).
+	if entry != nil && entry.SkillDir != "" && len(FilterErrors(promoted)) == 0 {
+		WriteDepsInstallCache(entry.SkillDir)
+	}
+
+	return promoted
 }
 
 type RunnerExecutionPreparation struct {

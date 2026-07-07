@@ -137,17 +137,17 @@ func TestOnboardingActivateMessageIncludesHubCenter(t *testing.T) {
 
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected activate command")
+		t.Fatal("expected resolve command")
 	}
 	if !m.remoteBusy {
 		t.Fatal("expected remoteBusy after activation")
 	}
-	msg, ok := cmd().(OnboardingActivateRemoteMsg)
+	msg, ok := cmd().(OnboardingResolveIdentityMsg)
 	if !ok {
 		t.Fatalf("command returned %T", cmd())
 	}
-	if msg.Email != "user@example.com" {
-		t.Fatalf("Email = %q", msg.Email)
+	if msg.Identity != "user@example.com" {
+		t.Fatalf("Identity = %q", msg.Identity)
 	}
 	if msg.HubCenterURL != "https://center.example" {
 		t.Fatalf("HubCenterURL = %q", msg.HubCenterURL)
@@ -181,17 +181,17 @@ func TestOnboardingEnterOnEmailStartsActivation(t *testing.T) {
 
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected activate command")
+		t.Fatal("expected resolve command")
 	}
 	if !m.remoteBusy {
 		t.Fatal("expected remoteBusy after activation")
 	}
-	msg, ok := cmd().(OnboardingActivateRemoteMsg)
+	msg, ok := cmd().(OnboardingResolveIdentityMsg)
 	if !ok {
 		t.Fatalf("command returned %T", cmd())
 	}
-	if msg.Email != "user@example.com" {
-		t.Fatalf("Email = %q", msg.Email)
+	if msg.Identity != "user@example.com" {
+		t.Fatalf("Identity = %q", msg.Identity)
 	}
 }
 
@@ -267,9 +267,11 @@ func TestOnboardingHubCenterSelectorManualFallbackFocusesInput(t *testing.T) {
 func TestOnboardingRemoteResultShowsSelectedHub(t *testing.T) {
 	m := NewOnboardingModel("en")
 	m, _ = m.Update(OnboardingRemoteResultMsg{Success: true, HubURL: "https://hub.example/", MachineID: "machine-1", MachineReady: true})
-	view := stripANSIForTest(m.View())
-	if !strings.Contains(view, "Selected Hub: https://hub.example") {
-		t.Fatalf("selected Hub URL missing from view:\n%s", view)
+	if m.hubURL != "https://hub.example" {
+		t.Fatalf("hubURL = %q, want https://hub.example", m.hubURL)
+	}
+	if !m.remoteDone {
+		t.Fatal("expected remoteDone after successful activation")
 	}
 }
 
@@ -290,7 +292,7 @@ func TestOnboardingRemoteFailureGuidesRetry(t *testing.T) {
 		t.Fatalf("cursor = %d, want activate row", m.cursor)
 	}
 	view := stripANSIForTest(m.View())
-	if !strings.Contains(view, "network timeout") || !strings.Contains(view, "Check email/HubCenter") || !strings.Contains(view, "press Enter to retry") {
+	if !strings.Contains(view, "network timeout") || !strings.Contains(view, "Check your input") || !strings.Contains(view, "press Enter to retry") {
 		t.Fatalf("failed activation should show error and retry guidance:\n%s", view)
 	}
 
@@ -301,8 +303,8 @@ func TestOnboardingRemoteFailureGuidesRetry(t *testing.T) {
 	if m.remoteFailed {
 		t.Fatal("starting retry should clear failure state")
 	}
-	if _, ok := cmd().(OnboardingActivateRemoteMsg); !ok {
-		t.Fatalf("command returned %T, want OnboardingActivateRemoteMsg", cmd())
+	if _, ok := cmd().(OnboardingResolveIdentityMsg); !ok {
+		t.Fatalf("command returned %T, want OnboardingResolveIdentityMsg", cmd())
 	}
 }
 
@@ -323,7 +325,7 @@ func TestOnboardingRemoteFailureClearsAfterEditingEmail(t *testing.T) {
 		t.Fatalf("remote status = %q", got)
 	}
 	view := stripANSIForTest(m.View())
-	if strings.Contains(view, "Check email/HubCenter") {
+	if strings.Contains(view, "Check your input") {
 		t.Fatalf("stale failure retry hint should clear after editing email:\n%s", view)
 	}
 }
@@ -441,18 +443,17 @@ func TestOnboardingBlankHubCenterUsesDefault(t *testing.T) {
 
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected activation command")
+		t.Fatal("expected resolve command")
 	}
-	msg := cmd().(OnboardingActivateRemoteMsg)
+	msg := cmd().(OnboardingResolveIdentityMsg)
 	if msg.HubCenterURL != remote.DefaultRemoteHubCenterURL {
 		t.Fatalf("HubCenterURL = %q, want default", msg.HubCenterURL)
 	}
-	if got := m.hubCenterInput.Value(); got != remote.DefaultRemoteHubCenterURL {
-		t.Fatalf("HubCenter input = %q, want default", got)
-	}
 }
 
-func TestOnboardingRejectsInvalidHubCenter(t *testing.T) {
+func TestOnboardingInvalidHubCenterStillSendsResolve(t *testing.T) {
+	// With the identity-first flow, HubCenter is hidden from the user.
+	// Even an invalid value proceeds — the backend resolve will handle errors.
 	m := NewOnboardingModel("en")
 	m.emailInput.SetValue("user@example.com")
 	m.hubCenterInput.SetValue("center.example")
@@ -460,14 +461,11 @@ func TestOnboardingRejectsInvalidHubCenter(t *testing.T) {
 	m.focusCursor()
 
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("invalid HubCenter should not start activation")
+	if cmd == nil {
+		t.Fatal("expected resolve command even with unusual HubCenter value")
 	}
-	if m.cursor != onboardingRowHubCenter {
-		t.Fatalf("cursor = %d, want HubCenter row", m.cursor)
-	}
-	if got := m.remoteStatus; got != onboardingText("en", "hubCenterInvalid") {
-		t.Fatalf("remote status = %q", got)
+	if !m.remoteBusy {
+		t.Fatal("expected remoteBusy")
 	}
 }
 
@@ -1222,5 +1220,282 @@ func TestOnboardingMissingViewerTokenRequiresReactivation(t *testing.T) {
 	}
 	if got := m.remoteStatus; got != onboardingText("en", "emailSaved") {
 		t.Fatalf("remote status = %q, want email saved guidance", got)
+	}
+}
+
+// --- Identity-first registration flow tests ---
+
+func TestOnboardingResolveIdentityPhoneShowsCodeInput(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("13800138000")
+	m.cursor = onboardingRowEmail
+	m.focusCursor()
+
+	// Simulate resolve result: phone method, code sent
+	m, cmd := m.Update(OnboardingResolveIdentityResultMsg{
+		Success:  true,
+		Identity: "13800138000",
+		Method:   "phone",
+		HubURL:   "https://hub.example",
+		TenantID: "tenant-1",
+		CodeLength: 6,
+	})
+	if cmd == nil {
+		t.Fatal("expected SMS tick command")
+	}
+	if !m.codeSent {
+		t.Fatal("codeSent should be true after phone resolve")
+	}
+	if m.codeLength != 6 {
+		t.Fatalf("codeLength = %d, want 6", m.codeLength)
+	}
+	if m.cursor != onboardingRowSMSCode {
+		t.Fatalf("cursor = %d, want SMS code row", m.cursor)
+	}
+	if m.resolvedMethod != "phone" {
+		t.Fatalf("resolvedMethod = %q", m.resolvedMethod)
+	}
+	// SMS code row should be in active rows
+	rows := m.activeRows()
+	found := false
+	for _, r := range rows {
+		if r == onboardingRowSMSCode {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("SMS code row not in activeRows: %v", rows)
+	}
+}
+
+func TestOnboardingResolveIdentityEmailAutoDispatches(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("user@example.com")
+
+	// Simulate resolve result: email method
+	m, cmd := m.Update(OnboardingResolveIdentityResultMsg{
+		Success:  true,
+		Identity: "user@example.com",
+		Method:   "email",
+		HubURL:   "https://hub.example",
+		TenantID: "tenant-1",
+	})
+	if cmd == nil {
+		t.Fatal("expected auto-dispatch verify command for email method")
+	}
+	if !m.remoteBusy {
+		t.Fatal("remoteBusy should stay true during email auto-enroll")
+	}
+	if m.codeSent {
+		t.Fatal("codeSent should be false for email method")
+	}
+	// The cmd should produce an OnboardingVerifyCodeMsg
+	msg := cmd()
+	verifyMsg, ok := msg.(OnboardingVerifyCodeMsg)
+	if !ok {
+		t.Fatalf("auto-dispatch cmd returned %T, want OnboardingVerifyCodeMsg", msg)
+	}
+	if verifyMsg.Method != "email" {
+		t.Fatalf("verify method = %q, want email", verifyMsg.Method)
+	}
+	if verifyMsg.HubURL != "https://hub.example" {
+		t.Fatalf("verify hubURL = %q", verifyMsg.HubURL)
+	}
+}
+
+func TestOnboardingVerifyCodeSuccess(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.codeSent = true
+	m.resolvedMethod = "phone"
+	m.remoteBusy = true
+
+	m, _ = m.Update(OnboardingVerifyCodeResultMsg{
+		Success:     true,
+		Message:     "activated",
+		HubURL:      "https://hub.example",
+		MachineID:   "machine-123",
+		MachineReady: true,
+	})
+	if !m.remoteDone {
+		t.Fatal("remoteDone should be true after success")
+	}
+	if m.remoteFailed {
+		t.Fatal("remoteFailed should be false after success")
+	}
+	if m.cursor != onboardingRowFinish {
+		t.Fatalf("cursor = %d, want finish row", m.cursor)
+	}
+}
+
+func TestOnboardingVerifyCodeFailurePhoneFocusesSMSCode(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.codeSent = true
+	m.resolvedMethod = "phone"
+	m.remoteBusy = true
+
+	m, _ = m.Update(OnboardingVerifyCodeResultMsg{
+		Success: false,
+		Message: "invalid code",
+	})
+	if m.remoteDone {
+		t.Fatal("remoteDone should be false after failure")
+	}
+	if !m.remoteFailed {
+		t.Fatal("remoteFailed should be true")
+	}
+	if m.cursor != onboardingRowSMSCode {
+		t.Fatalf("cursor = %d, want SMS code row for phone failure", m.cursor)
+	}
+}
+
+func TestOnboardingVerifyCodeFailureEmailFocusesEmail(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.codeSent = false
+	m.resolvedMethod = "email"
+	m.remoteBusy = true
+
+	m, _ = m.Update(OnboardingVerifyCodeResultMsg{
+		Success: false,
+		Message: "enrollment failed",
+	})
+	if m.cursor != onboardingRowEmail {
+		t.Fatalf("cursor = %d, want email row for email failure", m.cursor)
+	}
+}
+
+func TestOnboardingIdentityChangeResetsSMSState(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("13800138000")
+	m.codeSent = true
+	m.resolvedMethod = "phone"
+	m.resolvedHubURL = "https://hub.example"
+	m.smsCodeInput.SetValue("123456")
+	m.cursor = onboardingRowEmail
+	m.focusCursor()
+
+	// Type a character — identity changes
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	if m.codeSent {
+		t.Fatal("codeSent should reset when identity changes")
+	}
+	if m.resolvedMethod != "" {
+		t.Fatalf("resolvedMethod = %q, should be cleared", m.resolvedMethod)
+	}
+	if m.smsCodeInput.Value() != "" {
+		t.Fatalf("smsCodeInput = %q, should be cleared", m.smsCodeInput.Value())
+	}
+}
+
+func TestOnboardingSMSCountdownExpiredAllowsResend(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("13800138000")
+	m.codeSent = true
+	m.codeCountdown = 0
+	m.resolvedMethod = "phone"
+	m.resolvedHubURL = "https://hub.example"
+	m.cursor = onboardingRowEmail
+	m.focusCursor()
+
+	// Enter on email row when countdown=0 should re-resolve (resend)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected re-resolve command after countdown expired")
+	}
+	if m.codeSent {
+		t.Fatal("codeSent should be reset for re-resolve")
+	}
+	if !m.remoteBusy {
+		t.Fatal("expected remoteBusy during re-resolve")
+	}
+	msg := cmd()
+	if _, ok := msg.(OnboardingResolveIdentityMsg); !ok {
+		t.Fatalf("command returned %T, want OnboardingResolveIdentityMsg", msg)
+	}
+}
+
+func TestOnboardingSMSCountdownActiveVerifiesCode(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("13800138000")
+	m.codeSent = true
+	m.codeCountdown = 30
+	m.resolvedMethod = "phone"
+	m.resolvedHubURL = "https://hub.example"
+	m.resolvedTenantID = "tenant-1"
+	m.smsCodeInput.SetValue("123456")
+	m.cursor = onboardingRowEmail
+	m.focusCursor()
+
+	// Enter on email row when countdown>0 and code sent should verify
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected verify command")
+	}
+	msg := cmd()
+	verifyMsg, ok := msg.(OnboardingVerifyCodeMsg)
+	if !ok {
+		t.Fatalf("command returned %T, want OnboardingVerifyCodeMsg", msg)
+	}
+	if verifyMsg.VerifyCode != "123456" {
+		t.Fatalf("VerifyCode = %q", verifyMsg.VerifyCode)
+	}
+	if verifyMsg.Method != "phone" {
+		t.Fatalf("Method = %q", verifyMsg.Method)
+	}
+}
+
+func TestOnboardingLoadMobileFallback(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.LoadFromAppConfig(corelib.AppConfig{RemoteMobile: "13800138000"})
+	if got := m.emailInput.Value(); got != "13800138000" {
+		t.Fatalf("email input = %q, want phone fallback from RemoteMobile", got)
+	}
+}
+
+func TestOnboardingEmptyIdentityShowsError(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.emailInput.SetValue("")
+	m.cursor = onboardingRowEmail
+	m.focusCursor()
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("empty identity should not dispatch command")
+	}
+	if got := m.remoteStatus; got != onboardingText("en", "identityRequired") {
+		t.Fatalf("remote status = %q", got)
+	}
+}
+
+func TestOnboardingSMSTickCountdown(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.codeSent = true
+	m.codeCountdown = 3
+
+	m, cmd := m.Update(OnboardingSMSTickMsg{})
+	if m.codeCountdown != 2 {
+		t.Fatalf("countdown = %d, want 2", m.codeCountdown)
+	}
+	if cmd == nil {
+		t.Fatal("expected next tick command while countdown > 0")
+	}
+
+	m.codeCountdown = 1
+	m, cmd = m.Update(OnboardingSMSTickMsg{})
+	if m.codeCountdown != 0 {
+		t.Fatalf("countdown = %d, want 0", m.codeCountdown)
+	}
+	if cmd != nil {
+		t.Fatal("expected no tick command at countdown = 0")
+	}
+}
+
+func TestOnboardingHubCenterRowNotVisibleToUser(t *testing.T) {
+	m := NewOnboardingModel("en")
+	rows := m.activeRows()
+	for _, r := range rows {
+		if r == onboardingRowHubCenter {
+			t.Fatal("HubCenter row should not be in activeRows for user-facing navigation")
+		}
 	}
 }

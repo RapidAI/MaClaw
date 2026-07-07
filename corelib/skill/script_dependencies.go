@@ -122,6 +122,7 @@ var pythonImportToPackage = map[string]string{
 	"PIL":        "Pillow",
 	"docx":       "python-docx",
 	"pptx":       "python-pptx",
+	"rapidocr":   "rapidocr-onnxruntime",
 	"sklearn":    "scikit-learn",
 	"yaml":       "PyYAML",
 	"weasyprint": "weasyprint",

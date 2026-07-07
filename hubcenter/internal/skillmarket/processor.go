@@ -129,8 +129,70 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	versionNum := 1
 	var prevSkillID string
 	skillID := ""
+	publisherSkillID := "" // new format: publisher.skill-name (used for ownership binding)
 
-	// 如果包里带了 UUID，尝试复用（防洗包：fingerprint 必须匹配）
+	// Determine if the package declares a publisher.name skill ID or a legacy UUID.
+	if meta.ID != "" {
+		if _, err := uuid.Parse(meta.ID); err != nil {
+			// Not a UUID → treat as publisher.name format skill ID
+			publisherSkillID = meta.ID
+			log.Printf("[skillmarket] package declares skill_id: %s", publisherSkillID)
+			meta.ID = "" // clear so legacy UUID path doesn't use it
+		}
+	}
+
+	// ──── NEW: Publisher.name skill ID ownership binding ────
+	if publisherSkillID != "" {
+		// Validate format
+		if !isValidPublisherSkillID(publisherSkillID) {
+			return p.failSubmission(ctx, sub, fmt.Sprintf(
+				"skill id %q 格式无效（要求: publisher.skill-name，仅小写字母、数字、连字符，如 lovstudio.any2pdf）", publisherSkillID))
+		}
+
+		// Check ownership
+		owner, err := p.store.GetSkillIDOwner(ctx, publisherSkillID)
+		if err != nil {
+			return p.failSubmission(ctx, sub, "skill_id 归属查询失败: "+err.Error())
+		}
+		if owner == nil {
+			// First upload with this skill_id → register ownership
+			if err := p.store.RegisterSkillIDOwnership(ctx, publisherSkillID, sub.UserID, sub.Email); err != nil {
+				return p.failSubmission(ctx, sub, "skill_id 归属注册失败: "+err.Error())
+			}
+			// Re-read to confirm we won the race (ON CONFLICT DO NOTHING may silently no-op)
+			owner, err = p.store.GetSkillIDOwner(ctx, publisherSkillID)
+			if err != nil {
+				return p.failSubmission(ctx, sub, "skill_id 归属确认失败: "+err.Error())
+			}
+			if owner == nil || owner.UserID != sub.UserID {
+				// Another user registered it between our check and insert
+				maskedOwner := ""
+				if owner != nil {
+					maskedOwner = owner.MaskedEmail()
+				}
+				return p.failSubmission(ctx, sub, fmt.Sprintf(
+					"skill_id %q 已被其他用户注册（所有者: %s）。如果这是你的 skill，请联系管理员。",
+					publisherSkillID, maskedOwner))
+			}
+			log.Printf("[skillmarket] skill_id %s registered to user %s (%s)", publisherSkillID, sub.UserID, sub.Email)
+		} else if owner.UserID != sub.UserID {
+			// Ownership mismatch → reject
+			return p.failSubmission(ctx, sub, fmt.Sprintf(
+				"skill_id %q 已被其他用户注册（所有者: %s）。如果这是你的 skill，请联系管理员。",
+				publisherSkillID, owner.MaskedEmail()))
+		} else {
+			log.Printf("[skillmarket] skill_id %s ownership verified for user %s", publisherSkillID, sub.UserID)
+		}
+
+		// Find existing internal UUID for this skill_id (for update scenarios)
+		existingBySkillID := p.skillStore.FindBySkillID(publisherSkillID)
+		if existingBySkillID != nil {
+			skillID = existingBySkillID.ID
+			log.Printf("[skillmarket] reuse internal ID %s for skill_id %s", skillID, publisherSkillID)
+		}
+	}
+
+	// ──── Legacy UUID handling (backward compat) ────
 	if meta.ID != "" {
 		// 校验 UUID 格式，防止路径穿越等注入
 		if _, err := uuid.Parse(meta.ID); err != nil {
@@ -138,7 +200,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 			meta.ID = ""
 		}
 	}
-	if meta.ID != "" {
+	if meta.ID != "" && skillID == "" {
 		existing := p.skillStore.GetByID(meta.ID)
 		if existing != nil {
 			if existing.Fingerprint == fingerprint {
@@ -182,13 +244,27 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	// 更新 submission fingerprint
 	_ = p.store.UpdateSubmissionFingerprint(ctx, subID, fingerprint)
 
+	// ──── Version increment check (for skills with publisher.name ID + semver) ────
+	if publisherSkillID != "" && meta.Version != "" {
+		latestVersion, verErr := p.store.GetLatestVersionForSkillID(ctx, publisherSkillID)
+		if verErr == nil && latestVersion != "" {
+			if !isVersionGreaterThan(meta.Version, latestVersion) {
+				return p.failSubmission(ctx, sub, fmt.Sprintf(
+					"版本号 %s 必须大于已发布的最新版本 %s（skill_id: %s）",
+					meta.Version, latestVersion, publisherSkillID))
+			}
+		}
+	}
+
 	full := skill.HubSkillFull{
 		HubSkillMeta: skill.HubSkillMeta{
 			ID:                           skillID,
+			SkillID:                      publisherSkillID, // publisher.name format (empty for legacy skills)
 			Name:                         meta.Name,
 			Description:                  meta.Description,
 			Tags:                         meta.Tags,
 			Version:                      fmt.Sprintf("%d", versionNum),
+			SemVer:                       meta.Version, // semver from skill.yaml
 			Author:                       meta.Author,
 			TrustLevel:                   "community",
 			CreatedAt:                    fmtTime(sub.CreatedAt),
@@ -253,6 +329,13 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 
 	if err := p.skillStore.Publish(full); err != nil {
 		return p.failSubmissionWithMeta(ctx, sub, meta, fmt.Sprintf("publish failed: %v", err))
+	}
+
+	// Record version in history table (for skill_id version tracking)
+	if publisherSkillID != "" && meta.Version != "" {
+		if verErr := p.store.RecordSkillVersion(ctx, publisherSkillID, meta.Version, skillID, "", sub.UserID); verErr != nil {
+			log.Printf("[skillmarket] record version %s/%s failed: %v", publisherSkillID, meta.Version, verErr)
+		}
 	}
 
 	// 增量更新 FTS 搜索索引（新上传的 skill 初始状态为 trial）
@@ -358,6 +441,102 @@ func (p *Processor) sendNotification(ctx context.Context, to, subject, body stri
 	if err := p.mailer.Send(ctx, []string{to}, subject, body); err != nil {
 		log.Printf("[skillmarket] send mail to %s failed: %v", to, err)
 	}
+}
+
+// isVersionGreaterThan returns true if version a > version b using simple
+// semver-like comparison. Pre-release versions are lower than releases
+// (1.0.0 > 1.0.0-beta). Tolerates non-semver strings by falling back to
+// lexicographic comparison.
+func isVersionGreaterThan(a, b string) bool {
+	va, vaOk := parseSemVerParts(a)
+	vb, vbOk := parseSemVerParts(b)
+	if vaOk && vbOk {
+		if va.major != vb.major {
+			return va.major > vb.major
+		}
+		if va.minor != vb.minor {
+			return va.minor > vb.minor
+		}
+		if va.patch != vb.patch {
+			return va.patch > vb.patch
+		}
+		// Same numeric version — compare pre-release:
+		// release (no pre) > pre-release (has pre)
+		if va.pre == "" && vb.pre != "" {
+			return true // 1.0.0 > 1.0.0-beta
+		}
+		if va.pre != "" && vb.pre == "" {
+			return false // 1.0.0-beta < 1.0.0
+		}
+		// Both have pre-release — lexicographic
+		return va.pre > vb.pre
+	}
+	// Fallback: lexicographic (e.g. "2" > "1")
+	return a > b
+}
+
+type semverParts struct {
+	major, minor, patch int
+	pre                 string
+}
+
+// parseSemVerParts parses "1.2.3-beta.1" into components. Returns false on failure.
+func parseSemVerParts(s string) (semverParts, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" {
+		return semverParts{}, false
+	}
+	var pre string
+	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+		pre = s[idx+1:]
+		s = s[:idx]
+	}
+	nums := strings.Split(s, ".")
+	if len(nums) < 1 || len(nums) > 3 {
+		return semverParts{}, false
+	}
+	var parts [3]int
+	for i, n := range nums {
+		v := 0
+		for _, ch := range n {
+			if ch < '0' || ch > '9' {
+				return semverParts{}, false
+			}
+			v = v*10 + int(ch-'0')
+		}
+		parts[i] = v
+	}
+	return semverParts{major: parts[0], minor: parts[1], patch: parts[2], pre: pre}, true
+}
+
+// isValidPublisherSkillID validates the publisher.skill-name format.
+// This is a local copy of the validation logic from corelib/skill.IsValidSkillID.
+// Keep in sync with corelib/skill/skill_id.go.
+func isValidPublisherSkillID(id string) bool {
+	if len(id) < 6 || len(id) > 129 { // min: 3 (pub) + 1 (dot) + 2 (name) = 6; max: 64+1+64=129
+		return false
+	}
+	dot := strings.IndexByte(id, '.')
+	if dot < 3 || dot == len(id)-1 { // publisher min 3 chars
+		return false
+	}
+	namePart := id[dot+1:]
+	if len(namePart) < 2 { // name min 2 chars
+		return false
+	}
+	// Check each segment: [a-z0-9]([a-z0-9-]*[a-z0-9])
+	for _, seg := range []string{id[:dot], namePart} {
+		for i, ch := range seg {
+			if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
+				continue
+			}
+			if ch == '-' && i > 0 && i < len(seg)-1 {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 // SafeUnzip 安全解压 zip 文件到目标目录。

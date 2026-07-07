@@ -198,13 +198,15 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 
 	var full struct {
 		ID          string            `json:"id"`
+		SkillID     string            `json:"skill_id"`
+		SemVer      string            `json:"semver"`
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Triggers    []string          `json:"triggers"`
 		TrustLevel  string            `json:"trust_level"`
 		Version     string            `json:"version"`
 		Steps       []json.RawMessage `json:"steps"`
-		Files       map[string]string `json:"files"` // path 鈫?base64 content
+		Files       map[string]string `json:"files"` // path → base64 content
 	}
 	if err := json.Unmarshal(data, &full); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -252,6 +254,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	}
 
 	return &corelib.NLSkillEntry{
+		SkillID:     full.SkillID,
 		Name:        full.Name,
 		Description: full.Description,
 		Triggers:    full.Triggers,
@@ -261,6 +264,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		Source:      "hub",
 		HubSkillID:  full.ID,
 		HubVersion:  full.Version,
+		Version:     full.SemVer,
 		TrustLevel:  trustLevel,
 		SkillDir:    installSkillDir,
 	}, nil

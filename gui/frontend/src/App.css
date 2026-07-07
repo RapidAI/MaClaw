@@ -1592,7 +1592,7 @@ body {
     justify-content: center;
     box-sizing: border-box;
     overflow: hidden;
-    padding: 20px;
+    padding: 16px 20px;
     border: 1px solid var(--theme-border);
     border-radius: 12px;
     background: var(--theme-page-bg);
@@ -1628,16 +1628,17 @@ body {
 
 .app-loading-title {
     display: inline-block;
-    margin: 0 0 20px;
+    margin: 0 0 12px;
     color: var(--theme-primary-strong, #183b63);
     font-weight: 800;
+    font-size: 1.1rem;
 }
 
 .app-loading-progress {
     width: 100%;
     height: 4px;
     overflow: hidden;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     border: 1px solid var(--theme-border);
     border-radius: 2px;
     background: var(--theme-surface-muted);
@@ -1658,7 +1659,9 @@ body {
 
 .app-loading-log {
     width: 100%;
-    height: 240px;
+    max-height: 160px;
+    min-height: 80px;
+    flex: 1;
     margin-bottom: 10px;
     padding: 10px;
     border: 1px solid var(--theme-border);
@@ -1674,10 +1677,10 @@ body {
 .app-loading-status {
     width: 100%;
     height: 20px;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     overflow: hidden;
     color: var(--theme-text-secondary);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     text-overflow: ellipsis;
     white-space: nowrap;
 }

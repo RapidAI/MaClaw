@@ -557,7 +557,7 @@ func missingDependencyNameFromMessage(message string) string {
 	for _, marker := range []string{"no module named ", "cannot find module ", "cannot find package "} {
 		if idx := strings.Index(lower, marker); idx >= 0 {
 			rest := strings.TrimSpace(message[idx+len(marker):])
-			return strings.Trim(firstWord(rest), "\"'`:,;")
+			return strings.Trim(firstWord(rest), "\"'`()[]{}:,;")
 		}
 	}
 	for _, marker := range []string{"required python package ", "required node package "} {

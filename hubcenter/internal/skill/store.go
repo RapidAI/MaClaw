@@ -145,6 +145,23 @@ func (s *SkillStore) GetByID(id string) *HubSkillMeta {
 	return nil
 }
 
+// FindBySkillID searches for a skill by its publisher.name skill_id.
+// Returns the first matching HubSkillMeta, or nil if not found.
+func (s *SkillStore) FindBySkillID(skillID string) *HubSkillMeta {
+	if skillID == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sk := range s.skills {
+		if sk.SkillID == skillID {
+			m := sk.HubSkillMeta
+			return &m
+		}
+	}
+	return nil
+}
+
 func fmtTimeNow() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

@@ -323,6 +323,19 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		sourceLabel = "ClawHub"
 
 	default:
+		// If skill_id is in publisher.name format, resolve to internal UUID first
+		// via the by-skill-id endpoint, then use UUID for file-based install.
+		resolvedSkillID := skillID
+		if cskill.IsValidSkillID(skillID) {
+			resolved, resolveErr := cskill.DefaultHubClient().DownloadBySkillID(ctx, hubURL, skillID, "")
+			if resolveErr == nil && resolved != nil && resolved.HubSkillID != "" {
+				resolvedSkillID = resolved.HubSkillID // use internal UUID for InstallToDir
+				log.Printf("[skill-install] resolved skill_id %s → UUID %s", skillID, resolvedSkillID)
+			} else if resolveErr != nil {
+				log.Printf("[skill-install] DownloadBySkillID(%s) failed, using original ID: %v", skillID, resolveErr)
+			}
+		}
+
 		if h.getSkillHubClient() == nil {
 			h.ensureSkillHubClient()
 		}
@@ -330,12 +343,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return "SkillHub 客户端未初始化"
 		}
 		// Prepare staging directory for file-backed skills.
-		stagingDir, err = cskill.PrepareStagingDir(skillID)
+		stagingDir, err = cskill.PrepareStagingDir(resolvedSkillID)
 		if err != nil {
 			return fmt.Sprintf("创建临时目录失败: %s", err.Error())
 		}
 		// Download and extract files to staging dir (not final location).
-		entry, err = h.getSkillHubClient().InstallToDir(ctx, skillID, hubURL, stagingDir)
+		entry, err = h.getSkillHubClient().InstallToDir(ctx, resolvedSkillID, hubURL, stagingDir)
 		sourceLabel = "SkillHub"
 	}
 
@@ -441,6 +454,21 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		entry.SkillDir = finalDir
 		committedDir = finalDir
 	}
+
+	// Verify package integrity BEFORE normalization (normalization modifies files,
+	// which would invalidate the upload-time hashes in the manifest).
+	if entry.SkillDir != "" {
+		if manifest, _ := cskill.ReadPackageManifest(entry.SkillDir); manifest != nil {
+			if verifyErr := cskill.VerifyPackageIntegrity(entry.SkillDir, manifest); verifyErr != nil {
+				log.Printf("[skill-install] integrity check failed for %s: %v", entry.Name, verifyErr)
+				if committedDir != "" {
+					_ = os.RemoveAll(committedDir)
+				}
+				return fmt.Sprintf("安装失败（包完整性校验不通过）: %s\n\n可能原因：包在传输过程中被篡改或损坏。请重新安装。", verifyErr.Error())
+			}
+		}
+	}
+
 	preNormalizeScanHash := ""
 	if installScanReport != nil {
 		if hash, err := skillContentHash(entry); err == nil {
@@ -454,6 +482,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// remove packaging-only backups, and reload the disk definition so runtime
 	// uses the improved version rather than the raw download snapshot.
 	entry = h.app.normalizeInstalledSkill(entry)
+
 	if installScanReport != nil && preNormalizeScanHash != "" {
 		if err := writeSkillScanCacheForReportStatus(entry, entry.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
 			if committedDir != "" {
@@ -742,6 +771,13 @@ func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]
 		return fmt.Sprintf("patched skill definition is invalid; refused to save: %s", validationErr)
 	}
 
+	// Skill ID immutability protection: reject patches that modify or remove the id field.
+	if target.SkillID != "" {
+		if idChanged := checkSkillIDChanged([]byte(modified), target.SkillID); idChanged != "" {
+			return idChanged
+		}
+	}
+
 	if err := fileutil.AtomicWriteFile(defPath, []byte(modified), 0644); err != nil {
 		return fmt.Sprintf("save skill definition failed: %s", err.Error())
 	}
@@ -865,6 +901,13 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 	}
 	if validationErr := validateSkillFileContent(modified, defFormat); validationErr != "" {
 		return fmt.Sprintf("patched skill definition is invalid: %s", validationErr)
+	}
+
+	// Skill ID immutability protection
+	if target.SkillID != "" {
+		if idChanged := checkSkillIDChanged(modified, target.SkillID); idChanged != "" {
+			return idChanged
+		}
 	}
 
 	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
@@ -1042,6 +1085,11 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 		if gate := h.runUploadPortabilityGate(name); gate != "" {
 			return gate
 		}
+		// Ensure skill has a valid skill_id before upload.
+		// Auto-generates from uploader email + skill name if not declared.
+		if idErr := h.ensureSkillIDForUpload(name); idErr != "" {
+			return idErr
+		}
 		if exec := h.getSkillExecutor(); exec != nil {
 			exec.mu.RLock()
 			skills := exec.loadSkills()
@@ -1132,6 +1180,90 @@ func (h *IMMessageHandler) resolveManagedSkillDir(name string) string {
 		}
 	}
 	return ""
+}
+
+// ensureSkillIDForUpload ensures the skill has a valid skill_id before upload.
+// If the skill doesn't have one, it is auto-generated from the uploader's email
+// and the skill name, then persisted to skill.yaml.
+// Returns an agent-readable error message if id generation fails, or "" on success.
+func (h *IMMessageHandler) ensureSkillIDForUpload(name string) string {
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return ""
+	}
+	var target *corelib.NLSkillEntry
+	for _, s := range exec.loadSkills() {
+		if s.MatchesName(name) {
+			cp := s
+			target = &cp
+			break
+		}
+	}
+	if target == nil {
+		return "" // skill not found — let the upload path report the proper error
+	}
+
+	// Already has a valid skill_id — nothing to do
+	if target.SkillID != "" && cskill.IsValidSkillID(target.SkillID) {
+		return ""
+	}
+
+	// Get uploader email from config
+	uploaderEmail := ""
+	if h.app != nil {
+		cfg, err := h.app.LoadConfig()
+		if err == nil {
+			uploaderEmail = cfg.RemoteEmail
+		}
+	}
+
+	skillID, err := cskill.EnsureSkillIDBeforeUpload(target, uploaderEmail)
+	if err != nil {
+		return fmt.Sprintf("Skill ID 生成失败: %s\n\n"+
+			"请在 skill.yaml 中手动声明 id 字段（格式: publisher.skill-name，如 myname.%s）。\n"+
+			"id 一旦上传将与你的账户绑定，不可更改。",
+			err.Error(), cskill.SanitizeSkillNameForID(name))
+	}
+
+	// Refresh indexes so subsequent operations see the new id
+	h.refreshSkillIndexesAfterMutation(name)
+
+	log.Printf("[upload] skill %q assigned id %q", name, skillID)
+	return ""
+}
+
+// checkSkillIDChanged verifies that a modified skill definition did not change
+// or remove the skill_id field. Returns a non-empty error message if the id was
+// tampered with, or "" if the id is preserved.
+// Only checks top-level "id:" lines (no leading whitespace) to avoid matching
+// nested fields like step params that might contain "id:".
+func checkSkillIDChanged(modifiedContent []byte, originalID string) string {
+	content := string(modifiedContent)
+	for _, line := range strings.Split(content, "\n") {
+		// Only match top-level id field (no leading whitespace)
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "id:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "id:"))
+		value = strings.Trim(value, `"'`)
+		if value == "" {
+			// id field present but empty value
+			return fmt.Sprintf("错误：patch 后 skill id 值为空（原 id: %s）。"+
+				"skill id 不可删除。", originalID)
+		}
+		if !strings.EqualFold(value, originalID) {
+			return fmt.Sprintf("错误：skill id 不可修改（当前 id: %s，patch 后变为: %s）。"+
+				"如果需要更换 id，请创建新 skill 并迁移。", originalID, value)
+		}
+		return "" // id field found and matches
+	}
+	// id field not found in modified content — it was removed
+	return fmt.Sprintf("错误：patch 后 skill id 字段丢失（原 id: %s）。"+
+		"skill id 不可删除。请确保 patch 保留 id 字段。", originalID)
 }
 
 // toolValidateSkill validates a skill for portability issues and optionally auto-fixes them.

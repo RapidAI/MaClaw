@@ -140,6 +140,12 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	sandboxDir := filepath.Join(dataDir, "sm_sandbox")
 	processor := skillmarket.NewProcessor(pendingDir, sandboxDir, smStore, skillStore, mailer, trialMgr, versionMgr)
 
+	// One-time idempotent migration: assign skill_id to legacy skills without one.
+	if report := skillStore.MigrateSkillIDs(smStore); report.Migrated > 0 {
+		log.Printf("[hubcenter] skill ID migration: %d skills assigned IDs (%d already migrated, %d skipped)",
+			report.Migrated, report.AlreadyMigrated, report.Skipped)
+	}
+
 	rsaPrivKey, err := skillmarket.EnsureRSAKeyPair(dataDir)
 	if err != nil {
 		return nil, err

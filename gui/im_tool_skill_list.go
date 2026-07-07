@@ -59,8 +59,11 @@ func (h *IMMessageHandler) toolListSkills() string {
 			}
 			for _, s := range g.skills {
 				line := fmt.Sprintf("- %s", s.Name)
-				// Show qualified name for namespaced skills.
-				if s.Publisher != "" {
+				// Show skill_id (publisher.name) when available for precise referencing.
+				if s.SkillID != "" {
+					line = fmt.Sprintf("- %s (id: %s)", s.Name, s.SkillID)
+				} else if s.Publisher != "" {
+					// Show qualified name for namespaced skills (legacy format).
 					line = fmt.Sprintf("- %s:%s", s.Publisher, s.Name)
 				}
 				// Show directory name alias if different from display name.

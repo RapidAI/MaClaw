@@ -1175,6 +1175,46 @@ func PrepareResolvedStepEnv(step corelib.NLSkillStep, requiredEnv []string, extr
 	return step
 }
 
+// MergeRuntimeExtraEnv merges a shared Python runtime environment map into
+// a base extra-env map. PATH from runtimeEnv replaces PATH in base (since
+// the runtime prepends its Python dir). Other keys from runtimeEnv are only
+// added if not already present in base.
+//
+// This is the single shared implementation for GUI and TUI runners.
+func MergeRuntimeExtraEnv(base, runtimeEnv map[string]string) map[string]string {
+	if len(base) == 0 && len(runtimeEnv) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(runtimeEnv))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range runtimeEnv {
+		if envNameEqual(k, "PATH") {
+			// PATH from runtime takes precedence — delete any existing PATH key
+			for existing := range out {
+				if envNameEqual(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+			continue
+		}
+		// Other runtime keys are additive (don't override caller-specified values)
+		found := false
+		for existing := range out {
+			if envNameEqual(existing, k) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func SharedPythonRuntimeExtraEnv(entry *corelib.NLSkillEntry, base []string) map[string]string {
 	return SharedPythonRuntimeExtraEnvWithDataDir(defaultRunCheckDataDir(), entry, base)
 }

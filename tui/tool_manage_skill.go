@@ -758,6 +758,9 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 		execCtx, execCancel = context.WithTimeout(baseCtx, time.Duration(entry.GlobalTimeout)*time.Second)
 	}
 	defer execCancel()
+	// Compute the shared Python runtime extra env once — it doesn't change between
+	// steps (same entry.RequiresPython, same dataDir, same system PATH).
+	runtimeExtraEnv := skill.SharedPythonRuntimeExtraEnvWithDataDir(commands.ResolveDataDir(), entry, os.Environ())
 	for i, step := range entry.Steps {
 		// Early exit if context was cancelled between steps.
 		if execCtx.Err() != nil {
@@ -792,7 +795,8 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 			continue
 		}
 		step = resolveResult.Step
-		step = skill.PrepareResolvedStepEnv(step, entry.RequiredEnv, extraEnv)
+		stepExtraEnv := skill.MergeRuntimeExtraEnv(extraEnv, runtimeExtraEnv)
+		step = skill.PrepareResolvedStepEnv(step, entry.RequiredEnv, stepExtraEnv)
 
 		out, err := execStepWithContext(execCtx, step, entry.SkillDir)
 		if len(step.Capture) > 0 && out != "" {

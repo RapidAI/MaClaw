@@ -1183,3 +1183,76 @@ func uniqueID(prefix string) string {
 	_, _ = rand.Read(buf[:])
 	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixMilli(), hex.EncodeToString(buf[:]))
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Skill ID Ownership Handlers
+// ────────────────────────────────────────────────────────────────────────────
+
+// GetSkillIDOwnership handles GET /api/v1/admin/skill-ownership/{skill_id}.
+func (h *SkillMarketHandlers) GetSkillIDOwnership(w http.ResponseWriter, r *http.Request) {
+	skillID := r.PathValue("skill_id")
+	if skillID == "" {
+		smError(w, http.StatusBadRequest, "skill_id is required")
+		return
+	}
+	owner, err := h.store.GetSkillIDOwner(r.Context(), skillID)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	if owner == nil {
+		smError(w, http.StatusNotFound, "skill_id not registered: "+skillID)
+		return
+	}
+	writeJSON(w, http.StatusOK, owner)
+}
+
+// TransferSkillIDOwnership handles POST /api/v1/admin/skill-ownership/transfer.
+func (h *SkillMarketHandlers) TransferSkillIDOwnership(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SkillID    string `json:"skill_id"`
+		FromUserID string `json:"from_user_id"`
+		ToUserID   string `json:"to_user_id"`
+		ToEmail    string `json:"to_email"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	if req.SkillID == "" || req.FromUserID == "" || req.ToUserID == "" || req.ToEmail == "" {
+		smError(w, http.StatusBadRequest, "skill_id, from_user_id, to_user_id, and to_email are required")
+		return
+	}
+	if err := h.store.TransferSkillIDOwnership(r.Context(), req.SkillID, req.FromUserID, req.ToUserID, req.ToEmail); err != nil {
+		smError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "transferred", "skill_id": req.SkillID, "new_owner": req.ToUserID})
+}
+
+// ListMySkillIDs handles GET /api/v1/account/skill-ids.
+// Returns all skill_ids owned by the authenticated user.
+func (h *SkillMarketHandlers) ListMySkillIDs(w http.ResponseWriter, r *http.Request) {
+	token := extractSessionToken(r)
+	if token == "" {
+		smError(w, http.StatusUnauthorized, "session token required")
+		return
+	}
+	if h.authSvc == nil {
+		smError(w, http.StatusInternalServerError, "auth service not configured")
+		return
+	}
+	sess, err := h.authSvc.ValidateSession(r.Context(), token)
+	if err != nil {
+		smError(w, http.StatusUnauthorized, "session expired or invalid")
+		return
+	}
+	ids, err := h.store.ListSkillIDsByUser(r.Context(), sess.UserID)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	if ids == nil {
+		ids = []skillmarket.SkillIDOwnership{}
+	}
+	writeJSON(w, http.StatusOK, ids)
+}

@@ -136,12 +136,13 @@ func main() {
 	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
 
 	// Create application with options
-	winWidth, winHeight := adaptiveWindowSize()
+	// Start with compact size for environment check, resize to full after check completes.
+	envCheckWidth, envCheckHeight := envCheckWindowSize()
 	appOptions := &options.App{
 		Title:                    brand.Current().WindowTitle,
 		Frameless:                frameless,
-		Width:                    winWidth,
-		Height:                   winHeight,
+		Width:                    envCheckWidth,
+		Height:                   envCheckHeight,
 		EnableDefaultContextMenu: true,
 		StartHidden:              app.IsAutoStart,
 		OnStartup:                app.startup,

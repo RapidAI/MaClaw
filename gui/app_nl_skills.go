@@ -38,6 +38,7 @@ type SkillDiagEntry struct {
 type NLSkillDefinition struct {
 	Name                string                      `json:"name"`
 	DirName             string                      `json:"dir_name,omitempty"`
+	SkillID             string                      `json:"skill_id,omitempty"` // publisher.skill-name stable identifier
 	Description         string                      `json:"description"`
 	Triggers            []string                    `json:"triggers"`
 	Steps               []corelib.NLSkillStep       `json:"steps"`
@@ -1093,6 +1094,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		d := NLSkillDefinition{
 			Name:                s.Name,
 			DirName:             s.DirName,
+			SkillID:             s.SkillID,
 			Description:         s.Description,
 			Triggers:            triggers,
 			Steps:               steps,
@@ -1425,8 +1427,10 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	for _, warning := range prep.Warnings {
 		results = append(results, "[Warning] "+warning)
 	}
+	// Compute the shared Python runtime extra env once outside the step loop.
+	runtimeExtraEnv := skill.SharedPythonRuntimeExtraEnvWithDataDir(dataDir, &preparedEntry, os.Environ())
 	for i, step := range executionSteps {
-		stepExtraEnv := mergeSkillRuntimeExtraEnv(extraEnv, skill.SharedPythonRuntimeExtraEnvWithDataDir(dataDir, &preparedEntry, os.Environ()))
+		stepExtraEnv := mergeSkillRuntimeExtraEnv(extraEnv, runtimeExtraEnv)
 		condition := normalizeSkillStepConditionKind(step.Condition)
 		onError := normalizeSkillStepOnErrorKind(step.OnError)
 		if condition == skillStepConditionOnFailure && !hasFailure {

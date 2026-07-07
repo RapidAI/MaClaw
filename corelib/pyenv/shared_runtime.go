@@ -173,15 +173,40 @@ func EnsureSharedPythonRuntimeWithDataDir(dataDir string, spec SharedPythonRunti
 	if err := writeSharedRuntimeLock(plan, usedBy, "installing"); err != nil {
 		return plan, err
 	}
-	if err := runUV(plan, uvPath, "python", "install", plan.Python); err != nil {
-		return failSharedPythonRuntime(plan, usedBy, "uv_python_install", err)
+	// Prefer maclaw's already-installed private Python to avoid uv downloading
+	// a duplicate Python from the network (~50MB). Only fall back to
+	// `uv python install` when no compatible private Python is available.
+	seedPython := ""
+	if st := Detect(); st.Available && st.IsPrivate && sharedRuntimePythonVersionMatches(st.Version, plan.Python) {
+		seedPython = st.PythonPath
 	}
 	if _, err := os.Stat(plan.PythonPath); os.IsNotExist(err) {
 		if emit != nil {
 			emit("python_runtime", 35, "creating shared virtual environment")
 		}
-		if err := runUV(plan, uvPath, "venv", plan.EnvDir, "--python", plan.Python); err != nil {
-			return failSharedPythonRuntime(plan, usedBy, "uv_venv", err)
+		if seedPython != "" {
+			// Use existing private Python directly — skip uv python install
+			if err := runUV(plan, uvPath, "venv", plan.EnvDir, "--python", seedPython); err != nil {
+				// Seed Python failed (path stale or incompatible). Fall back to
+				// letting uv provision its own Python rather than failing immediately.
+				log.Printf("[pyenv] seed python %q failed for runtime %s, falling back to uv python install: %v", seedPython, plan.ID, err)
+				// Clean up any partially-created venv from the failed attempt.
+				os.RemoveAll(plan.EnvDir)
+				if err2 := runUV(plan, uvPath, "python", "install", plan.Python); err2 != nil {
+					return failSharedPythonRuntime(plan, usedBy, "uv_python_install_after_seed_fail", err2)
+				}
+				if err2 := runUV(plan, uvPath, "venv", plan.EnvDir, "--python", plan.Python); err2 != nil {
+					return failSharedPythonRuntime(plan, usedBy, "uv_venv_after_seed_fail", err2)
+				}
+			}
+		} else {
+			// No compatible private Python available — let uv download one
+			if err := runUV(plan, uvPath, "python", "install", plan.Python); err != nil {
+				return failSharedPythonRuntime(plan, usedBy, "uv_python_install", err)
+			}
+			if err := runUV(plan, uvPath, "venv", plan.EnvDir, "--python", plan.Python); err != nil {
+				return failSharedPythonRuntime(plan, usedBy, "uv_venv", err)
+			}
 		}
 	} else if err != nil {
 		return failSharedPythonRuntime(plan, usedBy, "stat_python", err)
@@ -346,7 +371,11 @@ func sharedPythonRuntimeReady(plan SharedPythonRuntimePlan) bool {
 	if lock.ID != plan.ID || !strings.EqualFold(strings.TrimSpace(lock.Status), "ready") {
 		return false
 	}
-	return sharedPythonRuntimeHasPip(plan)
+	// Trust the lock file: when status="ready", pip was ensured during the
+	// original EnsureSharedPythonRuntime call (ensureSharedPythonRuntimePip).
+	// Spawning `python -m pip --version` on every call adds 200-500ms latency
+	// and is unnecessary — pip doesn't disappear from an isolated venv.
+	return true
 }
 
 func sharedPythonRuntimeHasPip(plan SharedPythonRuntimePlan) bool {

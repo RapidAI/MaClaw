@@ -2810,6 +2810,10 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		log.Printf("[skill-runner] completed param schema for %q: explicit=%d complete=%d", skill.Name, len(skill.Params), len(skillParams))
 	}
 
+	// Compute the shared Python runtime extra env once — it doesn't change between
+	// steps (same skill.RequiresPython, same dataDir, same system PATH).
+	runtimeExtraEnv := cskill.SharedPythonRuntimeExtraEnvWithDataDir(r.dataDir(), skill, os.Environ())
+
 	for i, step := range skill.Steps {
 		// Check for global timeout
 		select {
@@ -2941,7 +2945,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// Propagate skill-level preferred_shell to bash steps so the shell
 		// selection logic can respect it.
 		resolvedStepAction := classifySkillStepAction(resolvedStep.Action)
-		stepExtraEnv := mergeSkillRuntimeExtraEnv(run.extraEnv, cskill.SharedPythonRuntimeExtraEnvWithDataDir(r.dataDir(), skill, os.Environ()))
+		stepExtraEnv := mergeSkillRuntimeExtraEnv(run.extraEnv, runtimeExtraEnv)
 		if resolvedStepAction.IsBash() && skill.PreferredShell != "" {
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
@@ -2999,6 +3003,66 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			defer restoreEnv()
 			return r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
 		}()
+
+		// ── Runtime dependency auto-install + retry ──
+		// If the step failed with a missing Python/Node package (ModuleNotFoundError,
+		// Cannot find module), attempt to install it and retry the step.
+		// This handles undeclared transitive dependencies that weren't caught by
+		// the pre-execution requirement check (which only covers explicit requires_python).
+		// Supports up to 3 rounds to handle scripts that import multiple missing packages.
+		if stepErr != nil && resolvedStepAction.IsBash() {
+			const maxDepInstallRetries = 3
+			// Resolve the Python that this step actually runs with. If the skill
+			// uses a shared Python runtime (RequiresPython non-empty), stepExtraEnv
+			// contains MACLAW_PYTHON pointing to the runtime's Python. We must
+			// install into the SAME Python, not the system default.
+			depInstallPython := stepExtraEnv["MACLAW_PYTHON"]
+			for depRetry := 0; depRetry < maxDepInstallRetries && stepErr != nil; depRetry++ {
+				if ctx.Err() != nil {
+					break // user cancelled during install cycle
+				}
+				bErr, ok := stepErr.(*bashStepError)
+				if !ok {
+					break
+				}
+				classified := classifyBashErrorFull(bErr.Stderr(), bErr.Stdout(), resolveCommandForDisplay(resolvedStep), bErr.ExitCode())
+				if classified.Class != cskill.ErrMissingDependency {
+					break
+				}
+				// Report progress to user via live output.
+				depKind, depPkg := cskill.MissingDependencyInstallNameFromError(bErr.Stderr() + " " + bErr.Stdout())
+				if depPkg != "" && run.liveOutput != nil {
+					run.liveOutput.Append(fmt.Sprintf("📦 正在自动安装缺失的 %s 包: %s ...", depKind, depPkg))
+				}
+				installErr := cskill.AutoInstallMissingDependencyWithPython(bErr.Stderr(), bErr.Stdout(), resolveCommandForDisplay(resolvedStep), skill.SkillDir, depInstallPython)
+				if installErr != nil {
+					log.Printf("[skill-runner] run=%s step %d/%d: dependency auto-install failed: %v", run.status.RunID, i+1, len(skill.Steps), installErr)
+					break
+				}
+				// Re-check cancellation after install (pip install has no context
+				// and can take 10-60s on slow networks).
+				if ctx.Err() != nil {
+					break
+				}
+				// Dependency installed — retry the step.
+				log.Printf("[skill-runner] run=%s step %d/%d: dependency auto-installed (%s), retrying step (attempt %d/%d)",
+					run.status.RunID, i+1, len(skill.Steps), depPkg, depRetry+1, maxDepInstallRetries)
+				restoreEnvRetry := installSkillStepProcessEnvForRun(run.status.RunID, run.status.OwnerID, resolvedStep.Action, stepExtraEnv)
+				retryResult, retryErr := func() (string, error) {
+					defer restoreEnvRetry()
+					return r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
+				}()
+				result = retryResult
+				stepErr = retryErr
+				if retryErr == nil {
+					log.Printf("[skill-runner] run=%s step %d/%d: retry after auto-install succeeded", run.status.RunID, i+1, len(skill.Steps))
+					if run.liveOutput != nil {
+						run.liveOutput.Append("✅ 依赖安装完成，步骤执行成功")
+					}
+				}
+			}
+		}
+
 		captured := map[string]string(nil)
 		if len(step.Capture) > 0 && result != "" {
 			captured = captureOutputVariables(result, step.Capture)
@@ -3908,44 +3972,7 @@ func mergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]strin
 }
 
 func mergeSkillRuntimeExtraEnv(base, runtimeEnv map[string]string) map[string]string {
-	if len(base) == 0 && len(runtimeEnv) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(base)+len(runtimeEnv))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range runtimeEnv {
-		if strings.EqualFold(k, "PATH") {
-			for existing := range out {
-				if envMapKeyEqual(existing, k) {
-					delete(out, existing)
-				}
-			}
-			out[k] = v
-			continue
-		}
-		if _, exists := lookupEnvMapKey(out, k); !exists {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func lookupEnvMapKey(values map[string]string, key string) (string, bool) {
-	for existing := range values {
-		if envMapKeyEqual(existing, key) {
-			return existing, true
-		}
-	}
-	return "", false
-}
-
-func envMapKeyEqual(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
+	return cskill.MergeRuntimeExtraEnv(base, runtimeEnv)
 }
 
 func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {

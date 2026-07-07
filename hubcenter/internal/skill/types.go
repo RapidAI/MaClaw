@@ -3,10 +3,12 @@ package skill
 // HubSkillMeta 是 SkillHub 中 Skill 的元数据。
 type HubSkillMeta struct {
 	ID          string   `json:"id"`
+	SkillID     string   `json:"skill_id,omitempty"` // Stable external identifier (publisher.skill-name)
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
 	Version     string   `json:"version"`
+	SemVer      string   `json:"semver,omitempty"` // Semantic version from skill.yaml (e.g. "1.3.0")
 	Author      string   `json:"author"`
 	TrustLevel  string   `json:"trust_level"` // "official", "community", "unknown"
 	Downloads   int      `json:"downloads"`

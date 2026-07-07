@@ -673,7 +673,7 @@ func TestEnsureSharedPythonRuntimePipFallbackRejectsWrongPythonMinor(t *testing.
 	}
 }
 
-func TestSharedPythonRuntimeReadyRejectsMissingPip(t *testing.T) {
+func TestSharedPythonRuntimeReadyTrustsLockStatus(t *testing.T) {
 	dataDir := t.TempDir()
 	plan, err := PlanSharedPythonRuntime(dataDir, SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}})
 	if err != nil {
@@ -688,23 +688,17 @@ func TestSharedPythonRuntimeReadyRejectsMissingPip(t *testing.T) {
 	if err := writeSharedRuntimeLock(plan, "pdf-word", "ready"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", filepath.Join(t.TempDir(), "pip-ready.log"))
-	t.Setenv("MACLAW_FAKE_PIP_FAIL_CONTAINS", "-m pip --version")
-	oldExec := sharedRuntimeExecCommand
-	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
-		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], helperArgs...)
-		cmd.Env = os.Environ()
-		return cmd
-	}
-	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
 
-	if sharedPythonRuntimeReady(plan) {
-		t.Fatal("ready lock with missing pip must not be treated as ready")
+	// When lock status="ready" and PythonPath exists, sharedPythonRuntimeReady
+	// trusts the lock without spawning a subprocess to verify pip. This avoids
+	// 200-500ms latency per skill run. Pip availability was ensured during the
+	// original EnsureSharedPythonRuntime call.
+	if !sharedPythonRuntimeReady(plan) {
+		t.Fatal("ready lock with existing PythonPath must be treated as ready (trust lock)")
 	}
 }
 
-func TestEnsureSharedPythonRuntimeRepairsMissingPipForReadyLock(t *testing.T) {
+func TestEnsureSharedPythonRuntimeSkipsReInstallWhenLockReady(t *testing.T) {
 	dataDir := t.TempDir()
 	spec := SharedPythonRuntimeSpec{Packages: []string{"pymupdf"}}
 	plan, err := PlanSharedPythonRuntime(dataDir, spec)
@@ -731,7 +725,6 @@ func TestEnsureSharedPythonRuntimeRepairsMissingPipForReadyLock(t *testing.T) {
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	logPath := filepath.Join(t.TempDir(), "repair-pip.log")
 	t.Setenv("MACLAW_FAKE_PIP_RUNTIME_LOG", logPath)
-	t.Setenv("MACLAW_FAKE_PIP_ENSUREPIP_MARKER", filepath.Join(t.TempDir(), "ensurepip.done"))
 	oldExec := sharedRuntimeExecCommand
 	sharedRuntimeExecCommand = func(name string, args ...string) *exec.Cmd {
 		helperArgs := append([]string{"-test.run=TestSharedPythonRuntimeFakePip", "--", name}, args...)
@@ -741,19 +734,14 @@ func TestEnsureSharedPythonRuntimeRepairsMissingPipForReadyLock(t *testing.T) {
 	}
 	t.Cleanup(func() { sharedRuntimeExecCommand = oldExec })
 
+	// With lock status="ready" and PythonPath existing, EnsureSharedPythonRuntime
+	// trusts the lock and short-circuits — no ensurepip or pip install is called.
 	if _, err := EnsureSharedPythonRuntimeWithDataDir(dataDir, spec, "pdf-word", nil); err != nil {
 		t.Fatal(err)
 	}
-	logData, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logText := string(logData)
-	if !strings.Contains(logText, "-m ensurepip --upgrade") {
-		t.Fatalf("expected ensurepip repair, got:\n%s", logText)
-	}
-	if !strings.Contains(logText, "pip install --python "+plan.PythonPath+" pymupdf") {
-		t.Fatalf("expected package reinstall after missing pip, got:\n%s", logText)
+	// Verify no subprocess commands were run (log file should not exist or be empty)
+	if data, err := os.ReadFile(logPath); err == nil && len(data) > 0 {
+		t.Fatalf("expected no commands when lock is ready, got:\n%s", string(data))
 	}
 }
 

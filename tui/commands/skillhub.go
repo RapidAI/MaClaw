@@ -24,6 +24,8 @@ import (
 // HubSkillMeta 是 SkillHub 搜索返回的技能元数据。
 type HubSkillMeta struct {
 	ID          string   `json:"id"`
+	SkillID     string   `json:"skill_id,omitempty"`
+	SemVer      string   `json:"semver,omitempty"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
@@ -544,6 +546,7 @@ func skillhubRate(args []string) error {
 // newNLSkillFromHub 从 Hub 元数据创建本地 NLSkillEntry。
 func newNLSkillFromHub(meta HubSkillMeta, triggers []string, hubURL string) corelib.NLSkillEntry {
 	return corelib.NLSkillEntry{
+		SkillID:       meta.SkillID,
 		Name:          meta.Name,
 		Description:   meta.Description,
 		Triggers:      triggers,
@@ -553,6 +556,7 @@ func newNLSkillFromHub(meta HubSkillMeta, triggers []string, hubURL string) core
 		SourceProject: hubURL,
 		HubSkillID:    meta.ID,
 		HubVersion:    meta.Version,
+		Version:       meta.SemVer,
 		TrustLevel:    meta.TrustLevel,
 	}
 }

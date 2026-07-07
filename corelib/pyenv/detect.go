@@ -244,10 +244,13 @@ func standalonePythonURLs() ([]string, error) {
 	const npmmirrorBase = "https://cdn.npmmirror.com/binaries/python-build-standalone/20250106"
 	// cnb.cool（码云 GitBoat）GitHub Release 镜像（中国大陆可达）
 	const cnbBase = "https://cnb.cool/astral-sh/python-build-standalone/-/releases/download/20250106"
+	// ghfast.top GitHub 加速代理（中国大陆可达）
+	const ghfastBase = "https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
 
 	if useChinaMirror.Load() {
 		return []string{
 			npmmirrorBase + "/" + filename,
+			ghfastBase + "/" + filename,
 			cnbBase + "/" + filename,
 			githubBase + "/" + filename,
 		}, nil
@@ -290,13 +293,17 @@ func uvInstallURLs() ([]string, error) {
 	// astral.sh 官方 CDN（不走 GitHub 域名，对中国大陆更友好）
 	const astralCDN = "https://releases.astral.sh/github/uv/releases/latest/download"
 	// cnb.cool（码云 GitBoat）GitHub Release 镜像（中国大陆可达）
-	// Note: cnb.cool 用 latest tag 路径可能不支持，用固定 tag 更可靠，但 uv 版本更新频繁
-	// 这里用 latest 语义——如果 cnb.cool 不支持 latest redirect，会 404 然后 fallback
 	const cnbBase = "https://cnb.cool/astral-sh/uv/-/releases/latest/download"
+	// npmmirror CDN（阿里云中国节点，稳定性高）
+	const npmmirrorBase = "https://cdn.npmmirror.com/binaries/uv/latest"
+	// ghfast.top GitHub 加速代理（中国大陆可达）
+	const ghfastBase = "https://ghfast.top/https://github.com/astral-sh/uv/releases/latest/download"
 
 	if useChinaMirror.Load() {
 		return []string{
+			npmmirrorBase + "/" + filename,
 			astralCDN + "/" + filename,
+			ghfastBase + "/" + filename,
 			cnbBase + "/" + filename,
 			githubBase + "/" + filename,
 		}, nil
@@ -304,6 +311,7 @@ func uvInstallURLs() ([]string, error) {
 	return []string{
 		githubBase + "/" + filename,
 		astralCDN + "/" + filename,
+		npmmirrorBase + "/" + filename,
 	}, nil
 }
 
@@ -325,24 +333,40 @@ func downloadToFile(url, destPath string, emit ProgressFunc) error {
 	return downloadWithFallback([]string{url}, destPath, emit)
 }
 
-// downloadWithFallback 依次尝试多个 URL 下载，每个 URL 最多重试 2 次。
+// downloadWithFallback 依次尝试多个 URL 下载，支持断点续传。
+// 当下载有进展（新数据写入）时允许更多重试，充分利用断点续传能力。
+// 切换到下一个源时清理临时文件（不同 CDN 的 offset 不互通）。
 // 全部失败后返回最后一个错误。
 func downloadWithFallback(urls []string, destPath string, emit ProgressFunc) error {
 	if len(urls) == 0 {
 		return fmt.Errorf("无下载地址")
 	}
 
+	tmpPath := destPath + ".download"
 	var lastErr error
 	for i, url := range urls {
-		const maxRetries = 2
-		for attempt := 0; attempt <= maxRetries; attempt++ {
+		const baseRetries = 2  // 零进展时的最大重试次数
+		const maxRetries = 6   // 有进展时的最大重试次数（断点续传场景）
+		retryBudget := baseRetries
+
+		for attempt := 0; attempt <= retryBudget; attempt++ {
 			if attempt > 0 {
-				// 指数退避: 3s, 6s
-				backoff := time.Duration(3*(1<<(attempt-1))) * time.Second
+				// 指数退避: 3s, 6s, 12s...（上限 30s）
+				backoffSec := 3 * (1 << (attempt - 1))
+				if backoffSec > 30 {
+					backoffSec = 30
+				}
+				backoff := time.Duration(backoffSec) * time.Second
 				if emit != nil {
-					emit("retry", 0, fmt.Sprintf("下载失败，%ds 后重试 (%d/%d)...", int(backoff.Seconds()), attempt, maxRetries))
+					emit("retry", 0, fmt.Sprintf("下载失败，%ds 后重试 (%d/%d)...", backoffSec, attempt, retryBudget))
 				}
 				time.Sleep(backoff)
+			}
+
+			// 记录本次尝试前的临时文件大小
+			var sizeBefore int64
+			if fi, statErr := os.Stat(tmpPath); statErr == nil {
+				sizeBefore = fi.Size()
 			}
 
 			err := downloadSingleURL(url, destPath, emit)
@@ -351,21 +375,46 @@ func downloadWithFallback(urls []string, destPath string, emit ProgressFunc) err
 			}
 			lastErr = err
 
-			// 不可恢复的错误：换源比重试更有效
-			if shouldFallbackToNextSource(err) && i < len(urls)-1 {
+			// 不可恢复的错误（DNS/连接拒绝/4xx）：立即换源
+			// 但仅当本次尝试无进展时才换源——有进展说明连接可达，中断是暂时性的
+			var sizeAfter int64
+			if fi, statErr := os.Stat(tmpPath); statErr == nil {
+				sizeAfter = fi.Size()
+			}
+			madeProgress := sizeAfter > sizeBefore
+
+			if !madeProgress && shouldFallbackToNextSource(err) && i < len(urls)-1 {
 				if emit != nil {
 					emit("fallback", 0, fmt.Sprintf("源 %d 不可用，切换到备用源...", i+1))
 				}
 				break // 跳到下一个 URL
 			}
+
+			// 有进展——扩展重试预算（但不超过 maxRetries）
+			if madeProgress {
+				if retryBudget < maxRetries {
+					retryBudget = maxRetries
+				}
+			}
+		}
+
+		// 切换到下一个源前清理临时文件——不同 CDN 的已下载部分不互通
+		if i < len(urls)-1 {
+			os.Remove(tmpPath)
 		}
 	}
+
+	// 全部源失败：清理残留的临时文件，避免下次启动时对第一个源断点续传损坏的数据
+	os.Remove(tmpPath)
 	return lastErr
 }
 
 // shouldFallbackToNextSource 判断错误是否应该立即切换到下一个源（不再重试当前源）。
 // 包括：网络不可达（连接拒绝/DNS/重置）、HTTP 4xx（路径错误/CDN 配置问题）。
-// 不包括：i/o timeout（GFW 随机丢包，重试可能成功）、下载中断（网络抖动）。
+// 不包括：i/o timeout（GFW 随机丢包，重试可能成功）。
+//
+// 注意：调用方（downloadWithFallback）在"本次尝试有进展"时不会调用此函数——
+// 有进展说明连接可达且有数据流，中断是暂时性的，应该续传而非换源。
 func shouldFallbackToNextSource(err error) bool {
 	if err == nil {
 		return false
@@ -399,8 +448,14 @@ func shouldFallbackToNextSource(err error) bool {
 	return false
 }
 
-// downloadSingleURL 执行单次 HTTP 下载。
+// downloadSingleURL 执行单次 HTTP 下载，支持断点续传。
+// 如果 destPath+".download" 临时文件已存在且服务器支持 Range 请求，则从断点继续。
 func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
+	return downloadSingleURLInner(url, destPath, emit, false)
+}
+
+// downloadSingleURLInner 是 downloadSingleURL 的内部实现，retried 防止 416 递归。
+func downloadSingleURLInner(url, destPath string, emit ProgressFunc, retried bool) error {
 	// 连接超时 30 秒（覆盖中国大陆 GitHub 的慢连接场景），总超时 15 分钟
 	transport := &http.Transport{
 		ResponseHeaderTimeout: 30 * time.Second,
@@ -410,12 +465,29 @@ func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
 		Transport: transport,
 	}
 
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	tmpPath := destPath + ".download"
+
+	// 检查是否有上次未完成的下载（断点续传）
+	var existingSize int64
+	if fi, err := os.Stat(tmpPath); err == nil {
+		existingSize = fi.Size()
+	}
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("构建请求失败: %w", err)
 	}
-	// 某些 CDN 对无 UA 的请求返回 403
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MaClaw/1.0")
+
+	// 断点续传：如果临时文件有数据且 >1KB（太小不值得续传），发送 Range 请求
+	resuming := existingSize > 1024
+	if resuming {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -423,23 +495,81 @@ func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	var totalSize int64
+	var startOffset int64
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// 服务器不支持 Range 或忽略了 Range 请求——从头下载
+		totalSize = resp.ContentLength
+		startOffset = 0
+		// 清理旧临时文件（将被 truncate 重建）
+		if existingSize > 0 {
+			os.Remove(tmpPath)
+		}
+	case http.StatusPartialContent:
+		// 服务器支持断点续传，返回了部分内容
+		startOffset = existingSize
+		// 从 Content-Range 头解析总大小和起始位置: "bytes 12345-99999/100000"
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			if idx := strings.LastIndex(cr, "/"); idx >= 0 {
+				if sz, parseErr := strconv.ParseInt(cr[idx+1:], 10, 64); parseErr == nil {
+					totalSize = sz
+				}
+			}
+			// 验证服务器返回的起始 offset 与我们请求的一致
+			// Content-Range: bytes START-END/TOTAL
+			if spaceIdx := strings.Index(cr, " "); spaceIdx >= 0 {
+				rangePart := cr[spaceIdx+1:] // "12345-99999/100000"
+				if dashIdx := strings.Index(rangePart, "-"); dashIdx > 0 {
+					if serverStart, parseErr := strconv.ParseInt(rangePart[:dashIdx], 10, 64); parseErr == nil {
+						if serverStart != existingSize {
+							// 服务器返回的起始位置与我们请求的不一致——数据会损坏
+							// 放弃续传，从头下载
+							io.Copy(io.Discard, resp.Body)
+							os.Remove(tmpPath)
+							if retried {
+								return fmt.Errorf("断点续传偏移不匹配: 请求 %d, 服务器返回 %d (%s)", existingSize, serverStart, url)
+							}
+							return downloadSingleURLInner(url, destPath, emit, true)
+						}
+					}
+				}
+			}
+		}
+		if totalSize == 0 && resp.ContentLength > 0 {
+			totalSize = startOffset + resp.ContentLength
+		}
+		if emit != nil {
+			mb := float64(startOffset) / (1024 * 1024)
+			emit("resuming", int(startOffset*100/max64(totalSize, startOffset+1)), fmt.Sprintf("断点续传，已有 %.1f MB", mb))
+		}
+	case http.StatusRequestedRangeNotSatisfiable:
+		// 文件可能已经完整下载了，或者服务端文件变了
+		io.Copy(io.Discard, resp.Body)
+		os.Remove(tmpPath)
+		if retried {
+			return fmt.Errorf("下载失败: HTTP 416 Range Not Satisfiable (%s)", url)
+		}
+		// 重新从头下载（仅递归一次）
+		return downloadSingleURLInner(url, destPath, emit, true)
+	default:
 		io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("下载失败: HTTP %d (%s)", resp.StatusCode, url)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %w", err)
+	// 打开临时文件：续传用 Append，全新下载用 Create
+	var outFile *os.File
+	if startOffset > 0 {
+		outFile, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0644)
+	} else {
+		outFile, err = os.Create(tmpPath)
 	}
-
-	tmpPath := destPath + ".download"
-	outFile, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("创建临时文件失败: %w", err)
+		return fmt.Errorf("创建/打开临时文件失败: %w", err)
 	}
 
-	totalSize := resp.ContentLength
-	var written int64
+	written := startOffset
 	buf := make([]byte, 64*1024)
 	lastPct := -1
 
@@ -448,7 +578,7 @@ func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
 		if n > 0 {
 			if _, wErr := outFile.Write(buf[:n]); wErr != nil {
 				outFile.Close()
-				os.Remove(tmpPath)
+				// 不删除临时文件——下次重试可断点续传
 				return fmt.Errorf("写入失败: %w", wErr)
 			}
 			written += int64(n)
@@ -467,17 +597,15 @@ func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
 				break
 			}
 			outFile.Close()
-			os.Remove(tmpPath)
-			return fmt.Errorf("下载中断: %w", readErr)
+			// 不删除临时文件——保留已下载部分，下次断点续传
+			return fmt.Errorf("下载中断 (已下载 %d bytes): %w", written, readErr)
 		}
 	}
 	if err := outFile.Sync(); err != nil {
 		outFile.Close()
-		os.Remove(tmpPath)
 		return fmt.Errorf("sync 失败: %w", err)
 	}
 	if err := outFile.Close(); err != nil {
-		os.Remove(tmpPath)
 		return fmt.Errorf("close 失败: %w", err)
 	}
 
@@ -488,6 +616,14 @@ func downloadSingleURL(url, destPath string, emit ProgressFunc) error {
 		return fmt.Errorf("rename 失败: %w", err)
 	}
 	return nil
+}
+
+// max64 returns the larger of a and b.
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // extractTarGz 解压 tar.gz 到目标目录。

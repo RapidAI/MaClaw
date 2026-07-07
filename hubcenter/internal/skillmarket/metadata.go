@@ -9,7 +9,7 @@ import (
 
 // SkillMetadata 是 skill.yaml 的结构化表示。
 type SkillMetadata struct {
-	ID          string   `yaml:"id,omitempty" json:"id,omitempty"` // UUID，首次创建时生成，重新上传时复用
+	ID          string   `yaml:"id,omitempty" json:"id,omitempty"` // skill.yaml 的 id 字段：可能是 UUID（旧 skill）或 publisher.name 格式（新 skill）
 	Name        string   `yaml:"name" json:"name"`
 	Description string   `yaml:"description" json:"description"`
 	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`

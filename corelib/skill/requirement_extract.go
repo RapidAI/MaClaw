@@ -143,7 +143,53 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 	inferred := inferCommandRequirements(skill)
 	reqs = append(reqs, inferred...)
 
+	// Infer dependencies from manifest files (requirements.txt, pyproject.toml,
+	// package.json). These are higher-confidence than script inference because
+	// manifest files are explicit declarations by the skill author. Inserted
+	// before script inference so manifest-declared packages are deduplicated
+	// against (script inference skips packages already in reqs).
+	if manifestReqs := inferManifestFileRequirements(skill, skillDir, cc); len(manifestReqs) > 0 {
+		reqs = append(reqs, manifestReqs...)
+	}
+
+	// Infer pip requirements from Python script files referenced by bash steps.
+	// This catches undeclared transitive dependencies (e.g., a script imports
+	// `rapidocr` but the skill.yaml doesn't list it in requires.python).
+	if scriptReqs := inferScriptFileRequirements(skill, skillDir, cc); len(scriptReqs) > 0 {
+		reqs = append(reqs, scriptReqs...)
+	}
+
+	// Deduplicate: manifest inference and script inference may produce overlapping
+	// pip/npm requirements. Earlier entries (explicit > manifest > inferred_script)
+	// take precedence. This is a single-point dedup that handles all source combos.
+	reqs = deduplicateRequirements(reqs)
+
 	return reqs
+}
+
+// deduplicateRequirements removes duplicate pip/npm requirements, keeping the
+// first occurrence (which has higher source priority: explicit > manifest > inferred).
+// Requirements of other types (command, env, platform, gui) are not deduplicated
+// because their identity semantics differ (commands don't have version conflicts,
+// env vars can't meaningfully conflict, etc.).
+func deduplicateRequirements(reqs []Requirement) []Requirement {
+	if len(reqs) <= 1 {
+		return reqs
+	}
+	seen := make(map[string]bool, len(reqs))
+	out := make([]Requirement, 0, len(reqs))
+	for _, r := range reqs {
+		switch r.Type {
+		case "pip", "npm":
+			key := r.Type + ":" + strings.ToLower(r.Name)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func extractRequiredEnvNames(skill *corelib.NLSkillEntry) []string {
@@ -490,6 +536,7 @@ func DefaultRegistry() *Registry {
 	// Fixers — only for types that support auto-repair.
 	r.RegisterFixer(&PipFixer{})
 	r.RegisterFixer(&NpmFixer{})
+	r.RegisterFixer(&CommandFixer{})
 	return r
 }
 

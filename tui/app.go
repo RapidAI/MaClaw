@@ -894,8 +894,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case views.OnboardingActivateRemoteMsg:
-		return m, m.activateRemoteFromTUI(msg.Email, msg.HubCenterURL)
+	case views.OnboardingResolveIdentityMsg:
+		return m, m.resolveIdentityFromTUI(msg.Identity, msg.HubCenterURL)
+
+	case views.OnboardingVerifyCodeMsg:
+		return m, m.verifyCodeFromTUI(msg.Identity, msg.VerifyCode, msg.Method, msg.HubURL, msg.HubID, msg.TenantID, msg.HubCenterURL)
 
 	case views.OnboardingStartSSOMsg:
 		return m, m.startCodeGenSSOFromTUI(msg.FlowID)
@@ -920,6 +923,33 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.saveOnboardingLanguage(msg.Language)
 
 	case views.OnboardingRemoteResultMsg:
+		if msg.Success {
+			m.reloadConfigBackedViews()
+		}
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if msg.Success && (msg.HubServiceReady || msg.MachineReady) {
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "hubActivationSuccess"))
+		} else if msg.Success {
+			status := strings.TrimSpace(msg.Message)
+			if status == "" {
+				status = tuiText(m.uiLang(), "viewerTokenMissing")
+			}
+			m.root.StatusBar.SetMessage(status)
+		} else {
+			m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "hubActivationFailed", msg.Message))
+		}
+		return m, cmd
+
+	case views.OnboardingResolveIdentityResultMsg:
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if !msg.Success {
+			m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "hubActivationFailed", msg.Message))
+		}
+		return m, cmd
+
+	case views.OnboardingVerifyCodeResultMsg:
 		if msg.Success {
 			m.reloadConfigBackedViews()
 		}
@@ -1826,56 +1856,290 @@ func (m *tuiModel) saveConfig(msg views.ConfigSaveMsg) tea.Cmd {
 	}
 }
 
-func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
+func (m *tuiModel) resolveIdentityFromTUI(identity, hubCenterURL string) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
 		store := commands.NewFileConfigStore(commands.ResolveDataDir())
 		cfg, err := store.LoadConfig()
 		if err != nil {
-			return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "loadConfigFailed", err.Error())}
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
 		}
 		hubCenterURL = strings.TrimRight(strings.TrimSpace(hubCenterURL), "/")
-		if hubCenterURL != "" && hubCenterURL != strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/") {
-			cfg.RemoteHubCenterURL = hubCenterURL
-			if err := store.SaveConfig(cfg); err != nil {
-				return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "saveHubCenterFailed", err.Error())}
+		if hubCenterURL == "" {
+			hubCenterURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+		}
+		if hubCenterURL == "" {
+			hubCenterURL = remote.DefaultRemoteHubCenterURL
+		}
+
+		// Single timeout covers all steps (resolve + auth check + send code)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Step 1: Resolve Hub from HubCenter using identity
+		hubCenterURLs := cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
+		resolveResult, _, _, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, "", hubCenterURL, hubCenterURLs)
+		if err != nil {
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+		}
+		hubURL, hubID, tenantID, err := remote.PickBestHubWithTenantAndID(*resolveResult)
+		if err != nil {
+			// Fallback: if identity looks like a phone number and resolve failed
+			// with "no phone route found", try using the configured hub URL
+			configuredHub := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+			if configuredHub != "" && isPhoneIdentityForTUI(identity) {
+				hubURL = configuredHub
+				hubID = strings.TrimSpace(cfg.RemoteHubID)
+				tenantID = strings.TrimSpace(cfg.RemoteTenantID)
+			} else {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
 			}
 		}
 
-		profile := remote.BuildMachineProfile(version)
-		profile.Email = strings.TrimSpace(email)
-		profile.ClientID = cfg.RemoteClientID
-		// Hub URL is display-only in the TUI. Registration resolves the actual
-		// Hub from HubCenter + email so users do not need to guess or type it.
-		profile.HubURL = ""
-		profile.HubCenterURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
-		profile.HubCenterURLs = cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
-		result, err := remote.NewEnrollmentClient().Enroll(context.Background(), profile)
-		if err != nil {
-			return views.OnboardingRemoteResultMsg{Success: false, Message: err.Error()}
+		// Step 2: Get registration auth method from Hub
+		authURL := strings.TrimRight(hubURL, "/") + "/api/enroll/registration-auth"
+		if tid := strings.TrimSpace(tenantID); tid != "" {
+			authURL += "?tenant_id=" + url.QueryEscape(tid)
 		}
-		cfg.RemoteEmail = result.Email
-		cfg.RemoteSN = result.SN
-		cfg.RemoteUserID = result.UserID
-		cfg.RemoteMachineID = result.MachineID
-		cfg.RemoteMachineToken = result.MachineToken
-		cfg.RemoteHubURL = result.HubURL
+		httpClient := remote.NewHubHTTPClient()
+		authReq, err := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
+		if err != nil {
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+		}
+		authResp, err := httpClient.Do(authReq)
+		if err != nil {
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+		}
+		defer authResp.Body.Close()
+		var authResult struct {
+			Method     string `json:"method"`
+			CodeLength int    `json:"code_length"`
+		}
+		if err := remote.DecodeHTTPJSONResponse(authResp, &authResult, "registration auth"); err != nil {
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+		}
+		if authResp.StatusCode >= 300 {
+			return views.OnboardingResolveIdentityResultMsg{Success: false, Message: tuiText(lang, "regAuthFailed")}
+		}
+		method := strings.ToLower(strings.TrimSpace(authResult.Method))
+		if method == "" {
+			method = "email"
+		}
+		// If Hub declares phone auth but identity looks like email, override to email.
+		// This mirrors GUI's registrationIdentityLooksPhone logic.
+		if method == "phone" && !isPhoneIdentityForTUI(identity) {
+			method = "email"
+		}
+		// If Hub requires email auth but identity is a phone number, inform user.
+		if method == "email" && isPhoneIdentityForTUI(identity) && !strings.Contains(identity, "@") {
+			return views.OnboardingResolveIdentityResultMsg{
+				Success: false,
+				Message: tuiText(lang, "regRequiresEmail"),
+			}
+		}
+		codeLength := authResult.CodeLength
+		if codeLength <= 0 {
+			codeLength = 6
+		}
+
+		// Step 3: Send verification code (phone only)
+		if method == "phone" {
+			phone := normalizeOnboardingPhoneForTUI(identity)
+			if len(phone) < 6 {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: tuiText(lang, "regInvalidPhone")}
+			}
+			payload := map[string]string{"phone_number": phone}
+			if strings.TrimSpace(tenantID) != "" {
+				payload["tenant_id"] = strings.TrimSpace(tenantID)
+			}
+			data, err := json.Marshal(payload)
+			if err != nil {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+			}
+			smsReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(hubURL, "/")+"/api/enroll/sms/send-code", bytes.NewReader(data))
+			if err != nil {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+			}
+			smsReq.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(smsReq)
+			if err != nil {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+			}
+			defer resp.Body.Close()
+			var smsResult struct {
+				OK      bool   `json:"ok"`
+				Code    string `json:"code,omitempty"`
+				Message string `json:"message,omitempty"`
+			}
+			if err := remote.DecodeHTTPJSONResponse(resp, &smsResult, "send SMS"); err != nil {
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: err.Error()}
+			}
+			if resp.StatusCode >= 300 {
+				msg := smsResult.Message
+				if msg == "" {
+					msg = tuiText(lang, "regSMSSendFailed")
+				}
+				if smsResult.Code != "" {
+					msg = smsResult.Code + ": " + msg
+				}
+				return views.OnboardingResolveIdentityResultMsg{Success: false, Message: msg}
+			}
+		}
+
+		return views.OnboardingResolveIdentityResultMsg{
+			Success:    true,
+			Identity:   identity,
+			Method:     method,
+			HubURL:     hubURL,
+			HubID:      hubID,
+			TenantID:   tenantID,
+			CodeLength: codeLength,
+		}
+	}
+}
+
+func (m *tuiModel) verifyCodeFromTUI(identity, verifyCode, method, hubURL, hubID, tenantID, hubCenterURL string) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+		}
+
+		if hubURL == "" {
+			return views.OnboardingVerifyCodeResultMsg{Success: false, Message: tuiText(lang, "regHubNotResolved")}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		profile := remote.BuildMachineProfile(version)
+		clientID := strings.TrimSpace(cfg.RemoteClientID)
+		if clientID == "" {
+			clientID = remote.GenerateClientID()
+		}
+		heartbeat := 30
+
+		httpClient := remote.NewHubHTTPClient()
+		var enrollResult remote.EnrollResult
+
+		if method == "phone" {
+			phone := normalizeOnboardingPhoneForTUI(identity)
+			body := map[string]any{
+				"phone_number":           phone,
+				"verify_code":            verifyCode,
+				"machine_name":           profile.MachineName,
+				"platform":              profile.Platform,
+				"hostname":              profile.Hostname,
+				"arch":                  profile.Arch,
+				"app_version":           profile.AppVersion,
+				"heartbeat_interval_sec": heartbeat,
+				"client_id":             clientID,
+			}
+			if strings.TrimSpace(tenantID) != "" {
+				body["tenant_id"] = strings.TrimSpace(tenantID)
+			}
+			data, err := json.Marshal(body)
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(hubURL, "/")+"/api/enroll/sms/verify-and-start", bytes.NewReader(data))
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			defer resp.Body.Close()
+			if err := remote.DecodeHTTPJSONResponse(resp, &enrollResult, "SMS activation"); err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			if resp.StatusCode >= 300 {
+				msg := enrollResult.Message
+				if msg == "" {
+					msg = tuiFormat(lang, "regActivationFailed", resp.Status)
+				}
+				if enrollResult.Code != "" {
+					msg = enrollResult.Code + ": " + msg
+				}
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: msg}
+			}
+		} else {
+			// Email method: use standard enroll with email
+			body := map[string]any{
+				"email":                  identity,
+				"machine_name":           profile.MachineName,
+				"platform":              profile.Platform,
+				"hostname":              profile.Hostname,
+				"arch":                  profile.Arch,
+				"app_version":           profile.AppVersion,
+				"heartbeat_interval_sec": heartbeat,
+				"client_id":             clientID,
+			}
+			if strings.TrimSpace(tenantID) != "" {
+				body["tenant_id"] = strings.TrimSpace(tenantID)
+			}
+			data, err := json.Marshal(body)
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(hubURL, "/")+"/api/enroll/start", bytes.NewReader(data))
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			defer resp.Body.Close()
+			if err := remote.DecodeHTTPJSONResponse(resp, &enrollResult, "email activation"); err != nil {
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
+			}
+			if resp.StatusCode >= 300 {
+				msg := enrollResult.Message
+				if msg == "" {
+					msg = tuiFormat(lang, "regActivationFailed", resp.Status)
+				}
+				if enrollResult.Code != "" {
+					msg = enrollResult.Code + ": " + msg
+				}
+				return views.OnboardingVerifyCodeResultMsg{Success: false, Message: msg}
+			}
+		}
+
+		cfg.RemoteEmail = enrollResult.Email
+		if method == "phone" {
+			cfg.RemoteMobile = normalizeOnboardingPhoneForTUI(identity)
+		}
+		cfg.RemoteSN = enrollResult.SN
+		cfg.RemoteUserID = enrollResult.UserID
+		cfg.RemoteTenantID = enrollResult.TenantID
+		cfg.RemoteTenantName = enrollResult.TenantName
+		cfg.RemoteMachineID = enrollResult.MachineID
+		cfg.RemoteMachineToken = enrollResult.MachineToken
+		cfg.RemoteHubURL = hubURL
 		cfg.RemoteEnabled = true
 		cfg.DefaultLaunchMode = "remote"
-		if result.ViewerToken != "" {
-			cfg.RemoteViewerToken = result.ViewerToken
+		if strings.TrimSpace(hubID) != "" {
+			cfg.RemoteHubID = strings.TrimSpace(hubID)
+		} else if strings.TrimSpace(enrollResult.HubID) != "" {
+			cfg.RemoteHubID = strings.TrimSpace(enrollResult.HubID)
 		}
-		if result.ClientID != "" && cfg.RemoteClientID == "" {
-			cfg.RemoteClientID = result.ClientID
+		if enrollResult.ViewerToken != "" {
+			cfg.RemoteViewerToken = enrollResult.ViewerToken
 		}
-		if result.HubCenterURL != "" && !remote.IsLoopbackURL(result.HubCenterURL) {
-			cfg.RemoteHubCenterURL = result.HubCenterURL
+		if clientID != "" && cfg.RemoteClientID == "" {
+			cfg.RemoteClientID = clientID
 		}
-		if len(result.DiscoveredURLs) > 0 {
-			cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(result.DiscoveredURLs)
+		if strings.TrimSpace(hubCenterURL) != "" && !remote.IsLoopbackURL(hubCenterURL) {
+			cfg.RemoteHubCenterURL = strings.TrimSpace(hubCenterURL)
 		}
 		if err := store.SaveConfig(cfg); err != nil {
-			return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "saveConfigFailed", err.Error())}
+			return views.OnboardingVerifyCodeResultMsg{Success: false, Message: err.Error()}
 		}
 		m.app.appConfig = cfg
 		hubServiceReady := strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
@@ -1885,19 +2149,35 @@ func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
 		message := tuiText(lang, "activated")
 		if !hubServiceReady && !machineReady {
 			message = tuiText(lang, "viewerTokenMissing")
-			if strings.TrimSpace(cfg.RemoteHubURL) == "" {
-				message = tuiText(lang, "hubURLMissing")
-			}
 		}
-		return views.OnboardingRemoteResultMsg{
+		return views.OnboardingVerifyCodeResultMsg{
 			Success:         true,
 			Message:         message,
-			HubURL:          result.HubURL,
-			MachineID:       result.MachineID,
+			HubURL:          hubURL,
+			MachineID:       enrollResult.MachineID,
 			HubServiceReady: hubServiceReady,
 			MachineReady:    machineReady,
 		}
 	}
+}
+
+func normalizeOnboardingPhoneForTUI(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isPhoneIdentityForTUI(identity string) bool {
+	identity = strings.TrimSpace(identity)
+	if identity == "" || strings.Contains(identity, "@") {
+		return false
+	}
+	return len(normalizeOnboardingPhoneForTUI(identity)) >= 6
 }
 
 func (m *tuiModel) startCodeGenSSOFromTUI(flowID string) tea.Cmd {

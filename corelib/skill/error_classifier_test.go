@@ -465,6 +465,62 @@ func TestClassifyStepError_EmbeddedActionHintDoesNotSwallowNextViolation(t *test
 	}
 }
 
+func TestClassifyStepError_MissingPythonModuleInParentheses(t *testing.T) {
+	// Regression test: babeldoc skill wraps the ModuleNotFoundError inside parentheses.
+	// The package name extraction must strip () in addition to quotes.
+	stderr := `[PaperTranslator] [babeldoc:err] C:\Users\ma139\.maclaw\python\install\python.exe: Error while finding module specification for 'babeldoc.main' (ModuleNotFoundError: No module named 'babeldoc') (exit code: 1)`
+	result := ClassifyStepError(1, "", stderr, "python run.py input.pdf")
+	if result.Class != ErrMissingDependency {
+		t.Fatalf("expected ErrMissingDependency, got %s", result.Class)
+	}
+	if !strings.Contains(result.UserMessage, `"babeldoc"`) {
+		t.Errorf("expected clean package name 'babeldoc' in message, got: %s", result.UserMessage)
+	}
+	// Verify the extracted name has no trailing parenthesis.
+	name := missingDependencyNameFromMessage(stderr)
+	if strings.Contains(name, ")") || strings.Contains(name, "(") {
+		t.Fatalf("missingDependencyNameFromMessage() = %q, must not contain parentheses", name)
+	}
+	if name != "babeldoc" {
+		t.Fatalf("missingDependencyNameFromMessage() = %q, want 'babeldoc'", name)
+	}
+}
+
+func TestMissingDependencyNameFromMessage_WrappingCharacters(t *testing.T) {
+	// Verify that various wrapping characters are stripped from package names.
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Standard Python traceback
+		{`ModuleNotFoundError: No module named 'requests'`, "requests"},
+		// Double-quoted
+		{`ModuleNotFoundError: No module named "requests"`, "requests"},
+		// Parenthesized (babeldoc-style wrapper output)
+		{`(ModuleNotFoundError: No module named 'babeldoc') (exit code: 1)`, "babeldoc"},
+		// Square brackets (JSON log output)
+		{`[error] No module named [pdfplumber]`, "pdfplumber"},
+		// Curly braces (rare but possible in structured logs)
+		{`{ModuleNotFoundError: No module named {docx}}`, "docx"},
+		// No wrapping at all
+		{`ModuleNotFoundError: No module named babeldoc`, "babeldoc"},
+		// Submodule with dot
+		{`ModuleNotFoundError: No module named 'PIL.Image'`, "PIL.Image"},
+		// Backtick-wrapped (markdown-style)
+		{"ModuleNotFoundError: No module named `yaml`", "yaml"},
+		// Node.js: Cannot find module
+		{`Error: Cannot find module '@scope/pkg'`, "@scope/pkg"},
+		// Node.js: Cannot find package (ESM)
+		{`Cannot find package 'chalk' imported from /app/index.mjs`, "chalk"},
+	}
+	for _, tt := range tests {
+		got := missingDependencyNameFromMessage(tt.input)
+		if got != tt.want {
+			t.Errorf("missingDependencyNameFromMessage(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestClassifyStepError_Unknown(t *testing.T) {
 	result := ClassifyStepError(1, "some random error output", "exit status 1", "my_tool")
 	if result.Class != ErrUnknown {

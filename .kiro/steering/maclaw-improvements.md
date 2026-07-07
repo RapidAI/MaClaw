@@ -7018,3 +7018,64 @@ const cancelResult = await CancelAIAssistantSessionForSession(sessionKey);
 - `CancelSessionForUser` 不再需要 force-close DoneC（正常场景下 goroutine 在 30s 内退出）
 - 所有 IsCancelled / RunAgentLoop / CancelSession 测试通过
 - GUI Go 编译通过 + 前端 TypeScript 编译通过
+
+
+### 117. Skill 唯一标识机制（Skill ID）——全局唯一、不可变、归属绑定
+
+**来源**：Skill 系统缺乏类似 Android applicationId 的唯一标识，导致名字冲突、依赖不确定、他人可覆盖。
+
+**设计**：`docs/skill-unique-id-mechanism-design.md`
+
+**格式**：`<publisher>.<skill-name>`（如 `lovstudio.any2pdf`、`zhangsan-a1b2.paper-translator`）
+
+**核心机制**：
+- skill.yaml 新增 `id` 顶层字段，作者声明（或上传时系统自动生成）
+- Hub/SkillMarket 首次上传时绑定到上传者账户（`sm_skill_id_ownership` 表）
+- 后续上传校验归属权——不匹配直接拒绝
+- 版本号必须递增（`sm_skill_versions` 表）
+- 本地 patch/write_file 修改 skill.yaml 时保护 id 不可变
+
+**自动生成规则**：
+- publisher = 邮箱前缀 + SHA256(完整邮箱)前 4 hex（如 `zhangsan-a1b2`）
+- skill-name = sanitize(display name)（只保留 a-z 0-9 -）
+- 纯 CJK 名称通过 hash fallback 生成可用 name
+
+**修复**：
+
+#### Phase 1: 基础支持（客户端）
+- `corelib/skill/skill_id.go`：`IsValidSkillID`、`ParseSkillID`、`DerivePublisher`、`DeriveSkillID`、`SanitizeSkillNameForID`
+- `corelib/skill/skill_id_ensure.go`：`EnsureSkillIDBeforeUpload`（自动生成 + 写回 skill.yaml）
+- `corelib/types.go`：`NLSkillEntry` 新增 `SkillID` 和 `Version` 字段
+- `corelib/skill/scanner.go`：`SkillYAMLFile` 新增 `ID` 字段；`loadSkillFromDir` 填充 SkillID/Publisher/Version；`scanSkillDirInternal` ID 冲突检测
+- `QualifiedID()` 优先返回 SkillID；`MatchesName()` 新增 skill_id 匹配
+- `gui/im_tools_misc.go`：`ensureSkillIDForUpload`（上传 gate）+ `checkSkillIDChanged`（patch 保护）
+
+#### Phase 2: Hub 强制（服务端）
+- `hubcenter/internal/skill/types.go`：`HubSkillMeta` 新增 `SkillID`/`SemVer`
+- `hubcenter/internal/skillmarket/store_skill_id_ownership.go`：归属绑定表 CRUD（注册/查询/转移/版本记录）
+- `hubcenter/internal/skillmarket/processor.go`：`processOne` 新增 publisher.name 归属校验逻辑
+- `hubcenter/internal/skill/store.go`：`FindBySkillID` 方法
+- `hubcenter/internal/httpapi/skill_handlers.go`：`DownloadBySkillID` handler
+- `hubcenter/internal/httpapi/router.go`：`GET /api/v1/skills/by-skill-id/{skill_id}/download` 路由
+- `hubcenter/internal/skill/migrate_skill_id.go`：旧 skill 自动迁移（启动时幂等执行）
+
+#### Phase 3: 依赖解析
+- `corelib/skill/semver.go`：语义版本号解析 + 版本约束（`^`/`~`/`>=`/`<`/组合）
+- `corelib/skill/dependency.go`：`SkillDependency` 声明 + `ResolveDependency` 本地解析
+- `corelib/skill/hub_search.go`：`HubClient.DownloadBySkillID`（按 skill_id 精确下载）
+
+**App 依赖解析流程**：
+```
+本地已安装 → entry.SkillID == dep.SkillID → 版本约束检查
+未安装 → GET /api/v1/skills/by-skill-id/{id}/download?constraint=...
+Hub 无 → 回退 install_ref(UUID)
+```
+
+**验收标准**：
+- `IsValidSkillID("lovstudio.any2pdf")` → true
+- 不同域同名邮箱 → 生成不同 publisher（hash 后缀不同）
+- 首次上传 → Hub 注册归属
+- 他人尝试上传同 id → 被拒绝
+- patch 修改 id → 被拒绝
+- 依赖声明 `^1.2.0` + 本地 `1.3.0` → satisfied
+- 依赖声明 `>=2.0.0` + 本地 `1.3.0` → needsUpgrade

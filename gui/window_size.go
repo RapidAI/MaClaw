@@ -1,5 +1,13 @@
 package main
 
+// envCheckWindowSize returns the compact window dimensions used during
+// environment check/preparation phase. The window is kept small (520×360) to
+// indicate a lightweight setup process, then expanded to adaptiveWindowSize()
+// after the check completes.
+func envCheckWindowSize() (width, height int) {
+	return 520, 360
+}
+
 // adaptiveWindowSize selects the best window dimensions based on the primary
 // screen resolution. Handles:
 //   - Landscape vs portrait orientation (portrait uses narrower, taller window)

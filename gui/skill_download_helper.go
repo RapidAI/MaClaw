@@ -374,6 +374,8 @@ func normalizeDownloadedSkillVersion(version string) string {
 func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLSkillEntry, error) {
 	var full struct {
 		ID          string            `json:"id"`
+		SkillID     string            `json:"skill_id"`
+		SemVer      string            `json:"semver"`
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Triggers    []string          `json:"triggers"`
@@ -425,6 +427,7 @@ func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLS
 	}
 
 	return &corelib.NLSkillEntry{
+		SkillID:     full.SkillID,
 		Name:        full.Name,
 		Description: full.Description,
 		Triggers:    full.Triggers,
@@ -434,6 +437,7 @@ func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLS
 		Source:      "hub",
 		HubSkillID:  full.ID,
 		HubVersion:  normalizeDownloadedSkillVersion(full.Version),
+		Version:     full.SemVer,
 		TrustLevel:  trustLevel,
 		SkillDir:    installSkillDir,
 	}, nil

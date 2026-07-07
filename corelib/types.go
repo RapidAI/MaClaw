@@ -320,6 +320,13 @@ type NLSkillOperation struct {
 
 // NLSkillEntry 描述一个自然语言技能条目。
 type NLSkillEntry struct {
+	// SkillID is the globally unique, immutable identifier for this skill.
+	// Format: "publisher.skill-name" (e.g. "lovstudio.any2pdf").
+	// Once uploaded to Hub/SkillMarket, it is bound to the uploader's account
+	// and cannot be changed. Used for deterministic dependency resolution.
+	// Empty for legacy skills that have not declared an id.
+	SkillID string `json:"skill_id,omitempty"`
+
 	Name          string              `json:"name"`
 	DirName       string              `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
 	Description   string              `json:"description"`
@@ -331,6 +338,10 @@ type NLSkillEntry struct {
 	SourceProject string              `json:"source_project"`
 	HubSkillID    string              `json:"hub_skill_id,omitempty"`
 	HubVersion    string              `json:"hub_version,omitempty"`
+	// Version is the semantic version from skill.yaml (e.g. "1.3.0").
+	// Used for dependency constraint checking. Distinct from HubVersion which
+	// may be a Hub-internal integer version counter.
+	Version string `json:"version,omitempty"`
 	Capability    *SkillCapabilityRef `json:"capability,omitempty"`
 	TrustLevel    string              `json:"trust_level,omitempty"`
 	Type          string              `json:"type,omitempty"`         // "executable" (default) | "knowledge"
@@ -465,10 +476,15 @@ type SkillPipelineStep struct {
 }
 
 // QualifiedID returns the canonical unique identifier for this skill.
-// Format: "publisher:name" when Publisher is set, otherwise bare "name".
+// Priority: SkillID (publisher.name format) > Publisher:Name > bare Name.
 // This is the stable identity used for App→Skill dependency binding.
-// Once a skill is published (Publisher assigned), its QualifiedID is immutable.
+// Once a skill is published, its QualifiedID is immutable.
 func (e *NLSkillEntry) QualifiedID() string {
+	// Prefer the new SkillID field (format: "publisher.skill-name")
+	if sid := strings.TrimSpace(e.SkillID); sid != "" {
+		return sid
+	}
+	// Legacy fallback: publisher:name
 	name := strings.TrimSpace(e.Name)
 	if name == "" {
 		return ""
@@ -481,13 +497,17 @@ func (e *NLSkillEntry) QualifiedID() string {
 }
 
 // MatchesQualifiedID checks if the skill matches the given qualified ID exactly.
-// This is stricter than MatchesName — it only matches against QualifiedID()
-// and HubSkillID, not against DirName or directory basename.
+// This is stricter than MatchesName — it only matches against SkillID,
+// QualifiedID() and HubSkillID, not against DirName or directory basename.
 // Used for App dependency resolution where deterministic identity is required.
 func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return false
+	}
+	// Check SkillID first (the new authoritative identifier)
+	if sid := strings.TrimSpace(e.SkillID); sid != "" && strings.EqualFold(sid, id) {
+		return true
 	}
 	if qid := e.QualifiedID(); qid != "" && strings.EqualFold(qid, id) {
 		return true
@@ -499,18 +519,26 @@ func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
 }
 
 // MatchesName checks if the skill matches the given name by comparing against
-// the qualified name (Publisher:Name), display name (Name), directory name
-// (DirName), and the SkillDir basename.
+// the skill ID (publisher.skill-name), qualified name (Publisher:Name),
+// display name (Name), directory name (DirName), and the SkillDir basename.
 // This allows run_skill to find skills by any of their known identifiers.
 // Matching is case-insensitive to improve usability when skill names contain
 // mixed-case or CJK characters that may be normalised differently.
 //
+// When the query contains "." and looks like a skill ID, it is checked first.
 // When the query contains ":" and the skill has a Publisher, the qualified
-// name (Publisher + ":" + Name) is checked first. This gives qualified names
+// name (Publisher + ":" + Name) is checked next. This gives structured IDs
 // precedence over bare name matching when resolving collisions.
 func (e *NLSkillEntry) MatchesName(query string) bool {
 	if query == "" {
 		return false
+	}
+	// Skill ID match: if query contains "." and the skill has a SkillID,
+	// check against SkillID (publisher.skill-name format).
+	if strings.Contains(query, ".") && e.SkillID != "" {
+		if e.SkillID == query || strings.EqualFold(e.SkillID, query) {
+			return true
+		}
 	}
 	// Qualified name match: if query contains ":" and skill has a Publisher,
 	// check against "Publisher:Name".

@@ -115,6 +115,8 @@ type hubSkillSearchResult struct {
 // hubSkillItem mirrors the hub's HubSkillMeta JSON.
 type hubSkillItem struct {
 	ID                           string                 `json:"id"`
+	SkillID                      string                 `json:"skill_id,omitempty"`
+	SemVer                       string                 `json:"semver,omitempty"`
 	Name                         string                 `json:"name"`
 	Description                  string                 `json:"description"`
 	Tags                         []string               `json:"tags"`
@@ -319,6 +321,7 @@ func (c *SkillHubClient) InstallToDirWithIntegrity(ctx context.Context, skillID,
 	}
 
 	return &corelib.NLSkillEntry{
+		SkillID:       full.SkillID,
 		Name:          full.Name,
 		Description:   full.Description,
 		Triggers:      full.Triggers,
@@ -329,6 +332,7 @@ func (c *SkillHubClient) InstallToDirWithIntegrity(ctx context.Context, skillID,
 		SourceProject: base,
 		HubSkillID:    full.ID,
 		HubVersion:    full.Version,
+		Version:       full.SemVer,
 		TrustLevel:    trustLevel,
 		SkillDir:      installSkillDir,
 	}, nil

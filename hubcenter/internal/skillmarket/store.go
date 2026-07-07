@@ -134,6 +134,10 @@ func (s *Store) migrate() error {
 	if err := s.migrateAuth(); err != nil {
 		return fmt.Errorf("auth migrate: %w", err)
 	}
+	// Skill ID ownership tables (ownership binding + version history)
+	if err := s.migrateSkillIDOwnership(); err != nil {
+		return fmt.Errorf("skill_id_ownership migrate: %w", err)
+	}
 	return nil
 }
 

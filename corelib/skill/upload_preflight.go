@@ -16,6 +16,7 @@ import (
 type UploadPreflightResult struct {
 	SkillName string `json:"skill_name"`
 	SkillDir  string `json:"skill_dir"`
+	SkillID   string `json:"skill_id,omitempty"` // Validated skill ID (empty if not declared)
 
 	// AutoFixed lists the safe, reversible rewrites applied to the skill dir
 	// in place (e.g. an absolute path under the skill dir rewritten to
@@ -125,6 +126,35 @@ func PrepareSkillForUploadWithOptions(skillDir string, opts UploadPreflightOptio
 
 	result.MissingFiles = missingBundledFileReferences(skillDir, report.SkillName)
 
+	// Validate skill ID if declared.
+	// Load the skill entry to read the id field.
+	entry, _, _ := loadSkillFromDir(skillDir, report.SkillName)
+	if entry != nil && entry.SkillID != "" {
+		result.SkillID = entry.SkillID
+		if !IsValidSkillID(entry.SkillID) {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("[skill_id] id %q 格式无效（要求: <publisher>.<skill-name>，仅小写字母、数字、连字符，如 lovstudio.any2pdf）", entry.SkillID))
+		}
+	}
+
+	// Generate package integrity manifest (SHA256 of all files).
+	// Written to the skill directory so it's included in the uploaded zip.
+	if result.Portable() {
+		skillID := ""
+		version := ""
+		if entry != nil {
+			skillID = entry.SkillID
+			version = entry.Version
+			if version == "" {
+				version = entry.HubVersion
+			}
+		}
+		manifest, manifestErr := GeneratePackageManifest(skillDir, skillID, version)
+		if manifestErr == nil && manifest != nil {
+			_ = WritePackageManifest(skillDir, manifest)
+		}
+	}
+
 	return result, nil
 }
 
@@ -174,7 +204,9 @@ func IsSkillRuntimePackageFile(name string) bool {
 		base == "upload_status.json" ||
 		base == "quality_status.json" ||
 		base == "skill_package_manifest.json" ||
-		base == ".patches.json"
+		base == PackageManifestFileName ||
+		base == ".patches.json" ||
+		base == ".maclaw_deps_ok"
 }
 
 func IsSkillRuntimePackageDir(name string) bool {

@@ -975,6 +975,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/v1/skills/search", skillHandlers.SearchSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", skillHandlers.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", skillHandlers.DownloadSkill)
+	mux.HandleFunc("GET /api/v1/skills/by-skill-id/{skill_id}/download", skillHandlers.DownloadBySkillID)
 	mux.HandleFunc("GET /api/v1/skills/popular", skillHandlers.PopularSkills)
 	mux.HandleFunc("POST /api/v1/skills", skillHandlers.PublishSkill)
 	mux.HandleFunc("POST /api/v1/skills/{id}/rate", skillHandlers.RateSkill)
@@ -1097,6 +1098,10 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))
 		mux.HandleFunc("GET /api/v1/admin/purchases", RequireAdmin(adminService, smHandlers.AdminListPurchases))
+		// Skill ID ownership management
+		mux.HandleFunc("GET /api/v1/admin/skill-ownership/{skill_id}", RequireAdmin(adminService, smHandlers.GetSkillIDOwnership))
+		mux.HandleFunc("POST /api/v1/admin/skill-ownership/transfer", RequireAdmin(adminService, smHandlers.TransferSkillIDOwnership))
+		mux.HandleFunc("GET /api/v1/account/skill-ids", smHandlers.ListMySkillIDs)
 	}
 
 	// LLM Service routes (providers, proxy, card store) — registered via external call.

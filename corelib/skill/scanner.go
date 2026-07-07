@@ -192,6 +192,7 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
+	ID               string               `yaml:"id,omitempty"`      // Global unique skill ID (publisher.skill-name)
 	Name             string               `yaml:"name"`
 	Version          string               `yaml:"version,omitempty"`
 	Description      string               `yaml:"description"`
@@ -331,11 +332,11 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 	}
 	applySkillYAMLCompatibility(&sf, normalizedRaw)
 	knownKeys := map[string]bool{
-		"name": true, "version": true, "description": true, "triggers": true, "steps": true,
+		"id": true, "name": true, "version": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
 		"shell": true, "mode": true, "operations": true, "params": true,
-		"type": true, "content": true,
+		"type": true, "content": true, "capabilities": true,
 		"requires_tools": true, "fallback_for_tools": true,
 		"requires_toolsets": true, "fallback_for_toolsets": true,
 		"required_credential_files": true,
@@ -1331,6 +1332,13 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if parsed.DirName == "" && fallbackName != parsed.Name {
 					parsed.DirName = fallbackName
 				}
+				// Propagate skill ID and derive publisher from it.
+				if sf.ID != "" {
+					parsed.SkillID = sf.ID
+					if dot := strings.IndexByte(sf.ID, '.'); dot > 0 {
+						parsed.Publisher = sf.ID[:dot]
+					}
+				}
 				// YAML fields take precedence over markdown frontmatter.
 				if len(sf.RequiredArgs) > 0 {
 					parsed.RequiredArgs = sf.RequiredArgs
@@ -1428,6 +1436,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			producesArtifact = false
 		}
 		entry := &corelib.NLSkillEntry{
+			SkillID:                 strings.TrimSpace(sf.ID),
 			Name:                    name,
 			DirName:                 fallbackName, // directory name for alias lookup
 			Description:             sf.Description,
@@ -1436,6 +1445,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Status:                  status,
 			Source:                  "file",
 			HubVersion:              strings.TrimSpace(sf.Version),
+			Version:                 strings.TrimSpace(sf.Version),
 			Platforms:               sf.Platforms,
 			RequiresGUI:             sf.RequiresGUI,
 			Mode:                    sf.Mode,
@@ -1461,6 +1471,12 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Stateful:                sf.Stateful,
 			Pipeline:                convertPipelineSteps(sf.Pipeline),
 			References:              scanReferences(skillDir),
+		}
+		// Derive publisher from skill ID
+		if entry.SkillID != "" {
+			if dot := strings.IndexByte(entry.SkillID, '.'); dot > 0 {
+				entry.Publisher = entry.SkillID[:dot]
+			}
 		}
 		NormalizeSkillForRunner(entry)
 		return entry, defPath, nil
@@ -1820,6 +1836,21 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 
 		result = append(result, *parsed)
 	}
+
+	// Detect duplicate skill IDs within this scan root.
+	idMap := make(map[string]string) // skill_id → first skill name
+	for _, entry := range result {
+		sid := strings.TrimSpace(entry.SkillID)
+		if sid == "" {
+			continue
+		}
+		if firstName, exists := idMap[sid]; exists {
+			log.Printf("[skill-scanner] WARNING: duplicate skill ID %q: %q and %q in %s", sid, firstName, entry.Name, root)
+		} else {
+			idMap[sid] = entry.Name
+		}
+	}
+
 	return result
 }
 

@@ -104,6 +104,30 @@ func (h *SkillHandlers) DownloadSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// DownloadBySkillID handles GET /api/v1/skills/by-skill-id/{skill_id}/download.
+// Looks up a skill by its publisher.name skill_id (not the internal UUID).
+// TODO: support ?version= and ?constraint= query params when multi-version
+// storage is implemented (currently returns the single latest version).
+func (h *SkillHandlers) DownloadBySkillID(w http.ResponseWriter, r *http.Request) {
+	skillID := r.PathValue("skill_id")
+	if skillID == "" {
+		skillError(w, http.StatusBadRequest, "skill_id is required")
+		return
+	}
+	meta := h.store.FindBySkillID(skillID)
+	if meta == nil {
+		skillError(w, http.StatusNotFound, "skill_id not found: "+skillID)
+		return
+	}
+	// Return the full skill (same format as DownloadSkill by UUID)
+	s, err := h.store.Get(meta.ID)
+	if err != nil {
+		skillError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
 func (h *SkillHandlers) PopularSkills(w http.ResponseWriter, r *http.Request) {
 	skills := h.store.TopByDownloads(20)
 	if skills == nil {

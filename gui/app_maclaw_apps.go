@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	contract "github.com/RapidAI/CodeClaw/corelib/structureddata"
 	maclawappcontract "github.com/RapidAI/CodeClaw/internal/maclawappcontract"
 )
@@ -158,6 +159,7 @@ type maclawAppInstallPlanApp struct {
 
 type maclawAppInstallPlanDependency struct {
 	ID                 string   `json:"id"`
+	SkillID            string   `json:"skill_id,omitempty"` // publisher.skill-name stable identifier
 	Version            string   `json:"version,omitempty"`
 	Kind               string   `json:"kind,omitempty"`
 	Required           bool     `json:"required"`
@@ -7900,6 +7902,11 @@ func (a *App) validateAppDependenciesPublished(plan maclawAppInstallPlan) error 
 		if dep.InstallRef != "" && src != "" && src != "local" {
 			continue
 		}
+		// If the dependency has a valid skill_id, the receiver can resolve
+		// it via the by-skill-id download endpoint.
+		if dep.SkillID != "" && cskill.IsValidSkillID(dep.SkillID) {
+			continue
+		}
 		// Check if the locally installed skill has a HubSkillID (was published).
 		match, found := installed[strings.ToLower(dep.ID)]
 		if found && strings.TrimSpace(match.HubSkillID) != "" {
@@ -7950,6 +7957,10 @@ func (a *App) enrichDependenciesWithHubSkillID(deps []maclawAppInstallPlanDepend
 			dep.InstallRef = hubID
 			dep.InstallRefTarget = hubID
 			dep.InstallRefStatus = "ok"
+		}
+		// Stamp SkillID (publisher.skill-name) for deterministic dependency resolution.
+		if dep.SkillID == "" && strings.TrimSpace(match.SkillID) != "" {
+			dep.SkillID = match.SkillID
 		}
 		matchSource := strings.ToLower(strings.TrimSpace(match.Source))
 		// Upgrade source from "local"/empty to a resolvable remote source.

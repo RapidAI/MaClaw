@@ -87,7 +87,11 @@ func defaultEnvLookup(key string) string {
 var findPythonExecutable = defaultFindPython
 
 func defaultFindPython() string {
-	// 1. System PATH (original logic)
+	// 1. maclaw bundled Python (preferred — fully managed, not dependent on system)
+	if p := resolveBundledPython(); p != "" {
+		return p
+	}
+	// 2. System PATH (fallback when bundled Python is not yet installed)
 	if runtime.GOOS != "windows" {
 		if _, err := exec.LookPath("python3"); err == nil {
 			return "python3"
@@ -96,17 +100,13 @@ func defaultFindPython() string {
 	if _, err := exec.LookPath("python"); err == nil {
 		return "python"
 	}
-	// 2. maclaw bundled Python (fallback)
-	if p := resolveBundledPython(); p != "" {
-		return p
-	}
 	return ""
 }
 
 // FindPython returns the best available Python executable path.
 // This is the exported API for callers outside the skill package (e.g. GUI
 // resume parsing, PDF text extraction) that need to run Python scripts.
-// Priority: system PATH python > bundled install Python > bundled venv Python.
+// Priority: bundled install Python > bundled venv Python > system PATH python.
 // Returns "" if no Python is available.
 func FindPython() string {
 	return findPythonExecutable()
@@ -200,7 +200,7 @@ var PipNeedsModuleMapping = sync.OnceValue(func() bool {
 })
 
 // resolveBundledPython returns the path to maclaw's bundled Python executable.
-// Priority: venv Python (has installed packages) > install Python (bare).
+// Priority: install Python (has pip + all uv-installed packages) > venv Python.
 // Returns "" if no bundled Python is available.
 //
 // Result is cached after first successful resolution to avoid repeated
@@ -375,6 +375,23 @@ func isBundledPythonPath(pythonPath string) bool {
 var checkNpmInstalledInDir = defaultCheckNpmInstalledInDir
 
 func defaultCheckNpmInstalledInDir(name, dir string) bool {
+	// Fast path: check if node_modules/{name} directory exists directly.
+	// This is more reliable than `npm list` which returns exit code 1 on npm 7+
+	// for peer dependency warnings even when the package IS installed.
+	if dir != "" {
+		pkgDir := filepath.Join(dir, "node_modules", name)
+		if info, err := os.Stat(pkgDir); err == nil && info.IsDir() {
+			return true
+		}
+		// Scoped packages: @scope/name → node_modules/@scope/name
+		if strings.HasPrefix(name, "@") {
+			pkgDir = filepath.Join(dir, "node_modules", name)
+			if info, err := os.Stat(pkgDir); err == nil && info.IsDir() {
+				return true
+			}
+		}
+	}
+	// Fallback: use npm list (handles global installs and edge cases)
 	cmd := coretool.Command("npm", "list", name, "--depth=0")
 	if dir != "" {
 		cmd.Dir = dir
