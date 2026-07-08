@@ -44,8 +44,6 @@ async function refresh() {
     $("openaiURL").textContent = status.openai_url || "";
     $("anthropicURL").textContent = status.anthropic_url || "";
     $("healthURL").textContent = status.health_url || "";
-    $("openaiEnv").textContent = `OPENAI_BASE_URL=${status.openai_url || ""}`;
-    $("anthropicEnv").textContent = `ANTHROPIC_BASE_URL=${status.anthropic_url || ""}`;
     const autoStart = $("autoStart");
     const autoStartRow = autoStart.closest(".check-row");
     autoStart.checked = !!status.auto_start_enabled;
@@ -314,7 +312,13 @@ async function checkCodexInstalled() {
 refresh();
 checkCodexInstalled();
 
-// Listen for backend model list refresh (e.g. after startup re-fetches from server)
+// Listen for real-time token stats updates from backend
 if (window.runtime && window.runtime.EventsOn) {
+  window.runtime.EventsOn("token-stats-updated", (data) => {
+    if (!data) return;
+    $("promptTokens").textContent = formatTokenCount(data.prompt || 0);
+    $("completionTokens").textContent = formatTokenCount(data.completion || 0);
+    $("totalTokens").textContent = formatTokenCount(data.total || 0);
+  });
   window.runtime.EventsOn("models-refreshed", () => { refresh(); });
 }

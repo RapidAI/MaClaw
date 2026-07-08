@@ -833,6 +833,14 @@ func (a *App) restartProxy(s Settings) error {
 	server.SetUsageCallback(func(prompt, completion, _ int) {
 		atomic.AddInt64(&a.totalPromptTokens, int64(prompt))
 		atomic.AddInt64(&a.totalCompletionTokens, int64(completion))
+		// Push updated token stats to frontend in real-time
+		if a.ctx != nil {
+			p := atomic.LoadInt64(&a.totalPromptTokens)
+			c := atomic.LoadInt64(&a.totalCompletionTokens)
+			runtime.EventsEmit(a.ctx, "token-stats-updated", map[string]int64{
+				"prompt": p, "completion": c, "total": p + c,
+			})
+		}
 	})
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {
 		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, corelib.CodeGenClientName)
