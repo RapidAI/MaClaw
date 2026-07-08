@@ -204,9 +204,12 @@ func (a *App) LoginSSO() (Status, error) {
 	s, _ := loadSettings()
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
-	s.ModelID = result.ModelID
 	s.Email = result.Email
 	s.Models = modelOptionsFromOAuth(result.Models)
+	// Preserve user's model selection if it still exists in the new model list.
+	if !modelExistsInList(s.ModelID, s.Models) {
+		s.ModelID = normalizeModelID(result.ModelID)
+	}
 	if strings.TrimSpace(s.APIKey) == "" {
 		s.APIKey = defaultProxyAPIKey
 	}
@@ -254,9 +257,12 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	s, _ := loadSettings()
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
-	s.ModelID = result.ModelID
 	s.Email = result.Email
 	s.Models = modelOptionsFromOAuth(result.Models)
+	// Preserve user's model selection if it still exists in the new model list.
+	if !modelExistsInList(s.ModelID, s.Models) {
+		s.ModelID = normalizeModelID(result.ModelID)
+	}
 	s = normalizeSettings(s)
 	if err := a.restartProxy(s); err != nil {
 		return Status{}, err
@@ -1114,4 +1120,20 @@ func normalizeModelID(id string) string {
 		return strings.TrimSpace(id[idx+1:])
 	}
 	return id
+}
+
+// modelExistsInList checks whether the user's selected model ID is still
+// present in the (already-normalized) model list. Returns false for empty
+// modelID so callers fall through to the server default.
+func modelExistsInList(modelID string, models []ModelOption) bool {
+	if strings.TrimSpace(modelID) == "" {
+		return false
+	}
+	normalized := normalizeModelID(modelID)
+	for _, m := range models {
+		if m.ID == normalized {
+			return true
+		}
+	}
+	return false
 }

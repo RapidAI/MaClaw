@@ -50,6 +50,8 @@ async function refresh() {
     const loginChip = $("loginChip");
     loginChip.textContent = status.logged_in ? (s.email || "已登录") : "未登录";
     loginChip.className = `chip ${status.logged_in ? "ok" : "muted"}`;
+    $("loginBtn").style.display = status.logged_in ? "none" : "";
+    $("logoutBtn").style.display = status.logged_in ? "" : "none";
     const badge = $("statusBadge");
     badge.textContent = status.last_error || (status.running ? (status.logged_in ? "运行中" : "等待登录") : "未运行");
     badge.className = `badge ${status.running && status.logged_in ? "ok" : "warn"}`;
