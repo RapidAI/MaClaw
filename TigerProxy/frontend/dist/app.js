@@ -3,6 +3,12 @@ const $ = (id) => document.getElementById(id);
 let toastTimer;
 let loginInProgress = false;
 
+function formatTokenCount(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
 function notify(message, kind = "ok") {
   const toast = $("toast");
   toast.textContent = message;
@@ -52,6 +58,9 @@ async function refresh() {
     loginChip.className = `chip ${status.logged_in ? "ok" : "muted"}`;
     $("loginBtn").style.display = status.logged_in ? "none" : "";
     $("logoutBtn").style.display = status.logged_in ? "" : "none";
+    $("promptTokens").textContent = formatTokenCount(status.prompt_tokens || 0);
+    $("completionTokens").textContent = formatTokenCount(status.completion_tokens || 0);
+    $("totalTokens").textContent = formatTokenCount(status.total_tokens || 0);
     const badge = $("statusBadge");
     badge.textContent = status.last_error || (status.running ? (status.logged_in ? "运行中" : "等待登录") : "未运行");
     badge.className = `badge ${status.running && status.logged_in ? "ok" : "warn"}`;
@@ -60,6 +69,16 @@ async function refresh() {
     (status.lan_urls || []).forEach((url) => {
       const item = document.createElement("code");
       item.textContent = `${url}/v1`;
+      item.classList.add("clickable");
+      item.title = "点击复制";
+      item.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(item.textContent || "");
+          item.classList.add("copied");
+          setTimeout(() => item.classList.remove("copied"), 600);
+          notify("已复制");
+        } catch { notify("复制失败，请手动选中复制", "error"); }
+      });
       lan.appendChild(item);
     });
   } catch (err) {
@@ -149,8 +168,15 @@ $("autoStart").addEventListener("change", async (event) => {
     checkbox.disabled = checkbox.closest(".check-row").classList.contains("disabled");
   }
 });
-document.querySelectorAll("button[data-copy]").forEach((btn) => {
-  btn.addEventListener("click", async () => { await navigator.clipboard.writeText($(btn.dataset.copy).textContent || ""); notify("已复制"); });
+document.querySelectorAll("code.clickable").forEach((el) => {
+  el.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(el.textContent || "");
+      el.classList.add("copied");
+      setTimeout(() => el.classList.remove("copied"), 600);
+      notify("已复制");
+    } catch { notify("复制失败，请手动选中复制", "error"); }
+  });
 });
 $("configCodexBtn").addEventListener("click", async () => {
   const btn = $("configCodexBtn");

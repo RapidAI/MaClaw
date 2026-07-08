@@ -147,6 +147,13 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	result.WorkflowPhaseID = workflowRoute.WorkflowPhaseID
 	result.PhasePrompt = workflowRoute.PhasePrompt
 	result.SkipNeedsConfirmGate = workflowRoute.SkipNeedsConfirmGate
+
+	// Goal continuation messages bypass all confirm gates — the goal itself
+	// is the user's confirmed intent. No need for per-turn confirmation.
+	if msg.Platform == "goal-continuation" {
+		result.SkipNeedsConfirmGate = true
+	}
+
 	workflowRouteElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 

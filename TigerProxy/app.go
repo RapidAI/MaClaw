@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -44,6 +45,10 @@ type App struct {
 	mu              sync.Mutex
 	shown           bool
 	codexInstalling bool
+
+	// Cumulative token counters (atomic, updated via usage callback).
+	totalPromptTokens     int64
+	totalCompletionTokens int64
 }
 
 type Settings struct {
@@ -75,6 +80,9 @@ type Status struct {
 	LoggedIn           bool     `json:"logged_in"`
 	AutoStartSupported bool     `json:"auto_start_supported"`
 	AutoStartEnabled   bool     `json:"auto_start_enabled"`
+	PromptTokens       int64    `json:"prompt_tokens"`
+	CompletionTokens   int64    `json:"completion_tokens"`
+	TotalTokens        int64    `json:"total_tokens"`
 }
 
 type LoginStartResult struct {
@@ -311,6 +319,8 @@ func (a *App) Status() (Status, error) {
 	if supported {
 		autoStartEnabled, _ = isAutoStartEnabled()
 	}
+	prompt := atomic.LoadInt64(&a.totalPromptTokens)
+	completion := atomic.LoadInt64(&a.totalCompletionTokens)
 	return Status{
 		Settings:           scrubSettings(s),
 		Running:            a.isRunning(),
@@ -323,6 +333,9 @@ func (a *App) Status() (Status, error) {
 		LoggedIn:           strings.TrimSpace(s.AccessToken) != "",
 		AutoStartSupported: supported,
 		AutoStartEnabled:   autoStartEnabled,
+		PromptTokens:       prompt,
+		CompletionTokens:   completion,
+		TotalTokens:        prompt + completion,
 	}, nil
 }
 
@@ -817,6 +830,10 @@ func (a *App) restartProxy(s Settings) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := codegenproxy.NewServer(s.ListenAddress)
 	server.SetClientAPIKey(s.APIKey)
+	server.SetUsageCallback(func(prompt, completion, _ int) {
+		atomic.AddInt64(&a.totalPromptTokens, int64(prompt))
+		atomic.AddInt64(&a.totalCompletionTokens, int64(completion))
+	})
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {
 		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, corelib.CodeGenClientName)
 	}

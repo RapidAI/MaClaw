@@ -39,7 +39,20 @@ const (
 
 	wizardWindowStyle  = wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsClipChildren
 	wizardClientWidth  = 780
-	wizardClientHeight = 500
+	wizardClientHeight = 540
+
+	// Layout geometry: content area starts after sidebar
+	wizardSidebarWidth  = 178
+	wizardContentLeft   = 194  // sidebar + gap
+	wizardContentRight  = 750  // right margin from client edge
+	wizardPanelInset    = 20   // inset from content edges to panel interior
+	wizardPanelLeft     = wizardContentLeft + wizardPanelInset  // 214
+	wizardPanelRight    = wizardContentRight - wizardPanelInset // 730
+	wizardBrandItemH    = 66   // vertical stride between brand options
+	wizardBrandCardH    = 62   // visible card height (< stride to leave gap)
+	wizardButtonW       = 90
+	wizardButtonH       = 30
+	wizardButtonGap     = 16   // horizontal gap between buttons
 
 	cwUseDefault      = 0x80000000
 	swHide            = 0
@@ -409,29 +422,40 @@ func wizardWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 }
 
 func createWizardControls(hwnd uintptr) {
-	wizardHeaderHwnd = addStatic(hwnd, tr("welcome.title"), 210, 34, 440, 30)
+	contentW := int32(wizardContentRight - wizardContentLeft - 32)
+	wizardHeaderHwnd = addStatic(hwnd, tr("welcome.title"), wizardContentLeft+16, 34, contentW, 30)
 	setControlFont(wizardHeaderHwnd, wizardTitleFont)
-	wizardIntroHwnd = addStatic(hwnd, tr("welcome.body"), 210, 74, 440, 58)
-	wizardGroupHwnd = addStatic(hwnd, tr("choose.brand"), 210, 178, 390, 22)
+	wizardIntroHwnd = addStatic(hwnd, tr("welcome.body"), wizardContentLeft+16, 74, contentW, 58)
+	wizardGroupHwnd = addStatic(hwnd, tr("choose.brand"), wizardContentLeft+16, 168, contentW, 22)
 	wizardBrandHwnds = make([]uintptr, 0, len(brandOptions))
 	for i, brand := range brandOptions {
-		wizardBrandHwnds = append(wizardBrandHwnds, addRadio(hwnd, idBrandFirst+i, brandLabel(brand), 226, brandOptionTop(i)+8, 330, 24))
+		wizardBrandHwnds = append(wizardBrandHwnds, addRadio(hwnd, idBrandFirst+i, brandLabel(brand), wizardPanelLeft+12, brandOptionTop(i)+8, wizardPanelRight-wizardPanelLeft-24, 24))
 	}
-	wizardDetailHwnd = addStatic(hwnd, tr("step.select"), 210, 382, 440, 28)
-	wizardProgressHwnd = addProgress(hwnd, 210, 340, 440, 12)
+	detailY := int32(brandOptionTop(len(brandOptions)-1)) + wizardBrandCardH + 18
+	maxDetailY := int32(wizardClientHeight) - wizardButtonH - 26 - 16 - 30 // must be above separator - gap
+	if detailY > maxDetailY {
+		detailY = maxDetailY
+	}
+	wizardDetailHwnd = addStatic(hwnd, tr("step.select"), wizardContentLeft+16, detailY, contentW, 28)
+	wizardProgressHwnd = addProgress(hwnd, wizardContentLeft+16, detailY-42, contentW, 12)
 	showControl(wizardProgressHwnd, false)
-	wizardNextHwnd = addButton(hwnd, idWizardNext, tr("next"), 514, 428, 90, 30, bsDefPushButton)
-	wizardCancelHwnd = addButton(hwnd, idWizardCancel, tr("cancel"), 622, 428, 90, 30, bsPushButton)
+	btnY := int32(wizardClientHeight) - wizardButtonH - 26 // anchor from bottom
+	btnCancelRight := wizardContentRight - 10
+	btnCancelLeft := btnCancelRight - wizardButtonW
+	btnNextRight := btnCancelLeft - wizardButtonGap
+	btnNextLeft := btnNextRight - wizardButtonW
+	wizardNextHwnd = addButton(hwnd, idWizardNext, tr("next"), int32(btnNextLeft), btnY, wizardButtonW, wizardButtonH, bsDefPushButton)
+	wizardCancelHwnd = addButton(hwnd, idWizardCancel, tr("cancel"), int32(btnCancelLeft), btnY, wizardButtonW, wizardButtonH, bsPushButton)
 	checkWizardBrandRadio(hwnd)
 }
 
 func selectBrandFromPoint(lParam uintptr) {
 	x := int32(lParam & 0xffff)
 	y := int32((lParam >> 16) & 0xffff)
-	if x >= 214 && x <= 646 {
+	if x >= wizardPanelLeft && x <= wizardPanelRight {
 		for i := range brandOptions {
 			top := brandOptionTop(i)
-			if y >= top && y <= top+50 {
+			if y >= top && y <= top+wizardBrandCardH {
 				selectWizardBrand(i)
 				return
 			}
@@ -465,7 +489,7 @@ func updateWizardSelectedFromControls(hwnd uintptr) {
 }
 
 func brandOptionTop(index int) int32 {
-	return int32(206 + index*54)
+	return int32(194 + index*wizardBrandItemH)
 }
 
 func startWizardInstall(hwnd uintptr) {
@@ -597,15 +621,17 @@ func moveControl(hwnd uintptr, x, y, width, height int32) {
 func configureWizardBusyLayout() {
 	showControl(wizardGroupHwnd, false)
 	showWizardBrandControls(false)
-	moveControl(wizardDetailHwnd, 210, 190, 440, 92)
-	moveControl(wizardProgressHwnd, 210, 306, 440, 14)
+	contentW := int32(wizardContentRight - wizardContentLeft - 32)
+	moveControl(wizardDetailHwnd, wizardContentLeft+16, 190, contentW, 92)
+	moveControl(wizardProgressHwnd, wizardContentLeft+16, 306, contentW, 14)
 }
 
 func configureWizardDoneLayout() {
 	showControl(wizardGroupHwnd, false)
 	showWizardBrandControls(false)
 	showControl(wizardProgressHwnd, false)
-	moveControl(wizardDetailHwnd, 210, 190, 440, 178)
+	contentW := int32(wizardContentRight - wizardContentLeft - 32)
+	moveControl(wizardDetailHwnd, wizardContentLeft+16, 190, contentW, 178)
 }
 
 func enableWizardBrandControls(enabled bool) {
@@ -628,28 +654,31 @@ func paintWizard(hwnd uintptr) {
 	}
 	defer procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 	fill(hdc, 0, 0, wizardClientWidth, wizardClientHeight, rgb(248, 250, 252))
-	fill(hdc, 0, 0, 178, wizardClientHeight, rgb(238, 246, 255))
-	fill(hdc, 178, 0, 180, wizardClientHeight, rgb(219, 234, 254))
+	fill(hdc, 0, 0, wizardSidebarWidth, wizardClientHeight, rgb(238, 246, 255))
+	fill(hdc, wizardSidebarWidth, 0, wizardSidebarWidth+2, wizardClientHeight, rgb(219, 234, 254))
 	fill(hdc, 0, 0, wizardClientWidth, 6, rgb(59, 130, 246))
 	drawWizardLogo(hdc)
 	if wizardInstallState == 0 {
-		drawPanel(hdc, 194, 164, 594, 374)
+		lastBrandBottom := brandOptionTop(len(brandOptions)-1) + wizardBrandCardH + 4
+		panelBottom := lastBrandBottom + 6
+		drawPanel(hdc, wizardContentLeft, 155, wizardContentRight, panelBottom)
 		for i, brand := range brandOptions {
 			top := brandOptionTop(i)
-			drawBrandOptionPanel(hdc, i, 214, top, wizardSelected == i)
-			drawTextWithFont(hdc, brandDescription(brand), 254, top+34, 572, top+50, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+			drawBrandOptionPanel(hdc, i, wizardPanelLeft, top, wizardSelected == i)
+			drawTextWithFont(hdc, brandDescription(brand), wizardPanelLeft+40, top+32, wizardPanelRight-10, top+wizardBrandCardH, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
 		}
 	} else if wizardInstallState == 1 {
-		drawPanel(hdc, 194, 158, 666, 342)
+		drawPanel(hdc, wizardContentLeft, 158, wizardContentRight, 342)
 	} else {
-		drawPanel(hdc, 194, 158, 666, 398)
+		drawPanel(hdc, wizardContentLeft, 158, wizardContentRight, 398)
 	}
 	drawTextWithFont(hdc, tr("sidebar.subtitle"), 30, 166, 156, 190, rgb(59, 130, 246), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
 	drawWizardSteps(hdc)
 	drawTextWithFont(hdc, tr("language"), 30, 326, 164, 350, rgb(71, 85, 105), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
 	drawTextWithFont(hdc, tr("sidebar.secure"), 30, 356, 166, 402, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, "v"+version, 594, 34, 744, 56, rgb(100, 116, 139), dtRight|dtSingleLine|dtNoPrefix, wizardFont)
-	fill(hdc, 194, 420, 726, 422, rgb(226, 232, 240))
+	drawTextWithFont(hdc, "v"+version, 594, 34, wizardContentRight, 56, rgb(100, 116, 139), dtRight|dtSingleLine|dtNoPrefix, wizardFont)
+	separatorY := int32(wizardClientHeight) - wizardButtonH - 26 - 16 // above buttons
+	fill(hdc, wizardContentLeft, separatorY, wizardContentRight, separatorY+2, rgb(226, 232, 240))
 }
 
 func brandDescription(brand brandOption) string {
@@ -746,8 +775,8 @@ func drawPanel(hdc uintptr, left, top, right, bottom int32) {
 
 func drawBrandOptionPanel(hdc uintptr, index int, left, top int32, selected bool) {
 	_ = index
-	right := int32(572)
-	bottom := top + 66
+	right := int32(wizardPanelRight)
+	bottom := top + wizardBrandCardH
 	fillColor := rgb(255, 255, 255)
 	borderColor := rgb(226, 232, 240)
 	accentColor := rgb(203, 213, 225)

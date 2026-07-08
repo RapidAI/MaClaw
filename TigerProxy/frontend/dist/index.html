@@ -13,6 +13,11 @@
         <h1>TigerProxy</h1>
         <p>CodeGen 本地协议转发</p>
       </div>
+      <div id="tokenStats" class="token-stats">
+        <span title="输入 tokens">↑ <strong id="promptTokens">0</strong></span>
+        <span title="输出 tokens">↓ <strong id="completionTokens">0</strong></span>
+        <span title="总计 tokens">Σ <strong id="totalTokens">0</strong></span>
+      </div>
       <div class="status-group">
         <span class="author">作者：Daniel 博士</span>
         <span id="loginChip" class="chip muted">未登录</span>
@@ -21,12 +26,9 @@
       </div>
     </section>
 
-    <section class="hero panel">
-      <div class="hero-copy">
-        <h2>连接状态</h2>
-        <p id="loginState">读取状态中...</p>
-      </div>
-      <div class="actions hero-actions">
+    <div class="topbar-actions">
+      <span id="loginState" class="login-state-text">读取状态中...</span>
+      <div class="actions">
         <button id="installCodexBtn" class="ghost codex-btn" style="display:none;">安装 Codex Desktop</button>
         <button id="configCodexBtn" class="ghost codex-btn">配置 Codex</button>
         <button id="loginBtn" class="primary">SSO 登录</button>
@@ -41,6 +43,17 @@
           <div id="codexProgressFill" class="codex-progress-fill"></div>
         </div>
       </div>
+    </div>
+
+    <section class="panel quick-guide-panel">
+      <h3>快速使用指南</h3>
+      <ol class="guide-steps" role="list">
+        <li>确认 <strong>Codex Desktop</strong> 已安装 <span class="step-hint">未安装则点击安装按钮</span></li>
+        <li>点击 <strong>SSO 登录</strong> 完成认证 <span class="step-hint">登录后自动获取模型列表</span></li>
+        <li>选择 <strong>默认模型</strong> 并点击 <strong>保存</strong></li>
+        <li>点击 <strong>配置 Codex</strong> 按钮</li>
+        <li>启动 <strong>Codex Desktop</strong> 开始使用</li>
+      </ol>
     </section>
 
     <section class="layout-grid">
@@ -52,15 +65,13 @@
 
         <div class="field-stack">
           <div class="field">
-            <label>监听地址</label>
+            <label>监听地址 <span class="label-hint">默认监听全部地址，可用 127.0.0.1 或局域网 IP 访问</span></label>
             <input id="listenAddress" spellcheck="false" />
-            <p class="hint">默认监听全部地址，可用 127.0.0.1 或局域网 IP 访问。</p>
           </div>
 
           <div class="field">
-            <label>API Key</label>
+            <label>API Key <span class="label-hint">OpenAI 与 Anthropic 共用同一个本地 API Key</span></label>
             <div class="inline"><input id="apiKey" spellcheck="false" /><button id="genKeyBtn" class="ghost">生成</button></div>
-            <p class="hint">OpenAI 与 Anthropic 共用同一个本地 API Key。</p>
           </div>
 
           <label class="check-row" for="autoStart">
@@ -92,22 +103,23 @@
       <aside class="panel endpoint-panel">
         <div class="section-head endpoints-head"><h2>协议地址</h2></div>
         <div class="endpoint-list">
-          <div class="endpoint"><span>OpenAI</span><code id="openaiURL" class="full-url"></code><button data-copy="openaiURL">复制</button></div>
-          <div class="endpoint"><span>Anthropic</span><code id="anthropicURL" class="full-url"></code><button data-copy="anthropicURL">复制</button></div>
-          <div class="endpoint"><span>Health</span><code id="healthURL" class="full-url"></code><button data-copy="healthURL">复制</button></div>
+          <div class="endpoint"><span>OpenAI</span><code id="openaiURL" class="full-url clickable" title="点击复制"></code></div>
+          <div class="endpoint"><span>Anthropic</span><code id="anthropicURL" class="full-url clickable" title="点击复制"></code></div>
+          <div class="endpoint"><span>Health</span><code id="healthURL" class="full-url clickable" title="点击复制"></code></div>
         </div>
 
         <div class="lan-block">
           <h3>局域网地址</h3>
           <div id="lanURLs" class="lan"></div>
         </div>
-      </aside>
-    </section>
 
-    <section class="panel notes">
-      <div><strong>OpenAI</strong><code id="openaiEnv" class="full-url"></code></div>
-      <div><strong>Anthropic</strong><code id="anthropicEnv" class="full-url"></code></div>
-      <p>请求中的 model 字段会透传到 CodeGen，agent 可继续使用 <code>/model</code> 查看和切换模型。</p>
+        <div class="env-block">
+          <h3>环境变量</h3>
+          <div class="env-item"><strong>OpenAI</strong><code id="openaiEnv" class="full-url clickable" title="点击复制"></code></div>
+          <div class="env-item"><strong>Anthropic</strong><code id="anthropicEnv" class="full-url clickable" title="点击复制"></code></div>
+          <p class="env-note">请求中的 model 字段会透传到 CodeGen，agent 可继续使用 <code>/model</code> 查看和切换模型。</p>
+        </div>
+      </aside>
     </section>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

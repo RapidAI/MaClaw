@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -64,6 +65,7 @@ type IMMessageHandler struct {
 	toolRouter       *ToolRouter
 	usageTracker     *tool.UsageTracker
 	taskStore        *task.Store
+	goalStore        *goal.Store
 	cachedTools      []map[string]interface{}
 	cachedToolDefGen *ToolDefinitionGenerator
 	toolsCacheTime   time.Time

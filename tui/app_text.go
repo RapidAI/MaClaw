@@ -130,6 +130,9 @@ Chat:
   /loop <cmd> <goal>  Goal-driven verification loop (like Claude Code /loop)
                       e.g. /loop "go test ./..." make all tests pass
                       Options: --max N, --timeout N, --dir path
+  /goal <objective>  Persistent long-running goal (auto-tracked across turns)
+                      e.g. /goal implement user login with JWT auth
+                      Sub-commands: status, pause, resume, cancel
 Navigation:
   /setup [email] Open first-run Setup, optionally prefilled
   /redeem [code] Open Service Redeem, optionally prefilled
@@ -262,6 +265,9 @@ Shortcuts:
   /new /clear    清除对话历史，开始新对话
   /btw <查询>    侧查询（不打断当前任务上下文）
   /loop <命令> <目标> 目标驱动验证循环；选项: --max 轮数, --timeout 秒, --dir 路径
+  /goal <目标描述> 持久化长时间自主目标（跨轮次自动跟踪）
+                    例: /goal 实现用户登录功能，包含JWT认证
+                    子命令: status, pause, resume, cancel
 页面跳转:
   /setup [邮箱]  打开首次设置，可自动填入
   /redeem [兑换码] 打开服务兑换，可自动填入

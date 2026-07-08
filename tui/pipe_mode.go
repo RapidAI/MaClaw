@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -147,6 +148,7 @@ func runPrompt(promptText string) {
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
+		GoalStore:   goal.NewStore(filepath.Join(dataSubDir, "goals")),
 		SecurityGuard: tuiSecurityGuard(func() corelib.AppConfig {
 			return app.appConfig
 		}),

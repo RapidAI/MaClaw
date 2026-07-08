@@ -91,7 +91,77 @@ type Server struct {
 	clientName     string // upstream CodeGen client identity for User-Agent and X-Codegen-Client-Name
 	clientKey      string // optional local proxy API key for OpenAI/Anthropic clients
 	modelAliasByID map[string]string
+
+	usageCallback func(promptTokens, completionTokens, totalTokens int)
 }
+
+// SetUsageCallback registers a function that is called after each proxied
+// request with the token counts reported by the upstream API. Thread-safe.
+func (s *Server) SetUsageCallback(cb func(promptTokens, completionTokens, totalTokens int)) {
+	s.mu.Lock()
+	s.usageCallback = cb
+	s.mu.Unlock()
+}
+
+func (s *Server) reportUsage(u *openaiUsage) {
+	if u == nil {
+		return
+	}
+	s.mu.RLock()
+	cb := s.usageCallback
+	s.mu.RUnlock()
+	if cb != nil {
+		cb(u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	}
+}
+
+func (s *Server) extractAndReportUsage(body []byte) {
+	// Try non-streaming JSON response first.
+	var resp struct {
+		Usage *openaiUsage `json:"usage"`
+	}
+	if json.Unmarshal(body, &resp) == nil && resp.Usage != nil {
+		s.reportUsage(resp.Usage)
+		return
+	}
+	// For streaming (SSE), scan for the last "data:" line containing usage.
+	// OpenAI streams emit usage in the final chunk (when stream_options.include_usage=true).
+	idx := bytes.LastIndex(body, []byte(`"prompt_tokens"`))
+	if idx < 0 {
+		return
+	}
+	// Find the enclosing "data: " line.
+	start := bytes.LastIndex(body[:idx], []byte("data: "))
+	if start < 0 {
+		return
+	}
+	line := body[start+6:] // skip "data: "
+	if end := bytes.IndexByte(line, '\n'); end > 0 {
+		line = line[:end]
+	}
+	var chunk struct {
+		Usage *openaiUsage `json:"usage"`
+	}
+	if json.Unmarshal(line, &chunk) == nil {
+		s.reportUsage(chunk.Usage)
+	}
+}
+
+// tailBuffer is an io.Writer that retains only the last max bytes written.
+type tailBuffer struct {
+	max  int
+	data []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.data = append(t.data, p...)
+	if len(t.data) > t.max {
+		t.data = t.data[len(t.data)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) Bytes() []byte { return t.data }
 
 // NewServer creates a new codegen proxy server.
 func NewServer(addr string) *Server {
@@ -583,7 +653,14 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(upResp.StatusCode)
-	_, _ = io.Copy(w, upResp.Body)
+	// Capture the tail of the response body to extract usage for token counting.
+	// For streaming (SSE), usage is in the last few hundred bytes; for non-streaming,
+	// the full JSON is typically <10KB. We cap at 4KB to avoid buffering large streams.
+	tail := &tailBuffer{max: 4096}
+	_, _ = io.Copy(w, io.TeeReader(upResp.Body, tail))
+	if upResp.StatusCode == http.StatusOK {
+		s.extractAndReportUsage(tail.Bytes())
+	}
 }
 
 // handleOpenAIResponses accepts the OpenAI Responses API shape used by newer
@@ -953,6 +1030,7 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 		"response":        responsesStreamResponseObject(respID, model, outputText, true, textOutputIndex, toolOrder, toolCalls, streamUsage),
 	})
 	flusher.Flush()
+	s.reportUsage(streamUsage)
 }
 
 type responsesStreamToolCallAccum struct {
@@ -1217,6 +1295,7 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, upResp *http.Res
 	anthResp := convertOpenAIToAnthropic(openaiResp, model)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(anthResp)
+	s.reportUsage(openaiResp.Usage)
 }
 
 // handleStreamResponse converts an OpenAI SSE stream to Anthropic SSE stream.
@@ -1276,6 +1355,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 	var toolOrder []int
 	var legacyFunction *streamToolCallAccum
 	var payloadErr error
+	var streamUsage *openaiUsage
 
 	handlePayload := func(payload string) bool {
 		payload = strings.TrimSpace(payload)
@@ -1291,6 +1371,9 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 			return false
 		}
 		if len(chunk.Choices) == 0 {
+			if chunk.Usage != nil {
+				streamUsage = chunk.Usage
+			}
 			return true
 		}
 		delta := chunk.Choices[0].Delta
@@ -1444,6 +1527,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, upResp *http.Respon
 
 	writeSSE(w, "message_stop", map[string]interface{}{"type": "message_stop"})
 	flusher.Flush()
+	s.reportUsage(streamUsage)
 }
 
 type streamToolCallAccum struct {

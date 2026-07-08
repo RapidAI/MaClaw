@@ -40,6 +40,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -212,9 +213,12 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		}
 		return sshtool.ToolSSH(deps, args)
 	}
+	goalStore := goal.NewStore(filepath.Join(dataDir, "data", "goals"))
+	app.goalStore = goalStore
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
+		GoalStore:   goalStore,
 		SecurityGuard: tuiSecurityGuard(func() corelib.AppConfig {
 			return app.appConfig
 		}),
@@ -437,6 +441,7 @@ type TUIApp struct {
 	appConfig        corelib.AppConfig
 	history          *agent.ConversationMemory
 	taskStore        *task.Store
+	goalStore        *goal.Store
 	toolRegistry     *agent.CoreToolRegistry
 	ttsManager       *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
@@ -772,6 +777,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.routeMissingLLMFromChat()
 				}
 				return m, m.handleLoopCommand(msg.Text)
+			}
+			if trimmedCmd == "/goal" || strings.HasPrefix(trimmedCmd, "/goal ") {
+				return m, m.handleSlashCommand(msg.Text)
 			}
 			return m, m.handleSlashCommand(msg.Text)
 		}
@@ -1123,6 +1131,10 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 				wf.understanding.CancelSession("tui-user")
 			}
 		}
+		// Clear active goal on conversation reset.
+		if m.app.goalStore != nil {
+			m.app.goalStore.Clear("default")
+		}
 		m.app.workflowMu.Lock()
 		m.app.pendingPhasePrompt = ""
 		m.app.workflowAgentLoop = false
@@ -1289,6 +1301,9 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		m.root.Help.Show()
 		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenHelp"))
 		return nil
+
+	case cmdName == "/goal":
+		return m.handleGoalSlashCommand(text)
 
 	default:
 		m.root.Chat.AppendSystemMessage(tuiFormat(m.uiLang(), "unknownCommand", text))

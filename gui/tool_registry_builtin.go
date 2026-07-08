@@ -314,6 +314,21 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolTask(args) })
 
+	// --- Goal management tool (persistent long-running objectives) ---
+	reg("goal", "管理持久化长时间运行目标（action: create/complete/fail/get）。创建目标后系统自动持续推进直到达成或预算耗尽。只在用户明确要求时创建目标，不要从普通任务中推断。",
+		ToolCategoryBuiltin, []string{"goal", "objective", "autonomous", "long-running"},
+		map[string]interface{}{
+			"action":              map[string]string{"type": "string", "description": "操作: create/complete/fail/get"},
+			"objective":           map[string]string{"type": "string", "description": "目标描述（create 时必填）"},
+			"token_budget":        map[string]string{"type": "integer", "description": "Token 预算上限（可选，0=无限制）"},
+			"max_turns":           map[string]string{"type": "integer", "description": "最大迭代轮次（可选，默认50）"},
+			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "可验证的完成条件列表（可选）", "items": map[string]string{"type": "string"}},
+			"project_path":        map[string]string{"type": "string", "description": "项目工作目录（可选）"},
+			"summary":             map[string]string{"type": "string", "description": "完成总结（complete 时使用）"},
+			"reason":              map[string]string{"type": "string", "description": "失败原因（fail 时使用）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolGoal(args) })
+
 	// --- Sub-agent delegation tool ---
 	reg("delegate_task", "将任务委派给专业子 Agent 处理。coding_workflow 会同步运行内部 CodingSubAgent 完成编码任务，不返回占位激活文本；help 用于使用帮助。",
 		ToolCategoryBuiltin, []string{"delegate", "subagent", "workflow", "help"},

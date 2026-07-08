@@ -55,6 +55,7 @@ var CoreToolNames = map[string]bool{
 	"set_nickname":     true,
 	"discover_tool":    true,
 	"task":             true,
+	"goal":             true,
 	"async_wait":       true,
 	"compress_context": true,
 	"tts":              true,

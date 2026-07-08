@@ -42,6 +42,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	defer lifecycle.Cleanup()
 	trimmed := lifecycle.Trimmed
 
+	// Notify goal continuation engine that a user message arrived.
+	// This cancels any pending continuation (user takes priority) and resets
+	// the no-tool counter. Skip for goal-continuation self-messages.
+	if msg.Platform != "goal-continuation" && h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.OnUserMessage(msg.UserID)
+	}
+
 	if resp, handled := h.handleImmediateIMCommand(msg, trimmed, onProgress, onToken); handled {
 		return resp
 	}

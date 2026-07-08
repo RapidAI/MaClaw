@@ -72,6 +72,10 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 			h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, &respSnapshot, workflowAgentLoop)
 		}
 		h.recordAgentLoopTerminalExperience(loopCtx, &respSnapshot)
+
+		// Goal continuation: after all post-loop side effects, check if the
+		// active goal should trigger the next iteration.
+		h.maybeScheduleGoalContinuation(msg.UserID, &respSnapshot, msg.Platform)
 	}()
 }
 

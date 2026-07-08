@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -16,6 +17,11 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		h.memory.Clear(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		h.flushEvidenceOnSessionEnd(msg.UserID)
+		// Clear active goal on conversation reset — the user is starting fresh.
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.CancelPending(msg.UserID)
+			h.getGoalStore().Clear(msg.UserID)
+		}
 		resp := &IMAgentResponse{Text: localizedIMConversationResetMessage(responseLang), ClearUI: true}
 		if ctx := h.getSessionLoopCtx(msg.UserID); ctx != nil {
 			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
@@ -78,9 +84,19 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		return h.handleLoopCommand(msg, trimmed, onProgress, onToken), true
 	case imCommandWorkflow:
 		return h.handleWorkflowCommand(msg, trimmed, responseLang)
+	case imCommandGoal:
+		return h.handleGoalCommand(msg, trimmed), true
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
+		// Pause active goal on cancel (don't clear — user can resume later)
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.CancelPending(msg.UserID)
+			if g := h.getGoalStore().Get(msg.UserID); g != nil && g.Status == goal.StatusActive {
+				h.getGoalStore().Pause(msg.UserID, g.GoalID)
+				log.Printf("[goal] paused on /cancel: user=%s goal_id=%s", msg.UserID, g.GoalID)
+			}
+		}
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
 				h.confirmationStore.clear(msg.UserID)
@@ -228,6 +244,9 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - goal-driven verification loop\n" +
 			"    e.g. /loop \"go test ./...\" make all tests pass\n" +
 			"    options: --max N (iterations), --timeout N (seconds), --dir path\n" +
+			"/goal <objective> - persistent long-running autonomous goal\n" +
+			"    e.g. /goal implement user login with JWT auth\n" +
+			"    sub-commands: status, pause, resume, cancel\n" +
 			"/workflow [type] - list or force-start a workflow\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
@@ -242,6 +261,9 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - 目標驅動的驗證循環\n" +
 			"    例：/loop \"go test ./...\" 讓所有測試通過\n" +
 			"    選項：--max N（迭代次數），--timeout N（秒），--dir 路徑\n" +
+			"/goal <目標> - 持久化長時間自主目標\n" +
+			"    例：/goal 實現用戶登錄功能，包含JWT認證\n" +
+			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [類型] - 列出或強制啟動工作流\n" +
 			"/compress - 壓縮對話歷史\n" +
 			"/memory - 查看記憶狀態\n" +
@@ -256,6 +278,9 @@ func localizedIMSlashHelpText(lang string) string {
 			"/loop <verify_cmd> <goal> - 目标驱动的验证循环\n" +
 			"    例：/loop \"go test ./...\" 让所有测试通过\n" +
 			"    选项：--max N（迭代次数），--timeout N（秒），--dir 路径\n" +
+			"/goal <目标> - 持久化长时间自主目标\n" +
+			"    例：/goal 实现用户登录功能，包含JWT认证\n" +
+			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [类型] - 列出或强制启动工作流\n" +
 			"/compress - 压缩对话历史\n" +
 			"/memory - 查看记忆状态\n" +

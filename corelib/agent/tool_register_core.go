@@ -10,6 +10,7 @@ package agent
 import (
 	"context"
 
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -23,6 +24,7 @@ const coreInlineToolPayloadMaxLength = 1800
 type CoreToolDeps struct {
 	MemoryStore *memory.Store
 	TaskStore   *task.Store
+	GoalStore   *goal.Store
 
 	// SecurityGuard can reject a tool call before the handler runs.
 	// Hosts use this to apply centrally managed security policy.
@@ -285,6 +287,22 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Required: []string{"action"},
 		Handler:  func(args map[string]interface{}) string { return ToolTask(deps.TaskStore, args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "goal",
+		Description: "Manage a persistent long-running goal (action: create/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The system auto-continues until the goal is complete or budget is exhausted.",
+		Properties: map[string]interface{}{
+			"action":              map[string]string{"type": "string", "description": "Action: create, complete, fail, get"},
+			"objective":           map[string]string{"type": "string", "description": "Goal description (required for create)"},
+			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
+			"max_turns":           map[string]string{"type": "integer", "description": "Max iteration rounds (optional, default 50)"},
+			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (optional)", "items": map[string]string{"type": "string"}},
+			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action)"},
+			"reason":              map[string]string{"type": "string", "description": "Failure reason (for fail action)"},
+		},
+		Required: []string{"action"},
+		Handler:  func(args map[string]interface{}) string { return ToolGoal(deps.GoalStore, args) },
 	})
 
 	r.Register(ToolEntry{

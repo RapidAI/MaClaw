@@ -34,6 +34,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
@@ -116,6 +117,7 @@ type App struct {
 	intentEmbedder          embedding.Embedder // local model held for UIC and reused when vector search is enabled
 	intentEmbedderPath      string             // absolute/loader-provided path for the shared local embedding runtime
 	usageTracker            *tool.UsageTracker
+	goalContinuation        *GoalContinuationEngine
 	experienceEvents        *lifecycle.EventTrail
 	experienceSink          lifecycle.EventSink
 	experienceExtractor     *ExperienceExtractor
@@ -507,6 +509,11 @@ func (a *App) initCoreInfra() {
 				}
 			}
 		}
+	}
+	if a.goalContinuation == nil {
+		goalDataDir := filepath.Join(a.GetDataDir(), "goals")
+		goalStore := goal.NewStore(goalDataDir)
+		a.goalContinuation = NewGoalContinuationEngine(goalStore, a)
 	}
 	if a.sharedContext == nil {
 		a.sharedContext = NewSharedContextStore()
