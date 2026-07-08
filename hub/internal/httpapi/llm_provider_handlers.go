@@ -3062,9 +3062,11 @@ func hubResponsesStreamResponseObject(id, model, text string, completed bool, te
 		"incomplete_details":  nil,
 		"error":               nil,
 		"usage": map[string]any{
-			"input_tokens":  usage.InputTokens,
-			"output_tokens": usage.OutputTokens,
-			"total_tokens":  usage.TotalTokens,
+			"input_tokens":          usage.InputTokens,
+			"output_tokens":         usage.OutputTokens,
+			"total_tokens":          usage.TotalTokens,
+			"input_tokens_details":  map[string]any{"cached_tokens": 0},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 0},
 		},
 	}
 }

@@ -9474,24 +9474,60 @@ func maclawAppBundledSkillSkipFileName(name string) bool {
 }
 
 func (a *App) installBundledMaclawAppDependency(packageJSON string, dep maclawAppInstallPlanDependency) (bool, error) {
+	// Primary: check bundled_dependencies in the provided packageJSON.
 	bundled := maclawAppBundledDependenciesForPackageJSON(packageJSON)
-	if len(bundled.Skills) == 0 {
-		return false, nil
+	if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate != nil {
+		if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
+			return true, err
+		}
+		return true, nil
 	}
-	var candidate *maclawAppBundledSkillEntry
-	for i := range bundled.Skills {
-		if maclawAppBundledSkillMatchesDependency(bundled.Skills[i], dep) {
-			candidate = &bundled.Skills[i]
-			break
+
+	// Fallback: check bundled_dependencies in persisted install records.
+	// This covers the case where the caller passes a fresh manifest (e.g.,
+	// appToManifest from the frontend) that doesn't include bundled_dependencies,
+	// but the original install package (stored in app_install_records.json) does.
+	if candidate := a.findBundledSkillInInstallRecords(dep); candidate != nil {
+		if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// findBundledSkillInInstallRecords searches all install records for a bundled
+// skill matching the given dependency. Returns nil if not found.
+func (a *App) findBundledSkillInInstallRecords(dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
+	if a == nil {
+		return nil
+	}
+	registry, err := a.readMaclawAppInstallRegistry()
+	if err != nil || len(registry.Installs) == 0 {
+		return nil
+	}
+	for _, record := range registry.Installs {
+		if len(record.Package) == 0 {
+			continue
+		}
+		bundled := maclawAppBundledDependenciesFromDoc(record.Package)
+		if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate != nil {
+			return candidate
 		}
 	}
-	if candidate == nil {
-		return false, nil
+	return nil
+}
+
+// maclawAppFindBundledSkillForDep searches a bundled dependencies set for a
+// skill matching the given dependency.
+func maclawAppFindBundledSkillForDep(bundled maclawAppBundledDependencies, dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
+	for i := range bundled.Skills {
+		if maclawAppBundledSkillMatchesDependency(bundled.Skills[i], dep) {
+			return &bundled.Skills[i]
+		}
 	}
-	if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
-		return true, err
-	}
-	return true, nil
+	return nil
 }
 
 func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDependency) (bool, error) {

@@ -14,6 +14,7 @@
         <p>CodeGen 本地协议转发</p>
       </div>
       <div class="status-group">
+        <span class="author">作者：Daniel 博士</span>
         <span id="loginChip" class="chip muted">未登录</span>
         <span id="statusBadge" class="badge">启动中</span>
         <button id="hideBtn" class="window-hide" title="隐藏主界面">隐藏</button>
@@ -26,8 +27,19 @@
         <p id="loginState">读取状态中...</p>
       </div>
       <div class="actions hero-actions">
+        <button id="installCodexBtn" class="ghost codex-btn" style="display:none;">安装 Codex Desktop</button>
+        <button id="configCodexBtn" class="ghost codex-btn">配置 Codex</button>
         <button id="loginBtn" class="primary">SSO 登录</button>
         <button id="logoutBtn" class="ghost danger">退出登录</button>
+      </div>
+      <div id="codexProgress" class="codex-progress" style="display:none;">
+        <div class="codex-progress-info">
+          <span id="codexProgressMsg">准备下载...</span>
+          <span id="codexProgressPct">0%</span>
+        </div>
+        <div class="codex-progress-track">
+          <div id="codexProgressFill" class="codex-progress-fill"></div>
+        </div>
       </div>
     </section>
 
@@ -35,7 +47,7 @@
       <section class="panel config-panel">
         <div class="section-head">
           <h2>配置</h2>
-          <button id="saveBtn" class="primary compact">保存并重启</button>
+          <button id="saveBtn" class="primary compact">保存</button>
         </div>
 
         <div class="field-stack">

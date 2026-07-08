@@ -100,7 +100,7 @@ async function save(options = {}) {
     });
     await refresh();
     if (!options.silent) {
-      notify("已保存并重启代理");
+      notify("已保存");
     }
   } finally {
     setBusy(saveBtn, false);
@@ -130,7 +130,7 @@ $("loginBtn").addEventListener("click", async () => {
 $("logoutBtn").addEventListener("click", async () => {
   try { await api.Logout(); await refresh(); notify("已退出登录"); } catch (err) { notify(errorMessage(err), "error"); }
 });
-$("genKeyBtn").addEventListener("click", async () => { $("apiKey").value = await api.GenerateAPIKey(); notify("已生成新的 API Key，保存后生效"); });
+$("genKeyBtn").addEventListener("click", async () => { const btn = $("genKeyBtn"); btn.disabled = true; try { $("apiKey").value = await api.GenerateAPIKey(); await refresh(); notify("已生成并保存新的 API Key"); } catch(err) { notify(errorMessage(err), "error"); } finally { btn.disabled = false; } });
 $("hideBtn").addEventListener("click", async () => { await api.WindowHide(); });
 $("autoStart").addEventListener("change", async (event) => {
   const checkbox = event.currentTarget;
@@ -150,5 +150,144 @@ $("autoStart").addEventListener("change", async (event) => {
 document.querySelectorAll("button[data-copy]").forEach((btn) => {
   btn.addEventListener("click", async () => { await navigator.clipboard.writeText($(btn.dataset.copy).textContent || ""); notify("已复制"); });
 });
+$("configCodexBtn").addEventListener("click", async () => {
+  const btn = $("configCodexBtn");
+  setBusy(btn, true, "配置中...");
+  try {
+    const msg = await api.ConfigureCodex();
+    if (msg && msg.includes("未检测到")) {
+      notify(msg, "error");
+    } else {
+      notify(msg || "Codex 配置已写入 ~/.codex/");
+    }
+    checkCodexInstalled(); // refresh button states
+  } catch (err) {
+    notify(errorMessage(err), "error");
+  } finally {
+    setBusy(btn, false);
+  }
+});
+$("installCodexBtn").addEventListener("click", async () => {
+  const btn = $("installCodexBtn");
+  if (btn.dataset.installing) return; // double-click guard
+  btn.dataset.installing = "1";
+  btn.style.display = "none";
+  const progressEl = $("codexProgress");
+  const progressMsg = $("codexProgressMsg");
+  const progressPct = $("codexProgressPct");
+  const progressFill = $("codexProgressFill");
+  progressEl.style.display = "";
+  progressEl.className = "codex-progress";
+  progressMsg.textContent = "准备安装...";
+  progressPct.textContent = "";
+  progressFill.style.width = "5%";
+  try {
+    await api.InstallCodexDesktop();
+    // Progress updates come via events — poll for completion as backup
+    pollCodexInstalled(60, 5000); // poll every 5s for up to 5 minutes
+  } catch (err) {
+    progressEl.className = "codex-progress error";
+    progressMsg.textContent = errorMessage(err);
+    progressPct.textContent = "失败";
+    progressFill.style.width = "100%";
+    notify(errorMessage(err), "error");
+    btn.style.display = "";
+    delete btn.dataset.installing;
+    setTimeout(() => { progressEl.style.display = "none"; }, 8000);
+  }
+  // NOTE: do NOT delete btn.dataset.installing here — keep the guard active
+  // until a terminal event ("done"/"error") resets it. This prevents double winget launches.
+});
+
+// Listen for codex install progress events from backend
+if (window.runtime && window.runtime.EventsOn) {
+  window.runtime.EventsOn("codex-install-progress", (data) => {
+    const progressEl = $("codexProgress");
+    const progressMsg = $("codexProgressMsg");
+    const progressPct = $("codexProgressPct");
+    const progressFill = $("codexProgressFill");
+    if (!data || !progressEl) return;
+    progressEl.style.display = "";
+    const pct = Math.round(data.percent || 0);
+    progressMsg.textContent = data.message || "";
+    progressPct.textContent = pct > 0 ? pct + "%" : "";
+    progressFill.style.width = Math.max(pct, 5) + "%";
+    if (data.phase === "done") {
+      // Deduplicate: skip if already shown as done (poll may have fired first)
+      if (progressEl.classList.contains("done")) return;
+      progressEl.className = "codex-progress done";
+      progressPct.textContent = "✓";
+      progressFill.style.width = "100%";
+      notify(data.message || "Codex Desktop 安装完成！");
+      $("installCodexBtn").style.display = "none";
+      delete $("installCodexBtn").dataset.installing;
+      setTimeout(() => { progressEl.style.display = "none"; }, 6000);
+    } else if (data.phase === "error") {
+      // Deduplicate: skip if already terminal
+      if (progressEl.classList.contains("done") || progressEl.classList.contains("error")) return;
+      progressEl.className = "codex-progress error";
+      progressPct.textContent = "✗";
+      progressFill.style.width = "100%";
+      $("installCodexBtn").style.display = "";
+      delete $("installCodexBtn").dataset.installing;
+      notify(data.message || "安装失败", "error");
+      setTimeout(() => { progressEl.style.display = "none"; }, 8000);
+    } else if (data.phase === "fallback") {
+      progressMsg.textContent = data.message || "正在打开 Microsoft Store...";
+      progressFill.style.width = "100%";
+      // Keep progress visible — polling will detect install
+    }
+  });
+}
+
+function pollCodexInstalled(remaining, intervalMs) {
+  if (remaining <= 0) return;
+  setTimeout(async () => {
+    const installed = await api.IsCodexInstalled().catch(() => false);
+    if (installed) {
+      const progressEl = $("codexProgress");
+      const btn = $("installCodexBtn");
+      // Only notify if progress bar hasn't already shown "done"
+      if (progressEl && !progressEl.classList.contains("done")) {
+        progressEl.className = "codex-progress done";
+        $("codexProgressPct").textContent = "✓";
+        $("codexProgressFill").style.width = "100%";
+        $("codexProgressMsg").textContent = "Codex Desktop 安装成功！";
+        notify("Codex Desktop 安装完成！现在可以点击「配置 Codex」。");
+        setTimeout(() => { progressEl.style.display = "none"; }, 6000);
+      }
+      btn.style.display = "none";
+      delete btn.dataset.installing;
+      $("configCodexBtn").removeAttribute("title");
+    } else {
+      pollCodexInstalled(remaining - 1, intervalMs);
+    }
+  }, intervalMs);
+}
+
+async function checkCodexInstalled() {
+  try {
+    const installed = await api.IsCodexInstalled();
+    const installBtn = $("installCodexBtn");
+    const configBtn = $("configCodexBtn");
+    if (installed) {
+      installBtn.style.display = "none";
+      configBtn.disabled = false;
+      configBtn.removeAttribute("title");
+    } else {
+      installBtn.style.display = "";
+      configBtn.disabled = false;
+      configBtn.setAttribute("title", "Codex 未安装，配置将预写入，安装后即可使用");
+    }
+  } catch (e) {
+    $("installCodexBtn").style.display = "";
+  }
+}
 
 refresh();
+checkCodexInstalled();
+
+// Listen for backend model list refresh (e.g. after startup re-fetches from server)
+if (window.runtime && window.runtime.EventsOn) {
+  window.runtime.EventsOn("models-refreshed", () => { refresh(); });
+}

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
@@ -69,6 +70,26 @@ func setAutoStartEnabled(enabled bool) error {
 }
 
 func autoStartCommand() (string, error) {
+	exe, err := resolvedExecutablePath()
+	if err != nil {
+		return "", err
+	}
+	return quoteWindowsCommandPath(exe) + " --hidden", nil
+}
+
+func autoStartCommandMatchesExecutable(command string) bool {
+	exe, err := resolvedExecutablePath()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(unquoteWindowsCommandPath(command), exe) &&
+		autoStartCommandHasHiddenArg(command)
+}
+
+// resolvedExecutablePath returns the canonical long-path of the current executable,
+// resolving 8.3 short names and symlinks. This ensures registry writes and reads
+// use a consistent path representation regardless of how the process was started.
+func resolvedExecutablePath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -77,16 +98,11 @@ func autoStartCommand() (string, error) {
 	if exe == "" {
 		return "", fmt.Errorf("executable path is empty")
 	}
-	return quoteWindowsCommandPath(exe) + " --hidden", nil
-}
-
-func autoStartCommandMatchesExecutable(command string) bool {
-	exe, err := os.Executable()
-	if err != nil {
-		return false
+	// EvalSymlinks on Windows also resolves 8.3 short paths to long paths.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
 	}
-	return strings.EqualFold(unquoteWindowsCommandPath(command), strings.TrimSpace(exe)) &&
-		autoStartCommandHasHiddenArg(command)
+	return exe, nil
 }
 
 func autoStartCommandHasHiddenArg(command string) bool {

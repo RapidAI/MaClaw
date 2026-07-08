@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,6 +32,99 @@ func TestDefaultDBPathUsesConfiguredRoot(t *testing.T) {
 	want := filepath.Join(root, "data.db")
 	if got := defaultDBPath(); got != want {
 		t.Fatalf("defaultDBPath()=%q, want %q", got, want)
+	}
+}
+
+func TestDefaultDBPathUsesProgramDataOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	t.Setenv("MACLAW_DATA_SQLITE_PATH", "")
+	t.Setenv("MACLAW_DATA_ROOT", "")
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		t.Skip("ProgramData env not set")
+	}
+	want := filepath.Join(pd, "MaClawDataSrv", "data.db")
+	if got := defaultDBPath(); got != want {
+		t.Fatalf("defaultDBPath()=%q, want ProgramData path %q", got, want)
+	}
+}
+
+func TestMaybeMigrateLegacyDataDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("migration only applies on Windows")
+	}
+	t.Setenv("MACLAW_DATA_SQLITE_PATH", "")
+	t.Setenv("MACLAW_DATA_ROOT", "")
+
+	// Simulate legacy dir with a data.db file.
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome) // os.UserHomeDir reads this on Windows
+	legacyDir := filepath.Join(tmpHome, ".maclaw_data")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "data.db"), []byte("test-db-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Also create a WAL file to test multi-file copy.
+	if err := os.WriteFile(filepath.Join(legacyDir, "data.db-wal"), []byte("wal-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Target: use a temp ProgramData so we don't pollute the real one.
+	fakePD := filepath.Join(t.TempDir(), "ProgramData")
+	if err := os.MkdirAll(fakePD, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ProgramData", fakePD)
+
+	dbPath := defaultDBPath()
+	result := maybeMigrateLegacyDataDir(dbPath)
+
+	// After migration, data.db should be at the new path.
+	if result != dbPath {
+		t.Fatalf("maybeMigrateLegacyDataDir returned %q, want %q", result, dbPath)
+	}
+	newDB := filepath.Join(fakePD, "MaClawDataSrv", "data.db")
+	content, err := os.ReadFile(newDB)
+	if err != nil {
+		t.Fatalf("data.db should exist at new location: %v", err)
+	}
+	if string(content) != "test-db-content" {
+		t.Fatalf("data.db content mismatch: %q", content)
+	}
+	// WAL should also be copied.
+	walContent, err := os.ReadFile(filepath.Join(fakePD, "MaClawDataSrv", "data.db-wal"))
+	if err != nil {
+		t.Fatalf("WAL should be copied: %v", err)
+	}
+	if string(walContent) != "wal-content" {
+		t.Fatalf("WAL content mismatch: %q", walContent)
+	}
+	// Legacy dir should be renamed to .migrated.
+	if _, err := os.Stat(legacyDir + ".migrated"); err != nil {
+		t.Fatalf("legacy dir should be renamed to .migrated: %v", err)
+	}
+}
+
+func TestMaybeMigrateLegacyDataDirNoopWhenNewPathExists(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("migration only applies on Windows")
+	}
+	// If new path already exists, migration should be a no-op.
+	newDir := filepath.Join(t.TempDir(), "MaClawDataSrv")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(newDir, "data.db")
+	if err := os.WriteFile(dbPath, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := maybeMigrateLegacyDataDir(dbPath)
+	if result != dbPath {
+		t.Fatalf("should return dbPath unchanged when new path exists: got %q", result)
 	}
 }
 

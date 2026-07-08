@@ -129,6 +129,7 @@ type openaiStreamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
+	Usage *openaiUsage `json:"usage,omitempty"`
 }
 
 type streamToolCallDelta struct {
@@ -501,14 +502,7 @@ func convertOpenAIChatResponseToResponses(body []byte, model string) ([]byte, er
 			})
 		}
 	}
-	usage := map[string]interface{}{}
-	if chat.Usage != nil {
-		usage = map[string]interface{}{
-			"input_tokens":  chat.Usage.PromptTokens,
-			"output_tokens": chat.Usage.CompletionTokens,
-			"total_tokens":  chat.Usage.TotalTokens,
-		}
-	}
+	usage := buildResponsesUsage(chat.Usage)
 	resp := map[string]interface{}{
 		"id":                  id,
 		"object":              "response",

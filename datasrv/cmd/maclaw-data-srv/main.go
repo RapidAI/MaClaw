@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -47,7 +48,10 @@ func runServer(ctx context.Context) error {
 	if err := validateListenAddr(addr); err != nil {
 		return err
 	}
-	store, err := structureddata.NewSQLiteStore(defaultDBPath())
+	dbPath := defaultDBPath()
+	dbPath = maybeMigrateLegacyDataDir(dbPath)
+	log.Printf("MaClawDataSrv data: %s", dbPath)
+	store, err := structureddata.NewSQLiteStore(dbPath)
 	if err != nil {
 		return fmt.Errorf("create sqlite store: %w", err)
 	}
@@ -240,6 +244,16 @@ func openAdminStore(path string) (*structureddata.SQLiteStore, error) {
 	}
 	if info, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// On Windows with default path, probe legacy location before reporting not found.
+			// This covers the case where admin command runs before the service has migrated data.
+			if runtime.GOOS == "windows" && path == defaultDBPath() {
+				if home, e := os.UserHomeDir(); e == nil && home != "" {
+					legacy := filepath.Join(home, ".maclaw_data", "data.db")
+					if _, e := os.Stat(legacy); e == nil {
+						return structureddata.NewSQLiteStore(legacy)
+					}
+				}
+			}
 			return nil, fmt.Errorf("database file does not exist: %s", path)
 		}
 		return nil, err
@@ -283,7 +297,7 @@ func printMainUsage(w io.Writer) {
 	fmt.Fprintln(w, "  MACLAW_DATA_TOKEN        Optional service bearer token. When set, it must be at least 24 characters.")
 	fmt.Fprintln(w, "  MACLAW_DATA_HTTP_ADDR    Optional listen address. Default: 127.0.0.1:18180. Plain HTTP is loopback-only.")
 	fmt.Fprintln(w, "  MACLAW_DATA_SQLITE_PATH  Optional explicit SQLite database path.")
-	fmt.Fprintln(w, "  MACLAW_DATA_ROOT         Optional data root. Default: $HOME/.maclaw_data; database file is data.db.")
+	fmt.Fprintln(w, "  MACLAW_DATA_ROOT         Optional data root. Default: %ProgramData%\\MaClawDataSrv (Windows) or $HOME/.maclaw_data (others); database file is data.db.")
 	fmt.Fprintln(w, "  MACLAW_DATA_API_KEYS     Optional JSON array of static API key policies.")
 	fmt.Fprintln(w, "  MACLAW_DATA_ADMIN_PASSWORD_MIN_LENGTH")
 	fmt.Fprintln(w, "                           Optional local administrator password minimum length. Default: 8, range: 8-128.")
@@ -329,7 +343,7 @@ func printAdminUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Common flags:")
 	fmt.Fprintln(w, "  -db path")
-	fmt.Fprintln(w, "      SQLite database path. Defaults to MACLAW_DATA_SQLITE_PATH, or MACLAW_DATA_ROOT/data.db, or $HOME/.maclaw_data/data.db.")
+	fmt.Fprintln(w, "      SQLite database path. Defaults to MACLAW_DATA_SQLITE_PATH, or MACLAW_DATA_ROOT/data.db, or %ProgramData%\\MaClawDataSrv\\data.db (Windows) / $HOME/.maclaw_data/data.db (others).")
 	fmt.Fprintln(w, "  -tenant tenant-id")
 	fmt.Fprintln(w, "      Tenant id for the administrator account. Default: default. Use all to query every tenant for list.")
 	fmt.Fprintln(w, "  -json")
@@ -459,14 +473,111 @@ func defaultDBPath() string {
 	}
 	root := strings.TrimSpace(os.Getenv("MACLAW_DATA_ROOT"))
 	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || strings.TrimSpace(home) == "" {
-			root = ".maclaw_data"
-		} else {
-			root = filepath.Join(home, ".maclaw_data")
+		if runtime.GOOS == "windows" {
+			if pd := os.Getenv("ProgramData"); pd != "" {
+				root = filepath.Join(pd, "MaClawDataSrv")
+			}
+		}
+		if root == "" {
+			home, err := os.UserHomeDir()
+			if err != nil || strings.TrimSpace(home) == "" {
+				root = ".maclaw_data"
+			} else {
+				root = filepath.Join(home, ".maclaw_data")
+			}
 		}
 	}
 	return filepath.Join(root, "data.db")
+}
+
+// maybeMigrateLegacyDataDir checks whether the resolved dbPath does not exist
+// but the legacy path ($HOME/.maclaw_data/data.db) does. If so, the legacy
+// database (and siblings like WAL/SHM/backups) are copied to the new location.
+// This provides zero-downtime upgrade for existing installations.
+// Uses file copy instead of os.Rename to handle cross-volume scenarios.
+func maybeMigrateLegacyDataDir(dbPath string) string {
+	if _, err := os.Stat(dbPath); err == nil {
+		return dbPath // new path already exists, nothing to do
+	}
+	// Only attempt migration on Windows where the default changed.
+	if runtime.GOOS != "windows" {
+		return dbPath
+	}
+	// Only migrate when using the platform default (not an explicit env override).
+	if strings.TrimSpace(os.Getenv("MACLAW_DATA_SQLITE_PATH")) != "" || strings.TrimSpace(os.Getenv("MACLAW_DATA_ROOT")) != "" {
+		return dbPath
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return dbPath
+	}
+	legacyDB := filepath.Join(home, ".maclaw_data", "data.db")
+	if _, err := os.Stat(legacyDB); err != nil {
+		return dbPath // no legacy data, fresh install
+	}
+	newDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		log.Printf("MaClawDataSrv migration: cannot create dir %s: %v; using legacy path", newDir, err)
+		return legacyDB
+	}
+	// Copy critical database files (data.db, WAL, SHM).
+	legacyDir := filepath.Join(home, ".maclaw_data")
+	filesToCopy := []string{"data.db", "data.db-wal", "data.db-shm"}
+	for _, name := range filesToCopy {
+		src := filepath.Join(legacyDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue // WAL/SHM may not exist
+		}
+		if err := copyFile(src, filepath.Join(newDir, name)); err != nil {
+			log.Printf("MaClawDataSrv migration: cannot copy %s: %v; using legacy path", name, err)
+			// Clean up partial copy to avoid corrupted state.
+			for _, f := range filesToCopy {
+				_ = os.Remove(filepath.Join(newDir, f))
+			}
+			return legacyDB
+		}
+	}
+	// Also copy backups directory if it exists.
+	legacyBackups := filepath.Join(legacyDir, "backups")
+	if info, err := os.Stat(legacyBackups); err == nil && info.IsDir() {
+		newBackups := filepath.Join(newDir, "backups")
+		_ = os.MkdirAll(newBackups, 0o755)
+		entries, _ := os.ReadDir(legacyBackups)
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			_ = copyFile(filepath.Join(legacyBackups, e.Name()), filepath.Join(newBackups, e.Name()))
+		}
+	}
+	log.Printf("MaClawDataSrv migrated data: %s -> %s", legacyDir, newDir)
+	// Rename legacy dir to mark it as migrated (best-effort, non-fatal).
+	_ = os.Rename(legacyDir, legacyDir+".migrated")
+	return dbPath
+}
+
+// copyFile copies src to dst atomically (write to .tmp then rename).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 func getenv(key, fallback string) string {

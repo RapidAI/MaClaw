@@ -4570,18 +4570,34 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 }
 
 // tryAutoInstallAppDependencySkill attempts to install a missing skill dependency
-// that an app requires. It uses the dependency alias registry to resolve the
-// skill name to an installable hub target, then installs via the configured
-// source hierarchy. Returns true if the skill was successfully installed.
+// that an app requires. It uses a three-layer fallback strategy:
 //
-// This is a best-effort fallback for when the normal dependency installation
-// (via InstallMaclawAppDependencies called by the frontend) was never triggered
-// or failed silently. The primary fix is in maclawAppImplicitHubSkillResolution
-// which now correctly resolves source="local" dependencies.
+//  1. Bundled recovery: restore from bundled_dependencies stored in the app's
+//     install record. This works offline, for private skills, and when remote
+//     sources no longer host the skill. This is the PRIMARY recovery mechanism.
+//  2. Remote install: download from Enterprise Hub → SkillMarket → SkillHub.
+//  3. If all layers fail, returns false.
+//
+// The bundled-first approach ensures that an installed MaClaw App can always
+// recover its runtime dependencies regardless of network availability or remote
+// source state — the app package is self-contained.
 func (a *App) tryAutoInstallAppDependencySkill(skillName string) bool {
 	if a == nil {
 		return false
 	}
+
+	// Layer 1: Try to restore from bundled_dependencies in install records.
+	// This is the most reliable path — the skill files were captured at publish
+	// time and stored in the local install registry. No network needed.
+	if a.tryRestoreSkillFromInstallRecordBundle(skillName) {
+		log.Printf("[skill-app] auto-install: restored %q from bundled dependencies in install record", skillName)
+		if a.skillExecutor != nil {
+			a.skillExecutor.invalidateSkillCache()
+		}
+		return true
+	}
+
+	// Layer 2: Try remote sources.
 	// Build a synthetic dependency entry to leverage the existing alias resolution.
 	// Use empty source to match the broadest set of alias registry entries.
 	dep := maclawAppInstallPlanDependency{
@@ -4590,14 +4606,14 @@ func (a *App) tryAutoInstallAppDependencySkill(skillName string) bool {
 	}
 	resolved, ok := maclawAppImplicitHubSkillResolution(dep)
 	if !ok {
-		log.Printf("[skill-app] auto-install: no alias resolution for %q", skillName)
+		log.Printf("[skill-app] auto-install: no alias resolution for %q and no bundled fallback available", skillName)
 		return false
 	}
 	target := resolved.Target
 	if target == "" {
 		target = skillName
 	}
-	log.Printf("[skill-app] auto-install: attempting to install %q (resolved target=%q)", skillName, target)
+	log.Printf("[skill-app] auto-install: attempting remote install %q (resolved target=%q)", skillName, target)
 
 	// Try sources in priority order: enterprise hub → skillmarket → hub.
 	// Enterprise hub is tried first because enterprise-only policies reject
@@ -4631,6 +4647,37 @@ func (a *App) tryAutoInstallAppDependencySkill(skillName string) bool {
 		return true
 	}
 	return false
+}
+
+// tryRestoreSkillFromInstallRecordBundle searches all install records for a
+// bundled_dependencies entry matching the given skill name, and if found,
+// extracts and installs the bundled skill files locally.
+//
+// This is the root-cause fix for the scenario where a MaClaw App is installed
+// (with bundled dependencies) but the dependency skill is later deleted or
+// corrupted. Without this, the app would fail at runtime with "Skill not found"
+// even though the skill files are available in the install record.
+func (a *App) tryRestoreSkillFromInstallRecordBundle(skillName string) bool {
+	if a == nil {
+		return false
+	}
+	// Build a synthetic dependency to leverage alias resolution — the skill
+	// name used at runtime (e.g., "paper_pdf_translator") may differ from
+	// the canonical name stored in the bundle (e.g., a hub_skill_id).
+	syntheticDep := maclawAppInstallPlanDependency{
+		ID:   skillName,
+		Kind: "runtime_skill",
+	}
+	candidate := a.findBundledSkillInInstallRecords(syntheticDep)
+	if candidate == nil {
+		return false
+	}
+	log.Printf("[skill-app] auto-install: found bundled skill %q in install records", skillName)
+	if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
+		log.Printf("[skill-app] auto-install: bundled restore failed for %q: %v", skillName, err)
+		return false
+	}
+	return true
 }
 
 func markMaclawAppSkillRunArgs(runArgs map[string]interface{}) map[string]interface{} {

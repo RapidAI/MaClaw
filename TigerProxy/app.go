@@ -6,10 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -17,9 +21,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var runtimeGOOS = goruntime.GOOS
 
 const (
 	defaultListenAddress = "0.0.0.0:18086"
@@ -27,15 +34,16 @@ const (
 )
 
 type App struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	ssoCtx    context.Context
-	ssoCancel context.CancelFunc
-	server    *codegenproxy.Server
-	listen    string
-	lastError string
-	mu        sync.Mutex
-	shown     bool
+	ctx             context.Context
+	cancel          context.CancelFunc
+	ssoCtx          context.Context
+	ssoCancel       context.CancelFunc
+	server          *codegenproxy.Server
+	listen          string
+	lastError       string
+	mu              sync.Mutex
+	shown           bool
+	codexInstalling bool
 }
 
 type Settings struct {
@@ -81,6 +89,49 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startProxyFromDisk()
+	// Asynchronously refresh model list from server if logged in.
+	// This ensures vendor/ prefix models are properly listed after the
+	// normalizeModelID fix (old cached settings may have stripped the prefix).
+	go a.refreshModelsIfLoggedIn()
+}
+
+// refreshModelsIfLoggedIn fetches the current model list from CodeGen and
+// updates settings.json. This is a no-op if the user is not logged in.
+// After updating, it emits an event so the frontend can refresh the UI.
+func (a *App) refreshModelsIfLoggedIn() {
+	s, err := loadSettings()
+	if err != nil || strings.TrimSpace(s.AccessToken) == "" {
+		return
+	}
+	models, _, err := oauth.FetchCodeGenModels(s.AccessToken)
+	if err != nil || len(models) == 0 {
+		return
+	}
+	newModels := modelOptionsFromOAuth(models)
+	// Skip write if the list hasn't actually changed (avoid unnecessary disk I/O and UI flicker)
+	if modelsEqual(s.Models, newModels) {
+		return
+	}
+	s.Models = newModels
+	if err := writeSettings(s); err != nil {
+		return
+	}
+	// Notify frontend to refresh the model dropdown
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "models-refreshed", nil)
+	}
+}
+
+func modelsEqual(a, b []ModelOption) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Name != b[i].Name {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -114,9 +165,27 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 		s.Models = cur.Models
 	}
 	s = normalizeSettings(s)
-	if err := a.restartProxy(s); err != nil {
-		return Status{}, err
+
+	// Only restart proxy if settings that affect the running proxy have changed.
+	// Model name, email, API key etc. are just persisted metadata or can be hot-updated.
+	needsRestart := s.ListenAddress != cur.ListenAddress ||
+		s.AccessToken != cur.AccessToken ||
+		s.BaseURL != cur.BaseURL
+
+	if needsRestart {
+		if err := a.restartProxy(s); err != nil {
+			return Status{}, err
+		}
+	} else if s.APIKey != cur.APIKey {
+		// API key can be hot-updated without restart (same as GenerateAPIKey)
+		a.mu.Lock()
+		server := a.server
+		a.mu.Unlock()
+		if server != nil {
+			server.SetClientAPIKey(s.APIKey)
+		}
 	}
+
 	if err := writeSettings(s); err != nil {
 		return Status{}, err
 	}
@@ -275,7 +344,26 @@ func (a *App) GenerateAPIKey() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return "tp-" + hex.EncodeToString(b), nil
+	newKey := "tp-" + hex.EncodeToString(b)
+
+	// Persist to disk first — if this fails, the running proxy is unaffected
+	// and the user can retry without ending up in a broken state.
+	s, _ := loadSettings()
+	s.APIKey = newKey
+	if err := writeSettings(s); err != nil {
+		return "", err
+	}
+
+	// Disk write succeeded — now hot-update the running proxy so the new key
+	// takes effect immediately without restart.
+	a.mu.Lock()
+	server := a.server
+	a.mu.Unlock()
+	if server != nil {
+		server.SetClientAPIKey(newKey)
+	}
+
+	return newKey, nil
 }
 
 func (a *App) OpenURL(url string) error {
@@ -284,6 +372,401 @@ func (a *App) OpenURL(url string) error {
 	}
 	runtime.BrowserOpenURL(a.ctx, url)
 	return nil
+}
+
+// ConfigureCodex writes the TigerProxy local forwarding address, API key, and
+// selected model into ~/.codex/auth.json and ~/.codex/config.toml so Codex
+// can use TigerProxy as its LLM backend.
+// Returns a success message including a warning if Codex binary is not detected.
+func (a *App) ConfigureCodex() (string, error) {
+	s, err := loadSettings()
+	if err != nil {
+		return "", fmt.Errorf("load settings: %w", err)
+	}
+	if strings.TrimSpace(s.APIKey) == "" {
+		return "", fmt.Errorf("API Key 未配置，请先设置 API Key")
+	}
+	modelID := s.ModelID
+	if modelID == "" {
+		modelID = "gpt-5.4"
+	}
+
+	// Use the local OpenAI-compatible endpoint as base URL for Codex
+	baseURL := publicBaseURL(s.ListenAddress, "127.0.0.1") + "/v1"
+	apiKey := s.APIKey
+	providerName := "tigerproxy"
+	wireApi := "responses"
+
+	if err := configfile.WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi); err != nil {
+		return "", err
+	}
+
+	if !a.IsCodexInstalled() {
+		return "配置已写入，但未检测到 Codex Desktop，请先安装。", nil
+	}
+	return "Codex 配置已写入 ~/.codex/", nil
+}
+
+// IsCodexInstalled checks whether Codex Desktop is available on the system.
+// Checks both the CLI in PATH and common Desktop app installation paths.
+// Avoids slow external commands (winget) — only uses fast filesystem checks.
+func (a *App) IsCodexInstalled() bool {
+	// Check CLI in PATH first
+	if _, err := exec.LookPath("codex"); err == nil {
+		return true
+	}
+	// Check platform-specific Desktop app locations (filesystem only, fast)
+	switch goRuntime() {
+	case "windows":
+		if a.isCodexInstalledWindows() {
+			return true
+		}
+	case "darwin":
+		if _, err := os.Stat("/Applications/Codex.app"); err == nil {
+			return true
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			if _, err := os.Stat(filepath.Join(home, "Applications", "Codex.app")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isCodexInstalledWindows checks all known Windows installation paths for Codex Desktop.
+func (a *App) isCodexInstalledWindows() bool {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData != "" {
+		// Traditional installer paths (non-Store)
+		candidates := []string{
+			filepath.Join(localAppData, "Programs", "Codex", "codex.exe"),
+			filepath.Join(localAppData, "Codex", "codex.exe"),
+		}
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
+				return true
+			}
+		}
+
+		// Microsoft Store App Execution Alias directory.
+		// When apps are installed from Store, Windows creates app aliases here.
+		// The alias may be directly at WindowsApps\codex.exe or under a package
+		// family name subdirectory like WindowsApps\OpenAI.Codex_<hash>\codex.exe
+		appAliasDir := filepath.Join(localAppData, "Microsoft", "WindowsApps")
+		if _, err := os.Stat(filepath.Join(appAliasDir, "codex.exe")); err == nil {
+			return true
+		}
+		// Check package family name subdirectories (Store apps may use this layout)
+		if findCodexInDir(appAliasDir, "OpenAI.Codex") {
+			return true
+		}
+
+		// WinGet packages directory (older winget versions put packages here)
+		msixBase := filepath.Join(localAppData, "Microsoft", "WinGet", "Packages")
+		if findCodexInDir(msixBase, "OpenAI.Codex") {
+			return true
+		}
+	}
+
+	// Program Files — traditional installer
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles != "" {
+		if _, err := os.Stat(filepath.Join(programFiles, "Codex", "codex.exe")); err == nil {
+			return true
+		}
+	}
+
+	// Microsoft Store / MSIX WindowsApps directory.
+	// C:\Program Files\WindowsApps\ has restrictive ACLs (TrustedInstaller only).
+	// os.ReadDir will fail for normal user processes. But os.Stat on a known full path
+	// may succeed if the file exists (Windows allows stat through restricted dirs in some cases).
+	// We attempt it as a last resort — if ACL blocks us, findCodexInDir returns false gracefully.
+	windowsApps := filepath.Join(os.Getenv("ProgramFiles"), "WindowsApps")
+	if findCodexInDir(windowsApps, "OpenAI.Codex") {
+		return true
+	}
+
+	return false
+}
+
+// findCodexInDir scans a directory for subdirectories matching the given prefix
+// and checks if codex.exe exists anywhere inside (up to 2 levels deep).
+func findCodexInDir(baseDir, prefix string) bool {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		pkgDir := filepath.Join(baseDir, e.Name())
+		// Check common locations within the package
+		codexPaths := []string{
+			filepath.Join(pkgDir, "codex.exe"),                          // root
+			filepath.Join(pkgDir, "app", "resources", "codex.exe"),      // Store MSIX layout
+			filepath.Join(pkgDir, "app", "codex.exe"),                   // alternative layout
+			filepath.Join(pkgDir, "resources", "codex.exe"),             // another variant
+		}
+		for _, p := range codexPaths {
+			if _, err := os.Stat(p); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codexDesktopWindowsStoreID is the Microsoft Store product ID for Codex Desktop.
+const codexDesktopWindowsStoreID = "9PLM9XGG6VKS"
+
+// codexDesktopStoreURL opens the MS Store page in a browser as fallback.
+const codexDesktopStoreURL = "https://apps.microsoft.com/detail/" + codexDesktopWindowsStoreID
+const codexDesktopMacURL = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+
+// InstallCodexDesktop installs Codex Desktop with progress reporting.
+// Windows: uses winget synchronously with progress feedback, fallback to MS Store page.
+// macOS: downloads .dmg and copies to /Applications.
+func (a *App) InstallCodexDesktop() error {
+	switch goRuntime() {
+	case "windows":
+		return a.installCodexWindows()
+	case "darwin":
+		return a.installCodexMac()
+	default:
+		return fmt.Errorf("当前平台不支持自动安装 Codex Desktop，请手动安装")
+	}
+}
+
+// codexInstallProgress is emitted to the frontend via Wails events.
+type codexInstallProgress struct {
+	Phase   string  `json:"phase"`   // "downloading" | "installing" | "done" | "error" | "fallback"
+	Percent float64 `json:"percent"` // 0-100
+	Message string  `json:"message"` // human-readable status
+}
+
+func (a *App) emitCodexProgress(p codexInstallProgress) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "codex-install-progress", p)
+	}
+}
+
+func (a *App) installCodexWindows() error {
+	// Prevent concurrent install attempts
+	a.mu.Lock()
+	if a.codexInstalling {
+		a.mu.Unlock()
+		return fmt.Errorf("安装已在进行中，请稍候")
+	}
+	a.codexInstalling = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.codexInstalling = false
+		a.mu.Unlock()
+	}()
+
+	a.emitCodexProgress(codexInstallProgress{Phase: "installing", Percent: 10, Message: "正在检查 winget..."})
+
+	// Check if winget is available
+	wingetPath, err := exec.LookPath("winget")
+	if err != nil {
+		// No winget — open MS Store page as fallback
+		return a.codexFallbackToStore("系统未安装 winget，正在打开 Microsoft Store...")
+	}
+
+	a.emitCodexProgress(codexInstallProgress{Phase: "installing", Percent: 20, Message: "正在通过 winget 安装 Codex Desktop（可能需要 1-3 分钟）..."})
+
+	// Run winget with a timeout to avoid indefinite hang.
+	// winget MS Store installs can take 1-5 minutes depending on network.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, wingetPath, "install",
+		"--name", "Codex",
+		"--source", "msstore",
+		"--accept-package-agreements",
+		"--accept-source-agreements",
+		"--silent",
+	)
+	// Hide the console window on Windows
+	hideConsoleWindow(cmd)
+
+	// Capture output for error diagnosis
+	output, cmdErr := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	// Check if already installed (winget may return non-zero but indicate "already installed")
+	if isWingetAlreadyInstalled(outputStr) {
+		a.emitCodexProgress(codexInstallProgress{Phase: "done", Percent: 100, Message: "Codex Desktop 已安装"})
+		return nil
+	}
+
+	if cmdErr != nil {
+		// Distinguish timeout from other failures
+		if ctx.Err() == context.DeadlineExceeded {
+			a.emitCodexProgress(codexInstallProgress{Phase: "installing", Percent: 50, Message: "winget 超时，尝试备用方案..."})
+			return a.codexFallbackToStore("winget 安装超时（5 分钟），请在 Microsoft Store 中手动安装")
+		}
+
+		// winget failed — try fallback
+		detail := strings.TrimSpace(outputStr)
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		a.emitCodexProgress(codexInstallProgress{Phase: "installing", Percent: 50, Message: "winget 安装未成功，尝试备用方案..."})
+		return a.codexFallbackToStore(fmt.Sprintf("winget 安装失败: %s", detail))
+	}
+
+	// winget succeeded — verify installation
+	a.emitCodexProgress(codexInstallProgress{Phase: "installing", Percent: 90, Message: "安装完成，正在验证..."})
+
+	// Give the system a moment to register the app
+	for i := 0; i < 10; i++ {
+		time.Sleep(2 * time.Second)
+		if a.IsCodexInstalled() {
+			a.emitCodexProgress(codexInstallProgress{Phase: "done", Percent: 100, Message: "Codex Desktop 安装成功！"})
+			return nil
+		}
+	}
+
+	// winget said success but we can't find it — might need a moment
+	a.emitCodexProgress(codexInstallProgress{Phase: "done", Percent: 100, Message: "安装程序已完成，Codex 可能需要重启后生效。"})
+	return nil
+}
+
+// isWingetAlreadyInstalled checks winget output for various "already installed" indicators
+// across different system languages.
+func isWingetAlreadyInstalled(output string) bool {
+	lower := strings.ToLower(output)
+	indicators := []string{
+		"already installed",
+		"已安装",
+		"no applicable update",
+		"no newer package versions",
+		"found an existing package",
+	}
+	for _, s := range indicators {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexFallbackToStore opens the Microsoft Store page for manual installation.
+func (a *App) codexFallbackToStore(reason string) error {
+	a.emitCodexProgress(codexInstallProgress{Phase: "fallback", Percent: 50, Message: reason})
+
+	// Try ms-windows-store:// protocol first (opens Store app directly)
+	storeProtocol := fmt.Sprintf("ms-windows-store://pdp/?productid=%s", codexDesktopWindowsStoreID)
+	cmd := exec.Command("cmd", "/c", "start", "", storeProtocol)
+	hideConsoleWindow(cmd)
+	if err := cmd.Run(); err != nil {
+		// Fallback to browser
+		if a.ctx != nil {
+			runtime.BrowserOpenURL(a.ctx, codexDesktopStoreURL)
+		}
+	}
+
+	a.emitCodexProgress(codexInstallProgress{Phase: "fallback", Percent: 100, Message: "已打开 Microsoft Store，请在商店中点击「获取」安装 Codex Desktop。"})
+
+	// Poll for installation in background
+	go func() {
+		for i := 0; i < 60; i++ {
+			time.Sleep(5 * time.Second)
+			// Stop polling if app is shutting down
+			if a.ctx == nil || a.ctx.Err() != nil {
+				return
+			}
+			if a.IsCodexInstalled() {
+				a.emitCodexProgress(codexInstallProgress{Phase: "done", Percent: 100, Message: "Codex Desktop 安装成功！"})
+				return
+			}
+		}
+		// Polling expired without detecting install — reset UI so user can retry
+		if a.ctx != nil && a.ctx.Err() == nil {
+			a.emitCodexProgress(codexInstallProgress{Phase: "error", Percent: 0, Message: "未检测到安装完成，请点击按钮重试。"})
+		}
+	}()
+
+	return nil
+}
+
+func (a *App) installCodexMac() error {
+	tmpDir := os.TempDir()
+	installerPath := filepath.Join(tmpDir, "Codex.dmg")
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Get(codexDesktopMacURL)
+	if err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+	}
+
+	outFile, err := os.Create(installerPath)
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	if _, err := io.Copy(outFile, resp.Body); err != nil {
+		outFile.Close()
+		os.Remove(installerPath)
+		return fmt.Errorf("写入安装包失败: %w", err)
+	}
+	outFile.Close()
+
+	// Mount the DMG with -nobrowse to avoid Finder auto-opening
+	mountOut, err := exec.Command("hdiutil", "attach", installerPath, "-nobrowse").Output()
+	if err != nil {
+		os.Remove(installerPath)
+		return fmt.Errorf("挂载 DMG 失败: %w", err)
+	}
+	// Parse actual mount point from hdiutil output
+	volumePath := parseDMGMountPoint(string(mountOut))
+	if volumePath == "" {
+		volumePath = "/Volumes/Codex"
+	}
+
+	// Try to copy .app to /Applications automatically
+	appPath := filepath.Join(volumePath, "Codex.app")
+	if _, statErr := os.Stat(appPath); statErr == nil {
+		cpCmd := exec.Command("cp", "-R", appPath, "/Applications/")
+		if cpErr := cpCmd.Run(); cpErr == nil {
+			_ = exec.Command("hdiutil", "detach", volumePath, "-quiet").Run()
+			go func() { time.Sleep(5 * time.Second); os.Remove(installerPath) }()
+			return nil
+		}
+	}
+	// Fallback: open the volume for manual drag-to-Applications
+	_ = exec.Command("open", volumePath).Start()
+	go func() {
+		time.Sleep(60 * time.Second)
+		_ = exec.Command("hdiutil", "detach", volumePath, "-quiet").Run()
+		os.Remove(installerPath)
+	}()
+	return nil
+}
+
+// parseDMGMountPoint extracts the mount point from hdiutil attach output.
+// Output format: "/dev/diskN\tApple_HFS\t/Volumes/VolumeName"
+func parseDMGMountPoint(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if idx := strings.LastIndex(line, "/Volumes/"); idx >= 0 {
+			return strings.TrimSpace(line[idx:])
+		}
+	}
+	return ""
+}
+
+// goRuntime returns the GOOS value at runtime.
+func goRuntime() string {
+	return runtimeGOOS
 }
 
 func (a *App) ShowMainWindow() {
@@ -438,7 +921,21 @@ func loadSettings() (Settings, error) {
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
-		return Settings{}, err
+		// Primary file is corrupted (e.g. partial write from a crash).
+		// Try the .tmp file which writeSettings creates before rename —
+		// it may contain a more recent valid snapshot.
+		if tmpData, tmpErr := os.ReadFile(path + ".tmp"); tmpErr == nil {
+			if json.Unmarshal(tmpData, &s) == nil {
+				// Recovered from tmp — persist it as the primary file.
+				_ = os.Rename(path+".tmp", path)
+				return normalizeSettings(s), nil
+			}
+		}
+		// Both files are bad — reset to defaults rather than returning an error
+		// that blocks the entire app from starting.
+		s = normalizeSettings(Settings{})
+		_ = writeSettings(s)
+		return s, nil
 	}
 	return normalizeSettings(s), nil
 }
@@ -456,7 +953,18 @@ func writeSettings(s Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Atomic write: write to temp file first, then rename over target.
+	// This prevents data loss if the process is killed mid-write.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Rename can fail on Windows if target is locked; fall back to direct write.
+		_ = os.Remove(tmp)
+		return os.WriteFile(path, data, 0o600)
+	}
+	return nil
 }
 
 func normalizeSettings(s Settings) Settings {
@@ -575,7 +1083,7 @@ func normalizeModelOptions(models []ModelOption) []ModelOption {
 			continue
 		}
 		if model.Name == "" {
-			model.Name = model.ID
+			model.Name = modelDisplayName(model.ID)
 		}
 		seen[model.ID] = true
 		out = append(out, model)
@@ -583,8 +1091,25 @@ func normalizeModelOptions(models []ModelOption) []ModelOption {
 	return out
 }
 
+// modelDisplayName generates a user-friendly display name from a model ID.
+// "vendor/GLM-5.1" → "GLM-5.1 (vendor)"
+// "GLM-5.2" → "GLM-5.2"
+func modelDisplayName(id string) string {
+	if strings.HasPrefix(id, "vendor/") {
+		bare := strings.TrimPrefix(id, "vendor/")
+		if bare != "" {
+			return bare + " (vendor)"
+		}
+	}
+	return id
+}
+
 func normalizeModelID(id string) string {
 	id = strings.TrimSpace(id)
+	// Keep "vendor/" prefix — it has routing semantics (tells CodeGen to use a third-party vendor API).
+	if strings.HasPrefix(id, "vendor/") {
+		return id
+	}
 	if idx := strings.LastIndex(id, "/"); idx >= 0 && idx+1 < len(id) {
 		return strings.TrimSpace(id[idx+1:])
 	}

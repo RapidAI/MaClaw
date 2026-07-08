@@ -272,7 +272,11 @@ func (s *Server) Stop() {
 	server := s.srv
 	s.mu.RUnlock()
 	if server != nil {
-		_ = server.Shutdown(context.Background())
+		// Use a short timeout to avoid blocking on long-lived SSE connections.
+		// Active streams will be forcefully closed after the deadline.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
 	}
 }
 
@@ -695,10 +699,11 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 	toolCalls := map[int]*responsesStreamToolCallAccum{}
 	var toolOrder []int
 	var payloadErr error
+	var streamUsage *openaiUsage
 	writeResponsesSSE(w, "response.created", map[string]interface{}{
 		"type":            "response.created",
 		"sequence_number": seq,
-		"response":        responsesStreamResponseObject(respID, model, "", false, -1, nil, nil),
+		"response":        responsesStreamResponseObject(respID, model, "", false, -1, nil, nil, nil),
 	})
 	seq++
 	flusher.Flush()
@@ -712,6 +717,9 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 			log.Printf("[codegenproxy] responses stream parse chunk failed id=%s model=%q err=%v payload=%s", reqID, model, err, truncateForLog([]byte(payload), 2048))
 			payloadErr = err
 			return false
+		}
+		if chunk.Usage != nil {
+			streamUsage = chunk.Usage
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
@@ -942,7 +950,7 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 	writeResponsesSSE(w, "response.completed", map[string]interface{}{
 		"type":            "response.completed",
 		"sequence_number": seq,
-		"response":        responsesStreamResponseObject(respID, model, outputText, true, textOutputIndex, toolOrder, toolCalls),
+		"response":        responsesStreamResponseObject(respID, model, outputText, true, textOutputIndex, toolOrder, toolCalls, streamUsage),
 	})
 	flusher.Flush()
 }
@@ -958,7 +966,7 @@ type responsesStreamToolCallAccum struct {
 	Added            bool
 }
 
-func responsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*responsesStreamToolCallAccum) map[string]interface{} {
+func responsesStreamResponseObject(id, model, text string, completed bool, textOutputIndex int, toolOrder []int, toolCalls map[int]*responsesStreamToolCallAccum, usage *openaiUsage) map[string]interface{} {
 	status := "in_progress"
 	output := []interface{}{}
 	if completed {
@@ -1020,7 +1028,26 @@ func responsesStreamResponseObject(id, model, text string, completed bool, textO
 		"instructions":        nil,
 		"incomplete_details":  nil,
 		"error":               nil,
-		"usage":               map[string]interface{}{},
+		"usage":               buildResponsesUsage(usage),
+	}
+}
+
+func buildResponsesUsage(usage *openaiUsage) map[string]interface{} {
+	if usage != nil {
+		return map[string]interface{}{
+			"input_tokens":          usage.PromptTokens,
+			"output_tokens":         usage.CompletionTokens,
+			"total_tokens":          usage.TotalTokens,
+			"input_tokens_details":  map[string]interface{}{"cached_tokens": 0},
+			"output_tokens_details": map[string]interface{}{"reasoning_tokens": 0},
+		}
+	}
+	return map[string]interface{}{
+		"input_tokens":          0,
+		"output_tokens":         0,
+		"total_tokens":          0,
+		"input_tokens_details":  map[string]interface{}{"cached_tokens": 0},
+		"output_tokens_details": map[string]interface{}{"reasoning_tokens": 0},
 	}
 }
 
