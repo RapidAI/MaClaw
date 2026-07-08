@@ -9486,7 +9486,15 @@ func (a *App) OpenSystemUrl(url string) error {
 		a.log("Opening URL on Windows: " + url)
 		// Escape & to ^& for cmd.exe
 		escapedUrl := strings.ReplaceAll(url, "&", "^&")
-		cmd = exec.Command("cmd", "/c", "start", "", escapedUrl)
+		cmdExe := os.Getenv("ComSpec")
+		if cmdExe == "" {
+			if sysroot := os.Getenv("SystemRoot"); sysroot != "" {
+				cmdExe = filepath.Join(sysroot, "System32", "cmd.exe")
+			} else {
+				cmdExe = `C:\Windows\System32\cmd.exe`
+			}
+		}
+		cmd = exec.Command(cmdExe, "/c", "start", "", escapedUrl)
 		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", url)

@@ -1588,7 +1588,7 @@ func (a *App) restartApp() {
 	}
 
 	cmdLine := fmt.Sprintf(`cmd /c start "" "%s"`, executable)
-	cmd := exec.Command("cmd")
+	cmd := exec.Command(resolveCmdExe())
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CmdLine:    cmdLine,
 		HideWindow: true,
@@ -2020,7 +2020,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 					binaryName, projectDir, codexBatchPath)
 			}
 
-			cmd := exec.Command("cmd")
+			cmd := exec.Command(resolveCmdExe())
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				CmdLine:    cmdLine,
 				HideWindow: true,
@@ -2043,7 +2043,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 			}
 
-			cmd := exec.Command("cmd")
+			cmd := exec.Command(resolveCmdExe())
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				CmdLine:    cmdLine,
 				HideWindow: true,
@@ -2083,8 +2083,23 @@ func createNpmInstallCmd(npmPath string, args []string) *exec.Cmd {
 	return cmd
 }
 
+// resolveCmdExe returns the absolute path to cmd.exe.
+// Uses ComSpec env var (always set by Windows), falls back to SystemRoot-based path,
+// then hardcoded path. This avoids "executable file not found in %PATH%" errors
+// when PATH is incomplete.
+// Note: corelib/tool.ResolveCmdExe() provides the same function for corelib consumers.
+func resolveCmdExe() string {
+	if comspec := os.Getenv("ComSpec"); comspec != "" {
+		return comspec
+	}
+	if sysroot := os.Getenv("SystemRoot"); sysroot != "" {
+		return filepath.Join(sysroot, "System32", "cmd.exe")
+	}
+	return `C:\Windows\System32\cmd.exe`
+}
+
 func createCondaEnvListCmd(condaCmd string) *exec.Cmd {
-	cmd := exec.Command("cmd", "/c", condaCmd, "env", "list")
+	cmd := exec.Command(resolveCmdExe(), "/c", condaCmd, "env", "list")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: _CREATE_NO_WINDOW}
 	return cmd
 }
@@ -2141,12 +2156,62 @@ func (a *App) ensureLocalNodeBinary() {
 func (a *App) LaunchInstallerAndExit(installerPath string) error {
 	a.log(fmt.Sprintf("Launching installer: %s", installerPath))
 
-	cmd := exec.Command("cmd", "/c", "start", "", installerPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	// Pre-check: verify installer file exists before attempting to launch.
+	if _, err := os.Stat(installerPath); err != nil {
+		return fmt.Errorf("installer file not accessible: %w", err)
+	}
 
-	err := cmd.Start()
+	// Use ShellExecuteW to launch the installer — this is the Windows-native way
+	// to run executables. It does not depend on PATH (unlike exec.Command("cmd")),
+	// and the launched process is fully independent of the parent (survives parent exit).
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExecute := shell32.NewProc("ShellExecuteW")
+
+	verb := syscall.StringToUTF16Ptr("open")
+	file, err := syscall.UTF16PtrFromString(installerPath)
 	if err != nil {
-		return fmt.Errorf("failed to launch installer: %w", err)
+		return fmt.Errorf("invalid installer path: %w", err)
+	}
+	params := syscall.StringToUTF16Ptr("")
+	dir := syscall.StringToUTF16Ptr("")
+
+	ret, _, _ := shellExecute.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(file)),
+		uintptr(unsafe.Pointer(params)),
+		uintptr(unsafe.Pointer(dir)),
+		uintptr(syscall.SW_SHOW),
+	)
+
+	launched := ret > 32
+
+	if !launched && ret == 5 {
+		// SE_ERR_ACCESSDENIED: try elevation before falling back to cmd
+		a.log("ShellExecuteW access denied, retrying with runas elevation")
+		verbRunas := syscall.StringToUTF16Ptr("runas")
+		retRunas, _, _ := shellExecute.Call(
+			0,
+			uintptr(unsafe.Pointer(verbRunas)),
+			uintptr(unsafe.Pointer(file)),
+			uintptr(unsafe.Pointer(params)),
+			uintptr(unsafe.Pointer(dir)),
+			uintptr(syscall.SW_SHOW),
+		)
+		launched = retRunas > 32
+		if !launched {
+			a.log(fmt.Sprintf("ShellExecuteW runas also failed: %d", retRunas))
+		}
+	}
+
+	if !launched {
+		// Fallback: try cmd /c start (last resort)
+		a.log(fmt.Sprintf("ShellExecuteW returned %d, falling back to cmd /c start", ret))
+		cmd := exec.Command(resolveCmdExe(), "/c", "start", "", installerPath)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to launch installer: ShellExecute error code %d, cmd fallback: %w", ret, err)
+		}
 	}
 
 	go func() {
@@ -2158,7 +2223,7 @@ func (a *App) LaunchInstallerAndExit(installerPath string) error {
 }
 
 func getWindowsVersionHidden() string {
-	cmd := exec.Command("cmd")
+	cmd := exec.Command(resolveCmdExe())
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CmdLine:    `cmd /c ver`,
 		HideWindow: true,

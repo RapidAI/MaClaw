@@ -1199,7 +1199,7 @@ function App() {
                 await LaunchInstallerAndExit(installerPath);
             } catch (err) {
                 console.error("Install launch error:", err);
-                showToastMessage(t("downloadError").replace("{error}", err as string));
+                showToastMessage(t("installLaunchError").replace("{error}", err as string));
             }
         }
     };

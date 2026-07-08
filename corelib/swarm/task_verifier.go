@@ -166,7 +166,7 @@ func RunTestShellCommand(workDir, cmd string, timeout time.Duration) (string, in
 
 	var c *exec.Cmd
 	if runtime.GOOS == "windows" {
-		c = exec.Command("cmd", "/C", cmd)
+		c = exec.Command(coretool.ResolveCmdExe(), "/C", cmd)
 	} else {
 		c = exec.Command("sh", "-c", cmd)
 	}

@@ -320,7 +320,7 @@ func ExecuteVerifyCommand(ctx context.Context, command, workDir string, timeout 
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", command)
+		cmd = exec.Command(coretool.ResolveCmdExe(), "/c", command)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
 	}

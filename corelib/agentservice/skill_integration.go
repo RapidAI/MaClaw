@@ -334,7 +334,7 @@ func (d *srvExecDeps) OnStepProgress(stepIndex, totalSteps int, stepAction, stat
 func executeBashCommand(ctx context.Context, command, workDir string, extraEnv map[string]string) (string, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", command)
+		cmd = exec.Command(coretool.ResolveCmdExe(), "/c", command)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
 	}
