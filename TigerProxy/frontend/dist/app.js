@@ -52,7 +52,6 @@ async function refresh() {
     autoStart.disabled = !status.auto_start_supported;
     autoStartRow.classList.toggle("disabled", !status.auto_start_supported);
     autoStartRow.title = status.auto_start_supported ? "" : "仅 Windows 平台支持开机自动启动";
-    $("loginState").textContent = status.logged_in ? `已登录 ${s.email || "CodeGen"}` : "未登录 CodeGen，请先完成 SSO。";
     const loginChip = $("loginChip");
     loginChip.textContent = status.logged_in ? (s.email || "已登录") : "未登录";
     loginChip.className = `chip ${status.logged_in ? "ok" : "muted"}`;
