@@ -680,7 +680,26 @@ class _BackendSSHSessionCardState
   }
 
   String _recentOutputForAI() {
-    return _capturedOutput.toString().trim();
+    final output = _capturedOutput.toString().trim();
+    if (output.isEmpty || _recentOutputHasEvidenceLine(output)) {
+      return output;
+    }
+    final evidence = _backendSessionEvidenceLine();
+    if (evidence == null) return output;
+    return '$evidence\n$output';
+  }
+
+  String? _backendSessionEvidenceLine() {
+    final sessionId = _lastBackendSessionId?.trim() ?? '';
+    final backendSessionId = _activeManagedBackendSessionId?.trim() ?? '';
+    if (sessionId.isEmpty ||
+        backendSessionId.isEmpty ||
+        _lastRealtimeOutputSeq <= 0) {
+      return null;
+    }
+    return 'GUI/agent 后台会话证据：Hub session $sessionId · '
+        'backend_session_id $backendSessionId · '
+        'claimed_by GUI/agent worker · output_seq $_lastRealtimeOutputSeq';
   }
 
   Future<bool> sendCommand(String command) async {
