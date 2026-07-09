@@ -12722,10 +12722,18 @@ body {
     color: inherit;
 }
 
-/* AI icon container: deepen the inactive badge in dark mode for clearer contrast */
+/* AI icon: raise inactive badge + glyph contrast in dark mode (was too low on pure dark fill). */
 .sidebar[data-ai-theme='dark'] .left-nav-item--ai {
-    --ai-icon-inactive-bg: color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%);
-    --ai-icon-inactive-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent), 0 6px 14px rgba(0,0,0,0.28);
+    --ai-icon-inactive-bg: color-mix(in srgb, var(--theme-surface) 68%, var(--theme-primary) 32%);
+    --ai-icon-inactive-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 48%, transparent),
+        0 4px 12px rgba(0, 0, 0, 0.38);
+    --ai-icon-inactive-fg: #f8fafc;
+}
+
+/* Active AI badge: slightly brighter gradient + stronger ring for dark chrome */
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai.active {
+    --ai-icon-active-bg: linear-gradient(135deg, #a8c8ec 0%, #6b9ad0 100%);
 }
 
 .main-container[data-ai-theme='dark'] {

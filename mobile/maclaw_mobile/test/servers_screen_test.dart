@@ -953,11 +953,11 @@ void main() {
     await tester.tap(copyButton);
     await tester.pump();
 
-    expect(copied.single, contains('GUI/agent 后台会话证据'));
+    expect(copied.single, contains('GUI/agent evidence line'));
     expect(copied.single, contains('Hub session ssh-session-srv-prod'));
     expect(copied.single, contains('backend_session_id mobile-ssh:ssh-session-srv-prod'));
-    expect(copied.single, contains('claimed_by GUI/agent worker'));
-    expect(copied.single, contains('output_seq 1'));
+    expect(copied.single, contains('claimed_by MaClaw GUI agent worker'));
+    expect(copied.single, contains('output_seq 2'));
     expect(copied.single, contains('backend session ready'));
     expect(copied.single, contains('agent output chunk'));
   });
