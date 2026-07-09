@@ -290,7 +290,10 @@ it. Each permission evidence item must include the matching
   record both values.
 - Confirm LLM mode is MaClaw official by default, or record the MaClaw desktop
   GUI QR authorization ID when third-party LLM access is enabled; record which
-  mode was used.
+  mode was used. For MaClaw official mode, capture the first post-SMS-verification
+  LLM request/usage evidence for the same phone:<digits> account and tenant,
+  including a concrete llm-request-id, llm-usage-record, charge log ID, or
+  equivalent usage record ID showing official credits were used.
 - Confirm the signed-out first screen is phone registration/login through Hub
   SMS verification. Third-party LLM access must appear only as an optional
   account/settings action using MaClaw desktop GUI QR authorization. Record that
@@ -376,8 +379,10 @@ it. Each permission evidence item must include the matching
 - Disconnect and reconnect the backend session, preserving the session ID or
   recording the replacement session ID.
 - Copy backend session output for the same GUI/agent-bound
-  `backend_session_id`; the `server-profile:<id>` only identifies the selected
-  sanitized server profile and is not sufficient as session proof.
+  `backend_session_id`; the copied output or operator console note must include
+  a GUI/agent evidence line with actual values for the Hub session ID, `backend_session_id`,
+  `claimed_by`, and numeric `output_seq`. The `server-profile:<id>` only identifies the
+  selected sanitized server profile and is not sufficient as session proof.
 - In the QA record, capture action-specific evidence for host type, auth mode,
   Connect result, read-only command, command output excerpt, interrupt result,
   disconnect result, reconnect result, copied backend session output evidence,

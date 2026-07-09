@@ -452,14 +452,14 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         "- Handoff output path or transcript, runtime-boundary verifier output, and full release-gate run result for the QA record final decision fields.",
         *platform_evidence,
         "- Runtime boundary verifier result proving mobile does not embed or bridge Go corelib.",
-        "- HubCenter discovery result, discovered Hub URL, tenant, LLM access mode, and mobile bootstrap result.",
+        "- HubCenter discovery result, discovered Hub URL, tenant, LLM access mode, post-SMS-verification official credits LLM proof with concrete llm-request-id and llm-usage-record, mobile bootstrap result, cold-start MaClaw logo with no Flutter placeholder, and signed-in AI assistant first screen with visible main-conversation/secondary-tab controls, microphone/voice input, and no legacy info-lookup entry.",
         "- AI assistant answer with citations, voice query, image/screenshot query, and share-to-app payload results.",
         "- Document import, AI transform, export/share, and notification evidence.",
         "- GUI-equivalent backend-managed SSH session evidence: login/session using the same GUI/agent-bound backend_session_id, "
         "GUI/agent claim or worker handoff with explicit worker claim/update evidence, "
         "`ssh_session` realtime events with `output_chunk` and `output_seq`, "
         "not phone-local/ad hoc terminal evidence, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, read-only command output, reconnect, "
-        "copied backend session output, AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id when used, "
+        "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id when used, "
         "and phone-side server-profile cache clear evidence.",
         "- Digital employee list, remote target invocation, completion/failure result, and notification evidence.",
         "- Weak-network/offline recovery evidence with timestamps.",

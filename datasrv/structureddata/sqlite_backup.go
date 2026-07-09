@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -154,6 +155,12 @@ func (s *SQLiteStore) RestoreBackup(ctx context.Context, backupID string, in Res
 		}
 		s.db = nil
 	}
+	// Close read pool BEFORE renaming the database file.
+	// On Windows, open file handles prevent rename/delete operations.
+	if s.readDB != nil {
+		_ = s.readDB.Close()
+		s.readDB = nil
+	}
 	if err := removeSQLiteSidecars(s.path); err != nil {
 		return nil, err
 	}
@@ -172,15 +179,40 @@ func (s *SQLiteStore) RestoreBackup(ctx context.Context, backupID string, in Res
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", s.path)
+	// Reopen write connection.
+	db, err := sql.Open("sqlite", s.path+"?_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 	s.db = db
 	if err := s.Migrate(ctx); err != nil {
 		_ = db.Close()
 		s.db = nil
+		return nil, err
+	}
+	// Reopen read pool.
+	readDB, err := sql.Open("sqlite", s.path+"?_txlock=deferred")
+	if err != nil {
+		return nil, err
+	}
+	// Restore with same pool size as original (derive from current config).
+	numCPU := runtime.NumCPU()
+	readConns := numCPU * 2
+	if readConns < 4 {
+		readConns = 4
+	}
+	if readConns > 64 {
+		readConns = 64
+	}
+	readDB.SetMaxOpenConns(readConns)
+	readDB.SetMaxIdleConns(readConns)
+	readDB.SetConnMaxLifetime(0)
+	s.readDB = readDB
+	s.readPoolSize = readConns
+	if err := s.applyReadPragmas(); err != nil {
 		return nil, err
 	}
 	return &RestoreResult{Status: "restored", Backup: info, RestoredBy: strings.TrimSpace(actor), RestoredAt: now}, nil

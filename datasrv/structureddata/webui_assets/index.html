@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClawDataSrv MIS 管理控制台</title>
+  <base href="/console/">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Toast notifications -->
+  <div class="toast-stack" id="toastStack"></div>
+
+  <!-- Login Screen -->
+  <div class="login-screen" id="loginScreen">
+    <div class="card login-card">
+      <h1>MaClawDataSrv</h1>
+      <p class="text-muted" style="text-align:center;margin-bottom:20px">企业结构化数据管理控制台</p>
+      <div class="form-field">
+        <label for="loginUsername">用户名</label>
+        <input id="loginUsername" placeholder="admin" autocomplete="username">
+      </div>
+      <div class="form-field mt-sm">
+        <label for="loginPassword">密码</label>
+        <input id="loginPassword" type="password" autocomplete="current-password">
+      </div>
+      <div class="btn-group mt-md">
+        <button class="primary" id="loginBtn" style="width:100%">登录</button>
+      </div>
+      <div id="loginStatus" class="text-muted text-sm mt-sm" style="text-align:center"></div>
+    </div>
+  </div>
+
+  <!-- Main App Shell -->
+  <div class="app-shell hidden" id="appShell">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">MIS</div>
+        <div>
+          <div class="brand-title">MaClawDataSrv</div>
+          <div class="brand-subtitle">数据运营管理</div>
+        </div>
+      </div>
+
+      <div class="nav-group">总览</div>
+      <button class="nav-item active" data-page="overview">总览</button>
+      <button class="nav-item" data-page="quickstart">快速操作</button>
+
+      <div class="nav-group">数据建模</div>
+      <button class="nav-item" data-page="domains">业务域</button>
+      <button class="nav-item" data-page="datasets">数据集</button>
+      <button class="nav-item" data-page="fields">字段</button>
+      <button class="nav-item" data-page="relationships">关联</button>
+
+      <div class="nav-group">数据操作</div>
+      <button class="nav-item" data-page="records">记录</button>
+      <button class="nav-item" data-page="actions">业务动作</button>
+      <button class="nav-item" data-page="inbox">收件箱</button>
+
+      <div class="nav-group">集成</div>
+      <button class="nav-item" data-page="connectors">连接器</button>
+      <button class="nav-item" data-page="views">视图</button>
+      <button class="nav-item" data-page="dashboards">仪表盘</button>
+      <button class="nav-item" data-page="reports">报表</button>
+
+      <div class="nav-group">安全与治理</div>
+      <button class="nav-item" data-page="apikeys">🔑 API 密钥</button>
+      <button class="nav-item" data-page="admins">管理员</button>
+      <button class="nav-item" data-page="quality">质量检查</button>
+      <button class="nav-item" data-page="backups">备份</button>
+      <button class="nav-item" data-page="audit">审计</button>
+      <button class="nav-item" data-page="ops">运维</button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <div class="main-wrap">
+      <!-- Topbar -->
+      <div class="topbar">
+        <div class="meta">
+          <span id="serviceStatus">● 未连接</span>
+          <span id="tenantChip">租户：default</span>
+        </div>
+        <div class="meta">
+          <div class="lang-switch">
+            <button class="sm active" data-lang="zh">中文</button>
+            <button class="sm" data-lang="en">EN</button>
+          </div>
+          <span id="adminName"></span>
+          <button class="ghost sm" id="logoutBtn">退出</button>
+        </div>
+      </div>
+
+      <!-- Page Content Container -->
+      <div class="main-content" id="pageContainer">
+        <!-- Pages are loaded here dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+  <script src="modules/overview.js"></script>
+  <script src="modules/quickstart.js"></script>
+  <script src="modules/domains.js"></script>
+  <script src="modules/datasets.js"></script>
+  <script src="modules/fields.js"></script>
+  <script src="modules/relationships.js"></script>
+  <script src="modules/records.js"></script>
+  <script src="modules/actions.js"></script>
+  <script src="modules/inbox.js"></script>
+  <script src="modules/connectors.js"></script>
+  <script src="modules/views.js"></script>
+  <script src="modules/apikeys.js"></script>
+  <script src="modules/security.js"></script>
+</body>
+</html>

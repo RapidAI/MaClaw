@@ -12,6 +12,9 @@ import (
 const asrModelFilename = "moonshine-base-zh.gguf"
 const asrModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/moonshine-base-zh.gguf"
 
+const svModelFilename = "sensevoice-small-q8_0.gguf"
+const svModelDefaultURL = "https://huggingface.co/cstr/sensevoice-small-GGUF/resolve/main/sensevoice-small-q8_0.gguf"
+
 var asrDownloadMu sync.Mutex
 
 // GetASREnabled returns whether ASR is enabled in config.
@@ -38,17 +41,25 @@ func (a *App) SetASREnabled(enabled bool) error {
 }
 
 // CheckASRModel returns model file status.
+// Checks for SenseVoice model first, then Moonshine.
 func (a *App) CheckASRModel() map[string]interface{} {
 	dir, err := embeddingModelsDir() // same dir as embedding model
 	if err != nil {
 		return map[string]interface{}{"exists": false, "size": 0}
 	}
-	p := filepath.Join(dir, asrModelFilename)
+	// Prefer SenseVoice
+	p := filepath.Join(dir, svModelFilename)
 	fi, err := os.Stat(p)
+	if err == nil {
+		return map[string]interface{}{"exists": true, "size": fi.Size(), "model": "sensevoice"}
+	}
+	// Fall back to Moonshine
+	p = filepath.Join(dir, asrModelFilename)
+	fi, err = os.Stat(p)
 	if err != nil {
 		return map[string]interface{}{"exists": false, "size": 0}
 	}
-	return map[string]interface{}{"exists": true, "size": fi.Size()}
+	return map[string]interface{}{"exists": true, "size": fi.Size(), "model": "moonshine"}
 }
 
 // DownloadASRModel downloads the ASR model (GitHub first, Hub fallback).

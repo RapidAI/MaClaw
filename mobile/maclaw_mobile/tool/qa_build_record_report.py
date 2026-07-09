@@ -256,6 +256,9 @@ SIGNED_INSTALL_FIELDS = {
 ASSISTANT_INPUT_FIELDS = {
     "Voice/photo assistant input evidence",
 }
+ASSISTANT_FIRST_SCREEN_FIELDS = {
+    "Assistant first screen evidence",
+}
 PERMISSION_EVIDENCE_FIELDS = {
     "Camera permission",
     "Local network / SSH scenario",
@@ -384,7 +387,15 @@ def _assistant_input_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, ASSISTANT_INPUT_FIELDS) for error in errors):
         return []
     return [
-        "- AI助手 voice/photo input: record the recognized voice transcript filling or being sent from the AI助手 composer, the photo/image/screenshot assistant input, a resulting citation URL or document upload task ID, and a traceable screenshot/recording ID such as `screenshot mobile-input-42`.",
+        "- AI assistant voice/photo input: record the recognized voice transcript filling or being sent from the AI assistant composer, the photo/image/screenshot assistant input, a resulting citation URL or document upload task ID, and a traceable screenshot/recording ID such as `screenshot mobile-input-42`.",
+    ]
+
+
+def _assistant_first_screen_hints(errors: list[str]) -> list[str]:
+    if not any(_matches_field_error(error, ASSISTANT_FIRST_SCREEN_FIELDS) for error in errors):
+        return []
+    return [
+        "- AI assistant first screen: record a signed-build cold launch after login showing the AI assistant first screen, main-conversation/secondary-tab controls, microphone/voice input, and no legacy info-lookup entry, with a traceable screenshot/recording ID such as `screenshot assistant-first-screen-42`.",
     ]
 
 
@@ -392,7 +403,7 @@ def _permission_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, PERMISSION_EVIDENCE_FIELDS) for error in errors):
         return []
     return [
-        "- Runtime permissions: capture the real permission prompt/result in the workflow that needs it, include a `permission-grant:<id>` token, and tie microphone/speech/camera/photo-library evidence to AI助手 voice/photo input, notification evidence to real task notification open, and local-network evidence to a backend-managed SSH read-only command executed through the GUI/agent session manager.",
+        "- Runtime permissions: capture the real permission prompt/result in the workflow that needs it, include a `permission-grant:<id>` token, and tie microphone/speech/camera/photo-library evidence to AI assistant voice/photo input, notification evidence to real task notification open, and local-network evidence to a backend-managed SSH read-only command executed through the GUI/agent session manager.",
     ]
 
 
@@ -400,7 +411,7 @@ def _share_to_app_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, SHARE_TO_APP_FIELDS) for error in errors):
         return []
     return [
-        "- Share-to-app payloads: record each payload entering MaClaw Mobile from the OS share sheet; plain text and URL should land in AI助手 with URL/citation evidence, while image/PDF/Word/Excel/CSV should create document import/upload task evidence.",
+        "- Share-to-app payloads: record each payload entering MaClaw Mobile from the OS share sheet; plain text and URL should land in AI assistant with URL/citation evidence, while image/PDF/Word/Excel/CSV should create document import/upload task evidence.",
     ]
 
 
@@ -440,7 +451,7 @@ def _ssh_smoke_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, SSH_SMOKE_FIELDS) for error in errors):
         return []
     return [
-        "- GUI-equivalent backend SSH session management smoke: record the server profile ID, mobile create/attach control request, GUI/agent-bound backend_session_id, visible claim/worker owner such as claimed_by, GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, not phone-local/ad hoc terminal evidence, host/auth mode metadata, connect result, backend-managed read-only command and output, the `ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` plus GUI/agent Ctrl+C handling, disconnect/reconnect through the managed session path, copied backend session output, redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used, manual command draft ID, digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used, and phone-side server-profile cache clear confirmation.",
+        "- GUI-equivalent backend SSH session management smoke: record the server profile ID, mobile create/attach control request, GUI/agent-bound backend_session_id, visible claim/worker owner such as claimed_by, GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, not phone-local/ad hoc terminal evidence, host/auth mode metadata, connect result, backend-managed read-only command and output, the `ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` plus GUI/agent Ctrl+C handling, disconnect/reconnect through the managed session path, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used, manual command draft ID, digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used, and phone-side server-profile cache clear confirmation.",
     ]
 
 
@@ -530,8 +541,13 @@ def format_report(report: QaBuildRecordReport) -> str:
         assistant_input_hints = _assistant_input_hints(report.evidence_errors)
         if assistant_input_hints:
             lines.append("")
-            lines.append("How to fill AI助手 voice/photo evidence:")
+            lines.append("How to fill AI assistant voice/photo evidence:")
             lines.extend(assistant_input_hints)
+        assistant_first_screen_hints = _assistant_first_screen_hints(report.evidence_errors)
+        if assistant_first_screen_hints:
+            lines.append("")
+            lines.append("How to fill AI assistant first-screen evidence:")
+            lines.extend(assistant_first_screen_hints)
         permission_hints = _permission_hints(report.evidence_errors)
         if permission_hints:
             lines.append("")

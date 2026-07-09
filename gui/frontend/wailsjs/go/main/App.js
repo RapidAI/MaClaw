@@ -983,6 +983,34 @@ export function ImportCodexAuth() {
   return window['go']['main']['App']['ImportCodexAuth']();
 }
 
+export function StartAnthropicOAuth() {
+  return window['go']['main']['App']['StartAnthropicOAuth']();
+}
+
+export function CompleteAnthropicOAuth(arg1) {
+  return window['go']['main']['App']['CompleteAnthropicOAuth'](arg1);
+}
+
+export function StartGitHubCopilotOAuth() {
+  return window['go']['main']['App']['StartGitHubCopilotOAuth']();
+}
+
+export function WaitGitHubCopilotOAuth() {
+  return window['go']['main']['App']['WaitGitHubCopilotOAuth']();
+}
+
+export function CancelGitHubCopilotOAuth() {
+  return window['go']['main']['App']['CancelGitHubCopilotOAuth']();
+}
+
+export function BranchConversationAt(arg1) {
+  return window['go']['main']['App']['BranchConversationAt'](arg1);
+}
+
+export function GetConversationBranchPoints() {
+  return window['go']['main']['App']['GetConversationBranchPoints']();
+}
+
 export function StartCodeGenSSO() {
   return window['go']['main']['App']['StartCodeGenSSO']();
 }

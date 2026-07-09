@@ -188,8 +188,6 @@ func (s *Service) runBatchImportJob(p Principal, job ImportJob, in BatchImportRe
 }
 
 func (s *Service) ListImportJobs(ctx context.Context, p Principal, in QueryImportJobsInput) ([]ImportJob, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validImportJobStatus(in.Status) {
 		return nil, fmt.Errorf("%w: invalid import job status", ErrInvalidInput)
@@ -207,7 +205,5 @@ func validImportJobStatus(value string) bool {
 }
 
 func (s *Service) GetImportJob(ctx context.Context, p Principal, jobID string) (*ImportJob, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetImportJob(ctx, p.TenantID, strings.TrimSpace(jobID))
 }

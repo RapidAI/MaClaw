@@ -119,8 +119,6 @@ func (s *Service) CreateRecordApproval(ctx context.Context, p Principal, dataset
 }
 
 func (s *Service) ListRecordApprovals(ctx context.Context, p Principal, in QueryRecordApprovalsInput) ([]RecordApproval, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.DatasetID = strings.TrimSpace(in.DatasetID)
 	in.RecordID = strings.TrimSpace(in.RecordID)
 	in.AppID = strings.TrimSpace(in.AppID)
@@ -287,8 +285,6 @@ func recordApprovalAuditMetadata(approval RecordApproval, extra map[string]any) 
 	return metadata
 }
 func (s *Service) GetRecordApproval(ctx context.Context, p Principal, approvalID string) (*RecordApproval, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetRecordApproval(ctx, p.TenantID, strings.TrimSpace(approvalID))
 }
 

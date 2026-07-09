@@ -8,6 +8,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -349,6 +352,55 @@ func (a *App) recordLocalLLMCacheRequest(cfg corelib.MaclawLLMConfig, hit bool) 
 		return
 	}
 	a.AccumulateLLMLocalCacheRequest(provider, hit)
+	a.emitLocalLLMCacheHitRateSummary(provider, hit)
+}
+
+// localLLMCacheHitRateState tracks per-provider hit/miss counters for periodic
+// hit-rate summary logging. Resets every summary interval.
+type localLLMCacheHitRateState struct {
+	hits     int64
+	misses   int64
+	mu       sync.Mutex
+	lastEmit time.Time
+}
+
+const localLLMCacheHitRateSummaryInterval = 5 * time.Minute
+
+// emitLocalLLMCacheHitRateSummary logs a hit-rate summary every 5 minutes per provider.
+// This gives visibility into cache effectiveness without flooding the log.
+func (a *App) emitLocalLLMCacheHitRateSummary(provider string, hit bool) {
+	val, _ := a.localCacheHitRateStates.LoadOrStore(provider, &localLLMCacheHitRateState{lastEmit: time.Now()})
+	state := val.(*localLLMCacheHitRateState)
+
+	if hit {
+		atomic.AddInt64(&state.hits, 1)
+	} else {
+		atomic.AddInt64(&state.misses, 1)
+	}
+
+	// Fast path: check without lock. The window check is racy but harmless —
+	// worst case we skip one emission and catch it next time.
+	now := time.Now()
+	state.mu.Lock()
+	if now.Sub(state.lastEmit) < localLLMCacheHitRateSummaryInterval {
+		state.mu.Unlock()
+		return
+	}
+	// We won the race to emit this window's summary.
+	state.lastEmit = now
+	hits := atomic.SwapInt64(&state.hits, 0)
+	misses := atomic.SwapInt64(&state.misses, 0)
+	state.mu.Unlock()
+
+	total := hits + misses
+	if total < 5 {
+		// Sample too small for meaningful rate — carry over to next window.
+		atomic.AddInt64(&state.hits, hits)
+		atomic.AddInt64(&state.misses, misses)
+		return
+	}
+	rate := float64(hits) / float64(total) * 100
+	log.Printf("[llm_cache_stats] provider=%q window=5m requests=%d hits=%d misses=%d hit_rate=%.1f%%", provider, total, hits, misses, rate)
 }
 
 func (a *App) effectiveLLMPromptCacheConfig() (corelib.LLMPromptCacheConfig, bool) {

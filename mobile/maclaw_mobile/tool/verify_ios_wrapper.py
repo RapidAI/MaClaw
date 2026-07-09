@@ -20,7 +20,7 @@ IOS_USAGE_DESCRIPTIONS = {
     'NSMicrophoneUsageDescription': '\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002',
     'NSSpeechRecognitionUsageDescription': '\u7528\u4e8e\u5c06\u8bed\u97f3\u63d0\u95ee\u8f6c\u6210\u6587\u5b57\u3002',
     'NSPhotoLibraryUsageDescription': '\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002',
-    'NSLocalNetworkUsageDescription': '\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002',
+    'NSLocalNetworkUsageDescription': '\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65 GUI/agent \u7ba1\u7406\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002',
 }
 
 

@@ -2,6 +2,7 @@ package corelib
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +100,130 @@ func TestExpandLLMPromptCacheDirExpandsTilde(t *testing.T) {
 	got := ExpandLLMPromptCacheDir("~/custom_llm_cache")
 	if filepath.Base(got) != "custom_llm_cache" || got == "~/custom_llm_cache" {
 		t.Fatalf("expanded dir = %q", got)
+	}
+}
+
+func TestLLMPromptCacheableRejectsLogitBias(t *testing.T) {
+	opts := LLMPromptCacheOptions{Enabled: true}
+	if decision := LLMPromptCacheable(map[string]any{
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"logit_bias": map[string]any{"42": 1.0},
+	}, opts); decision.Cacheable || decision.Reason != "logit_bias" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestLLMPromptCacheKeyStripsEmptyFunctionsAndDefaultFunctionCall(t *testing.T) {
+	opts := LLMPromptCacheOptions{Enabled: true, NormalizeDeterministicParams: true}
+	bodyA := map[string]any{
+		"messages":      []any{map[string]any{"role": "user", "content": "hi"}},
+		"functions":     []any{},
+		"function_call": "auto",
+	}
+	bodyB := map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	keyA, _, err := LLMPromptCacheKey("m", "m", bodyA, opts)
+	if err != nil {
+		t.Fatalf("keyA: %v", err)
+	}
+	keyB, _, err := LLMPromptCacheKey("m", "m", bodyB, opts)
+	if err != nil {
+		t.Fatalf("keyB: %v", err)
+	}
+	if keyA != keyB {
+		t.Fatalf("expected equivalent keys, got %q vs %q", keyA, keyB)
+	}
+}
+
+func TestLLMPromptCacheKeyPreservesToolChoiceNoneWhenToolsPresent(t *testing.T) {
+	opts := LLMPromptCacheOptions{Enabled: true}
+	tools := []any{map[string]any{"type": "function", "function": map[string]any{"name": "ping"}}}
+	bodyNone := map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":       tools,
+		"tool_choice": "none",
+	}
+	bodyAuto := map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":       tools,
+		"tool_choice": "auto",
+	}
+	keyNone, _, err := LLMPromptCacheKey("m", "m", bodyNone, opts)
+	if err != nil {
+		t.Fatalf("keyNone: %v", err)
+	}
+	keyAuto, _, err := LLMPromptCacheKey("m", "m", bodyAuto, opts)
+	if err != nil {
+		t.Fatalf("keyAuto: %v", err)
+	}
+	if keyNone == keyAuto {
+		t.Fatalf("tool_choice none must not collapse to auto when tools are present")
+	}
+}
+
+func TestLLMPromptCacheShouldStoreRejectsToolCallsAndBadStatus(t *testing.T) {
+	okBody := []byte(`{"id":"c1","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	if d := LLMPromptCacheShouldStore(okBody, 200); !d.Store {
+		t.Fatalf("ok body should store: %+v", d)
+	}
+	toolBody := []byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"1","type":"function","function":{"name":"x","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	if d := LLMPromptCacheShouldStore(toolBody, 200); d.Store || d.Reason != "tool_calls" {
+		t.Fatalf("tool body decision = %+v", d)
+	}
+	fnBody := []byte(`{"output":[{"type":"function_call","name":"x"}]}`)
+	if d := LLMPromptCacheShouldStore(fnBody, 200); d.Store || d.Reason != "tool_calls" {
+		t.Fatalf("responses function_call decision = %+v", d)
+	}
+	if d := LLMPromptCacheShouldStore(okBody, 500); d.Store || d.Reason != "status" {
+		t.Fatalf("status decision = %+v", d)
+	}
+	if d := LLMPromptCacheShouldStore([]byte("not-json"), 200); d.Store || d.Reason != "invalid_json" {
+		t.Fatalf("invalid json decision = %+v", d)
+	}
+	if d := LLMPromptCacheShouldStoreWithLimit(okBody, 200, 4); d.Store || d.Reason != "too_large" {
+		t.Fatalf("too large decision = %+v", d)
+	}
+}
+
+func TestSynthesizeOpenAIChatCompletionSSE(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl_1","object":"chat.completion","created":123,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	sse, err := SynthesizeOpenAIChatCompletionSSE(body)
+	if err != nil {
+		t.Fatalf("synthesize: %v", err)
+	}
+	text := string(sse)
+	if !strings.Contains(text, `"object":"chat.completion.chunk"`) {
+		t.Fatalf("missing chunk object: %s", text)
+	}
+	if !strings.Contains(text, `"content":"hello"`) {
+		t.Fatalf("missing content: %s", text)
+	}
+	if !strings.Contains(text, `"finish_reason":"stop"`) {
+		t.Fatalf("missing finish: %s", text)
+	}
+	if !strings.Contains(text, "data: [DONE]") {
+		t.Fatalf("missing DONE: %s", text)
+	}
+}
+
+func TestSynthesizeOpenAIChatCompletionSSEToolCalls(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl_tool","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	sse, err := SynthesizeOpenAIChatCompletionSSE(body)
+	if err != nil {
+		t.Fatalf("synthesize tool_calls: %v", err)
+	}
+	text := string(sse)
+	if !strings.Contains(text, `"tool_calls"`) {
+		t.Fatalf("missing tool_calls in stream: %s", text)
+	}
+	if !strings.Contains(text, `"name":"read_file"`) {
+		t.Fatalf("missing tool name: %s", text)
+	}
+	if !strings.Contains(text, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("missing finish tool_calls: %s", text)
+	}
+	if !strings.Contains(text, "data: [DONE]") {
+		t.Fatalf("missing DONE: %s", text)
 	}
 }

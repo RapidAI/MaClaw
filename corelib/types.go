@@ -327,27 +327,27 @@ type NLSkillEntry struct {
 	// Empty for legacy skills that have not declared an id.
 	SkillID string `json:"skill_id,omitempty"`
 
-	Name          string              `json:"name"`
-	DirName       string              `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
-	Description   string              `json:"description"`
-	Triggers      []string            `json:"triggers"`
-	Steps         []NLSkillStep       `json:"steps"`
-	Status        string              `json:"status"` // "active", "disabled"
-	CreatedAt     string              `json:"created_at"`
-	Source        string              `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
-	SourceProject string              `json:"source_project"`
-	HubSkillID    string              `json:"hub_skill_id,omitempty"`
-	HubVersion    string              `json:"hub_version,omitempty"`
+	Name          string        `json:"name"`
+	DirName       string        `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
+	Description   string        `json:"description"`
+	Triggers      []string      `json:"triggers"`
+	Steps         []NLSkillStep `json:"steps"`
+	Status        string        `json:"status"` // "active", "disabled"
+	CreatedAt     string        `json:"created_at"`
+	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
+	SourceProject string        `json:"source_project"`
+	HubSkillID    string        `json:"hub_skill_id,omitempty"`
+	HubVersion    string        `json:"hub_version,omitempty"`
 	// Version is the semantic version from skill.yaml (e.g. "1.3.0").
 	// Used for dependency constraint checking. Distinct from HubVersion which
 	// may be a Hub-internal integer version counter.
-	Version string `json:"version,omitempty"`
-	Capability    *SkillCapabilityRef `json:"capability,omitempty"`
-	TrustLevel    string              `json:"trust_level,omitempty"`
-	Type          string              `json:"type,omitempty"`         // "executable" (default) | "knowledge"
-	Content       string              `json:"content,omitempty"`      // Markdown content for knowledge-type skills
-	Platforms     []string            `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
-	RequiresGUI   bool                `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	Version     string              `json:"version,omitempty"`
+	Capability  *SkillCapabilityRef `json:"capability,omitempty"`
+	TrustLevel  string              `json:"trust_level,omitempty"`
+	Type        string              `json:"type,omitempty"`         // "executable" (default) | "knowledge"
+	Content     string              `json:"content,omitempty"`      // Markdown content for knowledge-type skills
+	Platforms   []string            `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
+	RequiresGUI bool                `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
 
 	// Tool availability conditions
 	Capabilities        []string `json:"capabilities,omitempty"`
@@ -582,18 +582,19 @@ func IsLearnedSource(source string) bool {
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
 type MaclawLLMProvider struct {
-	Name            string `json:"name"`
-	URL             string `json:"url"`
-	Key             string `json:"key"`
-	Model           string `json:"model"`
-	Protocol        string `json:"protocol,omitempty"`
-	ContextLength   int    `json:"context_length,omitempty"`
-	TimeoutSec      int    `json:"timeout_sec,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
-	IsCustom        bool   `json:"is_custom,omitempty"`
-	IsHubService    bool   `json:"is_hub_service,omitempty"`
-	SupportsVision  bool   `json:"supports_vision"`
-	AgentType       string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	Name            string   `json:"name"`
+	URL             string   `json:"url"`
+	Key             string   `json:"key"`
+	Model           string   `json:"model"`
+	Protocol        string   `json:"protocol,omitempty"`
+	ContextLength   int      `json:"context_length,omitempty"`
+	TimeoutSec      int      `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int      `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
+	Models          []string `json:"models,omitempty"`            // provider-specific model IDs, when discovered from the service
+	IsCustom        bool     `json:"is_custom,omitempty"`
+	IsHubService    bool     `json:"is_hub_service,omitempty"`
+	SupportsVision  bool     `json:"supports_vision"`
+	AgentType       string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                 string  `json:"auth_type,omitempty"`
 	RefreshToken             string  `json:"refresh_token,omitempty"`
@@ -627,6 +628,13 @@ type MaclawLLMConfig struct {
 	ProviderName             string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
 	AuthType                 string `json:"auth_type,omitempty"`
 	MaclawAgentMaxIterations int    `json:"maclaw_agent_max_iterations,omitempty"`
+
+	// EnablePromptCache hints to the LLM client that the system prompt is
+	// stable across iterations and should be marked for provider-side caching.
+	// When true: Anthropic → cache_control:{type:"ephemeral"} on system block;
+	// OpenAI/DeepSeek → implicit prefix caching (no client action needed).
+	// Used by CodingSubAgent where system prompt never changes across 80 iterations.
+	EnablePromptCache bool `json:"enable_prompt_cache,omitempty"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.

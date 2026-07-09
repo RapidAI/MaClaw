@@ -11,6 +11,11 @@ import {
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
     ImportCodexAuth,
+    StartAnthropicOAuth,
+    CompleteAnthropicOAuth,
+    StartGitHubCopilotOAuth,
+    WaitGitHubCopilotOAuth,
+    CancelGitHubCopilotOAuth,
     FetchCodeGenModels,
     FetchProviderModels,
     SaveCodeGenModelChoice,
@@ -83,7 +88,35 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setOauthBusy(true);
         setDlgTestResult(null);
         try {
-            await StartOpenAIOAuth();
+            const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
+
+            if (providerName === "Anthropic") {
+                // Anthropic: two-step flow (get auth URL, user pastes code)
+                const info = await StartAnthropicOAuth();
+                // Open browser for user
+                window.open(info.auth_url, "_blank");
+                // Prompt user for code
+                const code = prompt("请粘贴浏览器页面中显示的授权码 (Authorization Code):");
+                if (!code) {
+                    setDlgTestResult({ ok: false, msg: t("Cancelled", "已取消") });
+                    setOauthBusy(false);
+                    return;
+                }
+                await CompleteAnthropicOAuth(code);
+            } else if (providerName === "GitHub Copilot") {
+                // GitHub Copilot: device code flow
+                const deviceInfo = await StartGitHubCopilotOAuth();
+                setDlgTestResult({
+                    ok: true,
+                    msg: `请打开 ${deviceInfo.verification_uri} 并输入代码: ${deviceInfo.user_code}`,
+                });
+                // Wait for user to complete (blocking call)
+                await WaitGitHubCopilotOAuth();
+            } else {
+                // OpenAI: standard PKCE with local callback
+                await StartOpenAIOAuth();
+            }
+
             const data = await GetMaclawLLMProviders();
             if (data?.providers) {
                 const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
@@ -92,7 +125,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setCurrentName(data.current || NONE_PROVIDER);
                 loadHubServiceStatus().catch(() => {});
                 // Re-select the OAuth provider by name to keep dlgSelectedIdx stable
-                const oaIdx = fresh.findIndex((p: LLMProvider) => p.auth_type === "oauth");
+                const oaIdx = fresh.findIndex((p: LLMProvider) => p.name === providerName);
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
                 setDlgDirty(false);
                 onStatusChange?.(true, true);
@@ -104,7 +137,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             setDlgTestResult({ ok: false, msg: String(e) });
         }
         setOauthBusy(false);
-    }, [t, onStatusChange, onProviderChanged, loadHubServiceStatus]);
+    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -1030,10 +1063,19 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             }}>
                                                 {oauthBusy
                                                     ? `RUN ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
-                                                    : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
+                                                    : dlgProvider.name === "GitHub Copilot"
+                                                        ? t("Sign in with GitHub", "使用 GitHub 账号登录")
+                                                        : dlgProvider.name === "Anthropic"
+                                                            ? t("Sign in with Claude.ai", "使用 Claude.ai 账号登录")
+                                                            : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
                                             </button>
                                             {oauthBusy && (
-                                                <button onClick={() => { CancelOpenAIOAuth(); setOauthBusy(false); }} style={{
+                                                <button onClick={() => {
+                                                    const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
+                                                    if (name === "GitHub Copilot") CancelGitHubCopilotOAuth();
+                                                    else CancelOpenAIOAuth();
+                                                    setOauthBusy(false);
+                                                }} style={{
                                                     width: "100%", padding: "8px 0", fontSize: "0.76rem",
                                                     cursor: "pointer", marginTop: 6,
                                                     background: "transparent", color: colors.textMuted,

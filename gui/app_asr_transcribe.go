@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -17,8 +19,8 @@ import (
 )
 
 var (
-	asrInstance *asr.MoonshineModel
-	asrMu       sync.Mutex
+	asrInstance asr.ASRModel
+	asrMu      sync.Mutex
 )
 
 const asrRawFallbackMinRMS = 0.0025
@@ -244,7 +246,8 @@ func shouldDropASRText(text string, sampleCount int) (bool, string) {
 
 // getASRModel returns the singleton ASR model, loading on first call.
 // Thread-safe. Automatically retries if the model wasn't available before.
-func (a *App) getASRModel() (*asr.MoonshineModel, error) {
+// Supports both Moonshine and SenseVoice models via auto-detection.
+func (a *App) getASRModel() (asr.ASRModel, error) {
 	asrMu.Lock()
 	defer asrMu.Unlock()
 
@@ -260,15 +263,29 @@ func (a *App) getASRModel() (*asr.MoonshineModel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("models dir: %w", err)
 	}
+
+	// Try SenseVoice model first, then fall back to Moonshine
 	modelPath := filepath.Join(dir, asrModelFilename)
-	log.Printf("[asr] loading model from %s", modelPath)
-	m, err := asr.NewMoonshine(modelPath)
-	if err != nil {
-		return nil, fmt.Errorf("load moonshine model: %w", err)
+	svPath := filepath.Join(dir, svModelFilename)
+	if _, err := os.Stat(svPath); err == nil {
+		modelPath = svPath
 	}
-	asrInstance = m
+
+	log.Printf("[asr] loading model from %s", modelPath)
+	m, loadErr := asr.NewSenseVoice(modelPath)
+	if loadErr != nil {
+		// Fall back to Moonshine if SenseVoice load fails
+		log.Printf("[asr] SenseVoice load failed (%v), trying Moonshine", loadErr)
+		moonModel, moonErr := asr.NewMoonshine(modelPath)
+		if moonErr != nil {
+			return nil, fmt.Errorf("load ASR model: sensevoice=%v, moonshine=%v", loadErr, moonErr)
+		}
+		asrInstance = moonModel
+	} else {
+		asrInstance = m
+	}
 	log.Printf("[asr] model loaded successfully")
-	return m, nil
+	return asrInstance, nil
 }
 
 // TranscribeAudioBase64 accepts base64-encoded WAV audio data and returns
@@ -293,6 +310,11 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 	}
 	if len(wavData) < 44 {
 		return "", fmt.Errorf("audio data too short")
+	}
+
+	// Debug: save received WAV to disk for quality comparison
+	if asrDumpEnabled() {
+		dumpASRWav(wavData)
 	}
 	header := inspectWAVHeader(wavData)
 	if header.OK {
@@ -346,6 +368,10 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 		return "", fmt.Errorf("ASR model: %w", err)
 	}
 
+	// Gentle normalize: boost very quiet audio to a level the model handles well.
+	// Only activates when RMS < 0.015 (clearly too quiet). Max gain 3x.
+	pcm = gentleNormalizePCM(pcm)
+
 	text, err := model.Transcribe(pcm)
 	if err != nil {
 		return "", fmt.Errorf("transcribe: %w", err)
@@ -366,4 +392,82 @@ func (a *App) IsASRReady() bool {
 	}
 	info := a.CheckASRModel()
 	return info["exists"].(bool)
+}
+
+// asrDumpEnabled returns true if ASR audio dump is enabled for debugging.
+// Set environment variable MACLAW_ASR_DUMP=1 to enable.
+func asrDumpEnabled() bool {
+	return os.Getenv("MACLAW_ASR_DUMP") == "1"
+}
+
+var asrDumpCounter int64
+
+// dumpASRWav saves the WAV data received by the backend to ~/.maclaw/asr_dump/ for debugging.
+func dumpASRWav(wavData []byte) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(home, ".maclaw", "asr_dump")
+	os.MkdirAll(dir, 0755)
+
+	asrDumpCounter++
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+	filename := fmt.Sprintf("asr_%s_%03d.wav", ts, asrDumpCounter%1000)
+	path := filepath.Join(dir, filename)
+
+	if err := os.WriteFile(path, wavData, 0644); err != nil {
+		log.Printf("[asr-dump] write failed: %v", err)
+		return
+	}
+	log.Printf("[asr-dump] saved %d bytes -> %s", len(wavData), path)
+}
+
+// gentleNormalizePCM boosts audio that is too quiet for optimal ASR performance.
+// Only activates when RMS < 0.015. Targets RMS ~0.025, max gain 3x, never clips.
+func gentleNormalizePCM(pcm []float32) []float32 {
+	const minRMS = 0.015
+	const targetRMS = 0.025
+	const maxGain = 3.0
+
+	rmsVal := pcmRMS(pcm)
+	if rmsVal >= minRMS || rmsVal <= 0 {
+		return pcm
+	}
+
+	// Calculate gain
+	gain := targetRMS / rmsVal
+	// Limit by peak headroom
+	peakVal := 0.0
+	for _, s := range pcm {
+		if v := math.Abs(float64(s)); v > peakVal {
+			peakVal = v
+		}
+	}
+	if peakVal > 0 {
+		peakGain := 0.95 / peakVal
+		if peakGain < gain {
+			gain = peakGain
+		}
+	}
+	if gain > maxGain {
+		gain = maxGain
+	}
+	if gain <= 1.1 {
+		return pcm
+	}
+
+	log.Printf("[asr] gentle normalize: rms=%.5f -> gain=%.2fx", rmsVal, gain)
+	out := make([]float32, len(pcm))
+	g := float32(gain)
+	for i, s := range pcm {
+		v := s * g
+		if v > 1 {
+			v = 1
+		} else if v < -1 {
+			v = -1
+		}
+		out[i] = v
+	}
+	return out
 }

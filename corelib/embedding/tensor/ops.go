@@ -11,83 +11,148 @@ import (
 
 // MatMul computes out = A @ B^T where A is [M, K] and B is [N, K] (row-major).
 // Result out is [M, N]. Uses SIMD-accelerated dot product for each row pair.
+//
+// Loop order is N-outer so each B row stays hot while dotted against all M A
+// rows (critical for encoder-style M≈frames, N≈hidden/ff).
 func MatMul(out, a, b []float32, M, N, K int) {
-	nCPU := getMatMulWorkers()
-	if nCPU > 1 && N*K > 4096 {
-		if M > 1 {
-			matMulParallel(out, a, b, M, N, K)
-			return
-		}
-		matMulParallelN(out, a, b, M, N, K)
+	// Delegate to bias path with nil bias (same kernels, no second pass).
+	MatMulBias(out, a, b, nil, M, N, K)
+}
+
+// MatMulBias is MatMul with optional bias fused into the store:
+// out[m,n] = dot(A[m], B[n]) + bias[n].
+//
+// For M>1 uses M-tile outer (A panel hot); for M==1 parallelizes over N.
+func MatMulBias(out, a, b, bias []float32, M, N, K int) {
+	if M <= 0 || N <= 0 || K <= 0 {
 		return
 	}
-	for m := 0; m < M; m++ {
-		aRow := a[m*K : m*K+K]
+	if M == 1 {
+		if shouldParallel(1, N, K) {
+			matMulParallelN_M1(out, a, b, bias, N, K)
+			return
+		}
 		for n := 0; n < N; n++ {
-			out[m*N+n] = vek32.Dot(aRow, b[n*K:n*K+K])
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[n] = vek32.Dot(a[:K], b[n*K:n*K+K]) + bn
+		}
+		return
+	}
+	if shouldParallel(M, N, K) {
+		matMulParallelN_MTile(out, a, b, bias, M, N, K)
+		return
+	}
+	matMulSerialM(out, a, b, bias, M, N, K)
+}
+
+// MatMulBiasReLU computes out = max(0, A @ B^T + bias).
+func MatMulBiasReLU(out, a, b, bias []float32, M, N, K int) {
+	MatMulBias(out, a, b, bias, M, N, K)
+	reluInplace(out[:M*N])
+}
+
+func matMulParallelN_M1(out, a, b, bias []float32, N, K int) {
+	parallelRanges(N, func(ns, ne int) {
+		for n := ns; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[n] = vek32.Dot(a[:K], b[n*K:n*K+K]) + bn
+		}
+	})
+}
+
+// matMulSerialM: M-tile outer keeps A panel hot while streaming B rows.
+// Dual-B multiDot amortizes A loads across two B columns.
+func matMulSerialM(out, a, b, bias []float32, M, N, K int) {
+	matMulRangeDual(out, a, b, bias, M, N, K, 0, N)
+}
+
+// matMulParallelN_MTile: partition N via pool; M-tile outer inside each worker.
+func matMulParallelN_MTile(out, a, b, bias []float32, M, N, K int) {
+	parallelRanges(N, func(ns, ne int) {
+		matMulRangeDual(out, a, b, bias, M, N, K, ns, ne)
+	})
+}
+
+func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
+	var d4 [4]float32
+	var d8 [8]float32
+	var dDual0, dDual1 [8]float32
+	m := 0
+	for ; m+7 < M; m += 8 {
+		aPanel := a[m*K : (m+8)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			b0 := b[n*K : n*K+K]
+			b1 := b[(n+1)*K : (n+1)*K+K]
+			multiDot8DualB(&dDual0, &dDual1, aPanel, b0, b1, K)
+			storeF32Dual4(out, m, n, N, &dDual0, bn0, bn1)
+			storeF32Dual4(out, m+4, n, N, &dDual1, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			multiDot8(&d8, aPanel, b[n*K:n*K+K], K)
+			for t := 0; t < 8; t++ {
+				out[(m+t)*N+n] = d8[t] + bn
+			}
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			multiDot4DualB(&dDual0, aPanel, b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], K)
+			storeF32Dual4(out, m, n, N, &dDual0, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			multiDot4(&d4, aPanel, b[n*K:n*K+K], K)
+			out[m*N+n] = d4[0] + bn
+			out[(m+1)*N+n] = d4[1] + bn
+			out[(m+2)*N+n] = d4[2] + bn
+			out[(m+3)*N+n] = d4[3] + bn
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := ns; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[m*N+n] = vek32.Dot(aRow, b[n*K:n*K+K]) + bn
 		}
 	}
 }
 
-func matMulParallel(out, a, b []float32, M, N, K int) {
-	nWorkers := getMatMulWorkers()
-	if nWorkers > M {
-		nWorkers = M
-	}
-	var wg sync.WaitGroup
-	rowsPerWorker := (M + nWorkers - 1) / nWorkers
-	for w := 0; w < nWorkers; w++ {
-		start := w * rowsPerWorker
-		end := start + rowsPerWorker
-		if end > M {
-			end = M
-		}
-		if start >= end {
-			break
-		}
-		wg.Add(1)
-		go func(s, e int) {
-			defer wg.Done()
-			for m := s; m < e; m++ {
-				aRow := a[m*K : m*K+K]
-				for n := 0; n < N; n++ {
-					out[m*N+n] = vek32.Dot(aRow, b[n*K:n*K+K])
-				}
-			}
-		}(start, end)
-	}
-	wg.Wait()
-}
-
-// matMulParallelN parallelizes across the N (output) dimension for small M.
-func matMulParallelN(out, a, b []float32, M, N, K int) {
-	nWorkers := getMatMulWorkers()
-	if nWorkers > N {
-		nWorkers = N
-	}
-	var wg sync.WaitGroup
-	colsPerWorker := (N + nWorkers - 1) / nWorkers
-	for w := 0; w < nWorkers; w++ {
-		nStart := w * colsPerWorker
-		nEnd := nStart + colsPerWorker
-		if nEnd > N {
-			nEnd = N
-		}
-		if nStart >= nEnd {
-			break
-		}
-		wg.Add(1)
-		go func(ns, ne int) {
-			defer wg.Done()
-			for m := 0; m < M; m++ {
-				aRow := a[m*K : m*K+K]
-				for n := ns; n < ne; n++ {
-					out[m*N+n] = vek32.Dot(aRow, b[n*K:n*K+K])
-				}
-			}
-		}(nStart, nEnd)
-	}
-	wg.Wait()
+func storeF32Dual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
+	out[m*N+n] = d[0] + bn0
+	out[(m+1)*N+n] = d[1] + bn0
+	out[(m+2)*N+n] = d[2] + bn0
+	out[(m+3)*N+n] = d[3] + bn0
+	out[m*N+n+1] = d[4] + bn1
+	out[(m+1)*N+n+1] = d[5] + bn1
+	out[(m+2)*N+n+1] = d[6] + bn1
+	out[(m+3)*N+n+1] = d[7] + bn1
 }
 
 // Dot computes the dot product of two vectors using SIMD acceleration.
@@ -458,27 +523,48 @@ func WeightedSumStrided(out, weights, values []float32, rows, stride, dim int) {
 }
 
 // SoftmaxWeightedSumStrided computes out = softmax(scores) @ values without
-// materializing normalized scores. scores is reused as exp(score-max) scratch.
+// allocating normalized weights. scores is reused as exp(score-max) scratch,
+// then scaled by invSum and fed to WeightedSumStrided.
 func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim int) {
 	if rows <= 0 || dim <= 0 {
 		return
 	}
 	scores = scores[:rows]
 	max := vek32.Max(scores)
+	// Fused exp + sum; unroll for ILP.
 	var sum float32
-	for i := range scores {
+	i := 0
+	for ; i+3 < rows; i += 4 {
+		v0 := fastExp(scores[i] - max)
+		v1 := fastExp(scores[i+1] - max)
+		v2 := fastExp(scores[i+2] - max)
+		v3 := fastExp(scores[i+3] - max)
+		scores[i], scores[i+1], scores[i+2], scores[i+3] = v0, v1, v2, v3
+		sum += v0 + v1 + v2 + v3
+	}
+	for ; i < rows; i++ {
 		v := fastExp(scores[i] - max)
 		scores[i] = v
 		sum += v
 	}
 	if sum == 0 {
-		for i := 0; i < dim; i++ {
-			out[i] = 0
-		}
+		clear(out[:dim])
 		return
 	}
+	// Scale into weighted sum without a separate MulNumber pass when dim is small.
 	invSum := 1.0 / sum
-	w0 := scores[0] * invSum
+	if dim == 128 {
+		// Hot path for SenseVoice headDim=128: fuse invSum into weights on the fly.
+		weightedSumStridedScaled(out, scores, values, rows, stride, dim, invSum)
+		return
+	}
+	vek32.MulNumber_Inplace(scores, invSum)
+	WeightedSumStrided(out, scores, values, rows, stride, dim)
+}
+
+// weightedSumStridedScaled: out = sum_r (weights[r]*scale) * values[r*stride:].
+func weightedSumStridedScaled(out, weights, values []float32, rows, stride, dim int, scale float32) {
+	w0 := weights[0] * scale
 	v0 := values[:dim]
 	i := 0
 	for ; i+7 < dim; i += 8 {
@@ -494,9 +580,8 @@ func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim 
 	for ; i < dim; i++ {
 		out[i] = w0 * v0[i]
 	}
-
 	for r := 1; r < rows; r++ {
-		w := scores[r] * invSum
+		w := weights[r] * scale
 		if w == 0 {
 			continue
 		}
@@ -515,6 +600,51 @@ func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim 
 		for ; i < dim; i++ {
 			out[i] += w * v[i]
 		}
+	}
+}
+
+// MultiDot4 computes 4 dots of consecutive A rows against the same B vector.
+// a is [4][K] contiguous row-major; b is [K]; out receives 4 results.
+// Uses AVX2/NEON multi-row kernels when available.
+func MultiDot4(out *[4]float32, a, b []float32, K int) {
+	multiDot4(out, a, b, K)
+}
+
+// MultiDot8 computes 8 dots of consecutive A rows against the same B vector.
+func MultiDot8(out *[8]float32, a, b []float32, K int) {
+	multiDot8(out, a, b, K)
+}
+
+// MultiDot4DualB computes 4 A rows × 2 B vectors.
+// out[0:4] = dots with b0, out[4:8] = dots with b1.
+// Loads each A chunk once (better bandwidth than two MultiDot4 calls).
+func MultiDot4DualB(out *[8]float32, a, b0, b1 []float32, K int) {
+	multiDot4DualB(out, a, b0, b1, K)
+}
+
+// FmaddInto computes out[i] += a[i] * b[i] (fused multiply-add, in-place on out).
+// Unrolled for compiler auto-vectorization / ILP.
+func FmaddInto(out, a, b []float32) {
+	n := len(out)
+	if n > len(a) {
+		n = len(a)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	i := 0
+	for ; i+7 < n; i += 8 {
+		out[i] += a[i] * b[i]
+		out[i+1] += a[i+1] * b[i+1]
+		out[i+2] += a[i+2] * b[i+2]
+		out[i+3] += a[i+3] * b[i+3]
+		out[i+4] += a[i+4] * b[i+4]
+		out[i+5] += a[i+5] * b[i+5]
+		out[i+6] += a[i+6] * b[i+6]
+		out[i+7] += a[i+7] * b[i+7]
+	}
+	for ; i < n; i++ {
+		out[i] += a[i] * b[i]
 	}
 }
 

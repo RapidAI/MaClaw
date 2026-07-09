@@ -386,6 +386,115 @@ func TestRemoteHubClientUpdateMobileBackendSSHSessionSendsWorkerPayload(t *testi
 	}
 }
 
+func TestProcessMobileBackendSSHSessionReportsMissingDesktopProfile(t *testing.T) {
+	updates := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/mobile/ssh/sessions/mobssh_1/worker" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
+			t.Fatalf("X-Machine-ID = %q", got)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		updates <- payload
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "mobssh_1",
+			"status":     payload["status"],
+			"state":      payload["state"],
+			"message":    payload["message"],
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		SSHHosts: []corelib.SSHHostEntry{
+			{Label: "prod", Host: "10.0.0.10", User: "deploy", Port: 2222},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+
+	client.processMobileBackendSSHSession(mobileBackendSSHSession{
+		SessionID:       "mobssh_1",
+		ServerProfileID: "missing",
+		Status:          "agent_claimed",
+	})
+
+	payload := <-updates
+	if payload["status"] != "failed" || payload["state"] != "profile_not_found" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if !strings.Contains(payload["message"].(string), "not configured on this MaClaw desktop") {
+		t.Fatalf("message = %#v", payload["message"])
+	}
+}
+
+func TestProcessMobileBackendSSHSessionCloseUsesDesktopManager(t *testing.T) {
+	updates := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/mobile/ssh/sessions/mobssh_1/worker" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		updates <- payload
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":          "mobssh_1",
+			"backend_session_id":  payload["backend_session_id"],
+			"status":              payload["status"],
+			"state":               payload["state"],
+			"clear_pending_input": payload["clear_pending_input"],
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		SSHHosts: []corelib.SSHHostEntry{
+			{Label: "prod", Host: "10.0.0.10", User: "deploy", Port: 2222},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := &RemoteHubClient{
+		app: app,
+		configureIMHandler: func(h *IMMessageHandler) {
+			h.sshMgr = remote.NewSSHSessionManager(nil)
+		},
+	}
+
+	client.processMobileBackendSSHSession(mobileBackendSSHSession{
+		SessionID:        "mobssh_1",
+		ServerProfileID:  "prod",
+		BackendSessionID: "mobile-ssh:mobssh_1",
+		Status:           "close_requested",
+	})
+
+	payload := <-updates
+	if payload["status"] != "closed" || payload["state"] != "closed" || payload["backend_session_id"] != "mobile-ssh:mobssh_1" || payload["clear_pending_input"] != true {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if !strings.Contains(payload["message"].(string), "closed by MaClaw desktop") {
+		t.Fatalf("message = %#v", payload["message"])
+	}
+}
+
 func TestRemoteHubClientMobileBackendSSHTaskClaimAndUpdateUseMachineAuth(t *testing.T) {
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -86,6 +86,8 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		return h.handleWorkflowCommand(msg, trimmed, responseLang)
 	case imCommandGoal:
 		return h.handleGoalCommand(msg, trimmed), true
+	case imCommandBranch:
+		return h.handleBranchCommand(msg, trimmed), true
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)

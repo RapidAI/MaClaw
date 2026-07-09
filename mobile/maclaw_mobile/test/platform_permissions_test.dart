@@ -65,7 +65,7 @@ void main() {
     expect(plist, contains('<key>NSLocalNetworkUsageDescription</key>'));
     expect(
       plist,
-      contains('<string>用于发现 MaClaw 官方 Hub 并同步后台 SSH 会话状态。</string>'),
+      contains('<string>用于发现 MaClaw 官方 Hub 并同步 GUI/agent 管理的后台 SSH 会话状态。</string>'),
     );
     expect(plist, isNot(contains('?/string>')));
     expect(plist, isNot(contains('鐢')));

@@ -280,3 +280,30 @@ func TestToolRegistry_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestToolRegistry_ListAvailable_DeterministicOrder(t *testing.T) {
+	r := NewToolRegistry()
+	// Register in reverse alphabetical order to verify sort is applied.
+	r.Register(RegisteredTool{Name: "zeta", Status: RegToolAvailable})
+	r.Register(RegisteredTool{Name: "alpha", Status: RegToolAvailable})
+	r.Register(RegisteredTool{Name: "middle", Status: RegToolAvailable})
+
+	avail := r.ListAvailable()
+	if len(avail) != 3 {
+		t.Fatalf("ListAvailable len = %d, want 3", len(avail))
+	}
+	// Must be alphabetically sorted for LLM API prefix cache stability.
+	if avail[0].Name != "alpha" || avail[1].Name != "middle" || avail[2].Name != "zeta" {
+		t.Errorf("ListAvailable order = [%s, %s, %s], want [alpha, middle, zeta]",
+			avail[0].Name, avail[1].Name, avail[2].Name)
+	}
+
+	// Verify idempotency — multiple calls produce identical order.
+	avail2 := r.ListAvailable()
+	for i := range avail {
+		if avail[i].Name != avail2[i].Name {
+			t.Errorf("ListAvailable not idempotent: call1[%d]=%s, call2[%d]=%s",
+				i, avail[i].Name, i, avail2[i].Name)
+		}
+	}
+}

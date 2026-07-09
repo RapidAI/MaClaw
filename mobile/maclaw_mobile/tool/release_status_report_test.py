@@ -91,7 +91,17 @@ class ReleaseStatusReportTest(unittest.TestCase):
             output,
         )
         self.assertIn("GUI-equivalent backend-managed SSH session evidence", output)
+        self.assertIn("Hub discovery evidence with selected HubCenter", output)
+        self.assertIn("MaClaw logo cold start with no Flutter placeholder", output)
+        self.assertIn("signed-in AI assistant first screen", output)
+        self.assertIn("visible main-conversation/secondary-tab controls", output)
+        self.assertIn("microphone/voice input", output)
+        self.assertIn("no legacy info-lookup entry", output)
         self.assertIn("GUI/agent-bound backend_session_id", output)
+        self.assertIn("post-SMS-verification", output)
+        self.assertIn("official credits", output)
+        self.assertIn("llm-request-id", output)
+        self.assertIn("llm-usage-record", output)
         self.assertIn("GUI/agent claim or worker handoff", output)
         self.assertIn("explicit worker claim/update evidence", output)
         self.assertIn("`ssh_session` realtime `output_chunk`/`output_seq` proof", output)
@@ -101,6 +111,10 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
         self.assertIn("GUI/agent Ctrl+C handling", output)
         self.assertIn("copied backend session output", output)
+        self.assertIn(
+            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            output,
+        )
         self.assertIn("AI/digital-employee handoff evidence", output)
         self.assertIn("same GUI/agent-bound backend_session_id when used", output)
         self.assertIn("--team-id <APPLE_TEAM_ID>", output)
@@ -340,9 +354,16 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("quote placeholder arguments for dry-run previews", output)
         self.assertIn(
             "After preflight passes, signed-build QA still needs real-device share/permission, "
-            "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+            "Hub discovery evidence with selected HubCenter, discovered Hub, tenant, post-SMS-verification official credits LLM proof with concrete llm-request-id and llm-usage-record, MaClaw logo "
+            "cold start with no Flutter placeholder, signed-in AI assistant first screen with visible "
+            "main-conversation/secondary-tab controls, microphone/voice input, no legacy info-lookup entry, "
+            "notification, and GUI-equivalent backend-managed SSH session evidence",
             output,
         )
+        self.assertIn("post-SMS-verification", output)
+        self.assertIn("official credits", output)
+        self.assertIn("llm-request-id", output)
+        self.assertIn("llm-usage-record", output)
         self.assertIn("GUI/agent claim or worker handoff", output)
         self.assertIn("explicit worker claim/update evidence", output)
         self.assertIn(
@@ -355,6 +376,10 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
         self.assertIn("GUI/agent Ctrl+C handling", output)
         self.assertIn("copied backend session output", output)
+        self.assertIn(
+            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            output,
+        )
         self.assertIn("AI/digital-employee handoff evidence", output)
         self.assertIn("same GUI/agent-bound backend_session_id", output)
         self.assertNotIn(

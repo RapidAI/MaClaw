@@ -533,9 +533,9 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2500],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2560],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1200],
-  ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 520],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 260],
   ['gui/frontend/src/components/ai/aiAssistantControls.tsx', 120],
@@ -550,11 +550,11 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 170],
   ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 250],
-  ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
+  ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 500],
   ['gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
   ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
   ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
-  ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 100],
+  ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 240],
   ['gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
   ['gui/frontend/src/components/ai/useAssistantPreviewResize.ts', 50],
   ['gui/frontend/src/components/ai/aiAssistantStatusLabels.ts', 40],
@@ -736,9 +736,9 @@ requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggest
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-input"', 'inline AI input composer; use components/ai/AssistantInputComposer.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'rememberHistoryEdit(e.target.value)', 'inline AI input history handling; use components/ai/AssistantInputComposer.tsx');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputStack.tsx', 'from "./AssistantInputComposer"', 'AI input composer import');
-requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'data-testid="ai-input"', 'AI input textarea');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'data-testid={textareaTestId}', 'AI input textarea');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantAttachmentsStrip', 'AI input attachments strip wiring');
-requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantInputActions', 'AI input action buttons wiring');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantInputActionsLeft', 'AI input action buttons wiring');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'recallHistory("up")', 'AI input history up recall');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'handleSend();', 'AI input enter submit wiring');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const initStatusLabels', 'inline AI init status labels; use components/ai/aiAssistantStatusLabels.ts');

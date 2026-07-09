@@ -180,7 +180,7 @@ Screenshots / recordings:
 # official credits bound to that phone account. Include sms-verification:<id>.
 # After verification succeeds, include proof that the first LLM call charges/uses
 # the verified phone account's MaClaw official credits, including a
-# request/log/usage record ID.
+# request/log/usage record ID such as llm-usage-record:<id> or llm-request-id-<id>.
 Login result:
 # Include the same phone account and Tenant ID recorded above, plus quota,
 # feature flags, and service status from mobile bootstrap.
@@ -192,7 +192,8 @@ Discovered Hub/tenant result:
 # For maclaw_official mode, include the same phone:<digits> account recorded
 # above and prove that after SMS verification succeeds, LLM calls use that
 # verified phone account's MaClaw official credits/quota with a request/log/
-# usage record ID. For
+# usage record ID such as llm-usage-record:<id> or llm-request-id-<id>; generic
+# notes that omit the post-SMS-verification context or concrete usage ID are rejected. For
 # desktop_qr_third_party, include desktop GUI QR proof and the matching Desktop
 # GUI QR authorization ID recorded above. In both modes, include the same Tenant
 # ID recorded above.
@@ -310,8 +311,11 @@ Disconnect result:
 Reconnect result:
 Copied backend session output evidence:
 # Include copied backend session output evidence tied to the same
-# GUI/agent-bound backend_session_id. A generic terminal screenshot or
-# clipboard note without that backend-managed session link is not enough.
+# GUI/agent-bound backend_session_id. The copied output or operator console
+# note must include a GUI/agent evidence line with actual values for Hub session ID,
+# backend_session_id, claimed_by, and numeric output_seq so the copy can be traced to
+# the backend session manager. A generic terminal screenshot or clipboard note
+# without that backend-managed session link is not enough.
 # Include the backend SSH session/log output preview, the
 # sensitive-data warning, and proof that the output was redacted/masked/
 # sanitized before AI analysis.

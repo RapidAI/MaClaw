@@ -13,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qa_build_record_report
 import release_evidence_commands
 import validate_qa_build_record
-from validate_qa_build_record_test import complete_record, scoped_record
+from validate_qa_build_record_test import (
+    ASSISTANT_FIRST_SCREEN_CONTEXT,
+    complete_record,
+    scoped_record,
+)
 
 
 REQUIRED_EVIDENCE_COUNT = len(validate_qa_build_record.REQUIRED_FIELDS)
@@ -341,12 +345,34 @@ class QaBuildRecordReportTest(unittest.TestCase):
             output = qa_build_record_report.format_report(report)
 
             self.assertFalse(report.passed)
-            self.assertIn("How to fill AI助手 voice/photo evidence:", output)
+            self.assertIn("How to fill AI assistant voice/photo evidence:", output)
             self.assertIn("recognized voice transcript", output)
-            self.assertIn("AI助手 composer", output)
+            self.assertIn("AI assistant composer", output)
             self.assertIn("photo/image/screenshot assistant input", output)
             self.assertIn("citation URL or document upload task ID", output)
             self.assertIn("screenshot mobile-input-42", output)
+
+    def test_report_points_first_screen_gaps_to_assistant_screen_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root)
+            text = text.replace(
+                f"Assistant first screen evidence: {ASSISTANT_FIRST_SCREEN_CONTEXT}",
+                "Assistant first screen evidence: Signed-in app opened after login; screenshot assistant-first-screen-42",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("How to fill AI assistant first-screen evidence:", output)
+            self.assertIn("signed-build cold launch after login", output)
+            self.assertIn("AI assistant first screen", output)
+            self.assertIn("main-conversation/secondary-tab controls", output)
+            self.assertIn("microphone/voice input", output)
+            self.assertIn("no legacy info-lookup entry", output)
+            self.assertIn("screenshot assistant-first-screen-42", output)
 
     def test_report_points_permission_and_share_gaps_to_qa_flows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -368,7 +394,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertFalse(report.passed)
             self.assertIn("How to fill runtime permission evidence:", output)
             self.assertIn("permission-grant:<id>", output)
-            self.assertIn("AI助手 voice/photo input", output)
+            self.assertIn("AI assistant voice/photo input", output)
             self.assertIn("real task notification open", output)
             self.assertIn("backend-managed SSH read-only command", output)
             self.assertIn("GUI/agent session manager", output)
@@ -527,6 +553,10 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("GUI/agent Ctrl+C handling", output)
             self.assertIn("disconnect/reconnect through the managed session path", output)
             self.assertIn("copied backend session output", output)
+            self.assertIn(
+                "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+                output,
+            )
             self.assertIn(
                 "redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used",
                 output,

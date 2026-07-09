@@ -241,7 +241,22 @@ export const baseInputBtnStyle: React.CSSProperties = {
     transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
 };
 
-export type AssistantInputIconName = "paperclip" | "mic" | "cornerDownLeft" | "stop" | "edit" | "trash" | "eraser";
+export type AssistantInputIconName =
+    | "paperclip"
+    | "mic"
+    | "cornerDownLeft"
+    | "stop"
+    | "edit"
+    | "trash"
+    | "eraser"
+    | "plus"
+    | "target"
+    | "search"
+    | "repeat"
+    | "brain"
+    | "compress"
+    | "helpCircle"
+    | "messagePlus";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
     const common = {
@@ -289,6 +304,71 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="m7 21-4-4L14.5 5.5a2.8 2.8 0 0 1 4 4L7 21Z" />
                     <path {...common} d="m11 8 5 5" />
                     <path {...common} d="M7 21h10" />
+                </>
+            )}
+            {name === "plus" && (
+                <>
+                    <path {...common} d="M12 5v14" />
+                    <path {...common} d="M5 12h14" />
+                </>
+            )}
+            {/* 目标 /goal — 箭靶 */}
+            {name === "target" && (
+                <>
+                    <circle {...common} cx="12" cy="12" r="9" />
+                    <circle {...common} cx="12" cy="12" r="5" />
+                    <circle {...common} cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                </>
+            )}
+            {/* 旁路查询 /btw — 放大镜（侧问/检索） */}
+            {name === "search" && (
+                <>
+                    <circle {...common} cx="11" cy="11" r="7" />
+                    <path {...common} d="m20 20-3.5-3.5" />
+                </>
+            )}
+            {/* 验证循环 /loop — 循环箭头 */}
+            {name === "repeat" && (
+                <>
+                    <path {...common} d="m17 2 4 4-4 4" />
+                    <path {...common} d="M3 11v-1a4 4 0 0 1 4-4h14" />
+                    <path {...common} d="m7 22-4-4 4-4" />
+                    <path {...common} d="M21 13v1a4 4 0 0 1-4 4H3" />
+                </>
+            )}
+            {/* 记忆状态 /memory — 简化大脑轮廓（stroke 友好） */}
+            {name === "brain" && (
+                <>
+                    <path {...common} d="M9.5 2a2.5 2.5 0 0 1 2.45 2H12a2.5 2.5 0 0 1 2.45-2 2.5 2.5 0 0 1 2.5 2.5c0 .4-.1.78-.27 1.12A3.5 3.5 0 0 1 19 9a3.5 3.5 0 0 1-1.4 2.75A3 3 0 0 1 17 17H7a3 3 0 0 1-.6-5.25A3.5 3.5 0 0 1 5 9a3.5 3.5 0 0 1 2.32-3.38A2.5 2.5 0 0 1 7 4.5 2.5 2.5 0 0 1 9.5 2Z" />
+                    <path {...common} d="M12 5v12" />
+                    <path {...common} d="M9 9.5h.01" />
+                    <path {...common} d="M15 9.5h.01" />
+                    <path {...common} d="M9 13h.01" />
+                    <path {...common} d="M15 13h.01" />
+                </>
+            )}
+            {/* 压缩历史 /compress — 双向收拢箭头 */}
+            {name === "compress" && (
+                <>
+                    <path {...common} d="m7 7 5 5 5-5" />
+                    <path {...common} d="m7 17 5-5 5 5" />
+                    <path {...common} d="M4 12h16" />
+                </>
+            )}
+            {/* 帮助 /help — 问号圆 */}
+            {name === "helpCircle" && (
+                <>
+                    <circle {...common} cx="12" cy="12" r="9" />
+                    <path {...common} d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4" />
+                    <circle {...common} cx="12" cy="17" r="0.8" fill="currentColor" stroke="none" />
+                </>
+            )}
+            {/* 开始新对话 — 消息气泡 + */}
+            {name === "messagePlus" && (
+                <>
+                    <path {...common} d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    <path {...common} d="M12 7v6" />
+                    <path {...common} d="M9 10h6" />
                 </>
             )}
         </svg>
@@ -382,6 +462,17 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     }
     .ai-update-notice-button { animation: ai-update-notice-pulse 1.35s ease-in-out infinite; }
     .ai-update-menu-item:hover { background: rgba(148, 163, 184, 0.14) !important; }
+    .ai-plus-menu-item:hover:not(:disabled) { background: var(--ai-plus-menu-item-hover-bg, rgba(47, 95, 152, 0.08)) !important; }
+    .ai-plus-menu-item:focus-visible:not(:disabled) {
+        outline: 2px solid rgba(47, 95, 152, 0.38);
+        outline-offset: -1px;
+    }
+    .ai-plus-menu-item[data-active="true"]:not(:disabled) {
+        background: var(--ai-plus-menu-item-hover-bg, rgba(47, 95, 152, 0.08)) !important;
+    }
+    .ai-plus-menu-item:disabled {
+        cursor: not-allowed !important;
+    }
     @media (prefers-reduced-motion: reduce) {
         .ai-update-notice-button { animation: none; }
     }

@@ -21,10 +21,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
 const codeGenQwenFlashMaxTokens = 8192
@@ -93,6 +95,43 @@ type Server struct {
 	modelAliasByID map[string]string
 
 	usageCallback func(promptTokens, completionTokens, totalTokens int)
+
+	// cacheHitUsageCallback is called on cache hits with the token counts that
+	// were saved (would have been consumed without cache). Thread-safe.
+	cacheHitUsageCallback func(promptTokens, completionTokens, totalTokens int)
+
+	// cacheHitCallback is called on each cache hit/miss event (optional).
+	cacheHitCallback func(hit bool)
+
+	// cacheDecisionCallback receives detailed cache lookup/store decisions.
+	cacheDecisionCallback func(CacheDecisionEvent)
+
+	// Prompt response cache (optional). When set, deterministic requests are
+	// checked against the cache before forwarding to upstream. Successful
+	// non-streaming responses are stored; streaming hits are synthesized as SSE.
+	promptCache *llmpool.Cache
+
+	// promptCacheFlights coalesces concurrent misses for the same cache key.
+	promptCacheFlightMu sync.Mutex
+	promptCacheFlights  map[string]*promptCacheFlight
+
+	// Cache hit/miss counters (atomic).
+	cacheHits   int64
+	cacheMisses int64
+	// cacheSingleflightShared counts waiters that reused an in-flight fill.
+	cacheSingleflightShared int64
+
+	// streamOptionsDisabled is set to 1 (atomically) if upstream rejects stream_options.
+	// Once set, the proxy stops injecting stream_options into future requests.
+	streamOptionsDisabled int32
+}
+
+// CacheDecisionEvent describes one prompt-cache decision for chat/responses traffic.
+type CacheDecisionEvent struct {
+	Protocol  string `json:"protocol"`
+	Outcome   string `json:"outcome"`
+	Reason    string `json:"reason,omitempty"`
+	Streaming bool   `json:"streaming,omitempty"`
 }
 
 // SetUsageCallback registers a function that is called after each proxied
@@ -101,6 +140,30 @@ func (s *Server) SetUsageCallback(cb func(promptTokens, completionTokens, totalT
 	s.mu.Lock()
 	s.usageCallback = cb
 	s.mu.Unlock()
+}
+
+// SetCacheHitUsageCallback registers a function that is called on cache hits
+// with the token counts that were saved (what would have been consumed).
+func (s *Server) SetCacheHitUsageCallback(cb func(promptTokens, completionTokens, totalTokens int)) {
+	s.mu.Lock()
+	s.cacheHitUsageCallback = cb
+	s.mu.Unlock()
+}
+
+func (s *Server) reportCacheHitUsage(payload []byte) {
+	s.mu.RLock()
+	cb := s.cacheHitUsageCallback
+	s.mu.RUnlock()
+	if cb == nil {
+		return
+	}
+	// Extract usage from cached response payload.
+	var resp struct {
+		Usage *openaiUsage `json:"usage"`
+	}
+	if json.Unmarshal(payload, &resp) == nil && resp.Usage != nil {
+		cb(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+	}
 }
 
 func (s *Server) reportUsage(u *openaiUsage) {
@@ -151,6 +214,51 @@ func (s *Server) extractAndReportUsage(body []byte) {
 type tailBuffer struct {
 	max  int
 	data []byte
+}
+
+// injectStreamOptionsIfSupported injects stream_options into a streaming request body
+// so that upstream returns usage in the final SSE chunk. If upstream previously rejected
+// stream_options (flag set), this is a no-op and returns the body unchanged.
+func (s *Server) injectStreamOptionsIfSupported(body []byte) []byte {
+	if atomic.LoadInt32(&s.streamOptionsDisabled) != 0 {
+		return body
+	}
+	// Only inject for streaming requests that don't already have stream_options.
+	if !bytes.Contains(body, []byte(`"stream":true`)) && !bytes.Contains(body, []byte(`"stream": true`)) {
+		return body
+	}
+	if bytes.Contains(body, []byte(`"stream_options"`)) {
+		return body
+	}
+	// Inject stream_options right after "stream":true
+	// Use simple JSON manipulation to avoid full unmarshal/remarshal overhead.
+	var payload map[string]interface{}
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	payload["stream_options"] = map[string]interface{}{"include_usage": true}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// disableStreamOptions marks upstream as not supporting stream_options.
+// All future requests will skip injection.
+func (s *Server) disableStreamOptions() {
+	atomic.StoreInt32(&s.streamOptionsDisabled, 1)
+}
+
+// isStreamOptionsRejection checks if an upstream error response indicates
+// rejection of stream_options field.
+func isStreamOptionsRejection(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := bytes.ToLower(body)
+	return bytes.Contains(lower, []byte("stream_options")) ||
+		bytes.Contains(lower, []byte("stream_option"))
 }
 
 func (t *tailBuffer) Write(p []byte) (int, error) {
@@ -218,6 +326,66 @@ func (s *Server) SetClientAPIKey(apiKey string) {
 	s.mu.Lock()
 	s.clientKey = strings.TrimSpace(apiKey)
 	s.mu.Unlock()
+}
+
+// SetPromptCache configures a prompt response cache. When set, deterministic
+// requests are checked against the cache before forwarding to upstream.
+// Successful non-streaming responses are stored; concurrent misses for the
+// same key are singleflight-coalesced; streaming clients may hit via SSE synthesis.
+func (s *Server) SetPromptCache(cache *llmpool.Cache) {
+	s.mu.Lock()
+	s.promptCache = cache
+	s.mu.Unlock()
+}
+
+// SetCacheHitCallback registers a function called on each cache lookup result.
+// The boolean argument is true for hits, false for misses. Thread-safe.
+func (s *Server) SetCacheHitCallback(cb func(hit bool)) {
+	s.mu.Lock()
+	s.cacheHitCallback = cb
+	s.mu.Unlock()
+}
+
+// SetCacheDecisionCallback registers a function that receives detailed cache decisions.
+func (s *Server) SetCacheDecisionCallback(cb func(CacheDecisionEvent)) {
+	s.mu.Lock()
+	s.cacheDecisionCallback = cb
+	s.mu.Unlock()
+}
+
+func (s *Server) notifyCacheEvent(hit bool) {
+	s.mu.RLock()
+	cb := s.cacheHitCallback
+	s.mu.RUnlock()
+	if cb != nil {
+		cb(hit)
+	}
+}
+
+func (s *Server) notifyCacheDecision(evt CacheDecisionEvent) {
+	s.mu.RLock()
+	cb := s.cacheDecisionCallback
+	s.mu.RUnlock()
+	if cb != nil {
+		cb(evt)
+	}
+}
+
+// CacheHitMiss returns the cumulative cache hit and miss counts.
+func (s *Server) CacheHitMiss() (hits, misses int64) {
+	return atomic.LoadInt64(&s.cacheHits), atomic.LoadInt64(&s.cacheMisses)
+}
+
+// CacheSingleflightShared returns how many waiters reused an in-flight cache fill.
+func (s *Server) CacheSingleflightShared() int64 {
+	return atomic.LoadInt64(&s.cacheSingleflightShared)
+}
+
+// PromptCache returns the configured cache (may be nil).
+func (s *Server) PromptCache() *llmpool.Cache {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.promptCache
 }
 
 func (s *Server) getConfig() (string, string, string, string) {
@@ -578,8 +746,113 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		normalizedModel = resolvedModel
 	}
 	body, compatibilityNotes := applyCodeGenOpenAICompatibility(body)
-	requestSummary := summarizeOpenAIRequest(body)
+	// Inject stream_options for usage reporting (if upstream supports it).
+	body = s.injectStreamOptionsIfSupported(body)
 
+	// --- Prompt cache: check before forwarding upstream ---
+	// Detect streaming: SDK clients consistently serialize "stream":true.
+	// Also check "stream": true (one space) for hand-crafted requests.
+	// Cache keys ignore stream, so non-streaming stores can serve streaming hits via SSE synthesis.
+	isStreaming := bytes.Contains(body, []byte(`"stream":true`)) ||
+		bytes.Contains(body, []byte(`"stream": true`))
+	var cacheKey string
+	var (
+		cacheFlight       *promptCacheFlight
+		cacheFlightLeader bool
+		cacheFlightOK     bool
+		cacheFlightBody   []byte
+	)
+	s.mu.RLock()
+	promptCache := s.promptCache
+	s.mu.RUnlock()
+	if promptCache != nil {
+		var parsed map[string]any
+		if json.Unmarshal(body, &parsed) == nil {
+			opts := corelib.LLMPromptCacheOptions{
+				Enabled:                      true,
+				NormalizeDeterministicParams: true,
+				IgnoreModelField:             false,
+			}
+			decision := corelib.LLMPromptCacheable(parsed, opts)
+			if decision.Cacheable {
+				cacheKey, _, _ = corelib.LLMPromptCacheKey(normalizedModel, originalModel, parsed, opts)
+				if cacheKey != "" {
+					if entry, err := promptCache.Get(r.Context(), cacheKey); err == nil && entry != nil && len(entry.Payload) > 0 {
+						if writePromptCacheHitPayload(w, entry.Payload, isStreaming) {
+							atomic.AddInt64(&s.cacheHits, 1)
+							s.notifyCacheEvent(true)
+							s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "hit", Streaming: isStreaming})
+							s.reportCacheHitUsage(entry.Payload)
+							log.Printf("[codegenproxy] openai chat cache hit id=%s key=%.16s model=%q stream=%v size=%d",
+								reqID, cacheKey, normalizedModel, isStreaming, len(entry.Payload))
+							// NOTE: do NOT call extractAndReportUsage on cache hit —
+							// tokens were already counted on the original request.
+							return
+						}
+						// Bad streaming synthesis: drop entry and continue as miss.
+						log.Printf("[codegenproxy] openai chat cache hit stream synth failed id=%s key=%.16s",
+							reqID, cacheKey)
+						_ = promptCache.Delete(r.Context(), cacheKey)
+					}
+					// Coalesce concurrent misses. Only non-streaming requests lead a
+					// fill (they can store a payload). Streaming clients may join an
+					// existing in-flight non-streaming fill.
+					if !isStreaming {
+						cacheFlight, cacheFlightLeader = s.joinPromptCacheFlight(cacheKey)
+						if !cacheFlightLeader {
+							if shared, ok := waitPromptCacheFlight(r, cacheFlight, promptCacheSingleflightWait); ok {
+								if writePromptCacheHitPayload(w, shared, false) {
+									atomic.AddInt64(&s.cacheHits, 1)
+									atomic.AddInt64(&s.cacheSingleflightShared, 1)
+									s.notifyCacheEvent(true)
+									s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "shared_hit"})
+									s.reportCacheHitUsage(shared)
+									log.Printf("[codegenproxy] openai chat cache singleflight shared id=%s key=%.16s model=%q size=%d",
+										reqID, cacheKey, normalizedModel, len(shared))
+									return
+								}
+							}
+							if err := r.Context().Err(); err != nil {
+								writeError(w, http.StatusRequestTimeout, "cache singleflight wait: "+err.Error())
+								return
+							}
+						} else {
+							defer func() {
+								s.finishPromptCacheFlight(cacheKey, cacheFlight, cacheFlightBody, cacheFlightOK)
+							}()
+						}
+					} else {
+						s.promptCacheFlightMu.Lock()
+						existing := s.promptCacheFlights[cacheKey]
+						s.promptCacheFlightMu.Unlock()
+						if existing != nil {
+							if shared, ok := waitPromptCacheFlight(r, existing, promptCacheSingleflightWait); ok {
+								if writePromptCacheHitPayload(w, shared, true) {
+									atomic.AddInt64(&s.cacheHits, 1)
+									atomic.AddInt64(&s.cacheSingleflightShared, 1)
+									s.notifyCacheEvent(true)
+									s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "shared_hit", Streaming: true})
+									s.reportCacheHitUsage(shared)
+									log.Printf("[codegenproxy] openai chat cache singleflight stream shared id=%s key=%.16s model=%q size=%d",
+										reqID, cacheKey, normalizedModel, len(shared))
+									return
+								}
+							}
+						}
+					}
+					atomic.AddInt64(&s.cacheMisses, 1)
+					s.notifyCacheEvent(false)
+					s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "miss", Streaming: isStreaming})
+				}
+			} else {
+				s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "skip_lookup", Reason: decision.Reason, Streaming: isStreaming})
+			}
+		} else {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "skip_lookup", Reason: "invalid_json", Streaming: isStreaming})
+		}
+	}
+
+	requestSummary := summarizeOpenAIRequest(body)
 	upEndpoint := codeGenProxyChatCompletionsEndpoint(upURL, clientName)
 	normalizedClient := corelib.NormalizeCodeGenClientName(clientName)
 	log.Printf("[codegenproxy] openai chat upstream request id=%s endpoint=%q client=%q user_agent=%q codegen_client=%q accept=%q original_model=%q normalized_model=%q summary=%s compatibility=%s",
@@ -593,6 +866,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	defer upResp.Body.Close()
 
+	retried := false // set to true if a retry modified the request body — invalidates cacheKey
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
 		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(normalizedModel, body, upResp.StatusCode); ok {
@@ -605,6 +879,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				upResp = retryResp
 				defer upResp.Body.Close()
 				body = retryBody
+				retried = true
 				if upResp.StatusCode == http.StatusOK {
 					log.Printf("[codegenproxy] openai chat retry without tools succeeded id=%s model=%q status=%d content_type=%q",
 						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"))
@@ -626,6 +901,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				upResp = compactResp
 				defer upResp.Body.Close()
 				body = compactBody
+				retried = true
 				if upResp.StatusCode == http.StatusOK {
 					log.Printf("[codegenproxy] openai chat compact retry succeeded id=%s model=%q status=%d content_type=%q",
 						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"))
@@ -638,6 +914,11 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			}
 		}
 		if upResp.StatusCode != http.StatusOK {
+			// Detect upstream rejection of stream_options — disable for future requests.
+			if respBody != nil && isStreamOptionsRejection(upResp.StatusCode, respBody) {
+				s.disableStreamOptions()
+				log.Printf("[codegenproxy] openai chat stream_options rejected id=%s model=%q — disabling for future requests", reqID, normalizedModel)
+			}
 			log.Printf("[codegenproxy] openai chat upstream error id=%s endpoint=%q status=%d model=%q content_type=%q request=%s response=%s",
 				reqID, upEndpoint, upResp.StatusCode, normalizedModel, upResp.Header.Get("Content-Type"), truncateForLog(body, 4096), truncateForLog(respBody, 4096))
 			upResp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -652,20 +933,46 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 	}
+	if cacheKey != "" {
+		w.Header().Set("X-Cache", "MISS")
+	}
 	w.WriteHeader(upResp.StatusCode)
 	// Capture the tail of the response body to extract usage for token counting.
 	// For streaming (SSE), usage is in the last few hundred bytes; for non-streaming,
 	// the full JSON is typically <10KB. We cap at 4KB to avoid buffering large streams.
-	tail := &tailBuffer{max: 4096}
-	_, _ = io.Copy(w, io.TeeReader(upResp.Body, tail))
-	if upResp.StatusCode == http.StatusOK {
-		s.extractAndReportUsage(tail.Bytes())
+	// For cache-eligible non-streaming requests, capture the full body to store in cache.
+	// Streaming responses are not stored here; stream hits reuse non-streaming payloads via SSE synthesis.
+	// Tool-call payloads are stored for exact-match retries (see storePromptCacheChatPayload).
+	if !isStreaming && cacheKey != "" && !retried && promptCache != nil && upResp.StatusCode == http.StatusOK {
+		maxCacheableResponseBytes := corelib.DefaultLLMPromptCacheMaxResponseBytes
+		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, int64(maxCacheableResponseBytes)+1))
+		_, _ = w.Write(respBody)
+		s.extractAndReportUsage(respBody)
+		if stored, reason := s.storePromptCacheChatPayload(r.Context(), promptCache, cacheKey, normalizedModel, respBody, upResp.StatusCode); stored {
+			if cacheFlightLeader {
+				cacheFlightBody = respBody
+				cacheFlightOK = true
+			}
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "store"})
+			log.Printf("[codegenproxy] openai chat cache store id=%s key=%.16s model=%q size=%d",
+				reqID, cacheKey, normalizedModel, len(respBody))
+		} else {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "skip_store", Reason: reason})
+			log.Printf("[codegenproxy] openai chat cache store skipped id=%s key=%.16s reason=%s",
+				reqID, cacheKey, reason)
+		}
+	} else {
+		tail := &tailBuffer{max: 4096}
+		_, _ = io.Copy(w, io.TeeReader(upResp.Body, tail))
+		if upResp.StatusCode == http.StatusOK {
+			s.extractAndReportUsage(tail.Bytes())
+		}
 	}
 }
 
 // handleOpenAIResponses accepts the OpenAI Responses API shape used by newer
-// OpenAI/Codex clients and bridges non-streaming calls to CodeGen chat
-// completions.
+// OpenAI/Codex clients and bridges calls to CodeGen chat completions.
+// Prompt cache shares chat.completion payloads with /v1/chat/completions.
 func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	reqID := newLogRequestID()
 	if r.Method != http.MethodPost {
@@ -708,7 +1015,89 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		normalizedModel = resolvedModel
 	}
 	chatBody, compatibilityNotes := applyCodeGenOpenAICompatibility(chatBody)
+	// Inject stream_options for usage reporting (if upstream supports it).
+	chatBody = s.injectStreamOptionsIfSupported(chatBody)
 	stream := logBoolFromBody(chatBody, "stream")
+
+	// --- Prompt cache (shared with chat completions; keys from converted chat body) ---
+	s.mu.RLock()
+	promptCache := s.promptCache
+	s.mu.RUnlock()
+	var cacheKey string
+	var (
+		cacheFlight       *promptCacheFlight
+		cacheFlightLeader bool
+		cacheFlightOK     bool
+		cacheFlightBody   []byte
+	)
+	if promptCache != nil {
+		cacheReason := ""
+		cacheKey, cacheReason = resolvePromptCacheKey(chatBody, normalizedModel, originalModel)
+		if cacheKey != "" {
+			if entry, err := promptCache.Get(r.Context(), cacheKey); err == nil && entry != nil && len(entry.Payload) > 0 {
+				if writePromptCacheHitResponsesPayload(w, entry.Payload, normalizedModel, reqID, stream) {
+					atomic.AddInt64(&s.cacheHits, 1)
+					s.notifyCacheEvent(true)
+					s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "hit", Streaming: stream})
+					s.reportCacheHitUsage(entry.Payload)
+					log.Printf("[codegenproxy] openai responses cache hit id=%s key=%.16s model=%q stream=%v size=%d",
+						reqID, cacheKey, normalizedModel, stream, len(entry.Payload))
+					return
+				}
+				log.Printf("[codegenproxy] openai responses cache hit write failed id=%s key=%.16s", reqID, cacheKey)
+				_ = promptCache.Delete(r.Context(), cacheKey)
+			}
+			// Coalesce concurrent non-streaming fills; streaming may join an in-flight fill.
+			if !stream {
+				cacheFlight, cacheFlightLeader = s.joinPromptCacheFlight(cacheKey)
+				if !cacheFlightLeader {
+					if shared, ok := waitPromptCacheFlight(r, cacheFlight, promptCacheSingleflightWait); ok {
+						if writePromptCacheHitResponsesPayload(w, shared, normalizedModel, reqID, false) {
+							atomic.AddInt64(&s.cacheHits, 1)
+							atomic.AddInt64(&s.cacheSingleflightShared, 1)
+							s.notifyCacheEvent(true)
+							s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "shared_hit"})
+							s.reportCacheHitUsage(shared)
+							log.Printf("[codegenproxy] openai responses cache singleflight shared id=%s key=%.16s model=%q size=%d",
+								reqID, cacheKey, normalizedModel, len(shared))
+							return
+						}
+					}
+					if err := r.Context().Err(); err != nil {
+						writeError(w, http.StatusRequestTimeout, "cache singleflight wait: "+err.Error())
+						return
+					}
+				} else {
+					defer func() {
+						s.finishPromptCacheFlight(cacheKey, cacheFlight, cacheFlightBody, cacheFlightOK)
+					}()
+				}
+			} else {
+				s.promptCacheFlightMu.Lock()
+				existing := s.promptCacheFlights[cacheKey]
+				s.promptCacheFlightMu.Unlock()
+				if existing != nil {
+					if shared, ok := waitPromptCacheFlight(r, existing, promptCacheSingleflightWait); ok {
+						if writePromptCacheHitResponsesPayload(w, shared, normalizedModel, reqID, true) {
+							atomic.AddInt64(&s.cacheHits, 1)
+							atomic.AddInt64(&s.cacheSingleflightShared, 1)
+							s.notifyCacheEvent(true)
+							s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "shared_hit", Streaming: true})
+							s.reportCacheHitUsage(shared)
+							log.Printf("[codegenproxy] openai responses cache singleflight stream shared id=%s key=%.16s model=%q size=%d",
+								reqID, cacheKey, normalizedModel, len(shared))
+							return
+						}
+					}
+				}
+			}
+			atomic.AddInt64(&s.cacheMisses, 1)
+			s.notifyCacheEvent(false)
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "miss", Streaming: stream})
+		} else {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "skip_lookup", Reason: cacheReason, Streaming: stream})
+		}
+	}
 
 	upEndpoint := codeGenProxyChatCompletionsEndpoint(upURL, clientName)
 	log.Printf("[codegenproxy] openai responses upstream request id=%s endpoint=%q original_model=%q normalized_model=%q stream=%v summary=%s compatibility=%s",
@@ -726,11 +1115,15 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer upResp.Body.Close()
 	if stream {
-		s.handleOpenAIResponsesStream(w, upResp, normalizedModel, reqID)
+		s.handleOpenAIResponsesStream(w, upResp, normalizedModel, reqID, cacheKey, promptCache)
 		return
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
 	if upResp.StatusCode != http.StatusOK {
+		if isStreamOptionsRejection(upResp.StatusCode, respBody) {
+			s.disableStreamOptions()
+			log.Printf("[codegenproxy] openai responses stream_options rejected id=%s model=%q — disabling for future requests", reqID, normalizedModel)
+		}
 		log.Printf("[codegenproxy] openai responses upstream error id=%s endpoint=%q status=%d model=%q response=%s",
 			reqID, upEndpoint, upResp.StatusCode, normalizedModel, truncateForLog(respBody, 4096))
 		w.Header().Set("Content-Type", "application/json")
@@ -739,19 +1132,44 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cacheKey != "" {
+		w.Header().Set("X-Cache", "MISS")
+	}
+	if cacheKey != "" && promptCache != nil {
+		if stored, reason := s.storePromptCacheChatPayload(r.Context(), promptCache, cacheKey, normalizedModel, respBody, upResp.StatusCode); stored {
+			if cacheFlightLeader {
+				cacheFlightBody = append([]byte(nil), respBody...)
+				cacheFlightOK = true
+			}
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "store"})
+			log.Printf("[codegenproxy] openai responses cache store id=%s key=%.16s model=%q size=%d",
+				reqID, cacheKey, normalizedModel, len(respBody))
+		} else {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "skip_store", Reason: reason})
+			log.Printf("[codegenproxy] openai responses cache store skipped id=%s key=%.16s",
+				reqID, cacheKey)
+		}
+	}
+
 	responsesBody, err := convertOpenAIChatResponseToResponses(respBody, normalizedModel)
 	if err != nil {
 		log.Printf("[codegenproxy] openai responses convert response failed id=%s model=%q err=%v body=%s", reqID, normalizedModel, err, truncateForLog(respBody, 4096))
 		writeError(w, http.StatusBadGateway, "convert upstream response: "+err.Error())
 		return
 	}
+	// Report usage from the upstream OpenAI response (before conversion to Responses format).
+	s.extractAndReportUsage(respBody)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(responsesBody)
 }
 
-func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http.Response, model, reqID string) {
+func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http.Response, model, reqID, cacheKey string, promptCache *llmpool.Cache) {
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+		if isStreamOptionsRejection(upResp.StatusCode, respBody) {
+			s.disableStreamOptions()
+			log.Printf("[codegenproxy] openai responses stream stream_options rejected id=%s model=%q — disabling", reqID, model)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(upResp.StatusCode)
 		_, _ = w.Write(respBody)
@@ -765,6 +1183,9 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	if cacheKey != "" {
+		w.Header().Set("X-Cache", "MISS")
+	}
 
 	respID := "resp_" + shortSHA256(reqID+":"+model)
 	msgID := "msg_" + shortSHA256(respID+":message")
@@ -1031,6 +1452,22 @@ func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http
 	})
 	flusher.Flush()
 	s.reportUsage(streamUsage)
+
+	// Store stream-aggregated chat.completion payload for future responses/chat hits.
+	// Tool-call responses are stored for exact-match retries (see storePromptCacheChatPayload).
+	if cacheKey != "" && promptCache != nil && streamErr == nil && payloadErr == nil {
+		chatPayload := buildChatCompletionFromResponsesStream(model, outputText, streamUsage, toolOrder, toolCalls)
+		if stored, reason := s.storePromptCacheChatPayload(context.Background(), promptCache, cacheKey, model, chatPayload, http.StatusOK); stored {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "store", Streaming: true})
+			log.Printf("[codegenproxy] openai responses stream cache store id=%s key=%.16s model=%q size=%d",
+				reqID, cacheKey, model, len(chatPayload))
+		} else {
+			s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "skip_store", Reason: reason, Streaming: true})
+			// Keep "cache store" substring so TigerProxy error-filter logs retain the skip reason.
+			log.Printf("[codegenproxy] openai responses stream cache store skipped id=%s key=%.16s reason=%s",
+				reqID, cacheKey, reason)
+		}
+	}
 }
 
 type responsesStreamToolCallAccum struct {
@@ -1182,6 +1619,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Convert Anthropic → OpenAI
 	openaiReq := convertAnthropicToOpenAI(anthReq)
+	// Inject stream_options so upstream returns usage in the final SSE chunk.
+	if openaiReq.Stream && atomic.LoadInt32(&s.streamOptionsDisabled) == 0 {
+		openaiReq.StreamOptions = map[string]interface{}{"include_usage": true}
+	}
 	compatibilityNotes := applyCodeGenOpenAIRequestCompatibility(&openaiReq)
 	toolSchemas := summarizeOpenAIToolSchemas(openaiReq.Tools)
 
@@ -1248,6 +1689,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if upResp.StatusCode != http.StatusOK {
+			if respBody != nil && isStreamOptionsRejection(upResp.StatusCode, respBody) {
+				s.disableStreamOptions()
+				log.Printf("[codegenproxy] anthropic stream_options rejected id=%s model=%q — disabling for future requests", reqID, anthReq.Model)
+			}
 			log.Printf("[codegenproxy] upstream error id=%s model=%q stream=%v client=%q endpoint=%q status=%d content_type=%q request=%s response=%s",
 				reqID, anthReq.Model, anthReq.Stream, clientName, upEndpoint, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(reqData, 4096), truncateForLog(respBody, 4096))
 			upResp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -2047,7 +2492,7 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 			notes = append(notes, fmt.Sprintf("codegen_sanitize_messages:%d", len(sanitized)))
 		}
 	}
-	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
 		if _, ok := payload[key]; ok {
 			delete(payload, key)
 			notes = append(notes, "codegen_drop_"+key)

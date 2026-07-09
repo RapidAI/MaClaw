@@ -33,7 +33,7 @@ class ConfigurePlatformsTest(unittest.TestCase):
         )
         self.assertEqual(
             plist["NSLocalNetworkUsageDescription"],
-            "\u7528\u4e8e\u8fde\u63a5\u672c\u5730\u6216\u5185\u7f51\u670d\u52a1\u5668\u8fdb\u884c SSH \u5e94\u6025\u7ef4\u62a4\u3002",
+            "\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65 GUI/agent \u7ba1\u7406\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002",
         )
 
     def test_ios_usage_descriptions_keep_existing_values(self) -> None:
@@ -148,6 +148,42 @@ class ConfigurePlatformsTest(unittest.TestCase):
             self.assertNotIn("com.example.maclaw_mobile", text)
             self.assertNotIn("Specify your own unique Application ID", text)
             self.assertNotIn("review-gradle-config", text)
+            self.assertNotIn("The Flutter Gradle Plugin must be applied", text)
+
+    def test_android_gradle_replaces_flutter_plugin_template_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gradle = root / "android/app/build.gradle.kts"
+            gradle.parent.mkdir(parents=True)
+            gradle.write_text(
+                "plugins {\n"
+                "    id(\"com.android.application\")\n"
+                "    id(\"kotlin-android\")\n"
+                "    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.\n"
+                "    id(\"dev.flutter.flutter-gradle-plugin\")\n"
+                "}\n\n"
+                "android {\n"
+                "    namespace = \"top.mypapers.maclaw.mobile\"\n"
+                "    compileOptions {\n"
+                "        sourceCompatibility = JavaVersion.VERSION_17\n"
+                "        targetCompatibility = JavaVersion.VERSION_17\n"
+                "    }\n"
+                "    defaultConfig {\n"
+                "        applicationId = \"top.mypapers.maclaw.mobile\"\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            old_root = configure_platforms.ROOT
+            configure_platforms.ROOT = root
+            try:
+                configure_platforms.configure_android_gradle()
+            finally:
+                configure_platforms.ROOT = old_root
+
+            text = gradle.read_text(encoding="utf-8")
+            self.assertIn("MaClaw Mobile wrapper", text)
+            self.assertNotIn("The Flutter Gradle Plugin must be applied", text)
 
     def test_android_release_signing_template_is_idempotent(self) -> None:
         source = (
@@ -237,6 +273,41 @@ class ConfigurePlatformsTest(unittest.TestCase):
             text = props.read_text(encoding="utf-8")
             self.assertIn("kotlin.incremental=false", text)
             self.assertIn("kotlin.jvm.target.validation.mode=ignore", text)
+
+    def test_android_variant_manifests_replace_flutter_template_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            debug = root / "android/app/src/debug/AndroidManifest.xml"
+            profile = root / "android/app/src/profile/AndroidManifest.xml"
+            debug.parent.mkdir(parents=True)
+            profile.parent.mkdir(parents=True)
+            template = (
+                '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+                "    <!-- The INTERNET permission is required for development. Specifically,\n"
+                "         the Flutter tool needs it to communicate with the running application\n"
+                "         to allow setting breakpoints, to provide hot reload, etc.\n"
+                "    -->\n"
+                '    <uses-permission android:name="android.permission.INTERNET"/>\n'
+                "</manifest>\n"
+            )
+            debug.write_text(template, encoding="utf-8")
+            profile.write_text(template, encoding="utf-8")
+            old_root = configure_platforms.ROOT
+            configure_platforms.ROOT = root
+            try:
+                configure_platforms.configure_android_variant_manifests()
+            finally:
+                configure_platforms.ROOT = old_root
+
+            for path, marker in [
+                (debug, "Development builds need network access"),
+                (profile, "Profile builds need network access"),
+            ]:
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(marker, text)
+                self.assertIn("MaClaw service smoke checks", text)
+                self.assertNotIn("The INTERNET permission is required for development", text)
+                self.assertNotIn("hot reload", text)
 
     def test_android_manifest_gets_permissions_deep_link_and_share_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

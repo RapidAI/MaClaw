@@ -2651,6 +2651,10 @@ func TestApplyCodeGenSSOResultToConfigSetsUsableProviderDefaults(t *testing.T) {
 		BaseURL:       "https://codegen.example/api/v1",
 		ModelID:       "codegen-model",
 		ContextLength: 220000,
+		Models: []oauth.CodeGenModel{
+			{ID: "codegen-model"},
+			{ID: "codegen-next"},
+		},
 	})
 
 	if cfg.MaclawLLMCurrentProvider != "CodeGen" || len(cfg.MaclawLLMProviders) != 2 {
@@ -2663,6 +2667,9 @@ func TestApplyCodeGenSSOResultToConfigSetsUsableProviderDefaults(t *testing.T) {
 	if provider.TimeoutSec != corelib.DefaultLLMTimeoutSec || cfg.MaclawLLMTimeoutSec != corelib.DefaultLLMTimeoutSec {
 		t.Fatalf("CodeGen timeout = provider %d config %d, want %d", provider.TimeoutSec, cfg.MaclawLLMTimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
+	if got := strings.Join(provider.Models, ","); got != "codegen-model,codegen-next" {
+		t.Fatalf("CodeGen provider models = %q", got)
+	}
 	if provider.ContextLength != 220000 || cfg.MaclawLLMContextLength != 220000 {
 		t.Fatalf("CodeGen context = provider %d config %d", provider.ContextLength, cfg.MaclawLLMContextLength)
 	}
@@ -2674,17 +2681,45 @@ func TestApplyCodeGenSSOResultToConfigSetsUsableProviderDefaults(t *testing.T) {
 func TestCancelCodeGenSSOFlowInvokesRegisteredCancel(t *testing.T) {
 	m := &tuiModel{}
 	canceled := false
-	m.registerCodeGenSSOCancel("flow-1", func() { canceled = true })
+	entry := m.registerCodeGenSSOCancel("flow-1", func() { canceled = true })
 
 	m.cancelCodeGenSSOFlow("flow-1")
 	if !canceled {
 		t.Fatal("cancelCodeGenSSOFlow should invoke registered cancel")
+	}
+	select {
+	case <-entry.done:
+	default:
+		t.Fatal("cancelCodeGenSSOFlow should close done channel")
 	}
 
 	canceled = false
 	m.cancelCodeGenSSOFlow("flow-1")
 	if canceled {
 		t.Fatal("cancelCodeGenSSOFlow should remove cancel after first use")
+	}
+}
+
+func TestRegisterCodeGenSSOCancelClosesPreviousDone(t *testing.T) {
+	m := &tuiModel{}
+	canceled := false
+	first := m.registerCodeGenSSOCancel("flow-1", func() { canceled = true })
+	second := m.registerCodeGenSSOCancel("flow-1", func() {})
+	if second == nil {
+		t.Fatal("second register returned nil")
+	}
+	if !canceled {
+		t.Fatal("re-registering a flow should cancel the previous callback")
+	}
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("re-registering a flow should close the previous done channel")
+	}
+	select {
+	case <-second.done:
+		t.Fatal("new done channel should remain open")
+	default:
 	}
 }
 
@@ -2705,5 +2740,18 @@ func TestStaleCodeGenSSOSuccessDoesNotReloadConfig(t *testing.T) {
 	}
 	if strings.Contains(got.root.View(), tuiText("en", "codeGenSSOSuccess")) {
 		t.Fatal("stale SSO success should not show success status")
+	}
+}
+
+func TestCodeGenSSOParamsLifecycle(t *testing.T) {
+	m := &tuiModel{}
+	params := &oauth.HeadlessOAuthParams{AuthURL: "https://example.com", RedirectURI: "http://localhost/callback", Verifier: "verifier"}
+	m.storeCodeGenSSOParams("flow-1", params)
+	if got := m.codeGenSSOParams("flow-1"); got != params {
+		t.Fatalf("codeGenSSOParams() = %#v, want %#v", got, params)
+	}
+	m.clearCodeGenSSOParams("flow-1")
+	if got := m.codeGenSSOParams("flow-1"); got != nil {
+		t.Fatalf("codeGenSSOParams() after clear = %#v, want nil", got)
 	}
 }

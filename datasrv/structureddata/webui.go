@@ -729,10 +729,10 @@ const webConsoleHTML = `<!doctype html>
         <section class="quickstart-entry" data-testid="quickstart-entry">
           <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 7h18v18H7z"/><path d="M11 13h10M11 18h7M22 7v18"/><path d="M7 11H4m3 6H4m3 6H4"/></svg>
           <div>
-            <strong>maclaw data srv 快速操作手册 / Quick Start Manual</strong>
-            <p>先看概念、步骤和安全检查，再进入数据集、记录、业务动作、集成与治理模块。 Start here for concepts, first steps, and safe operating order.</p>
+            <strong>maclaw data srv Quick Start Manual</strong>
+            <p>Start here for concepts, first steps, and safe operating order.</p>
           </div>
-          <button class="primary quick-action" data-target-tab="quickstart" data-testid="open-quickstart-manual">打开手册 / Open manual</button>
+          <button class="primary quick-action" data-target-tab="quickstart" data-testid="open-quickstart-manual">Open manual</button>
         </section>
         <section class="checklist" aria-label="Setup checklist">
           <div class="checklist-head">
@@ -879,8 +879,8 @@ const webConsoleHTML = `<!doctype html>
         <section class="quickstart-guide" aria-label="MaClawDataSrv quick start manual">
           <div class="quickstart-hero">
             <div>
-              <h2>maclaw data srv 快速操作手册 / Quick Start Manual</h2>
-              <p>面向管理员的第一屏指南：先理解核心概念，再按安全顺序完成数据集、记录、业务动作、集成和治理检查。 For administrators: understand the core concepts first, then operate datasets, records, business actions, integrations, and governance checks in a controlled order.</p>
+              <h2>maclaw data srv Quick Start Manual</h2>
+              <p>For administrators: understand the core concepts first, then operate datasets, records, business actions, integrations, and governance checks in a controlled order.</p>
             </div>
             <div class="quickstart-map" aria-hidden="true">
               <svg viewBox="0 0 260 116" role="img" aria-label="Data service flow">
@@ -904,33 +904,33 @@ const webConsoleHTML = `<!doctype html>
           <div class="quickstart-flow" aria-label="Quick start steps">
             <div class="quickstart-step">
               <span>1</span>
-              <strong>看总览 / Check Overview</strong>
-              <p>确认服务在线、模板和数据集状态，再决定下一步。 Confirm health, templates, and datasets before changing data.</p>
-              <button class="quick-action" data-target-tab="overview">打开总览 / Open overview</button>
+              <strong>Check Overview</strong>
+              <p>Confirm health, templates, and datasets before changing data.</p>
+              <button class="quick-action" data-target-tab="overview">Open overview</button>
             </div>
             <div class="quickstart-step">
               <span>2</span>
-              <strong>建数据集 / Prepare Datasets</strong>
-              <p>用模板 Bootstrap 业务域，或创建自定义数据集。 Bootstrap business domains from templates or create a custom dataset.</p>
-              <button class="quick-action" data-target-tab="dataset">打开数据集 / Open dataset</button>
+              <strong>Prepare Datasets</strong>
+              <p>Bootstrap business domains from templates or create a custom dataset.</p>
+              <button class="quick-action" data-target-tab="dataset">Open dataset</button>
             </div>
             <div class="quickstart-step">
               <span>3</span>
-              <strong>记录管理 / Records</strong>
-              <p>选择数据集后新增、编辑、删除、查询、导出和检查业务记录。 Select a dataset, then add, edit, delete, query, export, and inspect records.</p>
-              <button class="quick-action" data-target-tab="records">打开记录 / Open records</button>
+              <strong>Records</strong>
+              <p>Select a dataset, then add, edit, delete, query, export, and inspect records.</p>
+              <button class="quick-action" data-target-tab="records">Open records</button>
             </div>
             <div class="quickstart-step">
               <span>4</span>
-              <strong>业务动作 / Business Actions</strong>
-              <p>生产写入优先使用业务动作和规则预检；原始记录编辑仅用于受控管理和测试。 Prefer business actions and rule checks for production writes; use raw record editing only for controlled admin and test changes.</p>
-              <button class="quick-action" data-target-tab="actions">打开业务动作 / Open actions</button>
+              <strong>Business Actions</strong>
+              <p>Prefer business actions and rule checks for production writes; use raw record editing only for controlled admin and test changes.</p>
+              <button class="quick-action" data-target-tab="actions">Open actions</button>
             </div>
             <div class="quickstart-step">
               <span>5</span>
-              <strong>做治理 / Govern Safely</strong>
-              <p>高风险操作前检查质量、审计、访问权限并创建备份。 Before risky work, check quality, audit, access, and backups.</p>
-              <button class="quick-action" data-target-tab="apikeys">打开 API Keys / Open API Keys</button>
+              <strong>Govern Safely</strong>
+              <p>Before risky work, check quality, audit, access, and backups.</p>
+              <button class="quick-action" data-target-tab="apikeys">Open API Keys</button>
             </div>
           </div>
         </section>
@@ -938,51 +938,51 @@ const webConsoleHTML = `<!doctype html>
         <section class="quickstart-grid" aria-label="Core concepts">
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 8c0-2 4-4 9-4s9 2 9 4v16c0 2-4 4-9 4s-9-2-9-4z"/><path d="M7 8c0 2 4 4 9 4s9-2 9-4M7 16c0 2 4 4 9 4s9-2 9-4"/></svg></div>
-            <h3>数据集 / Dataset</h3>
-            <p>一类业务对象的受控存储，例如客户、订单、费用或库存。 A controlled store for one business object type.</p>
-            <button class="quick-action" data-target-tab="dataset">管理数据集 / Manage dataset</button>
+            <h3>Dataset</h3>
+            <p>A controlled store for one business object type.</p>
+            <button class="quick-action" data-target-tab="dataset">Manage dataset</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 5h12l4 4v18H8z"/><path d="M20 5v5h5M12 15h10M12 20h8"/></svg></div>
-            <h3>记录 / Record</h3>
-            <p>数据集中的一条业务事实，可查询、导入、审批、恢复和关联。 A business fact inside a dataset.</p>
-            <button class="quick-action" data-target-tab="records">打开记录 / Open records</button>
+            <h3>Record</h3>
+            <p>A business fact inside a dataset.</p>
+            <button class="quick-action" data-target-tab="records">Open records</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M5 24V10l11-6 11 6v14"/><path d="M10 24v-8h12v8M13 12h6"/></svg></div>
-            <h3>业务域 / Business Domain</h3>
-            <p>销售、财务、HR、法务、采购等能力分组。 A business capability group such as sales, finance, HR, legal, or procurement.</p>
-            <button class="quick-action" data-target-tab="domains">打开业务域 / Open domains</button>
+            <h3>Business Domain</h3>
+            <p>A business capability group such as sales, finance, HR, legal, or procurement.</p>
+            <button class="quick-action" data-target-tab="domains">Open domains</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 17h10M17 17l-4-4M17 17l-4 4"/><path d="M17 8h8v18h-8zM7 8h6"/></svg></div>
-            <h3>业务动作 / Business Action</h3>
-            <p>面向业务的安全操作入口，通常带规则检查和幂等键。 A safe operation entry with rule checks and idempotency.</p>
-            <button class="quick-action" data-target-tab="actions">打开业务动作 / Open actions</button>
+            <h3>Business Action</h3>
+            <p>A safe operation entry with rule checks and idempotency.</p>
+            <button class="quick-action" data-target-tab="actions">Open actions</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M5 9h22v14H5z"/><path d="M9 19l4-4 4 3 5-6"/></svg></div>
-            <h3>视图/报表/仪表盘 / Views, Reports, Dashboards</h3>
-            <p>优先用受控分析入口看数据，减少原始数据访问。 Prefer curated analytics over raw dataset access.</p>
-            <button class="quick-action" data-target-tab="views">打开视图 / Open views</button>
+            <h3>Views, Reports, Dashboards</h3>
+            <p>Prefer curated analytics over raw dataset access.</p>
+            <button class="quick-action" data-target-tab="views">Open views</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 9h20v14H6z"/><path d="M6 17h6l3 4h2l3-4h6"/></svg></div>
-            <h3>收件箱 / Inbox</h3>
-            <p>集中处理审批、失败任务、质量问题和待办事项。 Central place for approvals, failures, quality issues, and pending work.</p>
-            <button class="quick-action" data-target-tab="inbox">打开收件箱 / Open inbox</button>
+            <h3>Inbox</h3>
+            <p>Central place for approvals, failures, quality issues, and pending work.</p>
+            <button class="quick-action" data-target-tab="inbox">Open inbox</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M10 16H5M27 16h-5M13 8h6v16h-6z"/><path d="M10 10l3 3M10 22l3-3M22 10l-3 3M22 22l-3-3"/></svg></div>
-            <h3>连接器 / Connector</h3>
-            <p>连接 CRM、ERP、HR、财务或库存系统，并检查同步健康。 Connect CRM, ERP, HR, finance, or inventory systems.</p>
-            <button class="quick-action" data-target-tab="connectors">打开连接器 / Open connectors</button>
+            <h3>Connector</h3>
+            <p>Connect CRM, ERP, HR, finance, or inventory systems.</p>
+            <button class="quick-action" data-target-tab="connectors">Open connectors</button>
           </article>
           <article class="quickstart-card">
             <div class="quickstart-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 4l10 4v7c0 6-4 10-10 13C10 25 6 21 6 15V8z"/><path d="M12 16l3 3 6-7"/></svg></div>
-            <h3>访问/审计/备份 / Access, Audit, Backup</h3>
-            <p>真实业务数据上线前必须配置权限、保留证据并准备恢复点。 Configure permissions, evidence, and recovery before production use.</p>
-            <button class="quick-action" data-target-tab="backups">打开备份 / Open backups</button>
+            <h3>Access, Audit, Backup</h3>
+            <p>Configure permissions, evidence, and recovery before production use.</p>
+            <button class="quick-action" data-target-tab="backups">Open backups</button>
           </article>
         </section>
       </div>
@@ -1962,6 +1962,38 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Overview": "总览",
       "Quick Start": "快速操作",
       "Quick Start Manual": "快速操作手册",
+      "maclaw data srv Quick Start Manual": "maclaw data srv 快速操作手册",
+      "For administrators: understand the core concepts first, then operate datasets, records, business actions, integrations, and governance checks in a controlled order.": "面向管理员的第一屏指南：先理解核心概念，再按安全顺序完成数据集、记录、业务动作、集成和治理检查。",
+      "Start here for concepts, first steps, and safe operating order.": "先看概念、步骤和安全检查，再进入数据集、记录、业务动作、集成与治理模块。",
+      "Open manual": "打开手册",
+      "Check Overview": "看总览",
+      "Confirm health, templates, and datasets before changing data.": "确认服务在线、模板和数据集状态，再决定下一步。",
+      "Open overview": "打开总览",
+      "Prepare Datasets": "建数据集",
+      "Bootstrap business domains from templates or create a custom dataset.": "用模板 Bootstrap 业务域，或创建自定义数据集。",
+      "Open dataset": "打开数据集",
+      "Select a dataset, then add, edit, delete, query, export, and inspect records.": "选择数据集后新增、编辑、删除、查询、导出和检查业务记录。",
+      "Prefer business actions and rule checks for production writes; use raw record editing only for controlled admin and test changes.": "生产写入优先使用业务动作和规则预检；原始记录编辑仅用于受控管理和测试。",
+      "Open actions": "打开业务动作",
+      "Govern Safely": "做治理",
+      "Before risky work, check quality, audit, access, and backups.": "高风险操作前检查质量、审计、访问权限并创建备份。",
+      "A controlled store for one business object type.": "一类业务对象的受控存储。",
+      "Manage dataset": "管理数据集",
+      "A business fact inside a dataset.": "数据集中的一条业务事实。",
+      "Business Domain": "业务域",
+      "A business capability group such as sales, finance, HR, legal, or procurement.": "业务能力分组，如销售、财务、人事、法务或采购。",
+      "Open domains": "打开业务域",
+      "Business Action": "业务动作",
+      "A safe operation entry with rule checks and idempotency.": "带有规则检查和幂等保护的安全操作入口。",
+      "Views, Reports, Dashboards": "视图/报表/仪表盘",
+      "Prefer curated analytics over raw dataset access.": "优先用受控分析入口看数据，减少原始数据访问。",
+      "Central place for approvals, failures, quality issues, and pending work.": "审批、失败、质量问题和待办工作的集中处理入口。",
+      "Open inbox": "打开收件箱",
+      "Connector": "连接器",
+      "Connect CRM, ERP, HR, finance, or inventory systems.": "连接 CRM、ERP、HR、财务或库存系统。",
+      "Open connectors": "打开连接器",
+      "Access, Audit, Backup": "访问/审计/备份",
+      "Configure permissions, evidence, and recovery before production use.": "真实业务数据上线前必须配置权限、保留证据并准备恢复点。",
       "First steps for administrators: core concepts, safe operating order, and governance checks.": "管理员快速入门：核心概念、安全操作顺序和治理检查。",
       "Concepts and first steps for using MaClawDataSrv safely.": "安全使用 MaClawDataSrv 的核心概念和快速步骤。",
       "Records": "记录",
@@ -2090,6 +2122,153 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       "Access": "访问控制",
       "API Keys": "API 密钥",
       "API Key Management": "API 密钥管理",
+      "Agent Authorization Workspace": "Agent 授权工作区",
+      "Grant agents by business capability first; raw datasets and sensitive fields stay explicit exceptions.": "授权 Agent 时优先按业务能力授权；原始数据集和敏感字段需单独明确授权。",
+      "1. Pick a business role": "1. 选择业务角色",
+      "Start from a preset for sales, finance, HR, legal, audit, or read-only reporting.": "从预设角色开始：销售、财务、人事、法务、审计或只读报表。",
+      "Load presets": "加载预设",
+      "2. Grant business operations": "2. 授予业务操作权限",
+      "Select actions, views, reports, and dashboards. Leave raw data disabled unless the agent truly administers data.": "选择业务动作、视图、报表和仪表盘。除非 Agent 确实需要管理原始数据，否则不要开放原始数据访问。",
+      "Select analytics": "选择分析权限",
+      "3. Verify and rotate": "3. 验证并轮换",
+      "Preview effective capabilities, run access checks, then rotate or disable stale keys from the managed list.": "预览生效权限、执行访问检查，然后从托管密钥列表中轮换或停用过期密钥。",
+      "Review now": "立即复核",
+      "API key ID": "API 密钥 ID",
+      "User / agent": "用户 / Agent",
+      "Role": "角色",
+      "Authorization preset": "授权预设",
+      "Custom": "自定义",
+      "Apply preset": "应用预设",
+      "Load more presets": "加载更多预设",
+      "Agent purpose": "Agent 用途",
+      "Recommend authorization": "推荐授权方案",
+      "Clear recommendation": "清除推荐",
+      "Expires at": "过期时间",
+      "Allow selected views/reports/dashboards": "允许访问选定的视图/报表/仪表盘",
+      "Allow raw dataset API": "允许原始数据集 API",
+      "Allow sensitive fields": "允许敏感字段",
+      "Allow admin operations": "允许管理操作",
+      "Policy": "策略",
+      "Generate policy": "生成策略",
+      "Compare policy changes": "对比策略变更",
+      "Check access": "检查访问权限",
+      "Keys": "密钥",
+      "Create managed key": "创建托管密钥",
+      "Update managed key": "更新托管密钥",
+      "Preview key access": "预览密钥权限",
+      "Refresh keys": "刷新密钥",
+      "Review": "复核",
+      "Export review": "导出复核",
+      "Plan remediation": "规划整改",
+      "Refresh evidence summary": "刷新证据摘要",
+      "Download summary": "下载摘要",
+      "Export evidence pack": "导出证据包",
+      "Agent": "Agent",
+      "Generate agent handoff": "生成 Agent 交接文档",
+      "Run agent readiness": "运行 Agent 就绪检查",
+      "Generate onboarding checklist": "生成接入清单",
+      "Generate onboarding packet": "生成接入包",
+      "Access check": "访问检查",
+      "Check type": "检查类型",
+      "Business action": "业务动作",
+      "Report": "报表",
+      "Business view": "业务视图",
+      "Dashboard": "仪表盘",
+      "Raw dataset": "原始数据集",
+      "Admin": "管理员",
+      "Sensitive fields": "敏感字段",
+      "Domain": "业务域",
+      "Check resource": "检查资源",
+      "Review severity": "复核严重级别",
+      "All findings": "全部发现",
+      "Critical+": "严重及以上",
+      "High+": "高及以上",
+      "Medium+": "中等及以上",
+      "Info+": "信息及以上",
+      "Key list": "密钥列表",
+      "Key status": "密钥状态",
+      "All": "全部",
+      "Active": "有效",
+      "Expiring soon": "即将过期",
+      "Expired": "已过期",
+      "Disabled": "已停用",
+      "Search keys": "搜索密钥",
+      "Limit": "数量上限",
+      "Refresh catalog": "刷新目录",
+      "MACLAW_DATA_API_KEYS entry": "MACLAW_DATA_API_KEYS 策略条目",
+      "Agent handoff": "Agent 交接",
+      "Copy handoff": "复制交接文档",
+      "Share this with MaClaw or a scoped agent after the managed key is created. Secrets are only included immediately after create or rotate.": "托管密钥创建后，将此内容分享给 MaClaw 或受限 Agent。密钥仅在创建或轮换后显示一次。",
+      "Onboarding packet": "Agent 接入包",
+      "Copy packet": "复制接入包",
+      "Download packet": "下载接入包",
+      "Generate a full onboarding packet after preparing the key.": "准备好密钥后，生成完整的接入包。",
+      "Create or load a managed API key, then generate the handoff.": "创建或加载托管 API 密钥，然后生成交接文档。",
+      "Managed API key risk summary from the authorization review API.": "通过授权复核 API 获取的托管密钥风险摘要。",
+      "Access Risk": "访问风险",
+      "Refresh risk": "刷新风险",
+      "Create and manage scoped API keys for agents and services. Review risk and rotate credentials.": "创建和管理 Agent 及服务的权限范围化 API 密钥。复核风险并轮换凭证。",
+      "Create administrator accounts, manage sessions, and configure Hub registration.": "创建管理员账号、管理会话并配置 Hub 注册。",
+      "Run data quality checks and inspect historical quality scans.": "执行数据质量检查并查看历史扫描记录。",
+      "Create, download, and restore database recovery points.": "创建、下载和恢复数据库快照。",
+      "Inspect event ingestion, dead letters, and retry workflows.": "查看事件接收、死信队列和重试流程。",
+      "Search and export audit trails for compliance review.": "搜索和导出审计轨迹用于合规复核。",
+      "Check service statistics and run controlled database maintenance.": "查看服务统计并执行受控数据库维护。",
+      "Inspect the latest raw API response for debugging and verification.": "查看最新的原始 API 响应用于调试和验证。",
+      "Service health, domain readiness, access risk, and recent activity at a glance.": "一览服务健康、业务域就绪度、访问风险和近期活动。",
+      "First steps for administrators: core concepts, safe operating order, and governance checks.": "管理员首步指南：核心概念、安全操作顺序和治理检查。",
+      "Discover and manage business capability domains.": "发现和管理业务能力域。",
+      "Create, manage, and configure dataset metadata and lifecycle.": "创建、管理和配置数据集元数据及生命周期。",
+      "Maintain schema fields and controlled schema improvement proposals.": "维护数据字段和受控的数据结构改进提案。",
+      "Inspect controlled links between business datasets and records.": "查看业务数据集和记录之间的受控关联。",
+      "Search, add, edit, delete, export, and inspect structured business records.": "搜索、新增、编辑、删除、导出和查看结构化业务记录。",
+      "Validate, edit, import, approve, and recover individual business records.": "验证、编辑、导入、审批和恢复单条业务记录。",
+      "Run governed business actions for production writes with rule checks.": "执行带规则预检的受控业务动作进行生产写入。",
+      "Evaluate business rules and preflight checks before operational writes.": "在业务写入前评估业务规则和预检条件。",
+      "Review pending approvals, failed jobs, quality issues, and operational work.": "复核待审批、失败任务、质量问题和运营待办。",
+      "Manage external CRM, ERP, HR, finance, and inventory integrations.": "管理外部 CRM、ERP、HR、财务和库存集成。",
+      "Query curated business views without exposing raw dataset internals.": "查询受控业务视图而不暴露原始数据集细节。",
+      "Run operational dashboard summaries for company and domain views.": "运行公司和业务域维度的运营仪表盘摘要。",
+      "Run built-in reports and controlled aggregate analysis.": "运行内置报表和受控聚合分析。",
+      "Business Domains": "业务域",
+      "Datasets": "数据集",
+      "Fields": "字段",
+      "Relationships": "关联",
+      "Records": "记录",
+      "Editor": "编辑器",
+      "Business Actions": "业务动作",
+      "Rules": "规则",
+      "Inbox": "收件箱",
+      "Connectors": "连接器",
+      "Views": "视图",
+      "Dashboards": "仪表盘",
+      "Reports": "报表",
+      "Quality": "质量",
+      "Backups": "备份",
+      "Events": "事件",
+      "Audit": "审计",
+      "Ops": "运维",
+      "Response": "响应",
+      "Actions": "业务动作",
+      "Domains": "域",
+      "data_user": "数据用户",
+      "data_auditor": "数据审计员",
+      "data_admin": "数据管理员",
+      "yes": "是",
+      "no": "否",
+      "never": "从未",
+      "matches": "条匹配",
+      "schema": "结构",
+      "succeeded": "成功",
+      "Suggested actions:": "建议操作：",
+      "Business data workspace": "业务数据工作空间",
+      "Admin sessions and API keys": "管理员会话与 API 密钥",
+      "Evidence and recovery trail": "证据与恢复轨迹",
+      "On first launch, create the local administrator account. After initialization, sign in to receive a temporary bearer token.": "首次启动时创建本地管理员账号。初始化后登录获取临时令牌。",
+      "Lifecycle": "生命周期",
+      "Health": "健康",
+      "Sync": "同步",
+      "Mapping": "映射",
       "Admins": "管理员",
       "Administrator Management": "管理员管理",
       "Governance evidence summary refreshed": "治理证据摘要已刷新",
@@ -2697,21 +2876,179 @@ SO-CSV-1,SO-CSV-1,Acme,8800,confirmed</textarea></label>
       ,"This will immediately terminate the administrator session.": "将立即终止该管理员会话。"
       ,"The old secret will immediately stop working. Save the new secret before closing.": "旧密钥将立即失效。请在关闭前保存新密钥。"
       ,"This key will no longer authenticate requests.": "该 Key 将无法再用于认证请求。"
+      ,"Keyword": "关键词"
+      ,"Tag": "标签"
+      ,"Filter JSON": "筛选 JSON"
+      ,"Title": "标题"
+      ,"Description": "描述"
+      ,"Input JSON": "输入 JSON"
+      ,"Connector ID": "连接器 ID"
+      ,"Name": "名称"
+      ,"Kind": "类型"
+      ,"Auth type": "认证类型"
+      ,"Token ref": "令牌引用"
+      ,"Base URL": "基础 URL"
+      ,"Subscribed actions": "订阅动作"
+      ,"Config JSON": "配置 JSON"
+      ,"View ID": "视图 ID"
+      ,"Dataset": "数据集"
+      ,"Dataset filter": "数据集筛选"
+      ,"Current selected": "当前已选"
+      ,"Action ID": "动作 ID"
+      ,"Target Dataset": "目标数据集"
+      ,"Intent": "意图"
+      ,"Resolve": "解析"
+      ,"Domain filter": "域筛选"
+      ,"Severity": "严重级别"
+      ,"Include completed or OK items": "包含已完成或正常项"
+      ,"Event Contracts": "事件契约"
+      ,"Refresh contracts": "刷新契约"
+      ,"Record table editor": "记录表格编辑器"
+      ,"external business id": "外部业务 ID"
+      ,"Save connector": "保存连接器"
+      ,"Test bindings": "测试绑定"
+      ,"Sync state": "同步状态"
+      ,"Suggest": "建议"
+      ,"Save suggestion": "保存建议"
+      ,"Load template": "加载模板"
+      ,"Preview event": "预览事件"
+      ,"Create dataset from template": "从模板创建数据集"
+      ,"Load more templates": "加载更多模板"
+      ,"Preview Bootstrap": "预览初始化"
+      ,"Bootstrap MIS": "初始化 MIS"
+      ,"Query": "查询"
+      ,"Export CSV": "导出 CSV"
+      ,"Export JSONL": "导出 JSONL"
+      ,"Export job": "导出任务"
+      ,"Import CSV": "导入 CSV"
+      ,"Import JSONL": "导入 JSONL"
+      ,"Batch import": "批量导入"
+      ,"Bulk update": "批量更新"
+      ,"Bulk delete": "批量删除"
+      ,"Refresh inbox": "刷新收件箱"
+      ,"Refresh records": "刷新记录"
+      ,"Refresh": "刷新"
+      ,"Run check": "运行检查"
+      ,"Refresh quality": "刷新质量"
+      ,"Create backup": "创建备份"
+      ,"Refresh backups": "刷新备份"
+      ,"VACUUM": "VACUUM 整理"
+      ,"Refresh stats": "刷新统计"
+      ,"Refresh events": "刷新事件"
+      ,"Refresh dead letters": "刷新死信"
+      ,"Refresh audit": "刷新审计"
+      ,"Refresh operation plans": "刷新操作计划"
+      ,"Create operation plan": "创建操作计划"
+      ,"Operational Health": "运营健康"
+      ,"Current service counters from the controlled stats API.": "来自受控统计 API 的当前服务计数器。"
+      ,"MIS Coverage": "MIS 覆盖"
+      ,"Template and dataset coverage across common enterprise business domains.": "常见企业业务域的模板和数据集覆盖情况。"
+      ,"Business Domain Readiness": "业务域就绪度"
+      ,"Readiness of sales, finance, HR, legal, procurement, inventory, and asset domains.": "销售、财务、人事、法务、采购、库存和资产域的就绪状态。"
+      ,"Business Capabilities": "业务能力"
+      ,"Business-first operations exposed to MaClaw agents and human operators.": "暴露给 MaClaw Agent 和人工操作员的业务优先操作。"
+      ,"Intent Launcher": "意图启动器"
+      ,"Resolve a business request into actions, views, reports, dashboards, and safe next steps.": "将业务请求解析为动作、视图、报表、仪表盘和安全的下一步操作。"
+      ,"Work Queue": "工作队列"
+      ,"Pending operational work from the MIS inbox summary API.": "来自 MIS 收件箱汇总 API 的待处理运营工作。"
+      ,"Integration Health": "集成健康"
+      ,"Connector status, recent failures, and open dead letters.": "连接器状态、近期失败和未处理死信。"
+      ,"Governance Readiness": "治理就绪度"
+      ,"Minimum controls for using DataSrv with real company operations.": "在真实企业运营中使用 DataSrv 的最低控制项。"
+      ,"Recent Activity": "近期活动"
+      ,"Latest audit trail entries from the controlled audit API.": "来自受控审计 API 的最新审计轨迹。"
+      ,"Daily Operations": "日常运营"
+      ,"Open record CRUD, governed business actions, and pending MIS work from one place.": "从一处打开记录 CRUD、受控业务动作和待处理 MIS 工作。"
+      ,"MIS Inbox": "MIS 收件箱"
+      ,"Business Domain": "业务域"
+      ,"A business capability group such as sales, finance, HR, legal, or procurement.": "业务能力分组，如销售、财务、人事、法务或采购。"
+      ,"Business Action": "业务动作"
+      ,"A safe operation entry with rule checks and idempotency.": "带有规则检查和幂等保护的安全操作入口。"
+      ,"A business fact inside a dataset.": "数据集中的一条业务事实。"
+      ,"A controlled store for one business object type.": "一类业务对象的受控存储。"
+      ,"Central place for approvals, failures, quality issues, and pending work.": "审批、失败、质量问题和待办工作的集中处理入口。"
+      ,"Connector": "连接器"
+      ,"Connect CRM, ERP, HR, finance, or inventory systems.": "连接 CRM、ERP、HR、财务或库存系统。"
+      ,"Manage dataset": "管理数据集"
+      ,"Open records": "打开记录"
+      ,"Open domains": "打开业务域"
+      ,"Open connectors": "打开连接器"
+      ,"Refresh domains": "刷新业务域"
+      ,"Refresh relationships": "刷新关联"
+      ,"Record": "记录"
     } };
     const chromeZh = {
       "Dataset: none selected": "数据集：未选择",
       "Engine": "引擎",
-      "Schema": "结构版本",
+      "Schema": "数据建模",
       "Datasets": "数据集",
       "Records": "记录",
       "Backups": "备份",
       "Selected Dataset": "当前数据集",
-      "Not connected": "未连接"
+      "Not connected": "未连接",
+      "Overview": "总览",
+      "Quick Start": "快速操作",
+      "Data": "数据操作",
+      "Integration": "集成",
+      "Security": "安全与治理",
+      "Dev": "开发",
+      "API Keys": "API 密钥",
+      "Admins": "管理员",
+      "Quality": "质量",
+      "Events": "事件",
+      "Audit": "审计",
+      "Ops": "运维",
+      "Domains": "域",
+      "Fields": "字段",
+      "Relationships": "关联",
+      "Editor": "编辑器",
+      "Actions": "业务动作",
+      "Rules": "规则",
+      "Inbox": "收件箱",
+      "Connectors": "连接器",
+      "Views": "视图",
+      "Dashboards": "仪表盘",
+      "Reports": "报表",
+      "Response": "响应"
     };
     const placeholderI18n = { zh: {
       "http://127.0.0.1:18180": "http://127.0.0.1:18180",
       "admin": "admin",
-      "At least 8 characters": "至少 8 个字符"
+      "At least 8 characters": "至少 8 个字符",
+      "sales-agent": "sales-agent",
+      "agent_sales": "agent_sales",
+      "finance reporting agent, sales order processor": "财务报表 Agent、销售订单处理 Agent",
+      "2026-12-31 or RFC3339": "2026-12-31 或 RFC3339 格式",
+      "id, user, note": "ID、用户、备注",
+      "200": "200",
+      "sales.order_upsert": "sales.order_upsert",
+      "Create or load a managed API key, then generate the handoff.": "创建或加载托管 API 密钥，然后生成交接文档。",
+      "Generate a full onboarding packet after preparing the key.": "准备好密钥后，生成完整的接入包。",
+      "Data Administrator": "数据管理员",
+      "customer, amount, name": "客户、金额、姓名",
+      "q1": "q1",
+      "q1, imported": "q1, imported",
+      "Leave blank to create": "留空则自动创建",
+      "optional": "可选",
+      "optional, e.g. inventory": "可选，如 inventory",
+      "optional, e.g. sales": "可选，如 sales",
+      "optional, e.g. sales.orders": "可选，如 sales.orders",
+      "e.g. low stock, expense reimbursement, procurement status": "如：库存不足、费用报销、采购状态",
+      "expense, low stock, sales order status": "费用报销、库存不足、销售订单状态",
+      "finance": "finance",
+      "finance.expense_submit": "finance.expense_submit",
+      "high, critical": "high, critical",
+      "sales.crm": "sales.crm",
+      "Sales CRM": "Sales CRM",
+      "sales": "sales",
+      "crm, erp, hris": "crm, erp, hris",
+      "bearer, api_key": "bearer, api_key",
+      "MIS_CRM_TOKEN": "MIS_CRM_TOKEN",
+      "https://crm.example.local": "https://crm.example.local",
+      "external business id": "外部业务 ID",
+      "source:object:id:version": "来源:对象:ID:版本",
+      "approval, operation_plan, import_job, export_job, quality": "approval, operation_plan, import_job, export_job, quality",
+      "pending, failed, issue": "pending, failed, issue"
     } };
     function currentLanguage() {
       return ($("appLanguage") && $("appLanguage").value) || ($("language") && $("language").value) || "en";

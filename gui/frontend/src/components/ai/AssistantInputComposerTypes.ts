@@ -1,5 +1,6 @@
 import type { ClipboardEvent, CSSProperties, Dispatch, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, Ref, SetStateAction } from "react";
 import type { AttachmentInfo } from "./useBufferQueue";
+import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -7,6 +8,11 @@ export interface AssistantInputComposerProps {
     browseFile: () => void;
     canSend: boolean;
     attachButtonTestId?: string;
+    composeAction?: ComposeAction | null;
+    onComposeActionChange?: (action: ComposeAction | null) => void;
+    onFireSlashCommand?: (command: FireSlashCommand) => void;
+    onInsertTemplate?: (template: string) => void;
+    onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     cancelPending: boolean;
     cancelSession?: unknown;
     clearSelectedFile?: () => void;
@@ -48,6 +54,8 @@ export interface AssistantInputComposerProps {
     showBusySpinner: boolean;
     showMemoryUsage?: boolean;
     showVoiceInput?: boolean;
+    /** Recent submitted prompts used for prefix autocomplete. */
+    submittedPrompts?: string[];
     sendButtonTestId?: string;
     sendButtonStyle?: CSSProperties;
     textareaAriaLabel?: string;

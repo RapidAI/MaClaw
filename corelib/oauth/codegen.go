@@ -70,6 +70,102 @@ func CodeGenOAuthConfig() Config {
 	}
 }
 
+// PrepareHeadlessCodeGenOAuth returns the PKCE parameters for manual/browser-based
+// CodeGen login flows in TUI/CLI environments.
+func PrepareHeadlessCodeGenOAuth() (*HeadlessOAuthParams, error) {
+	return PrepareHeadlessOAuth(CodeGenOAuthConfig())
+}
+
+// CompleteHeadlessCodeGenOAuth exchanges a pasted OAuth callback URL for a
+// CodeGen access token and model metadata.
+func CompleteHeadlessCodeGenOAuth(params *HeadlessOAuthParams, callbackURL string) (CodeGenSSOResult, error) {
+	if params == nil {
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 缺少 OAuth 会话参数，请重新开始登录")
+	}
+	tokenResult, err := CompleteHeadlessOAuth(CodeGenOAuthConfig(), params, callbackURL)
+	if err != nil {
+		return CodeGenSSOResult{}, err
+	}
+	result, err := ValidateAndBuildCodeGenResult(tokenResult.AccessToken)
+	if err != nil {
+		return CodeGenSSOResult{}, err
+	}
+	return result, nil
+}
+
+// LooksLikeOAuthCallbackURL reports whether the pasted input is a browser
+// callback URL carrying an OAuth authorization code.
+func LooksLikeOAuthCallbackURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return strings.TrimSpace(parsed.Query().Get("code")) != ""
+}
+
+// ExtractCodeGenTokenInput normalizes manual CodeGen login input. It accepts a
+// raw token as-is and also unwraps token-bearing URLs returned by older flows.
+func ExtractCodeGenTokenInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(input); err == nil {
+		query := parsed.Query()
+		for _, key := range []string{"token", "access_token"} {
+			if value := strings.TrimSpace(query.Get(key)); value != "" {
+				return value
+			}
+		}
+		if parsed.Fragment != "" {
+			if values, err := url.ParseQuery(parsed.Fragment); err == nil {
+				for _, key := range []string{"token", "access_token"} {
+					if value := strings.TrimSpace(values.Get(key)); value != "" {
+						return value
+					}
+				}
+			}
+			if strings.Count(parsed.Fragment, ".") == 2 && !strings.Contains(parsed.Fragment, "=") {
+				return strings.TrimSpace(parsed.Fragment)
+			}
+		}
+		if parsed.Scheme != "" && parsed.Host != "" && strings.Count(parsed.RawQuery, ".") == 2 && !strings.Contains(parsed.RawQuery, "=") {
+			return strings.TrimSpace(parsed.RawQuery)
+		}
+	}
+	if idx := strings.Index(input, "?"); idx >= 0 && idx < len(input)-1 {
+		if values, err := url.ParseQuery(input[idx+1:]); err == nil {
+			for _, key := range []string{"token", "access_token"} {
+				if value := strings.TrimSpace(values.Get(key)); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return input
+}
+
+// ResolveHeadlessCodeGenInput accepts either a pasted OAuth callback URL or a
+// raw token so TUI/CLI flows can support both the new PKCE path and the legacy
+// token page.
+func ResolveHeadlessCodeGenInput(input string, params *HeadlessOAuthParams) (CodeGenSSOResult, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return CodeGenSSOResult{}, fmt.Errorf("未输入登录结果")
+	}
+	if LooksLikeOAuthCallbackURL(input) {
+		return CompleteHeadlessCodeGenOAuth(params, input)
+	}
+	return ValidateAndBuildCodeGenResult(ExtractCodeGenTokenInput(input))
+}
+
 // CodeGenSSOResult 保存从 CodeGen SSO 回调中解析出的认证信息。
 type CodeGenSSOResult struct {
 	// AccessToken 是用于调用 CodeGen 模型 API 的凭证。
@@ -376,10 +472,15 @@ func ValidateAndBuildCodeGenResult(token string) (CodeGenSSOResult, error) {
 	}, nil
 }
 
-// HeadlessSSOLoginURL 返回用户在任意浏览器中打开的 SSO 登录 URL。
-// 登录完成后页面会显示 token，用户复制回 TUI 粘贴。
+// HeadlessSSOLoginURL 返回用户在任意浏览器中打开的 CodeGen OAuth 授权 URL。
+// 无头场景应当走 PKCE authorize 入口，而不是旧的扫码轮询/login 页面，
+// 否则企业 SSO 网关会认为缺少 response_type 等 OAuth 参数。
 func HeadlessSSOLoginURL() string {
-	return CodeGenSSOLoginURL
+	params, err := PrepareHeadlessCodeGenOAuth()
+	if err != nil || params == nil || strings.TrimSpace(params.AuthURL) == "" {
+		return CodeGenAuthEndpoint
+	}
+	return params.AuthURL
 }
 
 // codeGenRefreshRequest 是 /api/v1/auth/refresh 的请求体。

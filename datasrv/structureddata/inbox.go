@@ -10,8 +10,6 @@ import (
 )
 
 func (s *Service) MISInbox(ctx context.Context, p Principal, in QueryMISInboxInput) (*MISInboxResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	limit := in.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100

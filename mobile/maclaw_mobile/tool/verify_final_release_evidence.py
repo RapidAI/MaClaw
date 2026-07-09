@@ -146,6 +146,27 @@ def _record_link_errors(
     return errors
 
 
+def _backend_ssh_record_errors(records: list[Path]) -> list[str]:
+    errors: list[str] = []
+    for record in records:
+        values = validate_qa_build_record.parse_record(
+            record.read_text(encoding="utf-8"),
+        )
+        copied_output_values = values.get("Copied backend session output evidence", [])
+        if not copied_output_values:
+            continue
+        if not any(
+            validate_qa_build_record._has_gui_agent_evidence_line(value)
+            for value in copied_output_values
+        ):
+            errors.append(
+                f"{record.name}: copied backend session output evidence must include "
+                "the GUI/agent evidence line with actual values for Hub session ID, backend_session_id, "
+                "claimed_by, and numeric output_seq."
+            )
+    return errors
+
+
 def _qa_record_links(markdown: str) -> list[tuple[str, str]]:
     links: list[tuple[str, str]] = []
     for match in QA_MARKDOWN_LINK_RE.finditer(markdown):
@@ -237,6 +258,7 @@ def verify_final_release_evidence(
             + ", ".join(versions),
         )
 
+    errors.extend(_backend_ssh_record_errors(relevant_records))
     errors.extend(_record_link_errors(relevant_records, records_dir, release_evidence_path))
     return errors
 

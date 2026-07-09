@@ -49,6 +49,10 @@ export interface CreateProjectTabOptions {
     prepareMode?: "restore-context" | "new-agent";
 }
 
+export interface CreateVETabOptions {
+    allowIdentityReuse?: boolean;
+}
+
 /** Tab index entry shape returned by the backend LoadProjectTabIndex binding. */
 interface BackendTabIndexEntry {
     id: string;
@@ -171,7 +175,7 @@ export interface UseAITabManagerResult {
     /** Switch to a tab by ID */
     activateTab: (tabId: string) => void;
     /** Create a new VE conversation tab. Returns the tab or null if limit reached. */
-    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     /** Create a new group chat tab */
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
@@ -731,7 +735,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
     }, [updateTabState]);
 
-    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string): AITab | null => {
+    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options: CreateVETabOptions = {}): AITab | null => {
         const prev = tabStateRef.current;
         const canonicalVEId = String(veId || "").trim();
         if (!canonicalVEId) return null;
@@ -742,51 +746,60 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
         // Check for duplicate: if a tab with same veId exists, activate it.
         // A VE tab may already have been upgraded to a live group tab, so include both.
-        const existing = prev.tabs.find(t => t.id === canonicalTabId && isVEIdentityTab(t, canonicalVEId))
+        let existing = prev.tabs.find(t => t.id === canonicalTabId && isVEIdentityTab(t, canonicalVEId))
             || prev.tabs.find(t => isVEIdentityTab(t, canonicalVEId));
         if (existing) {
             const identityTabs = prev.tabs.filter(t => isVEIdentityTab(t, canonicalVEId));
-            const saved = tabStatesRef.current.get(existing.id) || { history: [], scrollTop: 0, inputText: "" };
-            const shouldPromoteHistoryGroup = isSingleParticipantGroupForVE(existing, canonicalVEId);
-            const targetTabId = shouldPromoteHistoryGroup ? canonicalTabId : existing.id;
+            let existingTab = existing;
+            if (options.allowIdentityReuse === false && sessionId) {
+                const matchingSessionTab = identityTabs.find(t => {
+                    const state = tabStatesRef.current.get(t.id);
+                    return String(state?.sessionId || state?.discussionId || t.discussionId || "").trim() === sessionId;
+                });
+                if (!matchingSessionTab) return null;
+                existingTab = matchingSessionTab;
+            }
+            const saved = tabStatesRef.current.get(existingTab.id) || { history: [], scrollTop: 0, inputText: "" };
+            const shouldPromoteHistoryGroup = isSingleParticipantGroupForVE(existingTab, canonicalVEId);
+            const targetTabId = shouldPromoteHistoryGroup ? canonicalTabId : existingTab.id;
             let nextSaved: AITabState = {
                 ...saved,
                 ...(sessionId ? { sessionId } : {}),
                 lastActiveAt: Date.now(),
             };
             for (const duplicate of identityTabs) {
-                if (duplicate.id === existing.id) continue;
+                if (duplicate.id === existingTab.id) continue;
                 nextSaved = mergeTabStateForIdentity(nextSaved, tabStatesRef.current.get(duplicate.id));
                 tabStatesRef.current.delete(duplicate.id);
             }
             tabStatesRef.current.set(targetTabId, nextSaved);
-            if (targetTabId !== existing.id) tabStatesRef.current.delete(existing.id);
+            if (targetTabId !== existingTab.id) tabStatesRef.current.delete(existingTab.id);
             const updated: AITab = shouldPromoteHistoryGroup
                 ? {
-                    ...existing,
+                    ...existingTab,
                     id: targetTabId,
-                    title: veName || existing.title,
+                    title: veName || existingTab.title,
                     veId: canonicalVEId,
-                    participants: existing.participants?.length ? existing.participants : [canonicalVEId],
-                    participantNames: veName ? { ...(existing.participantNames || {}), [canonicalVEId]: veName } : existing.participantNames,
-                    onlineStatus: onlineStatus || existing.onlineStatus || "online",
-                    avatarDataURL: safeAvatar || existing.avatarDataURL,
-                    veSkillDescription: normalizedSkillDescription || existing.veSkillDescription,
+                    participants: existingTab.participants?.length ? existingTab.participants : [canonicalVEId],
+                    participantNames: veName ? { ...(existingTab.participantNames || {}), [canonicalVEId]: veName } : existingTab.participantNames,
+                    onlineStatus: onlineStatus || existingTab.onlineStatus || "online",
+                    avatarDataURL: safeAvatar || existingTab.avatarDataURL,
+                    veSkillDescription: normalizedSkillDescription || existingTab.veSkillDescription,
                     readOnly: false,
                 }
-                : isLiveVETab(existing) && (onlineStatus || safeAvatar || normalizedSkillDescription)
+                : isLiveVETab(existingTab) && (onlineStatus || safeAvatar || normalizedSkillDescription)
                     ? {
-                        ...existing,
+                        ...existingTab,
                         ...(onlineStatus ? { onlineStatus } : {}),
                         ...(safeAvatar ? { avatarDataURL: safeAvatar } : {}),
                         ...(normalizedSkillDescription ? { veSkillDescription: normalizedSkillDescription } : {}),
                     }
-                    : existing;
+                    : existingTab;
             updateTabState(() => ({
                 ...prev,
                 tabs: prev.tabs
-                    .filter(t => t.id === existing.id || (t.id !== targetTabId && !identityTabs.some(duplicate => duplicate.id === t.id)))
-                    .map(t => t.id === existing.id ? updated : t),
+                    .filter(t => t.id === existingTab.id || (t.id !== targetTabId && !identityTabs.some(duplicate => duplicate.id === t.id)))
+                    .map(t => t.id === existingTab.id ? updated : t),
                 activeTabId: targetTabId,
             }));
             return updated;

@@ -1547,6 +1547,185 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
     });
 
+    it('shows event-driven goal continuation rounds as foreground chat output', async () => {
+        const { result } = renderAssistantHook();
+        const requestId = 'goal-cont-abc123';
+        const prompt = '[系统续接] 继续推进目标：实现一个 C++ 贪吃蛇';
+        const displayText = '/goal 继续推进目标：实现一个 C++ 贪吃蛇';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: prompt,
+                display_text: displayText,
+            });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(messageContents(result.current.messages)).toContain(displayText);
+        expect(messageContents(result.current.messages)).not.toContain(prompt);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: 'desktop-user' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: 'desktop-user', text: '正在创建项目结构' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestId, session_key: 'desktop-user', text: 'Coding Agent: running T1 - 写入源文件' });
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('正在创建项目结构');
+        expect(result.current.progressMessages.map(message => message.content)).toEqual(['Coding Agent: running T1 - 写入源文件']);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: '已完成本轮实现。',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('已完成本轮实现。');
+    });
+
+    it('recovers goal continuation output if the foreground start event was missed', async () => {
+        const { result } = renderAssistantHook();
+        const requestId = 'goal-cont-missed-start';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: '恢复后的流式输出',
+            });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(messageContents(result.current.messages)).toContain('/goal Continue goal');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('恢复后的流式输出');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: '恢复后的最终输出',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('恢复后的最终输出');
+    });
+
+    it('recovers goal continuation output from progress if the foreground start event was missed', async () => {
+        const { result } = renderAssistantHook();
+        const requestId = 'goal-cont-progress-first';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'Coding Agent: running T1 - 准备文件',
+            });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(messageContents(result.current.messages)).toContain('/goal Continue goal');
+        expect(result.current.progressMessages.map(message => message.content)).toEqual(['Coding Agent: running T1 - 准备文件']);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'progress-first done',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('progress-first done');
+    });
+
+    it('does not resurrect forgotten goal continuation rounds from late events', async () => {
+        const { result } = renderAssistantHook();
+        const requestId = 'goal-cont-forgotten';
+
+        act(() => {
+            forgetAIAssistantSessionRounds('desktop-user');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'late progress',
+            });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'late final',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+        expect(messageContents(result.current.messages)).not.toContain('/goal Continue goal');
+        expect(messageContents(result.current.messages)).not.toContain('late final');
+    });
+
+    it('allows a new goal continuation start after the session was forgotten', async () => {
+        const { result } = renderAssistantHook();
+        const requestId = 'goal-cont-new-after-forget';
+        const displayText = '/goal 继续推进目标：重新开始';
+
+        act(() => {
+            forgetAIAssistantSessionRounds('desktop-user');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: '[系统续接] 继续推进目标：重新开始',
+                display_text: displayText,
+            });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'new progress',
+            });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(messageContents(result.current.messages)).toContain(displayText);
+        expect(result.current.progressMessages.map(message => message.content)).toEqual(['new progress']);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: 'desktop-user',
+                text: 'new final',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('new final');
+    });
+
     it('treats stream-done as activity for the foreground timeout window', async () => {
         vi.useFakeTimers();
         try {

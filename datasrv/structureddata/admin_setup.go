@@ -234,8 +234,6 @@ func (s *Service) CreateAdminAccount(ctx context.Context, p Principal, in Create
 }
 
 func (s *Service) ListAdminAccounts(ctx context.Context, tenantID string) (*ListAdminAccountsResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	users, err := s.store.ListAdminUsers(ctx, normalizedAdminTenant(tenantID))
 	if err != nil {
 		return nil, err
@@ -424,8 +422,6 @@ func (s *Service) ListAdminSessionsForPrincipal(ctx context.Context, p Principal
 	if err := requireAdminTenantAccess(p, normalizedAdminTenant(tenantID)); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	sessions, err := s.store.ListAdminSessions(ctx, normalizedAdminTenant(tenantID), s.now().UTC())
 	if err != nil {
 		return nil, err

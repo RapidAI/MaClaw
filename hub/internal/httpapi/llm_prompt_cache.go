@@ -49,6 +49,8 @@ type llmPromptCacheRuntimeMetrics struct {
 	BypassTopP             int64            `json:"bypass_top_p"`
 	BypassPresencePenalty  int64            `json:"bypass_presence_penalty"`
 	BypassFrequencyPenalty int64            `json:"bypass_frequency_penalty"`
+	BypassLogitBias        int64            `json:"bypass_logit_bias"`
+	BypassStore            int64            `json:"bypass_store"`
 	SingleflightSharedHits int64            `json:"singleflight_shared_hits"`
 	SingleflightSavedCalls int64            `json:"singleflight_saved_calls"`
 	BypassReasons          map[string]int64 `json:"bypass_reasons,omitempty"`
@@ -71,8 +73,12 @@ type llmPromptCacheMetricCounters struct {
 	bypassTopP             atomic.Int64
 	bypassPresencePenalty  atomic.Int64
 	bypassFrequencyPenalty atomic.Int64
+	bypassLogitBias        atomic.Int64
+	bypassStore            atomic.Int64
 	singleflightSharedHits atomic.Int64
 	singleflightSavedCalls atomic.Int64
+	// otherBypass tracks less common reject reasons (reason -> count).
+	otherBypass sync.Map
 }
 
 var globalLLMPromptCacheMetrics llmPromptCacheMetricCounters
@@ -133,6 +139,16 @@ func recordLLMPromptCacheDecisionOn(metrics *llmPromptCacheMetricCounters, reaso
 		metrics.bypassPresencePenalty.Add(1)
 	case "frequency_penalty":
 		metrics.bypassFrequencyPenalty.Add(1)
+	case "logit_bias":
+		metrics.bypassLogitBias.Add(1)
+	case "store":
+		metrics.bypassStore.Add(1)
+	default:
+		if reason == "" {
+			return
+		}
+		val, _ := metrics.otherBypass.LoadOrStore(reason, &atomic.Int64{})
+		val.(*atomic.Int64).Add(1)
 	}
 }
 
@@ -164,6 +180,8 @@ func llmPromptCacheRuntimeMetricsFromCounters(counters *llmPromptCacheMetricCoun
 		BypassTopP:             counters.bypassTopP.Load(),
 		BypassPresencePenalty:  counters.bypassPresencePenalty.Load(),
 		BypassFrequencyPenalty: counters.bypassFrequencyPenalty.Load(),
+		BypassLogitBias:        counters.bypassLogitBias.Load(),
+		BypassStore:            counters.bypassStore.Load(),
 		SingleflightSharedHits: counters.singleflightSharedHits.Load(),
 		SingleflightSavedCalls: counters.singleflightSavedCalls.Load(),
 	}
@@ -175,6 +193,17 @@ func llmPromptCacheRuntimeMetricsFromCounters(counters *llmPromptCacheMetricCoun
 	addReason("top_p", metrics.BypassTopP)
 	addReason("presence_penalty", metrics.BypassPresencePenalty)
 	addReason("frequency_penalty", metrics.BypassFrequencyPenalty)
+	addReason("logit_bias", metrics.BypassLogitBias)
+	addReason("store", metrics.BypassStore)
+	counters.otherBypass.Range(func(key, value any) bool {
+		reason, _ := key.(string)
+		counter, _ := value.(*atomic.Int64)
+		if reason == "" || counter == nil {
+			return true
+		}
+		addReason(reason, counter.Load())
+		return true
+	})
 	if len(bypassReasons) > 0 {
 		metrics.BypassReasons = bypassReasons
 	}
@@ -232,8 +261,14 @@ func resetLLMPromptCacheMetricCounters(counters *llmPromptCacheMetricCounters) {
 	counters.bypassTopP.Store(0)
 	counters.bypassPresencePenalty.Store(0)
 	counters.bypassFrequencyPenalty.Store(0)
+	counters.bypassLogitBias.Store(0)
+	counters.bypassStore.Store(0)
 	counters.singleflightSharedHits.Store(0)
 	counters.singleflightSavedCalls.Store(0)
+	counters.otherBypass.Range(func(key, _ any) bool {
+		counters.otherBypass.Delete(key)
+		return true
+	})
 }
 
 func llmPromptCacheKey(model *llmservice.AuthorizedModel, body map[string]any, externalModel string, cfg HubLLMPromptCacheConfig) (string, string, error) {
@@ -294,10 +329,10 @@ func getCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 }
 
 func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheStore, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, respBody []byte, statusCode int, providerID string, serviceGroupIDs []string, usage corelib.TokenUsageStat, cfg HubLLMPromptCacheConfig) error {
-	if cache == nil || !llmPromptCacheableForTenant(ctx, body, cfg) || statusCode < 200 || statusCode >= 400 || len(respBody) == 0 {
+	if cache == nil || !llmPromptCacheableForTenant(ctx, body, cfg) {
 		return nil
 	}
-	if cachedAuthorizedModelResponseHasToolCall(respBody) {
+	if store := corelib.LLMPromptCacheShouldStore(respBody, statusCode); !store.Store {
 		return nil
 	}
 	cacheKey, inputHash, err := llmPromptCacheKey(model, body, externalModel, cfg)
@@ -351,43 +386,6 @@ func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 	}
 	scheduleHubLLMPromptCacheMaintenance(cache, cfg)
 	return nil
-}
-
-func cachedAuthorizedModelResponseHasToolCall(respBody []byte) bool {
-	var payload map[string]any
-	if len(respBody) == 0 || json.Unmarshal(respBody, &payload) != nil {
-		return false
-	}
-	for _, rawChoice := range anySlice(payload["choices"]) {
-		choice := mapFromPromptCacheAny(rawChoice)
-		if choice == nil {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["finish_reason"])), "tool_calls") ||
-			strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["finish_reason"])), "function_call") {
-			return true
-		}
-		message := mapFromPromptCacheAny(choice["message"])
-		if message == nil {
-			continue
-		}
-		if len(anySlice(message["tool_calls"])) > 0 {
-			return true
-		}
-		if functionCall := mapFromPromptCacheAny(message["function_call"]); len(functionCall) > 0 {
-			return true
-		}
-	}
-	for _, rawOutput := range anySlice(payload["output"]) {
-		output := mapFromPromptCacheAny(rawOutput)
-		if output == nil {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(output["type"])), "function_call") {
-			return true
-		}
-	}
-	return false
 }
 
 func anySlice(value any) []any {

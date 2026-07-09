@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from '../SidebarHistorySessions';
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../../wailsjs/go/main/App';
+import { EventsOff } from '../../../../wailsjs/runtime';
 
 const eventHandlers = new Map<string, (...args: any[]) => void>();
 
@@ -35,6 +36,7 @@ const hiddenSessions: HistoryDiscussionSummary[] = [
 const listMine = vi.mocked(GroupDiscussionListMine);
 const listHidden = vi.mocked(GroupDiscussionListLocalHidden);
 const setHidden = vi.mocked(GroupDiscussionSetLocalHidden);
+const eventsOff = vi.mocked(EventsOff);
 
 beforeEach(() => {
     eventHandlers.clear();
@@ -129,6 +131,16 @@ describe('SidebarHistorySessions', () => {
         await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
         await new Promise((resolve) => setTimeout(resolve, 220));
         expect(listMine).toHaveBeenCalledTimes(2);
+    });
+
+    it('cleans up only its own event listeners on unmount', async () => {
+        const { unmount } = render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+        unmount();
+
+        expect(eventHandlers.size).toBe(0);
+        expect(eventsOff).not.toHaveBeenCalled();
     });
 
     it('waits for stream_end instead of refreshing on every stream chunk', async () => {

@@ -1,10 +1,10 @@
 ﻿import { useCallback, useEffect, useRef } from "react";
-import type { CreateGroupTabOptions, CreateProjectTabOptions } from "./useAITabManager";
+import type { CreateGroupTabOptions, CreateProjectTabOptions, CreateVETabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
-import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
+import { addParticipantIdentityKeys } from "./participantIdentity";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export interface PendingProjectTabOpen {
@@ -72,7 +72,7 @@ function readableHistoryDiscussionTitle(discussion: PendingHistoryDiscussionOpen
 
 interface PendingAssistantTabOpenOptions {
     lang?: string;
-    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
     activateTab?: (tabId: string) => void;
@@ -153,31 +153,8 @@ export function usePendingAssistantTabOpen({
                 return;
             }
 
-            // If the history row is a 1:1 VE discussion and the direct VE tab
-            // already exists but has not saved its session ID yet, use the VE
-            // participant identity to avoid creating a duplicate history tab.
-            const onlyParticipant = singlePendingParticipantId(discussion);
-            if (onlyParticipant) {
-                const existingParticipantTab = tabs.find(t => {
-                    if (t.type !== "ve" && t.type !== "group") return false;
-                    if (participantIdentityMatches(t.veId, onlyParticipant)) return true;
-                    const seen = new Set<string>();
-                    const participants: string[] = [];
-                    for (const rawId of t.participants || []) {
-                        const id = String(rawId || "").trim();
-                        if (!id || isLocalHumanParticipantId(id)) continue;
-                        const before = seen.size;
-                        addParticipantIdentityKeys(seen, id);
-                        if (seen.size !== before) participants.push(id);
-                    }
-                    return !t.veId && participants.length === 1 && participantIdentityMatches(participants[0], onlyParticipant);
-                });
-                if (existingParticipantTab) {
-                    bindHistoryStateToTab(existingParticipantTab.id);
-                    activateTab(existingParticipantTab.id);
-                    return;
-                }
-            }
+            // Participant identity is not enough to identify a historical row:
+            // the same VE can have several discussions, each with a distinct ID.
         }
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
@@ -190,7 +167,7 @@ export function usePendingAssistantTabOpen({
         if (!readOnly) {
             const singleVE = singlePendingParticipantId(discussion);
             if (singleVE) {
-                const veTab = createVETab(singleVE, title, discussionId);
+                const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
                 if (veTab) return;
                 // Tab limit reached — fall through to createGroupTab as degraded fallback.
             }

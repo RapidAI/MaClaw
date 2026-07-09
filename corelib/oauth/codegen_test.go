@@ -2,11 +2,13 @@ package oauth
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +119,129 @@ func TestValidateAndRefreshCodeGenTokenNormalizeLegacyClientName(t *testing.T) {
 	}
 	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("seen requests:\n%s\nwant:\n%s", strings.Join(seen, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestHeadlessSSOLoginURLUsesLoginEndpoint(t *testing.T) {
+	got := HeadlessSSOLoginURL()
+	if !strings.HasPrefix(got, CodeGenAuthEndpoint+"?") {
+		t.Fatalf("HeadlessSSOLoginURL() = %q, want OAuth authorize URL with prefix %q", got, CodeGenAuthEndpoint+"?")
+	}
+	if strings.HasPrefix(got, CodeGenSSOLoginBaseURL) {
+		t.Fatalf("HeadlessSSOLoginURL() unexpectedly returned login endpoint %q", got)
+	}
+	if got == CodeGenSSOLoginURL {
+		t.Fatalf("HeadlessSSOLoginURL() unexpectedly returned legacy polling endpoint %q", CodeGenSSOLoginURL)
+	}
+}
+
+func TestStartCodeGenSSOCallbackServerUsesGUIRefLoginURL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		codeGenCallbackServerMu.Lock()
+		if codeGenCallbackServer != nil {
+			_ = codeGenCallbackServer.Close()
+			codeGenCallbackServer = nil
+			codeGenCallbackResultCh = nil
+		}
+		codeGenCallbackServerMu.Unlock()
+	}()
+
+	loginURL, callbackURL, err := StartCodeGenSSOCallbackServer(ctx)
+	if err != nil {
+		t.Fatalf("StartCodeGenSSOCallbackServer() error = %v", err)
+	}
+	if !strings.HasPrefix(callbackURL, "http://127.0.0.1:") {
+		t.Fatalf("callbackURL = %q, want loopback URL", callbackURL)
+	}
+	if !strings.HasPrefix(loginURL, CodeGenSSOLoginBaseURL+"?") {
+		t.Fatalf("loginURL = %q, want GUI SSO login URL prefix %q", loginURL, CodeGenSSOLoginBaseURL+"?")
+	}
+	if strings.HasPrefix(loginURL, CodeGenAuthEndpoint) {
+		t.Fatalf("loginURL unexpectedly used OAuth authorize endpoint: %q", loginURL)
+	}
+	parsed, err := url.Parse(loginURL)
+	if err != nil {
+		t.Fatalf("parse loginURL: %v", err)
+	}
+	if got := parsed.Query().Get("ref"); got != callbackURL {
+		t.Fatalf("ref = %q, want callbackURL %q", got, callbackURL)
+	}
+}
+
+func TestLooksLikeOAuthCallbackURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "callback url with code", input: "http://localhost:1455/auth/codegen/callback?code=abc&state=xyz", want: true},
+		{name: "callback url missing code", input: "http://localhost:1455/auth/codegen/callback?state=xyz", want: false},
+		{name: "raw token", input: "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6ImFAbi5jbiJ9.sig", want: false},
+		{name: "empty", input: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LooksLikeOAuthCallbackURL(tc.input); got != tc.want {
+				t.Fatalf("LooksLikeOAuthCallbackURL(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrepareHeadlessCodeGenOAuthUsesCodeGenConfig(t *testing.T) {
+	params, err := PrepareHeadlessCodeGenOAuth()
+	if err != nil {
+		t.Fatalf("PrepareHeadlessCodeGenOAuth() error = %v", err)
+	}
+	if params == nil {
+		t.Fatal("PrepareHeadlessCodeGenOAuth() returned nil params")
+	}
+	if !strings.HasPrefix(params.AuthURL, CodeGenAuthEndpoint+"?") {
+		t.Fatalf("AuthURL = %q, want prefix %q", params.AuthURL, CodeGenAuthEndpoint+"?")
+	}
+	if params.RedirectURI != "http://localhost:1455/auth/codegen/callback" {
+		t.Fatalf("RedirectURI = %q", params.RedirectURI)
+	}
+	if strings.TrimSpace(params.Verifier) == "" {
+		t.Fatal("Verifier should not be empty")
+	}
+}
+
+func TestPrepareHeadlessOAuthWithRedirectURI(t *testing.T) {
+	params, err := PrepareHeadlessOAuthWithRedirectURI(CodeGenOAuthConfig(), "http://127.0.0.1:4567/auth/codegen/callback")
+	if err != nil {
+		t.Fatalf("PrepareHeadlessOAuthWithRedirectURI() error = %v", err)
+	}
+	if params.RedirectURI != "http://127.0.0.1:4567/auth/codegen/callback" {
+		t.Fatalf("RedirectURI = %q", params.RedirectURI)
+	}
+	if !strings.Contains(params.AuthURL, "redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fauth%2Fcodegen%2Fcallback") {
+		t.Fatalf("AuthURL = %q, want encoded redirect_uri", params.AuthURL)
+	}
+}
+
+func TestResolveHeadlessCodeGenInputRejectsNilParamsForCallbackURL(t *testing.T) {
+	_, err := ResolveHeadlessCodeGenInput("http://localhost:1455/auth/codegen/callback?code=abc", nil)
+	if err == nil {
+		t.Fatal("ResolveHeadlessCodeGenInput(callback, nil) expected error")
+	}
+}
+
+func TestExtractCodeGenTokenInput(t *testing.T) {
+	cases := map[string]string{
+		"raw-token":                                        "raw-token",
+		"https://callback.example/?token=abc123":           "abc123",
+		"https://callback.example/?access_token=xyz":       "xyz",
+		"https://callback.example/#access_token=fragment":  "fragment",
+		"https://callback.example/#header.payload.sig":     "header.payload.sig",
+		"http://127.0.0.1:12345/?header.payload.signature": "header.payload.signature",
+	}
+	for input, want := range cases {
+		if got := ExtractCodeGenTokenInput(input); got != want {
+			t.Fatalf("ExtractCodeGenTokenInput(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

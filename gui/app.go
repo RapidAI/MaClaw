@@ -39,6 +39,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/session"
@@ -137,6 +138,11 @@ type App struct {
 	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
 	oauthMu                 sync.Mutex
 	oauthCancel             context.CancelFunc
+	credentialStore         *oauth.FileCredentialStore // independent OAuth credential storage (credentials.json)
+	anthropicOAuthParams    *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
+	copilotDeviceCode       string                      // in-progress GitHub Copilot device code
+	copilotPollInterval     int                         // Copilot device code poll interval
+	copilotPollCtx          context.Context             // Copilot device code polling context
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
@@ -173,6 +179,7 @@ type App struct {
 	llmPromptCache                    *corelib.LLMPromptResponseCache
 	llmPromptCacheDir                 string
 	llmPromptCacheMu                  sync.Mutex
+	localCacheHitRateStates           sync.Map // provider string → *localLLMCacheHitRateState
 	toolVersionCache                  *ToolVersionCache
 	securityFirewall                  *SecurityFirewall
 	securityRiskAnalyzer              *SecurityRiskAnalyzer
@@ -1894,6 +1901,8 @@ func (a *App) startup(ctx context.Context) {
 	a.codeEventEmitter = NewCodeEventEmitter(a)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
+	// Initialize independent credential store (OAuth tokens separated from config.json).
+	a.credentialStore = oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
 	// Migrate data to custom data_dir if configured and not yet migrated.
 	a.migrateToCustomDataDir()
 	// Platform specific initialization
@@ -1987,6 +1996,8 @@ func (a *App) startup(ctx context.Context) {
 				log.Printf("[CodeGen] startup model availability check failed: %v", err)
 			}
 		}()
+		// Migrate OAuth credentials from config.json to independent credential store.
+		go a.migrateOAuthCredentialsOnStartup(config)
 		go a.startIWorkerGoalWatchIfConfigured(config)
 		go func() {
 			time.Sleep(90 * time.Second)

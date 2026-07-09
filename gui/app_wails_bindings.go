@@ -1578,9 +1578,10 @@ type AIAssistantBackgroundTaskResult struct {
 }
 
 type AIAssistantStreamEvent struct {
-	RequestID  string `json:"request_id,omitempty"`
-	Text       string `json:"text,omitempty"`
-	SessionKey string `json:"session_key,omitempty"` // userID for per-tab event routing
+	RequestID   string `json:"request_id,omitempty"`
+	Text        string `json:"text,omitempty"`
+	SessionKey  string `json:"session_key,omitempty"` // userID for per-tab event routing
+	DisplayText string `json:"display_text,omitempty"`
 }
 
 const (

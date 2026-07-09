@@ -70,6 +70,18 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.getByTitle('Apps')).toBeTruthy();
     });
 
+    it('uses a darker inactive AI assistant icon background for dark mode contrast', () => {
+        renderRail({ navTab: 'settings' });
+
+        const aiEntry = screen.getByTitle('AI Asst');
+        const iconBadge = aiEntry.querySelector('div');
+
+        expect(iconBadge).toBeTruthy();
+        expect((iconBadge as HTMLElement).style.background).toBe('var(--ai-icon-inactive-bg, color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%))');
+        expect((iconBadge as HTMLElement).style.boxShadow).toBe('var(--ai-icon-inactive-shadow, inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent), 0 6px 14px rgba(0,0,0,0.28))');
+        expect(document.querySelector('.left-nav-item--ai.active')).toBeNull();
+    });
+
     it('shows a pending ranking mark for registered users without a ranking yet', () => {
         renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
 

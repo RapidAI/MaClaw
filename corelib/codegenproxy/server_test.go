@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 	openai "github.com/openai/openai-go"
@@ -1880,13 +1882,17 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	if !containsPrefix(notes, "codegen_sanitize_functions:") {
 		t.Fatalf("notes missing functions sanitize entry: %#v", notes)
 	}
-	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
 		if !containsPrefix(notes, "codegen_drop_"+key) {
 			t.Fatalf("notes missing %s drop entry: %#v", key, notes)
 		}
 		if _, ok := payload[key]; ok {
 			t.Fatalf("%s leaked into CodeGen request: %#v", key, payload)
 		}
+	}
+	// stream_options is preserved (not dropped) — verify it's still present.
+	if _, ok := payload["stream_options"]; !ok {
+		t.Fatalf("stream_options should be preserved, but was removed")
 	}
 	tool := payload["tools"].([]interface{})[0].(map[string]interface{})
 	fn := tool["function"].(map[string]interface{})
@@ -3412,6 +3418,231 @@ func TestOpenAIResponsesStreamInvalidChunkEmitsError(t *testing.T) {
 	}
 	if strings.Contains(string(body), "response.completed") {
 		t.Fatalf("stream body = %s, should not complete after invalid chunk", body)
+	}
+}
+
+func TestOpenAIResponsesToolCallPromptCacheMissThenHit(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-tool-cache","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetPromptCache(llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 32, MemoryMaxBytes: 1 << 20}))
+
+	doReq := func(stream bool) (*http.Response, []byte) {
+		t.Helper()
+		body := `{"model":"qax-codegen/Auto","input":"ping tool cache","temperature":0,"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`
+		if stream {
+			body = `{"model":"qax-codegen/Auto","input":"ping tool cache stream","temperature":0,"stream":true,"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`
+		}
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://"+srv.Addr().String()+"/v1/responses",
+			strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer local-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		payload, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, payload
+	}
+
+	// Non-stream tool_call: miss then hit.
+	resp1, body1 := doReq(false)
+	if resp1.StatusCode != 200 {
+		t.Fatalf("first status=%d body=%s", resp1.StatusCode, body1)
+	}
+	if resp1.Header.Get("X-Cache") != "MISS" {
+		t.Fatalf("first X-Cache=%q, want MISS", resp1.Header.Get("X-Cache"))
+	}
+	resp2, body2 := doReq(false)
+	if resp2.Header.Get("X-Cache") != "HIT" {
+		t.Fatalf("second X-Cache=%q, want HIT body=%s", resp2.Header.Get("X-Cache"), body2)
+	}
+	if !bytes.Contains(body2, []byte("read_file")) {
+		t.Fatalf("hit body missing tool: %s", body2)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+	}
+}
+
+func TestOpenAIResponsesPromptCacheMissThenHit(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-resp-cache","choices":[{"message":{"role":"assistant","content":"cached via responses"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetPromptCache(llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 32, MemoryMaxBytes: 1 << 20}))
+
+	doReq := func() (*http.Response, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://"+srv.Addr().String()+"/v1/responses",
+			strings.NewReader(`{"model":"qax-codegen/Auto","input":"ping cache","temperature":0}`))
+		req.Header.Set("Authorization", "Bearer local-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, body
+	}
+
+	resp1, body1 := doReq()
+	if resp1.StatusCode != 200 {
+		t.Fatalf("first status=%d body=%s", resp1.StatusCode, body1)
+	}
+	if resp1.Header.Get("X-Cache") != "MISS" {
+		t.Fatalf("first X-Cache=%q, want MISS", resp1.Header.Get("X-Cache"))
+	}
+	if !bytes.Contains(body1, []byte("cached via responses")) {
+		t.Fatalf("first body missing text: %s", body1)
+	}
+
+	resp2, body2 := doReq()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("second status=%d body=%s", resp2.StatusCode, body2)
+	}
+	if resp2.Header.Get("X-Cache") != "HIT" {
+		t.Fatalf("second X-Cache=%q, want HIT", resp2.Header.Get("X-Cache"))
+	}
+	if !bytes.Contains(body2, []byte("cached via responses")) {
+		t.Fatalf("second body missing text: %s", body2)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1 (second served from cache)", upstreamHits.Load())
+	}
+	hits, misses := srv.CacheHitMiss()
+	if hits != 1 || misses != 1 {
+		t.Fatalf("cache hits/misses=%d/%d, want 1/1", hits, misses)
+	}
+}
+
+func TestOpenAIResponsesStreamPromptCacheStoreAndHit(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"stream \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"cached\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetPromptCache(llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 32, MemoryMaxBytes: 1 << 20}))
+
+	doStream := func() (string, string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://"+srv.Addr().String()+"/v1/responses",
+			strings.NewReader(`{"model":"qax-codegen/Auto","input":"stream cache","temperature":0,"stream":true}`))
+		req.Header.Set("Authorization", "Bearer local-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.Header.Get("X-Cache"), string(body)
+	}
+
+	x1, body1 := doStream()
+	if x1 != "MISS" {
+		t.Fatalf("first stream X-Cache=%q, want MISS", x1)
+	}
+	if !strings.Contains(body1, "response.completed") || !strings.Contains(body1, "stream cached") {
+		t.Fatalf("first stream body unexpected: %s", body1)
+	}
+
+	// Allow stream store to finish (synchronous in handler, but be safe).
+	x2, body2 := doStream()
+	if x2 != "HIT" {
+		t.Fatalf("second stream X-Cache=%q, want HIT (upstreamHits=%d body=%s)", x2, upstreamHits.Load(), body2)
+	}
+	if !strings.Contains(body2, "stream cached") {
+		t.Fatalf("second stream missing text: %s", body2)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+	}
+}
+
+func TestOpenAIResponsesAndChatCompletionsSharePromptCache(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-shared","choices":[{"message":{"role":"assistant","content":"shared cache body"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetPromptCache(llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 32, MemoryMaxBytes: 1 << 20}))
+
+	// Populate via Responses API.
+	req1, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/responses",
+		strings.NewReader(`{"model":"qax-codegen/Auto","input":"share me","temperature":0}`))
+	req1.Header.Set("Authorization", "Bearer local-key")
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("responses request: %v", err)
+	}
+	io.Copy(io.Discard, resp1.Body)
+	resp1.Body.Close()
+	if resp1.Header.Get("X-Cache") != "MISS" {
+		t.Fatalf("responses X-Cache=%q, want MISS", resp1.Header.Get("X-Cache"))
+	}
+
+	// Hit via chat completions with equivalent deterministic body.
+	// convertOpenAIResponsesRequestToChat turns string input into a user message.
+	req2, _ := http.NewRequest(http.MethodPost,
+		"http://"+srv.Addr().String()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"qax-codegen/Auto","temperature":0,"messages":[{"role":"user","content":"share me"}]}`))
+	req2.Header.Set("Authorization", "Bearer local-key")
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.Header.Get("X-Cache") != "HIT" {
+		t.Fatalf("chat X-Cache=%q, want HIT (upstreamHits=%d body=%s)", resp2.Header.Get("X-Cache"), upstreamHits.Load(), body2)
+	}
+	if !bytes.Contains(body2, []byte("shared cache body")) {
+		t.Fatalf("chat body = %s", body2)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
 	}
 }
 

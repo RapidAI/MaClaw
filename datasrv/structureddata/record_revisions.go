@@ -47,8 +47,6 @@ func maskSensitiveRevisions(revisions []RecordRevision, fields []FieldDefinition
 }
 
 func (s *Service) GetRecordTimeline(ctx context.Context, p Principal, datasetID, recordID string, in QueryRecordTimelineInput) (*RecordTimelineResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	recordID = strings.TrimSpace(recordID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {

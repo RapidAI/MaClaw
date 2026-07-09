@@ -7,8 +7,6 @@ import (
 )
 
 func (s *Service) ListRelationships(ctx context.Context, p Principal, in QueryRelationshipsInput) ([]DatasetRelationship, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	items, err := s.listRelationshipsLocked(ctx, p, in.DatasetID)
 	if err != nil {
 		return nil, err
@@ -53,8 +51,6 @@ func (s *Service) GetRelatedRecords(ctx context.Context, p Principal, datasetID 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	record, err := s.store.GetRecord(ctx, p.TenantID, datasetID, recordID)
 	if err != nil {
 		return nil, err

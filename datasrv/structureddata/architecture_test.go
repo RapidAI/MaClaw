@@ -21,6 +21,8 @@ func TestDataSrvStructuredDataKeepsExportedContractsInCorelib(t *testing.T) {
 		"HTTPServer":           true,
 		"Service":              true,
 		"SQLiteStore":          true,
+		"SQLiteStoreOptions":   true,
+		"WriteBatcher":         true,
 		"Store":                true,
 		"DatasetStore":         true,
 		"RecordStore":          true,
@@ -57,7 +59,10 @@ func TestDataSrvStructuredDataKeepsNarrowExportedConstructors(t *testing.T) {
 		"NewHTTPServer":            true,
 		"NewHTTPServerWithAPIKeys": true,
 		"NewService":               true,
+		"NewServiceWithBatcher":    true,
 		"NewSQLiteStore":           true,
+		"NewSQLiteStoreWithOptions": true,
+		"NewWriteBatcher":          true,
 		"ParseAPIKeyPolicies":      true,
 	}
 	functionDecl := regexp.MustCompile(`(?m)^func ([A-Z][A-Za-z0-9_]*)\(`)

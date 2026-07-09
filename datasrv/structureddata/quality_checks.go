@@ -101,8 +101,6 @@ func (s *Service) RunQualityCheck(ctx context.Context, p Principal, datasetID st
 }
 
 func (s *Service) ListQualityRuns(ctx context.Context, p Principal, datasetID string, in QueryQualityRunsInput) ([]QualityCheckResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err
@@ -113,8 +111,6 @@ func (s *Service) ListQualityRuns(ctx context.Context, p Principal, datasetID st
 }
 
 func (s *Service) GetQualityRun(ctx context.Context, p Principal, datasetID, runID string) (*QualityCheckResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err

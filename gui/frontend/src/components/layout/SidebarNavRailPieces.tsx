@@ -138,50 +138,56 @@ export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinke
     </div>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, switchTool, workflowLabel }: SidebarPrimaryNavProps) => (
-    <>
-        <div
-            className={'sidebar-item left-nav-item left-nav-item--ai ' + (navTab === 'ai' ? 'active' : '')}
-            onClick={() => { switchTool('ai'); }}
-            style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'ai' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
-            title={aiAssistantLabel}
-        >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '10px', background: navTab === 'ai' ? 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))' : 'var(--ai-icon-inactive-bg, linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 85%, transparent), color-mix(in srgb, var(--theme-primary) 60%, transparent)))', boxShadow: navTab === 'ai' ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)' : 'var(--ai-icon-inactive-shadow, 0 1px 4px rgba(0,0,0,0.1))', transition: 'all 0.2s ease', cursor: 'pointer' }}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                    <circle cx="12" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                    <circle cx="8.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                    <circle cx="15.5" cy="11.5" r="0.8" fill="#fff" stroke="none" />
-                </svg>
-            </div>
-            <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: navTab === 'ai' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
-        </div>
-        <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
-        {showAppEntry && (
-            <div
-                className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
-                onClick={() => switchTool('apps')}
-                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
-                title={appsLabel}
-            >
-                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
-            </div>
-        )}
-        <div
-            className={'sidebar-item left-nav-item ' + (navTab === 'workflows' ? 'active' : '')}
-            onClick={() => switchTool('workflows')}
-            style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'workflows' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showWorkflowEntry ? undefined : 'none' }}
-            title={workflowLabel || '工作流'}
-        >
-            <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'workflows' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 3h6v6H3zM15 3h6v6h-6zM9 15h6v6H9z" />
-                    <path d="M6 9v3a3 3 0 0 0 3 3h0M18 9v3a3 3 0 0 1-3 3h0" />
-                </svg>
-            </span>
-            <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{workflowLabel || '工作流'}</span>
-        </div>
-    </>
-);
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, switchTool, workflowLabel }: SidebarPrimaryNavProps) => {
+    const isAiActive = navTab === 'ai';
+    const aiIconColor = isAiActive ? '#ffffff' : 'var(--theme-text-primary)';
+    const aiIconInactiveBg = 'var(--ai-icon-inactive-bg, color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%))';
+    const aiIconInactiveShadow = 'var(--ai-icon-inactive-shadow, inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent), 0 6px 14px rgba(0,0,0,0.28))';
 
+    return (
+        <>
+            <div
+                className={'sidebar-item left-nav-item left-nav-item--ai ' + (isAiActive ? 'active' : '')}
+                onClick={() => { switchTool('ai'); }}
+                style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: isAiActive ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+                title={aiAssistantLabel}
+            >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '10px', background: isAiActive ? 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))' : aiIconInactiveBg, boxShadow: isAiActive ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)' : aiIconInactiveShadow, transition: 'all 0.2s ease', cursor: 'pointer' }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={aiIconColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                        <circle cx="12" cy="11.5" r="0.8" fill={aiIconColor} stroke="none" />
+                        <circle cx="8.5" cy="11.5" r="0.8" fill={aiIconColor} stroke="none" />
+                        <circle cx="15.5" cy="11.5" r="0.8" fill={aiIconColor} stroke="none" />
+                    </svg>
+                </div>
+                <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: isAiActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
+            </div>
+            <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
+            {showAppEntry && (
+                <div
+                    className={'sidebar-item left-nav-item ' + (navTab === 'apps' ? 'active' : '')}
+                    onClick={() => switchTool('apps')}
+                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'apps' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
+                    title={appsLabel}
+                >
+                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
+                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
+                </div>
+            )}
+            <div
+                className={'sidebar-item left-nav-item ' + (navTab === 'workflows' ? 'active' : '')}
+                onClick={() => switchTool('workflows')}
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'workflows' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showWorkflowEntry ? undefined : 'none' }}
+                title={workflowLabel || '工作流'}
+            >
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'workflows' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 3h6v6H3zM15 3h6v6h-6zM9 15h6v6H9z" />
+                        <path d="M6 9v3a3 3 0 0 0 3 3h0M18 9v3a3 3 0 0 1-3 3h0" />
+                    </svg>
+                </span>
+                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{workflowLabel || '工作流'}</span>
+            </div>
+        </>
+    );
+};

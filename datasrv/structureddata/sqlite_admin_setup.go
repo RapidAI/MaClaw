@@ -9,7 +9,7 @@ import (
 
 func (s *SQLiteStore) AdminInitialized(ctx context.Context) (bool, error) {
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users WHERE enabled = 1`).Scan(&count); err != nil {
+	if err := s.queryDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users WHERE enabled = 1`).Scan(&count); err != nil {
 		return false, err
 	}
 	return count > 0, nil
@@ -56,7 +56,7 @@ func (s *SQLiteStore) ListAdminUsers(ctx context.Context, tenantID string) ([]ad
 }
 
 func (s *SQLiteStore) FindAdminUser(ctx context.Context, tenantID, username string) (*adminUserRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, username, display_name, role, admin_scope, password_hash, enabled, last_login_at, created_at, updated_at, login_failure_count, login_locked_until
 		FROM admin_users WHERE tenant_id = ? AND username = ?`, strings.TrimSpace(tenantID), strings.ToLower(strings.TrimSpace(username)))
 	item, err := scanAdminUser(row)
 	if err != nil {
@@ -187,7 +187,7 @@ func (s *SQLiteStore) CreateAdminSession(ctx context.Context, record adminSessio
 }
 
 func (s *SQLiteStore) FindAdminSessionByHash(ctx context.Context, tokenHash string, now time.Time) (*adminSessionRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, user_id, username, role, admin_scope, token_hash, expires_at, created_at
 		FROM admin_sessions WHERE token_hash = ? AND expires_at > ?`, strings.TrimSpace(tokenHash), formatTime(now))
 	item, err := scanAdminSession(row)
 	if err != nil {

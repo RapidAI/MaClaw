@@ -51,7 +51,7 @@ func (s *SQLiteStore) UpsertFields(ctx context.Context, tenantID, datasetID stri
 }
 
 func (s *SQLiteStore) ListFields(ctx context.Context, tenantID, datasetID string) ([]FieldDefinition, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_id, dataset_id, field_key, field_type, title, required, indexed, sensitive, config_json, created_at, updated_at FROM field_definitions WHERE tenant_id = ? AND dataset_id = ? ORDER BY field_key`, tenantID, datasetID)
+	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, tenant_id, dataset_id, field_key, field_type, title, required, indexed, sensitive, config_json, created_at, updated_at FROM field_definitions WHERE tenant_id = ? AND dataset_id = ? ORDER BY field_key`, tenantID, datasetID)
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +137,12 @@ func (s *SQLiteStore) CreateRecord(ctx context.Context, record Record) (*Record,
 		return nil, err
 	}
 	committed = true
+	// Read back from read pool (avoids holding write conn for SELECT).
 	return s.GetRecord(ctx, record.TenantID, record.DatasetID, record.ID)
 }
 
 func (s *SQLiteStore) GetRecord(ctx context.Context, tenantID, datasetID, recordID string) (*Record, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, title, data_json, source_id, created_by, updated_by, created_at, updated_at FROM records WHERE tenant_id = ? AND dataset_id = ? AND id = ?`, tenantID, datasetID, recordID)
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, title, data_json, source_id, created_by, updated_by, created_at, updated_at FROM records WHERE tenant_id = ? AND dataset_id = ? AND id = ?`, tenantID, datasetID, recordID)
 	record, err := scanRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrRecordNotFound
@@ -248,6 +249,7 @@ func (s *SQLiteStore) QueryRecords(ctx context.Context, tenantID, datasetID stri
 	whereArgs := []any{tenantID, datasetID}
 	joinArgs := []any{}
 	join := ""
+	needsGroupBy := false
 	before := strings.TrimSpace(in.Before)
 	beforeID := strings.TrimSpace(in.BeforeID)
 	if before != "" {
@@ -260,13 +262,16 @@ func (s *SQLiteStore) QueryRecords(ctx context.Context, tenantID, datasetID stri
 		}
 	}
 	if tag := strings.ToLower(strings.TrimSpace(in.Tag)); tag != "" {
-		clauses = append(clauses, `r.id IN (
-			SELECT record_id FROM record_tags
-			WHERE tenant_id = ? AND dataset_id = ? AND tag_norm = ?
+		// Use EXISTS instead of IN for better query plan with indexed lookup.
+		clauses = append(clauses, `EXISTS (
+			SELECT 1 FROM record_tags rt
+			WHERE rt.tenant_id = r.tenant_id AND rt.dataset_id = r.dataset_id AND rt.record_id = r.id AND rt.tag_norm = ?
 		)`)
-		whereArgs = append(whereArgs, tenantID, datasetID, tag)
+		whereArgs = append(whereArgs, tag)
 	}
 	if q := strings.TrimSpace(in.Q); q != "" {
+		// FTS virtual tables don't support correlated subqueries well,
+		// use IN subquery which SQLite optimizes for FTS MATCH.
 		clauses = append(clauses, `r.id IN (
 			SELECT record_id FROM record_fts
 			WHERE tenant_id = ? AND dataset_id = ? AND record_fts MATCH ?
@@ -277,20 +282,33 @@ func (s *SQLiteStore) QueryRecords(ctx context.Context, tenantID, datasetID stri
 	if err != nil {
 		return nil, err
 	}
-	join += filterJoin
-	joinArgs = append(joinArgs, filterJoinArgs...)
+	if filterJoin != "" {
+		join += filterJoin
+		joinArgs = append(joinArgs, filterJoinArgs...)
+		needsGroupBy = true // JOINs on field_index may produce duplicates
+	}
 	clauses = append(clauses, filterClauses...)
 	whereArgs = append(whereArgs, filterWhereArgs...)
 	sortJoin, sortArgs, orderBy, err := buildSortSQL(in.Sort)
 	if err != nil {
 		return nil, err
 	}
-	join += sortJoin
-	joinArgs = append(joinArgs, sortArgs...)
+	if sortJoin != "" {
+		join += sortJoin
+		joinArgs = append(joinArgs, sortArgs...)
+		needsGroupBy = true
+	}
 	args := append(joinArgs, whereArgs...)
 	args = append(args, limit)
-	query := fmt.Sprintf(`SELECT r.id, r.tenant_id, r.dataset_id, r.title, r.data_json, r.source_id, r.created_by, r.updated_by, r.created_at, r.updated_at FROM records r%s WHERE %s GROUP BY r.tenant_id, r.dataset_id, r.id ORDER BY %s LIMIT ?`, join, strings.Join(clauses, " AND "), orderBy)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+
+	groupByClause := ""
+	if needsGroupBy {
+		groupByClause = " GROUP BY r.tenant_id, r.dataset_id, r.id"
+	}
+	query := fmt.Sprintf(`SELECT r.id, r.tenant_id, r.dataset_id, r.title, r.data_json, r.source_id, r.created_by, r.updated_by, r.created_at, r.updated_at FROM records r%s WHERE %s%s ORDER BY %s LIMIT ?`, join, strings.Join(clauses, " AND "), groupByClause, orderBy)
+	qctx, qcancel := queryCtx(ctx)
+	defer qcancel()
+	rows, err := s.queryDB().QueryContext(qctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -306,13 +324,60 @@ func (s *SQLiteStore) QueryRecords(ctx context.Context, tenantID, datasetID stri
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	for i := range records {
-		records[i].Tags, err = s.recordTags(ctx, tenantID, datasetID, records[i].ID)
-		if err != nil {
+	// Batch-load tags for all records in one query (eliminates N+1).
+	if len(records) > 0 {
+		if err := s.batchLoadRecordTags(ctx, tenantID, datasetID, records); err != nil {
 			return nil, err
 		}
 	}
 	return records, nil
+}
+
+// batchLoadRecordTags loads tags for multiple records in a single query,
+// eliminating the N+1 problem (one query per record → one query total).
+func (s *SQLiteStore) batchLoadRecordTags(ctx context.Context, tenantID, datasetID string, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	// Build IN clause with placeholders.
+	placeholders := make([]string, len(records))
+	args := make([]any, 0, len(records)+2)
+	args = append(args, tenantID, datasetID)
+	for i, r := range records {
+		placeholders[i] = "?"
+		args = append(args, r.ID)
+	}
+	query := fmt.Sprintf(
+		`SELECT record_id, tag FROM record_tags WHERE tenant_id = ? AND dataset_id = ? AND record_id IN (%s) ORDER BY record_id, tag`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	// Build a map of record_id → tags.
+	tagMap := make(map[string][]string, len(records))
+	for rows.Next() {
+		var recordID, tag string
+		if err := rows.Scan(&recordID, &tag); err != nil {
+			return err
+		}
+		tagMap[recordID] = append(tagMap[recordID], tag)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Assign tags to records. Records not in tagMap get empty slice (not nil)
+	// to ensure JSON serialization produces [] rather than null.
+	for i := range records {
+		if tags, ok := tagMap[records[i].ID]; ok {
+			records[i].Tags = tags
+		} else {
+			records[i].Tags = []string{}
+		}
+	}
+	return nil
 }
 
 func writeRecordIndexes(ctx context.Context, tx *sql.Tx, record Record, dataJSON string) error {
@@ -541,7 +606,7 @@ func scanRecord(scanner interface{ Scan(dest ...any) error }) (Record, error) {
 }
 
 func (s *SQLiteStore) recordTags(ctx context.Context, tenantID, datasetID, recordID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT tag FROM record_tags WHERE tenant_id = ? AND dataset_id = ? AND record_id = ? ORDER BY tag`, tenantID, datasetID, recordID)
+	rows, err := s.queryDB().QueryContext(ctx, `SELECT tag FROM record_tags WHERE tenant_id = ? AND dataset_id = ? AND record_id = ? ORDER BY tag`, tenantID, datasetID, recordID)
 	if err != nil {
 		return nil, err
 	}

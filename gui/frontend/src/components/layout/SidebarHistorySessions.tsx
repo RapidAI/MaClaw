@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
-import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
+import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
 import { getHistoryDiscussionRelation, isHistoryDiscussionReadOnly } from '../ai/historyDiscussionUtils';
 
@@ -35,14 +35,6 @@ function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
         return EventsOn(eventName, callback);
     } catch {
         return undefined;
-    }
-}
-
-function safeEventsOff(eventName: string) {
-    try {
-        EventsOff(eventName);
-    } catch {
-        // Runtime events are unavailable in a plain browser dev session.
     }
 }
 
@@ -139,11 +131,8 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
                 refreshTimerRef.current = null;
             }
             if (typeof offDiscussion === 'function') offDiscussion();
-            else safeEventsOff('ve-event');
             if (typeof offRename === 'function') offRename();
-            else safeEventsOff('ve:discussion_rename');
             if (typeof offStreamEnd === 'function') offStreamEnd();
-            else safeEventsOff('ve:stream_end');
         };
     }, [enabled, scheduleLoadItems]);
 
@@ -177,7 +166,7 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
             const readOnly = isHistoryDiscussionReadOnly(item);
             const title = item.topic || item.question || item.id || textForLang(lang, 'Untitled session', '\u672a\u547d\u540d\u4f1a\u8bdd', '\u672a\u547d\u540d\u6703\u8a71');
             const meta = relationMeta(lang, relation);
-            return <button key={item.id || index} type="button" onClick={() => onOpenDiscussion?.(item)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenDiscussion?.(item); } }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, item }); }} title={textForLang(lang, 'Click, press Enter, or right-click to open session', '\u70b9\u51fb\u3001\u6309 Enter \u6216\u53f3\u952e\u6253\u5f00\u4f1a\u8bdd', '\u9ede\u64ca\u3001\u6309 Enter \u6216\u53f3\u9375\u6253\u958b\u6703\u8a71')} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--theme-border)', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)', borderRadius: 6, padding: '8px', marginBottom: 6, cursor: 'pointer', textAlign: 'left' }}>
+            return <button key={item.id || index} type="button" onClick={() => onOpenDiscussion?.(item)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, item }); }} title={textForLang(lang, 'Click, press Enter, or right-click to open session', '\u70b9\u51fb\u3001\u6309 Enter \u6216\u53f3\u952e\u6253\u5f00\u4f1a\u8bdd', '\u9ede\u64ca\u3001\u6309 Enter \u6216\u53f3\u9375\u6253\u958b\u6703\u8a71')} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--theme-border)', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)', borderRadius: 6, padding: '8px', marginBottom: 6, cursor: 'pointer', textAlign: 'left' }}>
                 <span aria-hidden="true" title={meta.label} style={{ width: 22, height: 20, borderRadius: 4, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: relation === 'initiated_by_me' ? 'var(--theme-info-bg)' : 'var(--theme-surface-muted)', color: relation === 'initiated_by_me' ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', fontSize: 14, fontWeight: 700, lineHeight: 1 }}>{meta.icon}</span>
                 <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>{title}</span>

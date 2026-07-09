@@ -654,7 +654,7 @@ void main() {
         'server-profile:srv-prod',
         '/servers',
       ),
-      '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
+      '已打开任务提醒：请在远程页查看后台 SSH 会话或服务器档案',
     );
     expect(
       mobileNotificationRecoveryMessage(

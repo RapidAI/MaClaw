@@ -168,6 +168,7 @@ interface AIAssistantStreamEvent {
     request_id?: string;
     text?: string;
     session_key?: string;
+    display_text?: string;
 }
 
 const AGENT_VIEW_EVENT = "agent-view";
@@ -400,10 +401,12 @@ const NEW_ROUND_EVENT = "ai-assistant-new-round";
 const STREAM_DONE_EVENT = "ai-assistant-stream-done";
 const INIT_PROGRESS_EVENT = "ai-assistant-init-progress";
 const PROGRESS_EVENT = "ai-assistant-progress";
+const FOREGROUND_ROUND_STARTED_EVENT = "ai-assistant-foreground-round-started";
 const RESPONSE_EVENT = "ai-assistant-response";
 const LOCAL_FORGET_SESSION_ROUNDS_EVENT = "ai-assistant:forget-session-rounds";
 const LOCAL_ACTIVE_SESSION_CHANGED_EVENT = "ai-assistant:active-session-changed";
 const MIN_REASONING_DEDUP_OVERLAP = 8;
+const FORGOTTEN_EVENT_SESSION_TTL_MS = 30_000;
 
 // Module-level active session key. Updated by AIAssistantPanel when the active
 // tab changes. The useAIAssistant hook reads this to filter events by session.
@@ -711,7 +714,11 @@ function resolveContextStartIndex(messages: ChatMessage[], boundaryMessageID: st
 
 function isExplicitHistoryResetCommand(text: string): boolean {
     const trimmed = text.trim().toLowerCase();
-    return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
+    if (trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear") return true;
+    // /branch N (with a numeric argument) resets the UI after rewinding history.
+    // /branch without argument (list mode) does NOT reset.
+    if (/^\/branch\s+\d+$/.test(trimmed)) return true;
+    return false;
 }
 
 
@@ -2101,6 +2108,7 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
             request_id: stringField('request_id', 'requestId', 'RequestID'),
             text: stringField('text', 'Text'),
             session_key: stringField('session_key', 'sessionKey', 'SessionKey'),
+            display_text: stringField('display_text', 'displayText', 'DisplayText'),
         };
     }
     if (typeof raw === 'string') {
@@ -2579,6 +2587,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const responseTimeoutControllersByRequestRef = useRef<Map<string, ResponseTimeoutController>>(new Map());
     const agentViewLifecycleSeqBySessionRef = useRef<Map<string, number>>(new Map());
     const agentViewsBySessionRef = useRef<Map<string, AgentView>>(new Map());
+    const forgottenEventSessionsRef = useRef<Map<string, number>>(new Map());
     const initialActiveSessionKey = options?.activeSessionKey || getActiveSessionKey();
     const activeAgentViewSessionKeyRef = useRef(normalizeRuntimeSessionKey(initialActiveSessionKey));
     const hasExplicitAgentViewSessionRef = useRef(!!String(initialActiveSessionKey || '').trim());
@@ -3086,6 +3095,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return setRoundState(next);
     }, [setRoundState]);
 
+    const goalContinuationDisplayText = useCallback((event: AIAssistantStreamEvent) => {
+        const explicitDisplayText = event.display_text?.trim();
+        if (explicitDisplayText) return explicitDisplayText;
+        const firstLine = (event.text || '').split(/\r?\n/)[0]?.trim() || '';
+        const objective = firstLine.replace(/^\[系统续接\]\s*/, '').trim();
+        if (objective) return `/goal ${objective}`;
+        return localizeText(uiLang, "/goal Continue goal", "/goal 继续推进目标", "/goal 繼續推進目標");
+    }, [uiLang]);
+
     const ensureRoundPlaceholder = useCallback((generation: number) => {
         const current = activeRoundRef.current;
         if (current.generation !== generation) {
@@ -3185,6 +3203,72 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return controller;
     }, [clearTransientProgress, emitPetStateForAssistant, forgetInFlightRound, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
 
+    const startEventDrivenForegroundRound = useCallback((event: AIAssistantStreamEvent) => {
+        const requestId = event.request_id?.trim();
+        if (!requestId) return null;
+        if (activeRoundRef.current.requestId === requestId || inFlightRoundsByRequestRef.current.has(requestId)) {
+            return null;
+        }
+        const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
+        if (!isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) return null;
+        forgottenEventSessionsRef.current.delete(sessionKey);
+        const generation = activeRoundRef.current.generation + 1;
+        const assistantMessageId = nextId();
+        const displayText = goalContinuationDisplayText(event);
+        const nextRound = {
+            generation,
+            phase: 'requesting',
+            assistantMessageId,
+            requestId,
+            sessionKey,
+            userText: displayText,
+        } as ActiveRound;
+
+        clearTransientProgress(sessionKey);
+        rememberInFlightRound(nextRound);
+        setRoundState(nextRound);
+        emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
+        setMessages(prev => [
+            ...prev,
+            {
+                id: nextId(),
+                role: 'user',
+                content: displayText,
+                sessionKey,
+                timestamp: Date.now(),
+            },
+            {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: '',
+                requestId,
+                sessionKey,
+                timestamp: Date.now(),
+            },
+        ]);
+        startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai:event-round' });
+        return nextRound;
+    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, goalContinuationDisplayText, rememberInFlightRound, setRoundState, startResponseTimeout]);
+
+    const recoverGoalContinuationRound = useCallback((event: AIAssistantStreamEvent) => {
+        const requestId = event.request_id?.trim() || '';
+        if (!requestId.startsWith('goal-cont-')) return null;
+        if (activeRoundRef.current.requestId === requestId) return activeRoundRef.current;
+        const existingRound = inFlightRoundsByRequestRef.current.get(requestId);
+        if (existingRound) return existingRound;
+        if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return null;
+        const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
+        const forgottenAt = forgottenEventSessionsRef.current.get(sessionKey);
+        if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return null;
+        if (forgottenAt) forgottenEventSessionsRef.current.delete(sessionKey);
+        return startEventDrivenForegroundRound({
+            ...event,
+            session_key: sessionKey,
+            text: '',
+            display_text: localizeText(uiLang, "/goal Continue goal", "/goal 继续推进目标", "/goal 繼續推進目標"),
+        });
+    }, [activeSessionKeyForEvents, startEventDrivenForegroundRound, uiLang]);
+
     const resetResponseTimeoutForRound = useCallback((round: ActiveRound | null | undefined) => {
         if (!round?.requestId) return;
         const controller = responseTimeoutControllersByRequestRef.current.get(round.requestId);
@@ -3268,6 +3352,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const forgetInFlightRoundsForSession = useCallback((sessionKey: string) => {
         const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
+        forgottenEventSessionsRef.current.set(normalizedSessionKey, Date.now());
         let changed = false;
         for (const [requestId, round] of inFlightRoundsByRequestRef.current) {
             if (normalizeRuntimeSessionKey(round.sessionKey || 'desktop-user') === normalizedSessionKey) {
@@ -3575,9 +3660,19 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [clearPendingTaskForRequest, clearTransientProgress, forgetInFlightRound, pendingTaskVersion, resetActiveRound, stopResponseTimeout]);
 
     useEffect(() => {
-        const tokenHandler = (payload: unknown) => {
-            const currentRound = activeRoundRef.current;
+        const foregroundRoundStartedHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            if (!event.request_id) return;
+            startEventDrivenForegroundRound(event);
+        };
+
+        const tokenHandler = (payload: unknown) => {
+            const event = normalizeStreamEvent(payload);
+            let currentRound = activeRoundRef.current;
+            const recoveredRound = recoverGoalContinuationRound(event);
+            if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
+                currentRound = recoveredRound;
+            }
             if (event.request_id && matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForActiveRound();
             }
@@ -3609,8 +3704,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
 
         const newRoundHandler = (payload: unknown) => {
-            const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
+            let currentRound = activeRoundRef.current;
+            const recoveredRound = recoverGoalContinuationRound(event);
+            if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
+                currentRound = recoveredRound;
+            }
             const detachedRound = event.request_id ? inFlightRoundsByRequestRef.current.get(event.request_id) : undefined;
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
@@ -3630,8 +3729,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
 
         const streamDoneHandler = (payload: unknown) => {
-            const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
+            let currentRound = activeRoundRef.current;
+            const recoveredRound = recoverGoalContinuationRound(event);
+            if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
+                currentRound = recoveredRound;
+            }
             const detachedRound = event.request_id ? inFlightRoundsByRequestRef.current.get(event.request_id) : undefined;
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
@@ -3650,18 +3753,20 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             });
         };
 
+        const offForegroundRoundStarted = subscribeEvent(FOREGROUND_ROUND_STARTED_EVENT, foregroundRoundStartedHandler);
         const offStreamToken = subscribeEvent(STREAM_TOKEN_EVENT, tokenHandler);
         const offNewRound = subscribeEvent(NEW_ROUND_EVENT, newRoundHandler);
         const offStreamDone = subscribeEvent(STREAM_DONE_EVENT, streamDoneHandler);
         return () => {
+            offForegroundRoundStarted();
             offStreamToken();
             offNewRound();
             offStreamDone();
             resetAllStreamTokenBuffers();
         };
-    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, transitionRound, updateInFlightRound]);
+    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, transitionRound, updateInFlightRound]);
 
-        // Listen for the async response event. When SendAIAssistantMessage returns
+    // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
     // This is the single source of truth for final response processing -
     // all messages (including /new, /reset, normal chat) are handled here.
@@ -3680,6 +3785,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(normalized) || '';
+            if (responseRequestId.startsWith('goal-cont-')) {
+                recoverGoalContinuationRound({
+                    request_id: responseRequestId,
+                    session_key: normalized.session_key || '',
+                    text: '',
+                });
+            }
             const currentRound = activeRoundRef.current;
             // Final responses must carry the request id returned by SendAIAssistantMessage.
             // Treat missing ids as malformed terminal events instead of unlocking the wrong round.
@@ -3783,7 +3895,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -4394,7 +4506,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         const handler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
-            const currentRound = activeRoundRef.current;
+            let currentRound = activeRoundRef.current;
+            const recoveredRound = recoverGoalContinuationRound(event);
+            if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
+                currentRound = recoveredRound;
+            }
             const activeSessionKey = activeSessionKeyForEvents();
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
@@ -4433,7 +4549,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendProgressForSession, findInFlightRoundBySession, findPendingTaskBySession, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+    }, [activeSessionKeyForEvents, appendProgressForSession, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
 
     useEffect(() => {
         // agent-view:lifecycle is the single source of truth for view state.

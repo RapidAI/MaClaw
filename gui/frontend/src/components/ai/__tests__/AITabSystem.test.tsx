@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAITabManager } from '../useAITabManager';
 import { usePendingAssistantTabOpen } from '../usePendingAssistantTabOpen';
 import type { PendingHistoryDiscussionOpen } from '../usePendingAssistantTabOpen';
@@ -27,6 +27,13 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue(null),
 }));
+
+beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    runtimeEvents.handlers.clear();
+    vi.clearAllMocks();
+});
 
 describe('AITabTypes', () => {
     it('createInitialTabState returns correct default state', () => {
@@ -538,7 +545,7 @@ describe('useAITabManager', () => {
             expect(result.current.activeTab.title).not.toContain("disc-raw-123");
         });
 
-        it('activates an existing direct VE tab by participant when history opens before session id is saved', async () => {
+        it('opens a separate history tab when an existing direct VE tab has no matching session id', async () => {
             const onHandled = vi.fn();
             const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
                 ({ pending }: { pending: PendingHistoryDiscussion }) => {
@@ -577,14 +584,14 @@ describe('useAITabManager', () => {
             });
 
             await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-            expect(result.current.activeTab.id).toBe(veTab!.id);
-            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-early")).toHaveLength(0);
-            expect(result.current.tabState.tabs).toHaveLength(2);
-            expect(result.current.getTabState(veTab!.id)?.sessionId).toBe("disc-early");
-            expect(result.current.getTabState(veTab!.id)?.discussionId).toBe("disc-early");
+            expect(result.current.activeTab.id).toBe("history-disc-early");
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-early")).toHaveLength(1);
+            expect(result.current.tabState.tabs).toHaveLength(3);
+            expect(result.current.getTabState(veTab!.id)?.sessionId).toBeUndefined();
+            expect(result.current.activeTab.discussionId).toBe("disc-early");
         });
 
-        it('activates an existing direct VE tab by generated participant alias', async () => {
+        it('does not reuse a direct VE tab by generated participant alias without a matching session id', async () => {
             const onHandled = vi.fn();
             const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
                 ({ pending }: { pending: PendingHistoryDiscussion }) => {
@@ -623,9 +630,9 @@ describe('useAITabManager', () => {
             });
 
             await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-            expect(result.current.activeTab.id).toBe(veTab!.id);
-            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-alias-early")).toHaveLength(0);
-            expect(result.current.getTabState(veTab!.id)?.sessionId).toBe("disc-alias-early");
+            expect(result.current.activeTab.id).toBe("history-disc-alias-early");
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-alias-early")).toHaveLength(1);
+            expect(result.current.getTabState(veTab!.id)?.sessionId).toBeUndefined();
         });
 
         it('activates an existing VE session tab when opening the same history discussion', async () => {

@@ -7125,3 +7125,62 @@ Layer 3 — 前端接收点（纵深）：
 - 代码块内的 `Browser:` → 不被误清理（已有 ``` 排除逻辑）
 - 无 browser 工具激活时仍然出现幻觉 → 日志可追踪（CP_WriteFile 记录）
 - Go `go vet` 零新增错误 + TypeScript `tsc --noEmit` 零新增错误
+
+
+### 119. OAuth Credential Store 独立化——对齐 Pi Agent 的 CredentialStore 架构
+
+**来源**：借鉴 earendil-works/pi 的 OAuth 架构（独立 auth.json + CredentialStore 接口 + modify() 串行化），解决 MaClaw 的 credential 与 config.json 混合存储导致的竞态问题（#11、#104）。
+
+**根因**：MaClaw 的 OAuth token（Key/RefreshToken/TokenExpiresAt/OAuthAccessToken）存储在 `config.json` 的 `MaclawLLMProviders[]` 数组中，与 100+ 个无关配置字段混合。Token 刷新通过 `SaveMaclawLLMProviders` → `PatchConfig` → `configMu` 全局锁持久化。两个问题：
+1. 任何 config 写入（UI 设置保存、Hub sync、startup 初始化）都与 token 刷新竞争同一把 `configMu` 锁
+2. 前端 `SaveConfig` 全量覆盖可能用 stale state 覆盖后台刷新的 token（#11 根因）
+
+**修复**（对齐 Pi 的 CredentialStore 架构）：
+
+#### Phase 1: CredentialStore 接口 + FileCredentialStore 实现
+
+- `corelib/oauth/credential_store.go`：
+  - `CredentialStore` 接口（Read/Modify/Delete）——Modify 是唯一写路径，内部串行化
+  - `StoredCredential` 结构体——统一 OAuth 和 SSO credential
+  - `FileCredentialStore`——独立 `sync.Mutex`（不与 `configMu` 竞争），原子写入（tmp + rename），文件权限 0600
+  - `MigrateFromConfig()`——从旧 config.json 迁移，不覆盖 store 中已有 credential
+  - `DefaultCredentialStorePath()`——返回 `~/.maclaw/credentials.json`
+  - `StoredCredential.IsExpired()`——含 5 分钟 margin
+- `corelib/oauth/credential_store_test.go`：8 个测试覆盖 CRUD、并发串行化（10 goroutine 只有 1 个执行 refresh）、原子写入、迁移
+
+#### Phase 2: GUI 集成——ensureOAuthToken 通过 CredentialStore 串行化
+
+- `gui/app.go`：
+  - `App` 结构体新增 `credentialStore *oauth.FileCredentialStore` 字段
+  - `startup()` 中初始化 credential store + 启动迁移 goroutine
+  - import 新增 `corelib/oauth`
+- `gui/app_oauth_credential_store.go`（新文件）：
+  - `credentialStoreProviderID()`——provider name 到 store ID 的单一映射点
+  - `migrateOAuthCredentialsOnStartup()`——从 config.json 迁移到 credentials.json
+  - `ensureOAuthTokenViaStore()`——通过 `Modify()` 串行化 token 刷新，double-refresh 防护
+  - `syncCredentialToConfig()`——双写回 config.json（向后兼容 TUI）
+  - `resolveProviderKeyFromStore()`——从 store 读取 key，fallback 到 config.json
+  - `saveOAuthResultToStore()`——新 OAuth 登录结果写入 store
+- `gui/app_maclaw_llm.go`：
+  - `ensureOAuthToken()`：primary path 走 CredentialStore（独立锁），fallback 走旧路径
+  - `StartOpenAIOAuth()`：登录成功后调用 `saveOAuthResultToStore` 双写
+  - `GetMaclawLLMConfig()`：OAuth key 优先从 CredentialStore 读取
+
+**与 Pi 的对齐点**：
+- ✅ Credential 独立于 config 存储（`credentials.json` vs `auth.json`）
+- ✅ `Modify()` 串行化防止 double-refresh（等价于 Pi 的 `CredentialStore.modify()`）
+- ✅ 独立 mutex 不与全局 config 锁竞争
+- ✅ 原子写入（tmp + rename）
+- ✅ 向后兼容（双写 config.json 给 TUI 读取）
+
+**迁移策略**：
+- 写入时：同时写 credentials.json 和 config.json（双写）
+- 读取时：优先 credentials.json，fallback config.json
+- 刷新时：通过 CredentialStore.Modify()（独立锁），不走 SaveMaclawLLMProviders
+
+**验收标准**：
+- 8 个新增单元测试全部 PASS
+- `go vet ./gui/` 无新增错误
+- `go build ./corelib/oauth/` 编译通过
+- 并发 10 goroutine 同时检测 token 过期 → 仅 1 个执行实际 refresh
+- 前端 SaveConfig 不再能覆盖 OAuth token（credential 从独立 store 读取）

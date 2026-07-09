@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import shlex
 import sys
@@ -169,6 +169,10 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             ),
         ]:
             self.assertIn(expected, hint)
+        self.assertIn(
+            "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            hint,
+        )
         self.assertNotIn("--record-dir docs/qa-builds", hint)
 
     def test_handoff_evidence_path_is_shared(self) -> None:
@@ -337,13 +341,20 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         )
         self.assertIn(
             "complete the signed-build QA record with real-device share/permission, "
-            "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+            "Hub discovery evidence including selected HubCenter, discovered Hub, tenant, post-SMS-verification official credits LLM proof with concrete llm-request-id and llm-usage-record, "
+            "MaClaw logo cold start with no Flutter placeholder, signed-in AI assistant first screen "
+            "with visible main-conversation/secondary-tab controls, microphone/voice input, no legacy info-lookup entry, "
+            "notification evidence, and GUI-equivalent backend-managed SSH session evidence",
             hint,
         )
         self.assertIn(
             "`ssh_session` realtime `output_chunk`/`output_seq` proof",
             hint,
         )
+        self.assertIn("post-SMS-verification", hint)
+        self.assertIn("official credits", hint)
+        self.assertIn("llm-request-id", hint)
+        self.assertIn("llm-usage-record", hint)
         self.assertIn("GUI/agent claim or worker handoff", hint)
         self.assertIn("explicit worker claim/update evidence", hint)
         self.assertIn("not phone-local/ad hoc terminal evidence", hint)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -681,7 +682,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		AgentType:     "openclaw",
 	}
 	if providerIndex >= 0 {
-		if providers[providerIndex] != provider {
+		if !reflect.DeepEqual(providers[providerIndex], provider) {
 			providers[providerIndex] = provider
 			changed = true
 		}

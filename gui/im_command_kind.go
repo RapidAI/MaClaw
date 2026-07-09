@@ -17,6 +17,7 @@ const (
 	imCommandLoop
 	imCommandWorkflow
 	imCommandGoal
+	imCommandBranch
 )
 
 func classifyImmediateIMCommand(trimmed string) imCommandKind {
@@ -48,6 +49,9 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 		}
 		if strings.HasPrefix(trimmed, "/goal ") || trimmed == "/goal" {
 			return imCommandGoal
+		}
+		if strings.HasPrefix(trimmed, "/branch ") || trimmed == "/branch" {
+			return imCommandBranch
 		}
 		return imCommandUnknown
 	}

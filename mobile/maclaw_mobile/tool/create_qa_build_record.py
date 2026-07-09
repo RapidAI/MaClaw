@@ -245,10 +245,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Created QA build record: {target}")
     print(
         "Complete manual evidence before validation: real-device share/permission, "
-        "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence with "
+        "Hub discovery with post-SMS-verification official credits LLM proof including concrete llm-request-id and llm-usage-record, notification, and GUI-equivalent backend-managed SSH session evidence with "
         "the same GUI/agent-bound backend_session_id, GUI/agent claim "
         "or worker handoff plus explicit worker claim/update evidence and "
-        "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
+        "`ssh_session` realtime `output_chunk`/`output_seq` proof, copied-output GUI/agent evidence line with actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, not phone-local/ad hoc terminal evidence, phone-initiated "
         "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, and "
         "AI/digital-employee handoff evidence tied to that same GUI/agent-bound backend_session_id "
         "when used.",

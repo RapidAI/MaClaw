@@ -7,8 +7,6 @@ import (
 )
 
 func (s *Service) Capabilities(ctx context.Context, p Principal) (*DataCapabilities, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasets, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {
 		return nil, err

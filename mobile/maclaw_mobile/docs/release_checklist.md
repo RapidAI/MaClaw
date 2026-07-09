@@ -186,7 +186,7 @@ For a single local readiness summary, run:
 
 - `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`
 - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
-- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1`
+- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
 - `python3 -m unittest tool/configure_platforms_test.py`
 - `python3 -m unittest tool/validate_qa_build_record_test.py`
 - `python3 -m unittest tool/create_qa_build_record_test.py`

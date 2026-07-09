@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin && !linux
 
 package main
 
@@ -13,5 +13,5 @@ func isAutoStartEnabled() (bool, error) {
 }
 
 func setAutoStartEnabled(bool) error {
-	return fmt.Errorf("auto start is only supported on Windows")
+	return fmt.Errorf("auto start is not supported on this platform")
 }

@@ -377,10 +377,22 @@ void main() {
     final androidManifest = readDoc('android/app/src/main/AndroidManifest.xml');
     final iosStoryboard =
         readDoc('ios/Runner/Base.lproj/LaunchScreen.storyboard');
+    final iosLaunchReadme =
+        readDoc('ios/Runner/Assets.xcassets/LaunchImage.imageset/README.md');
 
     for (final xml in [androidLaunch, androidLaunchV21]) {
       expect(xml, contains('android:src="@mipmap/launch_image"'));
       expect(xml, isNot(contains('<!-- <item>')));
+      expect(xml, contains('MaClaw launch splash'));
+      expect(xml, isNot(contains('customize your launch splash screen')));
+    }
+    for (final xml in [
+      readDoc('android/app/src/main/res/values/styles.xml'),
+      readDoc('android/app/src/main/res/values-night/styles.xml'),
+    ]) {
+      expect(xml, contains('MaClaw logo splash'));
+      expect(xml, isNot(contains('Flutter engine draws its first frame')));
+      expect(xml, isNot(contains('V2 of Flutter')));
     }
     expect(
       androidLaunchV31,
@@ -404,6 +416,9 @@ void main() {
       reason: 'old Flutter template package activity must not remain',
     );
     expect(iosStoryboard, contains('image="LaunchImage"'));
+    expect(iosLaunchReadme, contains('MaClaw Launch Screen Assets'));
+    expect(iosLaunchReadme, contains('do not replace them with template'));
+    expect(iosLaunchReadme, isNot(contains('Flutter project')));
 
     for (final path in [
       'android/app/src/main/res/mipmap-mdpi/launch_image.png',
@@ -424,6 +439,46 @@ void main() {
         reason: '$path must not be an empty Flutter placeholder',
       );
     }
+  });
+
+  test('Android wrapper comments do not use generated template wording', () {
+    final androidWrapperSources = {
+      'android/app/build.gradle.kts': readDoc('android/app/build.gradle.kts'),
+      'android/app/src/debug/AndroidManifest.xml':
+          readDoc('android/app/src/debug/AndroidManifest.xml'),
+      'android/app/src/profile/AndroidManifest.xml':
+          readDoc('android/app/src/profile/AndroidManifest.xml'),
+    };
+
+    for (final entry in androidWrapperSources.entries) {
+      expect(
+        entry.value,
+        isNot(contains('The Flutter Gradle Plugin must be applied')),
+        reason: '${entry.key} should not keep generated template comments.',
+      );
+      expect(
+        entry.value,
+        isNot(contains('The INTERNET permission is required for development')),
+        reason: '${entry.key} should not keep generated template comments.',
+      );
+      expect(
+        entry.value,
+        isNot(contains('hot reload')),
+        reason: '${entry.key} should not keep generated template comments.',
+      );
+    }
+    expect(
+      androidWrapperSources['android/app/build.gradle.kts'],
+      contains('MaClaw Mobile wrapper'),
+    );
+    expect(
+      androidWrapperSources['android/app/src/debug/AndroidManifest.xml'],
+      contains('MaClaw service smoke checks'),
+    );
+    expect(
+      androidWrapperSources['android/app/src/profile/AndroidManifest.xml'],
+      contains('MaClaw service smoke checks'),
+    );
   });
 
   test('release docs keep mobile corelib boundary explicit', () {
@@ -1055,18 +1110,23 @@ void main() {
       'queueing create, attach, reconnect, interrupt, input, and close control records',
       'preserving terminal input carriage returns',
       'flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact',
-      '60 mobile backend ssh control-plane tests',
+      '58 mobile backend ssh control-plane tests',
       'request gui/agent-managed `exec_background`',
       '`check_task`, `wait_task`, `list_tasks`, `kill_task`, and backend file',
       'caches gui/agent background task status in the server controller',
       'mobile screen button that submits a command as a gui/agent background task',
+      'maclaw-style backend ssh session management',
+      'terminal-first ssh client',
+      'phone foreground agent as a hub session-management requester',
       'rather than phone-local sftp',
       'phone-side foreground path using tenant hub apis',
       'create, attach, interrupt, reconnect, send input to, and close gui/agent-managed backend ssh sessions',
       'keeps backend command payloads queued for hub/agent execution rather than phone-local ssh execution',
       'go test ./hub/internal/httpapi -run "testmobile.*(ssh|backendssh|realtimebackendssh)" -count=1',
-      'go test ./gui -run "testremotehubclient.*mobilebackendssh|testresolvemobile|testmobileserverprofiles"',
-      '13 gui backend ssh worker/profile tests',
+      'go test ./gui -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession"',
+      '17 gui mobile worker/profile tests',
+      'missing-profile failure reporting through the worker path',
+      'desktop-managed close handling that clears pending input',
       'process-level handling that waits for the desktop',
       'mobile-to-core background task id mapping',
       'bounded default wait timeout behavior',
@@ -1081,7 +1141,13 @@ void main() {
     expect(
       auditText,
       contains(
-        'go test ./gui -run "testremotehubclient.*mobilebackendssh|testresolvemobile|testmobileserverprofiles" -count=1',
+        'go test ./gui -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession" -count=1',
+      ),
+    );
+    expect(
+      auditText,
+      contains(
+        'copied backend session output evidence with a gui/agent evidence line containing actual values for hub session id, `backend_session_id`, `claimed_by`, and numeric `output_seq`',
       ),
     );
 
@@ -1103,9 +1169,14 @@ void main() {
       'MaClaw GUI/agent plus `SSHSessionManager` remain the backend session owner',
       'GUI-Equivalent Management Contract',
       'Session ownership stays with the desktop GUI/agent worker',
-      'foreground mobile agent can create the Hub control record',
+      'foreground mobile agent is a session-management requester',
+      'start background tasks',
+      'request file operations',
       'authorized GUI/agent worker claims it',
       'backend managed SSH session',
+      'MaClaw-style SSH backend management',
+      'not as a terminal-first SSH client',
+      'foreground operator console for the managed record',
       '`SSHSessionManager`',
       '`SSHPool` connections',
       'PTY handles',
@@ -1142,6 +1213,9 @@ void main() {
       'incremental `output_chunk`',
       'monotonic `output_seq`',
       'backend session ID linkage',
+      'GUI/agent evidence line with actual values for the Hub session ID',
+      'worker `claimed_by`',
+      'prove the output came from the backend session manager rather than a phone-local SSH client',
       'Digital employee handoff context must include the GUI/agent-bound `backend_session_id`',
       'not merely the Hub control-record `session_id`',
       'tie analysis, command drafts, and follow-up actions back to the same `backend_session_id`',
@@ -1177,8 +1251,21 @@ void main() {
       'Disconnect result',
       'Reconnect result',
       'Copied backend session output evidence',
+      'GUI/agent evidence line with actual values for Hub session ID',
+      'backend_session_id, claimed_by, and numeric output_seq',
+      'backend session manager',
     ]) {
       expect(template, contains(expected));
+    }
+    for (final expected in [
+      'copied output or operator console note must include',
+      'GUI/agent evidence line with actual values for the Hub session ID',
+      '`backend_session_id`',
+      '`claimed_by`',
+      '`output_seq`',
+      'not sufficient as session proof',
+    ]) {
+      expect(qa, contains(expected));
     }
   });
 
@@ -1221,7 +1308,7 @@ void main() {
     expect(
       auditText,
       contains(
-        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap, cold-start MaClaw logo splash evidence with no Flutter placeholder/template branding, signed-in `AI助手` first-screen evidence with visible voice input and no legacy `查信息` entry, AI assistant query with citations',
+        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence with post-SMS-verification official credits usage record ID, bootstrap, cold-start MaClaw logo splash evidence with no Flutter placeholder/template branding, signed-in `AI助手` first-screen evidence with visible `主对话`/secondary-tab controls, microphone/voice input, and no legacy `查信息` entry, AI assistant query with citations',
       ),
     );
     expect(auditText, contains('with `permission-grant:<id>` evidence'));
@@ -1255,11 +1342,19 @@ void main() {
     expect(
       evidenceText,
       contains(
-        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence, bootstrap result',
+        'selected HubCenter, discovered Hub, tenant, LLM mode/QR authorization evidence with post-SMS-verification official credits usage record ID, concrete `llm-request-id` and `llm-usage-record`, bootstrap result',
       ),
     );
-  });
+    for (final expected in [
+      'Hub discovery with post-SMS-verification official credits LLM proof, concrete',
+      '`llm-request-id` and `llm-usage-record`, notification',
+      'real-device share/permission, Hub discovery with post-SMS-verification',
+      'official credits LLM proof, concrete `llm-request-id` and',
+    ]) {
+      expect(evidenceText, contains(expected));
+    }
 
+  });
   test('QA build record template captures every manual release gate', () {
     final template = readDoc('docs/qa_build_record_template.md');
 
@@ -1653,7 +1748,7 @@ void main() {
     expectInOrder(checklist, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
       'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1',
+      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
       'python3 -m unittest tool/create_qa_build_record_test.py',
@@ -1699,7 +1794,7 @@ void main() {
     expectInOrder(evidence, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
       'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts" -count=1',
+      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'cd mobile/maclaw_mobile',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',

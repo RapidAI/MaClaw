@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -97,7 +98,7 @@ func maclawLLMProvidersEqual(a, b []corelib.MaclawLLMProvider) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !reflect.DeepEqual(a[i], b[i]) {
 			return false
 		}
 	}
@@ -136,6 +137,8 @@ func canonicalVolcengineTokenPlanProviderName(name string) string {
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
 		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
+		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -496,9 +499,15 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 			}
 			// For OAuth providers: if token exchange succeeded, Key contains sk-... API key;
 			// otherwise fall back to OAuthAccessToken (raw access_token).
+			// Primary: read from independent CredentialStore (Pi-aligned).
+			// Fallback: config.json fields.
 			key := p.Key
-			if authKind.IsOAuth() && p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
-				key = p.OAuthAccessToken
+			if authKind.IsOAuth() {
+				if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
+					key = storeKey
+				} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+					key = p.OAuthAccessToken
+				}
 			}
 			// Diagnostic log for OAuth token debugging
 			if authKind.IsOAuth() {
@@ -612,6 +621,8 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
 				return "", fmt.Errorf("保存 OAuth 配置失败: %w", err)
 			}
+			// Also save to independent credential store (Pi-aligned)
+			a.saveOAuthResultToStore("OpenAI", result)
 			return "OpenAI OAuth 登录成功", nil
 		}
 	}
@@ -704,6 +715,11 @@ func (a *App) ensureOAuthToken() error {
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
 		if p.Name == data.Current && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+			// Primary path: use CredentialStore (serialized, independent of configMu)
+			if a.credentialStore != nil && credentialStoreProviderID(p) != "" {
+				return a.ensureOAuthTokenViaStore(p, i)
+			}
+			// Fallback path: legacy config.json-based refresh
 			cfg := oauth.DefaultConfig()
 			updated, err := oauth.EnsureValidToken(p, cfg, func(up corelib.MaclawLLMProvider) error {
 				data.Providers[i] = up
@@ -1863,6 +1879,10 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 // 如果列表中已存在同名条目则覆盖，否则追加到列表末尾。
 // 返回新的 providers 切片（不修改原切片）。
 func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.CodeGenSSOResult) []corelib.MaclawLLMProvider {
+	models := make([]string, 0, len(result.Models))
+	for _, model := range result.Models {
+		models = appendUniqueCodeGenModel(models, model.ID)
+	}
 	entry := corelib.MaclawLLMProvider{
 		Name:          codegenProviderName,
 		URL:           result.BaseURL,
@@ -1872,6 +1892,7 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 		AgentType:     corelib.CodeGenClientName, // TigerClaw CodeGen client identity
 		AuthType:      "sso",                     // 标识认证来源，区别于手动 API Key
 		ContextLength: result.ContextLength,
+		Models:        models,
 	}
 	// 遍历查找并覆盖已有 CodeGen 条目
 	for i, p := range providers {
@@ -1887,6 +1908,19 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 	}
 	// 未找到则追加
 	return append(providers, entry)
+}
+
+func appendUniqueCodeGenModel(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 // codegenClaudeRemoteBaseURL is the remote Anthropic-compatible base URL used

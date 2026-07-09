@@ -111,8 +111,8 @@
       var cat = classifySkillCategory(s);
       // Prefer human-readable display name over internal ID-like name
       var rawName = s.maclaw_app_name || s.display_name || s.name || '-';
-      // If name looks like a skill_id format (publisher.skill-name): lowercase, no spaces, 2 dot-separated parts
-      if (/^[a-z0-9_-]+\.[a-z0-9_-]+$/.test(rawName) && rawName === (s.skill_id || s.name)) {
+      // If name looks like a skill_id format (publisher.skill-name): alphanumeric with dots, 2+ dot-separated parts
+      if (/^[a-z0-9_.-]+\.[a-z0-9_.-]+$/i.test(rawName) && rawName === (s.skill_id || s.name)) {
         var parts = rawName.split('.');
         rawName = parts[parts.length - 1];
       }
@@ -152,8 +152,8 @@
           '<div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name" title="' + name + '">' + name + '</div>' + verTag + '</div>' +
           catBadge +
         '</div>' +
-        idLine +
         '<div class="mp-cap-card-desc">' + description + '</div>' +
+        idLine +
         '<div class="mp-cap-card-meta">' + metaLine + '</div>' +
         statsHtml +
         '<div class="mp-card-btn-grid">' +

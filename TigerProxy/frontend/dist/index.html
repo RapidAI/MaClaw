@@ -14,9 +14,16 @@
         <p>CodeGen 本地协议转发</p>
       </div>
       <div id="tokenStats" class="token-stats">
-        <span title="输入 tokens">↑ <strong id="promptTokens">0</strong></span>
-        <span title="输出 tokens">↓ <strong id="completionTokens">0</strong></span>
-        <span title="总计 tokens">Σ <strong id="totalTokens">0</strong></span>
+        <span title="实际输入 / 原始输入 tokens">↑ <strong id="promptTokens">0</strong><small id="promptBefore" class="before-cache"></small></span>
+        <span title="实际输出 / 原始输出 tokens">↓ <strong id="completionTokens">0</strong><small id="completionBefore" class="before-cache"></small></span>
+        <span title="实际总计 / 原始总计 tokens">Σ <strong id="totalTokens">0</strong><small id="totalBefore" class="before-cache"></small></span>
+        <span title="缓存节省率" class="cache-stat">💾 <strong id="cacheSaving">-</strong></span>
+        <span class="token-period-switcher">
+          <button class="period-btn active" data-period="today" title="今天">日</button>
+          <button class="period-btn" data-period="week" title="本周">周</button>
+          <button class="period-btn" data-period="month" title="本月">月</button>
+          <button class="period-btn" data-period="all" title="累计">全</button>
+        </span>
       </div>
       <div class="status-group">
         <span class="author">作者：Daniel 博士</span>
@@ -110,6 +117,21 @@
         <div class="lan-block">
           <h3>局域网地址</h3>
           <div id="lanURLs" class="lan"></div>
+        </div>
+
+        <div class="cache-block">
+          <h3>响应缓存</h3>
+          <div class="cache-info">
+            <span>条目: <strong id="cacheEntries">0</strong></span>
+            <span>占用: <strong id="cacheBytes">0 B</strong></span>
+            <span>命中: <strong id="cacheHits">0</strong></span>
+            <span>未命中: <strong id="cacheMisses">0</strong></span>
+            <span>命中率: <strong id="cacheHitRate">-</strong></span>
+          </div>
+          <div class="cache-diagnostic" id="cacheDiagnostic" title="">
+            <div class="cache-diagnostic-line">最近一次 <strong id="cacheDecisionSummary">-</strong><span id="cacheDecisionExtra" class="cache-diagnostic-extra"></span></div>
+          </div>
+          <button id="clearCacheBtn" class="ghost compact">清除缓存</button>
         </div>
 
       </aside>

@@ -29,7 +29,7 @@ IOS_USAGE_DESCRIPTIONS = {
     "NSMicrophoneUsageDescription": "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002",
     "NSSpeechRecognitionUsageDescription": "\u7528\u4e8e\u5c06\u8bed\u97f3\u63d0\u95ee\u8f6c\u6210\u6587\u5b57\u3002",
     "NSPhotoLibraryUsageDescription": "\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002",
-    "NSLocalNetworkUsageDescription": "\u7528\u4e8e\u8fde\u63a5\u672c\u5730\u6216\u5185\u7f51\u670d\u52a1\u5668\u8fdb\u884c SSH \u5e94\u6025\u7ef4\u62a4\u3002",
+    "NSLocalNetworkUsageDescription": "\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65 GUI/agent \u7ba1\u7406\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002",
 }
 
 IOS_CORRUPT_USAGE_MARKERS = [
@@ -162,6 +162,7 @@ def configure_android() -> None:
     configure_android_root_gradle()
     configure_android_gradle()
     configure_android_gradle_properties()
+    configure_android_variant_manifests()
     configure_android_main_activity()
     manifest_path = ROOT / "android/app/src/main/AndroidManifest.xml"
     if not manifest_path.exists():
@@ -197,6 +198,30 @@ def configure_android() -> None:
             existing.add(signature)
     ET.indent(tree, space="    ")
     tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+
+
+ANDROID_TEMPLATE_INTERNET_PERMISSION_COMMENT = """    <!-- The INTERNET permission is required for development. Specifically,
+         the Flutter tool needs it to communicate with the running application
+         to allow setting breakpoints, to provide hot reload, etc.
+    -->
+"""
+
+
+def configure_android_variant_manifests() -> None:
+    replacements = {
+        ROOT / "android/app/src/debug/AndroidManifest.xml": (
+            "    <!-- Development builds need network access for MaClaw service smoke checks. -->\n"
+        ),
+        ROOT / "android/app/src/profile/AndroidManifest.xml": (
+            "    <!-- Profile builds need network access for MaClaw service smoke checks. -->\n"
+        ),
+    }
+    for path, replacement in replacements.items():
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        text = text.replace(ANDROID_TEMPLATE_INTERNET_PERMISSION_COMMENT, replacement)
+        path.write_text(text, encoding="utf-8")
 
 
 
@@ -254,6 +279,10 @@ def configure_android_gradle() -> None:
     if not gradle_path.exists():
         return
     text = gradle_path.read_text(encoding="utf-8")
+    text = text.replace(
+        "    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.\n",
+        "    // Keep the MaClaw Mobile wrapper on the standard plugin order.\n",
+    )
     text = text.replace(
         'namespace = "com.example.maclaw_mobile"',
         f'namespace = "{ANDROID_PACKAGE_ID}"',

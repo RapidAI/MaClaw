@@ -451,6 +451,298 @@ jobs:
           path: dist/Ins-maclaw/*
 
   # ============================================================
+  # TigerProxy: Windows NSIS + macOS PKG + Linux AppImage
+  # ============================================================
+  build-tigerproxy:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+          - os: macos-latest
+            goos: darwin
+          - os: ubuntu-22.04
+            goos: linux
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Extract version
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION=$(python3 -c "import json; print(json.load(open('TigerProxy/wails.json'))['info']['productVersion'])")
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TigerProxy version: $VERSION"
+
+      # ---- Windows ----
+      - name: Install goversioninfo (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+
+      - name: Build TigerProxy Windows
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $iconPath = "TigerProxy/assets/maclaw.ico"
+          $manifest = Get-Content build/windows/wails.exe.manifest -Raw
+          $manifest = $manifest.Replace('{{.Name}}', 'TigerProxy').Replace('{{.Info.ProductVersion}}', $env:VERSION)
+          [System.IO.File]::WriteAllText("build/windows/wails.exe.manifest.tmp", $manifest, [System.Text.UTF8Encoding]::new($false))
+          $parts = $env:VERSION.Split('.')
+          $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
+          $build = if ($parts.Length -ge 4) { [int]$parts[3] } else { 0 }
+          $versionInfo = @{
+            FixedFileInfo = @{
+              FileVersion    = @{ Major=$major; Minor=$minor; Patch=$patch; Build=$build }
+              ProductVersion = @{ Major=$major; Minor=$minor; Patch=$patch; Build=$build }
+            }
+            StringFileInfo = @{
+              CompanyName='QianXin'; FileDescription='TigerProxy'; FileVersion=$env:VERSION
+              ProductName='TigerProxy'; ProductVersion=$env:VERSION; LegalCopyright='Copyright (C) 2026 QianXin'
+            }
+            VarFileInfo = @{ Translation = @{ LangID='0409'; CharsetID='04B0' } }
+          } | ConvertTo-Json -Depth 6
+          [System.IO.File]::WriteAllText("build/windows/versioninfo.json.tmp", $versionInfo, [System.Text.UTF8Encoding]::new($false))
+
+          $goversioninfo = Join-Path (go env GOPATH) "bin/goversioninfo.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # amd64
+          & $goversioninfo -64 -icon $iconPath -manifest build/windows/wails.exe.manifest.tmp -o TigerProxy/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
+          $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'
+          go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w -H windowsgui" -o "dist/TigerProxy_amd64.exe" ./TigerProxy/
+          Remove-Item TigerProxy/resource_windows_amd64.syso -ErrorAction SilentlyContinue
+
+          # arm64
+          & $goversioninfo -64 -arm -icon $iconPath -manifest build/windows/wails.exe.manifest.tmp -o TigerProxy/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
+          $env:GOARCH='arm64'
+          go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w -H windowsgui" -o "dist/TigerProxy_arm64.exe" ./TigerProxy/
+          Remove-Item TigerProxy/resource_windows_arm64.syso -ErrorAction SilentlyContinue
+          Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp -ErrorAction SilentlyContinue
+
+      - name: Install NSIS (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $nsisPath) {
+            $candidates = @("C:\Program Files (x86)\NSIS\makensis.exe","C:\Program Files\NSIS\makensis.exe")
+            $nsisPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $nsisPath) { Write-Error "NSIS not found"; exit 1 }
+          echo "NSIS_PATH=$nsisPath" >> $env:GITHUB_ENV
+
+      - name: Create TigerProxy NSIS installer (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          & $env:NSIS_PATH /DINFO_PROJECTNAME="TigerProxy" `
+                  /DPRODUCT_EXECUTABLE="TigerProxy.exe" `
+                  /DINFO_PRODUCTNAME="TigerProxy" `
+                  /DINFO_COMPANYNAME="QianXin" `
+                  /DINFO_COPYRIGHT="Copyright (C) 2026 QianXin" `
+                  /DINFO_PRODUCTVERSION="$env:VERSION" `
+                  /DARG_WAILS_AMD64_BINARY="$root\dist\TigerProxy_amd64.exe" `
+                  /DARG_WAILS_ARM64_BINARY="$root\dist\TigerProxy_arm64.exe" `
+                  /DMUI_ICON_PATH="$root\TigerProxy\assets\maclaw.ico" `
+                  build/windows/installer/tigerproxy.nsi
+
+      # ---- macOS ----
+      - name: Build TigerProxy macOS
+        if: matrix.goos == 'darwin'
+        run: |
+          mkdir -p dist build/bin
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_amd64" ./TigerProxy/
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_arm64" ./TigerProxy/
+          lipo -create -output "build/bin/TigerProxy" "build/bin/TigerProxy_amd64" "build/bin/TigerProxy_arm64"
+
+      - name: Create TigerProxy macOS App Bundle & PKG
+        if: matrix.goos == 'darwin'
+        run: |
+          BUNDLE="dist/TigerProxy.app"
+          mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+          cp "build/bin/TigerProxy" "$BUNDLE/Contents/MacOS/TigerProxy"
+          chmod +x "$BUNDLE/Contents/MacOS/TigerProxy"
+
+          # Generate icns if source PNG is available
+          if [ -f "build/appicon.png" ]; then
+            ICONSET=build/tp_iconset.iconset
+            mkdir -p "$ICONSET"
+            for sz in 16 32 128 256 512; do
+              sips -z $sz $sz "build/appicon.png" --out "$ICONSET/icon_${sz}x${sz}.png" > /dev/null
+            done
+            cp "$ICONSET/icon_32x32.png" "$ICONSET/icon_16x16@2x.png"
+            cp "$ICONSET/icon_256x256.png" "$ICONSET/icon_128x128@2x.png"
+            cp "$ICONSET/icon_512x512.png" "$ICONSET/icon_256x256@2x.png"
+            iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+            rm -rf "$ICONSET"
+          fi
+
+          cat > "$BUNDLE/Contents/Info.plist" <<PEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleName</key><string>TigerProxy</string>
+            <key>CFBundleExecutable</key><string>TigerProxy</string>
+            <key>CFBundleIdentifier</key><string>com.qianxin.tigerproxy</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSUIElement</key><true/>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+          </dict></plist>
+          PEOF
+
+          # PKG with postinstall script for LaunchAgent autostart
+          mkdir -p build/tp_pkg_scripts build/tp_pkg_root/Applications
+          cp -R "$BUNDLE" "build/tp_pkg_root/Applications/"
+
+          cat > build/tp_pkg_scripts/postinstall <<'SCRIPT'
+          #!/bin/bash
+          CURRENT_USER=$(stat -f "%Su" /dev/console)
+          CURRENT_HOME=$(dscl . -read /Users/$CURRENT_USER NFSHomeDirectory | awk '{print $2}')
+          LA_DIR="$CURRENT_HOME/Library/LaunchAgents"
+          mkdir -p "$LA_DIR"
+          cat > "$LA_DIR/com.qianxin.tigerproxy.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>Label</key><string>com.qianxin.tigerproxy</string>
+            <key>ProgramArguments</key><array>
+              <string>/Applications/TigerProxy.app/Contents/MacOS/TigerProxy</string>
+              <string>--hidden</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><false/>
+          </dict></plist>
+          PLIST
+          chown $CURRENT_USER "$LA_DIR/com.qianxin.tigerproxy.plist"
+          su $CURRENT_USER -c "launchctl load '$LA_DIR/com.qianxin.tigerproxy.plist'" 2>/dev/null || true
+          exit 0
+          SCRIPT
+          chmod +x build/tp_pkg_scripts/postinstall
+
+          pkgbuild --root build/tp_pkg_root \
+                   --scripts build/tp_pkg_scripts \
+                   --identifier com.qianxin.tigerproxy \
+                   --version "$VERSION" \
+                   --install-location / \
+                   "dist/TigerProxy-Universal.pkg"
+
+      # ---- Linux ----
+      - name: Build TigerProxy Linux
+        if: matrix.goos == 'linux'
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "dist/TigerProxy_linux_amd64" ./TigerProxy/
+
+      - name: Create TigerProxy AppImage (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+          APPDIR="dist/TigerProxy.AppDir"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp dist/TigerProxy_linux_amd64 "$APPDIR/usr/bin/tigerproxy"
+          chmod +x "$APPDIR/usr/bin/tigerproxy"
+
+          cat > "$APPDIR/tigerproxy.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=TigerProxy
+          Exec=tigerproxy
+          Icon=tigerproxy
+          Terminal=false
+          Categories=Network;Utility;
+          Comment=CodeGen protocol proxy
+          X-AppImage-Version=${VERSION}
+          EOF
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' "$APPDIR/tigerproxy.desktop"
+          cp "$APPDIR/tigerproxy.desktop" "$APPDIR/usr/share/applications/"
+
+          # Icon
+          if [ -f "build/appicon.png" ]; then
+            cp build/appicon.png "$APPDIR/tigerproxy.png"
+          else
+            # Minimal placeholder
+            convert -size 256x256 xc:navy "$APPDIR/tigerproxy.png" 2>/dev/null || printf '' > "$APPDIR/tigerproxy.png"
+          fi
+          cp "$APPDIR/tigerproxy.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/tigerproxy.png"
+
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/tigerproxy" "$@"
+          EOF
+          sed -i 's/^          //' "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+
+          ARCH=x86_64 ./appimagetool --no-appstream "$APPDIR" "dist/TigerProxy-x86_64.AppImage"
+
+          # Autostart helper script
+          cat > dist/tigerproxy-install-autostart.sh <<'EOF'
+          #!/bin/bash
+          # TigerProxy autostart installer - place AppImage permanently then run this.
+          APPIMAGE_PATH="${1:-$(ls "$(dirname "$(readlink -f "$0")")"/TigerProxy-*-x86_64.AppImage 2>/dev/null | head -1)}"
+          if [ ! -f "$APPIMAGE_PATH" ]; then
+            echo "Usage: $0 /path/to/TigerProxy.AppImage"; exit 1
+          fi
+          APPIMAGE_PATH=$(readlink -f "$APPIMAGE_PATH")
+          AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+          mkdir -p "$AUTOSTART_DIR"
+          cat > "$AUTOSTART_DIR/tigerproxy.desktop" <<DESKTOP
+          [Desktop Entry]
+          Type=Application
+          Name=TigerProxy
+          Exec=$APPIMAGE_PATH --hidden
+          Icon=tigerproxy
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+          DESKTOP
+          echo "✅ TigerProxy autostart installed: $AUTOSTART_DIR/tigerproxy.desktop"
+          EOF
+          sed -i 's/^          //' dist/tigerproxy-install-autostart.sh
+          chmod +x dist/tigerproxy-install-autostart.sh
+
+      # ---- Upload ----
+      - name: Upload TigerProxy artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: tigerproxy-${{ matrix.goos }}
+          path: |
+            dist/TigerProxy-Setup.exe
+            dist/TigerProxy_amd64.exe
+            dist/TigerProxy_arm64.exe
+            dist/TigerProxy-Universal.pkg
+            dist/TigerProxy.app/**
+            dist/TigerProxy-x86_64.AppImage
+            dist/TigerProxy_linux_amd64
+            dist/tigerproxy-install-autostart.sh
+
+  # ============================================================
   # macOS: GUI universal binary + PKG + TUI/tool (darwin)
   # ============================================================
   build-macos:
@@ -1348,7 +1640,7 @@ jobs:
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
-    needs: [build-windows, build-ins-maclaw, build-macos, build-linux, build-linux-arm64]
+    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -1462,6 +1754,9 @@ jobs:
               "Ins-maclaw-darwin-arm64",
               "Ins-maclaw-linux-amd64",
               "Ins-maclaw-linux-arm64",
+              "TigerProxy-Setup.exe",
+              "TigerProxy-Universal.pkg",
+              "TigerProxy-x86_64.AppImage",
           ]
 
           print("\n".join(assets))

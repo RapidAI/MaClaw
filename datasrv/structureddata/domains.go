@@ -53,8 +53,6 @@ func (s *Service) GetBusinessDomain(ctx context.Context, p Principal, domain str
 	if domain == "" {
 		return nil, ErrInvalidInput
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasets, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
@@ -98,8 +96,6 @@ func (s *Service) GetBusinessDomain(ctx context.Context, p Principal, domain str
 }
 
 func (s *Service) businessDomainNames(ctx context.Context, p Principal) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	domainSet := map[string]struct{}{}
 	datasets, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {

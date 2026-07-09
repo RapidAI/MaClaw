@@ -149,6 +149,7 @@ class _FakeBackendSSHApiClient extends ApiClient {
       status: 'connected',
       state: 'running',
       claimedBy: 'desktop-agent-1',
+      outputSeq: 1,
       recentOutput: 'backend session ready\n',
     );
   }
@@ -177,7 +178,7 @@ class _FakeBackendSSHApiClient extends ApiClient {
       status: 'connected',
       state: 'running',
       claimedBy: 'desktop-agent-1',
-      recentOutput: 'attached existing backend session\n',
+      recentOutput: 'GUI/agent evidence line Hub session $sessionId backend_session_id mobile-ssh:$sessionId claimed_by desktop-agent-1 output_seq 2\nattached existing backend session\n',
       outputSeq: 2,
     );
   }
@@ -701,6 +702,9 @@ void main() {
         overrides: [
           mobileLocalStoreProvider.overrideWithValue(store),
           mobileBackendSshInitialOutputProvider.overrideWithValue(
+            'GUI/agent 后台会话证据：Hub session mobssh-12345 · '
+            'backend_session_id mobile-ssh-mobssh-12345 · '
+            'claimed_by MaClaw GUI agent worker · output_seq 2\n'
             'nginx[1]: upstream timed out\n'
             'systemd[1]: app.service failed\n'
             'Authorization: Bearer backend-output-token\n'
@@ -743,19 +747,20 @@ void main() {
       findsNothing,
     );
 
-    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
+    final copyButton = find.byTooltip('复制后台会话输出');
     await tester.ensureVisible(copyButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(copyButton);
     await tester.pump();
 
-    expect(
-      copied.single,
-      'nginx[1]: upstream timed out\n'
-      'systemd[1]: app.service failed\n'
-      'Authorization: Bearer [REDACTED_TOKEN]\n'
-      'password=[REDACTED_SECRET]',
-    );
+    expect(copied.single, contains('GUI/agent 后台会话证据'));
+    expect(copied.single, contains('Hub session mobssh-12345'));
+    expect(copied.single, contains('backend_session_id mobile-ssh-mobssh-12345'));
+    expect(copied.single, contains('claimed_by MaClaw GUI agent worker'));
+    expect(copied.single, contains('output_seq 2'));
+    expect(copied.single, contains('nginx[1]: upstream timed out'));
+    expect(copied.single, contains('Authorization: Bearer [REDACTED_TOKEN]'));
+    expect(copied.single, contains('password=[REDACTED_SECRET]'));
     expect(copied.single, isNot(contains('backend-output-token')));
     expect(copied.single, isNot(contains('backend-output-password')));
     expect(find.text('后台会话输出已复制'), findsOneWidget);
@@ -764,6 +769,61 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 
+
+  testWidgets('servers screen blocks copied backend output without GUI agent evidence line',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final copied = <String>[];
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          mobileBackendSshInitialOutputProvider.overrideWithValue(
+            'nginx[1]: upstream timed out\n'
+            'systemd[1]: app.service failed',
+          ),
+          mobileClipboardWriterProvider.overrideWithValue((text) async {
+            copied.add(text);
+          }),
+          serverProfilesProvider.overrideWith(
+            _TestServerProfilesController.new,
+          ),
+          serverCommandsProvider.overrideWith(
+            _TestServerCommandsController.new,
+          ),
+          sshAnalysisProvider.overrideWith(_TestSSHAnalysisController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: ServersScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final copyButton = find.byTooltip('复制后台会话输出');
+    await tester.ensureVisible(copyButton);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(copyButton);
+    await tester.pump();
+
+    expect(copied, isEmpty);
+    expect(find.text('等待 GUI/agent 证据行后再复制后台会话输出'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 50));
+  });
   testWidgets('servers screen notifies when SSH connection fails',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
@@ -878,20 +938,26 @@ void main() {
               'server_profile_id': 'srv-prod',
               'status': 'connected',
               'state': 'running',
+              'backend_session_id': 'mobile-ssh:ssh-session-srv-prod',
               'claimed_by': 'MaClaw GUI agent worker',
-              'output_chunk': 'agent output chunk\n',
-              'output_seq': 1,
+              'output_chunk': 'GUI/agent evidence line Hub session ssh-session-srv-prod backend_session_id mobile-ssh:ssh-session-srv-prod claimed_by MaClaw GUI agent worker output_seq 2\nagent output chunk\n',
+              'output_seq': 2,
             },
           ),
         );
     await tester.pump();
 
-    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
+    final copyButton = find.byTooltip('复制后台会话输出');
     await tester.ensureVisible(copyButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(copyButton);
     await tester.pump();
 
+    expect(copied.single, contains('GUI/agent evidence line'));
+    expect(copied.single, contains('Hub session ssh-session-srv-prod'));
+    expect(copied.single, contains('backend_session_id mobile-ssh:ssh-session-srv-prod'));
+    expect(copied.single, contains('claimed_by MaClaw GUI agent worker'));
+    expect(copied.single, contains('output_seq 2'));
     expect(copied.single, contains('backend session ready'));
     expect(copied.single, contains('agent output chunk'));
   });
@@ -955,8 +1021,9 @@ void main() {
               'backend_session_id': 'mobile-ssh:ssh-session-srv-prod',
               'status': 'connected',
               'state': 'running',
-              'output_chunk': 'journalctl output chunk\n',
-              'output_seq': 1,
+              'output_chunk': 'GUI/agent evidence line Hub session ssh-session-srv-prod backend_session_id mobile-ssh:ssh-session-srv-prod claimed_by MaClaw GUI agent worker output_seq 2\njournalctl output chunk\n',
+              'claimed_by': 'MaClaw GUI agent worker',
+              'output_seq': 2,
             },
           ),
         );
@@ -1054,12 +1121,17 @@ void main() {
 
     expect(api.attachedSessionIds, ['ssh-existing-1']);
 
-    final copyButton = find.byIcon(Icons.content_copy_outlined).first;
+    final copyButton = find.byTooltip('复制后台会话输出');
     await tester.ensureVisible(copyButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(copyButton);
     await tester.pump();
 
+    expect(copied.single, contains('GUI/agent evidence line'));
+    expect(copied.single, contains('Hub session ssh-existing-1'));
+    expect(copied.single, contains('backend_session_id mobile-ssh:ssh-existing-1'));
+    expect(copied.single, contains('claimed_by desktop-agent-1'));
+    expect(copied.single, contains('output_seq 2'));
     expect(copied.single, contains('attached existing backend session'));
   });
 

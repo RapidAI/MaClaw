@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 import tempfile
@@ -261,9 +261,13 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             self.assertTrue(record.exists())
             self.assertIn(
                 "Complete manual evidence before validation: real-device share/permission, "
-                "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence",
+                "Hub discovery with post-SMS-verification official credits LLM proof including concrete llm-request-id and llm-usage-record, notification, and GUI-equivalent backend-managed SSH session evidence",
                 output.getvalue(),
             )
+            self.assertIn("post-SMS-verification", output.getvalue())
+            self.assertIn("official credits", output.getvalue())
+            self.assertIn("llm-request-id", output.getvalue())
+            self.assertIn("llm-usage-record", output.getvalue())
             self.assertIn(
                 "`ssh_session` realtime `output_chunk`/`output_seq` proof",
                 output.getvalue(),
@@ -285,6 +289,10 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 output.getvalue(),
             )
             self.assertIn("GUI/agent Ctrl+C handling", output.getvalue())
+            self.assertIn(
+                "copied-output GUI/agent evidence line with actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+                output.getvalue(),
+            )
             self.assertIn(
                 "AI/digital-employee handoff evidence tied to that same GUI/agent-bound backend_session_id",
                 output.getvalue(),

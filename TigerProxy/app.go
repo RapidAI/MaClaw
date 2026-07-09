@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -45,10 +46,17 @@ type App struct {
 	mu              sync.Mutex
 	shown           bool
 	codexInstalling bool
+	promptCache     *llmpool.Cache
+	usageStore      *UsageStore
 
 	// Cumulative token counters (atomic, updated via usage callback).
 	totalPromptTokens     int64
 	totalCompletionTokens int64
+	totalTokensReported   int64 // upstream-reported total (may include reasoning/cache tokens)
+
+	cacheDiagMu     sync.Mutex
+	lastCacheDiag   codegenproxy.CacheDecisionEvent
+	lastCacheDiagAt time.Time
 }
 
 type Settings struct {
@@ -83,6 +91,14 @@ type Status struct {
 	PromptTokens       int64    `json:"prompt_tokens"`
 	CompletionTokens   int64    `json:"completion_tokens"`
 	TotalTokens        int64    `json:"total_tokens"`
+	CacheHits          int64    `json:"cache_hits"`
+	CacheMisses        int64    `json:"cache_misses"`
+	CacheEntries       int      `json:"cache_entries"`
+	CacheBytes         int64    `json:"cache_bytes"`
+	LastCacheProtocol  string   `json:"last_cache_protocol,omitempty"`
+	LastCacheOutcome   string   `json:"last_cache_outcome,omitempty"`
+	LastCacheReason    string   `json:"last_cache_reason,omitempty"`
+	LastCacheStreaming bool     `json:"last_cache_streaming,omitempty"`
 }
 
 type LoginStartResult struct {
@@ -91,7 +107,16 @@ type LoginStartResult struct {
 }
 
 func NewApp() *App {
-	return &App{shown: true}
+	cache := llmpool.NewCache(nil, llmpool.CacheConfig{
+		MemoryMaxEntries: 256,
+		MemoryMaxBytes:   32 << 20, // 32 MB
+	})
+	dir, _ := configDir()
+	var store *UsageStore
+	if dir != "" {
+		store = NewUsageStore(dir)
+	}
+	return &App{shown: true, promptCache: cache, usageStore: store}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -146,6 +171,9 @@ func (a *App) shutdown(ctx context.Context) {
 	_ = ctx
 	a.cancelSSOLogin()
 	a.stopProxy()
+	if a.usageStore != nil {
+		a.usageStore.Stop()
+	}
 }
 
 func (a *App) LoadSettings() (Settings, error) {
@@ -321,6 +349,25 @@ func (a *App) Status() (Status, error) {
 	}
 	prompt := atomic.LoadInt64(&a.totalPromptTokens)
 	completion := atomic.LoadInt64(&a.totalCompletionTokens)
+	total := atomic.LoadInt64(&a.totalTokensReported)
+	var cacheHits, cacheMisses int64
+	var cacheEntries int
+	var cacheBytes int64
+	a.mu.Lock()
+	srv := a.server
+	a.mu.Unlock()
+	if srv != nil {
+		cacheHits, cacheMisses = srv.CacheHitMiss()
+	}
+	if a.promptCache != nil {
+		if st, err := a.promptCache.Status(context.Background(), time.Now().UTC()); err == nil && st != nil {
+			cacheEntries = st.MemoryEntries
+			cacheBytes = st.MemoryBytes
+		}
+	}
+	a.cacheDiagMu.Lock()
+	lastDiag := a.lastCacheDiag
+	a.cacheDiagMu.Unlock()
 	return Status{
 		Settings:           scrubSettings(s),
 		Running:            a.isRunning(),
@@ -335,7 +382,15 @@ func (a *App) Status() (Status, error) {
 		AutoStartEnabled:   autoStartEnabled,
 		PromptTokens:       prompt,
 		CompletionTokens:   completion,
-		TotalTokens:        prompt + completion,
+		TotalTokens:        total,
+		CacheHits:          cacheHits,
+		CacheMisses:        cacheMisses,
+		CacheEntries:       cacheEntries,
+		CacheBytes:         cacheBytes,
+		LastCacheProtocol:  lastDiag.Protocol,
+		LastCacheOutcome:   lastDiag.Outcome,
+		LastCacheReason:    lastDiag.Reason,
+		LastCacheStreaming: lastDiag.Streaming,
 	}, nil
 }
 
@@ -356,6 +411,23 @@ func (a *App) SetAutoStartEnabled(enabled bool) (Status, error) {
 	}
 	status.AutoStartEnabled = actual
 	return status, nil
+}
+
+// ClearCache purges all cached LLM responses from the in-memory cache.
+func (a *App) ClearCache() (Status, error) {
+	if a.promptCache != nil {
+		_, _ = a.promptCache.Purge(context.Background())
+	}
+	return a.Status()
+}
+
+// TokenStats returns aggregated token usage for the specified period.
+// Supported periods: "today", "week", "month", "all".
+func (a *App) TokenStats(period string) TokenStatsSummary {
+	if a.usageStore == nil {
+		return TokenStatsSummary{Period: period}
+	}
+	return a.usageStore.Query(period)
 }
 
 func (a *App) GenerateAPIKey() (string, error) {
@@ -830,16 +902,62 @@ func (a *App) restartProxy(s Settings) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := codegenproxy.NewServer(s.ListenAddress)
 	server.SetClientAPIKey(s.APIKey)
-	server.SetUsageCallback(func(prompt, completion, _ int) {
+	server.SetPromptCache(a.promptCache)
+	server.SetCacheHitCallback(func(hit bool) {
+		if a.ctx == nil {
+			return
+		}
+		hits, misses := server.CacheHitMiss()
+		runtime.EventsEmit(a.ctx, "cache-stats-updated", map[string]int64{
+			"cache_hits": hits, "cache_misses": misses,
+		})
+	})
+	server.SetCacheDecisionCallback(func(evt codegenproxy.CacheDecisionEvent) {
+		a.cacheDiagMu.Lock()
+		a.lastCacheDiag = evt
+		a.lastCacheDiagAt = time.Now()
+		a.cacheDiagMu.Unlock()
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "cache-decision-updated", map[string]interface{}{
+				"protocol":  evt.Protocol,
+				"outcome":   evt.Outcome,
+				"reason":    evt.Reason,
+				"streaming": evt.Streaming,
+			})
+		}
+	})
+	server.SetUsageCallback(func(prompt, completion, total int) {
 		atomic.AddInt64(&a.totalPromptTokens, int64(prompt))
 		atomic.AddInt64(&a.totalCompletionTokens, int64(completion))
+		// Use upstream-reported total if available (may include reasoning tokens),
+		// otherwise fall back to prompt + completion.
+		reportedTotal := int64(total)
+		if reportedTotal <= 0 {
+			reportedTotal = int64(prompt) + int64(completion)
+		}
+		atomic.AddInt64(&a.totalTokensReported, reportedTotal)
+		// Persist to usage store for time-period queries.
+		if a.usageStore != nil {
+			a.usageStore.Record(int64(prompt), int64(completion), reportedTotal)
+		}
 		// Push updated token stats to frontend in real-time
 		if a.ctx != nil {
 			p := atomic.LoadInt64(&a.totalPromptTokens)
 			c := atomic.LoadInt64(&a.totalCompletionTokens)
+			t := atomic.LoadInt64(&a.totalTokensReported)
 			runtime.EventsEmit(a.ctx, "token-stats-updated", map[string]int64{
-				"prompt": p, "completion": c, "total": p + c,
+				"prompt": p, "completion": c, "total": t,
 			})
+		}
+	})
+	server.SetCacheHitUsageCallback(func(prompt, completion, total int) {
+		// Record saved tokens for period stats (what would have been consumed).
+		if a.usageStore != nil {
+			reportedTotal := int64(total)
+			if reportedTotal <= 0 {
+				reportedTotal = int64(prompt) + int64(completion)
+			}
+			a.usageStore.RecordCacheHit(int64(prompt), int64(completion), reportedTotal)
 		}
 	})
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {

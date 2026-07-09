@@ -114,13 +114,20 @@ type LoopHooks interface {
 	// OnEmptyResponse is called when the LLM returns an empty response.
 	// Returns true to continue the loop (retry), false to exit.
 	OnEmptyResponse(iteration int) bool
+
+	// TransformConversation is called before each LLM request with the current
+	// conversation. It may return a modified conversation (e.g., compacted).
+	// Return nil to keep the conversation unchanged.
+	// This enables mid-loop compaction without exposing conversation internals.
+	TransformConversation(conversation []interface{}) []interface{}
 }
 
 // DefaultLoopHooks provides no-op implementations of all optional hooks.
 type DefaultLoopHooks struct{}
 
-func (DefaultLoopHooks) OnToolExecuted(string, string, string, bool) {}
-func (DefaultLoopHooks) OnEmptyResponse(int) bool                    { return false }
+func (DefaultLoopHooks) OnToolExecuted(string, string, string, bool)       {}
+func (DefaultLoopHooks) OnEmptyResponse(int) bool                          { return false }
+func (DefaultLoopHooks) TransformConversation([]interface{}) []interface{} { return nil }
 
 // LoopResult is the output of RunLoop.
 type LoopResult struct {
@@ -216,6 +223,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
 			return LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls}
+		}
+
+		// Mid-loop conversation transformation (e.g., compaction).
+		if transformed := h.TransformConversation(conversation); transformed != nil {
+			conversation = transformed
 		}
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
@@ -764,13 +776,13 @@ func buildToolCallTruncationRecovery(names []string, tools []map[string]interfac
 		sb.WriteString("\nTruncated tools: ")
 		sb.WriteString(strings.Join(names, ", "))
 	}
-	if containsString(names, "write_file") && available["write_file"] {
+	if containsToolName(names, "write_file") && available["write_file"] {
 		sb.WriteString("\nFor write_file: no per-call content length limit. For very large content (>6000 chars), split into overwrite + append chunks to avoid model output truncation. Prefer edit_file or edit_lines for existing files.")
 	}
-	if containsString(names, "bash") && available["bash"] {
+	if containsToolName(names, "bash") && available["bash"] {
 		sb.WriteString("\nFor bash: keep command <= 4000 characters. Do not embed generated file bodies in shell heredocs; use write_file chunks or targeted edits.")
 	}
-	if (available["edit_file"] || available["edit_lines"]) && containsString(names, "write_file") {
+	if (available["edit_file"] || available["edit_lines"]) && containsToolName(names, "write_file") {
 		sb.WriteString("\nFor existing files, use targeted edits instead of rewriting whole files.")
 	}
 	if strings.TrimSpace(userGoal) != "" {
@@ -780,7 +792,7 @@ func buildToolCallTruncationRecovery(names []string, tools []map[string]interfac
 	return sb.String()
 }
 
-func containsString(items []string, target string) bool {
+func containsToolName(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
 			return true

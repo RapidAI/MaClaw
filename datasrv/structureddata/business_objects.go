@@ -46,8 +46,6 @@ var businessObjectDefinitions = []businessObjectDefinition{
 }
 
 func (s *Service) ListBusinessObjects(ctx context.Context, p Principal, in QueryBusinessObjectsInput) ([]BusinessObjectCatalog, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasets, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
@@ -64,8 +62,6 @@ func (s *Service) ResolveObjectRole(ctx context.Context, p Principal, in Resolve
 	if objectRole == "" {
 		return nil, ErrInvalidInput
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasets, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {
 		return nil, err

@@ -1,5 +1,5 @@
-# Launch Screen Assets
+# MaClaw Launch Screen Assets
 
-You can customize the launch screen with your own desired assets by replacing the image files in this directory.
-
-You can also do it by opening your Flutter project's Xcode project with `open ios/Runner.xcworkspace`, selecting `Runner/Assets.xcassets` in the Project Navigator and dropping in the desired images.
+This image set contains the MaClaw logo used by the iOS cold-start launch
+screen. Keep these files in sync with the Android `launch_image` resources and
+do not replace them with template or placeholder branding.

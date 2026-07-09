@@ -1052,8 +1052,10 @@ func TestConfigFields_ProxyProfileCustomEnablesManualFields(t *testing.T) {
 
 func TestConfigFields_LLMModelQuickPickIncludesSavedModels(t *testing.T) {
 	cfg := corelib.AppConfig{
-		MaclawLLMModel: "current-model",
+		MaclawLLMCurrentProvider: "CodeGen",
+		MaclawLLMModel:           "current-model",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "CodeGen", Model: "current-model", Models: []string{"codegen-a", "codegen-b"}},
 			{Name: "Saved", Model: "saved-model"},
 		},
 	}
@@ -1061,9 +1063,14 @@ func TestConfigFields_LLMModelQuickPickIncludesSavedModels(t *testing.T) {
 	m.LoadFromAppConfig(cfg)
 
 	_, _, entry := findConfigEntryForTest(t, m, "maclaw_llm_model_choice")
-	for _, want := range []string{"auto", "current-model", "saved-model", "qwen2.5-coder:32b"} {
+	for _, want := range []string{"codegen-a", "codegen-b", "current-model", "saved-model"} {
 		if !containsString(entry.Options, want) {
 			t.Fatalf("model quick-pick options missing %q: %#v", want, entry.Options)
+		}
+	}
+	for _, blocked := range []string{"glm-5-turbo", "qwen2.5-coder:32b"} {
+		if containsString(entry.Options, blocked) {
+			t.Fatalf("CodeGen quick-pick should not include generic preset %q: %#v", blocked, entry.Options)
 		}
 	}
 }

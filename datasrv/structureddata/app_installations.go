@@ -68,8 +68,6 @@ func (s *Service) UpsertAppInstallation(ctx context.Context, p Principal, appID 
 }
 
 func (s *Service) ListAppInstallations(ctx context.Context, p Principal, in QueryAppInstallationsInput) ([]AppInstallation, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.AppID = strings.TrimSpace(in.AppID)
 	in.BlueprintID = strings.TrimSpace(in.BlueprintID)
 	in.Kind = strings.ToLower(strings.TrimSpace(in.Kind))
@@ -100,8 +98,6 @@ func (s *Service) ListAppInstallations(ctx context.Context, p Principal, in Quer
 }
 
 func (s *Service) GetAppInstallation(ctx context.Context, p Principal, appID string) (*AppInstallation, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetAppInstallation(ctx, p.TenantID, strings.TrimSpace(appID))
 }
 func appInstallationAuditMetadata(app AppInstallation) map[string]any {

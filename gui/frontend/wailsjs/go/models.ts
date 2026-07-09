@@ -969,4 +969,74 @@ export namespace main {
 	    }
 	}
 
+	export class AnthropicOAuthInfo {
+	    auth_url: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AnthropicOAuthInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.auth_url = source["auth_url"];
+	    }
+	}
+
+	export class GitHubCopilotDeviceInfo {
+	    user_code: string;
+	    verification_uri: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubCopilotDeviceInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.user_code = source["user_code"];
+	        this.verification_uri = source["verification_uri"];
+	    }
+	}
+
+	export class ConversationBranchResult {
+	    success: boolean;
+	    message: string;
+	    new_length: number;
+	    total_nodes: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ConversationBranchResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.message = source["message"];
+	        this.new_length = source["new_length"];
+	        this.total_nodes = source["total_nodes"];
+	    }
+	}
+
+	export class ConversationBranchPoint {
+	    index: number;
+	    entry_id: string;
+	    role: string;
+	    preview: string;
+	    branches: number;
+	    labels: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new ConversationBranchPoint(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.entry_id = source["entry_id"];
+	        this.role = source["role"];
+	        this.preview = source["preview"];
+	        this.branches = source["branches"];
+	        this.labels = source["labels"] || [];
+	    }
+	}
+
 }

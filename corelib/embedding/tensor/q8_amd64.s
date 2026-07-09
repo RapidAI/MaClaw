@@ -2,6 +2,187 @@
 
 #include "textflag.h"
 
+// func dotQ8RowScaledAVX2(a *float32, data *byte, scales *float32, rowOff, nBlocks int) float32
+// Frame: a+0, data+8, scales+16, rowOff+24, nBlocks+32, ret+40 = 44 → pad 48
+TEXT ·dotQ8RowScaledAVX2(SB), NOSPLIT, $0-48
+	MOVQ a+0(FP), SI
+	MOVQ data+8(FP), DI
+	MOVQ scales+16(FP), R8
+	MOVQ rowOff+24(FP), R9
+	MOVQ nBlocks+32(FP), CX
+	ADDQ R9, DI
+
+	VXORPS Y0, Y0, Y0
+	TESTQ CX, CX
+	JZ    dqs_dot_done
+
+dqs_dot_loop:
+	PREFETCHT0 34(DI)
+	PREFETCHT0 4(R8)
+	PREFETCHT0 128(SI)
+
+	MOVSS (R8), X1
+	VBROADCASTSS X1, Y1
+	ADDQ  $4, R8
+
+	VPMOVSXBD 2(DI), X2
+	VPMOVSXBD 6(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   (SI), Y3
+	VFMADD231PS Y2, Y3, Y0
+
+	VPMOVSXBD 10(DI), X2
+	VPMOVSXBD 14(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   32(SI), Y3
+	VFMADD231PS Y2, Y3, Y0
+
+	VPMOVSXBD 18(DI), X2
+	VPMOVSXBD 22(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   64(SI), Y3
+	VFMADD231PS Y2, Y3, Y0
+
+	VPMOVSXBD 26(DI), X2
+	VPMOVSXBD 30(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   96(SI), Y3
+	VFMADD231PS Y2, Y3, Y0
+
+	ADDQ  $34, DI
+	ADDQ  $128, SI
+	DECQ  CX
+	JNZ   dqs_dot_loop
+
+dqs_dot_done:
+	VEXTRACTF128 $1, Y0, X1
+	VADDPS X1, X0, X0
+	VHADDPS X0, X0, X0
+	VHADDPS X0, X0, X0
+	MOVSS X0, ret+40(FP)
+	VZEROUPPER
+	RET
+
+// func q8DualDot2ScaledAVX2(out *[2]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int)
+// Frame: out+0, a+8, data+16, scales0+24, scales1+32, rowOff0+40, rowOff1+48, nBlocks+56 = 64
+TEXT ·q8DualDot2ScaledAVX2(SB), NOSPLIT, $0-64
+	MOVQ out+0(FP), R11
+	MOVQ a+8(FP), SI
+	MOVQ data+16(FP), DI
+	MOVQ scales0+24(FP), R8
+	MOVQ scales1+32(FP), R9
+	MOVQ nBlocks+56(FP), CX
+
+	ADDQ rowOff0+40(FP), DI
+	MOVQ data+16(FP), R15
+	ADDQ rowOff1+48(FP), R15
+
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	TESTQ CX, CX
+	JZ    dd_sc_hsum
+
+dd_sc_loop:
+	PREFETCHT0 34(DI)
+	PREFETCHT0 34(R15)
+
+	MOVSS (R8), X14
+	VBROADCASTSS X14, Y14
+	ADDQ  $4, R8
+	MOVSS (R9), X15
+	VBROADCASTSS X15, Y15
+	ADDQ  $4, R9
+
+	// g0
+	VPMOVSXBD 2(DI), X2
+	VPMOVSXBD 6(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS Y14, Y2, Y2
+	VPMOVSXBD 2(R15), X3
+	VPMOVSXBD 6(R15), X4
+	VINSERTI128 $1, X4, Y3, Y3
+	VCVTDQ2PS Y3, Y3
+	VMULPS Y15, Y3, Y3
+	VMOVUPS (SI), Y4
+	VFMADD231PS Y4, Y2, Y0
+	VFMADD231PS Y4, Y3, Y1
+
+	// g1
+	VPMOVSXBD 10(DI), X2
+	VPMOVSXBD 14(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS Y14, Y2, Y2
+	VPMOVSXBD 10(R15), X3
+	VPMOVSXBD 14(R15), X4
+	VINSERTI128 $1, X4, Y3, Y3
+	VCVTDQ2PS Y3, Y3
+	VMULPS Y15, Y3, Y3
+	VMOVUPS 32(SI), Y4
+	VFMADD231PS Y4, Y2, Y0
+	VFMADD231PS Y4, Y3, Y1
+
+	// g2
+	VPMOVSXBD 18(DI), X2
+	VPMOVSXBD 22(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS Y14, Y2, Y2
+	VPMOVSXBD 18(R15), X3
+	VPMOVSXBD 22(R15), X4
+	VINSERTI128 $1, X4, Y3, Y3
+	VCVTDQ2PS Y3, Y3
+	VMULPS Y15, Y3, Y3
+	VMOVUPS 64(SI), Y4
+	VFMADD231PS Y4, Y2, Y0
+	VFMADD231PS Y4, Y3, Y1
+
+	// g3
+	VPMOVSXBD 26(DI), X2
+	VPMOVSXBD 30(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS Y14, Y2, Y2
+	VPMOVSXBD 26(R15), X3
+	VPMOVSXBD 30(R15), X4
+	VINSERTI128 $1, X4, Y3, Y3
+	VCVTDQ2PS Y3, Y3
+	VMULPS Y15, Y3, Y3
+	VMOVUPS 96(SI), Y4
+	VFMADD231PS Y4, Y2, Y0
+	VFMADD231PS Y4, Y3, Y1
+
+	ADDQ $34, DI
+	ADDQ $34, R15
+	ADDQ $128, SI
+	DECQ CX
+	JNZ  dd_sc_loop
+
+dd_sc_hsum:
+	VEXTRACTF128 $1, Y0, X2
+	VADDPS X0, X2, X0
+	VHADDPS X0, X0, X0
+	VHADDPS X0, X0, X0
+	MOVSS X0, (R11)
+
+	VEXTRACTF128 $1, Y1, X2
+	VADDPS X1, X2, X1
+	VHADDPS X1, X1, X1
+	VHADDPS X1, X1, X1
+	MOVSS X1, 4(R11)
+
+	VZEROUPPER
+	RET
+
 // func dotQ8RowAVX2(a []float32, data []byte, rowOff, nBlocks int) float32
 //
 // Computes dot product of float32 vector a[] with a Q8_0 row.
@@ -224,5 +405,68 @@ dq_scale_ready:
 	JNZ   dq_loop
 
 dq_done:
+	VZEROUPPER
+	RET
+
+// func dequantRowScaledAVX2(dst []float32, data []byte, scales *float32, rowOff, nBlocks int)
+//
+// Like dequantRowIntoAVX2 but scale is preconverted f32 at scales[b].
+// Frame: dst+0 (slice 24), data+24 (slice 24), scales+48, rowOff+56, nBlocks+64 = 72
+TEXT ·dequantRowScaledAVX2(SB), NOSPLIT, $0-72
+	MOVQ dst+0(FP), SI
+	MOVQ data+24(FP), DI
+	MOVQ scales+48(FP), R8    // R8 = &scales[0]
+	MOVQ rowOff+56(FP), R9
+	MOVQ nBlocks+64(FP), CX
+	ADDQ R9, DI               // DI = &data[rowOff]
+
+	TESTQ CX, CX
+	JZ    dqs_done
+
+dqs_loop:
+	// Prefetch next block (34B) + next scale + next dst
+	PREFETCHT0 34(DI)
+	PREFETCHT0 4(R8)
+	PREFETCHT0 128(SI)
+
+	// Load f32 scale and broadcast — no f16 convert
+	MOVSS (R8), X1
+	VBROADCASTSS X1, Y1
+	ADDQ  $4, R8              // next scale
+
+	VPMOVSXBD 2(DI), X2
+	VPMOVSXBD 6(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   Y2, (SI)
+
+	VPMOVSXBD 10(DI), X2
+	VPMOVSXBD 14(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   Y2, 32(SI)
+
+	VPMOVSXBD 18(DI), X2
+	VPMOVSXBD 22(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   Y2, 64(SI)
+
+	VPMOVSXBD 26(DI), X2
+	VPMOVSXBD 30(DI), X3
+	VINSERTI128 $1, X3, Y2, Y2
+	VCVTDQ2PS Y2, Y2
+	VMULPS    Y1, Y2, Y2
+	VMOVUPS   Y2, 96(SI)
+
+	ADDQ  $34, DI
+	ADDQ  $128, SI
+	DECQ  CX
+	JNZ   dqs_loop
+
+dqs_done:
 	VZEROUPPER
 	RET

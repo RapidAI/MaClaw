@@ -26,6 +26,8 @@ import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
+import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
+import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView } from "./AssistantWelcomeView";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
@@ -51,8 +53,9 @@ import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, witho
 import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
+import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { CancelAIAssistantSessionForSession, GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields, RefreshWorkflowV2StateForTab } from "../../../wailsjs/go/main/App";
+import { CancelAIAssistantSessionForSession, GetConversationBranchPoints, GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields, RefreshWorkflowV2StateForTab } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -60,6 +63,15 @@ import { useDialog } from "../CustomDialog";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
+
+type ConversationBranchPointLike = {
+    index?: number;
+    entry_id?: string;
+    role?: string;
+    preview?: string;
+    branches?: number;
+    labels?: string[];
+};
 
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
@@ -83,160 +95,6 @@ function agentViewHiddenFieldValue(view: unknown, fieldName: string): string {
     const field = fields.find((item: any) => item && item.name === fieldName);
     const value = field?.value;
     return typeof value === "string" ? value.trim() : "";
-}
-
-function WorkflowReviewInlinePrompt({
-    lang,
-    onAbort,
-    onConfirm,
-    onRequestRevision,
-    onViewDocument,
-    phaseName,
-    theme: t,
-}: {
-    lang?: string;
-    onAbort: () => void;
-    onConfirm: () => void;
-    onRequestRevision: () => void;
-    onViewDocument: () => void;
-    phaseName: string;
-    theme: Theme;
-}) {
-    const resolvedPhaseName = phaseName.trim();
-    const title = lang === "en"
-        ? `${resolvedPhaseName || "Current phase"} is waiting for review`
-        : resolvedPhaseName
-            ? `当前「${resolvedPhaseName}」等待确认`
-            : "当前阶段等待确认";
-    const description = lang === "en"
-        ? "This is not stopped. Review the workflow document and choose how to continue."
-        : "这不是停止状态。请查看工作流文档，并选择继续推进或补充修改。";
-    const viewLabel = lang === "en" ? "View document" : "查看文档";
-    const confirmLabel = lang === "en" ? "Confirm & proceed" : "确认并推进";
-    const reviseLabel = lang === "en" ? "Provide feedback" : "输入补充/修改意见";
-    const abortLabel = lang === "en" ? "Abort" : "中止";
-    const baseButtonStyle = {
-        borderRadius: 999,
-        border: `1px solid ${t.titleBarBorder}`,
-        cursor: "pointer",
-        fontSize: 12,
-        fontWeight: 700,
-        padding: "6px 10px",
-    } as const;
-
-    return (
-        <div
-            aria-live="polite"
-            data-testid="workflow-review-inline-prompt"
-            style={{
-                flexShrink: 0,
-                padding: "9px 10px 10px",
-                borderTop: `1px solid ${t.inputBarBorder}`,
-                background: `linear-gradient(135deg, color-mix(in srgb, ${t.headingColor} 12%, ${t.inputBarBg}) 0%, ${t.inputBarBg} 72%)`,
-                color: t.text,
-            }}
-        >
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div style={{ minWidth: 220, flex: "1 1 260px" }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 3 }}>{title}</div>
-                    <div style={{ color: t.textMuted, fontSize: 12 }}>{description}</div>
-                </div>
-                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    <button
-                        type="button"
-                        onClick={onViewDocument}
-                        style={{
-                            ...baseButtonStyle,
-                            background: t.fieldBg,
-                            color: t.text,
-                        }}
-                    >
-                        {viewLabel}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onRequestRevision}
-                        style={{ ...baseButtonStyle, background: t.fieldBg, color: t.text }}
-                    >
-                        {reviseLabel}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onAbort}
-                        style={{ ...baseButtonStyle, background: "transparent", color: "#dc2626", borderColor: "color-mix(in srgb, #dc2626 45%, transparent)" }}
-                    >
-                        {abortLabel}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onConfirm}
-                        style={{ ...baseButtonStyle, background: t.sendBtnBg, borderColor: t.sendBtnBg, color: t.sendBtnColor }}
-                    >
-                        {confirmLabel}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function WorkflowFormInlinePrompt({
-    formActive,
-    generatingDocument,
-    lang,
-    phaseName,
-    theme: t,
-}: {
-    formActive: boolean;
-    generatingDocument?: boolean;
-    lang?: string;
-    phaseName: string;
-    theme: Theme;
-}) {
-    const resolvedPhaseName = phaseName.trim();
-    const title = generatingDocument
-        ? (lang === "en" ? "Generating workflow document" : "正在生成工作流文档")
-        : formActive
-        ? (lang === "en" ? "Workflow form is ready" : "工作流表单已打开")
-        : (lang === "en" ? "Opening workflow form" : "正在打开工作流表单");
-    const description = generatingDocument
-        ? (lang === "en"
-            ? `Generating the phase document${resolvedPhaseName ? ` for ${resolvedPhaseName}` : ""}. The review controls will appear here when it is ready.`
-            : `正在生成${resolvedPhaseName ? `「${resolvedPhaseName}」` : "当前阶段"}文档，完成后会在这里显示确认推进入口。`)
-        : formActive
-        ? (lang === "en"
-            ? `Fill in the form on the right to continue${resolvedPhaseName ? `: ${resolvedPhaseName}` : "."}`
-            : `请在右侧表单填写并提交${resolvedPhaseName ? `「${resolvedPhaseName}」` : ""}，提交后会继续推进。`)
-        : (lang === "en"
-            ? `Preparing the right-side form${resolvedPhaseName ? ` for ${resolvedPhaseName}` : ""}.`
-            : `正在准备右侧表单${resolvedPhaseName ? `「${resolvedPhaseName}」` : ""}，请稍候。`);
-    const statusText = generatingDocument
-        ? (lang === "en" ? "Generating document" : "生成文档中")
-        : (lang === "en" ? "Waiting for form input" : "等待表单输入");
-
-    return (
-        <div
-            aria-live="polite"
-            data-testid="workflow-form-inline-prompt"
-            style={{
-                flexShrink: 0,
-                padding: "8px 10px 9px",
-                borderTop: `1px solid ${t.inputBarBorder}`,
-                background: t.inputBarBg,
-                color: t.text,
-                fontSize: 12,
-            }}
-        >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
-                <span style={{ fontWeight: 800 }}>{title}</span>
-                <span style={{ color: t.textMuted }}>{statusText}</span>
-            </div>
-            <div style={{ color: t.textMuted, marginBottom: 7 }}>{description}</div>
-            <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${t.headingColor} 16%, transparent)` }}>
-                <div style={{ width: generatingDocument ? "78%" : formActive ? "62%" : "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
-            </div>
-        </div>
-    );
 }
 
 function hasRestorableProjectConversation(history: unknown[] | undefined): boolean {
@@ -302,6 +160,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
     const [localDraftInputValue, setLocalDraftInputValue] = useState(draftInputValue);
+    const [composeAction, setComposeAction] = useState<ComposeAction | null>(null);
     const [cancelPending, setCancelPending] = useState(false);
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
@@ -791,6 +650,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } else if (activeTab.id === "local") {
             setLocalDraftInputValue(draftInputValue);
         }
+        // Compose mode is session-UI state, not per-tab draft — clear on switch.
+        setComposeAction(null);
         prevActiveTabIdRef.current = currentTabId;
     }, [activeTab.id]); // eslint-disable-line react-hooks/exhaustive-deps
     // Track which tab owns the agentView — when agentView is set, record the
@@ -1437,7 +1298,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
-    const idlePlaceholderText = lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...";
+    const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
+        || (lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...");
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const hasActiveDetachedProjectRound = useMemo(() => (
         isProjectTabActive && Array.from(detachedProjectRoundsRef.current.values()).some(detached => detached.tabId === activeTab.id)
@@ -1622,6 +1484,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
     }, [openSaveTaskDialog]);
 
+    // Branch command listener: triggered by the 🔀 button on user messages.
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            if (detail?.command && sendMessageForTabRef.current) {
+                void sendMessageForTabRef.current(detail.command);
+            }
+        };
+        window.addEventListener('ai-send-branch-command', handler);
+        return () => window.removeEventListener('ai-send-branch-command', handler);
+    }, []);
+
     // Handle external "run skill" requests (from Skills Management Panel ▶ button)
     useEffect(() => {
         const handler = (e: Event) => {
@@ -1742,6 +1616,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
     const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const handleWelcomePromptSelect = useCallback((text: string) => {
+        // Scenario templates are free-form prompts, not slash-command arguments.
+        setComposeAction(null);
         updateInputValue(text);
         requestAnimationFrame(() => {
             if (inputRef.current) {
@@ -1776,6 +1652,33 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
+    const [branchPoints, setBranchPoints] = useState<ConversationBranchPointLike[]>([]);
+    useEffect(() => {
+        if (!isLocalTabActive || otherMessages.length < 2 || sending || streaming) {
+            setBranchPoints([]);
+            return;
+        }
+        let cancelled = false;
+        GetConversationBranchPoints()
+            .then(points => {
+                if (cancelled) return;
+                setBranchPoints(Array.isArray(points) ? points : []);
+            })
+            .catch(() => {
+                if (!cancelled) setBranchPoints([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [isLocalTabActive, otherMessages.length, sending, streaming]);
+    const branchPointByDisplayIndex = useMemo(() => {
+        const map = new Map<number, ConversationBranchPointLike>();
+        for (const point of branchPoints) {
+            const index = Number(point?.index);
+            if (Number.isInteger(index) && index >= 0) map.set(index, point);
+        }
+        return map;
+    }, [branchPoints]);
     // Show welcome for an idle, empty conversation on local tab or a cleared project tab.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
@@ -1848,23 +1751,129 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
     }, [resizeInput, updateInputValue]);
     const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue, submittedPrompts });
-    const handleClearInput = useCallback(() => {
-        resetHistoryBrowsing();
-        updateInputValue("");
-        if (inputRef.current) inputRef.current.style.height = "auto";
+    const handleComposeActionChange = useCallback((action: ComposeAction | null) => {
+        setComposeAction(action);
         requestAnimationFrame(() => inputRef.current?.focus());
-    }, [resetHistoryBrowsing, updateInputValue]);
+    }, []);
+    const clearComposerDraft = useCallback((options?: { clearAttachments?: boolean; focus?: boolean }) => {
+        resetHistoryBrowsing();
+        setComposeAction(null);
+        updateInputValue("");
+        if (inputRef.current) {
+            // Controlled <textarea> keeps the previous DOM value until React re-renders.
+            // Clear it immediately so a rapid second Enter cannot re-read the same draft
+            // via `inputRef.current?.value ?? inputValue` and double-queue/send.
+            inputRef.current.value = "";
+            inputRef.current.style.height = "auto";
+        }
+        if (options?.clearAttachments) {
+            setPendingAttachments([]);
+            clearSelectedFile?.();
+        }
+        if (options?.focus !== false) {
+            requestAnimationFrame(() => inputRef.current?.focus());
+        }
+    }, [clearSelectedFile, resetHistoryBrowsing, setPendingAttachments, updateInputValue]);
+    const newConversationInFlightRef = useRef(false);
+    const handlePlusMenuAction = useCallback((actionId: PlusMenuActionId) => {
+        if (actionId === "newConversation") {
+            // Same behavior as the title-bar "New conversation" control.
+            if (inputLocked || newConversationInFlightRef.current) return;
+            newConversationInFlightRef.current = true;
+            // Clear local draft/attachments immediately for snappier UI while history resets.
+            clearComposerDraft({ clearAttachments: true, focus: true });
+            void Promise.resolve(clearActiveHistory()).finally(() => {
+                newConversationInFlightRef.current = false;
+            });
+        }
+    }, [clearActiveHistory, clearComposerDraft, inputLocked]);
+    /** Shared /btw dispatch used by typed send, voice, queue drain, and queue fire. */
+    const dispatchBtwText = useCallback(async (commandText: string): Promise<boolean> => {
+        if (!sendBtwMessage || !isBtwCommandText(commandText)) return false;
+        const recorded = commandText.trim();
+        try {
+            await sendBtwMessage(btwQueryFromText(recorded));
+            // Only record after a successful handoff so failed sends can be retried cleanly.
+            recordSubmittedPrompt?.(recorded);
+            return true;
+        } catch (err: unknown) {
+            console.warn("[AIAssistantPanel] /btw send failed", err);
+            return false;
+        }
+    }, [recordSubmittedPrompt, sendBtwMessage]);
+    const handleInsertTemplate = useCallback((template: string) => {
+        setComposeAction(null);
+        updateInputValue(template);
+        requestAnimationFrame(() => {
+            if (!inputRef.current) return;
+            inputRef.current.focus();
+            inputRef.current.style.height = "auto";
+            inputRef.current.style.height = inputRef.current.scrollHeight + "px";
+            const caret = template.length;
+            inputRef.current.setSelectionRange(caret, caret);
+        });
+    }, [updateInputValue]);
+    const fireSlashInFlightRef = useRef(false);
+    const handleFireSlashCommand = useCallback(async (command: FireSlashCommand) => {
+        if (!ready || fireSlashInFlightRef.current) return;
+        fireSlashInFlightRef.current = true;
+        setComposeAction(null);
+        // Immediate slash commands (/help, /memory, …) are handled before the agent
+        // loop on the backend — always send now, never park them behind the busy queue.
+        userScrolledUpRef.current = false;
+        try {
+            const sent = await sendMessageForTab(command);
+            if (sent !== false) recordSubmittedPrompt?.(command);
+        } finally {
+            fireSlashInFlightRef.current = false;
+            requestAnimationFrame(() => inputRef.current?.focus());
+        }
+    }, [ready, recordSubmittedPrompt, sendMessageForTab]);
+    const handleClearInput = useCallback(() => {
+        clearComposerDraft({ clearAttachments: false });
+    }, [clearComposerDraft]);
+    const sendInFlightRef = useRef(false);
     const submitRecognizedVoiceText = useCallback(async (text: string, _source?: VoiceInputSource) => {
         const trimmed = text.trim();
-        if (!trimmed || !ready || inputLocked) return;
-        resetHistoryBrowsing();
-        updateInputValue("");
-        void sendMessageForTab(trimmed).then((sent) => {
-            if (sent !== false) recordSubmittedPrompt?.(trimmed);
-        }).catch((err: unknown) => {
+        if (!trimmed || !ready) return;
+        // Honor active compose mode (goal / btw) so voice matches typed send semantics.
+        const composed = applyComposeActionToText(trimmed, composeAction);
+        if (isBtwCommandText(composed) && sendBtwMessage) {
+            if (sendInFlightRef.current) return;
+            sendInFlightRef.current = true;
+            // Clear immediately — SendBtwQuery only resolves after the full side-query loop.
+            clearComposerDraft({ clearAttachments: false });
+            try {
+                const ok = await dispatchBtwText(composed);
+                if (!ok) {
+                    // Restore draft so the user can retry after a hard failure.
+                    updateInputValue(composed);
+                    setComposeAction("btw");
+                }
+            } finally {
+                sendInFlightRef.current = false;
+            }
+            return;
+        }
+        // If agent is busy (inputLocked), queue the transcription for later delivery
+        // instead of dropping it. The buffer queue auto-drains when the agent becomes idle.
+        if (inputLocked) {
+            addEntry(composed, [], { autoDrain: true });
+            setComposeAction(null);
+            return;
+        }
+        if (sendInFlightRef.current) return;
+        sendInFlightRef.current = true;
+        clearComposerDraft({ clearAttachments: false });
+        try {
+            const sent = await sendMessageForTab(composed);
+            if (sent !== false) recordSubmittedPrompt?.(composed);
+        } catch (err: unknown) {
             console.warn("[AIAssistantPanel] Voice prompt send failed", err);
-        });
-    }, [inputLocked, ready, recordSubmittedPrompt, resetHistoryBrowsing, sendMessageForTab, updateInputValue]);
+        } finally {
+            sendInFlightRef.current = false;
+        }
+    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, sendBtwMessage, sendMessageForTab, updateInputValue]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -1874,28 +1883,30 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         voiceInput,
     });
     const handleSend = useCallback(async () => {
+        if (sendInFlightRef.current) return;
         const rawInputValue = inputRef.current?.value ?? inputValue;
-        const text = rawInputValue.trim();
-        if ((text === '/btw' || text.startsWith('/btw ')) && sendBtwMessage) {
-            const btwQuery = text.slice(4).trim(); // strip "/btw" prefix
-            recordSubmittedPrompt?.(text);
-            resetHistoryBrowsing();
-            updateInputValue("");
-            if (inputRef.current) inputRef.current.style.height = "auto";
-            setPendingAttachments([]);
-            clearSelectedFile?.();
-            requestAnimationFrame(() => inputRef.current?.focus());
-            await sendBtwMessage(btwQuery);
+        const text = applyComposeActionToText(rawInputValue, composeAction);
+        if (isBtwCommandText(text) && sendBtwMessage) {
+            sendInFlightRef.current = true;
+            // Clear immediately — SendBtwQuery only resolves after the full side-query loop.
+            clearComposerDraft({ clearAttachments: true });
+            try {
+                const ok = await dispatchBtwText(text);
+                if (!ok) {
+                    // Restore draft so the user can retry after a hard failure.
+                    updateInputValue(text);
+                    setComposeAction("btw");
+                }
+            } finally {
+                sendInFlightRef.current = false;
+            }
             return;
         }
         if (submitLocked || queueEditDraftActive) {
             if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
                 if (queueEditDraftActive) {
-                    resetHistoryBrowsing();
-                    updateInputValue("");
                     setQueueEditDraftActive(false);
-                    if (inputRef.current) inputRef.current.style.height = "auto";
-                    requestAnimationFrame(() => inputRef.current?.focus());
+                    clearComposerDraft({ clearAttachments: false });
                 }
                 return;
             }
@@ -1917,6 +1928,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 cancelPending,
                 textLength: text.length,
                 attachmentCount: pendingAttachments.length + selectedFilePaths.length,
+                composeAction: composeAction || undefined,
             });
             const attachments: AttachmentInfo[] = [...pendingAttachments];
             for (const fp of selectedFilePaths) {
@@ -1925,17 +1937,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
             }
             setQueueInteractionStarted(true);
-            addEntry(rawInputValue, attachments, { autoDrain: submitLocked });
+            // Queue stores the composed command text so /goal (and similar) survive drain.
+            addEntry(text || rawInputValue, attachments, { autoDrain: submitLocked });
             if (submitLocked) {
                 queueAutoDrainArmedRef.current = true;
             }
-            resetHistoryBrowsing();
-            updateInputValue("");
             setQueueEditDraftActive(false);
-            if (inputRef.current) inputRef.current.style.height = "auto";
-            setPendingAttachments([]);
-            clearSelectedFile?.();
-            requestAnimationFrame(() => inputRef.current?.focus());
+            clearComposerDraft({ clearAttachments: true });
             return;
         }
         if (!text && selectedFilePaths.length === 0 && pendingAttachments.length === 0) return;
@@ -1943,16 +1951,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         for (const att of pendingAttachments) {
             if (att.filePath.trim()) allFilePaths.push(att.filePath.trim());
         }
-        resetHistoryBrowsing();
-        updateInputValue("");
-        if (inputRef.current) inputRef.current.style.height = "auto";
-        setPendingAttachments([]);
-        clearSelectedFile?.();
+        sendInFlightRef.current = true;
+        clearComposerDraft({ clearAttachments: true });
         userScrolledUpRef.current = false;
-        const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
-        const sent = await sendMessageForTab(outgoing);
-        if (sent !== false) recordSubmittedPrompt?.(text);
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, busySessionKeys, cancelPending, inputValue, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessageForTab, sendBtwMessage]);
+        try {
+            const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
+            const sent = await sendMessageForTab(outgoing);
+            if (sent !== false) recordSubmittedPrompt?.(text);
+        } finally {
+            sendInFlightRef.current = false;
+        }
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainRef.current = false;
@@ -1975,20 +1984,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             queueAutoDrainArmedRef.current = false;
             drainingEntryIdsRef.current.add(entry.id);
             refreshQueueInFlight();
-            const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
+            const entryText = entry.text.trim();
             console.info("[AIAssistantPanel] drain queued input", {
                 activeTabId: activeTab.id,
                 activeTabType: activeTab.type,
                 projectPath: activeTab.projectPath || "",
                 entryId: entry.id,
-                textLength: entry.text.trim().length,
+                textLength: entryText.length,
                 attachmentCount: entry.attachments.length,
             });
-            sendMessageForTab(outgoing).then((sent) => {
+            // Preserve /btw side-query semantics when draining the buffer queue.
+            const entryIsBtw = isBtwCommandText(entryText) && !!sendBtwMessage;
+            const drainPromise = entryIsBtw
+                ? dispatchBtwText(entryText)
+                : sendMessageForTab(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
+            drainPromise.then((sent) => {
                 if (sent === false) return;
                 continueQueueDrainRef.current = true;
                 removeEntry(entry.id);
-                recordSubmittedPrompt?.(entry.text);
+                // dispatchBtwText already records the prompt; only record normal sends here.
+                if (!entryIsBtw) recordSubmittedPrompt?.(entry.text);
             }).catch(() => {}).finally(() => {
                 drainingEntryIdsRef.current.delete(entry.id);
                 refreshQueueInFlight();
@@ -1996,7 +2011,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeTab.id, activeTab.projectPath, activeTab.type, queue, queueEditDraftActive, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendMessageForTab, showChatUI, submitLocked]);
+    }, [activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
     const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null, accepted = true) => {
         if (!targetTabId) return;
         const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);
@@ -2025,8 +2040,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const guideTargetTabId = isProjectTabActive ? activeTab.id : null;
         firingEntryIdsRef.current.add(id);
         refreshQueueInFlight();
-        const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
+        const entryText = entry.text.trim();
         try {
+            // /btw is a side query, not a main-loop inject — keep its semantics.
+            if (isBtwCommandText(entryText) && sendBtwMessage) {
+                const ok = await dispatchBtwText(entryText);
+                if (ok) removeEntry(id);
+                return;
+            }
+            const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
             let injected = false;
             if (guideLaunchReference) {
                 injected = await guideLaunchReference(outgoing, activeSessionKey);
@@ -2041,13 +2063,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             removeEntry(id);
             recordSubmittedPrompt?.(entry.text);
         } catch {
-            appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
+            if (!isBtwCommandText(entryText)) {
+                const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
+                appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
+            }
             return;
         } finally {
             firingEntryIdsRef.current.delete(id);
             refreshQueueInFlight();
         }
-    }, [activeSessionKey, activeTab.id, appendProjectGuideReferenceEcho, guideLaunchReference, injectSupplementary, isProjectTabActive, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry]);
+    }, [activeSessionKey, activeTab.id, appendProjectGuideReferenceEcho, dispatchBtwText, guideLaunchReference, injectSupplementary, isProjectTabActive, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage]);
     const handleDeleteEntry = useCallback((id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         removeEntry(id);
@@ -2266,9 +2291,44 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy);
             }
             cache.set(msg.id, { contentKey, node });
+            const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
+            if (branchPoint) {
+                const branchIdx = Number(branchPoint.index ?? idx);
+                const branchCount = Number(branchPoint.branches || 0);
+                const branchTitle = lang === 'en'
+                    ? branchCount > 1
+                        ? `Branch from here (#${branchIdx}, ${branchCount} paths)`
+                        : `Branch from here (#${branchIdx})`
+                    : branchCount > 1
+                        ? `从此处分支 (#${branchIdx}，${branchCount} 条路径)`
+                        : `从此处分支 (#${branchIdx})`;
+                const wrappedNode = (
+                    <div key={`branch-wrap-${msg.id}`} style={{ position: 'relative' }} className="branch-hover-container">
+                        {node}
+                        <button
+                            type="button"
+                            className="branch-btn"
+                            aria-label={branchTitle}
+                            title={branchTitle}
+                            onClick={() => {
+                                window.dispatchEvent(new CustomEvent('ai-send-branch-command', { detail: { command: `/branch ${branchIdx}` } }));
+                            }}
+                            style={{
+                                position: 'absolute', top: 2, right: 4,
+                                background: 'transparent', border: 'none',
+                                cursor: 'pointer', fontSize: 11, opacity: 0,
+                                transition: 'opacity 0.15s',
+                                color: t.textMuted, padding: '2px 6px', borderRadius: 4,
+                            }}
+                        >🔀</button>
+                    </div>
+                );
+                cache.set(msg.id, { contentKey, node: wrappedNode });
+                return wrappedNode;
+            }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy]);
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, branchPointByDisplayIndex]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],
@@ -2279,6 +2339,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
+            <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && <AssistantDragHandle />}
             <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
@@ -2372,6 +2433,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 cancelPending,
                                 cancelSession,
                                 clearSelectedFile,
+                                composeAction,
                                 exitHistoryBrowsing,
                                 finishVoicePointer,
                                 handleCancel,
@@ -2388,6 +2450,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 inputValue,
                                 isBusy: inputVisualBusy,
                                 isSelectionCollapsedAtBoundary,
+                                onComposeActionChange: handleComposeActionChange,
+                                onFireSlashCommand: handleFireSlashCommand,
+                                onInsertTemplate: handleInsertTemplate,
+                                onPlusMenuAction: handlePlusMenuAction,
                                 pendingAttachments,
                                 ready,
                                 recallHistory,
@@ -2397,6 +2463,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 selectedFilePaths,
                                 setPendingAttachments,
                                 showBusySpinner,
+                                submittedPrompts,
                                 updateInputValue,
                                 voiceInput,
                             }}
@@ -2438,7 +2505,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         theme={t}
                     />
                 )}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (

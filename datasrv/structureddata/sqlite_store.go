@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,44 +17,247 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 29
+const currentSchemaVersion = 30
 
 type SQLiteStore struct {
-	db        *sql.DB
-	path      string
-	backupDir string
+	db           *sql.DB // write connection (single, serialized)
+	readDB       *sql.DB // read connection pool (concurrent readers via WAL)
+	path         string
+	backupDir    string
+	cacheSizeMB  int
+	mmapSizeMB   int
+	readPoolSize int
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
+	return NewSQLiteStoreWithOptions(path, SQLiteStoreOptions{})
+}
+
+// SQLiteStoreOptions allows tuning the store for different hardware profiles.
+type SQLiteStoreOptions struct {
+	// MaxReadConns overrides the read connection pool size.
+	// Default: max(4, min(runtime.NumCPU()*2, 64))
+	// More CPU cores → more parallel readers → higher read throughput.
+	MaxReadConns int
+
+	// CacheSizeMB sets the SQLite page cache per connection (megabytes).
+	// Default: 64 MB. With more RAM, increase to 256-512 MB.
+	CacheSizeMB int
+
+	// MmapSizeMB sets the memory-mapped I/O region size (megabytes).
+	// Default: 256 MB. With more RAM, increase to 1-4 GB.
+	MmapSizeMB int
+}
+
+func NewSQLiteStoreWithOptions(path string, opts SQLiteStoreOptions) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+
+	// Compute dynamic pool size based on available CPU cores.
+	readConns := opts.MaxReadConns
+	if readConns <= 0 {
+		numCPU := runtime.NumCPU()
+		readConns = numCPU * 2
+		if readConns < 4 {
+			readConns = 4
+		}
+		if readConns > 64 {
+			readConns = 64
+		}
+	}
+	// Safety cap: prevent resource exhaustion from misconfiguration.
+	// Each connection uses cacheSizeMB of memory; 128 × 64MB = 8GB max.
+	if readConns > 128 {
+		readConns = 128
+	}
+
+	cacheSizeMB := opts.CacheSizeMB
+	if cacheSizeMB <= 0 {
+		cacheSizeMB = 64
+	}
+	mmapSizeMB := opts.MmapSizeMB
+	if mmapSizeMB <= 0 {
+		mmapSizeMB = 256
+	}
+
+	// Write connection: single conn, serialized writes. SQLite only supports
+	// one writer at a time; using a single conn avoids SQLITE_BUSY on writes.
+	writeDB, err := sql.Open("sqlite", path+"?_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	store := &SQLiteStore{db: db, path: path, backupDir: filepath.Join(filepath.Dir(path), "backups")}
-	if err := store.Migrate(context.Background()); err != nil {
-		_ = db.Close()
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+	writeDB.SetConnMaxLifetime(0) // keep alive forever
+
+	// Read connection pool: multiple concurrent readers via WAL mode.
+	// Pool size scales with CPU cores for maximum parallelism.
+	// Note: modernc.org/sqlite doesn't support ?mode=ro URI param, so we
+	// enforce read-only via PRAGMA query_only=ON in applyReadPragmas().
+	readDB, err := sql.Open("sqlite", path+"?_txlock=deferred")
+	if err != nil {
+		_ = writeDB.Close()
 		return nil, err
 	}
+	readDB.SetMaxOpenConns(readConns)
+	readDB.SetMaxIdleConns(readConns)
+	readDB.SetConnMaxLifetime(0)
+
+	store := &SQLiteStore{
+		db: writeDB, readDB: readDB, path: path,
+		backupDir:    filepath.Join(filepath.Dir(path), "backups"),
+		cacheSizeMB:  cacheSizeMB,
+		mmapSizeMB:   mmapSizeMB,
+		readPoolSize: readConns,
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, err
+	}
+
+	// Apply performance PRAGMAs to the read pool after migration.
+	if err := store.applyReadPragmas(); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, err
+	}
+
 	return store, nil
 }
 
+// applyReadPragmas configures performance-critical PRAGMAs on read connections.
+// PRAGMAs are per-connection in SQLite. We apply them by acquiring every
+// connection in the pool and setting PRAGMAs individually. Since
+// ConnMaxLifetime=0, connections are kept alive indefinitely (never recycled).
+//
+// Risk: if a connection is invalidated and replaced by database/sql internally,
+// the new connection won't have PRAGMAs. This is extremely rare with SQLite
+// (no network disconnects) but if it happens, the connection will work with
+// default settings (slower but correct).
+func (s *SQLiteStore) applyReadPragmas() error {
+	cacheSizeKB := int64(s.cacheSizeMB) * 1024
+	mmapSize := int64(s.mmapSizeMB) * 1024 * 1024
+	pragmas := []string{
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=NORMAL`,
+		`PRAGMA busy_timeout=5000`,
+		fmt.Sprintf(`PRAGMA cache_size=-%d`, cacheSizeKB), // negative = KB
+		fmt.Sprintf(`PRAGMA mmap_size=%d`, mmapSize),
+		`PRAGMA temp_store=MEMORY`,
+		`PRAGMA query_only=ON`, // enforce read-only on read pool connections
+	}
+	// Apply PRAGMAs to all connections in the pool by acquiring each one.
+	poolSize := s.readPoolSize
+	if poolSize <= 0 {
+		poolSize = 8
+	}
+	conns := make([]*sql.Conn, 0, poolSize)
+	for i := 0; i < poolSize; i++ {
+		conn, err := s.readDB.Conn(context.Background())
+		if err != nil {
+			break // pool might be smaller
+		}
+		for _, p := range pragmas {
+			if _, err := conn.ExecContext(context.Background(), p); err != nil {
+				// Close acquired conns and return error.
+				for _, c := range conns {
+					_ = c.Close()
+				}
+				_ = conn.Close()
+				return fmt.Errorf("read pragma %q on conn %d: %w", p, i, err)
+			}
+		}
+		conns = append(conns, conn)
+	}
+	// Release all connections back to the pool.
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return nil
+}
+
 func (s *SQLiteStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	var errs []error
+
+	// 1. Close read pool first — stops new reads from starting.
+	//    In-flight reads will complete on their already-acquired connections.
+	if s.readDB != nil {
+		if err := s.readDB.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	// 2. Run final maintenance on the write connection before closing:
+	//    - PRAGMA optimize: update query planner stats from runtime usage
+	//    - WAL checkpoint(TRUNCATE): merge WAL into main db + truncate WAL file
+	//    This ensures fast restart (no WAL replay) and optimal query plans.
+	if s.db != nil {
+		_, _ = s.db.Exec(`PRAGMA optimize`)
+		_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+		if err := s.db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+// ReadDB returns the read-optimized connection pool for query operations.
+// All SELECT-only operations should use this pool to enable concurrent reads.
+func (s *SQLiteStore) ReadDB() *sql.DB {
+	return s.readDB
+}
+
+// queryDB returns the connection to use for read-only queries.
+// It returns the read pool (concurrent readers via WAL) when available,
+// falling back to the write connection for backward compatibility.
+func (s *SQLiteStore) queryDB() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
+
+// queryTimeout is the maximum duration for any single read query.
+// Prevents a pathological FTS or JOIN from holding a read connection
+// indefinitely and starving other readers (DoS protection).
+const queryTimeout = 30 * time.Second
+
+// queryCtx wraps a context with the query timeout if no deadline is already set.
+// Callers should use this for read-pool queries to prevent indefinite blocking.
+func queryCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {} // already has a deadline, don't override
+	}
+	return context.WithTimeout(ctx, queryTimeout)
 }
 
 func (s *SQLiteStore) Migrate(ctx context.Context) error {
+	cacheSizeKB := int64(s.cacheSizeMB) * 1024
+	if cacheSizeKB == 0 {
+		cacheSizeKB = 65536 // 64 MB default
+	}
+	mmapSize := int64(s.mmapSizeMB) * 1024 * 1024
+	if mmapSize == 0 {
+		mmapSize = 268435456 // 256 MB default
+	}
 	stmts := []string{
 		`PRAGMA journal_mode=WAL`,
 		`PRAGMA synchronous=NORMAL`,
 		`PRAGMA foreign_keys=ON`,
-		`PRAGMA busy_timeout=5000`,
+		`PRAGMA busy_timeout=10000`,
+		`PRAGMA wal_autocheckpoint=1000`,
+		fmt.Sprintf(`PRAGMA cache_size=-%d`, cacheSizeKB),
+		fmt.Sprintf(`PRAGMA mmap_size=%d`, mmapSize),
+		`PRAGMA temp_store=MEMORY`,
 		`CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
 	}
 	for _, stmt := range stmts {
@@ -207,6 +411,11 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if version < 29 {
 		if err := s.applyMigrationV29(ctx); err != nil {
+			return err
+		}
+	}
+	if version < 30 {
+		if err := s.applyMigrationV30(ctx); err != nil {
 			return err
 		}
 	}
@@ -1692,6 +1901,42 @@ func (s *SQLiteStore) applyMigrationV29(ctx context.Context) error {
 	committed = true
 	return nil
 }
+
+// applyMigrationV30 adds covering indexes for high-frequency query patterns
+// to improve read throughput under concurrent load.
+func (s *SQLiteStore) applyMigrationV30(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	// Covering index for cursor-pagination queries (most common read pattern).
+	// Only create if the records table exists (test DBs may have partial schemas).
+	if exists, _ := sqliteTableExists(ctx, tx, "records"); exists {
+		if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_records_cursor ON records(tenant_id, dataset_id, created_at DESC, id DESC)`); err != nil {
+			return err
+		}
+	}
+	// Index for tag-based record filtering (used in EXISTS subquery).
+	if exists, _ := sqliteTableExists(ctx, tx, "record_tags"); exists {
+		if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tags_tenant_record ON record_tags(tenant_id, dataset_id, tag_norm, record_id)`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, 30, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
 func sqliteTableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
@@ -1800,7 +2045,7 @@ func (s *SQLiteStore) CreateDataset(ctx context.Context, dataset Dataset) (*Data
 }
 
 func (s *SQLiteStore) ListDatasets(ctx context.Context, tenantID string) ([]Dataset, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, tenant_id, domain, name, title, description, schema_version, created_at, updated_at FROM datasets WHERE tenant_id = ? ORDER BY domain, name`, tenantID)
+	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, tenant_id, domain, name, title, description, schema_version, created_at, updated_at FROM datasets WHERE tenant_id = ? ORDER BY domain, name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1817,7 +2062,7 @@ func (s *SQLiteStore) ListDatasets(ctx context.Context, tenantID string) ([]Data
 }
 
 func (s *SQLiteStore) GetDataset(ctx context.Context, tenantID, datasetID string) (*Dataset, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, domain, name, title, description, schema_version, created_at, updated_at FROM datasets WHERE tenant_id = ? AND id = ?`, tenantID, datasetID)
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, domain, name, title, description, schema_version, created_at, updated_at FROM datasets WHERE tenant_id = ? AND id = ?`, tenantID, datasetID)
 	dataset, err := scanDataset(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrDatasetNotFound

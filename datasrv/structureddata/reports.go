@@ -135,8 +135,6 @@ func (s *Service) RunReport(ctx context.Context, p Principal, reportID string, i
 }
 
 func (s *Service) AggregateRecords(ctx context.Context, p Principal, datasetID string, in AggregateInput) (*AggregateResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err

@@ -4,6 +4,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import type { ChatMessage } from "./useAIAssistant";
 import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
+import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand, type PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 
@@ -365,6 +366,7 @@ export interface WelcomeComposerProps {
     cancelPending: boolean;
     cancelSession?: unknown;
     clearSelectedFile?: () => void;
+    composeAction?: ComposeAction | null;
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: React.PointerEvent<HTMLButtonElement>) => void;
     handleCancel: () => void;
@@ -381,6 +383,10 @@ export interface WelcomeComposerProps {
     inputValue: string;
     isBusy: boolean;
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
+    onComposeActionChange?: (action: ComposeAction | null) => void;
+    onFireSlashCommand?: (command: FireSlashCommand) => void;
+    onInsertTemplate?: (template: string) => void;
+    onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     pendingAttachments: AttachmentInfo[];
     ready: boolean;
     recallHistory: (direction: "up" | "down") => boolean;
@@ -390,6 +396,7 @@ export interface WelcomeComposerProps {
     selectedFilePaths: string[];
     setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
+    submittedPrompts?: string[];
     updateInputValue: (value: string) => void;
     voiceInput: UseVoiceInputResult;
 }
@@ -502,7 +509,8 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     ? "0 2px 12px rgba(0,0,0,0.32)"
                     : "0 2px 12px rgba(0,0,0,0.06)",
                 background: t.inputBarBg,
-                overflow: "hidden",
+                // Visible so history autocomplete can paint above the composer.
+                overflow: "visible",
             }}>
                 <AssistantInputComposer
                     browseFile={cp.browseFile}
@@ -510,6 +518,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     cancelPending={cp.cancelPending}
                     cancelSession={cp.cancelSession}
                     clearSelectedFile={cp.clearSelectedFile}
+                    composeAction={cp.composeAction}
                     exitHistoryBrowsing={cp.exitHistoryBrowsing}
                     finishVoicePointer={cp.finishVoicePointer}
                     handleCancel={cp.handleCancel}
@@ -529,8 +538,15 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     isBusy={cp.isBusy}
                     isSelectionCollapsedAtBoundary={cp.isSelectionCollapsedAtBoundary}
                     lang={lang}
+                    onComposeActionChange={cp.onComposeActionChange}
+                    onFireSlashCommand={cp.onFireSlashCommand}
+                    onInsertTemplate={cp.onInsertTemplate}
+                    onPlusMenuAction={cp.onPlusMenuAction}
                     pendingAttachments={cp.pendingAttachments}
-                    placeholderText={isZh ? "描述你的需求，或直接问我任何问题..." : "Describe what you need, or ask me anything..."}
+                    placeholderText={
+                        getComposeActionPlaceholder(cp.composeAction, isZh)
+                            || (isZh ? "描述你的需求，或直接问我任何问题..." : "Describe what you need, or ask me anything...")
+                    }
                     ready={cp.ready}
                     recallHistory={cp.recallHistory}
                     rememberHistoryEdit={cp.rememberHistoryEdit}
@@ -541,6 +557,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     showBusySpinner={cp.showBusySpinner}
                     showMemoryUsage={false}
                     showVoiceInput={true}
+                    submittedPrompts={cp.submittedPrompts}
                     theme={t}
                     themeMode={themeMode}
                     updateInputValue={cp.updateInputValue}

@@ -422,6 +422,63 @@ func TestLLMPromptResponseCacheRejectsMismatchedDiskSize(t *testing.T) {
 	}
 }
 
+func TestLLMPromptResponseCacheStatusAndMaintain(t *testing.T) {
+	cfg := DefaultLLMPromptCacheConfig().WithDefaults()
+	cfg.TTLSeconds = 60
+	dir := t.TempDir()
+	cache := NewLLMPromptResponseCache(dir)
+	// Use Get/Set without relying on MaybeMaintain side effects for counters.
+	cache.mu.Lock()
+	cache.entries["alive"] = &LLMPromptResponseCacheEntry{
+		Key: "alive", Body: []byte("ok"), ExpiresAt: time.Now().Add(time.Hour),
+		LastUsed: time.Now(), Size: 2,
+	}
+	cache.mu.Unlock()
+	if _, ok := cache.Get("alive", cfg); !ok {
+		t.Fatal("expected hit")
+	}
+	if _, ok := cache.Get("missing", cfg); ok {
+		t.Fatal("expected miss")
+	}
+	st := cache.Status()
+	if st.Hits != 1 || st.Misses != 1 || st.MemoryEntries != 1 || st.MemoryBytes != 2 {
+		t.Fatalf("status = %+v, want hits=1 misses=1 entries=1 bytes=2", st)
+	}
+
+	// Force an expired disk entry and ensure Maintain removes it.
+	expired := LLMPromptResponseCacheEntry{
+		Key: "expired", Body: []byte("x"), ExpiresAt: time.Now().Add(-time.Hour),
+		LastUsed: time.Now().Add(-time.Hour), Size: 1,
+	}
+	data, err := json.Marshal(expired)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "expired.json"), data, 0o600); err != nil {
+		t.Fatalf("write expired: %v", err)
+	}
+	if deleted := cache.Maintain(cfg); deleted < 1 {
+		t.Fatalf("Maintain deleted = %d, want >= 1", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "expired.json")); !os.IsNotExist(err) {
+		t.Fatalf("expired entry still present: %v", err)
+	}
+}
+
+func TestLLMPromptResponseCacheMaybeMaintainThrottled(t *testing.T) {
+	cfg := DefaultLLMPromptCacheConfig().WithDefaults()
+	cache := NewLLMPromptResponseCache(t.TempDir())
+	cache.MaybeMaintain(cfg, time.Hour)
+	first := atomic.LoadInt64(&cache.lastMaintainUnix)
+	if first == 0 {
+		t.Fatal("expected lastMaintainUnix set")
+	}
+	cache.MaybeMaintain(cfg, time.Hour)
+	if atomic.LoadInt64(&cache.lastMaintainUnix) != first {
+		t.Fatal("MaybeMaintain should throttle within interval")
+	}
+}
+
 func TestMigrateLLMPromptResponseCacheDirSkipsInvalidAndExpiredEntries(t *testing.T) {
 	fromDir := t.TempDir()
 	toDir := t.TempDir()

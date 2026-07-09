@@ -2,6 +2,7 @@ import type React from "react";
 import { BufferQueuePanel } from "./BufferQueuePanel";
 import { AssistantInputComposer } from "./AssistantInputComposer";
 import type { Theme } from "./aiAssistantPanelTheme";
+import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo, BufferEntry } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 
@@ -9,6 +10,11 @@ interface AssistantInputStackProps {
     attachButtonTestId?: string;
     browseFile: () => void;
     canSend: boolean;
+    composeAction?: ComposeAction | null;
+    onComposeActionChange?: (action: ComposeAction | null) => void;
+    onFireSlashCommand?: (command: FireSlashCommand) => void;
+    onInsertTemplate?: (template: string) => void;
+    onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     cancelPending: boolean;
     cancelSession?: unknown;
     clearSelectedFile?: () => void;
@@ -61,6 +67,7 @@ interface AssistantInputStackProps {
     showMemoryUsage?: boolean;
     showResizeHandle?: boolean;
     showVoiceInput?: boolean;
+    submittedPrompts?: string[];
     sendButtonStyle?: React.CSSProperties;
     sendButtonTestId?: string;
     startInputResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -75,15 +82,15 @@ interface AssistantInputStackProps {
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
-        attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
+        attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
-        inputLocked, inputOverlay, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
+        inputLocked, inputOverlay, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
-        showVoiceInput, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
+        showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
         themeMode, toolbarTestId, updateInputValue, voiceInput,
     } = props;
 
@@ -134,7 +141,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     maxHeight: "55%",
                     height: inputAreaHeight ? `${inputAreaHeight}px` : undefined,
                     minWidth: 0,
-                    overflow: inputOverlay ? "visible" : "hidden",
+                    // Keep visible so history autocomplete / overlays can paint above the textarea.
+                    overflow: "visible",
                     background: inline ? t.inputBarBg : "transparent",
                     borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                     ['--wails-draggable' as any]: 'no-drag',
@@ -148,7 +156,12 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     cancelPending={cancelPending}
                     cancelSession={cancelSession}
                     clearSelectedFile={clearSelectedFile}
+                    composeAction={composeAction}
                     exitHistoryBrowsing={exitHistoryBrowsing}
+                    onComposeActionChange={onComposeActionChange}
+                    onFireSlashCommand={onFireSlashCommand}
+                    onInsertTemplate={onInsertTemplate}
+                    onPlusMenuAction={onPlusMenuAction}
                     finishVoicePointer={finishVoicePointer}
                     handleCancel={handleCancel}
                     handleClearInput={handleClearInput}
@@ -186,6 +199,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     showBusySpinner={showBusySpinner}
                     showMemoryUsage={showMemoryUsage}
                     showVoiceInput={showVoiceInput}
+                    submittedPrompts={submittedPrompts}
                     sendButtonStyle={sendButtonStyle}
                     sendButtonTestId={sendButtonTestId}
                     textareaAriaLabel={textareaAriaLabel}

@@ -40,7 +40,21 @@ func BuildAnthropicMessagesRequestBody(
 		"stream":     opts.Stream,
 	}
 	if converted.SystemText != "" {
-		reqBody["system"] = converted.SystemText
+		if cfg.EnablePromptCache {
+			// Anthropic cache_control: mark system prompt for provider-side KV caching.
+			// The "ephemeral" type indicates this content is stable within the session
+			// and should be cached for subsequent requests. Saves ~90% of system prompt
+			// input token cost on iterations 2-80 of SubAgent tasks.
+			reqBody["system"] = []map[string]interface{}{
+				{
+					"type":          "text",
+					"text":          converted.SystemText,
+					"cache_control": map[string]string{"type": "ephemeral"},
+				},
+			}
+		} else {
+			reqBody["system"] = converted.SystemText
+		}
 	}
 	if len(opts.Tools) > 0 {
 		if at := ConvertToAnthropicTools(opts.Tools); len(at) > 0 {

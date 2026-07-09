@@ -108,10 +108,15 @@ from a simple SSH client:
 - Session ownership stays with the desktop GUI/agent worker and the
   `SSHSessionManager`; mobile only creates, attaches, observes, and controls a
   Hub session record.
-- The foreground mobile agent can create the Hub control record from the AI
-  assistant or remote-server surface, but the record is not active until an
-  authorized GUI/agent worker claims it and binds it to a backend managed SSH
-  session.
+- The foreground mobile agent is a session-management requester: it can create
+  the Hub control record from the AI assistant or remote-server surface, attach
+  to an existing record, queue input, request interrupt/reconnect/close, start
+  background tasks, request file operations, and hand output to AI/digital
+  employees. The record is not active until an authorized GUI/agent worker
+  claims it and binds it to a backend managed SSH session.
+- Mobile must present this as MaClaw-style SSH backend management, not as a
+  terminal-first SSH client. A terminal-like output view is only the foreground
+  operator console for the managed record.
 - Real SSH credentials, `SSHPool` connections, PTY handles, keepalive behavior,
   and lifecycle cleanup stay on the GUI/agent side.
 - Output is reported as managed session state with recent preview text,
@@ -149,7 +154,12 @@ raw terminal socket. The mapping is:
   through `WriteInputChecked` so broken sessions can reconnect before retry.
 - Output: GUI/agent reports preview plus incremental `output_chunk` and
   monotonic `output_seq`; mobile renders that managed output and may copy or
-  redact it for AI/digital-employee analysis.
+  redact it for AI/digital-employee analysis. The mobile operator console and
+  copied output must include a GUI/agent evidence line with actual values for the Hub session ID,
+  GUI/agent-bound `backend_session_id`, worker `claimed_by`, and realtime
+  numeric `output_seq`, so AI, digital-employee handoff, and QA records
+  can prove the output came from the backend session manager rather than a
+  phone-local SSH client.
 - Interrupt/reconnect/close: mobile requests Hub control actions; GUI/agent
   handles them through `InterruptByID`, `ReconnectByID`, and `RemoveSession`.
 - Health management: shell responsiveness probes, Ctrl+C recovery, connection

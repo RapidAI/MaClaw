@@ -49,6 +49,15 @@ func main() {
 		return
 	}
 
+	// --- --mode rpc: JSONL RPC mode for process integration ---
+	// Usage: maclaw-tui --mode rpc
+	// Communicates via LF-delimited JSONL on stdin/stdout.
+	// Inspired by Pi's --mode rpc protocol.
+	if parseRPCModeFlag() {
+		runRPCMode()
+		return
+	}
+
 	if len(os.Args) < 2 {
 		// 默认启动 TUI 交互模式
 		runTUI()

@@ -52,8 +52,6 @@ func (s *Service) ProposeSchema(ctx context.Context, p Principal, datasetID stri
 }
 
 func (s *Service) ListSchemaProposals(ctx context.Context, p Principal, datasetID string, in ListSchemaProposalsInput) ([]SchemaProposal, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validSchemaProposalStatus(in.Status) {
@@ -77,8 +75,6 @@ func validSchemaProposalStatus(value string) bool {
 }
 
 func (s *Service) GetSchemaProposal(ctx context.Context, p Principal, datasetID, proposalID string) (*SchemaProposal, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err

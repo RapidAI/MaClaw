@@ -42,8 +42,10 @@ func NewHTTPServerWithAPIKeys(svc *Service, token, version string, apiKeys []API
 func (s *HTTPServer) Handler() http.Handler { return s.mux }
 
 func (s *HTTPServer) routes() {
-	s.mux.HandleFunc("GET /", s.handleWebConsole)
-	s.mux.HandleFunc("GET /ui", s.handleWebConsole)
+	s.mux.HandleFunc("GET /", s.handleWebConsoleV2)
+	s.mux.HandleFunc("GET /ui", s.handleWebConsoleV2)
+	s.mux.HandleFunc("GET /console/", s.handleWebConsoleV2)
+	s.mux.HandleFunc("GET /legacy", s.handleWebConsole)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /readyz", s.handleReady)
 	s.mux.HandleFunc("GET /version", s.handleVersion)

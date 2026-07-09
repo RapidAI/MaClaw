@@ -74,14 +74,10 @@ func (s *Service) UpsertExternalConnector(ctx context.Context, p Principal, conn
 }
 
 func (s *Service) ListExternalConnectors(ctx context.Context, p Principal, in QueryExternalConnectorsInput) ([]ExternalConnector, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.ListExternalConnectors(ctx, p.TenantID, in)
 }
 
 func (s *Service) GetExternalConnector(ctx context.Context, p Principal, connectorID string) (*ExternalConnector, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
 }
 
@@ -133,8 +129,6 @@ func (s *Service) PatchExternalConnectorConfig(ctx context.Context, p Principal,
 }
 
 func (s *Service) TestExternalConnector(ctx context.Context, p Principal, connectorID string) (*ConnectorTestResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
 	if err != nil {
 		return nil, err
@@ -171,8 +165,6 @@ func (s *Service) TestExternalConnector(ctx context.Context, p Principal, connec
 }
 
 func (s *Service) ValidateExternalConnectorConfig(ctx context.Context, p Principal, connectorID string) (*ConnectorConfigValidationResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
 	if err != nil {
 		return nil, err
@@ -428,8 +420,6 @@ func connectorSyncToolCall(action, connectorID string, body map[string]any) map[
 }
 
 func (s *Service) GetConnectorSyncState(ctx context.Context, p Principal, connectorID string) (*ConnectorSyncState, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
 	if err != nil {
 		return nil, err
@@ -439,8 +429,6 @@ func (s *Service) GetConnectorSyncState(ctx context.Context, p Principal, connec
 }
 
 func (s *Service) ListConnectorSyncRuns(ctx context.Context, p Principal, connectorID string, in QueryConnectorSyncRunsInput) ([]ConnectorSyncRun, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
 	if err != nil {
 		return nil, err
@@ -516,9 +504,7 @@ func (s *Service) UpdateConnectorSyncState(ctx context.Context, p Principal, con
 }
 
 func (s *Service) ConnectorHealth(ctx context.Context, p Principal, connectorID string) (*ConnectorHealth, error) {
-	s.mu.RLock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
-	s.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1001,9 +987,7 @@ type connectorMappingResult struct {
 }
 
 func (s *Service) normalizeConnectorEvent(ctx context.Context, p Principal, connectorID string, in DataEventInput) (*ExternalConnector, DataEventInput, connectorMappingResult, error) {
-	s.mu.RLock()
 	connector, err := s.store.GetExternalConnector(ctx, p.TenantID, strings.TrimSpace(connectorID))
-	s.mu.RUnlock()
 	if err != nil {
 		return nil, DataEventInput{}, connectorMappingResult{}, err
 	}

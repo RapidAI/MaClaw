@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 import tempfile
@@ -255,6 +255,15 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("Handoff output path or transcript", output)
         self.assertIn("full release-gate run result", output)
         self.assertIn("HubCenter discovery result", output)
+        self.assertIn("post-SMS-verification", output)
+        self.assertIn("official credits", output)
+        self.assertIn("llm-request-id", output)
+        self.assertIn("llm-usage-record", output)
+        self.assertIn("cold-start MaClaw logo with no Flutter placeholder", output)
+        self.assertIn("signed-in AI assistant first screen", output)
+        self.assertIn("visible main-conversation/secondary-tab controls", output)
+        self.assertIn("microphone/voice input", output)
+        self.assertIn("no legacy info-lookup entry", output)
         self.assertIn("Runtime boundary verifier result", output)
         self.assertIn("AI assistant answer with citations", output)
         self.assertNotIn("Assistant search with citations", output)
@@ -280,6 +289,9 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("/api/mobile/ssh/sessions/{session_id}/interrupt", output)
         self.assertIn("GUI/agent Ctrl+C handling", output)
         self.assertIn("copied backend session output", output)
+        self.assertIn("GUI/agent evidence line", output)
+        self.assertIn("Hub session ID", output)
+        self.assertIn("claimed_by", output)
         self.assertIn(
             "AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id",
             output,

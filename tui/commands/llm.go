@@ -1000,7 +1000,11 @@ func llmLoginOpenAI(args []string) error {
 // llmLoginCodeGen 实现无头环境下的 CodeGen SSO 登录。
 // 显示 SSO URL 让用户在任意浏览器中打开，完成后粘贴 token。
 func llmLoginCodeGen(args []string) error {
-	loginURL := oauth.HeadlessSSOLoginURL()
+	params, err := oauth.PrepareHeadlessCodeGenOAuth()
+	if err != nil {
+		return fmt.Errorf("准备 CodeGen OAuth 参数失败: %w", err)
+	}
+	loginURL := params.AuthURL
 
 	fmt.Println("╭──────────────────────────────────────────────────────╮")
 	fmt.Println("│           CodeGen SSO 登录（无头模式）               │")
@@ -1009,25 +1013,27 @@ func llmLoginCodeGen(args []string) error {
 	fmt.Println("│  1. 在任意浏览器中打开以下链接:                      │")
 	fmt.Printf("│     %s\n", loginURL)
 	fmt.Println("│                                                      │")
-	fmt.Println("│  2. 完成扫码/登录后，页面会显示 Token                │")
+	fmt.Println("│  2. 完成扫码/登录后，浏览器会跳转到 localhost 页面   │")
 	fmt.Println("│                                                      │")
-	fmt.Println("│  3. 复制 Token 粘贴到下方                            │")
+	fmt.Println("│  3. 优先复制浏览器地址栏中的完整回调 URL             │")
+	fmt.Println("│                                                      │")
+	fmt.Println("│  4. 若页面仍直接显示 Token，也可直接粘贴 Token       │")
 	fmt.Println("│                                                      │")
 	fmt.Println("╰──────────────────────────────────────────────────────╯")
 	fmt.Println()
-	fmt.Print("请粘贴 Token: ")
+	fmt.Print("请粘贴回调 URL 或 Token: ")
 
-	var token string
-	fmt.Scanln(&token)
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return fmt.Errorf("未输入 Token，登录取消")
+	var input string
+	fmt.Scanln(&input)
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fmt.Errorf("未输入回调 URL 或 Token，登录取消")
 	}
 
-	fmt.Println("正在验证 Token...")
-	result, err := oauth.ValidateAndBuildCodeGenResult(token)
+	fmt.Println("正在完成 CodeGen 认证...")
+	result, err := oauth.ResolveHeadlessCodeGenInput(input, params)
 	if err != nil {
-		return fmt.Errorf("Token 验证失败: %w", err)
+		return fmt.Errorf("CodeGen 认证失败: %w", err)
 	}
 
 	// 保存到配置

@@ -35,7 +35,7 @@ OFFICIAL_LLM_ACCESS_CONTEXT = (
     "MaClaw official LLM access mode available using phone account "
     "phone:8613800138000 official credits for tenant tenant-a; "
     "screenshot llm-access-42; after SMS verification passed, LLM request "
-    "request id llm-request-id-12345 has usage record charged to the verified "
+    "request id llm-request-id-12345 has usage record llm-usage-record-12345 charged to the verified "
     "phone account's MaClaw official credits"
 )
 
@@ -239,8 +239,10 @@ def complete_record() -> str:
             value = (
                 "Copied backend session output from backend-session:mobile-ssh-mobssh-12345 "
                 "on server-profile:srv-prod to clipboard through the GUI/agent-managed "
-                "SSHSessionManager path, not phone-local ad hoc terminal; "
-                "screenshot ssh-copy-42"
+                "SSHSessionManager path, not phone-local ad hoc terminal, with "
+                "GUI/agent evidence line Hub session mobssh-12345 "
+                "backend_session_id mobile-ssh-mobssh-12345 claimed_by "
+                "MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42"
             )
         if field in validate_qa_build_record.SSH_AI_ANALYSIS_WARNING_FIELDS:
             value = (
@@ -1244,6 +1246,44 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             missing,
         )
 
+
+    def test_official_llm_access_evidence_requires_usage_record_after_sms_verification(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available "
+                "using phone account phone:8613800138000 official credits for "
+                "tenant tenant-a; screenshot llm-access-42; LLM request "
+                "request id llm-request-id-12345 has usage record charged to "
+                "the phone account's MaClaw official credits",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must include official phone-credit usage record",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_official_llm_access_evidence_requires_trackable_usage_record_id(
+        self,
+    ) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                f"LLM access evidence: {OFFICIAL_LLM_ACCESS_CONTEXT}",
+                "LLM access evidence: MaClaw official LLM access mode available "
+                "using phone account phone:8613800138000 official credits for "
+                "tenant tenant-a; screenshot llm-access-42; after SMS verification "
+                "passed, LLM request request id ok has usage record charged to "
+                "the verified phone account's MaClaw official credits",
+            ),
+        )
+
+        self.assertIn(
+            "LLM access evidence must include official phone-credit usage record",
+            validate_qa_build_record.missing_required_fields(values),
+        )
     def test_official_llm_access_evidence_requires_digits_only_phone_credits(
         self,
     ) -> None:
@@ -2850,7 +2890,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Reconnect result: QA screenshot captured",
             )
             .replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: QA screenshot captured",
             ),
         )
@@ -3062,7 +3102,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_copied_output_rejects_phone_local_terminal_context(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard from phone-local terminal screenshot; screenshot ssh-copy-42",
             ),
         )
@@ -3071,6 +3111,39 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
             validate_qa_build_record.missing_required_fields(values),
         )
+
+    def test_ssh_copied_output_requires_gui_agent_evidence_line(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+            ),
+        )
+
+        self.assertIn(
+            "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_copied_output_requires_evidence_line_values(self) -> None:
+        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42"
+        invalid_values = [
+            base.replace("Hub session mobssh-12345", "Hub session"),
+            base.replace("backend_session_id mobile-ssh-mobssh-12345", "backend_session_id"),
+            base.replace("claimed_by MaClaw GUI agent worker", "claimed_by"),
+            base.replace("output_seq 2", "output_seq next"),
+        ]
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                values = validate_qa_build_record.parse_record(
+                    complete_record().replace(base, invalid_value),
+                )
+
+                self.assertIn(
+                    "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+                    validate_qa_build_record.missing_required_fields(values),
+                )
 
     def test_ssh_read_only_command_accepts_safe_diagnostic_commands(self) -> None:
         values = validate_qa_build_record.parse_record(
@@ -3123,7 +3196,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Reconnect result: SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42",
             )
             .replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: Copied output to clipboard; screenshot ssh-copy-42",
             )
             .replace(

@@ -144,8 +144,6 @@ func (s *Service) runExportJob(p Principal, job ExportJob, in StartExportJobInpu
 }
 
 func (s *Service) ListExportJobs(ctx context.Context, p Principal, in QueryExportJobsInput) ([]ExportJob, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validExportJobStatus(in.Status) {
 		return nil, fmt.Errorf("%w: invalid export job status", ErrInvalidInput)
@@ -163,8 +161,6 @@ func validExportJobStatus(value string) bool {
 }
 
 func (s *Service) GetExportJob(ctx context.Context, p Principal, jobID string) (*ExportJob, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetExportJob(ctx, p.TenantID, strings.TrimSpace(jobID))
 }
 

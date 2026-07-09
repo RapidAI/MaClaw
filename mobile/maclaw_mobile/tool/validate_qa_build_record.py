@@ -86,6 +86,9 @@ REDACTION_CHECK_ID_RE = re.compile(
 SMS_VERIFICATION_ID_RE = re.compile(
     r"(?i)\bsms-verification:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
+LLM_USAGE_RECORD_ID_RE = re.compile(
+    r"(?i)\b(?:llm[-_ ]?(?:request|usage|credit|charge|quota)[-_ ]?(?:id|record)|(?:request|usage|credit|charge|quota)[-_ ](?:id|record))[-_: #]*[A-Za-z0-9][A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+)
 DIGITAL_EMPLOYEE_TASK_ID_TOKEN_RE = re.compile(
     r"(?i)\bdigital-employee-task-id-[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
@@ -1146,9 +1149,21 @@ def _is_assistant_first_screen_evidence(value: str) -> bool:
         _is_auditable_note(value)
         and ("ai助手" in normalized or "ai assistant" in normalized)
         and any(marker in normalized for marker in ("first tab", "first screen", "default route", "opens to", "bottom nav"))
-        and any(marker in value for marker in ("主对话", "副对话", "多对话", "多 Tab", "multi-tab", "main tab"))
+        and any(
+            marker in normalized
+            for marker in (
+                "主对话",
+                "副对话",
+                "多对话",
+                "多 tab",
+                "multi-tab",
+                "main tab",
+                "main-conversation",
+                "secondary-tab",
+            )
+        )
         and any(marker in value for marker in ("语音", "麦克风", "voice", "microphone"))
-        and ("查信息" in value or "lookup" in normalized or "search tab" in normalized)
+        and ("查信息" in value or "lookup" in normalized or "info-lookup" in normalized or "search tab" in normalized)
         and any(marker in normalized for marker in ("not present", "absent", "removed", "no legacy", "not shown", "not visible"))
         and _has_visual_evidence_id(value)
     )
@@ -1607,6 +1622,11 @@ def _is_login_result_evidence(value: str) -> bool:
 
 def _has_official_phone_credit_usage_evidence(value: str) -> bool:
     normalized = value.strip().lower()
+    after_verified_phone_login = (
+        any(marker in normalized for marker in ("after", "post-login", "post verification", "post-verification"))
+        and any(marker in normalized for marker in ("sms", "verification", "verified", "验证码", "验证"))
+        and any(marker in normalized for marker in ("passed", "accepted", "succeeded", "success", "通过", "成功"))
+    )
     return (
         any(marker in normalized for marker in ("llm call", "llm request", "query"))
         and any(
@@ -1625,6 +1645,8 @@ def _has_official_phone_credit_usage_evidence(value: str) -> bool:
             for marker in ("request id", "request-id", "log id", "usage record")
         )
         and bool(_phone_account_refs(value))
+        and after_verified_phone_login
+        and LLM_USAGE_RECORD_ID_RE.search(value) is not None
     )
 
 
@@ -2023,6 +2045,37 @@ def _has_gui_agent_backend_session_ref(value: str) -> bool:
     )
 
 
+def _has_gui_agent_evidence_line(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        any(
+            marker in normalized
+            for marker in (
+                "gui/agent evidence line",
+                "gui/agent 后台会话证据",
+                "后台会话证据",
+                "operator console evidence",
+            )
+        )
+        and re.search(
+            r"(?i)\bhub[-_ ]session(?:\s+id)?\s*[:=]?\s*[A-Za-z0-9._:-]*\d[A-Za-z0-9._:-]*\b",
+            value,
+        )
+        is not None
+        and re.search(
+            r"(?i)\bbackend_session_id\s*[:=]?\s*[A-Za-z0-9._:-]*\d[A-Za-z0-9._:-]*\b",
+            value,
+        )
+        is not None
+        and re.search(
+            r"(?i)\bclaimed_by\s*[:=]?\s*(?!output_seq\b)[A-Za-z0-9][A-Za-z0-9 ._:-]{2,}?(?=\s+output_seq\b|[;,]|$)",
+            value,
+        )
+        is not None
+        and re.search(r"(?i)\boutput_seq\s*[:=]?\s*\d+\b", value) is not None
+    )
+
+
 def _is_ssh_copied_output_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -2038,6 +2091,7 @@ def _is_ssh_copied_output_evidence(value: str) -> bool:
             )
         )
         and _has_gui_agent_backend_session_ref(value)
+        and _has_gui_agent_evidence_line(value)
         and _rejects_phone_local_ssh_client_evidence(value)
     )
 

@@ -3,7 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    // Keep the MaClaw Mobile wrapper on the standard plugin order.
     id("dev.flutter.flutter-gradle-plugin")
 }
 

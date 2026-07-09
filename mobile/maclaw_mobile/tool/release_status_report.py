@@ -247,12 +247,15 @@ def format_status(status: ReleaseStatus) -> str:
                 )
             lines.append(
                 "- After preflight passes, signed-build QA still needs real-device share/permission, "
-                "Hub discovery, notification, and GUI-equivalent backend-managed SSH session evidence with "
+                "Hub discovery evidence with selected HubCenter, discovered Hub, tenant, post-SMS-verification official credits LLM proof with concrete llm-request-id and llm-usage-record, MaClaw logo "
+                "cold start with no Flutter placeholder, signed-in AI assistant first screen with visible "
+                "main-conversation/secondary-tab controls, microphone/voice input, no legacy info-lookup entry, "
+                "notification, and GUI-equivalent backend-managed SSH session evidence with "
                 "the same GUI/agent-bound backend_session_id, GUI/agent claim "
                 "or worker handoff plus explicit worker claim/update evidence and "
                 "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
                 "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend "
-                "session output, and AI/digital-employee handoff evidence tied to that "
+                "session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, and AI/digital-employee handoff evidence tied to that "
                 "same GUI/agent-bound backend_session_id when used.",
             )
         if blocking_invalid_records:
@@ -270,13 +273,16 @@ def format_status(status: ReleaseStatus) -> str:
                 f"- Create and validate in-scope signed-build QA records under {records_dir_label}/.",
             )
             lines.append(
-                "- Include GUI-equivalent backend-managed SSH session evidence with the same GUI/agent-bound "
+                "- Include Hub discovery evidence with selected HubCenter, discovered Hub, tenant, post-SMS-verification official credits LLM proof with concrete llm-request-id and llm-usage-record, "
+                "MaClaw logo cold start with no Flutter placeholder, signed-in AI assistant first screen with "
+                "visible main-conversation/secondary-tab controls, microphone/voice input, and no legacy info-lookup entry; "
+                "also include GUI-equivalent backend-managed SSH session evidence with the same GUI/agent-bound "
                 "backend_session_id, plus GUI/agent claim or worker handoff, "
                 "explicit worker claim/update evidence, and `ssh_session` realtime "
                 "`output_chunk`/`output_seq` proof, plus "
                 "not phone-local/ad hoc terminal evidence, phone-initiated interrupt "
                 "evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend session "
-                "output, and AI/digital-employee handoff evidence tied to that same GUI/agent-bound "
+                "output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, and AI/digital-employee handoff evidence tied to that same GUI/agent-bound "
                 "backend_session_id when used.",
             )
             lines.append(

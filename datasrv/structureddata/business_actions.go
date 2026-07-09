@@ -624,8 +624,6 @@ func (s *Service) ExecuteBusinessAction(ctx context.Context, p Principal, action
 }
 
 func (s *Service) dryRunBusinessAction(ctx context.Context, p Principal, action BusinessAction, in ExecuteBusinessActionInput) (*ExecuteBusinessActionResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID := strings.TrimSpace(action.DatasetID)
 	fields, err := s.store.ListFields(ctx, p.TenantID, datasetID)
 	if err != nil {

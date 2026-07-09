@@ -271,8 +271,10 @@ void main() {
       apiClient.createdContext['private_key'],
       '[REDACTED_PRIVATE_KEY]',
     );
-    expect(apiClient.createdContext.toString(),
-        isNot(contains('raw-context-token')));
+    expect(
+      apiClient.createdContext.toString(),
+      isNot(contains('raw-context-token')),
+    );
     expect(apiClient.createdContext.toString(), isNot(contains('raw-key')));
     expect(store.lastTask?.prompt, apiClient.createdPrompt);
     expect(store.lastTask?.context, apiClient.createdContext);

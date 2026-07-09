@@ -101,6 +101,10 @@ type CodingSubAgentResult struct {
 	GitDiffChecked bool
 	GitDiffSummary string
 
+	// DiffStat holds structured diff statistics parsed from `git diff --stat`.
+	// Nil when diff was not checked or the project is not a git repo.
+	DiffStat *SubAgentDiffStat
+
 	// CommandsRun records bash commands executed during the coding task.
 	CommandsRun []CodingSubAgentCommandResult
 
@@ -264,7 +268,18 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		prevOutputs: prevOutputs,
 	}
 
-	result := agent.RunLoop(cb, cb.buildTaskUserMessage(), nil, s.httpClient)
+	result := agent.RunLoop(cb, cb.buildTaskUserMessage(), nil, s.httpClient, s.buildLoopHooks(cb))
+
+	// Codex-inspired post-loop verification: if the model completed without
+	// errors but didn't run verification itself, automatically verify + fix.
+	if result.Error == "" && !result.HardExit && !cb.ShouldStop() {
+		if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
+			// Check if model already ran a verification command during the loop
+			if !hasSubAgentSelfVerified(cb) {
+				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd)
+			}
+		}
+	}
 
 	status := TaskExecPassed
 	errMsg := ""
@@ -373,6 +388,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		FilesRead:           filesRead,
 		GitDiffChecked:      diffChecked,
 		GitDiffSummary:      diffSummary,
+		DiffStat:            cb.getDiffStat(),
 		CommandsRun:         commandsRun,
 		SearchesRun:         searchesRun,
 		GuardrailViolations: guardrailViolations,
@@ -471,6 +487,7 @@ type codingSubAgentCallbacks struct {
 	fileSnapshots  map[string]codingFileSnapshot
 	gitDiffChecked bool
 	lastGitDiff    string
+	diffStat       *SubAgentDiffStat
 	commandsRun    []CodingSubAgentCommandResult
 	searchesRun    []CodingSubAgentSearchResult
 	guardrails     []CodingSubAgentGuardrailViolation
@@ -489,7 +506,12 @@ type codingFileSnapshot struct {
 }
 
 func (c *codingSubAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.subagent.cfg
+	cfg := c.subagent.cfg
+	// Codex-inspired: SubAgent system prompt never changes across iterations.
+	// Enable prompt caching so providers (Anthropic, DeepSeek) can cache the
+	// system prompt's KV state, reducing latency and cost by ~90% for iters 2-80.
+	cfg.EnablePromptCache = true
+	return cfg
 }
 
 func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
@@ -742,6 +764,15 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 	default:
 		outcome = agent.ToolExecutionOutcomeError
 	}
+
+	// Codex-inspired adaptive truncation: reduce context consumption for verbose
+	// tool outputs while preserving reachability (truncation hints tell the LLM
+	// how to access omitted content). Only truncate successful results — errors
+	// are already compact and should be shown in full.
+	if outcome == agent.ToolExecutionOutcomeOK {
+		result.Text = truncateToolResultForSubAgent(canonicalCodingSubAgentToolName(name), result.Text)
+	}
+
 	return agent.ToolExecutionResult{Result: result.Text, Outcome: outcome}
 }
 
@@ -3402,6 +3433,8 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated
 	c.mu.Unlock()
 
 	if alreadyChecked && !isEmptySubAgentDiffOutput(lastDiff) {
+		// Also collect --stat if not already done
+		c.ensureDiffStat()
 		return c.validateFinalGitDiffSummary(lastDiff, filesCreated)
 	}
 	if len(filesModified) == 0 {
@@ -3417,6 +3450,8 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated
 		c.rejectEmptyFinalGitDiff()
 		return false, "git diff 无输出：已记录文件修改，但最终 diff 为空。请重新检查改动是否被还原，必要时重新编辑并再次运行 git_diff。"
 	}
+	// Collect structured --stat
+	c.ensureDiffStat()
 	return c.validateFinalGitDiffSummary(diffSummary, filesCreated)
 }
 
@@ -3429,6 +3464,52 @@ func (c *codingSubAgentCallbacks) validateFinalGitDiffSummary(diffSummary string
 		return false, "git diff 只包含与本任务新建文件无关的未跟踪文件：已记录文件修改，但最终 diff 缺少本任务改动证据。请重新检查改动是否被还原，必要时重新编辑并再次运行 git_diff。"
 	}
 	return true, diffSummary
+}
+
+// ensureDiffStat runs `git diff --stat` and parses the output into structured
+// SubAgentDiffStat. Called after the main diff check to collect metrics without
+// blocking the quality gate (best-effort).
+func (c *codingSubAgentCallbacks) ensureDiffStat() {
+	c.mu.Lock()
+	if c.diffStat != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+
+	workDir := c.projectPath()
+	if workDir == "" {
+		return
+	}
+
+	ctx, cancel := c.toolContext()
+	defer cancel()
+	result := executeCodingBashWithContext(ctx, map[string]interface{}{
+		"command":     "git diff --stat -- .",
+		"working_dir": workDir,
+		"timeout":     float64(15),
+	}, nil).toolResult()
+
+	if result.Outcome != codingToolOutcomeSuccess {
+		return
+	}
+
+	stat := parseGitDiffStat(result.Text)
+	if stat != nil {
+		c.mu.Lock()
+		c.diffStat = stat
+		c.mu.Unlock()
+	}
+}
+
+// getDiffStat returns the parsed diff stat (may be nil if not a git repo or no changes).
+func (c *codingSubAgentCallbacks) getDiffStat() *SubAgentDiffStat {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.diffStat
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {

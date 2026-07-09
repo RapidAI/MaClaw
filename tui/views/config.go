@@ -979,19 +979,14 @@ func llmURLSuggestions(cfg corelib.AppConfig) []string {
 }
 
 func llmModelSuggestions(cfg corelib.AppConfig) []string {
-	values := []string{cfg.MaclawLLMModel}
-	for _, p := range llmProviderPresets {
-		values = append(values, p.Model)
-	}
+	values := providerModelOptionsFromConfig(&cfg, currentLLMPresetName(&cfg))
+	values = append(values, cfg.MaclawLLMModel)
 	for _, p := range cfg.MaclawLLMProviders {
+		if strings.TrimSpace(p.Name) == strings.TrimSpace(cfg.MaclawLLMCurrentProvider) {
+			continue
+		}
 		values = append(values, p.Model)
 	}
-	values = append(values,
-		"auto",
-		"qwen2.5-coder:32b",
-		"deepseek-coder-v2",
-		"llama3.1",
-	)
 	return uniqueConfigValues(values...)
 }
 

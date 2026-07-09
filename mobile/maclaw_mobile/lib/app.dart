@@ -103,7 +103,7 @@ String mobileNotificationRecoveryMessage(String payload, String? targetPath) {
   final detail = switch (targetPath) {
     '/documents' => '已打开任务提醒：请在文档页查看导入、导出或草稿状态',
     '/employees' => '已打开任务提醒：请在数字员工页查看远程任务状态',
-    '/servers' => '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料',
+    '/servers' => '已打开任务提醒：请在远程页查看后台 SSH 会话或服务器档案',
     _ => '已打开任务提醒',
   };
   if (targetPath == '/documents' &&
@@ -124,7 +124,7 @@ String mobileNotificationRecoveryMessage(String payload, String? targetPath) {
   }
   if (targetPath == '/servers' &&
       value.startsWith(mobileServerProfileNotificationPrefix)) {
-    return '已打开任务提醒：请在远程页查看 SSH 连接或服务器资料';
+    return '已打开任务提醒：请在远程页查看后台 SSH 会话或服务器档案';
   }
   return detail;
 }

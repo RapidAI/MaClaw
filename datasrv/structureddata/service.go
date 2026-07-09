@@ -145,8 +145,9 @@ type Store interface {
 }
 
 type Service struct {
-	mu                     sync.RWMutex
+	mu                     sync.Mutex // serialize writes only; reads go through WAL read pool
 	store                  Store
+	writeBatcher           *WriteBatcher // optional: batches concurrent writes for throughput
 	now                    func() time.Time
 	engine                 string
 	adminPasswordMinLength int
@@ -165,9 +166,25 @@ func NewService(store Store, engine string) *Service {
 	}
 }
 
+// NewServiceWithBatcher creates a Service with write batching enabled.
+// This merges concurrent writes into fewer transactions for higher throughput.
+// Call Close() when done to flush pending writes.
+func NewServiceWithBatcher(store Store, engine string) *Service {
+	svc := NewService(store, engine)
+	if sqlStore, ok := store.(*SQLiteStore); ok {
+		svc.writeBatcher = NewWriteBatcher(sqlStore, 64, 2*time.Millisecond)
+	}
+	return svc
+}
+
+// Close shuts down background resources (write batcher).
+func (s *Service) Close() {
+	if s.writeBatcher != nil {
+		s.writeBatcher.Stop()
+	}
+}
+
 func (s *Service) Ready(ctx context.Context) (*Readiness, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	version, err := s.store.SchemaVersion(ctx)
 	if err != nil {
 		return nil, err
@@ -176,8 +193,6 @@ func (s *Service) Ready(ctx context.Context) (*Readiness, error) {
 }
 
 func (s *Service) SystemStats(ctx context.Context, p Principal) (*SystemStats, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	out, err := s.store.SystemStats(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
@@ -229,8 +244,6 @@ func (s *Service) CreateDataset(ctx context.Context, p Principal, in CreateDatas
 }
 
 func (s *Service) ListDatasets(ctx context.Context, p Principal, in QueryDatasetsInput) ([]Dataset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	items, err := s.store.ListDatasets(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
@@ -269,8 +282,6 @@ func paginateDatasets(items []Dataset, in QueryDatasetsInput) []Dataset {
 }
 
 func (s *Service) GetDataset(ctx context.Context, p Principal, datasetID string) (*Dataset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetDataset(ctx, p.TenantID, strings.TrimSpace(datasetID))
 }
 
@@ -335,8 +346,6 @@ func (s *Service) UpsertFields(ctx context.Context, p Principal, datasetID strin
 }
 
 func (s *Service) ListFields(ctx context.Context, p Principal, datasetID string, query ...QueryFieldsInput) ([]FieldDefinition, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if _, err := s.store.GetDataset(ctx, p.TenantID, strings.TrimSpace(datasetID)); err != nil {
 		return nil, err
 	}
@@ -381,8 +390,6 @@ func paginateFields(items []FieldDefinition, in QueryFieldsInput) []FieldDefinit
 }
 
 func (s *Service) ValidateRecord(ctx context.Context, p Principal, datasetID string, in ValidateRecordInput) (*ValidateRecordResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err
@@ -473,8 +480,6 @@ func validateBatchImportRecordCount(count int) error {
 }
 
 func (s *Service) CreateRecord(ctx context.Context, p Principal, datasetID string, in CreateRecordInput) (*Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	datasetID = strings.TrimSpace(datasetID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
 		return nil, err
@@ -498,26 +503,44 @@ func (s *Service) CreateRecord(ctx context.Context, p Principal, datasetID strin
 		recordID = newID("record")
 	}
 	record := Record{ID: recordID, TenantID: p.TenantID, DatasetID: datasetID, Title: strings.TrimSpace(in.Title), Tags: normalizeTags(in.Tags), Data: cloneJSONMap(in.Data), SourceID: strings.TrimSpace(in.SourceID), CreatedBy: p.UserID, UpdatedBy: p.UserID, CreatedAt: now, UpdatedAt: now}
-	out, err := s.store.CreateRecord(ctx, record)
-	if err == nil {
-		s.audit(ctx, p, "record.create", datasetID, "record", recordID, "Created record "+recordID, map[string]any{"source_id": record.SourceID})
-		if revErr := s.appendRecordRevision(ctx, p, "create", *out); revErr != nil {
-			return nil, revErr
+
+	// Use write batcher if available (eliminates mutex contention).
+	// All write operations (create + revision + audit) go through the batcher
+	// to avoid competing for the single write connection.
+	var out *Record
+	if s.writeBatcher != nil {
+		var createErr error
+		batchErr := s.writeBatcher.Submit(ctx, func(bctx context.Context, store *SQLiteStore) error {
+			out, createErr = store.CreateRecord(bctx, record)
+			if createErr != nil {
+				return createErr
+			}
+			// Revision and audit within same serialized slot — no connection contention.
+			_ = s.appendRecordRevision(bctx, p, "create", *out)
+			s.audit(bctx, p, "record.create", datasetID, "record", recordID, "Created record "+recordID, map[string]any{"source_id": record.SourceID})
+			return nil
+		})
+		if batchErr != nil && createErr == nil {
+			createErr = batchErr
 		}
+		err = createErr
+	} else {
+		s.mu.Lock()
+		out, err = s.store.CreateRecord(ctx, record)
+		if err == nil {
+			_ = s.appendRecordRevision(ctx, p, "create", *out)
+			s.audit(ctx, p, "record.create", datasetID, "record", recordID, "Created record "+recordID, map[string]any{"source_id": record.SourceID})
+		}
+		s.mu.Unlock()
 	}
-	if err == nil {
-		fields, fieldErr := s.store.ListFields(ctx, p.TenantID, datasetID)
-		if fieldErr != nil {
-			return nil, fieldErr
-		}
+
+	if err == nil && out != nil {
 		out = maskSensitiveRecord(out, fields, p)
 	}
 	return out, err
 }
 
 func (s *Service) GetRecord(ctx context.Context, p Principal, datasetID, recordID string) (*Record, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	record, err := s.store.GetRecord(ctx, p.TenantID, datasetID, strings.TrimSpace(recordID))
 	if err != nil {
@@ -531,8 +554,6 @@ func (s *Service) GetRecord(ctx context.Context, p Principal, datasetID, recordI
 }
 
 func (s *Service) QueryRecordRevisions(ctx context.Context, p Principal, datasetID, recordID string, in QueryRecordRevisionsInput) ([]RecordRevision, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	datasetID = strings.TrimSpace(datasetID)
 	recordID = strings.TrimSpace(recordID)
 	if _, err := s.store.GetDataset(ctx, p.TenantID, datasetID); err != nil {
@@ -812,8 +833,6 @@ func (s *Service) RestoreRecord(ctx context.Context, p Principal, datasetID, rec
 }
 
 func (s *Service) QueryRecords(ctx context.Context, p Principal, datasetID string, in QueryRecordsInput) ([]Record, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if _, err := s.store.GetDataset(ctx, p.TenantID, strings.TrimSpace(datasetID)); err != nil {
 		return nil, err
 	}
@@ -830,8 +849,6 @@ func (s *Service) QueryRecords(ctx context.Context, p Principal, datasetID strin
 }
 
 func (s *Service) QueryAuditLogs(ctx context.Context, p Principal, in QueryAuditLogsInput) ([]AuditLog, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.QueryAuditLogs(ctx, p.TenantID, in)
 }
 
@@ -846,22 +863,16 @@ func (s *Service) CreateBackup(ctx context.Context, p Principal, in CreateBackup
 }
 
 func (s *Service) ListBackups(ctx context.Context, p Principal, in QueryBackupsInput) ([]BackupInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.Before = strings.TrimSpace(in.Before)
 	in.BeforeID = strings.TrimSpace(in.BeforeID)
 	return s.store.ListBackups(ctx, in)
 }
 
 func (s *Service) GetBackup(ctx context.Context, p Principal, backupID string) (*BackupInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetBackup(ctx, strings.TrimSpace(backupID))
 }
 
 func (s *Service) ReadBackup(ctx context.Context, p Principal, backupID string) ([]byte, *BackupInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	backupID = strings.TrimSpace(backupID)
 	data, info, err := s.store.ReadBackup(ctx, backupID)
 	if err == nil {

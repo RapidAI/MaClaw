@@ -2,11 +2,30 @@ const api = window.go?.main?.App;
 const $ = (id) => document.getElementById(id);
 let toastTimer;
 let loginInProgress = false;
+let currentTokenPeriod = "today";
+
+function formatCacheDecision(status) {
+  const protocol = status.last_cache_protocol || "";
+  const outcome = status.last_cache_outcome || "";
+  const streaming = !!status.last_cache_streaming;
+  if (!protocol || !outcome) return { summary: "-", reason: "" };
+  const mode = streaming ? " / stream" : "";
+  return {
+    summary: `${protocol} / ${outcome}${mode}`,
+    reason: status.last_cache_reason || "",
+  };
+}
 
 function formatTokenCount(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
   return String(n);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return bytes + " B";
 }
 
 function notify(message, kind = "ok") {
@@ -55,9 +74,31 @@ async function refresh() {
     loginChip.className = `chip ${status.logged_in ? "ok" : "muted"}`;
     $("loginBtn").style.display = status.logged_in ? "none" : "";
     $("logoutBtn").style.display = status.logged_in ? "" : "none";
-    $("promptTokens").textContent = formatTokenCount(status.prompt_tokens || 0);
-    $("completionTokens").textContent = formatTokenCount(status.completion_tokens || 0);
-    $("totalTokens").textContent = formatTokenCount(status.total_tokens || 0);
+    $("cacheEntries").textContent = String(status.cache_entries || 0);
+    $("cacheBytes").textContent = formatBytes(status.cache_bytes || 0);
+    const hits = status.cache_hits || 0;
+    const misses = status.cache_misses || 0;
+    const total_cache = hits + misses;
+    if ($("cacheHits")) $("cacheHits").textContent = String(hits);
+    if ($("cacheMisses")) $("cacheMisses").textContent = String(misses);
+    $("cacheHitRate").textContent = total_cache > 0 ? Math.round((hits / total_cache) * 100) + "%" : "-";
+    // Single-line cache decision only — multi-line reason/hint causes layout flash on refresh.
+    const cacheDecision = formatCacheDecision(status);
+    if ($("cacheDecisionSummary")) $("cacheDecisionSummary").textContent = cacheDecision.summary;
+    const extra = $("cacheDecisionExtra");
+    if (extra) {
+      extra.textContent = cacheDecision.reason ? ` · ${cacheDecision.reason}` : "";
+    }
+    const diag = $("cacheDiagnostic");
+    if (diag) {
+      // Longer explanations stay in title tooltip to avoid height jumps.
+      let tip = cacheDecision.summary || "";
+      if (cacheDecision.reason) tip += ` (${cacheDecision.reason})`;
+      if (hits === 0 && misses > 0 && (status.cache_entries || 0) > 0) {
+        tip += " — 精确匹配整包请求；多轮 messages 变化时难命中，相同请求重试应 HIT。";
+      }
+      diag.title = tip;
+    }
     const badge = $("statusBadge");
     badge.textContent = status.last_error || (status.running ? (status.logged_in ? "运行中" : "等待登录") : "未运行");
     badge.className = `badge ${status.running && status.logged_in ? "ok" : "warn"}`;
@@ -312,13 +353,71 @@ async function checkCodexInstalled() {
 refresh();
 checkCodexInstalled();
 
+$("clearCacheBtn").addEventListener("click", async () => {
+  const btn = $("clearCacheBtn");
+  setBusy(btn, true, "清除中...");
+  try {
+    await api.ClearCache();
+    await refresh();
+    notify("缓存已清除");
+  } catch (err) {
+    notify(errorMessage(err), "error");
+  } finally {
+    setBusy(btn, false);
+  }
+});
+
 // Listen for real-time token stats updates from backend
 if (window.runtime && window.runtime.EventsOn) {
   window.runtime.EventsOn("token-stats-updated", (data) => {
     if (!data) return;
-    $("promptTokens").textContent = formatTokenCount(data.prompt || 0);
-    $("completionTokens").textContent = formatTokenCount(data.completion || 0);
-    $("totalTokens").textContent = formatTokenCount(data.total || 0);
+    scheduleTokenStatsRefresh();
   });
+  window.runtime.EventsOn("cache-stats-updated", (data) => {
+    if (!data) return;
+    scheduleTokenStatsRefresh();
+  });
+  window.runtime.EventsOn("cache-decision-updated", () => { refresh(); });
   window.runtime.EventsOn("models-refreshed", () => { refresh(); });
 }
+
+// Token stats period switcher
+let tokenStatsRefreshTimer = null;
+
+function scheduleTokenStatsRefresh() {
+  // Throttle: at most once every 2 seconds.
+  if (tokenStatsRefreshTimer) return;
+  tokenStatsRefreshTimer = setTimeout(() => {
+    tokenStatsRefreshTimer = null;
+    refreshTokenStats();
+  }, 2000);
+}
+
+async function refreshTokenStats() {
+  if (!api || !api.TokenStats) return;
+  try {
+    const stats = await api.TokenStats(currentTokenPeriod);
+    $("promptTokens").textContent = formatTokenCount(stats.prompt_tokens || 0);
+    $("completionTokens").textContent = formatTokenCount(stats.completion_tokens || 0);
+    $("totalTokens").textContent = formatTokenCount(stats.total_tokens || 0);
+    // Show "before cache" values only if there are cache hits (savings exist).
+    const hasSavings = (stats.total_before_cache || 0) > (stats.total_tokens || 0);
+    $("promptBefore").textContent = hasSavings ? formatTokenCount(stats.prompt_before_cache || 0) : "";
+    $("completionBefore").textContent = hasSavings ? formatTokenCount(stats.completion_before_cache || 0) : "";
+    $("totalBefore").textContent = hasSavings ? formatTokenCount(stats.total_before_cache || 0) : "";
+    const pct = stats.cache_saving_pct || 0;
+    $("cacheSaving").textContent = pct > 0 ? pct.toFixed(0) + "%" : "-";
+  } catch (e) { /* ignore */ }
+}
+
+document.querySelectorAll(".period-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".period-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentTokenPeriod = btn.dataset.period;
+    refreshTokenStats();
+  });
+});
+
+// Initial load uses the selected period
+refreshTokenStats();

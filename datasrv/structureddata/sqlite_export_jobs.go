@@ -46,7 +46,7 @@ func (s *SQLiteStore) ListExportJobs(ctx context.Context, tenantID string, in Qu
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (s *SQLiteStore) ListExportJobs(ctx context.Context, tenantID string, in Qu
 }
 
 func (s *SQLiteStore) GetExportJob(ctx context.Context, tenantID, jobID string) (*ExportJob, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, format, status, total, bytes, error, result_text, created_by, created_at, started_at, finished_at FROM export_jobs WHERE tenant_id = ? AND id = ?`, tenantID, jobID)
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, format, status, total, bytes, error, result_text, created_by, created_at, started_at, finished_at FROM export_jobs WHERE tenant_id = ? AND id = ?`, tenantID, jobID)
 	job, err := scanExportJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrRecordNotFound

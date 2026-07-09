@@ -64,7 +64,7 @@ func (s *SQLiteStore) QueryAuditLogs(ctx context.Context, tenantID string, in Qu
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

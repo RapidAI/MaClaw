@@ -2,6 +2,8 @@
 
 package tensor
 
+import "unsafe"
+
 // --- AVX2+FMA assembly (Haswell+) ---
 
 //go:noescape
@@ -9,6 +11,9 @@ func dotQ8RowAVX2(a []float32, data []byte, rowOff, nBlocks int) float32
 
 //go:noescape
 func dequantRowIntoAVX2(dst []float32, data []byte, rowOff, nBlocks int)
+
+//go:noescape
+func dequantRowScaledAVX2(dst []float32, data []byte, scales *float32, rowOff, nBlocks int)
 
 // --- AVX1 assembly (Sandy/Ivy Bridge) ---
 
@@ -40,4 +45,13 @@ func dequantRowIntoASM(dst []float32, data []byte, rowOff, nBlocks int) {
 		return
 	}
 	dequantRowIntoScalar(dst, data, rowOff, nBlocks)
+}
+
+func dequantRowScaledASM(dst []float32, data []byte, scales *float32, rowOff, nBlocks int) {
+	if hasAVX2andFMA && nBlocks > 0 {
+		dequantRowScaledAVX2(dst, data, scales, rowOff, nBlocks)
+		return
+	}
+	sc := unsafe.Slice(scales, nBlocks)
+	dequantRowScaledScalar(dst, data, sc, rowOff, nBlocks)
 }

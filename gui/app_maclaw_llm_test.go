@@ -680,6 +680,50 @@ func TestInjectCodeGenModelIntoToolConfigsUsesFirstModelAsToolModelName(t *testi
 	}
 }
 
+func TestUpsertCodeGenProviderStoresAvailableModelIDs(t *testing.T) {
+	providers := []corelib.MaclawLLMProvider{{
+		Name:      codegenProviderName,
+		URL:       "https://old.example/api/v1",
+		Key:       "old-token",
+		Model:     "old-model",
+		AgentType: corelib.CodeGenClientName,
+		Models:    []string{"old-model"},
+	}, {
+		Name:  "Other",
+		Model: "other-model",
+	}}
+
+	updated := upsertCodeGenProvider(providers, oauth.CodeGenSSOResult{
+		AccessToken: "token-123",
+		BaseURL:     "https://codegen.qianxin-inc.cn/api/v1",
+		ModelID:     "qax-codegen/Auto",
+		Models: []oauth.CodeGenModel{
+			{ID: "qax-codegen/Auto"},
+			{ID: " qax-codegen/Claude "},
+			{ID: "qax-codegen/Auto"},
+			{ID: ""},
+		},
+	})
+
+	if got := providers[0].Key; got != "old-token" {
+		t.Fatalf("original providers mutated, key = %q", got)
+	}
+	if len(updated) != len(providers) {
+		t.Fatalf("len(updated) = %d, want %d", len(updated), len(providers))
+	}
+	gotModels := updated[0].Models
+	wantModels := []string{"qax-codegen/Auto", "qax-codegen/Claude"}
+	if !reflect.DeepEqual(gotModels, wantModels) {
+		t.Fatalf("CodeGen Models = %#v, want %#v", gotModels, wantModels)
+	}
+	if got := updated[0].Model; got != "qax-codegen/Auto" {
+		t.Fatalf("CodeGen Model = %q, want selected SSO model", got)
+	}
+	if got := updated[1].Name; got != "Other" {
+		t.Fatalf("non-CodeGen provider was not preserved: %+v", updated[1])
+	}
+}
+
 func TestSaveCodeGenModelChoiceRenamesExistingCodeGenModelEntry(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

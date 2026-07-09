@@ -13,12 +13,12 @@ package main
 //   Main Agent (conversation owner)     Btw SubAgent (side query)
 //   ┌──────────────────────┐           ┌──────────────────────┐
 //   │ System Prompt  12K   │           │ Identity + Recall ~2K │
-//   │ 40+ Tools     15K   │  /btw     │ 5 Tools        600   │
+//   │ 40+ Tools     15K   │  /btw     │ 6 Tools        700   │
 //   │ Memory/Steering 5K  │ ───────→  │ Empty History         │
 //   │ History       20K   │           │                      │
 //   │                      │ ←─────── │ Duties: search,      │
 //   │ Duties: workflow,    │  result   │ fetch, read, recall, │
-//   │ IM, memory, routing  │ (1 msg)  │ agent_status         │
+//   │ IM, memory, routing  │ (1 msg)  │ time, agent_status   │
 //   └──────────────────────┘           └──────────────────────┘
 //
 // Mechanism-level design decisions:
@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -240,14 +241,15 @@ const btwSuffix = `
 你正在处理一个 /btw 侧查询。这是一个独立的单轮快速查询，不是主任务的一部分。
 
 规则：
-1. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
-2. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
-3. 如果问题涉及本地项目文件，使用 read_file 查看
-4. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
-5. 回答要简洁、结构化，直接给出关键信息
-6. 引用网络来源时附上 URL
-7. 这是一个只读查询——不要修改任何文件，不要执行任何写操作
-8. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
+1. 如果用户询问当前日期/时间/星期，必须使用 current_datetime 工具，禁止猜测或编造
+2. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
+3. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
+4. 如果问题涉及本地项目文件，使用 read_file 查看
+5. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
+6. 回答要简洁、结构化，直接给出关键信息
+7. 引用网络来源时附上 URL
+8. 这是一个只读查询——不要修改任何文件，不要执行任何写操作
+9. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
 `
 
 func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -259,12 +261,17 @@ func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
 
 func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !btwToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory, agent_status）", name)
+		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory, agent_status, current_datetime）", name)
 	}
 
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return fmt.Sprintf("参数解析失败: %v", err)
+	if argsJSON != "" && argsJSON != "{}" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return fmt.Sprintf("参数解析失败: %v", err)
+		}
+	}
+	if args == nil {
+		args = map[string]interface{}{}
 	}
 
 	// Mechanism-level enforcement: memory tool is read-only in /btw.
@@ -288,9 +295,24 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 		return h.toolMemory(args)
 	case "agent_status":
 		return h.toolAgentStatus(args)
+	case "current_datetime":
+		return formatBtwCurrentDateTime()
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
+}
+
+// formatBtwCurrentDateTime mirrors the main agent current_datetime tool output.
+func formatBtwCurrentDateTime() string {
+	now := time.Now()
+	isoYear, isoWeek := now.ISOWeek()
+	return fmt.Sprintf(
+		"%04d-%02d-%02d %s ISO week %04d-W%02d %02d:%02d:%02d (timezone: %s)",
+		now.Year(), int(now.Month()), now.Day(),
+		now.Weekday().String(), isoYear, isoWeek,
+		now.Hour(), now.Minute(), now.Second(),
+		now.Location().String(),
+	)
 }
 
 func (c *btwCallbacks) OnToken(delta string) {
@@ -323,11 +345,12 @@ func (c *btwCallbacks) ShouldStop() bool {
 
 // btwToolNames is the allowlist of tools available to /btw queries.
 var btwToolNames = map[string]bool{
-	"web_search":   true,
-	"web_fetch":    true,
-	"read_file":    true,
-	"memory":       true,
-	"agent_status": true,
+	"web_search":        true,
+	"web_fetch":         true,
+	"read_file":         true,
+	"memory":            true,
+	"agent_status":      true,
+	"current_datetime":  true,
 }
 
 // buildBtwToolDefinitions constructs the minimal tool definitions for /btw.
@@ -359,6 +382,8 @@ func buildBtwToolDefinitions() []map[string]interface{} {
 				"category": map[string]string{"type": "string", "description": "Category: all, local_tasks, ssh_tasks, sessions, or ssh_sessions"},
 				"task_id":  map[string]string{"type": "string", "description": "Optional task ID"},
 			}, nil),
+		btwToolDef("current_datetime", "Get current local date and time (year, month, day, weekday, hour, minute, second, timezone). Prefer this over guessing the clock.",
+			map[string]interface{}{}, nil),
 	}
 }
 func btwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {

@@ -60,13 +60,14 @@ type anthropicUsage struct {
 // ── OpenAI request/response types ──
 
 type openaiChatRequest struct {
-	Model        string           `json:"model"`
-	Messages     []openaiMessage  `json:"messages"`
-	Stream       bool             `json:"stream,omitempty"`
-	MaxTokens    int              `json:"max_tokens,omitempty"`
-	Tools        []openaiTool     `json:"tools,omitempty"`
-	Functions    []openaiFunction `json:"functions,omitempty"`
-	FunctionCall interface{}      `json:"function_call,omitempty"`
+	Model         string                 `json:"model"`
+	Messages      []openaiMessage        `json:"messages"`
+	Stream        bool                   `json:"stream,omitempty"`
+	StreamOptions map[string]interface{} `json:"stream_options,omitempty"`
+	MaxTokens     int                    `json:"max_tokens,omitempty"`
+	Tools         []openaiTool           `json:"tools,omitempty"`
+	Functions     []openaiFunction       `json:"functions,omitempty"`
+	FunctionCall  interface{}            `json:"function_call,omitempty"`
 }
 
 type openaiMessage struct {

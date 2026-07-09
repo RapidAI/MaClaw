@@ -48,7 +48,7 @@ func (s *SQLiteStore) ListImportJobs(ctx context.Context, tenantID string, in Qu
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (s *SQLiteStore) ListImportJobs(ctx context.Context, tenantID string, in Qu
 }
 
 func (s *SQLiteStore) GetImportJob(ctx context.Context, tenantID, jobID string) (*ImportJob, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, kind, status, dry_run, total, imported, valid, error, result_json, created_by, created_at, started_at, finished_at FROM import_jobs WHERE tenant_id = ? AND id = ?`, tenantID, jobID)
+	row := s.queryDB().QueryRowContext(ctx, `SELECT id, tenant_id, dataset_id, kind, status, dry_run, total, imported, valid, error, result_json, created_by, created_at, started_at, finished_at FROM import_jobs WHERE tenant_id = ? AND id = ?`, tenantID, jobID)
 	job, err := scanImportJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrRecordNotFound

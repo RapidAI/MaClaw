@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -74,7 +75,7 @@ func (r *Registry) Get(name string) (*RegisteredTool, bool) {
 	return t, ok
 }
 
-// List returns all registered tools.
+// List returns all registered tools, sorted by name for deterministic ordering.
 func (r *Registry) List() []RegisteredTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -82,19 +83,29 @@ func (r *Registry) List() []RegisteredTool {
 	for _, t := range r.tools {
 		out = append(out, *t)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
 
-// ListAvailable returns tools with status "available".
+// ListAvailable returns tools with status "available", sorted by name
+// for deterministic ordering. Stable ordering is critical for LLM API
+// prefix caching — if the tool definition list changes order between
+// requests, the API provider's server-side KV cache cannot match the
+// token prefix, wasting input token budget.
 func (r *Registry) ListAvailable() []RegisteredTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var out []RegisteredTool
+	out := make([]RegisteredTool, 0, len(r.tools))
 	for _, t := range r.tools {
 		if t.Status == StatusAvailable {
 			out = append(out, *t)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
 
@@ -140,7 +151,8 @@ func (r *Registry) UpdateStatus(name string, status Status) {
 	r.mu.Unlock()
 }
 
-// AvailableTools returns tools available on the current platform.
+// AvailableTools returns tools available on the current platform,
+// sorted by name for deterministic ordering.
 // In headless environments, tools requiring display or clipboard are filtered out.
 func (r *Registry) AvailableTools(platform PlatformChecker) []RegisteredTool {
 	r.mu.RLock()
@@ -158,6 +170,9 @@ func (r *Registry) AvailableTools(platform PlatformChecker) []RegisteredTool {
 		}
 		out = append(out, *t)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
 	return out
 }
 

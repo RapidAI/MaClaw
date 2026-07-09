@@ -19,19 +19,20 @@ func (s *SQLiteStore) SystemStats(ctx context.Context, tenantID string) (*System
 		Datasets:      []DatasetStats{},
 		Extra:         map[string]interface{}{},
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM datasets WHERE tenant_id = ?`, tenantID).Scan(&out.DatasetCount); err != nil {
+	rdb := s.queryDB()
+	if err := rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM datasets WHERE tenant_id = ?`, tenantID).Scan(&out.DatasetCount); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE tenant_id = ?`, tenantID).Scan(&out.RecordCount); err != nil {
+	if err := rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM records WHERE tenant_id = ?`, tenantID).Scan(&out.RecordCount); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM field_definitions WHERE tenant_id = ?`, tenantID).Scan(&out.FieldCount); err != nil {
+	if err := rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM field_definitions WHERE tenant_id = ?`, tenantID).Scan(&out.FieldCount); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM quality_runs WHERE tenant_id = ?`, tenantID).Scan(&out.QualityRunCount); err != nil {
+	if err := rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM quality_runs WHERE tenant_id = ?`, tenantID).Scan(&out.QualityRunCount); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ?`, tenantID).Scan(&out.AuditLogCount); err != nil {
+	if err := rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ?`, tenantID).Scan(&out.AuditLogCount); err != nil {
 		return nil, err
 	}
 	backups, err := s.ListBackups(ctx, QueryBackupsInput{Limit: 500})
@@ -41,7 +42,7 @@ func (s *SQLiteStore) SystemStats(ctx context.Context, tenantID string) (*System
 	if info, err := os.Stat(s.path); err == nil {
 		out.DatabaseBytes = info.Size()
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM import_jobs WHERE tenant_id = ? GROUP BY status`, tenantID)
+	rows, err := rdb.QueryContext(ctx, `SELECT status, COUNT(*) FROM import_jobs WHERE tenant_id = ? GROUP BY status`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (s *SQLiteStore) SystemStats(ctx context.Context, tenantID string) (*System
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM export_jobs WHERE tenant_id = ? GROUP BY status`, tenantID)
+	rows, err = rdb.QueryContext(ctx, `SELECT status, COUNT(*) FROM export_jobs WHERE tenant_id = ? GROUP BY status`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (s *SQLiteStore) SystemStats(ctx context.Context, tenantID string) (*System
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT d.id, d.domain, d.name, d.title, d.schema_version, d.updated_at, COUNT(DISTINCT f.field_key), COUNT(DISTINCT r.id)
+	rows, err = rdb.QueryContext(ctx, `SELECT d.id, d.domain, d.name, d.title, d.schema_version, d.updated_at, COUNT(DISTINCT f.field_key), COUNT(DISTINCT r.id)
 		FROM datasets d
 		LEFT JOIN field_definitions f ON f.tenant_id = d.tenant_id AND f.dataset_id = d.id
 		LEFT JOIN records r ON r.tenant_id = d.tenant_id AND r.dataset_id = d.id

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,10 @@ type LLMPromptResponseCache struct {
 	mu       sync.Mutex
 	entries  map[string]*LLMPromptResponseCacheEntry
 	inflight map[string]*llmPromptResponseCacheFlight
+	hits     int64
+	misses   int64
+	// lastMaintainUnix gates opportunistic background maintenance.
+	lastMaintainUnix int64
 }
 
 type LLMPromptResponseCacheEntry struct {
@@ -30,6 +35,15 @@ type LLMPromptResponseCacheEntry struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	LastUsed  time.Time `json:"last_used"`
 	Size      int64     `json:"size"`
+}
+
+// LLMPromptResponseCacheStatus reports local cache counters and occupancy.
+type LLMPromptResponseCacheStatus struct {
+	Dir           string `json:"dir"`
+	MemoryEntries int    `json:"memory_entries"`
+	MemoryBytes   int64  `json:"memory_bytes"`
+	Hits          int64  `json:"hits"`
+	Misses        int64  `json:"misses"`
 }
 
 type llmPromptResponseCacheFlight struct {
@@ -52,6 +66,7 @@ func (c *LLMPromptResponseCache) Get(key string, cfg LLMPromptCacheConfig) ([]by
 			shouldTouch := now.Sub(entry.LastUsed) > time.Second
 			entry.LastUsed = now
 			body := append([]byte(nil), entry.Body...)
+			c.hits++
 			c.mu.Unlock()
 			if shouldTouch {
 				c.touchDisk(key, now)
@@ -63,19 +78,122 @@ func (c *LLMPromptResponseCache) Get(key string, cfg LLMPromptCacheConfig) ([]by
 	c.mu.Unlock()
 	entry, ok := c.readDisk(key)
 	if !ok {
+		c.mu.Lock()
+		c.misses++
+		c.mu.Unlock()
 		return nil, false
 	}
 	if now.After(entry.ExpiresAt) {
 		c.Delete(key)
+		c.mu.Lock()
+		c.misses++
+		c.mu.Unlock()
 		return nil, false
 	}
 	entry.LastUsed = now
 	c.touchDisk(key, now)
 	c.mu.Lock()
 	c.entries[key] = entry
+	c.hits++
 	c.pruneMemoryLocked(cfg)
 	c.mu.Unlock()
 	return append([]byte(nil), entry.Body...), true
+}
+
+// Status returns memory occupancy and hit/miss counters.
+func (c *LLMPromptResponseCache) Status() LLMPromptResponseCacheStatus {
+	if c == nil {
+		return LLMPromptResponseCacheStatus{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var bytes int64
+	for _, entry := range c.entries {
+		if entry != nil {
+			bytes += entry.Size
+		}
+	}
+	return LLMPromptResponseCacheStatus{
+		Dir:           c.dir,
+		MemoryEntries: len(c.entries),
+		MemoryBytes:   bytes,
+		Hits:          c.hits,
+		Misses:        c.misses,
+	}
+}
+
+// DeleteExpired removes expired entries from memory and disk. Returns deleted count.
+func (c *LLMPromptResponseCache) DeleteExpired(cfg LLMPromptCacheConfig) int {
+	if c == nil {
+		return 0
+	}
+	_ = cfg.WithDefaults()
+	now := time.Now()
+	deleted := 0
+	c.mu.Lock()
+	for key, entry := range c.entries {
+		if entry == nil || !now.Before(entry.ExpiresAt) {
+			delete(c.entries, key)
+			deleted++
+		}
+	}
+	c.mu.Unlock()
+	if strings.TrimSpace(c.dir) == "" {
+		return deleted
+	}
+	files, err := os.ReadDir(c.dir)
+	if err != nil {
+		return deleted
+	}
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(c.dir, file.Name())
+		entry, ok := readLLMPromptResponseCacheDiskFile(path, "")
+		if !ok || now.After(entry.ExpiresAt) {
+			if err := os.Remove(path); err == nil {
+				deleted++
+			}
+		}
+	}
+	return deleted
+}
+
+// Maintain runs expiration cleanup and disk size prune.
+func (c *LLMPromptResponseCache) Maintain(cfg LLMPromptCacheConfig) int {
+	if c == nil {
+		return 0
+	}
+	cfg = cfg.WithDefaults()
+	deleted := c.DeleteExpired(cfg)
+	c.pruneDisk(cfg)
+	return deleted
+}
+
+// MaybeMaintain runs Maintain at most once per minInterval (default 60s).
+// Safe to call on hot paths; work is skipped when recently run.
+func (c *LLMPromptResponseCache) MaybeMaintain(cfg LLMPromptCacheConfig, minInterval time.Duration) {
+	if c == nil {
+		return
+	}
+	if minInterval <= 0 {
+		minInterval = 60 * time.Second
+	}
+	now := time.Now().Unix()
+	minSec := int64(minInterval / time.Second)
+	if minSec < 1 {
+		minSec = 1
+	}
+	last := atomic.LoadInt64(&c.lastMaintainUnix)
+	if now-last < minSec {
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&c.lastMaintainUnix, last, now) {
+		return
+	}
+	cfg = cfg.WithDefaults()
+	_ = c.Maintain(cfg)
 }
 
 func (c *LLMPromptResponseCache) Set(key string, body []byte, cfg LLMPromptCacheConfig) bool {
@@ -95,6 +213,9 @@ func (c *LLMPromptResponseCache) Set(key string, body []byte, cfg LLMPromptCache
 	}
 	if entry.Size <= cfg.DiskMaxBytes {
 		stored = c.writeDisk(entry, cfg) || stored
+	}
+	if stored {
+		c.MaybeMaintain(cfg, 60*time.Second)
 	}
 	return stored
 }

@@ -51,6 +51,9 @@ type ConversationEntry struct {
 	ToolCallID       string      `json:"tool_call_id,omitempty"`
 	ToolName         string      `json:"tool_name,omitempty"`
 	ToolOutcome      string      `json:"tool_outcome,omitempty"`
+	ID               string      `json:"_id,omitempty"`
+	ParentID         string      `json:"_parent_id,omitempty"`
+	Timestamp        int64       `json:"_ts,omitempty"`
 }
 
 // ToMessage converts a ConversationEntry to a map suitable for the LLM API.
@@ -128,6 +131,7 @@ type ConversationArchiver interface {
 
 type conversationSession struct {
 	entries             []ConversationEntry
+	activeBranchTipID   string
 	lastAccess          time.Time
 	unfinishedSlot      *UnfinishedTaskSlot
 	activeSlotID        string
@@ -139,6 +143,7 @@ type conversationSession struct {
 
 type persistedSession struct {
 	Entries             []ConversationEntry `json:"entries"`
+	ActiveBranchTipID   string              `json:"active_branch_tip_id,omitempty"`
 	LastAccess          time.Time           `json:"last_access"`
 	UnfinishedSlot      *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
 	ActiveSlotID        string              `json:"active_slot_id,omitempty"`
@@ -354,8 +359,14 @@ func (cm *ConversationMemory) Stop() {
 	})
 }
 
-// Load returns a copy of the conversation entries for a user.
+// Load returns a copy of the active branch entries for a user.
 func (cm *ConversationMemory) Load(userID string) []ConversationEntry {
+	return cm.LoadActiveBranch(userID)
+}
+
+// LoadAll returns every persisted conversation entry, including inactive
+// branches. Most prompt-building code should use Load/LoadActiveBranch instead.
+func (cm *ConversationMemory) LoadAll(userID string) []ConversationEntry {
 	sh := cm.shard(userID)
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
@@ -368,11 +379,35 @@ func (cm *ConversationMemory) Load(userID string) []ConversationEntry {
 	return out
 }
 
-// Save stores conversation entries for a user.
+// LoadActiveBranch returns the active path through the user's conversation tree.
+func (cm *ConversationMemory) LoadActiveBranch(userID string) []ConversationEntry {
+	sh := cm.shard(userID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	s := sh.sessions[userID]
+	if s == nil {
+		return nil
+	}
+	return NewConversationTreeWithTip(s.entries, s.activeBranchTipID).ActiveBranch()
+}
+
+// ActiveBranchTipID returns the currently selected branch tip ID.
+func (cm *ConversationMemory) ActiveBranchTipID(userID string) string {
+	sh := cm.shard(userID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	if s := sh.sessions[userID]; s != nil {
+		return s.activeBranchTipID
+	}
+	return ""
+}
+
+// Save stores conversation entries for a user and treats the final entry as the
+// active branch tip. Existing inactive branches are preserved when entries carry
+// branch metadata.
 func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
-	entries = DeduplicateAdjacentAssistantEntries(entries)
-	copied := make([]ConversationEntry, len(entries))
-	copy(copied, entries)
+	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
+	now := time.Now()
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
@@ -380,8 +415,57 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 		s = &conversationSession{}
 		sh.sessions[userID] = s
 	}
-	s.entries = copied
-	s.lastAccess = time.Now()
+	if len(entries) == 0 {
+		s.entries = nil
+		s.activeBranchTipID = ""
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+		return
+	}
+	hasBranchMetadata := false
+	for _, entry := range entries {
+		if entry.ID != "" {
+			hasBranchMetadata = true
+			break
+		}
+	}
+	if !hasBranchMetadata {
+		if all, tip, ok := mergeLinearEntriesIntoExistingTree(s.entries, s.activeBranchTipID, entries); ok {
+			s.activeBranchTipID = tip
+			s.entries = all
+			s.lastAccess = now
+			sh.mu.Unlock()
+			cm.markDirtyAndScheduleFlush()
+			return
+		}
+		tree := NewConversationTree(entries)
+		s.activeBranchTipID = tree.TipID()
+		s.entries = tree.AllConversationEntries()
+		s.lastAccess = now
+		sh.mu.Unlock()
+		cm.markDirtyAndScheduleFlush()
+		return
+	}
+	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+	for _, entry := range entries {
+		if entry.ID == "" {
+			tree.Append(entry)
+			continue
+		}
+		branchEntry := entryToBranchable(entry)
+		if branchEntry.Timestamp == 0 {
+			branchEntry.Timestamp = now.UnixMilli()
+		}
+		tree.entries[branchEntry.ID] = branchEntry
+		if branchEntry.ParentID == "" && !containsString(tree.rootIDs, branchEntry.ID) {
+			tree.rootIDs = append(tree.rootIDs, branchEntry.ID)
+		}
+		tree.tipID = branchEntry.ID
+	}
+	s.activeBranchTipID = tree.TipID()
+	s.entries = tree.AllConversationEntries()
+	s.lastAccess = now
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
 }
@@ -394,10 +478,11 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 	if len(entries) == 0 {
 		return
 	}
-	entries = DeduplicateAdjacentAssistantEntries(entries)
+	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
 	if len(entries) == 0 {
 		return
 	}
+	now := time.Now()
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
@@ -405,10 +490,35 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 		s = &conversationSession{}
 		sh.sessions[userID] = s
 	}
-	s.entries = DeduplicateAdjacentAssistantEntries(append(s.entries, entries...))
-	s.lastAccess = time.Now()
+	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+	for _, entry := range entries {
+		tree.Append(entry)
+	}
+	s.activeBranchTipID = tree.TipID()
+	s.entries = tree.AllConversationEntries()
+	s.lastAccess = now
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
+}
+
+// SetActiveBranchTip rewinds or switches the visible conversation branch while
+// keeping every node in the tree.
+func (cm *ConversationMemory) SetActiveBranchTip(userID, tipID string) bool {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.sessions[userID]
+	if s == nil {
+		return false
+	}
+	tree := NewConversationTreeWithTip(s.entries, s.activeBranchTipID)
+	if !tree.BranchAt(tipID) {
+		return false
+	}
+	s.activeBranchTipID = tree.TipID()
+	s.lastAccess = time.Now()
+	cm.markDirtyAndScheduleFlush()
+	return true
 }
 
 // DeduplicateAdjacentAssistantEntries removes exact adjacent assistant text
@@ -416,12 +526,20 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 // occasionally race and hand the same completed message back twice; keeping both
 // pollutes future prompts and makes the assistant repeat stale task summaries.
 func DeduplicateAdjacentAssistantEntries(entries []ConversationEntry) []ConversationEntry {
+	return deduplicateAdjacentAssistantEntries(entries, false)
+}
+
+func deduplicateAdjacentAssistantEntriesForActiveBranch(entries []ConversationEntry) []ConversationEntry {
+	return deduplicateAdjacentAssistantEntries(entries, true)
+}
+
+func deduplicateAdjacentAssistantEntries(entries []ConversationEntry, respectBranchMetadata bool) []ConversationEntry {
 	if len(entries) < 2 {
 		return entries
 	}
 	result := make([]ConversationEntry, 0, len(entries))
 	for _, entry := range entries {
-		if len(result) > 0 && isDuplicateAssistantEntry(result[len(result)-1], entry) {
+		if len(result) > 0 && isDuplicateAssistantEntry(result[len(result)-1], entry, respectBranchMetadata) {
 			continue
 		}
 		result = append(result, entry)
@@ -429,9 +547,15 @@ func DeduplicateAdjacentAssistantEntries(entries []ConversationEntry) []Conversa
 	return result
 }
 
-func isDuplicateAssistantEntry(left, right ConversationEntry) bool {
+func isDuplicateAssistantEntry(left, right ConversationEntry, respectBranchMetadata bool) bool {
 	if left.Role != "assistant" || right.Role != "assistant" {
 		return false
+	}
+	if respectBranchMetadata && (left.ID != "" || right.ID != "") {
+		return left.ID != "" &&
+			right.ID != "" &&
+			left.ID == right.ID &&
+			left.ParentID == right.ParentID
 	}
 	if left.ToolCalls != nil || right.ToolCalls != nil || left.ToolCallID != "" || right.ToolCallID != "" {
 		return false
@@ -442,6 +566,50 @@ func isDuplicateAssistantEntry(left, right ConversationEntry) bool {
 		return false
 	}
 	return strings.TrimSpace(leftText) != "" && strings.TrimSpace(leftText) == strings.TrimSpace(rightText)
+}
+
+func mergeLinearEntriesIntoExistingTree(all []ConversationEntry, activeTipID string, entries []ConversationEntry) ([]ConversationEntry, string, bool) {
+	if len(all) == 0 || len(entries) == 0 {
+		return nil, "", false
+	}
+	tree := NewConversationTreeWithTip(all, activeTipID)
+	active := tree.ActiveBranch()
+	if len(active) == 0 {
+		return nil, "", false
+	}
+	common := 0
+	for common < len(entries) && common < len(active) && sameConversationEntryPayload(entries[common], active[common]) {
+		common++
+	}
+	if common == 0 {
+		return nil, "", false
+	}
+	if !tree.BranchAt(active[common-1].ID) {
+		return nil, "", false
+	}
+	for _, entry := range entries[common:] {
+		tree.Append(entry)
+	}
+	return tree.AllConversationEntries(), tree.TipID(), true
+}
+
+func sameConversationEntryPayload(left, right ConversationEntry) bool {
+	return left.Role == right.Role &&
+		reflect.DeepEqual(left.Content, right.Content) &&
+		left.ReasoningContent == right.ReasoningContent &&
+		reflect.DeepEqual(left.ToolCalls, right.ToolCalls) &&
+		left.ToolCallID == right.ToolCallID &&
+		left.ToolName == right.ToolName &&
+		left.ToolOutcome == right.ToolOutcome
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // Clear removes all conversation data for a user.
@@ -588,6 +756,7 @@ func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
 		return
 	}
 	s.entries = nil
+	s.activeBranchTipID = ""
 	s.activeSlotID = ""
 	s.lastAccess = time.Now()
 	cm.markDirtyAndScheduleFlush()
@@ -602,6 +771,7 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 		return
 	}
 	s.entries = nil
+	s.activeBranchTipID = ""
 	s.unfinishedSlot = nil
 	s.activeSlotID = ""
 	s.lastAccess = time.Now()
@@ -843,6 +1013,7 @@ func (cm *ConversationMemory) saveToDisk() error {
 			entries := sanitizeConversationEntriesForPersistence(session.entries)
 			snapshot.Sessions[userID] = persistedSession{
 				Entries:             entries,
+				ActiveBranchTipID:   session.activeBranchTipID,
 				LastAccess:          session.lastAccess,
 				UnfinishedSlot:      CloneUnfinishedTaskSlot(session.unfinishedSlot),
 				ActiveSlotID:        session.activeSlotID,
@@ -939,6 +1110,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
 			entries:             entries,
+			activeBranchTipID:   session.ActiveBranchTipID,
 			lastAccess:          session.LastAccess,
 			unfinishedSlot:      CloneUnfinishedTaskSlot(session.UnfinishedSlot),
 			activeSlotID:        session.ActiveSlotID,

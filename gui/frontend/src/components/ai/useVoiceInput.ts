@@ -69,10 +69,10 @@ const NOISE_FLOOR_MULTIPLIER = 3.0;    // speech threshold = noiseFloor * multip
 const NOISE_FLOOR_ADAPT_RATE = 0.05;   // EMA alpha for noise floor adaptation during silence
 const NOISE_FLOOR_MAX = 0.08;          // cap noise floor - above this the environment is too loud
 const NOISE_FLOOR_DEFAULT = 0.0025;    // conservative default; backend VAD catches false positives better than missed speech
-const SPEECH_START_CHUNKS = 2;         // consecutive speech chunks to start collecting a segment
+const SPEECH_START_CHUNKS = 1;         // 1 speech chunk to start (backend Silero VAD filters false positives)
 const SILENCE_END_CHUNKS = 6;          // consecutive silence chunks to end a segment (~1.5s)
 const SILENCE_FALLBACK_FLUSH_CHUNKS = 12; // prolonged silence drops low-level pre-roll audio (~3s)
-const CONTINUOUS_PREROLL_CHUNKS = 6;         // keep ~1.5s of raw audio before VAD confirms speech
+const CONTINUOUS_PREROLL_CHUNKS = 8;         // keep ~2s of raw audio before VAD confirms speech
 const MIN_SPEECH_CHUNKS = 2;           // continuous mode should accept short voice commands
 const MIN_CONTINUOUS_SPEECH_SEC = 0.45; // avoid tiny blips, but do not drop short Chinese commands
 const MAX_SEGMENT_SEC = 30;            // max segment duration before forced cut
@@ -458,6 +458,42 @@ function normalizePCMForASR(pcm: Float32Array): { pcm: Float32Array; gain: numbe
     return { pcm: normalized, gain, ...audioStats(normalized) };
 }
 
+
+
+/**
+ * gentleNormalize: only boost audio that is clearly too quiet for ASR.
+ * - If RMS >= 0.015 (normal speech level), don't touch it.
+ * - If RMS < 0.015, gently boost to reach ~0.025 RMS, capped at 3x gain.
+ * - Never clip: peak after gain stays <= 0.95.
+ * - No trim: preserves full segment boundaries.
+ *
+ * This is much more conservative than the old normalizePCMForASR (which
+ * targeted RMS=0.035 with up to 6x gain).
+ */
+function gentleNormalize(pcm: Float32Array): Float32Array {
+    const stats = audioStats(pcm);
+    if (stats.rms <= 0 || stats.peak <= 0) return pcm;
+
+    // Already at a reasonable level - don't modify
+    const GENTLE_TARGET_RMS = 0.025;
+    const GENTLE_MIN_RMS = 0.015;  // below this we boost
+    const GENTLE_MAX_GAIN = 3.0;
+
+    if (stats.rms >= GENTLE_MIN_RMS) return pcm;
+
+    // Calculate needed gain, constrained by peak headroom and max gain
+    const rmsGain = GENTLE_TARGET_RMS / stats.rms;
+    const peakGain = 0.95 / stats.peak;
+    const gain = Math.min(GENTLE_MAX_GAIN, rmsGain, peakGain);
+    if (gain <= 1.1) return pcm;
+
+    const out = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) {
+        out[i] = Math.max(-1, Math.min(1, pcm[i] * gain));
+    }
+    return out;
+}
+
 function pushContinuousPrerollChunk(chunks: Float32Array[], data: Float32Array) {
     chunks.push(new Float32Array(data));
     while (chunks.length > CONTINUOUS_PREROLL_CHUNKS) chunks.shift();
@@ -668,10 +704,13 @@ export function useVoiceInput(
         const beforeStats = audioStats(downsampled);
         const preprocessed = preprocessPCMForASR(downsampled, TARGET_SAMPLE_RATE);
         const preprocessedStats = audioStats(preprocessed.pcm);
-        const trimmed = trimPCMForASR(preprocessed.pcm);
-        const trimmedStats = audioStats(trimmed);
-        const normalized = normalizePCMForASR(trimmed);
-        const pcm = normalized.pcm;
+        // Gentle normalization: only boost if signal is clearly too quiet for the model.
+        // The model works best around RMS 0.02-0.05. Don't touch audio that's already
+        // in a reasonable range (avoids the old aggressive pipeline that damaged quality).
+        // Max gain capped at 3x to avoid amplifying noise in very quiet recordings.
+        const pcm = gentleNormalize(preprocessed.pcm);
+        const trimmedStats = audioStats(pcm);
+        const normalized = { pcm, gain: 1, rms: trimmedStats.rms, peak: trimmedStats.peak };
         const durationSec = pcm.length / TARGET_SAMPLE_RATE;
 
         // Too short -skip
@@ -1130,7 +1169,7 @@ export function useVoiceInput(
                     sampleRate: { ideal: TARGET_SAMPLE_RATE },
                     echoCancellation: false,
                     noiseSuppression: false,
-                    autoGainControl: false,
+                    autoGainControl: true,
                     ...(selectedDevice ? { deviceId: { ideal: selectedDevice } } : {}),
                 },
             });

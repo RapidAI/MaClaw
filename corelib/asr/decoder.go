@@ -90,6 +90,24 @@ func matMulLinear(out, a []float32, w linearWeight, M, N, K int) {
 	tensor.MatMulQ8(out, a, w.q8, M, N, K)
 }
 
+// matMulLinearBias is matMulLinear + row-broadcast bias (one write pass over out).
+func matMulLinearBias(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
+	if w.f32 != nil {
+		tensor.MatMulBias(out, a, w.f32, bias, M, N, K)
+		return
+	}
+	tensor.MatMulQ8Bias(out, a, w.q8, bias, M, N, K)
+}
+
+// matMulLinearBiasReLU is matMul + bias + ReLU (FFN up-projection).
+func matMulLinearBiasReLU(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
+	if w.f32 != nil {
+		tensor.MatMulBiasReLU(out, a, w.f32, bias, M, N, K)
+		return
+	}
+	tensor.MatMulQ8BiasReLU(out, a, w.q8, bias, M, N, K)
+}
+
 // shouldStopNearEOS handles small Go-vs-ggml numeric differences at utterance end.
 func shouldStopNearEOS(logits []float32, eosID int, bestVal float32, generated int) bool {
 	const minGeneratedTokens = 8
@@ -123,12 +141,62 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 
 	vocabN := m.activeVocabSize()
 	tokens := []int{hp.BOSID}
+
+	// Anti-loop: track consecutive repetitions and n-gram occurrences
+	const maxConsecutiveRepeat = 3 // force EOS after same token repeats N times
+	const repPenalty float32 = 1.5 // penalize recently generated tokens
+	const repWindow = 16           // look-back window for repetition penalty
+	const bigramBlockAfter = 1     // block a bigram after it has appeared N times
+
+	consecutiveCount := 0
+	lastToken := -1
+
 	for step := 0; step < hp.MaxSeqLen; step++ {
 		m.decoderStep(cache, bufs, step, tokens[len(tokens)-1], encFrames, vocabN)
 
+		// Suppress BOS/padding
 		bufs.logits[0] = float32(math.Inf(-1))
 		if hp.BOSID >= 0 && hp.BOSID < vocabN {
 			bufs.logits[hp.BOSID] = float32(math.Inf(-1))
+		}
+
+		// Repetition penalty: penalize tokens that appeared recently
+		start := len(tokens) - repWindow
+		if start < 0 {
+			start = 0
+		}
+		for _, tid := range tokens[start:] {
+			if tid >= 0 && tid < vocabN && tid != hp.EOSID {
+				if bufs.logits[tid] > 0 {
+					bufs.logits[tid] /= repPenalty
+				} else {
+					bufs.logits[tid] *= repPenalty
+				}
+			}
+		}
+
+		// Bigram blocking: if the previous token + candidate forms a bigram
+		// that already appeared in the sequence, suppress the candidate.
+		// This prevents short-phrase repetition like "太阳太阳".
+		// Only check top candidates (logit > bestLogit - 5.0) to avoid O(vocab*seq) cost.
+		if len(tokens) >= 2 {
+			prevToken := tokens[len(tokens)-1]
+			// Find threshold: only check candidates that are competitive
+			var topLogit float32
+			for i := 0; i < vocabN; i++ {
+				if bufs.logits[i] > topLogit {
+					topLogit = bufs.logits[i]
+				}
+			}
+			bigramThreshold := topLogit - 5.0
+			for candidate := 0; candidate < vocabN; candidate++ {
+				if bufs.logits[candidate] <= bigramThreshold {
+					continue
+				}
+				if bigramCount(tokens, prevToken, candidate) >= bigramBlockAfter {
+					bufs.logits[candidate] = float32(math.Inf(-1))
+				}
+			}
 		}
 
 		bestID := 0
@@ -142,6 +210,18 @@ func (m *MoonshineModel) decode(encOut []float32, encFrames int) ([]int, error) 
 		if bestID == hp.EOSID || shouldStopNearEOS(bufs.logits, hp.EOSID, bestVal, len(tokens)-1) {
 			break
 		}
+
+		// Consecutive repeat guard
+		if bestID == lastToken {
+			consecutiveCount++
+			if consecutiveCount >= maxConsecutiveRepeat {
+				break
+			}
+		} else {
+			consecutiveCount = 0
+		}
+		lastToken = bestID
+
 		tokens = append(tokens, bestID)
 	}
 	return tokens, nil
@@ -240,4 +320,16 @@ func sdpaSingleOpt(q, k, v, out, scores []float32, seqK, nHeads, headDim int) {
 		outSlice := out[hOff : hOff+headDim]
 		tensor.SoftmaxWeightedSumStrided(outSlice, scores[:seqK], v[hOff:], seqK, dim, headDim)
 	}
+}
+
+// bigramCount counts how many times the bigram (a, b) appears in tokens.
+// Used by bigram blocking to prevent short-phrase repetition.
+func bigramCount(tokens []int, a, b int) int {
+	count := 0
+	for i := 0; i < len(tokens)-1; i++ {
+		if tokens[i] == a && tokens[i+1] == b {
+			count++
+		}
+	}
+	return count
 }

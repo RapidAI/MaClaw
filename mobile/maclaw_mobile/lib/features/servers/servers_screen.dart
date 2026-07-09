@@ -886,9 +886,28 @@ class _BackendSSHSessionCardState
     );
   }
 
+  bool _recentOutputHasEvidenceLine(String output) {
+    final normalized = output.toLowerCase();
+    return (normalized.contains('gui/agent 后台会话证据') ||
+            normalized.contains('gui/agent evidence line')) &&
+        normalized.contains('hub session') &&
+        normalized.contains('backend_session_id') &&
+        normalized.contains('claimed_by') &&
+        normalized.contains('output_seq');
+  }
+
   Future<void> _copyRecentOutput() async {
     final output = _recentOutputForAI();
     if (output.isEmpty) return;
+    if (!_recentOutputHasEvidenceLine(output)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('等待 GUI/agent 证据行后再复制后台会话输出'),
+        ),
+      );
+      return;
+    }
     await ref.read(mobileClipboardWriterProvider)(
       redactMobileSensitiveText(output),
     );
@@ -897,7 +916,6 @@ class _BackendSSHSessionCardState
       const SnackBar(content: Text('后台会话输出已复制')),
     );
   }
-
   void _clearCapturedOutput() {
     _capturedOutput.clear();
     _backendSessionTerminal.write('\x1B[2J\x1B[H');

@@ -284,18 +284,44 @@ func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
 }
 
 func llmModelOptionsFromConfig(c *corelib.AppConfig) []string {
-	values := cloneConfigValues(llmModelChoiceOpts...)
 	if c == nil {
-		return values
+		return cloneConfigValues(llmModelChoiceOpts...)
+	}
+	values := providerModelOptionsFromConfig(c, currentLLMPresetName(c))
+	if len(values) == 0 {
+		values = cloneConfigValues(llmModelChoiceOpts...)
+		for _, p := range llmProviderPresets {
+			values = appendUniqueOption(values, p.Model)
+		}
 	}
 	values = appendUniqueOption(values, c.MaclawLLMModel)
-	for _, p := range llmProviderPresets {
-		values = appendUniqueOption(values, p.Model)
-	}
 	for _, p := range c.MaclawLLMProviders {
+		if strings.TrimSpace(p.Name) == strings.TrimSpace(c.MaclawLLMCurrentProvider) {
+			continue
+		}
 		values = appendUniqueOption(values, p.Model)
 	}
 	return values
+}
+
+func providerModelOptionsFromConfig(c *corelib.AppConfig, providerName string) []string {
+	providerName = strings.TrimSpace(providerName)
+	if c == nil || providerName == "" {
+		return nil
+	}
+	for _, provider := range c.MaclawLLMProviders {
+		if strings.TrimSpace(provider.Name) != providerName {
+			continue
+		}
+		values := cloneConfigValues(provider.Models...)
+		return appendUniqueOption(values, provider.Model)
+	}
+	for _, preset := range llmProviderPresets {
+		if preset.Name == providerName {
+			return cloneConfigValues(preset.Model)
+		}
+	}
+	return nil
 }
 
 func applyLLMModelChoice(c *corelib.AppConfig, model string) {

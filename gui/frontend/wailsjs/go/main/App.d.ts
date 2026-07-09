@@ -493,6 +493,20 @@ export function CancelOpenAIOAuth():Promise<void>;
 
 export function ImportCodexAuth():Promise<string>;
 
+export function StartAnthropicOAuth():Promise<main.AnthropicOAuthInfo>;
+
+export function CompleteAnthropicOAuth(arg1:string):Promise<string>;
+
+export function StartGitHubCopilotOAuth():Promise<main.GitHubCopilotDeviceInfo>;
+
+export function WaitGitHubCopilotOAuth():Promise<string>;
+
+export function CancelGitHubCopilotOAuth():Promise<void>;
+
+export function BranchConversationAt(arg1:number):Promise<main.ConversationBranchResult>;
+
+export function GetConversationBranchPoints():Promise<Array<main.ConversationBranchPoint>>;
+
 export function StartCodeGenSSO():Promise<any>;
 
 export function StartCodeGenSSOEmbedded():Promise<any>;

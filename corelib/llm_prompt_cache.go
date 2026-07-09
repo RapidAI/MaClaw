@@ -11,6 +11,9 @@ import (
 
 var ErrLLMPromptCacheInvalidResponse = errors.New("llm prompt cache invalid response")
 
+// DefaultLLMPromptCacheMaxResponseBytes caps a single cached response body.
+const DefaultLLMPromptCacheMaxResponseBytes = 2 * 1024 * 1024
+
 type LLMPromptCacheOptions struct {
 	Enabled                      bool
 	NormalizeDeterministicParams bool
@@ -22,6 +25,12 @@ type LLMPromptCacheOptions struct {
 type LLMPromptCacheDecision struct {
 	Reason    string
 	Cacheable bool
+}
+
+// LLMPromptCacheStoreDecision reports whether a completed response may be stored.
+type LLMPromptCacheStoreDecision struct {
+	Reason string
+	Store  bool
 }
 
 func LLMPromptCacheable(body map[string]any, opts LLMPromptCacheOptions) LLMPromptCacheDecision {
@@ -48,6 +57,9 @@ func LLMPromptCacheable(body map[string]any, opts LLMPromptCacheOptions) LLMProm
 	}
 	if value, ok := promptCacheFloatValue(body["frequency_penalty"]); ok && value != 0 {
 		return LLMPromptCacheDecision{Reason: "frequency_penalty"}
+	}
+	if hasNonEmptyPromptCacheMap(body["logit_bias"]) {
+		return LLMPromptCacheDecision{Reason: "logit_bias"}
 	}
 	return LLMPromptCacheDecision{Cacheable: true}
 }
@@ -108,12 +120,22 @@ func NormalizeLLMPromptCacheBody(body map[string]any, opts LLMPromptCacheOptions
 	if tools, ok := normalized["tools"].([]any); ok && len(tools) == 0 {
 		delete(normalized, "tools")
 	}
+	if functions, ok := normalized["functions"].([]any); ok && len(functions) == 0 {
+		delete(normalized, "functions")
+	}
 	_, hasTools := normalized["tools"]
+	_, hasFunctions := normalized["functions"]
 	if !hasTools {
 		delete(normalized, "tool_choice")
 		delete(normalized, "parallel_tool_calls")
 	} else if isDefaultPromptCacheToolChoice(normalized["tool_choice"]) {
 		delete(normalized, "tool_choice")
+	}
+	if !hasFunctions {
+		// Legacy OpenAI functions API: absent functions means function_call is noise.
+		delete(normalized, "function_call")
+	} else if isDefaultPromptCacheFunctionCall(normalized["function_call"]) {
+		delete(normalized, "function_call")
 	}
 	if value, ok := normalized["parallel_tool_calls"].(bool); ok && value {
 		delete(normalized, "parallel_tool_calls")
@@ -129,6 +151,201 @@ func NormalizeLLMPromptCacheBody(body map[string]any, opts LLMPromptCacheOptions
 		delete(normalized, "modalities")
 	}
 	return normalized
+}
+
+// LLMPromptCacheShouldStore reports whether a completed upstream response is safe to cache.
+// statusCode 0 is treated as HTTP 200 for callers that only have a body.
+func LLMPromptCacheShouldStore(respBody []byte, statusCode int) LLMPromptCacheStoreDecision {
+	return LLMPromptCacheShouldStoreWithLimit(respBody, statusCode, DefaultLLMPromptCacheMaxResponseBytes)
+}
+
+// LLMPromptCacheShouldStoreWithLimit is like LLMPromptCacheShouldStore with an explicit size cap.
+// maxBytes <= 0 uses DefaultLLMPromptCacheMaxResponseBytes.
+func LLMPromptCacheShouldStoreWithLimit(respBody []byte, statusCode int, maxBytes int) LLMPromptCacheStoreDecision {
+	if maxBytes <= 0 {
+		maxBytes = DefaultLLMPromptCacheMaxResponseBytes
+	}
+	if statusCode == 0 {
+		statusCode = 200
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return LLMPromptCacheStoreDecision{Reason: "status"}
+	}
+	if len(respBody) == 0 {
+		return LLMPromptCacheStoreDecision{Reason: "empty_body"}
+	}
+	if len(respBody) > maxBytes {
+		return LLMPromptCacheStoreDecision{Reason: "too_large"}
+	}
+	if !json.Valid(respBody) {
+		return LLMPromptCacheStoreDecision{Reason: "invalid_json"}
+	}
+	if LLMPromptCacheResponseHasToolCall(respBody) {
+		return LLMPromptCacheStoreDecision{Reason: "tool_calls"}
+	}
+	return LLMPromptCacheStoreDecision{Store: true}
+}
+
+// LLMPromptCacheResponseHasToolCall detects chat-completion and responses-API tool/function calls.
+func LLMPromptCacheResponseHasToolCall(respBody []byte) bool {
+	var payload map[string]any
+	if len(respBody) == 0 || json.Unmarshal(respBody, &payload) != nil {
+		return false
+	}
+	for _, rawChoice := range promptCacheAnySlice(payload["choices"]) {
+		choice, _ := rawChoice.(map[string]any)
+		if choice == nil {
+			continue
+		}
+		finish := strings.ToLower(strings.TrimSpace(promptCacheStringValue(choice["finish_reason"])))
+		if finish == "tool_calls" || finish == "function_call" {
+			return true
+		}
+		message, _ := choice["message"].(map[string]any)
+		if message == nil {
+			continue
+		}
+		if len(promptCacheAnySlice(message["tool_calls"])) > 0 {
+			return true
+		}
+		if functionCall, _ := message["function_call"].(map[string]any); len(functionCall) > 0 {
+			return true
+		}
+	}
+	for _, rawOutput := range promptCacheAnySlice(payload["output"]) {
+		output, _ := rawOutput.(map[string]any)
+		if output == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(promptCacheStringValue(output["type"])), "function_call") {
+			return true
+		}
+	}
+	return false
+}
+
+// SynthesizeOpenAIChatCompletionSSE converts a cached non-streaming chat.completion
+// JSON body into an OpenAI-compatible SSE stream (content and/or tool_calls + finish + [DONE]).
+func SynthesizeOpenAIChatCompletionSSE(respBody []byte) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return nil, err
+	}
+	id := promptCacheStringValue(payload["id"])
+	model := promptCacheStringValue(payload["model"])
+	created, _ := promptCacheIntValue(payload["created"])
+	choices := promptCacheAnySlice(payload["choices"])
+	if len(choices) == 0 {
+		return nil, fmt.Errorf("%w: missing choices", ErrLLMPromptCacheInvalidResponse)
+	}
+
+	var events []string
+	for i, rawChoice := range choices {
+		choice, _ := rawChoice.(map[string]any)
+		if choice == nil {
+			continue
+		}
+		index := i
+		if idx, ok := promptCacheIntValue(choice["index"]); ok {
+			index = int(idx)
+		}
+		message, _ := choice["message"].(map[string]any)
+		role := "assistant"
+		content := ""
+		var toolCalls []any
+		var functionCall map[string]any
+		if message != nil {
+			if r := strings.TrimSpace(promptCacheStringValue(message["role"])); r != "" {
+				role = r
+			}
+			content = promptCacheMessageContentString(message["content"])
+			toolCalls = promptCacheAnySlice(message["tool_calls"])
+			if fc, ok := message["function_call"].(map[string]any); ok && len(fc) > 0 {
+				functionCall = fc
+			}
+		}
+		finish := promptCacheStringValue(choice["finish_reason"])
+		if finish == "" {
+			if len(toolCalls) > 0 {
+				finish = "tool_calls"
+			} else if functionCall != nil {
+				finish = "function_call"
+			} else {
+				finish = "stop"
+			}
+		}
+
+		delta := map[string]any{"role": role}
+		if content != "" {
+			delta["content"] = content
+		}
+		if len(toolCalls) > 0 {
+			streamTCs := make([]any, 0, len(toolCalls))
+			for ti, rawTC := range toolCalls {
+				tc, _ := rawTC.(map[string]any)
+				if tc == nil {
+					continue
+				}
+				// OpenAI stream tool_calls include an index field for multi-call assembly.
+				streamTC := map[string]any{"index": ti}
+				for k, v := range tc {
+					streamTC[k] = v
+				}
+				if _, ok := streamTC["type"]; !ok {
+					streamTC["type"] = "function"
+				}
+				streamTCs = append(streamTCs, streamTC)
+			}
+			if len(streamTCs) > 0 {
+				delta["tool_calls"] = streamTCs
+			}
+		}
+		if functionCall != nil {
+			delta["function_call"] = functionCall
+		}
+		contentChunk := map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []any{
+				map[string]any{
+					"index":         index,
+					"delta":         delta,
+					"finish_reason": nil,
+				},
+			},
+		}
+		contentJSON, err := json.Marshal(contentChunk)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, "data: "+string(contentJSON))
+
+		finishChunk := map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []any{
+				map[string]any{
+					"index":         index,
+					"delta":         map[string]any{},
+					"finish_reason": finish,
+				},
+			},
+		}
+		if usage := payload["usage"]; usage != nil && i == len(choices)-1 {
+			finishChunk["usage"] = usage
+		}
+		finishJSON, err := json.Marshal(finishChunk)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, "data: "+string(finishJSON))
+	}
+	events = append(events, "data: [DONE]")
+	return []byte(strings.Join(events, "\n\n") + "\n\n"), nil
 }
 
 func deleteDefaultDeterministicParams(normalized map[string]any) {
@@ -194,6 +411,48 @@ func promptCacheStringValue(value any) string {
 	}
 }
 
+func promptCacheMessageContentString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []any:
+		var b strings.Builder
+		for _, part := range typed {
+			switch p := part.(type) {
+			case string:
+				b.WriteString(p)
+			case map[string]any:
+				if t := strings.TrimSpace(promptCacheStringValue(p["type"])); t == "" || strings.EqualFold(t, "text") {
+					b.WriteString(promptCacheStringValue(p["text"]))
+				}
+			}
+		}
+		return b.String()
+	default:
+		return promptCacheStringValue(value)
+	}
+}
+
+func promptCacheAnySlice(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, item)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func hasNonEmptyPromptCacheMap(value any) bool {
+	m, ok := value.(map[string]any)
+	return ok && len(m) > 0
+}
+
 func isDefaultPromptCacheResponseFormat(value any) bool {
 	m, ok := value.(map[string]any)
 	if !ok || len(m) != 1 {
@@ -211,6 +470,13 @@ func isDefaultPromptCacheModalities(value any) bool {
 }
 
 func isDefaultPromptCacheToolChoice(value any) bool {
+	// "none" is NOT default when tools are present — it disables tool use.
+	s := strings.ToLower(strings.TrimSpace(promptCacheStringValue(value)))
+	return s == "" || s == "auto"
+}
+
+func isDefaultPromptCacheFunctionCall(value any) bool {
+	// "none" is NOT default when functions are present — it disables function calls.
 	s := strings.ToLower(strings.TrimSpace(promptCacheStringValue(value)))
 	return s == "" || s == "auto"
 }

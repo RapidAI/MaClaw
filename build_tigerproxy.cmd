@@ -4,6 +4,20 @@ setlocal EnableDelayedExpansion
 echo [INFO] Building TigerProxy...
 
 set "ROOT=%~dp0"
+
+rem --- Ensure Go is in PATH ---
+where go >nul 2>nul
+if !errorlevel! neq 0 (
+  if exist "C:\Program Files\Go\bin\go.exe" (
+    set "PATH=C:\Program Files\Go\bin;%USERPROFILE%\go\bin;%PATH%"
+  ) else if exist "C:\Go\bin\go.exe" (
+    set "PATH=C:\Go\bin;%USERPROFILE%\go\bin;%PATH%"
+  ) else (
+    echo [FAILED] Go not found. Please install Go from https://go.dev/dl/
+    pause
+    exit /b 1
+  )
+)
 set "APP_NAME=TigerProxy"
 set "OUTPUT_DIR=%ROOT%dist"
 set "TIGER_DIR=%ROOT%TigerProxy"

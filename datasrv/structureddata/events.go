@@ -213,8 +213,6 @@ func (s *Service) dryRunRawEventLocked(ctx context.Context, p Principal, in Data
 }
 
 func (s *Service) QueryDataEvents(ctx context.Context, p Principal, in QueryDataEventsInput) ([]DataEventLog, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.QueryDataEvents(ctx, p.TenantID, in)
 }
 
@@ -250,8 +248,6 @@ func (s *Service) CreateDataEventDeadLetter(ctx context.Context, p Principal, in
 }
 
 func (s *Service) QueryDataEventDeadLetters(ctx context.Context, p Principal, in QueryDataEventDeadLettersInput) ([]DataEventDeadLetter, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.Status = strings.TrimSpace(in.Status)
 	if in.Status != "" && !validDataEventDeadLetterStatus(in.Status) {
 		return nil, fmt.Errorf("%w: invalid dead letter status", ErrInvalidInput)
@@ -269,8 +265,6 @@ func validDataEventDeadLetterStatus(value string) bool {
 }
 
 func (s *Service) GetDataEventDeadLetter(ctx context.Context, p Principal, deadLetterID string) (*DataEventDeadLetter, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetDataEventDeadLetter(ctx, p.TenantID, strings.TrimSpace(deadLetterID))
 }
 

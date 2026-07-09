@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,6 +202,94 @@ func TestTigerProxyOpenAIChatUpstreamServesChatAndResponsesClients(t *testing.T)
 	}
 	if second.Body["messages"] == nil {
 		t.Fatalf("responses request was not converted to chat messages: %#v", second.Body)
+	}
+}
+
+func TestTigerProxyResponsesToolCallIsStoredAndHit(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-tool","choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	err := app.restartProxy(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+	})
+	if err != nil {
+		t.Fatalf("restartProxy: %v", err)
+	}
+	defer app.stopProxy()
+
+	baseURL := tigerProxyTestBaseURL(t, app)
+	client := &http.Client{Timeout: 5 * time.Second}
+	doReq := func() (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/responses", strings.NewReader(`{"model":"qax-codegen/Auto","input":"hi","temperature":0,"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]}`))
+		if err != nil {
+			t.Fatalf("new responses request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer local-key")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("responses request: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, body
+	}
+
+	resp1, body1 := doReq()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first status = %d, want 200 body=%s", resp1.StatusCode, body1)
+	}
+	if resp1.Header.Get("X-Cache") != "MISS" {
+		t.Fatalf("first X-Cache = %q, want MISS", resp1.Header.Get("X-Cache"))
+	}
+
+	status, err := app.Status()
+	if err != nil {
+		t.Fatalf("status after store: %v", err)
+	}
+	if status.LastCacheProtocol != "responses" {
+		t.Fatalf("LastCacheProtocol = %q, want responses", status.LastCacheProtocol)
+	}
+	if status.LastCacheOutcome != "store" {
+		t.Fatalf("LastCacheOutcome = %q, want store (tool_calls should be cacheable for exact-match retries)", status.LastCacheOutcome)
+	}
+	if status.CacheEntries < 1 {
+		t.Fatalf("CacheEntries = %d, want >= 1 after tool_call store", status.CacheEntries)
+	}
+
+	resp2, body2 := doReq()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d, want 200 body=%s", resp2.StatusCode, body2)
+	}
+	if resp2.Header.Get("X-Cache") != "HIT" {
+		t.Fatalf("second X-Cache = %q, want HIT (upstreamHits=%d body=%s)", resp2.Header.Get("X-Cache"), upstreamHits.Load(), body2)
+	}
+	if !bytes.Contains(body2, []byte("read_file")) {
+		t.Fatalf("second body missing tool name: %s", body2)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1 (second served from cache)", upstreamHits.Load())
+	}
+
+	status2, err := app.Status()
+	if err != nil {
+		t.Fatalf("status after hit: %v", err)
+	}
+	if status2.CacheHits < 1 {
+		t.Fatalf("CacheHits = %d, want >= 1", status2.CacheHits)
+	}
+	if status2.LastCacheOutcome != "hit" {
+		t.Fatalf("LastCacheOutcome = %q, want hit", status2.LastCacheOutcome)
 	}
 }
 

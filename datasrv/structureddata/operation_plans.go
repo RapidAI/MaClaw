@@ -61,8 +61,6 @@ func (s *Service) CreateOperationPlan(ctx context.Context, p Principal, in Creat
 }
 
 func (s *Service) ListOperationPlans(ctx context.Context, p Principal, in QueryOperationPlansInput) ([]OperationPlan, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	in.Operation = strings.ToLower(strings.TrimSpace(in.Operation))
 	if in.Operation != "" && in.Operation != "bulk_update_records" && in.Operation != "bulk_delete_records" {
 		return nil, fmt.Errorf("%w: invalid operation plan operation", ErrInvalidInput)
@@ -84,8 +82,6 @@ func validOperationPlanStatus(value string) bool {
 }
 
 func (s *Service) GetOperationPlan(ctx context.Context, p Principal, planID string) (*OperationPlan, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.store.GetOperationPlan(ctx, p.TenantID, strings.TrimSpace(planID))
 }
 

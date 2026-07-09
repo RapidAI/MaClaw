@@ -324,14 +324,20 @@ type HeadlessOAuthParams struct {
 // PrepareHeadlessOAuth 生成无头环境下 OAuth 流程所需的参数。
 // 返回的 AuthURL 供用户在任意浏览器中打开。
 func PrepareHeadlessOAuth(cfg Config) (*HeadlessOAuthParams, error) {
+	// 使用固定的 localhost redirect_uri（与 Codex CLI 一致）
+	redirectURI := fmt.Sprintf("http://localhost:%d%s", DefaultCallbackPort, cfg.CallbackPath)
+	return PrepareHeadlessOAuthWithRedirectURI(cfg, redirectURI)
+}
+
+// PrepareHeadlessOAuthWithRedirectURI generates PKCE parameters for a caller-
+// supplied redirect URI. This is used by local callback servers that must bind
+// an ephemeral port before building the authorization URL.
+func PrepareHeadlessOAuthWithRedirectURI(cfg Config, redirectURI string) (*HeadlessOAuthParams, error) {
 	verifier, err := GenerateCodeVerifier()
 	if err != nil {
 		return nil, fmt.Errorf("oauth: failed to generate code verifier: %w", err)
 	}
 	challenge := GenerateCodeChallenge(verifier)
-
-	// 使用固定的 localhost redirect_uri（与 Codex CLI 一致）
-	redirectURI := fmt.Sprintf("http://localhost:%d%s", DefaultCallbackPort, cfg.CallbackPath)
 	state := generateState()
 	authURL := BuildAuthURL(cfg, challenge, redirectURI, state)
 

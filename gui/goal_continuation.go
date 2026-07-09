@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -161,12 +162,115 @@ func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
 	}
 	requestID := fmt.Sprintf("goal-cont-%s-%d", idPrefix, time.Now().UnixMilli())
 
-	go handler.HandleIMMessage(IMUserMessage{
+	e.emitForegroundRoundStarted(requestID, userID, prompt, e.buildContinuationDisplayText(g))
+
+	go e.runForegroundContinuation(handler, IMUserMessage{
 		RequestID: requestID,
 		UserID:    userID,
 		Platform:  "goal-continuation",
 		Text:      prompt,
 	})
+}
+
+func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHandler, msg IMUserMessage) {
+	if e == nil || handler == nil {
+		return
+	}
+	finalResponseAttempted := false
+	responseEmitted := false
+	emitFinalResponse := func(resp *IMAgentResponse) {
+		if finalResponseAttempted || e == nil || e.app == nil {
+			return
+		}
+		finalResponseAttempted = true
+		if resp == nil {
+			resp = &IMAgentResponse{}
+		}
+		resp.SessionKey = msg.UserID
+		responseEmitted = e.app.emitAIAssistantResponse(msg.RequestID, resp)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[goal-continuation] foreground request %s panicked: %v", msg.RequestID, r)
+			emitFinalResponse(&IMAgentResponse{Error: fmt.Sprintf("Goal continuation failed: %v", r)})
+			return
+		}
+		if !finalResponseAttempted {
+			log.Printf("[goal-continuation] foreground request %s exited without final response", msg.RequestID)
+			emitFinalResponse(&IMAgentResponse{Error: "Goal continuation ended without a final response."})
+		} else if !responseEmitted {
+			log.Printf("[goal-continuation] foreground request %s final response could not be emitted", msg.RequestID)
+		}
+	}()
+	emitEvent := func(name, value string) {
+		e.emitAssistantStreamEvent(name, msg.RequestID, msg.UserID, value)
+	}
+	onProgress := func(progressText string) {
+		if progressText == imHeartbeatMsg {
+			emitEvent("ai-assistant-progress", progressText)
+			return
+		}
+		if !isVisibleAIAssistantProgressText(progressText) {
+			return
+		}
+		emitEvent("ai-assistant-progress", progressText)
+	}
+	streamDeltaNormalizer := &aiAssistantStreamDeltaNormalizer{}
+	onToken := func(delta string) {
+		delta = streamDeltaNormalizer.Normalize(delta)
+		if delta == "" {
+			return
+		}
+		emitEvent("ai-assistant-token", delta)
+	}
+	onNewRound := func() {
+		streamDeltaNormalizer.Reset()
+		emitEvent("ai-assistant-new-round", "")
+	}
+	onStreamDone := func() {
+		emitEvent("ai-assistant-stream-done", "")
+	}
+
+	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	if resp == nil {
+		resp = &IMAgentResponse{}
+	}
+	emitFinalResponse(resp)
+}
+
+func (e *GoalContinuationEngine) emitForegroundRoundStarted(requestID, userID, prompt, displayText string) {
+	e.emitAssistantStreamEventWithDisplayText("ai-assistant-foreground-round-started", requestID, userID, prompt, displayText)
+}
+
+func (e *GoalContinuationEngine) emitAssistantStreamEvent(name, requestID, userID, text string) {
+	e.emitAssistantStreamEventWithDisplayText(name, requestID, userID, text, "")
+}
+
+func (e *GoalContinuationEngine) emitAssistantStreamEventWithDisplayText(name, requestID, userID, text, displayText string) {
+	if e == nil || e.app == nil || e.app.ctx == nil {
+		return
+	}
+	payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: userID, DisplayText: displayText})
+	if err != nil {
+		log.Printf("[goal-continuation] marshal %s event failed: %v", name, err)
+		return
+	}
+	runtime.EventsEmit(e.app.ctx, name, string(payload))
+}
+
+func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) string {
+	if g == nil {
+		return "/goal 继续推进目标"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("/goal 继续推进目标：%s", g.Objective))
+	if g.MaxTurns > 0 {
+		b.WriteString(fmt.Sprintf("\n进度：第 %d/%d 轮", g.TurnsUsed+1, g.MaxTurns))
+	}
+	if g.TokenBudget > 0 {
+		b.WriteString(fmt.Sprintf(" | Token: %d/%d", g.TokensUsed, g.TokenBudget))
+	}
+	return b.String()
 }
 
 // buildContinuationPrompt constructs the message that drives the next iteration.
@@ -213,7 +317,6 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 	})
 }
 
-
 // maybeScheduleGoalContinuation is called from the post-loop side effects
 // goroutine. It checks if the user has an active goal and schedules the
 // next continuation turn via the continuation engine.
@@ -229,6 +332,11 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 	engine := h.app.goalContinuation
 	g := engine.store.Get(userID)
 	if g == nil || g.IsTerminal() || g.Status != goal.StatusActive {
+		return
+	}
+	if h.hasCancelledTaskBoundary(userID) {
+		engine.CancelPending(userID)
+		log.Printf("[goal-continuation] skipping: task cancelled by user user=%s", userID)
 		return
 	}
 
