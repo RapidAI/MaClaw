@@ -86,8 +86,7 @@ void main() {
     expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
   });
 
-  test('mobile can explicitly disable assistant without treating it as search',
-      () {
+  test('mobile keeps assistant visible even if Hub disables assistant flag', () {
     const features = MobileFeatures(
       assistant: false,
       search: true,
@@ -99,11 +98,19 @@ void main() {
 
     final tabs = mobileAppTabsForFeatures(features);
 
-    expect(tabs.map((tab) => tab.path), ['/documents', '/account']);
-    expect(mobileInitialPathForFeatures(features), '/documents');
-    expect(mobilePathEnabledForFeatures('/assistant', features), isFalse);
+    expect(tabs.map((tab) => tab.path), [
+      '/assistant',
+      '/documents',
+      '/account',
+    ]);
+    expect(tabs.map((tab) => tab.label), [
+      _assistantTab,
+      _documentsTab,
+      _accountTab,
+    ]);
+    expect(mobileInitialPathForFeatures(features), '/assistant');
+    expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
   });
-
   test('shared file intents prefer documents when document feature is enabled',
       () {
     const features = MobileFeatures(

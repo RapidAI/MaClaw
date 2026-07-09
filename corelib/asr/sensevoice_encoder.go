@@ -30,20 +30,23 @@ func (m *SenseVoiceModel) encode(lfrFeats []float32, lfrFrames int) []float32 {
 
 	bufs := m.ensureEncBufs(totalFrames)
 
-	// Build input sequence into featsBuf: [4 prompt embeddings ; LFR features]
+	// Build input sequence into featsBuf: [4 prompt embeddings ; LFR features].
+	// Avoid full-buffer clear — only zero missing prompt rows; LFR is fully overwritten.
 	featsN := totalFrames * featsDim
 	xFeats := bufs.featsBuf[:featsN]
-	// Zero first so unused embedding dims stay clean if embedding rows short
-	clear(xFeats)
-
+	promptIDs := [4]int{0, 1, 2, 14}
 	if m.w.embedding != nil {
-		promptIDs := [4]int{0, 1, 2, 14}
 		embRows := len(m.w.embedding) / featsDim
 		for i, pid := range promptIDs {
+			dst := xFeats[i*featsDim : (i+1)*featsDim]
 			if pid < embRows {
-				copy(xFeats[i*featsDim:(i+1)*featsDim], m.w.embedding[pid*featsDim:(pid+1)*featsDim])
+				copy(dst, m.w.embedding[pid*featsDim:(pid+1)*featsDim])
+			} else {
+				clear(dst)
 			}
 		}
+	} else {
+		clear(xFeats[:4*featsDim])
 	}
 	copy(xFeats[4*featsDim:], lfrFeats[:lfrFrames*featsDim])
 
@@ -134,21 +137,20 @@ func (m *SenseVoiceModel) sanmBlockInto(x []float32, nFrames, inDim int, l *svLa
 	projOut := bufs.projOut[:n]
 	matMulLinearBias(projOut, attnOut, l.outW, l.outB.f32, nFrames, hidden, hidden)
 
-	// FSMN(V) + V residual, then + projOut (+ input residual)
+	// FSMN(V) + V residual (fused into one pass), then + projOut (+ input residual)
 	fsmnOut := bufs.fsmnOut[:n]
 	if useFused {
 		// V is third plane of interleaved QKV [Q|K|V], stride = 3*hidden
-		svFSMNStrided(fsmnOut, qkv, 2*hidden, 3*hidden, nFrames, hidden, l.fsmnW, m.hp.FSMNKernel, bufs)
-		// residual V: add V plane into fsmnOut (strided)
-		svAddStridedInplace(fsmnOut, qkv, nFrames, hidden, 2*hidden, 3*hidden)
+		svFSMNStridedAddV(fsmnOut, qkv, 2*hidden, 3*hidden, nFrames, hidden, l.fsmnW, m.hp.FSMNKernel)
 	} else {
 		svFSMNInto(fsmnOut, v, l.fsmnW, nFrames, hidden, m.hp.FSMNKernel, bufs)
 		vek32.Add_Inplace(fsmnOut, v)
 	}
-	// out = projOut + fsmnOut [+ x residual] — this is the FFN residual.
-	vek32.Add_Into(out[:n], projOut, fsmnOut)
+	// out = projOut + fsmnOut [+ x] — fused when residual present
 	if sameInOut {
-		vek32.Add_Inplace(out[:n], x[:n])
+		svAdd3(out[:n], projOut, fsmnOut, x[:n])
+	} else {
+		vek32.Add_Into(out[:n], projOut, fsmnOut)
 	}
 
 	// FFN without residual copy:
@@ -164,26 +166,22 @@ func (m *SenseVoiceModel) sanmBlockInto(x []float32, nFrames, inDim int, l *svLa
 	vek32.Add_Inplace(out[:n], projOut)
 }
 
-// svAddStridedInplace: dst[f] += src[f*stride+baseOff] for f in [0,nFrames).
-func svAddStridedInplace(dst, src []float32, nFrames, dim, baseOff, stride int) {
-	for f := 0; f < nFrames; f++ {
-		d := dst[f*dim : (f+1)*dim]
-		s := src[f*stride+baseOff : f*stride+baseOff+dim]
-		// Unrolled for auto-vectorization
-		i := 0
-		for ; i+7 < dim; i += 8 {
-			d[i] += s[i]
-			d[i+1] += s[i+1]
-			d[i+2] += s[i+2]
-			d[i+3] += s[i+3]
-			d[i+4] += s[i+4]
-			d[i+5] += s[i+5]
-			d[i+6] += s[i+6]
-			d[i+7] += s[i+7]
-		}
-		for ; i < dim; i++ {
-			d[i] += s[i]
-		}
+// svAdd3: out[i] = a[i] + b[i] + c[i] (one write pass).
+func svAdd3(out, a, b, c []float32) {
+	n := len(out)
+	i := 0
+	for ; i+7 < n; i += 8 {
+		out[i] = a[i] + b[i] + c[i]
+		out[i+1] = a[i+1] + b[i+1] + c[i+1]
+		out[i+2] = a[i+2] + b[i+2] + c[i+2]
+		out[i+3] = a[i+3] + b[i+3] + c[i+3]
+		out[i+4] = a[i+4] + b[i+4] + c[i+4]
+		out[i+5] = a[i+5] + b[i+5] + c[i+5]
+		out[i+6] = a[i+6] + b[i+6] + c[i+6]
+		out[i+7] = a[i+7] + b[i+7] + c[i+7]
+	}
+	for ; i < n; i++ {
+		out[i] = a[i] + b[i] + c[i]
 	}
 }
 
@@ -203,16 +201,66 @@ func svMultiHeadAttentionInto(out, q, k, v []float32, nFrames, nHeads, headDim i
 }
 
 // svMultiHeadAttentionFused: qkv is [nFrames, 3*hidden] with layout [Q|K|V] per frame.
-// Packs K per head for multiDot score kernels; V stays strided for weighted sum.
+// Packs Q/K/V for all heads once (contiguous [nHeads][nFrames][headDim]).
+// Scores use packed Q (no per-tile Q copy); softmax@V uses packed V (stride=headDim).
+// Parallelizes across heads via the tensor worker pool when T is large.
 func svMultiHeadAttentionFused(out, qkv []float32, nFrames, nHeads, headDim, hidden int, bufs *svEncoderBufs) {
 	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
-	qkvStride := 3 * hidden
-	for h := 0; h < nHeads; h++ {
+
+	// Frame-major pack Q→bufs.q, K→bufs.k, V→bufs.v (one sweep over qkv rows).
+	packQKVHeads(bufs.q, bufs.k, bufs.v, qkv, nFrames, nHeads, headDim, hidden)
+
+	runHead := func(h int) {
 		hOff := h * headDim
-		// Pack K (middle plane of QKV) — reuse unused k buffer.
-		kPack := bufs.k[:nFrames*headDim]
-		packStridedHead(kPack, qkv, nFrames, qkvStride, hidden+hOff, headDim)
-		svAttnHeadPackedFused(out, qkv, kPack, nFrames, hidden, qkvStride, hOff, headDim, scale, bufs)
+		base := h * nFrames * headDim
+		qPack := bufs.q[base : base+nFrames*headDim]
+		kPack := bufs.k[base : base+nFrames*headDim]
+		vPack := bufs.v[base : base+nFrames*headDim]
+		scores, _ := ensureAttnScratchHead(bufs, nFrames, headDim, h, nHeads)
+		// Packed Q/K/V: vStride=headDim, vBaseOff=0 (contiguous head buffer).
+		svAttnScoresPackedQ(out, qPack, kPack, vPack, scores, nFrames, hidden, headDim, hOff, 0, headDim, scale)
+	}
+
+	if nFrames >= 32 && nHeads > 1 {
+		// Reuse matmul worker pool — avoids ~70 layers × N head goroutine spawn/join.
+		tensor.ParallelRanges(nHeads, func(s, e int) {
+			for h := s; h < e; h++ {
+				runHead(h)
+			}
+		})
+		return
+	}
+	for h := 0; h < nHeads; h++ {
+		runHead(h)
+	}
+}
+
+// packQKVHeads packs fused QKV into contiguous [nHeads][nFrames][headDim] for Q, K, V.
+// Frame-major over heads keeps each qkv row hot in L1.
+func packQKVHeads(qDst, kDst, vDst, qkv []float32, nFrames, nHeads, headDim, hidden int) {
+	qkvStride := 3 * hidden
+	if headDim == 128 {
+		for f := 0; f < nFrames; f++ {
+			row := qkv[f*qkvStride:]
+			for h := 0; h < nHeads; h++ {
+				hOff := h * 128
+				dstOff := (h*nFrames + f) * 128
+				copy(qDst[dstOff:dstOff+128], row[hOff:hOff+128])
+				copy(kDst[dstOff:dstOff+128], row[hidden+hOff:hidden+hOff+128])
+				copy(vDst[dstOff:dstOff+128], row[2*hidden+hOff:2*hidden+hOff+128])
+			}
+		}
+		return
+	}
+	for f := 0; f < nFrames; f++ {
+		row := qkv[f*qkvStride:]
+		for h := 0; h < nHeads; h++ {
+			hOff := h * headDim
+			dstOff := (h*nFrames + f) * headDim
+			copy(qDst[dstOff:dstOff+headDim], row[hOff:hOff+headDim])
+			copy(kDst[dstOff:dstOff+headDim], row[hidden+hOff:hidden+hOff+headDim])
+			copy(vDst[dstOff:dstOff+headDim], row[2*hidden+hOff:2*hidden+hOff+headDim])
+		}
 	}
 }
 
@@ -233,14 +281,21 @@ func packStridedHead(dst, src []float32, nFrames, stride, baseOff, headDim int) 
 	}
 }
 
-// ensureAttnScratch returns score rows [8*nFrames] and Q panel [8*headDim].
+// ensureAttnScratch returns score rows [8*nFrames] and Q panel [8*headDim] (head 0).
 func ensureAttnScratch(bufs *svEncoderBufs, nFrames, headDim int) (scores, qPanel []float32) {
-	need := 8*nFrames + 8*headDim
+	return ensureAttnScratchHead(bufs, nFrames, headDim, 0, 1)
+}
+
+// ensureAttnScratchHead returns per-head score/Q-panel slices for parallel attention.
+func ensureAttnScratchHead(bufs *svEncoderBufs, nFrames, headDim, h, nHeads int) (scores, qPanel []float32) {
+	perHead := 8*nFrames + 8*headDim
+	need := nHeads * perHead
 	if cap(bufs.scoresScratch) < need {
 		bufs.scoresScratch = make([]float32, need)
 	}
-	scores = bufs.scoresScratch[:8*nFrames]
-	qPanel = bufs.scoresScratch[8*nFrames : 8*nFrames+8*headDim]
+	base := h * perHead
+	scores = bufs.scoresScratch[base : base+8*nFrames]
+	qPanel = bufs.scoresScratch[base+8*nFrames : base+perHead]
 	return
 }
 
@@ -254,29 +309,103 @@ func svAttnHeadPacked(out, q, kPack, v []float32, nFrames, hidden, hOff, headDim
 // svAttnHeadPackedFused: Q/V in interleaved QKV; K packed contiguous.
 func svAttnHeadPackedFused(out, qkv, kPack []float32, nFrames, hidden, qkvStride, hOff, headDim int, scale float32, bufs *svEncoderBufs) {
 	scores, qPanel := ensureAttnScratch(bufs, nFrames, headDim)
-	// Fused path: q buffer is free — use it for denser Q panel locality.
-	if cap(bufs.q) >= 8*headDim {
-		qPanel = bufs.q[:8*headDim]
-	}
 	svAttnScoresTiled(out, qkv, kPack, qkv, scores, qPanel, nFrames, hidden, qkvStride, hOff, 2*hidden+hOff, headDim, scale, true)
 }
 
-// svAttnScoresTiled computes Q-tiles of 8/4 against packed K via MultiDot, then softmax@V.
-// When fused=true, Q lives at base qSrc[f*qStride+hOff] and V at vSrc[f*vStride+vBaseOff].
-// When fused=false, Q/V use the same hidden stride with offsets hOff / hOff.
+// svAttnScoresPackedQ: Q and K are both contiguous [nFrames][headDim].
+// No per-tile Q packing — MultiDot reads Q panels directly from qPack.
+// V is typically packed (vStride=headDim); softmax@V batches 8/4 queries to share V loads.
+func svAttnScoresPackedQ(out, qPack, kPack, vSrc, scores []float32, nFrames, hidden, vStride, hOff, vBaseOff, headDim int, scale float32) {
+	vBase := vSrc[vBaseOff:]
+	qf := 0
+	for ; qf+7 < nFrames; qf += 8 {
+		// Contiguous 8×headDim Q panel
+		aPanel := qPack[qf*headDim : (qf+8)*headDim]
+		var dLo, dHi [8]float32
+		kf := 0
+		for ; kf+1 < nFrames; kf += 2 {
+			k0 := kPack[kf*headDim : (kf+1)*headDim]
+			k1 := kPack[(kf+1)*headDim : (kf+2)*headDim]
+			tensor.MultiDot4DualB(&dLo, aPanel[:4*headDim], k0, k1, headDim)
+			tensor.MultiDot4DualB(&dHi, aPanel[4*headDim:], k0, k1, headDim)
+			scores[0*nFrames+kf] = dLo[0] * scale
+			scores[1*nFrames+kf] = dLo[1] * scale
+			scores[2*nFrames+kf] = dLo[2] * scale
+			scores[3*nFrames+kf] = dLo[3] * scale
+			scores[0*nFrames+kf+1] = dLo[4] * scale
+			scores[1*nFrames+kf+1] = dLo[5] * scale
+			scores[2*nFrames+kf+1] = dLo[6] * scale
+			scores[3*nFrames+kf+1] = dLo[7] * scale
+			scores[4*nFrames+kf] = dHi[0] * scale
+			scores[5*nFrames+kf] = dHi[1] * scale
+			scores[6*nFrames+kf] = dHi[2] * scale
+			scores[7*nFrames+kf] = dHi[3] * scale
+			scores[4*nFrames+kf+1] = dHi[4] * scale
+			scores[5*nFrames+kf+1] = dHi[5] * scale
+			scores[6*nFrames+kf+1] = dHi[6] * scale
+			scores[7*nFrames+kf+1] = dHi[7] * scale
+		}
+		if kf < nFrames {
+			var d8 [8]float32
+			tensor.MultiDot8(&d8, aPanel, kPack[kf*headDim:(kf+1)*headDim], headDim)
+			for t := 0; t < 8; t++ {
+				scores[t*nFrames+kf] = d8[t] * scale
+			}
+		}
+		// 8 queries share one V stream (8× fewer V loads vs sequential).
+		tensor.SoftmaxWeightedSumBatched(out, scores, vBase, 8, nFrames, vStride, headDim, hidden, hOff, qf)
+	}
+	for ; qf+3 < nFrames; qf += 4 {
+		aPanel := qPack[qf*headDim : (qf+4)*headDim]
+		var dDual [8]float32
+		kf := 0
+		for ; kf+1 < nFrames; kf += 2 {
+			tensor.MultiDot4DualB(&dDual, aPanel,
+				kPack[kf*headDim:(kf+1)*headDim],
+				kPack[(kf+1)*headDim:(kf+2)*headDim], headDim)
+			scores[0*nFrames+kf] = dDual[0] * scale
+			scores[1*nFrames+kf] = dDual[1] * scale
+			scores[2*nFrames+kf] = dDual[2] * scale
+			scores[3*nFrames+kf] = dDual[3] * scale
+			scores[0*nFrames+kf+1] = dDual[4] * scale
+			scores[1*nFrames+kf+1] = dDual[5] * scale
+			scores[2*nFrames+kf+1] = dDual[6] * scale
+			scores[3*nFrames+kf+1] = dDual[7] * scale
+		}
+		if kf < nFrames {
+			var d4 [4]float32
+			tensor.MultiDot4(&d4, aPanel, kPack[kf*headDim:(kf+1)*headDim], headDim)
+			for t := 0; t < 4; t++ {
+				scores[t*nFrames+kf] = d4[t] * scale
+			}
+		}
+		tensor.SoftmaxWeightedSumBatched(out, scores, vBase, 4, nFrames, vStride, headDim, hidden, hOff, qf)
+	}
+	for ; qf < nFrames; qf++ {
+		qVec := qPack[qf*headDim : (qf+1)*headDim]
+		sc := scores[:nFrames]
+		for kf := 0; kf < nFrames; kf++ {
+			sc[kf] = vek32.Dot(qVec, kPack[kf*headDim:(kf+1)*headDim]) * scale
+		}
+		oOff := qf*hidden + hOff
+		tensor.SoftmaxWeightedSumStrided(out[oOff:oOff+headDim], sc, vBase, nFrames, vStride, headDim)
+	}
+}
+
+// svAttnScoresTiled: legacy path for non-packed Q (non-fused attention).
 func svAttnScoresTiled(out, qSrc, kPack, vSrc, scores, qPanel []float32, nFrames, hidden, qStride, hOff, vBaseOff, headDim int, scale float32, fused bool) {
 	vStride := hidden
 	if fused {
 		vStride = qStride
 	}
+	// Fallback: pack-on-the-fly still works; prefer PackedQ when possible.
+	_ = fused
 	qf := 0
 	for ; qf+7 < nFrames; qf += 8 {
 		for t := 0; t < 8; t++ {
 			src := qSrc[(qf+t)*qStride+hOff : (qf+t)*qStride+hOff+headDim]
 			copy(qPanel[t*headDim:(t+1)*headDim], src)
 		}
-		// Dual-K: MultiDot4DualB amortizes Q loads across two K vectors.
-		// Process Q rows 0-3 and 4-7 separately (each dual×4).
 		var dLo, dHi [8]float32
 		kf := 0
 		for ; kf+1 < nFrames; kf += 2 {
@@ -304,14 +433,9 @@ func svAttnScoresTiled(out, qSrc, kPack, vSrc, scores, qPanel []float32, nFrames
 		if kf < nFrames {
 			var d8 [8]float32
 			tensor.MultiDot8(&d8, qPanel, kPack[kf*headDim:(kf+1)*headDim], headDim)
-			scores[0*nFrames+kf] = d8[0] * scale
-			scores[1*nFrames+kf] = d8[1] * scale
-			scores[2*nFrames+kf] = d8[2] * scale
-			scores[3*nFrames+kf] = d8[3] * scale
-			scores[4*nFrames+kf] = d8[4] * scale
-			scores[5*nFrames+kf] = d8[5] * scale
-			scores[6*nFrames+kf] = d8[6] * scale
-			scores[7*nFrames+kf] = d8[7] * scale
+			for t := 0; t < 8; t++ {
+				scores[t*nFrames+kf] = d8[t] * scale
+			}
 		}
 		for t := 0; t < 8; t++ {
 			oOff := (qf+t)*hidden + hOff
@@ -342,10 +466,9 @@ func svAttnScoresTiled(out, qSrc, kPack, vSrc, scores, qPanel []float32, nFrames
 		if kf < nFrames {
 			var d4 [4]float32
 			tensor.MultiDot4(&d4, qPanel[:4*headDim], kPack[kf*headDim:(kf+1)*headDim], headDim)
-			scores[0*nFrames+kf] = d4[0] * scale
-			scores[1*nFrames+kf] = d4[1] * scale
-			scores[2*nFrames+kf] = d4[2] * scale
-			scores[3*nFrames+kf] = d4[3] * scale
+			for t := 0; t < 4; t++ {
+				scores[t*nFrames+kf] = d4[t] * scale
+			}
 		}
 		for t := 0; t < 4; t++ {
 			oOff := (qf+t)*hidden + hOff
@@ -385,36 +508,134 @@ func svFSMNInto(out, v, kernel []float32, nFrames, hidden, kernelSize int, bufs 
 }
 
 // svFSMNStrided is FSMN over a strided V layout (e.g. fused QKV with V at baseOff).
-// vFrame f starts at f*stride + baseOff and is contiguous for `hidden` floats.
-// Uses fused out += v⊙k (no temporary mul buffer).
 func svFSMNStrided(out, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, kernelSize int, bufs *svEncoderBufs) {
+	svFSMNStridedOpt(out, v, baseOff, stride, nFrames, hidden, kernel, kernelSize, false)
+}
+
+// svFSMNStridedAddV = FSMN(V) + V in one pass (saves a full memory sweep).
+func svFSMNStridedAddV(out, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, kernelSize int) {
+	svFSMNStridedOpt(out, v, baseOff, stride, nFrames, hidden, kernel, kernelSize, true)
+}
+
+func svFSMNStridedOpt(out, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, kernelSize int, addV bool) {
 	if kernel == nil {
-		clear(out[:nFrames*hidden])
+		if addV {
+			// out = V
+			for f := 0; f < nFrames; f++ {
+				copy(out[f*hidden:(f+1)*hidden], v[f*stride+baseOff:f*stride+baseOff+hidden])
+			}
+		} else {
+			clear(out[:nFrames*hidden])
+		}
+		return
+	}
+	if kernelSize == 11 && hidden >= 8 {
+		svFSMNKernel11(out, v, baseOff, stride, nFrames, hidden, kernel, addV)
 		return
 	}
 	pad := (kernelSize - 1) / 2
-
 	for f := 0; f < nFrames; f++ {
+		svFSMNOneFrame(out[f*hidden:(f+1)*hidden], v, baseOff, stride, nFrames, hidden, kernel, kernelSize, pad, f)
+		if addV {
+			s := v[f*stride+baseOff : f*stride+baseOff+hidden]
+			d := out[f*hidden : (f+1)*hidden]
+			i := 0
+			for ; i+7 < hidden; i += 8 {
+				d[i] += s[i]
+				d[i+1] += s[i+1]
+				d[i+2] += s[i+2]
+				d[i+3] += s[i+3]
+				d[i+4] += s[i+4]
+				d[i+5] += s[i+5]
+				d[i+6] += s[i+6]
+				d[i+7] += s[i+7]
+			}
+			for ; i < hidden; i++ {
+				d[i] += s[i]
+			}
+		}
+	}
+}
+
+// svFSMNKernel11 is the hot FSMN path (kernel_size=11, pad=5).
+// When addV, residual V is folded into the center kernel term (ki==pad):
+//   out += V*(k_center+1)  instead of  out += V*k_center; out += V
+// Edge frames (partial window) still use a trailing svAddRow.
+func svFSMNKernel11(out, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, addV bool) {
+	const pad, ksz = 5, 11
+	for f := 0; f < pad && f < nFrames; f++ {
+		row := out[f*hidden : (f+1)*hidden]
+		svFSMNOneFrame(row, v, baseOff, stride, nFrames, hidden, kernel, ksz, pad, f)
+		if addV {
+			svAddRow(row, v[f*stride+baseOff:f*stride+baseOff+hidden])
+		}
+	}
+	end := nFrames - pad
+	if end < pad {
+		end = pad
+	}
+	for f := pad; f < end; f++ {
 		outRow := out[f*hidden : (f+1)*hidden]
-		seeded := false
-		for ki := 0; ki < kernelSize; ki++ {
-			srcFrame := f + ki - pad
-			if srcFrame < 0 || srcFrame >= nFrames {
-				continue
-			}
-			vOff := srcFrame*stride + baseOff
-			vRow := v[vOff : vOff+hidden]
+		src0 := (f-pad)*stride + baseOff
+		vek32.Mul_Into(outRow, v[src0:src0+hidden], kernel[:hidden])
+		for ki := 1; ki < ksz; ki++ {
+			src := (f-pad+ki)*stride + baseOff
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			if !seeded {
-				vek32.Mul_Into(outRow, vRow, kRow)
-				seeded = true
-				continue
+			vRow := v[src : src+hidden]
+			if addV && ki == pad {
+				// Center term sources V[f]; fold residual: out += V*(k+1)
+				tensor.FmaddPlusOneInto(outRow, vRow, kRow)
+			} else {
+				tensor.FmaddInto(outRow, vRow, kRow)
 			}
-			tensor.FmaddInto(outRow, vRow, kRow)
 		}
+	}
+	for f := end; f < nFrames; f++ {
+		row := out[f*hidden : (f+1)*hidden]
+		svFSMNOneFrame(row, v, baseOff, stride, nFrames, hidden, kernel, ksz, pad, f)
+		if addV {
+			svAddRow(row, v[f*stride+baseOff:f*stride+baseOff+hidden])
+		}
+	}
+}
+
+func svAddRow(d, s []float32) {
+	n := len(d)
+	i := 0
+	for ; i+7 < n; i += 8 {
+		d[i] += s[i]
+		d[i+1] += s[i+1]
+		d[i+2] += s[i+2]
+		d[i+3] += s[i+3]
+		d[i+4] += s[i+4]
+		d[i+5] += s[i+5]
+		d[i+6] += s[i+6]
+		d[i+7] += s[i+7]
+	}
+	for ; i < n; i++ {
+		d[i] += s[i]
+	}
+}
+
+func svFSMNOneFrame(outRow, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, kernelSize, pad, f int) {
+	seeded := false
+	for ki := 0; ki < kernelSize; ki++ {
+		srcFrame := f + ki - pad
+		if srcFrame < 0 || srcFrame >= nFrames {
+			continue
+		}
+		vOff := srcFrame*stride + baseOff
+		vRow := v[vOff : vOff+hidden]
+		kRow := kernel[ki*hidden : (ki+1)*hidden]
 		if !seeded {
-			clear(outRow)
+			vek32.Mul_Into(outRow, vRow, kRow)
+			seeded = true
+			continue
 		}
+		tensor.FmaddInto(outRow, vRow, kRow)
+	}
+	if !seeded {
+		clear(outRow)
 	}
 }
 

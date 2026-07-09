@@ -976,6 +976,80 @@ body {
     color: var(--theme-primary-strong);
 }
 
+/* AI nav badge: defaults (light + dark base). Dark theme overrides tokens below. */
+.left-nav-item--ai .ai-nav-icon-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    color: var(--ai-icon-inactive-fg, var(--theme-text-primary));
+    background: var(
+        --ai-icon-inactive-bg,
+        color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%)
+    );
+    box-shadow: var(
+        --ai-icon-inactive-shadow,
+        inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent),
+        0 6px 14px rgba(0, 0, 0, 0.28)
+    );
+    transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+    /* Parent row is the hit target; keep badge non-interactive for a11y tree. */
+    pointer-events: none;
+}
+
+/* Hover chrome only when inactive — avoid fighting active gradient/ring. */
+.left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
+    transform: translateY(-1px);
+    box-shadow: var(
+        --ai-icon-hover-shadow,
+        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 35%, transparent),
+        0 8px 16px rgba(0, 0, 0, 0.22)
+    );
+}
+
+.left-nav-item--ai.active .ai-nav-icon-badge {
+    /* Default: light glyph on primary gradient. Dark theme may override via --ai-icon-active-fg. */
+    color: var(--ai-icon-active-fg, #ffffff);
+    background: var(
+        --ai-icon-active-bg,
+        linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))
+    );
+    box-shadow:
+        0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent),
+        0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent);
+    transform: none;
+}
+
+.left-nav-item--ai .ai-nav-icon {
+    display: block;
+    flex-shrink: 0;
+}
+
+/* Higher specificity than `.sidebar[data-ai-theme] .left-nav-item span { color: inherit }`. */
+.left-nav-item.left-nav-item--ai .ai-nav-label {
+    font-size: 0.68rem;
+    line-height: 1;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.left-nav-item.left-nav-item--ai.active .ai-nav-label,
+.left-nav-item.left-nav-item--ai:hover .ai-nav-label {
+    color: var(--theme-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .left-nav-item--ai .ai-nav-icon-badge {
+        transition: none;
+    }
+
+    .left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
+        transform: none;
+    }
+}
+
 .sidebar-spacer {
     flex: 1;
 }
@@ -12722,18 +12796,50 @@ body {
     color: inherit;
 }
 
-/* AI icon: raise inactive badge + glyph contrast in dark mode (was too low on pure dark fill). */
+/*
+ * Dark AI icon contrast pairing (do not invert):
+ *   inactive → dark bubble on light gray-white badge
+ *   active   → white bubble on deep primary gradient
+ * Near-white-on-gray-white was unreadable; primary+white active washout was too.
+ * Prefer theme tokens so custom dark schemes stay consistent.
+ */
 .sidebar[data-ai-theme='dark'] .left-nav-item--ai {
-    --ai-icon-inactive-bg: color-mix(in srgb, var(--theme-surface) 68%, var(--theme-primary) 32%);
+    --ai-icon-inactive-bg: color-mix(in srgb, var(--theme-text-primary) 90%, var(--theme-primary) 10%);
+    --ai-icon-inactive-fg: var(--theme-page-bg);
     --ai-icon-inactive-shadow:
-        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 48%, transparent),
-        0 4px 12px rgba(0, 0, 0, 0.38);
-    --ai-icon-inactive-fg: #f8fafc;
+        inset 0 0 0 1px color-mix(in srgb, var(--theme-page-bg) 16%, transparent),
+        0 4px 12px rgba(0, 0, 0, 0.35);
+    --ai-icon-hover-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary-strong) 45%, transparent),
+        0 6px 14px rgba(0, 0, 0, 0.4);
+    --ai-icon-active-fg: #ffffff;
+    /* Deep end anchors to page-bg so white stroke stays readable. */
+    --ai-icon-active-bg: linear-gradient(
+        135deg,
+        var(--theme-primary-strong),
+        color-mix(in srgb, var(--theme-primary-strong) 55%, var(--theme-page-bg) 45%)
+    );
 }
 
-/* Active AI badge: slightly brighter gradient + stronger ring for dark chrome */
-.sidebar[data-ai-theme='dark'] .left-nav-item--ai.active {
-    --ai-icon-active-bg: linear-gradient(135deg, #a8c8ec 0%, #6b9ad0 100%);
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai.active .ai-nav-icon-badge {
+    box-shadow:
+        0 2px 10px color-mix(in srgb, var(--theme-primary-strong) 55%, transparent),
+        0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent);
+}
+
+/* Keep dark bubble on hover (only ring/shadow changes). */
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
+    color: var(--ai-icon-inactive-fg);
+}
+
+/* Beat dark `.left-nav-item span { color: inherit }` so labels keep intended contrast. */
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai .ai-nav-label {
+    color: var(--theme-text-primary);
+}
+
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai.active .ai-nav-label,
+.sidebar[data-ai-theme='dark'] .left-nav-item--ai:hover .ai-nav-label {
+    color: var(--theme-primary);
 }
 
 .main-container[data-ai-theme='dark'] {

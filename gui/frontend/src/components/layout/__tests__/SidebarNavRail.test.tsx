@@ -70,32 +70,28 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.getByTitle('Apps')).toBeTruthy();
     });
 
-    it('uses CSS variables for inactive AI assistant icon badge contrast', () => {
+    it('renders AI assistant icon badge markup for theme contrast tokens', () => {
         renderRail({ navTab: 'settings' });
 
         const aiEntry = screen.getByTitle('AI Asst');
-        const iconBadge = aiEntry.querySelector('div');
-        const icon = aiEntry.querySelector('svg');
+        const iconBadge = aiEntry.querySelector('.ai-nav-icon-badge');
+        const icon = aiEntry.querySelector('.ai-nav-icon');
 
         expect(iconBadge).toBeTruthy();
-        expect((iconBadge as HTMLElement).style.background).toBe('var(--ai-icon-inactive-bg, color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%))');
-        expect((iconBadge as HTMLElement).style.boxShadow).toBe('var(--ai-icon-inactive-shadow, inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent), 0 6px 14px rgba(0,0,0,0.28))');
-        // Inactive glyph uses overridable fg token (dark theme sets near-white).
-        expect(icon?.getAttribute('stroke')).toBe('var(--ai-icon-inactive-fg, var(--theme-text-primary))');
-        expect(icon?.getAttribute('stroke-width')).toBe('1.85');
+        expect(icon).toBeTruthy();
+        // Glyph inherits badge color via currentColor; dark theme sets --ai-icon-inactive-fg.
+        expect(icon?.getAttribute('stroke')).toBe('currentColor');
+        expect(icon?.getAttribute('stroke-width')).toBe('2');
         expect(document.querySelector('.left-nav-item--ai.active')).toBeNull();
     });
 
-    it('uses a high-contrast white icon when AI nav is active', () => {
+    it('marks AI nav active for selected high-contrast badge state', () => {
         renderRail({ navTab: 'ai' });
 
         const aiEntry = screen.getByTitle('AI Asst');
-        const iconBadge = aiEntry.querySelector('div');
-        const icon = aiEntry.querySelector('svg');
-
-        expect(document.querySelector('.left-nav-item--ai.active')).toBeTruthy();
-        expect((iconBadge as HTMLElement).style.background).toContain('--ai-icon-active-bg');
-        expect(icon?.getAttribute('stroke')).toBe('#ffffff');
+        expect(aiEntry.classList.contains('active')).toBe(true);
+        expect(aiEntry.querySelector('.ai-nav-icon-badge')).toBeTruthy();
+        expect(aiEntry.querySelector('.ai-nav-icon')?.getAttribute('stroke')).toBe('currentColor');
     });
 
     it('shows a pending ranking mark for registered users without a ranking yet', () => {

@@ -61,6 +61,14 @@ func poolWorkers() int {
 	return int(atomic.LoadInt32(&poolSize))
 }
 
+// ParallelRanges splits [0, total) into up to nw contiguous ranges and runs
+// fn(start,end) on the matmul worker pool. fn must be safe for concurrent
+// disjoint ranges. Prefer this over spawning goroutines per call site
+// (e.g. attention heads across ~70 SANM layers).
+func ParallelRanges(total int, fn func(start, end int)) {
+	parallelRanges(total, fn)
+}
+
 // parallelRanges splits [0, total) into up to nw contiguous ranges and runs
 // fn(start,end) on the pool. fn must be safe for concurrent disjoint ranges.
 func parallelRanges(total int, fn func(start, end int)) {

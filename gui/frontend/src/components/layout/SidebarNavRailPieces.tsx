@@ -140,10 +140,6 @@ export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinke
 
 export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, switchTool, workflowLabel }: SidebarPrimaryNavProps) => {
     const isAiActive = navTab === 'ai';
-    // Inactive color is overridable via --ai-icon-inactive-fg (dark theme raises contrast).
-    const aiIconColor = isAiActive ? '#ffffff' : 'var(--ai-icon-inactive-fg, var(--theme-text-primary))';
-    const aiIconInactiveBg = 'var(--ai-icon-inactive-bg, color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%))';
-    const aiIconInactiveShadow = 'var(--ai-icon-inactive-shadow, inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent), 0 6px 14px rgba(0,0,0,0.28))';
 
     return (
         <>
@@ -153,15 +149,16 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: isAiActive ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
                 title={aiAssistantLabel}
             >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '10px', background: isAiActive ? 'var(--ai-icon-active-bg, linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong)))' : aiIconInactiveBg, boxShadow: isAiActive ? '0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)' : aiIconInactiveShadow, transition: 'all 0.2s ease', cursor: 'pointer' }}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={aiIconColor} strokeWidth="1.85" strokeLinecap="round" strokeLinejoin="round">
+                {/* Badge colors live in App.css tokens (--ai-icon-*). Dark: dark glyph on light badge. */}
+                <div className="ai-nav-icon-badge" aria-hidden="true">
+                    <svg className="ai-nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                        <circle cx="12" cy="11.5" r="0.9" fill={aiIconColor} stroke="none" />
-                        <circle cx="8.5" cy="11.5" r="0.9" fill={aiIconColor} stroke="none" />
-                        <circle cx="15.5" cy="11.5" r="0.9" fill={aiIconColor} stroke="none" />
+                        <circle cx="12" cy="11.5" r="1" fill="currentColor" stroke="none" />
+                        <circle cx="8.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+                        <circle cx="15.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
                     </svg>
                 </div>
-                <span style={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: isAiActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}>{aiAssistantLabel}</span>
+                <span className="ai-nav-label">{aiAssistantLabel}</span>
             </div>
             <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
             {showAppEntry && (

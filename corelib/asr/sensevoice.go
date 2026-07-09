@@ -183,13 +183,17 @@ func (m *SenseVoiceModel) ensureEncBufs(maxFrames int) *svEncoderBufs {
 	if nWorkers < 4 {
 		nWorkers = 4
 	}
-	// Attention Q-tile needs 8 score rows + 8×headDim Q panel.
+	// Attention: per-head scratch for parallel heads — 8 score rows + 8×headDim Q panel each.
 	headDim := hidden / m.hp.NumHeads
 	if headDim < 1 {
 		headDim = 1
 	}
+	nHeads := m.hp.NumHeads
+	if nHeads < 1 {
+		nHeads = 1
+	}
 	scoreScratchN := nWorkers * maxFrames
-	if need := 8*maxFrames + 8*headDim; need > scoreScratchN {
+	if need := nHeads * (8*maxFrames + 8*headDim); need > scoreScratchN {
 		scoreScratchN = need
 	}
 	m.encBufs = &svEncoderBufs{
@@ -453,10 +457,11 @@ func (m *SenseVoiceModel) ctcGreedyDecode(logits []float32, numFrames int) []int
 		row := logits[off : off+vocab]
 		bestID := 0
 		bestVal := row[0]
-		// 4-wide unroll for argmax ILP
+		// 8-wide unroll for argmax ILP (vocab ~25k)
 		i := 1
-		for ; i+3 < vocab; i += 4 {
+		for ; i+7 < vocab; i += 8 {
 			v0, v1, v2, v3 := row[i], row[i+1], row[i+2], row[i+3]
+			v4, v5, v6, v7 := row[i+4], row[i+5], row[i+6], row[i+7]
 			if v0 > bestVal {
 				bestVal, bestID = v0, i
 			}
@@ -468,6 +473,18 @@ func (m *SenseVoiceModel) ctcGreedyDecode(logits []float32, numFrames int) []int
 			}
 			if v3 > bestVal {
 				bestVal, bestID = v3, i+3
+			}
+			if v4 > bestVal {
+				bestVal, bestID = v4, i+4
+			}
+			if v5 > bestVal {
+				bestVal, bestID = v5, i+5
+			}
+			if v6 > bestVal {
+				bestVal, bestID = v6, i+6
+			}
+			if v7 > bestVal {
+				bestVal, bestID = v7, i+7
 			}
 		}
 		for ; i < vocab; i++ {

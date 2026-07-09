@@ -1679,7 +1679,7 @@ QA record.
   - Covers readable bottom navigation labels for `AI助手`, `文档`, `远程`,
     `员工`, and `我的`; configured sessions opening the assistant; feature
     flags keeping the primary `AI助手` workspace when optional search is
-    disabled, while honoring an explicit `assistant:false`; missing LLM
+    disabled and even when Hub sends `assistant:false`, because the GUI-like assistant is the non-removable mobile home surface; missing LLM
     access opening the mobile workspace while third-party LLM authorization
     remains optional in account/settings; official LLM sessions accepting
     normalized `phone:<digits>` credits from bootstrap JSON, keeping the

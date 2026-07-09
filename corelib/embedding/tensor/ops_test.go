@@ -112,6 +112,37 @@ func TestSoftmaxWeightedSumStrided_MatchesSoftmaxThenWeightedSum(t *testing.T) {
 	}
 }
 
+func TestSoftmaxWeightedSumBatched8_MatchesSequential(t *testing.T) {
+	const rows, dim, nQ = 16, 128, 8
+	// Contiguous V [rows][dim]
+	values := make([]float32, rows*dim)
+	for i := range values {
+		values[i] = float32((i%17)-8) * 0.1
+	}
+	// scores [nQ][rows]
+	scoresBatched := make([]float32, nQ*rows)
+	scoresSeq := make([]float32, nQ*rows)
+	for t := 0; t < nQ; t++ {
+		for r := 0; r < rows; r++ {
+			v := float32(t-3)*0.2 + float32(r-8)*0.05
+			scoresBatched[t*rows+r] = v
+			scoresSeq[t*rows+r] = v
+		}
+	}
+	// out: [nQ][dim] with outStride=dim, hOff=0, qf=0
+	got := make([]float32, nQ*dim)
+	want := make([]float32, nQ*dim)
+	SoftmaxWeightedSumBatched(got, scoresBatched, values, nQ, rows, dim, dim, dim, 0, 0)
+	for t := 0; t < nQ; t++ {
+		SoftmaxWeightedSumStrided(want[t*dim:(t+1)*dim], scoresSeq[t*rows:(t+1)*rows], values, rows, dim, dim)
+	}
+	for i := range got {
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-4 {
+			t.Fatalf("idx %d: got %v want %v diff %v", i, got[i], want[i], diff)
+		}
+	}
+}
+
 func TestLayerNorm_MatchesReference(t *testing.T) {
 	x := []float32{-1.5, 0.25, 2, -0.75, 1.25, 3.5, -2.25, 0.5}
 	weight := []float32{1, 0.5, -1, 2, 1.5, -0.25, 0.75, 1.25}

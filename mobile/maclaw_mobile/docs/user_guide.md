@@ -50,7 +50,7 @@ server-log analysis, and digital employee task handoff.
 
 The assistant is the primary signed-in workspace. Optional bootstrap feature
 flags can hide documents, backend SSH session management, digital employees, or push notification
-capabilities, but they do not remove the `AI助手` entry or make digital
+capabilities, but they do not remove the `AI助手` entry, even if Hub sends `assistant:false`, or make digital
 employees the default landing page.
 If the current Hub disables assistant online access, the assistant keeps the
 workspace open, disables `发送给 AI 助手`, and explains that voice input, image/file

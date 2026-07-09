@@ -177,7 +177,7 @@ class MobileAppTab {
 
   bool enabledBy(MobileFeatures features) {
     return switch (feature) {
-      'assistant' => features.assistant,
+      'assistant' => true,
       'search' => features.search,
       'documents' => features.documents,
       'backend_ssh_sessions' => features.backendSshSessions,
