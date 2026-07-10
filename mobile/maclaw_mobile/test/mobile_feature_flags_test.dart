@@ -211,4 +211,24 @@ void main() {
 
     expect(sharedIntentTargetPath(intent, features), '/assistant');
   });
+
+  test('shared link intents still open assistant when assistant flag is disabled', () {
+    const features = MobileFeatures(
+      assistant: false,
+      search: true,
+      documents: true,
+      backendSshSessions: true,
+      digitalEmployees: true,
+      pushNotifications: false,
+    );
+    final intent = MobileSharedIntent(
+      id: 'share-link-assistant-disabled',
+      kind: MobileSharedIntentKind.link,
+      value: 'https://example.com/incident',
+      receivedAt: DateTime.utc(2026, 7, 1),
+    );
+
+    expect(sharedIntentTargetPath(intent, features), '/assistant');
+    expect(sharedIntentCanBeConsumedAtTarget(intent, '/assistant'), isTrue);
+  });
 }

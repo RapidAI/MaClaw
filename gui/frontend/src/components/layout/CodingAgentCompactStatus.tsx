@@ -2,9 +2,9 @@ import {
     codingAgentStatusClassName,
     codingAgentStatusDataAttrs,
     codingAgentFilePreviewText,
-    codingAgentStatusLabel,
+    codingAgentProgressStatusText,
     codingAgentProgressMetaText,
-    codingAgentStatusTone,
+    codingAgentProgressTone,
     codingAgentVariantDisplayText,
     normalizeCodingAgentProgress,
     type CodingAgentProgress,
@@ -22,10 +22,10 @@ type CodingAgentCompactStatusProps = {
 
 export const CodingAgentCompactStatus = ({ progress, lang, testId, variant }: CodingAgentCompactStatusProps) => {
     const normalized = normalizeCodingAgentProgress(progress);
-    const tone = codingAgentStatusTone(normalized.phase);
+    const tone = codingAgentProgressTone(normalized);
     const agentLabel = lang.startsWith('zh') ? '\u7f16\u7a0b\u667a\u80fd\u4f53' : 'Coding Agent';
     const taskStatusLabel = lang.startsWith('zh') ? '\u4efb\u52a1\u72b6\u6001' : 'Task status';
-    const statusLabel = codingAgentStatusLabel(normalized.phase, lang);
+    const statusLabel = codingAgentProgressStatusText(normalized, lang);
     const isSidebar = variant === 'sidebar';
     const displayText = codingAgentVariantDisplayText(normalized, lang, variant);
     const metaText = codingAgentProgressMetaText(normalized, lang);

@@ -9464,6 +9464,7 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
 	event.Event = codingAgentEventKindToolFinished.String()
 	event.Detail = strings.TrimSpace(name)
+	event.Command = codingToolEventCommand(name, argsJSON)
 	event.Outcome = string(outcome)
 	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
@@ -9477,6 +9478,19 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	}
 	event.DurationMS = durationMS
 	emitCodingAgentEvent(c.subagent.onProgress, event)
+}
+
+func codingToolEventCommand(name, argsJSON string) string {
+	name = canonicalCodingSubAgentToolName(name)
+	if name != "bash" && name != remoteSSHBashToolName {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+	command, _ := args["command"].(string)
+	return strings.TrimSpace(redactCodingSubAgentFreeformLogText(command))
 }
 
 func compactCodingToolResultSummary(result string) string {

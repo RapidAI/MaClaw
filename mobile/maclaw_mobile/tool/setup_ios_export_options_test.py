@@ -92,12 +92,17 @@ class SetupIOSExportOptionsTest(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("Wrote local iOS export options", stdout.getvalue())
+        self.assertIn("Next for iOS-only QA", stdout.getvalue())
         self.assertIn(
-            "python3 tool/qa_preflight.py --team-id ABCD123456 --export-method enterprise",
+            "python3 tool/qa_preflight.py --scope ios --team-id ABCD123456 --export-method enterprise --log docs/qa-builds/preflight-ios-<version+build>.log",
             stdout.getvalue(),
         )
+        self.assertIn("For Android/iOS QA, ensure Android signing is configured", stdout.getvalue())
+        self.assertIn("--scope android-ios", stdout.getvalue())
+        self.assertIn("--log docs/qa-builds/preflight-<version+build>.log", stdout.getvalue())
         self.assertNotIn("<APPLE_TEAM_ID>", stdout.getvalue())
-        self.assertIn("keep ios/ExportOptions.plist local", stdout.getvalue())
+        self.assertIn("Keep ios/ExportOptions.plist local", stdout.getvalue())
+        self.assertIn("do not add placeholder signing/export files", stdout.getvalue())
 
     def test_main_rejects_invalid_team_id_without_traceback(self) -> None:
         stderr = StringIO()

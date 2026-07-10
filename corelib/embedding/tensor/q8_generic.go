@@ -19,3 +19,8 @@ func dequantRowScaledASM(dst []float32, data []byte, scales *float32, rowOff, nB
 	sc := unsafe.Slice(scales, nBlocks)
 	dequantRowScaledScalar(dst, data, sc, rowOff, nBlocks)
 }
+
+func dequantRowScaledDual(dst0, dst1 []float32, data []byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int) {
+	dequantRowScaledASM(dst0, data, scales0, rowOff0, nBlocks)
+	dequantRowScaledASM(dst1, data, scales1, rowOff1, nBlocks)
+}

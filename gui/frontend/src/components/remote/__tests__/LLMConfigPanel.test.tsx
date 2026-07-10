@@ -46,6 +46,7 @@ vi.mock('../../CustomDialog', () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
         showConfirm: vi.fn(),
+        showPrompt: vi.fn(),
     }),
 }));
 
@@ -170,8 +171,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(await screen.findByRole('button', { name: '\u706b\u5c71\u5f15\u64ce Agent Plan' })).toBeTruthy();
     });
 
-    it('fetches Volcengine Agent Plan models through the OpenAI v3 endpoint', async () => {
-        FetchProviderModelsMock.mockResolvedValue([{ id: 'glm-5.2', name: 'glm-5.2' }]);
+    it('disables model fetch for Volcengine Agent Plan (preset model, enter manually)', async () => {
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: '\u706b\u5c71\u5f15\u64ce Agent Plan', url: 'https://ark.cn-beijing.volces.com/api/plan/v3', key: 'secret', model: 'glm-5.2', protocol: 'openai', wire_api: 'responses', supports_vision: false },
@@ -182,11 +182,84 @@ describe('LLMConfigPanel test-and-save flow', () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Fetch' }));
+        // Product intentionally disables Fetch for this preset provider.
+        const fetchBtn = screen.queryByRole('button', { name: 'Fetch' });
+        if (fetchBtn) {
+            expect((fetchBtn as HTMLButtonElement).disabled).toBe(true);
+            fireEvent.click(fetchBtn);
+        }
+        expect(FetchProviderModelsMock).not.toHaveBeenCalled();
+        expect(screen.getByText(/preset model, enter manually/i)).toBeTruthy();
+    });
+
+    it('fetches OAuth provider models without requiring a visible API Key field', async () => {
+        FetchProviderModelsMock.mockResolvedValue([{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }]);
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'GitHub Copilot',
+                    url: 'https://api.githubcopilot.com',
+                    // Hydrated token from backend credential store — no API Key UI for OAuth.
+                    key: 'managed-oauth-token',
+                    model: 'claude-sonnet-4',
+                    protocol: 'openai',
+                    auth_type: 'oauth',
+                },
+            ],
+            current: 'GitHub Copilot',
+        });
+
+        render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: '配置' }));
+        // OAuth authenticated state should be shown, not an API Key input.
+        expect(await screen.findByText(/OAuth 已认证|OAuth authenticated/)).toBeTruthy();
+        expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: '获取' }));
 
         await waitFor(() => {
-            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://ark.cn-beijing.volces.com/api/plan/v3', 'secret', 'openai', 'openclaw');
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith(
+                'https://api.githubcopilot.com',
+                'managed-oauth-token',
+                'openai',
+                'openclaw',
+            );
         });
+        expect(screen.queryByText(/请先填写 API Key/)).toBeNull();
+    });
+
+    it('lets backend resolve OAuth models when frontend key is empty', async () => {
+        FetchProviderModelsMock.mockResolvedValue([{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }]);
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'GitHub Copilot',
+                    url: 'https://api.githubcopilot.com',
+                    key: '', // not hydrated yet; backend must resolve from credential store
+                    model: 'claude-sonnet-4',
+                    protocol: 'openai',
+                    auth_type: 'oauth',
+                },
+            ],
+            current: 'GitHub Copilot',
+        });
+
+        render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: '配置' }));
+        fireEvent.click(screen.getByRole('button', { name: '获取' }));
+
+        await waitFor(() => {
+            // Empty key is OK for OAuth — backend resolves internally.
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith(
+                'https://api.githubcopilot.com',
+                '',
+                'openai',
+                'openclaw',
+            );
+        });
+        expect(screen.queryByText(/请先填写 API Key/)).toBeNull();
     });
 
     it('quick-fills Volcengine Agent Plan endpoint with the tested model defaults', async () => {

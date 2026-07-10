@@ -957,23 +957,7 @@ func llmLoginOpenAI(args []string) error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	// Find or create the OpenAI provider
-	found := false
-	for i, p := range appCfg.MaclawLLMProviders {
-		if p.Name == "OpenAI" && p.AuthType == "oauth" {
-			appCfg.MaclawLLMProviders[i] = oauth.ApplyTokenResult(p, result)
-			found = true
-			break
-		}
-	}
-	if !found {
-		p := corelib.MaclawLLMProvider{
-			Name: "OpenAI", URL: "https://api.openai.com/v1",
-			Model: "gpt-4o", AuthType: "oauth", ContextLength: 110000,
-		}
-		p = oauth.ApplyTokenResult(p, result)
-		appCfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{p}, appCfg.MaclawLLMProviders...)
-	}
+	applyOpenAIOAuthResultToConfig(&appCfg, result)
 
 	// Set OpenAI as current and sync legacy fields
 	appCfg.MaclawLLMCurrentProvider = "OpenAI"
@@ -995,6 +979,35 @@ func llmLoginOpenAI(args []string) error {
 	fmt.Println()
 	fmt.Println("✓ OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
 	return nil
+}
+
+func defaultOpenAIOAuthProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          "OpenAI",
+		URL:           "https://chatgpt.com/backend-api/codex",
+		Model:         "gpt-5.4",
+		AuthType:      "oauth",
+		ContextLength: 110000,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+		WireAPI:       "responses-ws",
+	}
+}
+
+func applyOpenAIOAuthResultToConfig(appCfg *corelib.AppConfig, result *oauth.TokenResult) {
+	defaultProvider := defaultOpenAIOAuthProvider()
+	for i, p := range appCfg.MaclawLLMProviders {
+		if p.Name == defaultProvider.Name && p.AuthType == defaultProvider.AuthType {
+			p = oauth.ApplyTokenResult(p, result)
+			p.URL = defaultProvider.URL
+			p.Model = defaultProvider.Model
+			p.ContextLength = defaultProvider.ContextLength
+			p.TimeoutSec = defaultProvider.TimeoutSec
+			p.WireAPI = defaultProvider.WireAPI
+			appCfg.MaclawLLMProviders[i] = p
+			return
+		}
+	}
+	appCfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{oauth.ApplyTokenResult(defaultProvider, result)}, appCfg.MaclawLLMProviders...)
 }
 
 // llmLoginCodeGen 实现无头环境下的 CodeGen SSO 登录。

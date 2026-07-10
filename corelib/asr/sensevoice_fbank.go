@@ -15,8 +15,9 @@ package asr
 
 import (
 	"math"
-	"runtime"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 const (
@@ -194,32 +195,14 @@ func svMelFilterbankInto(pcm, out []float32) bool {
 	}
 	svInitFbankTables()
 
-	nw := runtime.NumCPU()
-	if nw > 8 {
-		nw = 8
-	}
-	if numFrames < 48 || nw <= 1 {
+	if numFrames < 48 {
 		svMelFilterbankRange(pcm, out, 0, numFrames)
 		return true
 	}
-	var wg sync.WaitGroup
-	chunk := (numFrames + nw - 1) / nw
-	for w := 0; w < nw; w++ {
-		fs := w * chunk
-		fe := fs + chunk
-		if fe > numFrames {
-			fe = numFrames
-		}
-		if fs >= fe {
-			break
-		}
-		wg.Add(1)
-		go func(fs, fe int) {
-			defer wg.Done()
-			svMelFilterbankRange(pcm, out, fs, fe)
-		}(fs, fe)
-	}
-	wg.Wait()
+	// Reuse tensor matmul worker pool (no per-call goroutine spawn).
+	tensor.ParallelRanges(numFrames, func(fs, fe int) {
+		svMelFilterbankRange(pcm, out, fs, fe)
+	})
 	return true
 }
 
@@ -237,22 +220,32 @@ func svMelFilterbankRange(pcm, out []float32, fs, fe int) {
 		offset := f * svHopSize
 		frame := pcm[offset : offset+svWindowSize]
 
-		// Mean (DC)
+		// Mean (DC) — 8-wide accumulate
 		var sum float32
 		i := 0
-		for ; i+3 < svWindowSize; i += 4 {
-			sum += frame[i] + frame[i+1] + frame[i+2] + frame[i+3]
+		for ; i+7 < svWindowSize; i += 8 {
+			sum += frame[i] + frame[i+1] + frame[i+2] + frame[i+3] +
+				frame[i+4] + frame[i+5] + frame[i+6] + frame[i+7]
 		}
 		for ; i < svWindowSize; i++ {
 			sum += frame[i]
 		}
 		mean := sum / float32(svWindowSize)
 
-		// DC-remove + preemph + Hamming → time[0:window]; zero-pad
+		// DC-remove + preemph + Hamming → time[0:window]; zero-pad.
+		// Dual-step: break preemph dep chain across even/odd for better ILP.
 		r0 := frame[0] - mean
 		time[0] = r0 * (1.0 - preemph) * window[0]
 		prev := r0
-		for i := 1; i < svWindowSize; i++ {
+		i = 1
+		for ; i+1 < svWindowSize; i += 2 {
+			c0 := frame[i] - mean
+			c1 := frame[i+1] - mean
+			time[i] = (c0 - preemph*prev) * window[i]
+			time[i+1] = (c1 - preemph*c0) * window[i+1]
+			prev = c1
+		}
+		for ; i < svWindowSize; i++ {
 			cur := frame[i] - mean
 			time[i] = (cur - preemph*prev) * window[i]
 			prev = cur
@@ -266,10 +259,21 @@ func svMelFilterbankRange(pcm, out []float32, fs, fe int) {
 		base := f * svNumMels
 		for m := 0; m < svNumMels; m++ {
 			band := sparse[m]
-			var melEnergy float32
 			w := band.w
 			ks := band.start
-			for j := 0; j < len(w); j++ {
+			var melEnergy float32
+			j := 0
+			for ; j+7 < len(w); j += 8 {
+				melEnergy += power[ks+j]*w[j] + power[ks+j+1]*w[j+1] +
+					power[ks+j+2]*w[j+2] + power[ks+j+3]*w[j+3] +
+					power[ks+j+4]*w[j+4] + power[ks+j+5]*w[j+5] +
+					power[ks+j+6]*w[j+6] + power[ks+j+7]*w[j+7]
+			}
+			for ; j+3 < len(w); j += 4 {
+				melEnergy += power[ks+j]*w[j] + power[ks+j+1]*w[j+1] +
+					power[ks+j+2]*w[j+2] + power[ks+j+3]*w[j+3]
+			}
+			for ; j < len(w); j++ {
 				melEnergy += power[ks+j] * w[j]
 			}
 			if melEnergy < logFloor {
@@ -297,10 +301,24 @@ func fastLog32(x float32) float32 {
 func rfftPower32(time, re, im, power []float32) {
 	half := svHalfFFT
 
-	// Pack z[k] = time[2k] + j*time[2k+1]
-	for k := 0; k < half; k++ {
+	// Pack z[k] = time[2k] + j*time[2k+1] (8-wide)
+	for k := 0; k+7 < half; k += 8 {
 		re[k] = time[2*k]
 		im[k] = time[2*k+1]
+		re[k+1] = time[2*k+2]
+		im[k+1] = time[2*k+3]
+		re[k+2] = time[2*k+4]
+		im[k+2] = time[2*k+5]
+		re[k+3] = time[2*k+6]
+		im[k+3] = time[2*k+7]
+		re[k+4] = time[2*k+8]
+		im[k+4] = time[2*k+9]
+		re[k+5] = time[2*k+10]
+		im[k+5] = time[2*k+11]
+		re[k+6] = time[2*k+12]
+		im[k+6] = time[2*k+13]
+		re[k+7] = time[2*k+14]
+		im[k+7] = time[2*k+15]
 	}
 
 	complexFFTHalf32(re, im)
@@ -309,7 +327,35 @@ func rfftPower32(time, re, im, power []float32) {
 	t0 := re[0] + im[0]
 	power[0] = t0 * t0
 
-	for k := 1; k < half; k++ {
+	// Dual-k post-combine (independent bins; better ILP)
+	k := 1
+	for ; k+1 < half; k += 2 {
+		zr0, zi0 := re[k], im[k]
+		znr0, zni0 := re[half-k], im[half-k]
+		zr1, zi1 := re[k+1], im[k+1]
+		znr1, zni1 := re[half-k-1], im[half-k-1]
+		xeR0 := float32(0.5) * (zr0 + znr0)
+		xeI0 := float32(0.5) * (zi0 - zni0)
+		xoR0 := float32(0.5) * (zr0 - znr0)
+		xoI0 := float32(0.5) * (zi0 + zni0)
+		xeR1 := float32(0.5) * (zr1 + znr1)
+		xeI1 := float32(0.5) * (zi1 - zni1)
+		xoR1 := float32(0.5) * (zr1 - znr1)
+		xoI1 := float32(0.5) * (zi1 + zni1)
+		wc0, ws0 := svRFFTPostCos[k], svRFFTPostSin[k]
+		wc1, ws1 := svRFFTPostCos[k+1], svRFFTPostSin[k+1]
+		wXoR0 := wc0*xoR0 - ws0*xoI0
+		wXoI0 := wc0*xoI0 + ws0*xoR0
+		wXoR1 := wc1*xoR1 - ws1*xoI1
+		wXoI1 := wc1*xoI1 + ws1*xoR1
+		xr0 := xeR0 + wXoI0
+		xi0 := xeI0 - wXoR0
+		xr1 := xeR1 + wXoI1
+		xi1 := xeI1 - wXoR1
+		power[k] = xr0*xr0 + xi0*xi0
+		power[k+1] = xr1*xr1 + xi1*xi1
+	}
+	for ; k < half; k++ {
 		zr, zi := re[k], im[k]
 		znr, zni := re[half-k], im[half-k]
 		xeR := float32(0.5) * (zr + znr)
@@ -326,7 +372,7 @@ func rfftPower32(time, re, im, power []float32) {
 }
 
 func complexFFTHalf32(real, imag []float32) {
-	n := svHalfFFT
+	n := svHalfFFT // 256 fixed
 	for i := 1; i < n; i++ {
 		j := svRFFTBitRev[i]
 		if i < j {
@@ -334,22 +380,102 @@ func complexFFTHalf32(real, imag []float32) {
 			imag[i], imag[j] = imag[j], imag[i]
 		}
 	}
-	stage := 0
-	for size := 2; size <= n; size <<= 1 {
+	// Stage 0: size=2, cos=1, sin=0 — pure add/sub butterflies
+	for i := 0; i < n; i += 2 {
+		tr, ti := real[i+1], imag[i+1]
+		real[i+1] = real[i] - tr
+		imag[i+1] = imag[i] - ti
+		real[i] += tr
+		imag[i] += ti
+	}
+	// Remaining stages size=4..256
+	stage := 1
+	for size := 4; size <= n; size <<= 1 {
 		halfSize := size >> 1
 		tw := svRFFTTwiddles[stage]
+		cosT, sinT := tw.cos, tw.sin
 		for i := 0; i < n; i += size {
-			for k := 0; k < halfSize; k++ {
-				cos := tw.cos[k]
-				sin := tw.sin[k]
-				idx1 := i + k
-				idx2 := i + k + halfSize
-				tReal := real[idx2]*cos - imag[idx2]*sin
-				tImag := real[idx2]*sin + imag[idx2]*cos
-				real[idx2] = real[idx1] - tReal
-				imag[idx2] = imag[idx1] - tImag
-				real[idx1] += tReal
-				imag[idx1] += tImag
+			// k=0: cos=1, sin=0
+			idx1, idx2 := i, i+halfSize
+			tr, ti := real[idx2], imag[idx2]
+			real[idx2] = real[idx1] - tr
+			imag[idx2] = imag[idx1] - ti
+			real[idx1] += tr
+			imag[idx1] += ti
+			// Quad-k butterflies when halfSize is large (size>=16 → better ILP).
+			k := 1
+			if halfSize >= 8 {
+				for ; k+3 < halfSize; k += 4 {
+					c0, s0 := cosT[k], sinT[k]
+					c1, s1 := cosT[k+1], sinT[k+1]
+					c2, s2 := cosT[k+2], sinT[k+2]
+					c3, s3 := cosT[k+3], sinT[k+3]
+					j1 := i + k
+					j2 := j1 + halfSize
+					j3, j4 := j1+1, j1+1+halfSize
+					j5, j6 := j1+2, j1+2+halfSize
+					j7, j8 := j1+3, j1+3+halfSize
+					r2, i2 := real[j2], imag[j2]
+					r4, i4 := real[j4], imag[j4]
+					r6, i6 := real[j6], imag[j6]
+					r8, i8 := real[j8], imag[j8]
+					tR0 := r2*c0 - i2*s0
+					tI0 := r2*s0 + i2*c0
+					tR1 := r4*c1 - i4*s1
+					tI1 := r4*s1 + i4*c1
+					tR2 := r6*c2 - i6*s2
+					tI2 := r6*s2 + i6*c2
+					tR3 := r8*c3 - i8*s3
+					tI3 := r8*s3 + i8*c3
+					r1, i1 := real[j1], imag[j1]
+					r3, i3 := real[j3], imag[j3]
+					r5, i5 := real[j5], imag[j5]
+					r7, i7 := real[j7], imag[j7]
+					real[j2], imag[j2] = r1-tR0, i1-tI0
+					real[j1], imag[j1] = r1+tR0, i1+tI0
+					real[j4], imag[j4] = r3-tR1, i3-tI1
+					real[j3], imag[j3] = r3+tR1, i3+tI1
+					real[j6], imag[j6] = r5-tR2, i5-tI2
+					real[j5], imag[j5] = r5+tR2, i5+tI2
+					real[j8], imag[j8] = r7-tR3, i7-tI3
+					real[j7], imag[j7] = r7+tR3, i7+tI3
+				}
+			}
+			for ; k+1 < halfSize; k += 2 {
+				c0, s0 := cosT[k], sinT[k]
+				c1, s1 := cosT[k+1], sinT[k+1]
+				j1 := i + k
+				j2 := j1 + halfSize
+				j3 := j1 + 1
+				j4 := j3 + halfSize
+				r2, i2 := real[j2], imag[j2]
+				r4, i4 := real[j4], imag[j4]
+				tR0 := r2*c0 - i2*s0
+				tI0 := r2*s0 + i2*c0
+				tR1 := r4*c1 - i4*s1
+				tI1 := r4*s1 + i4*c1
+				r1, i1 := real[j1], imag[j1]
+				r3, i3 := real[j3], imag[j3]
+				real[j2] = r1 - tR0
+				imag[j2] = i1 - tI0
+				real[j1] = r1 + tR0
+				imag[j1] = i1 + tI0
+				real[j4] = r3 - tR1
+				imag[j4] = i3 - tI1
+				real[j3] = r3 + tR1
+				imag[j3] = i3 + tI1
+			}
+			for ; k < halfSize; k++ {
+				cos := cosT[k]
+				sin := sinT[k]
+				j1 := i + k
+				j2 := j1 + halfSize
+				tReal := real[j2]*cos - imag[j2]*sin
+				tImag := real[j2]*sin + imag[j2]*cos
+				real[j2] = real[j1] - tReal
+				imag[j2] = imag[j1] - tImag
+				real[j1] += tReal
+				imag[j1] += tImag
 			}
 		}
 		stage++
@@ -468,7 +594,23 @@ func svApplyLFRInto(fbank []float32, numFrames int, out []float32) int {
 			}
 			dstOff := f*svFeatsDim + s*svNumMels
 			srcOff := srcFrame * svNumMels
-			copy(out[dstOff:dstOff+svNumMels], fbank[srcOff:srcOff+svNumMels])
+			// 80 mels: unrolled copy (avoids generic copy call overhead)
+			src := fbank[srcOff : srcOff+svNumMels]
+			dst := out[dstOff : dstOff+svNumMels]
+			j := 0
+			for ; j+7 < svNumMels; j += 8 {
+				dst[j] = src[j]
+				dst[j+1] = src[j+1]
+				dst[j+2] = src[j+2]
+				dst[j+3] = src[j+3]
+				dst[j+4] = src[j+4]
+				dst[j+5] = src[j+5]
+				dst[j+6] = src[j+6]
+				dst[j+7] = src[j+7]
+			}
+			for ; j < svNumMels; j++ {
+				dst[j] = src[j]
+			}
 		}
 	}
 	return lfrFrames

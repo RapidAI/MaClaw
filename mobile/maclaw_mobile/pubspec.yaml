@@ -26,7 +26,6 @@ dependencies:
   sqlite3_flutter_libs: ^0.5.24
   path_provider: ^2.1.4
   web_socket_channel: ^3.0.1
-  xterm: ^4.0.0
   mobile_scanner: ^7.2.0
 
 dev_dependencies:

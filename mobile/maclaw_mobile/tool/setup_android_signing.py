@@ -156,8 +156,19 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Wrote local Android signing config: {target}")
     print(
-        "Complete iOS ExportOptions if this QA scope includes iOS, then run "
-        "`python3 tool/qa_preflight.py`; do not commit android/key.properties."
+        "Next for Android-only QA: run "
+        "`python3 tool/qa_preflight.py --scope android "
+        "--log docs/qa-builds/preflight-android-<version+build>.log`."
+    )
+    print(
+        "For Android/iOS QA, complete iOS ExportOptions first, then run "
+        "`python3 tool/qa_preflight.py --scope android-ios "
+        "--team-id <APPLE_TEAM_ID> --export-method development "
+        "--log docs/qa-builds/preflight-<version+build>.log`."
+    )
+    print(
+        "Keep android/key.properties local and do not add placeholder "
+        "signing/export files."
     )
     return 0
 

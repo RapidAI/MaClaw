@@ -25,7 +25,7 @@ import (
 
 // responsesWSEndpoint converts an HTTP base URL to a WebSocket URL for the
 // Responses API WebSocket mode.
-// For chatgpt.com/backend-api → wss://chatgpt.com/backend-api/codex/responses
+// For chatgpt.com/backend-api/codex → wss://chatgpt.com/backend-api/codex/responses
 // For api.openai.com/v1 → wss://api.openai.com/v1/responses
 func responsesWSEndpoint(baseURL string) string {
 	u := strings.TrimRight(baseURL, "/")
@@ -34,6 +34,9 @@ func responsesWSEndpoint(baseURL string) string {
 	if llm.IsCodexSubscriptionEndpoint(u) {
 		if strings.HasSuffix(u, "/codex/responses") {
 			return u
+		}
+		if strings.HasSuffix(u, "/codex") {
+			return u + "/responses"
 		}
 		return u + "/codex/responses"
 	}

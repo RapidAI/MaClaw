@@ -15,6 +15,9 @@ func dequantRowIntoAVX2(dst []float32, data []byte, rowOff, nBlocks int)
 //go:noescape
 func dequantRowScaledAVX2(dst []float32, data []byte, scales *float32, rowOff, nBlocks int)
 
+//go:noescape
+func dequantRowScaledDualAVX2(dst0, dst1 []float32, data []byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int)
+
 // --- AVX1 assembly (Sandy/Ivy Bridge) ---
 
 //go:noescape
@@ -54,4 +57,13 @@ func dequantRowScaledASM(dst []float32, data []byte, scales *float32, rowOff, nB
 	}
 	sc := unsafe.Slice(scales, nBlocks)
 	dequantRowScaledScalar(dst, data, sc, rowOff, nBlocks)
+}
+
+func dequantRowScaledDual(dst0, dst1 []float32, data []byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int) {
+	if hasAVX2andFMA && nBlocks > 0 && len(dst0) >= nBlocks*q8BlockSize && len(dst1) >= nBlocks*q8BlockSize {
+		dequantRowScaledDualAVX2(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
+		return
+	}
+	dequantRowScaledASM(dst0, data, scales0, rowOff0, nBlocks)
+	dequantRowScaledASM(dst1, data, scales1, rowOff1, nBlocks)
 }

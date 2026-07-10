@@ -37,6 +37,7 @@ export interface CodingAgentProgress {
     taskID?: string;
     title: string;
     detail?: string;
+    command?: string;
     outcome?: string;
     severity?: string;
     summary?: string;
@@ -99,7 +100,7 @@ const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh
     starting: { en: "Starting", zh: "\u542f\u52a8\u4e2d" },
     running: { en: "Running", zh: "\u6267\u884c\u4e2d" },
     completed: { en: "Completed", zh: "\u5df2\u5b8c\u6210" },
-    failed: { en: "Run Error", zh: "\u8fd0\u884c\u9519\u8bef" },
+    failed: { en: "Failed", zh: "\u5931\u8d25" },
     retrying: { en: "Retrying", zh: "\u91cd\u8bd5\u4e2d" },
     skipped: { en: "Skipped", zh: "\u5df2\u8df3\u8fc7" },
     result: { en: "Result", zh: "\u7ed3\u679c" },
@@ -146,6 +147,7 @@ export function normalizeCodingAgentProgress(progress: CodingAgentProgress): Cod
         taskID: normalizeCodingAgentTaskID(progress.taskID),
         title: normalizeCodingAgentTitle(progress.title),
         detail: normalizeCodingAgentOptionalText(progress.detail),
+        command: normalizeCodingAgentOptionalText(progress.command),
         outcome: normalizeCodingAgentOptionalText(progress.outcome),
         severity: normalizeCodingAgentOptionalText(progress.severity),
         summary: normalizeCodingAgentOptionalText(progress.summary),
@@ -230,6 +232,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
             taskID,
             title: typeof raw.title === "string" ? raw.title : "",
             detail: typeof raw.detail === "string" ? raw.detail : "",
+            command: typeof raw.command === "string" ? raw.command : "",
             outcome: typeof raw.outcome === "string" ? raw.outcome : "",
             severity: typeof raw.severity === "string" ? raw.severity : "",
             summary: typeof raw.summary === "string" ? raw.summary : "",
@@ -261,6 +264,7 @@ export function codingAgentProgressTone(progress: CodingAgentProgress): CodingAg
         case "guardrail_summary":
             return codingAgentGuardrailStatusTone(normalized.outcome);
         case "command_summary":
+            if (codingAgentCommandFailureLooksExploratory(normalized)) return neutralAttentionTone;
             return codingAgentCommandStatusTone(normalized.outcome);
         case "file_activity_summary":
             return codingAgentFileActivityStatusTone(normalized.outcome);
@@ -273,16 +277,46 @@ export function codingAgentProgressTone(progress: CodingAgentProgress): CodingAg
         case "diff_check":
             return codingAgentDiffCheckStatusTone(normalized.outcome);
         case "tool_finished":
-            if (codingAgentToolFailureLooksDiagnostic(normalized)) {
-                return neutralAttentionTone;
-            }
+            if (codingAgentToolFailureLooksDiagnostic(normalized)) return neutralAttentionTone;
+            if (codingAgentToolFailureLooksExpectedOrRecoverable(normalized)) return neutralAttentionTone;
             return codingAgentToolOutcomeTone(normalized.outcome);
         default:
             return codingAgentStatusTone(normalized.phase);
     }
 }
 
-function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: string): string {
+export function codingAgentToolProgressTone(outcome: string | undefined, summary?: string, detail?: string, severity?: string): CodingAgentStatusTone {
+    const progress = normalizeCodingAgentProgress({
+        phase: "running",
+        title: "",
+        event: "tool_finished",
+        detail,
+        outcome,
+        severity,
+        summary,
+    });
+    if (codingAgentToolFailureLooksDiagnostic(progress)) return neutralAttentionTone;
+    if (codingAgentToolFailureLooksExpectedOrRecoverable(progress)) return neutralAttentionTone;
+    return codingAgentToolOutcomeTone(outcome);
+}
+
+export function codingAgentToolProgressLabel(outcome: string | undefined, lang: string, summary?: string, detail?: string, severity?: string): string {
+    const progress = normalizeCodingAgentProgress({
+        phase: "running",
+        title: "",
+        event: "tool_finished",
+        detail,
+        outcome,
+        severity,
+        summary,
+    });
+    if (codingAgentToolFailureLooksExpectedOrRecoverable(progress)) {
+        return lang.startsWith("zh") ? "\u68c0\u67e5" : "Check";
+    }
+    return codingAgentToolOutcomeLabel(outcome, lang);
+}
+
+export function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
     const event = (normalized.event || "").trim().toLowerCase();
     const label = (en: string, zh: string) => lang.startsWith("zh") ? zh : en;
@@ -291,6 +325,9 @@ function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: stri
         case "guardrail_summary":
             return `${label("Guard", "\u8fb9\u754c")} ${codingAgentGuardrailStatusLabel(normalized.outcome, lang)}`;
         case "command_summary":
+            if (codingAgentCommandFailureLooksExploratory(normalized)) {
+                return codingAgentCommandProgressLabel(normalized.outcome, lang, normalized.summary, normalized.detail, true);
+            }
             return `${label("Commands", "\u547d\u4ee4")} ${codingAgentCommandStatusLabel(normalized.outcome, lang)}`;
         case "file_activity_summary":
             return `${label("Activity", "\u6587\u4ef6\u52a8\u4f5c")} ${codingAgentFileActivityStatusLabel(normalized.outcome, lang)}`;
@@ -303,6 +340,9 @@ function codingAgentProgressStatusText(progress: CodingAgentProgress, lang: stri
         case "diff_check":
             return `${label("Diff check", "Diff \u81ea\u68c0")} ${codingAgentDiffCheckStatusLabel(normalized.outcome, lang)}`;
         case "tool_finished":
+            if (codingAgentToolFailureLooksExpectedOrRecoverable(normalized)) {
+                return label("Tool Check", "\u5de5\u5177\u68c0\u67e5");
+            }
             return `${label("Tool", "\u5de5\u5177")} ${codingAgentToolOutcomeLabel(normalized.outcome, lang)}`;
         default:
             return codingAgentStatusLabel(normalized.phase, lang);
@@ -322,6 +362,7 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
     const displayText = codingAgentDisplayText(progress, lang);
     const statusText = codingAgentProgressStatusText(progress, lang);
     const metaText = codingAgentProgressMetaText(progress, lang);
+    const commandPreview = codingAgentCommandPreviewText(progress, lang);
     return (
         <div
             key={msg.id}
@@ -353,6 +394,25 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
             {progress.taskID && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{progress.taskID}</span>}
             {metaText && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{metaText}</span>}
             {progress.title && <span style={{ color: t.text, minWidth: 0, overflowWrap: "anywhere" }}>{progress.title}</span>}
+            {commandPreview && (
+                <span
+                    data-testid="coding-agent-command-preview"
+                    title={progress.command}
+                    style={{
+                        color: t.fieldLabel,
+                        minWidth: 0,
+                        marginLeft: "auto",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                        fontSize: "11px",
+                        maxWidth: "min(44ch, 42%)",
+                    }}
+                >
+                    {commandPreview}
+                </span>
+            )}
         </div>
     );
 }
@@ -506,6 +566,24 @@ export function codingAgentProgressMetaText(progress: CodingAgentProgress, lang:
     return undefined;
 }
 
+export function codingAgentCommandPreviewText(progress: CodingAgentProgress, lang: string, maxRunes = 72): string | undefined {
+    const normalized = normalizeCodingAgentProgress(progress);
+    if ((normalized.event || "").trim().toLowerCase() !== "tool_finished") return undefined;
+    const toolName = (normalized.detail || "").trim().toLowerCase();
+    if (toolName !== "bash" && toolName !== "ssh_bash") return undefined;
+    if (normalizeCodingAgentToolOutcome(normalized.outcome) === "success") return undefined;
+    const command = (normalized.command || "").trim();
+    if (!command) return undefined;
+    const label = lang.startsWith("zh") ? "\u547d\u4ee4" : "cmd";
+    return `${label}: ${truncateCodingAgentInlineText(command, maxRunes)}`;
+}
+
+function truncateCodingAgentInlineText(text: string, maxRunes: number): string {
+    const chars = Array.from(text.replace(/\s+/g, " ").trim());
+    if (chars.length <= maxRunes) return chars.join("");
+    return `${chars.slice(0, Math.max(1, maxRunes - 1)).join("")}\u2026`;
+}
+
 function codingAgentCountMetaText(progress: CodingAgentProgress, lang: string): string {
     const count = progress.count ?? 0;
     const event = (progress.event || "").trim().toLowerCase();
@@ -581,7 +659,7 @@ export function codingAgentTurnSnapshotText(snapshot: CodingAgentTurnSnapshot, l
         snapshot.toolOutcome ? `${outcomeLabel}: ${snapshot.toolOutcome}` : undefined,
         snapshot.toolDurationMs !== undefined ? `${durationLabel}: ${formatCodingAgentDuration(snapshot.toolDurationMs)}` : undefined,
         snapshot.guardrailStatus ? `${guardLabel}: ${codingAgentGuardrailStatusLabel(snapshot.guardrailStatus, lang)}${snapshot.guardrailSummary ? ` (${snapshot.guardrailSummary})` : ""}` : undefined,
-        snapshot.commandStatus ? `${commandLabel}: ${codingAgentCommandStatusLabel(snapshot.commandStatus, lang)}${snapshot.commandSummary ? ` (${snapshot.commandSummary})` : ""}` : undefined,
+        snapshot.commandStatus ? `${commandLabel}: ${codingAgentCommandProgressLabel(snapshot.commandStatus, lang, snapshot.commandSummary)}${snapshot.commandSummary ? ` (${snapshot.commandSummary})` : ""}` : undefined,
         snapshot.fileActivityStatus ? `${fileActivityLabel}: ${codingAgentFileActivityStatusLabel(snapshot.fileActivityStatus, lang)}${snapshot.fileActivityDetail ? ` (${snapshot.fileActivityDetail})` : snapshot.fileActivitySummary ? ` (${snapshot.fileActivitySummary})` : ""}` : undefined,
         snapshot.qualityStatus ? `${qualityLabel}: ${codingAgentQualityStatusLabel(snapshot.qualityStatus, lang)}${snapshot.qualitySummary ? ` (${snapshot.qualitySummary})` : ""}` : undefined,
         snapshot.explorationStatus ? `${exploreLabel}: ${codingAgentExplorationStatusLabel(snapshot.explorationStatus, lang)}${snapshot.explorationSummary ? ` (${snapshot.explorationSummary})` : ""}` : undefined,
@@ -596,7 +674,7 @@ export function codingAgentToolTraceText(snapshot: CodingAgentTurnSnapshot, lang
     const tools = snapshot.tools || [];
     if (tools.length === 0) return undefined;
     return tools.map((tool) => {
-        const outcome = tool.outcome ? codingAgentToolOutcomeLabel(tool.outcome, lang) : undefined;
+        const outcome = tool.outcome ? codingAgentToolProgressLabel(tool.outcome, lang, tool.summary, tool.name) : undefined;
         const duration = formatCodingAgentDuration(tool.durationMs);
         const summary = tool.summary ? `(${tool.summary})` : undefined;
         return [tool.name, outcome, duration, summary].filter(Boolean).join(" ");
@@ -626,14 +704,14 @@ export function codingAgentToolOutcomeLabel(outcome: string | undefined, lang: s
     if (lang.startsWith("zh")) {
         switch (normalized) {
             case "success": return "\u6210\u529f";
-            case "failed": return "\u8fd0\u884c\u9519\u8bef";
+            case "failed": return "\u5931\u8d25";
             case "blocked": return "\u5df2\u963b\u65ad";
             default: return "\u672a\u77e5";
         }
     }
     switch (normalized) {
         case "success": return "Success";
-        case "failed": return "Run Error";
+        case "failed": return "Failed";
         case "blocked": return "Blocked";
         default: return "Unknown";
     }
@@ -661,7 +739,6 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "build stopped",
         "check(",
         "check (",
-        "expected",
         "fatal error",
         "fail at",
         "failed test",
@@ -684,15 +761,78 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "could not find files for the given pattern",
         "diagnostic",
         "environment probe",
+        "expectedexpression",
+        "expected expression",
+        "execution_policies",
+        "execution policies",
+        "fullyqualifiederrorid : expectedexpression",
+        "fullyqualifiederrorid : unexpectedtoken",
+        "missingopenparenthesisinifstatement",
+        "missing closing",
+        "missing variable name after foreach",
+        "no generator specified for -g",
+        "output was likely consumed by a pipeline filter",
+        "parsererror",
+        "powershell command compatibility",
+        "powershell exception",
         "get-command",
         "not recognized as",
         "probe",
         "version check",
         "where.exe",
+        "authorizationmanager",
+        "unexpected token",
+        "unexpectedtoken",
+        "在此系统上禁止运行脚本",
+        "无法加载文件",
+        "表达式或语句中包含意外的标记",
+        "意外的标记",
         "无法将",
         "识别为 cmdlet",
     ];
     return diagnosticMarkers.some((marker) => text.includes(marker));
+}
+
+function codingAgentToolFailureLooksExpectedOrRecoverable(progress: CodingAgentProgress): boolean {
+    if (normalizeCodingAgentToolOutcome(progress.outcome) !== "failed") return false;
+    if (codingAgentToolFailureLooksDiagnostic(progress)) return false;
+    const text = [progress.detail, progress.summary].filter(Boolean).join("\n").toLowerCase();
+    if (!text) return false;
+    const hardFailureMarkers = [
+        "access denied",
+        "fatal error",
+        "linker command failed",
+        "ninja:",
+        "panic:",
+        "permission denied",
+        "traceback",
+        "undefined reference",
+    ];
+    if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
+    const expectedFailureMarkers = [
+        "all tests should fail",
+        "driver not implemented",
+        "expected behavior for a test-only",
+        "expected - driver not implemented",
+        "is a directory; use list_directory",
+        "red light",
+        "test-only",
+        "tdd red",
+    ];
+    if (expectedFailureMarkers.some((marker) => text.includes(marker))) return true;
+    const assertionMarkers = [
+        "expected: (0) !=",
+    ];
+    const expectedContextMarkers = [
+        "driver",
+        "not implemented",
+        "red phase",
+        "red-light",
+        "red_light",
+        "test-only",
+        "tdd",
+    ];
+    return assertionMarkers.some((marker) => text.includes(marker)) && expectedContextMarkers.some((marker) => text.includes(marker));
 }
 
 export function normalizeCodingAgentGuardrailStatus(status?: string): CodingAgentGuardrailStatus {
@@ -733,14 +873,14 @@ export function codingAgentCommandStatusLabel(status: string | undefined, lang: 
     if (lang.startsWith("zh")) {
         switch (normalized) {
             case "passed": return "\u5df2\u901a\u8fc7";
-            case "failed": return "\u672a\u901a\u8fc7";
+            case "failed": return "\u5931\u8d25";
             case "none": return "\u672a\u8fd0\u884c";
             default: return "\u672a\u77e5";
         }
     }
     switch (normalized) {
         case "passed": return "Passed";
-        case "failed": return "Not Passed";
+        case "failed": return "Failed";
         case "none": return "None";
         default: return "Unknown";
     }
@@ -757,6 +897,102 @@ export function codingAgentCommandStatusTone(status: string | undefined): Coding
         default:
             return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
     }
+}
+
+export function codingAgentCommandProgressTone(status: string | undefined, summary?: string, detail?: string): CodingAgentStatusTone {
+    const progress = normalizeCodingAgentProgress({
+        phase: "result",
+        title: "",
+        event: "command_summary",
+        detail,
+        outcome: status,
+        summary,
+    });
+    if (codingAgentCommandFailureLooksExploratory(progress)) return neutralAttentionTone;
+    return codingAgentCommandStatusTone(status);
+}
+
+export function codingAgentCommandProgressLabel(status: string | undefined, lang: string, summary?: string, detail?: string, includeNoun = false): string {
+    const progress = normalizeCodingAgentProgress({
+        phase: "result",
+        title: "",
+        event: "command_summary",
+        detail,
+        outcome: status,
+        summary,
+    });
+    if (codingAgentCommandFailureLooksExploratory(progress)) {
+        if (includeNoun) {
+            return lang.startsWith("zh") ? "\u547d\u4ee4\u68c0\u67e5" : "Commands Check";
+        }
+        return lang.startsWith("zh") ? "\u68c0\u67e5" : "Check";
+    }
+    return codingAgentCommandStatusLabel(status, lang);
+}
+
+function codingAgentCommandFailureLooksExploratory(progress: CodingAgentProgress): boolean {
+    if (normalizeCodingAgentCommandStatus(progress.outcome) !== "failed") return false;
+    const text = [progress.detail, progress.summary].filter(Boolean).join("\n").toLowerCase();
+    if (!text) return false;
+    const hardFailureMarkers = [
+        "access denied",
+        "fatal error",
+        "linker command failed",
+        "ninja:",
+        "panic:",
+        "permission denied",
+        "traceback",
+        "undefined reference",
+    ];
+    if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
+    const exploratoryMarkers = [
+        "all tests should fail",
+        "command not found",
+        "could not find files for the given pattern",
+        "driver not implemented",
+        "environment probe",
+        "expectedexpression",
+        "expected expression",
+        "execution_policies",
+        "execution policies",
+        "fullyqualifiederrorid : expectedexpression",
+        "fullyqualifiederrorid : unexpectedtoken",
+        "is a directory; use list_directory",
+        "missingopenparenthesisinifstatement",
+        "missing closing",
+        "missing variable name after foreach",
+        "no generator specified for -g",
+        "not recognized as",
+        "output was likely consumed by a pipeline filter",
+        "parsererror",
+        "powershell command compatibility",
+        "powershell exception",
+        "probe",
+        "red light",
+        "test-only",
+        "tdd red",
+        "version check",
+        "where.exe",
+        "authorizationmanager",
+        "unexpected token",
+        "unexpectedtoken",
+        "在此系统上禁止运行脚本",
+        "无法加载文件",
+        "表达式或语句中包含意外的标记",
+        "意外的标记",
+        "\u65e0\u6cd5\u5c06",
+        "\u8bc6\u522b\u4e3a cmdlet",
+    ];
+    if (exploratoryMarkers.some((marker) => text.includes(marker))) return true;
+    return text.includes("expected: (0) !=") && [
+        "driver",
+        "not implemented",
+        "red phase",
+        "red-light",
+        "red_light",
+        "test-only",
+        "tdd",
+    ].some((marker) => text.includes(marker));
 }
 
 export function normalizeCodingAgentFileActivityStatus(status?: string): CodingAgentFileActivityStatus {

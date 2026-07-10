@@ -111,7 +111,10 @@ def complete_record() -> str:
             )
         if field == "Runtime boundary verification result":
             value = (
-                "MaClaw Mobile runtime boundary verified; log: "
+                "MaClaw Mobile runtime boundary verified: no corelib, "
+                "phone-local SSH, terminal emulator, phone-side SSH credential, "
+                "custom Hub URL, redemption-code login, or third-party LLM "
+                "provider/base URL/API-key regressions; log: "
                 "docs/qa-builds/runtime-boundary-1.0.0+42.log"
             )
         if field == "Automated release gates result":
@@ -206,7 +209,7 @@ def complete_record() -> str:
         if field == "SSH realtime incremental output evidence":
             value = (
                 "Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 "
-                "on server-profile:srv-prod was claimed_by MaClaw GUI agent worker "
+                "on server-profile:srv-prod was claimed_by desktop-agent-1 "
                 "through agent/backend-managed SSHSessionManager, not phone-local "
                 "ad hoc terminal, and included output_chunk with whoami stdout "
                 "and output_seq 2; "
@@ -242,7 +245,7 @@ def complete_record() -> str:
                 "SSHSessionManager path, not phone-local ad hoc terminal, with "
                 "GUI/agent evidence line Hub session mobssh-12345 "
                 "backend_session_id mobile-ssh-mobssh-12345 claimed_by "
-                "MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42"
+                "desktop-agent-1 output_seq 2; screenshot ssh-copy-42"
             )
         if field in validate_qa_build_record.SSH_AI_ANALYSIS_WARNING_FIELDS:
             value = (
@@ -2369,6 +2372,18 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_document_draft_from_assistant_result_accepts_document_draft_id_label(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "document-draft:draft-from-assistant-12345",
+                "document-draft-id-draft-from-assistant-12345",
+            ),
+        )
+
+        self.assertNotIn(
+            "Document draft created from assistant result must describe assistant-result draft creation for every document template",
+            validate_qa_build_record.missing_required_fields(values),
+        )
     def test_document_draft_from_assistant_result_requires_trackable_draft_id(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
@@ -2874,7 +2889,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Command output excerpt: QA screenshot captured",
             )
             .replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
                 "SSH realtime incremental output evidence: QA screenshot captured",
             )
             .replace(
@@ -2890,7 +2905,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Reconnect result: QA screenshot captured",
             )
             .replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: QA screenshot captured",
             ),
         )
@@ -2914,7 +2929,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_realtime_incremental_output_requires_delta_fields(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
                 "SSH realtime incremental output evidence: Realtime ssh_session event reached server-profile:srv-prod but only static backend session screenshot was captured; screenshot ssh-realtime-output-42",
             ),
         )
@@ -2979,7 +2994,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_realtime_incremental_output_requires_gui_agent_handoff(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
                 "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
             ),
         )
@@ -2994,7 +3009,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
                 "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was managed by MaClaw GUI agent through SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
             ),
         )
@@ -3009,7 +3024,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
                 "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was managed by MaClaw GUI agent through SSHSessionManager after mobile called /api/mobile/ssh/sessions/mobssh-12345/input and worker status changed, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
             ),
         )
@@ -3019,13 +3034,33 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_ssh_realtime_incremental_output_rejects_generic_claimed_by_identity(
+        self,
+    ) -> None:
+        base = "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42"
+        invalid_values = [
+            base.replace("claimed_by desktop-agent-1", "claimed_by MaClaw GUI agent worker"),
+            base.replace("claimed_by desktop-agent-1", "claimed_by GUI/agent worker"),
+            base.replace("claimed_by desktop-agent-1", "claimed_by worker"),
+        ]
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                values = validate_qa_build_record.parse_record(
+                    complete_record().replace(base, invalid_value),
+                )
+
+                self.assertIn(
+                    "SSH realtime incremental output evidence must describe the expected SSH smoke-test evidence",
+                    validate_qa_build_record.missing_required_fields(values),
+                )
     def test_ssh_realtime_incremental_output_rejects_phone_local_terminal_only(
         self,
     ) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
-                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by MaClaw GUI agent worker and included output_chunk with whoami stdout and output_seq 2, but evidence only shows a phone-local terminal screenshot; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 through agent/backend-managed SSHSessionManager, not phone-local ad hoc terminal, and included output_chunk with whoami stdout and output_seq 2; screenshot ssh-realtime-output-42",
+                "SSH realtime incremental output evidence: Realtime ssh_session event for backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod was claimed_by desktop-agent-1 and included output_chunk with whoami stdout and output_seq 2, but evidence only shows a phone-local terminal screenshot; screenshot ssh-realtime-output-42",
             ),
         )
 
@@ -3102,7 +3137,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_copied_output_rejects_phone_local_terminal_context(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard from phone-local terminal screenshot; screenshot ssh-copy-42",
             ),
         )
@@ -3115,7 +3150,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
     def test_ssh_copied_output_requires_gui_agent_evidence_line(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record().replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
             ),
         )
@@ -3125,13 +3160,61 @@ class ValidateQABuildRecordTest(unittest.TestCase):
             validate_qa_build_record.missing_required_fields(values),
         )
 
+    def test_ssh_copied_output_accepts_backend_session_output_panel_evidence_line(self) -> None:
+        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42"
+        value = base.replace(
+            "GUI/agent evidence line",
+            "backend-session output panel evidence",
+        )
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(base, value),
+        )
+
+        self.assertNotIn(
+            "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
+    def test_ssh_copied_output_rejects_legacy_operator_console_evidence_line(self) -> None:
+        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42"
+        value = base.replace(
+            "GUI/agent evidence line",
+            "operator console evidence",
+        )
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(base, value),
+        )
+
+        self.assertIn(
+            "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
     def test_ssh_copied_output_requires_evidence_line_values(self) -> None:
-        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42"
+        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42"
         invalid_values = [
             base.replace("Hub session mobssh-12345", "Hub session"),
             base.replace("backend_session_id mobile-ssh-mobssh-12345", "backend_session_id"),
-            base.replace("claimed_by MaClaw GUI agent worker", "claimed_by"),
+            base.replace("claimed_by desktop-agent-1", "claimed_by"),
             base.replace("output_seq 2", "output_seq next"),
+        ]
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                values = validate_qa_build_record.parse_record(
+                    complete_record().replace(base, invalid_value),
+                )
+
+                self.assertIn(
+                    "Copied backend session output evidence must describe the expected SSH smoke-test evidence",
+                    validate_qa_build_record.missing_required_fields(values),
+                )
+
+    def test_ssh_copied_output_rejects_generic_claimed_by_identity(self) -> None:
+        base = "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42"
+        invalid_values = [
+            base.replace("claimed_by desktop-agent-1", "claimed_by MaClaw GUI agent worker"),
+            base.replace("claimed_by desktop-agent-1", "claimed_by GUI/agent worker"),
+            base.replace("claimed_by desktop-agent-1", "claimed_by worker"),
         ]
 
         for invalid_value in invalid_values:
@@ -3196,7 +3279,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Reconnect result: SSH reconnected to QA server after disconnect; screenshot ssh-reconnect-42",
             )
             .replace(
-                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
                 "Copied backend session output evidence: Copied output to clipboard; screenshot ssh-copy-42",
             )
             .replace(
@@ -4112,6 +4195,19 @@ class ValidateQABuildRecordTest(unittest.TestCase):
         self.assertIn("Runtime boundary verification result", missing)
         self.assertIn("Automated release gates result", missing)
 
+    def test_runtime_boundary_evidence_must_cover_full_mobile_boundary(self) -> None:
+        values = validate_qa_build_record.parse_record(
+            complete_record().replace(
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib or phone-local SSH regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+            ),
+        )
+
+        self.assertIn(
+            "Runtime boundary verification result must reference verify_runtime_boundary.py verified output or log evidence",
+            validate_qa_build_record.missing_required_fields(values),
+        )
+
     def test_automated_gate_evidence_fields_must_match_expected_artifacts(self) -> None:
         values = validate_qa_build_record.parse_record(
             complete_record()
@@ -4124,7 +4220,7 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Preflight result: QA evidence screenshot captured for release approval",
             )
             .replace(
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                 "Runtime boundary verification result: QA evidence screenshot captured for release approval",
             )
             .replace(
@@ -4190,8 +4286,8 @@ class ValidateQABuildRecordTest(unittest.TestCase):
                 "Preflight result: qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+41.log",
             )
             .replace(
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+41.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+41.log",
             )
             .replace(
                 "Automated release gates result: run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",

@@ -27,6 +27,27 @@ export interface CodePreviewUIState {
     userClosed: boolean;          // user manually closed, suppress auto-open
 }
 
+function normalizeCodeEventProjectPath(projectPath?: string): string {
+    let normalized = (projectPath || "").trim().replace(/\\/g, "/");
+    normalized = normalized.replace(/\/+$/, "");
+    if (/^[a-z]:\//i.test(normalized) || normalized.startsWith("//")) {
+        normalized = normalized.toLowerCase();
+    }
+    return normalized;
+}
+
+function shouldAcceptCodeEventForProject(eventProjectPath?: string, activeTabProjectPath?: string, forceOpen = false): boolean {
+    const eventPath = normalizeCodeEventProjectPath(eventProjectPath);
+    if (!eventPath) {
+        return true;
+    }
+    const activePath = normalizeCodeEventProjectPath(activeTabProjectPath);
+    if (activePath) {
+        return eventPath === activePath;
+    }
+    return forceOpen;
+}
+
 // ── Pure State Logic Functions (exported for testing) ──
 
 /** Returns a fresh default state. */
@@ -60,10 +81,10 @@ export function applyFileUpdate(
     if (state.sessionID && file.sessionID !== state.sessionID) {
         // Session mismatch detected.
         // If the current session is NOT active (i.e., it ended or was restored
-        // from a snapshot of a completed session), allow a new session to take
-        // over by clearing old files and accepting the new file.
-        if (file.sessionID && !state.sessionActive) {
-            // New session starting — clear stale state and accept
+        // from a snapshot of a completed session), or if the backend explicitly
+        // marks this file as forceOpen, allow the new source preview session to
+        // take over by clearing old files and accepting the new file.
+        if (file.sessionID && (!state.sessionActive || file.forceOpen)) {
             const nextFiles = new Map<string, CodeFile>();
             nextFiles.set(file.filePath, file);
             return {
@@ -71,6 +92,7 @@ export function applyFileUpdate(
                 files: nextFiles,
                 activeFilePath: file.filePath,
                 sessionID: file.sessionID,
+                sessionActive: state.sessionActive || file.forceOpen === true,
                 active: !state.userClosed || file.forceOpen ? true : state.active,
                 userClosed: file.forceOpen ? false : state.userClosed,
             };
@@ -93,6 +115,7 @@ export function applyFileUpdate(
         files: nextFiles,
         activeFilePath: shouldAutoSelect ? file.filePath : state.activeFilePath,
         sessionID: file.sessionID || state.sessionID,
+        sessionActive: file.forceOpen && file.sessionID ? true : state.sessionActive,
         active: shouldAutoOpen ? true : state.active,
         userClosed: file.forceOpen ? false : state.userClosed,
     };
@@ -112,7 +135,7 @@ export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUI
  * sets sessionActive=true, resets userClosed.
  */
 export function applySessionStart(state: CodePreviewUIState, sessionID = ""): CodePreviewUIState {
-    if (state.sessionID && !sessionID) {
+    if (state.sessionID && !sessionID && state.sessionActive) {
         return state;
     }
     return {
@@ -195,6 +218,13 @@ export function applyResetSession(): CodePreviewUIState {
     return initialState();
 }
 
+export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIState {
+    return {
+        ...state,
+        files: new Map(state.files),
+    };
+}
+
 // ── React Hook ──
 
 /**
@@ -220,21 +250,24 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
 
             const eventProjectPath: string | undefined = data.project_path;
-            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
+            const forceOpen = data.force_open === true;
+            if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath, forceOpen)) {
                 return;
             }
 
+            const opType: CodeFile['opType'] = data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create";
+            const original = opType === "modify" && typeof data.original === "string" ? data.original : undefined;
             const file: CodeFile = {
                 sessionID: data.session_id || "",
                 filePath: data.file_path,
                 fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
                 absPath: data.abs_path || undefined,
                 content: data.content,
-                original: data.original || undefined,
-                opType: data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create",
+                original,
+                opType,
                 language: data.language || "plaintext",
                 updatedAt: Date.now(),
-                forceOpen: data.force_open === true,
+                forceOpen,
             };
 
             setState(prev => applyFileUpdate(prev, file));
@@ -249,7 +282,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
     useEffect(() => {
         const unsub = EventsOn("code:session_start", (data: any) => {
             const eventProjectPath: string | undefined = data?.project_path;
-            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
+            if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath)) {
                 return;
             }
             setState(prev => applySessionStart(prev, data?.session_id || ""));
@@ -264,10 +297,13 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
     useEffect(() => {
         const unsub = EventsOn("code:session_end", (data: any) => {
             const eventProjectPath: string | undefined = data?.project_path;
-            if (eventProjectPath && eventProjectPath !== activeTabProjectPath) {
-                return;
-            }
-            setState(prev => applySessionEnd(prev, data?.session_id || ""));
+            const sessionID = data?.session_id || "";
+            setState(prev => {
+                if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath) && prev.sessionID !== sessionID) {
+                    return prev;
+                }
+                return applySessionEnd(prev, sessionID);
+            });
         });
         return () => {
             if (typeof unsub === "function") unsub();
@@ -308,7 +344,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
 
     /** Overwrites the entire code preview state from a saved snapshot. */
     const restoreState = useCallback((snapshot: CodePreviewUIState) => {
-        setState(snapshot);
+        setState(cloneCodePreviewState(snapshot));
     }, []);
 
     return {

@@ -48,6 +48,10 @@ type LoopContext struct {
 	StartedAt  time.Time    // when this loop was spawned
 	Runtime    RuntimeContext
 
+	// codeSessionID scopes source-preview events emitted by nested coding
+	// SubAgents to the same UI code session opened by the workflow runner.
+	codeSessionID string
+
 	// SkipNeedsConfirmGate is set only for non-review continuations that have
 	// their own interaction state, such as attachment bypasses or ask_user
 	// replies. A workflow phase awaiting review overrides this flag so every

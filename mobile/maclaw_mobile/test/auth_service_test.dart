@@ -103,7 +103,15 @@ void main() {
     );
     final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
 
-    for (final value in const ['', 'abc', '1234567', '1234567890123456']) {
+    for (final value in const [
+      '',
+      'abc',
+      '1234567',
+      '1234567890123456',
+      'user19900001111',
+      '199-TEST-1111',
+      'phone:19900001111',
+    ]) {
       await expectLater(
         service.requestPhoneLogin(value),
         throwsA(isA<ArgumentError>()),

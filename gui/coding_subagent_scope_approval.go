@@ -39,6 +39,8 @@ const (
 	ScopeApprovalAllowOnce  ScopeApprovalDecision = "allow_once"
 	ScopeApprovalAllowDir   ScopeApprovalDecision = "allow_dir"
 	ScopeApprovalFullAccess ScopeApprovalDecision = "full_access"
+
+	localHighRiskApprovalKind = "local_high_risk_bash"
 )
 
 // ScopeApprovalRequest is sent to the user when an out-of-scope access is detected.
@@ -61,10 +63,11 @@ type ScopeApprovalCallback func(req ScopeApprovalRequest) ScopeApprovalDecision
 // scopeApprovalState tracks approved directories and pending decisions
 // for a single SubAgent task execution.
 type scopeApprovalState struct {
-	mu              sync.Mutex
-	fullAccess      bool                  // when true, all paths are allowed without prompting (persistent across app restarts via config)
-	approvedDirs    map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
-	onScopeApproval ScopeApprovalCallback // nil = hard reject (legacy behavior)
+	mu                 sync.Mutex
+	fullAccess         bool                  // when true, all paths are allowed without prompting (persistent across app restarts via config)
+	highRiskFullAccess bool                  // task-scoped approval for high-risk shell commands only
+	approvedDirs       map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
+	onScopeApproval    ScopeApprovalCallback // nil = hard reject (legacy behavior)
 }
 
 // newScopeApprovalState creates a new approval state.
@@ -178,6 +181,28 @@ func (s *scopeApprovalState) grantFullAccess() {
 	s.fullAccess = true
 }
 
+func (s *scopeApprovalState) highRiskApproved() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.highRiskFullAccess
+}
+
+func (s *scopeApprovalState) grantHighRiskFullAccess() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.highRiskFullAccess = true
+}
+
+func shouldPersistLocalScopeFullAccess(req ScopeApprovalRequest, decision ScopeApprovalDecision) bool {
+	return decision == ScopeApprovalFullAccess && req.Kind != localHighRiskApprovalKind
+}
+
 // formatScopeRejection generates the rejection message shown to the LLM.
 func formatScopeRejection(toolName, path, projectPath string) string {
 	switch toolName {
@@ -205,7 +230,11 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 
 		// Send progress update so user knows what's happening.
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("\u26a0\ufe0f \u7f16\u7801 SubAgent \u5c1d\u8bd5\u8bbf\u95ee\u9879\u76ee\u76ee\u5f55\u5916\u7684\u8def\u5f84\uff0c\u7b49\u5f85\u786e\u8ba4...\n\u8def\u5f84: %s\n\u9879\u76ee\u8303\u56f4: %s", req.Path, req.ProjectPath))
+			message := strings.TrimSpace(req.Message)
+			if message == "" {
+				message = "\u7f16\u7801 SubAgent \u5c1d\u8bd5\u8bbf\u95ee\u9879\u76ee\u76ee\u5f55\u5916\u7684\u8def\u5f84\uff0c\u7b49\u5f85\u786e\u8ba4..."
+			}
+			onProgress(fmt.Sprintf("\u26a0\ufe0f %s\n\u8def\u5f84: %s\n\u9879\u76ee\u8303\u56f4: %s", message, req.Path, req.ProjectPath))
 		}
 
 		// Create a channel for the response.
@@ -230,7 +259,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 		if loopCtx != nil {
 			select {
 			case decision := <-responseCh:
-				if decision == ScopeApprovalFullAccess && handler != nil && handler.app != nil {
+				if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
 				return decision
@@ -248,7 +277,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 		// No loopCtx — wait with timeout only.
 		select {
 		case decision := <-responseCh:
-			if decision == ScopeApprovalFullAccess && handler != nil && handler.app != nil {
+			if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}
 			return decision

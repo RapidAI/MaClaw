@@ -82,7 +82,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 final_decision_prefills={
                     "Release handoff result": "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md",
                     "Preflight result": "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
-                    "Runtime boundary verification result": "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                    "Runtime boundary verification result": "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                     "Automated release gates result": "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                 },
             )
@@ -97,7 +97,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 text,
             )
             self.assertIn(
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                 text,
             )
             self.assertIn(
@@ -290,7 +290,11 @@ class CreateQaBuildRecordTest(unittest.TestCase):
             )
             self.assertIn("GUI/agent Ctrl+C handling", output.getvalue())
             self.assertIn(
-                "copied-output GUI/agent evidence line with actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+                "copied-output GUI/agent evidence line with actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq",
+                output.getvalue(),
+            )
+            self.assertIn(
+                "preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID",
                 output.getvalue(),
             )
             self.assertIn(
@@ -472,7 +476,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                         "--preflight-result",
                         "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log",
                         "--runtime-boundary-result",
-                        "MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                        "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                         "--automated-gates-result",
                         "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log",
                     ],
@@ -491,7 +495,7 @@ class CreateQaBuildRecordTest(unittest.TestCase):
                 text,
             )
             self.assertIn(
-                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
+                "Runtime boundary verification result: MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log",
                 text,
             )
             self.assertIn(

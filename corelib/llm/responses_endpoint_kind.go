@@ -10,7 +10,8 @@ const (
 )
 
 func classifyResponsesEndpointKind(rawURL string) responsesEndpointKind {
-	if strings.Contains(strings.ToLower(strings.TrimSpace(rawURL)), "chatgpt.com") {
+	endpoint := strings.ToLower(strings.TrimSpace(rawURL))
+	if strings.Contains(endpoint, "chatgpt.com") || strings.Contains(endpoint, "/backend-api/codex") {
 		return responsesEndpointCodex
 	}
 	return responsesEndpointOpenAI

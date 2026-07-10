@@ -97,6 +97,32 @@ void main() {
     expect(adapter.requests, isEmpty);
   });
 
+  test('desktop GUI QR LLM authorization rejects provider config smuggling',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({'status': 'should-not-be-called'}),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+    final invalidPayloads = [
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top","api_key":"sk-test"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top","base_url":"https://llm.example.com/v1"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"mlqr_test","hub_url":"https://tenant-a.maclaw.top","provider":"openai"}',
+      '{"v":2,"type":"maclaw_mobile_llm_authorization","session_id":"short","hub_url":"https://tenant-a.maclaw.top"}',
+    ];
+
+    for (final payload in invalidPayloads) {
+      await expectLater(
+        client.authorizeThirdPartyLlmWithDesktopQr(payload),
+        throwsA(isA<FormatException>()),
+      );
+    }
+    expect(adapter.requests, isEmpty);
+  });
   test('desktop GUI QR LLM authorization rejects mobile auth payloads',
       () async {
     FlutterSecureStorage.setMockInitialValues({});

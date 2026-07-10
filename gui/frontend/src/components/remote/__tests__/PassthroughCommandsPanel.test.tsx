@@ -22,6 +22,8 @@ vi.mock("../../CustomDialog", () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
         showConfirm: (message: string) => Promise.resolve(window.confirm(message)),
+        showPrompt: (message: string, _title?: string, options?: { defaultValue?: string }) =>
+            Promise.resolve(window.prompt(message, options?.defaultValue ?? '')),
     }),
 }));
 

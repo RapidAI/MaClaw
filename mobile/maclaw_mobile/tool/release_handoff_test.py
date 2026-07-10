@@ -208,6 +208,10 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn('--signing-identity "<alias or certificate fingerprint>"', output)
         self.assertIn('--installer-channel "<internal test channel>"', output)
         self.assertIn(
+            "Android signing setup requires `MACLAW_ANDROID_STORE_FILE`, `MACLAW_ANDROID_STORE_PASSWORD`, `MACLAW_ANDROID_KEY_ALIAS`, and `MACLAW_ANDROID_KEY_PASSWORD` in the environment",
+            output,
+        )
+        self.assertIn(
             release_evidence_commands.setup_ios_export_options_command(
                 team_id="ABCDE12345",
                 export_method="development",
@@ -243,7 +247,7 @@ class ReleaseHandoffTest(unittest.TestCase):
             + '"',
             output,
         )
-        self.assertIn('--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log"', output)
+        self.assertIn('--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log"', output)
         self.assertIn('--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"', output)
         self.assertIn(
             release_evidence_commands.qa_record_path_placeholder(
@@ -292,11 +296,19 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn("GUI/agent evidence line", output)
         self.assertIn("Hub session ID", output)
         self.assertIn("claimed_by", output)
+        self.assertIn("redacted text or a traceable attachment ID", output)
+        self.assertIn("preserving that evidence line", output)
+        self.assertIn("concrete claimed_by worker identity", output)
+        self.assertIn("claimed_by desktop-agent-1", output)
         self.assertIn(
             "AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id",
             output,
         )
         self.assertIn("Digital employee list", output)
+        self.assertIn(
+            "Do not add placeholder signing/export files; use real local signing material",
+            output,
+        )
         self.assertIn("Do not store signing secrets", output)
         self.assertIn("Missing completed signed-build QA record", output)
         self.assertIn(
@@ -428,6 +440,7 @@ class ReleaseHandoffTest(unittest.TestCase):
                 release_evidence_commands.release_status_report_command(
                     team_id="ABCDE12345",
                     export_method="ad-hoc",
+                    log=release_evidence_commands.release_status_log_path("1.0.0+42"),
                 ),
                 release_evidence_commands.release_handoff_command(
                     version="1.0.0+42",
@@ -552,6 +565,11 @@ class ReleaseHandoffTest(unittest.TestCase):
             release_evidence_commands.release_status_report_command(
                 scope="android",
                 records_dir="tmp/qa-builds",
+                log=release_evidence_commands.release_status_log_path(
+                    "1.0.0+42",
+                    scope="android",
+                    records_dir="tmp/qa-builds",
+                ),
             ),
             commands,
         )
@@ -722,6 +740,10 @@ class ReleaseHandoffTest(unittest.TestCase):
         self.assertIn(
             release_evidence_commands.release_status_report_command(
                 scope="android",
+                log=release_evidence_commands.release_status_log_path(
+                    "1.0.0+42",
+                    scope="android",
+                ),
             ),
             android_output,
         )
@@ -812,6 +834,10 @@ class ReleaseHandoffTest(unittest.TestCase):
                 scope="ios",
                 team_id="ABCDE12345",
                 export_method="ad-hoc",
+                log=release_evidence_commands.release_status_log_path(
+                    "1.0.0+42",
+                    scope="ios",
+                ),
             ),
             ios_output,
         )

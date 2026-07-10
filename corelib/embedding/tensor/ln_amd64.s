@@ -1,0 +1,443 @@
+//go:build amd64
+
+#include "textflag.h"
+
+// Horizontal sum of YMM → X0 low float32 (destroys Y0, uses X8/X15).
+// Input in Y0; result in X0.
+#define HSUM_Y0 \
+	VEXTRACTF128 $1, Y0, X8 \
+	VADDPS X0, X8, X0 \
+	VSHUFPD $1, X0, X0, X15 \
+	VADDPS X0, X15, X0 \
+	VMOVSHDUP X0, X15 \
+	VADDSS X0, X15, X0
+
+// func sumSumsq512AVX2(src *float32) (sum, sumsq float32)
+// Frame: src+0, sum+8, sumsq+12  (two float32 returns after pointer)
+// 32 floats/iter (4 YMM) → 16 iters.
+TEXT ·sumSumsq512AVX2(SB), NOSPLIT, $0-16
+	MOVQ src+0(FP), SI
+	VXORPS Y0, Y0, Y0 // sum
+	VXORPS Y1, Y1, Y1 // sumsq
+	MOVQ $16, CX
+sumss_loop:
+	VMOVUPS (SI), Y2
+	VMOVUPS 32(SI), Y3
+	VMOVUPS 64(SI), Y4
+	VMOVUPS 96(SI), Y5
+	VADDPS Y2, Y0, Y0
+	VADDPS Y3, Y0, Y0
+	VADDPS Y4, Y0, Y0
+	VADDPS Y5, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+	VFMADD231PS Y3, Y3, Y1
+	VFMADD231PS Y4, Y4, Y1
+	VFMADD231PS Y5, Y5, Y1
+	ADDQ $128, SI
+	DECQ CX
+	JNZ  sumss_loop
+
+	// hsum sum → X0
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS X0, X8, X0
+	VSHUFPD $1, X0, X0, X15
+	VADDPS X0, X15, X0
+	VMOVSHDUP X0, X15
+	VADDSS X0, X15, X0
+	MOVSS X0, sum+8(FP)
+
+	// hsum sumsq → X1
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS X1, X8, X1
+	VSHUFPD $1, X1, X1, X15
+	VADDPS X1, X15, X1
+	VMOVSHDUP X1, X15
+	VADDSS X1, X15, X1
+	MOVSS X1, sumsq+12(FP)
+	VZEROUPPER
+	RET
+
+// func add2SumSumsq512AVX2(out, a, b *float32) (sum, sumsq float32)
+// out[i] += a[i]+b[i]; return sum/sumsq of new out.
+// Frame: out+0 a+8 b+16 sum+24 sumsq+28
+// 32 floats/iter → 16 iters.
+TEXT ·add2SumSumsq512AVX2(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), DI
+	MOVQ a+8(FP), SI
+	MOVQ b+16(FP), DX
+	VXORPS Y0, Y0, Y0 // sum
+	VXORPS Y1, Y1, Y1 // sumsq
+	MOVQ $16, CX
+a2ss_loop:
+	VMOVUPS (DI), Y2
+	VMOVUPS (SI), Y3
+	VMOVUPS (DX), Y4
+	VADDPS Y3, Y2, Y2
+	VADDPS Y4, Y2, Y2
+	VMOVUPS Y2, (DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 32(DI), Y2
+	VMOVUPS 32(SI), Y3
+	VMOVUPS 32(DX), Y4
+	VADDPS Y3, Y2, Y2
+	VADDPS Y4, Y2, Y2
+	VMOVUPS Y2, 32(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 64(DI), Y2
+	VMOVUPS 64(SI), Y3
+	VMOVUPS 64(DX), Y4
+	VADDPS Y3, Y2, Y2
+	VADDPS Y4, Y2, Y2
+	VMOVUPS Y2, 64(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 96(DI), Y2
+	VMOVUPS 96(SI), Y3
+	VMOVUPS 96(DX), Y4
+	VADDPS Y3, Y2, Y2
+	VADDPS Y4, Y2, Y2
+	VMOVUPS Y2, 96(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	ADDQ $128, DI
+	ADDQ $128, SI
+	ADDQ $128, DX
+	DECQ CX
+	JNZ  a2ss_loop
+
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS X0, X8, X0
+	VSHUFPD $1, X0, X0, X15
+	VADDPS X0, X15, X0
+	VMOVSHDUP X0, X15
+	VADDSS X0, X15, X0
+	MOVSS X0, sum+24(FP)
+
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS X1, X8, X1
+	VSHUFPD $1, X1, X1, X15
+	VADDPS X1, X15, X1
+	VMOVSHDUP X1, X15
+	VADDSS X1, X15, X1
+	MOVSS X1, sumsq+28(FP)
+	VZEROUPPER
+	RET
+
+// func add1SumSumsq512AVX2(out, a *float32) (sum, sumsq float32)
+// Frame: out+0 a+8 sum+16 sumsq+20
+// 32 floats/iter → 16 iters.
+TEXT ·add1SumSumsq512AVX2(SB), NOSPLIT, $0-24
+	MOVQ out+0(FP), DI
+	MOVQ a+8(FP), SI
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	MOVQ $16, CX
+a1ss_loop:
+	VMOVUPS (DI), Y2
+	VMOVUPS (SI), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, (DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 32(DI), Y2
+	VMOVUPS 32(SI), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 32(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 64(DI), Y2
+	VMOVUPS 64(SI), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 64(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	VMOVUPS 96(DI), Y2
+	VMOVUPS 96(SI), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 96(DI)
+	VADDPS Y2, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+
+	ADDQ $128, DI
+	ADDQ $128, SI
+	DECQ CX
+	JNZ  a1ss_loop
+
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS X0, X8, X0
+	VSHUFPD $1, X0, X0, X15
+	VADDPS X0, X15, X0
+	VMOVSHDUP X0, X15
+	VADDSS X0, X15, X0
+	MOVSS X0, sum+16(FP)
+
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS X1, X8, X1
+	VSHUFPD $1, X1, X1, X15
+	VADDPS X1, X15, X1
+	VMOVSHDUP X1, X15
+	VADDSS X1, X15, X1
+	MOVSS X1, sumsq+20(FP)
+	VZEROUPPER
+	RET
+
+// func lnAffine512AVX2(dst, src, w, b *float32, mean, invStd float32)
+// dst[i] = (src[i]-mean)*invStd*w[i] + b[i]
+// Frame: dst+0 src+8 w+16 b+24 mean+32 invStd+36
+// 32 floats/iter (4×8) → 16 iters.
+TEXT ·lnAffine512AVX2(SB), NOSPLIT, $0-40
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ w+16(FP), R8
+	MOVQ b+24(FP), R9
+	MOVSS mean+32(FP), X0
+	VBROADCASTSS X0, Y0 // mean
+	MOVSS invStd+36(FP), X1
+	VBROADCASTSS X1, Y1 // invStd
+
+	MOVQ $16, CX
+lna_loop:
+	// chunk 0
+	VMOVUPS (SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS (R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS (R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, (DI)
+	// chunk 1
+	VMOVUPS 32(SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS 32(R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS 32(R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 32(DI)
+	// chunk 2
+	VMOVUPS 64(SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS 64(R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS 64(R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 64(DI)
+	// chunk 3
+	VMOVUPS 96(SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS 96(R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS 96(R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 96(DI)
+
+	ADDQ $128, DI
+	ADDQ $128, SI
+	ADDQ $128, R8
+	ADDQ $128, R9
+	DECQ CX
+	JNZ  lna_loop
+
+	VZEROUPPER
+	RET
+
+// func lnAffine512DualAVX2(d0,s0,d1,s1,w,b *float32, mean0,inv0,mean1,inv1 float32)
+// Two frames share w/b loads: d_r = (s_r-mean_r)*inv_r*w + b
+// Frame: d0+0 s0+8 d1+16 s1+24 w+32 b+40 m0+48 i0+52 m1+56 i1+60 → 64
+TEXT ·lnAffine512DualAVX2(SB), NOSPLIT, $0-64
+	MOVQ d0+0(FP), DI
+	MOVQ s0+8(FP), SI
+	MOVQ d1+16(FP), R10
+	MOVQ s1+24(FP), R11
+	MOVQ w+32(FP), R8
+	MOVQ b+40(FP), R9
+	MOVSS mean0+48(FP), X0
+	VBROADCASTSS X0, Y0
+	MOVSS inv0+52(FP), X1
+	VBROADCASTSS X1, Y1
+	MOVSS mean1+56(FP), X2
+	VBROADCASTSS X2, Y2
+	MOVSS inv1+60(FP), X3
+	VBROADCASTSS X3, Y3
+
+	// 32 iters of 16 floats (2 YMM); w/b loaded once per pair for both frames
+	MOVQ $32, CX
+lnad_loop:
+	VMOVUPS (R8), Y6          // w
+	VMOVUPS (R9), Y7          // b
+	// frame 0
+	VMOVUPS (SI), Y4
+	VSUBPS Y0, Y4, Y4
+	VMULPS Y1, Y4, Y4
+	VMULPS Y6, Y4, Y4
+	VADDPS Y7, Y4, Y4
+	VMOVUPS Y4, (DI)
+	// frame 1
+	VMOVUPS (R11), Y5
+	VSUBPS Y2, Y5, Y5
+	VMULPS Y3, Y5, Y5
+	VMULPS Y6, Y5, Y5
+	VADDPS Y7, Y5, Y5
+	VMOVUPS Y5, (R10)
+
+	VMOVUPS 32(R8), Y6
+	VMOVUPS 32(R9), Y7
+	VMOVUPS 32(SI), Y4
+	VSUBPS Y0, Y4, Y4
+	VMULPS Y1, Y4, Y4
+	VMULPS Y6, Y4, Y4
+	VADDPS Y7, Y4, Y4
+	VMOVUPS Y4, 32(DI)
+	VMOVUPS 32(R11), Y5
+	VSUBPS Y2, Y5, Y5
+	VMULPS Y3, Y5, Y5
+	VMULPS Y6, Y5, Y5
+	VADDPS Y7, Y5, Y5
+	VMOVUPS Y5, 32(R10)
+
+	ADDQ $64, DI
+	ADDQ $64, SI
+	ADDQ $64, R10
+	ADDQ $64, R11
+	ADDQ $64, R8
+	ADDQ $64, R9
+	DECQ CX
+	JNZ  lnad_loop
+
+	VZEROUPPER
+	RET
+
+// func sumSumsqNAVX2(src *float32, n int) (sum, sumsq float32)
+// n multiple of 16. Frame: src+0 n+8 sum+16 sumsq+20
+TEXT ·sumSumsqNAVX2(SB), NOSPLIT, $0-24
+	MOVQ src+0(FP), SI
+	MOVQ n+8(FP), CX
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	SHRQ $4, CX               // n/16
+	TESTQ CX, CX
+	JZ   ssn_hsum
+
+ssn_loop:
+	VMOVUPS (SI), Y2
+	VMOVUPS 32(SI), Y3
+	VADDPS Y2, Y0, Y0
+	VADDPS Y3, Y0, Y0
+	VFMADD231PS Y2, Y2, Y1
+	VFMADD231PS Y3, Y3, Y1
+	ADDQ $64, SI
+	DECQ CX
+	JNZ  ssn_loop
+
+ssn_hsum:
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS X0, X8, X0
+	VSHUFPD $1, X0, X0, X15
+	VADDPS X0, X15, X0
+	VMOVSHDUP X0, X15
+	VADDSS X0, X15, X0
+	MOVSS X0, sum+16(FP)
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS X1, X8, X1
+	VSHUFPD $1, X1, X1, X15
+	VADDPS X1, X15, X1
+	VMOVSHDUP X1, X15
+	VADDSS X1, X15, X1
+	MOVSS X1, sumsq+20(FP)
+	VZEROUPPER
+	RET
+
+// func lnAffineNAVX2(dst, src, w, b *float32, n int, mean, invStd float32)
+// n multiple of 16. Frame: dst+0 src+8 w+16 b+24 n+32 mean+40 invStd+44 → 48
+TEXT ·lnAffineNAVX2(SB), NOSPLIT, $0-48
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ w+16(FP), R8
+	MOVQ b+24(FP), R9
+	MOVQ n+32(FP), CX
+	MOVSS mean+40(FP), X0
+	VBROADCASTSS X0, Y0
+	MOVSS invStd+44(FP), X1
+	VBROADCASTSS X1, Y1
+	SHRQ $4, CX
+	TESTQ CX, CX
+	JZ   lnan_done
+
+lnan_loop:
+	VMOVUPS (SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS (R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS (R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, (DI)
+
+	VMOVUPS 32(SI), Y2
+	VSUBPS Y0, Y2, Y2
+	VMULPS Y1, Y2, Y2
+	VMOVUPS 32(R8), Y3
+	VMULPS Y3, Y2, Y2
+	VMOVUPS 32(R9), Y3
+	VADDPS Y3, Y2, Y2
+	VMOVUPS Y2, 32(DI)
+
+	ADDQ $64, DI
+	ADDQ $64, SI
+	ADDQ $64, R8
+	ADDQ $64, R9
+	DECQ CX
+	JNZ  lnan_loop
+
+lnan_done:
+	VZEROUPPER
+	RET
+
+// func scaleAddNAVX2(dst, a, b *float32, n int, scale float32)
+// dst[i] = a[i]*scale + b[i]; n multiple of 16.
+// Frame: dst+0 a+8 b+16 n+24 scale+32 → 36
+TEXT ·scaleAddNAVX2(SB), NOSPLIT, $0-36
+	MOVQ dst+0(FP), DI
+	MOVQ a+8(FP), SI
+	MOVQ b+16(FP), DX
+	MOVQ n+24(FP), CX
+	MOVSS scale+32(FP), X0
+	VBROADCASTSS X0, Y0
+	SHRQ $4, CX
+	TESTQ CX, CX
+	JZ   san_done
+
+san_loop:
+	VMOVUPS (SI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS (DX), Y2
+	VADDPS Y2, Y1, Y1
+	VMOVUPS Y1, (DI)
+
+	VMOVUPS 32(SI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS 32(DX), Y2
+	VADDPS Y2, Y1, Y1
+	VMOVUPS Y1, 32(DI)
+
+	ADDQ $64, DI
+	ADDQ $64, SI
+	ADDQ $64, DX
+	DECQ CX
+	JNZ  san_loop
+
+san_done:
+	VZEROUPPER
+	RET

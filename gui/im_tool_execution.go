@@ -261,8 +261,11 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		runner = RunTaskWithSubAgent
 	}
 	codeSessionID := newCodingSubAgentCodeSessionID("delegate-task-coding-workflow", opts.UserID)
-	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID)
-	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID)
+	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, projectPath)
+	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, projectPath)
+	if opts.Context != nil {
+		opts.Context.codeSessionID = codeSessionID
+	}
 	result := runner(
 		h,
 		h.getMaclawLLMConfig(),
@@ -409,7 +412,7 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON stri
 // hasActiveWorkflowForPolicy returns true if the user has an active workflow
 // hasActiveWorkflowForPolicy checks whether a workflow is active for the user
 // (in the StateMachine or WorkflowEngine adapter). Used to override
-// SkipWorkflowGate when a workflow is active — workflow tool policy must always
+// SkipWorkflowGate when a workflow is active; workflow tool policy must always
 // be enforced regardless of the gate bypass flag.
 func (h *IMMessageHandler) hasActiveWorkflowForPolicy(policyUserID string) bool {
 	policyUserID = strings.TrimSpace(policyUserID)
@@ -1065,10 +1068,10 @@ func preCheckAgentLoopInlinePayloadLimit(name, argsJSON string, iteration int) *
 	// - edit_lines: line insert/replace on arbitrary content
 	//
 	// The preCheck limit was originally designed to prevent max_output_tokens
-	// truncation (long JSON args → incomplete JSON). But truncation is now
+	// truncation (long JSON args -> incomplete JSON). But truncation is now
 	// handled at the stream layer by filterTruncatedToolCalls (#83/#88).
 	// Blocking edit_file/edit_lines here forces LLM to use write_file for
-	// full-file rewrites (larger payload, MORE likely to truncate) — the
+	// full-file rewrites (larger payload, MORE likely to truncate); the
 	// exact opposite of the intended protection.
 	if name == "write_file" || name == "edit_file" || name == "edit_lines" {
 		log.Printf("[agent-loop] %s auto-pass: allowing oversized %s (%d runes > %d soft limit) to pass through to handler (iter=%d)", name, field, valueRunes, limit, iteration)

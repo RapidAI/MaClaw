@@ -96,6 +96,10 @@ class QaPreflightTest(unittest.TestCase):
         self.assertIn("[OK] Automated release gate documentation", output)
         self.assertIn("[OK] Runtime boundary verification", output)
         self.assertIn("phone-local SSH dependencies", output)
+        self.assertIn("terminal emulator dependencies", output)
+        self.assertIn("custom Hub URL configuration", output)
+        self.assertIn("redemption-code login", output)
+        self.assertIn("arbitrary third-party LLM provider/base URL/API-key fields", output)
         self.assertIn("phone-side SSH credential save/read APIs", output)
         self.assertIn("38 automated release gates in runner order", output)
         self.assertIn("QA record validation/redaction rules", output)
@@ -116,7 +120,7 @@ class QaPreflightTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log"',
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-<version+build>.log"',
             output,
         )
         self.assertIn(
@@ -251,6 +255,19 @@ class QaPreflightTest(unittest.TestCase):
         self.assertIn("[BLOCKER] iOS wrapper and Share Extension", output)
         self.assertIn("signed-build QA record creation is deferred", output)
         self.assertIn(
+            "Run setup helper command(s) for the missing local release inputs",
+            output,
+        )
+        self.assertIn("`python3 tool/setup_android_signing.py`", output)
+        self.assertIn("MACLAW_ANDROID_STORE_FILE", output)
+        self.assertIn("MACLAW_ANDROID_STORE_PASSWORD", output)
+        self.assertIn("MACLAW_ANDROID_KEY_ALIAS", output)
+        self.assertIn("MACLAW_ANDROID_KEY_PASSWORD", output)
+        self.assertIn(
+            "Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state.",
+            output,
+        )
+        self.assertIn(
             "re-run `"
             + release_evidence_commands.qa_preflight_command(
                 team_id=release_evidence_commands.DEFAULT_TEAM_ID,
@@ -336,11 +353,41 @@ class QaPreflightTest(unittest.TestCase):
         output = qa_preflight.format_preflight(checks)
 
         self.assertIn("--team-id ABCDE12345", output)
+        self.assertIn(
+            "`python3 tool/setup_android_signing.py`",
+            output,
+        )
+        self.assertIn(
+            "Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state.",
+            output,
+        )
         self.assertNotIn(
             "PowerShell treats unquoted `<...>` placeholders as redirection syntax",
             output,
         )
 
+    def test_blocked_preflight_includes_ios_export_setup_helper(self) -> None:
+        checks = qa_preflight.run_preflight(
+            self.make_root(),
+            ios_team_id="ABCDE12345",
+            ios_export_method="development",
+            android_config_validator=ok_android_config,
+            android_key_validator=ok_android_key,
+            ios_wrapper_validator=ok_ios,
+            ios_export_options_validator=lambda *_args, **_kwargs: [
+                "Missing iOS export options plist: ios/ExportOptions.plist",
+            ],
+            records_dir_validator=empty_records,
+            automated_gate_validator=ok_automated_gates,
+            manual_gate_validator=ok_manual_gates,
+        )
+        output = qa_preflight.format_preflight(checks)
+
+        self.assertIn(
+            "`python3 tool/setup_ios_export_options.py --team-id ABCDE12345 --export-method development`",
+            output,
+        )
+        self.assertIn("Do not add placeholder signing/export files", output)
     def test_android_scope_skips_ios_preflight_checks(self) -> None:
         checks = qa_preflight.run_preflight(
             self.make_root(),

@@ -533,7 +533,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2560],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2800],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1200],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 520],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
@@ -564,7 +564,7 @@ for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1880],
-  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1250],
+  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1290],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];

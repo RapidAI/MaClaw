@@ -76,4 +76,41 @@ void main() {
       isNull,
     );
   });
+  test('backend SSH claimed-by handoff uses GUI agent worker identity only',
+      () {
+    expect(
+      mobileBackendSessionClaimedBy(
+        const MobileBackendSSHSession(
+          sessionId: 'hub-session-1',
+          serverProfileId: 'srv-prod',
+          status: 'connected',
+          claimedBy: 'desktop-agent-1',
+        ),
+      ),
+      'desktop-agent-1',
+    );
+
+    expect(
+      mobileBackendSessionClaimedBy(
+        const MobileBackendSSHSession(
+          sessionId: 'hub-session-1',
+          serverProfileId: 'srv-prod',
+          status: 'connected',
+        ),
+        fallback: 'desktop-agent-previous',
+      ),
+      'desktop-agent-previous',
+    );
+
+    expect(
+      mobileBackendSessionClaimedBy(
+        const MobileBackendSSHSession(
+          sessionId: 'hub-session-1',
+          serverProfileId: 'srv-prod',
+          status: 'queued',
+        ),
+      ),
+      isNull,
+    );
+  });
 }

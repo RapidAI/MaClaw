@@ -78,7 +78,10 @@ def final_decision_prefills(
             f"log: {preflight_log_path(version, scope=scope, records_dir=records_dir)}"
         ),
         "Runtime boundary verification result": (
-            "MaClaw Mobile runtime boundary verified. "
+            "MaClaw Mobile runtime boundary verified: no corelib, "
+            "phone-local SSH, terminal emulator, phone-side SSH credential, "
+            "custom Hub URL, redemption-code login, or third-party LLM "
+            "provider/base URL/API-key regressions; "
             f"log: {records_dir}/runtime-boundary-{version}.log"
         ),
         "Automated release gates result": (
@@ -108,12 +111,24 @@ def create_record_command(
     return command
 
 
+def release_status_log_path(
+    version: str = DEFAULT_VERSION,
+    *,
+    scope: str = DEFAULT_SCOPE,
+    records_dir: str = DEFAULT_QA_RECORDS_DIR,
+) -> str:
+    scope = validate_scope(scope)
+    if scope != DEFAULT_SCOPE:
+        return f"{records_dir}/release-status-{scope}-{version}.log"
+    return f"{records_dir}/release-status-{version}.log"
+
 def release_status_report_command(
     *,
     scope: str = DEFAULT_SCOPE,
     team_id: str | None = DEFAULT_TEAM_ID,
     export_method: str | None = DEFAULT_EXPORT_METHOD,
     records_dir: str = DEFAULT_QA_RECORDS_DIR,
+    log: str | None = None,
 ) -> str:
     scope = validate_scope(scope)
     command = f"python3 tool/release_status_report.py --scope {scope}"
@@ -122,6 +137,8 @@ def release_status_report_command(
         command += f" --export-method {export_method or DEFAULT_EXPORT_METHOD}"
     if records_dir != DEFAULT_QA_RECORDS_DIR:
         command += f" --records-dir {records_dir}"
+    if log:
+        command += f" --log {log}"
     return command
 
 
@@ -507,6 +524,7 @@ def signed_qa_record_hint(
         "no completed signed-build QA records yet; release handoff is only a "
         "QA plan, not a completed QA record; preview the handoff with "
         f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir, dry_run=True)}`; run "
+        f"`{release_status_report_command(scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir, log=release_status_log_path(version, scope=scope, records_dir=records_dir))}`; run "
         f"`{release_handoff_command(version=version, scope=scope, team_id=team_id, export_method=export_method, records_dir=records_dir)}`; "
         + "; ".join(setup_hints)
         + "; "
@@ -526,7 +544,7 @@ def signed_qa_record_hint(
         "or worker handoff plus explicit worker claim/update evidence and "
         "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
         "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend "
-        "session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, and AI/digital-employee handoff evidence tied to that "
+        "session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID, and AI/digital-employee handoff evidence tied to that "
         "same GUI/agent-bound backend_session_id when used; "
         "after completing evidence validate it with "
         f"`{validate_qa_build_record_command(record)}`; "

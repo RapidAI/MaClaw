@@ -451,7 +451,7 @@ def _ssh_smoke_hints(errors: list[str]) -> list[str]:
     if not any(_matches_field_error(error, SSH_SMOKE_FIELDS) for error in errors):
         return []
     return [
-        "- GUI-equivalent backend SSH session management smoke: record the server profile ID, mobile create/attach control request, GUI/agent-bound backend_session_id, visible claim/worker owner such as claimed_by, GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, not phone-local/ad hoc terminal evidence, host/auth mode metadata, connect result, backend-managed read-only command and output, the `ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` plus GUI/agent Ctrl+C handling, disconnect/reconnect through the managed session path, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used, manual command draft ID, digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used, and phone-side server-profile cache clear confirmation.",
+        "- GUI-equivalent backend SSH session management smoke: record the server profile ID, mobile create/attach control request, GUI/agent-bound backend_session_id, visible concrete claim/worker owner from the Hub/GUI update such as `claimed_by desktop-agent-1` (not generic `worker`, `GUI/agent worker`, or `MaClaw GUI agent worker`), GUI/agent claim or worker handoff evidence, explicit worker claim/update evidence, not phone-local/ad hoc terminal evidence, host/auth mode metadata, connect result, backend-managed read-only command and output, the `ssh_session` realtime event with `output_chunk`/`output_seq` tied to the same GUI/agent-bound backend_session_id, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` plus GUI/agent Ctrl+C handling, disconnect/reconnect through the managed session path, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, redacted AI analysis with sensitive-data warning tied to the same GUI/agent-bound backend_session_id when backend output is used, manual command draft ID, digital employee handoff evidence tied to the same GUI/agent-bound backend_session_id if used, and phone-side server-profile cache clear confirmation.",
     ]
 
 
@@ -463,13 +463,29 @@ def _hub_llm_setup_hints(errors: list[str]) -> list[str]:
     ]
 
 
-def _secret_redaction_hints(errors: list[str], *, record_path: str) -> list[str]:
+def _secret_redaction_hints(
+    errors: list[str],
+    *,
+    record_path: str,
+    values: dict[str, list[str]],
+) -> list[str]:
     if not errors:
         return []
-    return [
+    hints = [
         "- Remove raw secrets from the QA record, then replace them with redacted evidence, attachment IDs, task IDs, artifact hashes, or reviewer notes.",
-        f"- Re-run `python3 tool/validate_qa_build_record.py {record_path}` before linking the record from docs/release_evidence.md.",
     ]
+    copied_output_values = values.get("Copied backend session output evidence", [])
+    if any(
+        validate_qa_build_record.raw_secret_errors(value)
+        for value in copied_output_values
+    ):
+        hints.append(
+            "- For copied backend session output evidence, keep the GUI/agent evidence line with real Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID."
+        )
+    hints.append(
+        f"- Re-run `python3 tool/validate_qa_build_record.py {record_path}` before linking the record from docs/release_evidence.md.",
+    )
+    return hints
 
 
 def _version_for_report(report: QaBuildRecordReport) -> str:
@@ -588,9 +604,17 @@ def format_report(report: QaBuildRecordReport) -> str:
             lines.append("")
             lines.append("How to fill Hub/account/LLM setup evidence:")
             lines.extend(hub_llm_setup_hints)
+        secret_values = (
+            validate_qa_build_record.parse_record(
+                report.path.read_text(encoding="utf-8"),
+            )
+            if report.secret_errors and report.path.is_file()
+            else {}
+        )
         secret_hints = _secret_redaction_hints(
             report.secret_errors,
             record_path=str(report.path),
+            values=secret_values,
         )
         if secret_hints:
             lines.append("")

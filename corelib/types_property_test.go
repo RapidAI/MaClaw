@@ -3,6 +3,7 @@ package corelib
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -351,7 +352,7 @@ func TestProperty_MaclawLLMProvider_JSONRoundTrip(t *testing.T) {
 			t.Fatalf("unmarshal error: %v", err)
 		}
 
-		if decoded != original {
+		if !reflect.DeepEqual(decoded, original) {
 			t.Fatalf("round-trip mismatch:\n  original: %+v\n  decoded:  %+v", original, decoded)
 		}
 	})

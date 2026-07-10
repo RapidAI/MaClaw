@@ -4,12 +4,14 @@ An Android/iOS Flutter app for the MaClaw mobile AI assistant, shaped as a
 MaClaw GUI-like assistant workspace:
 
 - a MaClaw GUI-like multi-tab AI assistant that opens as the signed-in first
-  workspace, with typed or voice input as primary interaction modes;
+  workspace, with `AI助手`, `主对话`, secondary-tab controls, typed and voice input,
+  and no legacy `查信息` entry;
 - assistant online answers with citations, shareable results, screenshot/photo
   questions, and document handoff;
 - urgent document drafting, editing, and export;
 - GUI/agent-managed backend SSH session management, where the phone creates or
-  controls Hub records and MaClaw desktop/agent owns the real SSH session;
+  controls Hub records while MaClaw desktop/agent claims the work and owns the
+  real SSH session;
 - digital employee access for remote server or desktop capabilities;
 - Hub account, quota, service status, cache, and credential management.
 
@@ -19,13 +21,36 @@ The app uses only the three preset official HubCenter endpoints
 expose custom Hub endpoint configuration. Third-party LLM access is available
 only as an optional account/settings action through a QR authorization generated
 by MaClaw desktop GUI. The first screen for an unregistered or signed-out user
-is phone registration/login through the discovered Hub SMS verification flow.
+is phone registration/login through the discovered Hub SMS verification flow;
+there is no redemption-code login on mobile, and no arbitrary third-party LLM
+endpoint, base URL, provider URL, or API-key entry. After SMS verification, the
+verified `phone:<digits>` account uses its MaClaw official credits for LLM
+requests; signed-build QA must record post-SMS-verification usage evidence such
+as a concrete `llm-request-id` and `llm-usage-record`. Cold-start evidence must
+show the MaClaw logo splash screen and explicitly rule out Flutter
+placeholder/template branding before the signed-in `AI助手` first screen appears.
 
 Mobile keeps lightweight local cache for assistant history, server metadata,
 common commands, digital employee prompts, and the most recent document draft.
 Sensitive login tokens stay in secure storage. SSH passwords, private keys, and
 passphrases stay on the authorized MaClaw GUI/agent side; the phone can only
-clear local server metadata and legacy credential residue.
+clear local server metadata and legacy credential residue. Backend SSH release
+evidence must prove the Hub control record was claimed by a concrete GUI/agent
+worker, include the same GUI/agent-bound `backend_session_id`, realtime
+`ssh_session` `output_chunk`/`output_seq`, and a copied-output GUI/agent
+evidence line with actual Hub session ID, `backend_session_id`, concrete
+`claimed_by` identity such as `claimed_by desktop-agent-1`, and numeric
+`output_seq`. The copied output evidence must stay traceable while replacing
+credentials or private customer excerpts with redacted text or a traceable
+attachment ID.
+
+The mobile `远程` surface must follow the MaClaw GUI SSH backend-management
+shape: `connect`, confirmed command input, `exec_background`, task
+`check`/`wait`/`list`/`kill`, file `upload`/`download`/`list`, interrupt,
+reconnect, and close are represented as Hub control records. The phone is the
+foreground requester and evidence viewer; MaClaw GUI/agent claims those records
+and executes them through the desktop-side `SSHSessionManager`,
+`SSHBackgroundTaskManager`, and SFTP path.
 
 ## Runtime boundary
 
@@ -78,6 +103,14 @@ permission exists only when signed-build QA exercises backend SSH session
 management against a local or private-network server; the app's Hub/API traffic
 uses the Hub discovered through official HubCenter.
 
+Signed-build QA for native mobile entry points must record share-to-app evidence
+for text, URL, image, PDF, Word, Excel, and CSV payloads; runtime permission
+grants with `permission-grant:<id>` tied to camera/photo, microphone/speech,
+media/file access, notification delivery/open, and any local-network prompt;
+typed notification payload or tap/open evidence for document export, digital
+employee, and backend SSH abnormal/disconnect flows; and traceable document
+draft, upload task, and export job IDs.
+
 ## Hub persistence
 
 Official Hub deployments should set `MACLAW_MOBILE_STATE_PATH` to a writable
@@ -92,7 +125,7 @@ or store submission. Use `docs/release_evidence.md` to separate automated
 evidence from manual signed-build and real-device gates. Use
 `docs/release_audit.md` for the current requirement-by-requirement release
 status. Before planning signed-build QA or final approval, run
-`python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`;
+`python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log`;
 `NOT READY` means the listed signing inputs, QA records, or final evidence must
 be resolved first. Use
 `docs/qa_device_checklist.md` for signed-build and real-device QA. Use

@@ -211,6 +211,184 @@ func layerNormReference(out, x, weight []float32, eps float32) {
 	}
 }
 
+func TestWsumBatchedDual_MatchesSequential(t *testing.T) {
+	const dim = 128
+	o0, o1, o2, o3 := make([]float32, dim), make([]float32, dim), make([]float32, dim), make([]float32, dim)
+	r0, r1, r2, r3 := make([]float32, dim), make([]float32, dim), make([]float32, dim), make([]float32, dim)
+	va, vb := make([]float32, dim), make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		va[i] = float32(i%7) * 0.1
+		vb[i] = float32(i%5) * 0.2
+		o0[i], o1[i], o2[i], o3[i] = 1, 2, 3, 4
+		r0[i], r1[i], r2[i], r3[i] = 1, 2, 3, 4
+	}
+	wa0, wa1, wa2, wa3 := float32(0.1), float32(0.2), float32(0.3), float32(0.4)
+	wb0, wb1, wb2, wb3 := float32(0.5), float32(0.6), float32(0.7), float32(0.8)
+	wsumBatched4Add128Dual(o0, o1, o2, o3, va, vb, wa0, wa1, wa2, wa3, wb0, wb1, wb2, wb3)
+	wsumBatched4Add128(r0, r1, r2, r3, va, wa0, wa1, wa2, wa3)
+	wsumBatched4Add128(r0, r1, r2, r3, vb, wb0, wb1, wb2, wb3)
+	for i := 0; i < dim; i++ {
+		if math.Abs(float64(o0[i]-r0[i])) > 1e-5 || math.Abs(float64(o3[i]-r3[i])) > 1e-5 {
+			t.Fatalf("dual4 mismatch at %d: got %v want %v", i, o0[i], r0[i])
+		}
+	}
+	// set-add dual seed
+	wsumBatched4SetAdd128Dual(o0, o1, o2, o3, va, vb, wa0, wa1, wa2, wa3, wb0, wb1, wb2, wb3)
+	for i := 0; i < dim; i++ {
+		want0 := wa0*va[i] + wb0*vb[i]
+		if math.Abs(float64(o0[i]-want0)) > 1e-5 {
+			t.Fatalf("setAdd dual4 mismatch at %d: got %v want %v", i, o0[i], want0)
+		}
+	}
+	// 8-way dual
+	outs := make([][]float32, 8)
+	refs := make([][]float32, 8)
+	for q := 0; q < 8; q++ {
+		outs[q] = make([]float32, dim)
+		refs[q] = make([]float32, dim)
+		for i := 0; i < dim; i++ {
+			outs[q][i] = float32(q)
+			refs[q][i] = float32(q)
+		}
+	}
+	var wa, wb [8]float32
+	for q := 0; q < 8; q++ {
+		wa[q] = float32(q+1) * 0.05
+		wb[q] = float32(q+1) * 0.07
+	}
+	wsumBatched8Add128Dual(outs[0], outs[1], outs[2], outs[3], outs[4], outs[5], outs[6], outs[7], va, vb, &wa, &wb)
+	wsumBatched8Add128(refs[0], refs[1], refs[2], refs[3], refs[4], refs[5], refs[6], refs[7], va,
+		wa[0], wa[1], wa[2], wa[3], wa[4], wa[5], wa[6], wa[7])
+	wsumBatched8Add128(refs[0], refs[1], refs[2], refs[3], refs[4], refs[5], refs[6], refs[7], vb,
+		wb[0], wb[1], wb[2], wb[3], wb[4], wb[5], wb[6], wb[7])
+	for q := 0; q < 8; q++ {
+		for i := 0; i < dim; i++ {
+			if math.Abs(float64(outs[q][i]-refs[q][i])) > 1e-4 {
+				t.Fatalf("dual8 q=%d i=%d got %v want %v", q, i, outs[q][i], refs[q][i])
+			}
+		}
+	}
+}
+
+func TestPackQKV128_MatchesSequential(t *testing.T) {
+	srcQ, srcK, srcV := make([]float32, 128), make([]float32, 128), make([]float32, 128)
+	dQ, dK, dV := make([]float32, 128), make([]float32, 128), make([]float32, 128)
+	rQ, rK, rV := make([]float32, 128), make([]float32, 128), make([]float32, 128)
+	scale := float32(0.08838835)
+	for i := 0; i < 128; i++ {
+		srcQ[i] = float32(i) * 0.01
+		srcK[i] = float32(i) * 0.02
+		srcV[i] = float32(i) * 0.03
+	}
+	PackQKV128(dQ, dK, dV, srcQ, srcK, srcV, scale)
+	Copy128Mul(rQ, srcQ, scale)
+	Copy128(rK, srcK)
+	Copy128(rV, srcV)
+	for i := 0; i < 128; i++ {
+		if dQ[i] != rQ[i] || dK[i] != rK[i] || dV[i] != rV[i] {
+			t.Fatalf("PackQKV128 mismatch at %d", i)
+		}
+	}
+}
+
+func TestMul2Fmadd2_MatchesSequential(t *testing.T) {
+	const n = 512
+	o0, o1 := make([]float32, n), make([]float32, n)
+	r0, r1 := make([]float32, n), make([]float32, n)
+	a0, a1 := make([]float32, n), make([]float32, n)
+	b := make([]float32, n)
+	for i := 0; i < n; i++ {
+		a0[i] = float32(i%7) * 0.1
+		a1[i] = float32(i%5) * 0.2
+		b[i] = float32(i%13)*0.01 + 0.5
+	}
+	Mul2Into(o0, o1, a0, a1, b)
+	for i := 0; i < n; i++ {
+		r0[i], r1[i] = a0[i]*b[i], a1[i]*b[i]
+	}
+	for i := 0; i < n; i++ {
+		if o0[i] != r0[i] || o1[i] != r1[i] {
+			t.Fatalf("Mul2Into mismatch at %d", i)
+		}
+	}
+	Fmadd2Into(o0, o1, a0, a1, b)
+	for i := 0; i < n; i++ {
+		r0[i] += a0[i] * b[i]
+		r1[i] += a1[i] * b[i]
+	}
+	for i := 0; i < n; i++ {
+		if o0[i] != r0[i] || o1[i] != r1[i] {
+			t.Fatalf("Fmadd2Into mismatch at %d", i)
+		}
+	}
+	FmaddPlusOne2Into(o0, o1, a0, a1, b)
+	for i := 0; i < n; i++ {
+		bp1 := b[i] + 1
+		r0[i] += a0[i] * bp1
+		r1[i] += a1[i] * bp1
+	}
+	for i := 0; i < n; i++ {
+		if math.Abs(float64(o0[i]-r0[i])) > 1e-5 {
+			t.Fatalf("FmaddPlusOne2Into mismatch at %d", i)
+		}
+	}
+}
+
+func TestMul4Fmadd4_MatchesSequential(t *testing.T) {
+	const n = 512
+	o0, o1, o2, o3 := make([]float32, n), make([]float32, n), make([]float32, n), make([]float32, n)
+	r0, r1, r2, r3 := make([]float32, n), make([]float32, n), make([]float32, n), make([]float32, n)
+	a0, a1, a2, a3 := make([]float32, n), make([]float32, n), make([]float32, n), make([]float32, n)
+	b := make([]float32, n)
+	for i := 0; i < n; i++ {
+		a0[i] = float32(i%7) * 0.1
+		a1[i] = float32(i%5) * 0.2
+		a2[i] = float32(i%3) * 0.3
+		a3[i] = float32(i%11) * 0.05
+		b[i] = float32(i%13)*0.01 + 0.5
+	}
+	Mul4Into(o0, o1, o2, o3, a0, a1, a2, a3, b)
+	for i := 0; i < n; i++ {
+		r0[i], r1[i], r2[i], r3[i] = a0[i]*b[i], a1[i]*b[i], a2[i]*b[i], a3[i]*b[i]
+	}
+	for i := 0; i < n; i++ {
+		if o0[i] != r0[i] || o1[i] != r1[i] || o2[i] != r2[i] || o3[i] != r3[i] {
+			t.Fatalf("Mul4Into mismatch at %d", i)
+		}
+	}
+	// accumulate
+	Fmadd4Into(o0, o1, o2, o3, a0, a1, a2, a3, b)
+	for i := 0; i < n; i++ {
+		r0[i] += a0[i] * b[i]
+		r1[i] += a1[i] * b[i]
+		r2[i] += a2[i] * b[i]
+		r3[i] += a3[i] * b[i]
+	}
+	for i := 0; i < n; i++ {
+		if o0[i] != r0[i] || o1[i] != r1[i] || o2[i] != r2[i] || o3[i] != r3[i] {
+			t.Fatalf("Fmadd4Into mismatch at %d: got %v want %v", i, o0[i], r0[i])
+		}
+	}
+	// center+1
+	copy(o0, r0)
+	copy(o1, r1)
+	copy(o2, r2)
+	copy(o3, r3)
+	FmaddPlusOne4Into(o0, o1, o2, o3, a0, a1, a2, a3, b)
+	for i := 0; i < n; i++ {
+		bp1 := b[i] + 1
+		r0[i] += a0[i] * bp1
+		r1[i] += a1[i] * bp1
+		r2[i] += a2[i] * bp1
+		r3[i] += a3[i] * bp1
+	}
+	for i := 0; i < n; i++ {
+		if math.Abs(float64(o0[i]-r0[i])) > 1e-5 {
+			t.Fatalf("FmaddPlusOne4Into mismatch at %d: got %v want %v", i, o0[i], r0[i])
+		}
+	}
+}
+
 func groupNorm1Reference(data []float32, time, channels int, weight, bias []float32, eps float32) {
 	n := time * channels
 	var mean float32

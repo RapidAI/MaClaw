@@ -136,7 +136,7 @@ func canonicalVolcengineTokenPlanProviderName(name string) string {
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
-		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
+		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -305,6 +305,18 @@ func (a *App) GetMaclawLLMProviders() struct {
 	if current == "" {
 		current = providers[0].Name
 	}
+	// OAuth/SSO credentials live in the independent credential store. Hydrate
+	// Key only for managed-auth providers so the UI can show "OAuth authenticated"
+	// and model-list fetch can pass a token without a visible API Key field.
+	for i := range providers {
+		kind := normalizeMaclawLLMAuthTypeKind(providers[i].AuthType)
+		if !kind.IsOAuth() && providers[i].AuthType != "sso" {
+			continue
+		}
+		if storeKey := a.resolveProviderKeyFromStore(providers[i]); storeKey != "" {
+			providers[i].Key = storeKey
+		}
+	}
 	return struct {
 		Providers []corelib.MaclawLLMProvider `json:"providers"`
 		Current   string                      `json:"current"`
@@ -378,6 +390,10 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 		providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
 	}
+	// OAuth/SSO tokens are managed internally (credential store + config). If the
+	// frontend saves with an empty Key (UI never shows a key field for OAuth),
+	// preserve the existing secrets so a model/settings save cannot wipe login.
+	providers = preserveManagedAuthSecrets(providers, cfg.MaclawLLMProviders)
 	if current == hubServiceProviderName {
 		hasHubProvider := false
 		var hubStatus HubLLMServiceStatus
@@ -2145,30 +2161,76 @@ type CodeGenModelItem struct {
 func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 	// 从已保存的 CodeGen provider 中读取认证信息
 	data := a.GetMaclawLLMProviders()
-	var codeGenProvider *corelib.MaclawLLMProvider
+	codeGenProviderIndex := -1
 	for i := range data.Providers {
 		if data.Providers[i].Name == codegenProviderName {
-			codeGenProvider = &data.Providers[i]
+			codeGenProviderIndex = i
 			break
 		}
 	}
-	if codeGenProvider == nil || codeGenProvider.Key == "" {
+	if codeGenProviderIndex < 0 {
+		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
+	}
+	codeGenProvider := data.Providers[codeGenProviderIndex]
+	if codeGenProvider.Key == "" {
+		if items := codeGenModelItemsFromSavedIDs(codeGenProvider.Models); len(items) > 0 {
+			return items, nil
+		}
 		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
 	}
 
-	models, _, err := oauth.FetchCodeGenModelsWithClientName(codeGenProvider.Key, codeGenProvider.UserAgent())
+	models, err := a.fetchProviderModels(codeGenProvider.URL, codeGenProvider.Key, "openai", codeGenProvider.UserAgent(), false)
 	if err != nil {
-		return nil, err
+		if items := codeGenModelItemsFromSavedIDs(codeGenProvider.Models); len(items) > 0 {
+			log.Printf("[CodeGen] FetchCodeGenModels: live fetch failed, using cached provider models: %v", err)
+			return items, nil
+		}
+		return nil, fmt.Errorf("获取 CodeGen 模型列表失败: %w", err)
 	}
 
 	items := make([]CodeGenModelItem, 0, len(models))
+	modelIDs := make([]string, 0, len(models))
 	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
 		items = append(items, CodeGenModelItem{
-			ID:   model.ID,
+			ID:   id,
 			Name: model.Name,
 		})
+		modelIDs = appendUniqueCodeGenModel(modelIDs, id)
+	}
+	if len(items) == 0 {
+		if cached := codeGenModelItemsFromSavedIDs(codeGenProvider.Models); len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("CodeGen 服务商返回了空的模型列表")
+	}
+	if !reflect.DeepEqual(codeGenProvider.Models, modelIDs) {
+		data.Providers[codeGenProviderIndex].Models = modelIDs
+		if err := a.SaveMaclawLLMProviders(data.Providers, data.Current); err != nil {
+			log.Printf("[CodeGen] FetchCodeGenModels: save provider models failed: %v", err)
+		}
 	}
 	return items, nil
+}
+
+func codeGenModelItemsFromSavedIDs(ids []string) []CodeGenModelItem {
+	items := make([]CodeGenModelItem, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		items = append(items, CodeGenModelItem{ID: id, Name: id})
+	}
+	return items
 }
 
 // SaveCodeGenModelChoice 保存用户在 SSO 后选择的模型：
@@ -2498,12 +2560,144 @@ func providerModelItemFromEntry(m providerModelEntry) (ProviderModelItem, bool) 
 	return ProviderModelItem{ID: id, Name: name}, true
 }
 
+// preserveManagedAuthSecrets keeps OAuth/SSO credentials when the UI saves
+// provider settings without an API Key field (tokens are internal).
+func preserveManagedAuthSecrets(incoming, existing []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
+	if len(incoming) == 0 || len(existing) == 0 {
+		return incoming
+	}
+	byName := make(map[string]corelib.MaclawLLMProvider, len(existing))
+	for _, p := range existing {
+		byName[p.Name] = p
+	}
+	for i, p := range incoming {
+		kind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
+		if !kind.IsOAuth() && p.AuthType != "sso" {
+			continue
+		}
+		old, ok := byName[p.Name]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(p.Key) == "" && strings.TrimSpace(old.Key) != "" {
+			incoming[i].Key = old.Key
+		}
+		if strings.TrimSpace(p.RefreshToken) == "" && strings.TrimSpace(old.RefreshToken) != "" {
+			incoming[i].RefreshToken = old.RefreshToken
+		}
+		if strings.TrimSpace(p.OAuthAccessToken) == "" && strings.TrimSpace(old.OAuthAccessToken) != "" {
+			incoming[i].OAuthAccessToken = old.OAuthAccessToken
+		}
+		if p.TokenExpiresAt == 0 && old.TokenExpiresAt != 0 {
+			incoming[i].TokenExpiresAt = old.TokenExpiresAt
+		}
+	}
+	return incoming
+}
+
+// urlsMatchForModelFetch reports whether two provider base URLs refer to the
+// same API host for model discovery (exact or parent/child path).
+func urlsMatchForModelFetch(a, b string) bool {
+	a = strings.TrimRight(strings.ToLower(strings.TrimSpace(a)), "/")
+	b = strings.TrimRight(strings.ToLower(strings.TrimSpace(b)), "/")
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// resolveAPIKeyForModelFetch looks up a managed OAuth/SSO (or saved API) key for
+// the given provider base URL when the frontend did not supply one.
+//
+// Match order:
+//  1. exact URL match (preferred — avoids prefix collisions)
+//  2. parent/child path match
+//
+// Within each tier, prefer OAuth/SSO providers over plain API-key entries.
+func (a *App) resolveAPIKeyForModelFetch(baseURL string) string {
+	if a == nil {
+		return ""
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return ""
+	}
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	providers := normalizeMaclawLLMProviders(a.syncedMaclawLLMProviders(cfg))
+
+	type candidate struct {
+		idx      int
+		provider corelib.MaclawLLMProvider
+		score    int // exact+managed=6, exact=4, managed=2, other=0
+	}
+	var candidates []candidate
+	for i, p := range providers {
+		p = normalizeMaclawLLMProvider(p)
+		if p.URL == "" {
+			continue
+		}
+		exact := strings.EqualFold(strings.TrimRight(p.URL, "/"), baseURL)
+		loose := !exact && urlsMatchForModelFetch(p.URL, baseURL)
+		if !exact && !loose {
+			continue
+		}
+		kind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
+		managed := kind.IsOAuth() || p.AuthType == "sso"
+		score := 0
+		if exact {
+			score += 4
+		}
+		if managed {
+			score += 2
+		}
+		candidates = append(candidates, candidate{
+			idx:      i,
+			provider: p,
+			score:    score,
+		})
+	}
+	// exact+managed > exact > managed > other
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	for _, c := range candidates {
+		p := c.provider
+		storeID := credentialStoreProviderID(p)
+		if storeID != "" {
+			// Best-effort refresh so model listing works after token expiry.
+			if a.credentialStore != nil {
+				_ = a.ensureOAuthTokenViaStore(p, c.idx)
+			}
+			if key := a.resolveProviderKeyFromStore(p); key != "" {
+				return key
+			}
+		}
+		if key := strings.TrimSpace(p.Key); key != "" {
+			return key
+		}
+		// OAuthAccessToken is not always an API key. For GitHub Copilot it holds
+		// the long-lived GitHub token; the short-lived Copilot token is in Key /
+		// credential store RawAccessToken. Never fall back to it for copilot.
+		if storeID != "github-copilot" {
+			if key := strings.TrimSpace(p.OAuthAccessToken); key != "" {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
 // FetchProviderModels 通过 {baseURL}/models 端点获取服务商可用的模型列表。
 // 适用于所有 OpenAI / Anthropic 兼容的 API 服务商。
 //
 // 参数：
 //   - baseURL: 服务商 API 基础地址（如 https://api.deepseek.com/v1）
-//   - apiKey: API Key
+//   - apiKey: API Key（OAuth/SSO 可为空，后端从内部凭证解析）
 //   - protocol: "openai"（默认）或 "anthropic"
 //
 // 前端在 MaClaw LLM 配置面板和编程工具配置面板中调用此函数，
@@ -2517,6 +2711,19 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
 
+	// ChatGPT / Codex subscription (chatgpt.com/backend-api) does not expose a
+	// standard OpenAI-compatible /models endpoint. Using GET /models returns
+	// HTTP 403 even with a valid OAuth token. Handle it on a dedicated path.
+	if llm.IsCodexSubscriptionEndpoint(baseURL) {
+		return a.fetchCodexSubscriptionModels(baseURL, apiKey, userAgent, sortModels)
+	}
+
+	// OAuth/SSO providers manage tokens internally. When the frontend does not
+	// (or cannot) pass a key, resolve it from credential store / saved config.
+	if apiKey == "" {
+		apiKey = a.resolveAPIKeyForModelFetch(baseURL)
+	}
+
 	maskedKey := "***"
 	if len(apiKey) > 8 {
 		maskedKey = apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
@@ -2527,7 +2734,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		return nil, fmt.Errorf("API 地址为空，请先填写 API Endpoint")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("API Key 为空，请先填写 API Key")
+		return nil, fmt.Errorf("API Key 为空：请先填写 API Key，或完成 OAuth/SSO 登录")
 	}
 
 	// Model discovery protocol override for hybrid gateways. CodeGen speaks
@@ -2701,6 +2908,169 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	return items, nil
 }
 
+// codexSubscriptionModelCatalog is the built-in fallback when ChatGPT's
+// codex/models endpoint is unavailable. Keep ids aligned with Codex CLI.
+func codexSubscriptionModelCatalog() []ProviderModelItem {
+	ids := []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"gpt-5.3-codex-spark",
+		"gpt-5.2",
+		"gpt-5.2-codex",
+		"gpt-5.1",
+		"gpt-5.1-codex-max",
+		"gpt-5.1-codex-mini",
+	}
+	items := make([]ProviderModelItem, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, ProviderModelItem{ID: id, Name: id})
+	}
+	return items
+}
+
+// resolveCodexAuthToken picks the JWT access token for ChatGPT backend-api.
+// sk- API keys from token-exchange cannot call chatgpt.com/backend-api.
+func (a *App) resolveCodexAuthToken(baseURL, frontendKey string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	pickJWT := func(key, raw string) string {
+		raw = strings.TrimSpace(raw)
+		key = strings.TrimSpace(key)
+		// Prefer raw OAuth JWT (eyJ...) over exchanged sk- API keys.
+		if raw != "" && !strings.HasPrefix(raw, "sk-") {
+			return raw
+		}
+		if key != "" && !strings.HasPrefix(key, "sk-") {
+			return key
+		}
+		return ""
+	}
+
+	if a != nil {
+		if cfg, err := a.LoadConfig(); err == nil {
+			for _, p := range normalizeMaclawLLMProviders(a.syncedMaclawLLMProviders(cfg)) {
+				p = normalizeMaclawLLMProvider(p)
+				if !urlsMatchForModelFetch(p.URL, baseURL) {
+					continue
+				}
+				if storeID := credentialStoreProviderID(p); storeID != "" && a.credentialStore != nil {
+					if cred, err := a.credentialStore.Read(storeID); err == nil && cred != nil {
+						if tok := pickJWT(cred.AccessToken, cred.RawAccessToken); tok != "" {
+							return tok
+						}
+					}
+				}
+				if tok := pickJWT(p.Key, p.OAuthAccessToken); tok != "" {
+					return tok
+				}
+			}
+		}
+	}
+
+	frontendKey = strings.TrimSpace(frontendKey)
+	if frontendKey != "" && !strings.HasPrefix(frontendKey, "sk-") {
+		return frontendKey
+	}
+	// Last resort: may still be a JWT if exchange never ran.
+	return frontendKey
+}
+
+// fetchCodexSubscriptionModels lists models for OpenAI ChatGPT OAuth (Codex).
+// Tries GET {base}/codex/models with Codex headers; on failure returns a built-in catalog.
+func (a *App) fetchCodexSubscriptionModels(baseURL, frontendKey, userAgent string, sortModels bool) ([]ProviderModelItem, error) {
+	token := a.resolveCodexAuthToken(baseURL, frontendKey)
+	if token == "" {
+		// Still return catalog so the user can pick a model after login state is partial.
+		log.Printf("[FetchProviderModels] codex: no auth token, returning built-in catalog")
+		return codexSubscriptionModelCatalog(), nil
+	}
+
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		ua = "openclaw"
+	}
+
+	// Normalize to .../backend-api then append /codex/models
+	endpoint := strings.TrimRight(baseURL, "/")
+	endpoint = strings.TrimSuffix(endpoint, "/codex/models")
+	endpoint = strings.TrimSuffix(endpoint, "/codex")
+	endpoint = strings.TrimSuffix(endpoint, "/models")
+	endpoint = strings.TrimRight(endpoint, "/") + "/codex/models"
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		log.Printf("[FetchProviderModels] codex: build request failed: %v", err)
+		return codexSubscriptionModelCatalog(), nil
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("Accept", "application/json")
+	if accountID, _ := oauth.ExtractAccountIDFromJWT(token); accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+
+	log.Printf("[FetchProviderModels] codex: GET %s (tokenLen=%d)", endpoint, len(token))
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[FetchProviderModels] codex: request failed: %v, using built-in catalog", err)
+		return codexSubscriptionModelCatalog(), nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[FetchProviderModels] codex: HTTP %d body=%s, using built-in catalog",
+			resp.StatusCode, truncateCodeGenStr(string(body), 200))
+		return codexSubscriptionModelCatalog(), nil
+	}
+
+	items := parseProviderModelsJSON(body)
+	if len(items) == 0 {
+		log.Printf("[FetchProviderModels] codex: empty remote list, using built-in catalog")
+		return codexSubscriptionModelCatalog(), nil
+	}
+	if sortModels {
+		sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	}
+	log.Printf("[FetchProviderModels] codex: success %d models", len(items))
+	return items, nil
+}
+
+// parseProviderModelsJSON extracts model items from OpenAI / Anthropic / array shapes.
+func parseProviderModelsJSON(body []byte) []ProviderModelItem {
+	var items []ProviderModelItem
+	var objResult struct {
+		Data   []providerModelEntry `json:"data"`
+		Models []providerModelEntry `json:"models"`
+	}
+	if err := json.Unmarshal(body, &objResult); err == nil {
+		src := objResult.Models
+		if len(src) == 0 {
+			src = objResult.Data
+		}
+		for _, m := range src {
+			if item, ok := providerModelItemFromEntry(m); ok {
+				items = append(items, item)
+			}
+		}
+		if len(items) > 0 {
+			return items
+		}
+	}
+	var arr []providerModelEntry
+	if err := json.Unmarshal(body, &arr); err == nil {
+		for _, m := range arr {
+			if item, ok := providerModelItemFromEntry(m); ok {
+				items = append(items, item)
+			}
+		}
+	}
+	return items
+}
+
 // doFetchModelsRequest 发送 GET 请求到指定的 models 端点。
 // 提取为独立方法以支持 FetchProviderModels 中的 fallback 重试。
 func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protocol, userAgent string) (*http.Response, error) {
@@ -2722,6 +3092,9 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, ua)
+	if strings.EqualFold(ua, corelib.CodeGenClientName) {
+		req.Header.Set(corelib.CodeGenClientNameHeader, corelib.CodeGenClientName)
+	}
 	return client.Do(req)
 }
 

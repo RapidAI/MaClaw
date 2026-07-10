@@ -112,7 +112,11 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("GUI/agent Ctrl+C handling", output)
         self.assertIn("copied backend session output", output)
         self.assertIn(
-            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq",
+            output,
+        )
+        self.assertIn(
+            "preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID",
             output,
         )
         self.assertIn("AI/digital-employee handoff evidence", output)
@@ -128,7 +132,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
             output,
         )
         self.assertIn(
-            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log"',
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-<version+build>.log"',
             output,
         )
         self.assertIn(
@@ -338,6 +342,22 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("- [Preflight] Android local signing inputs", output)
         self.assertIn("Missing Android signing file: android/key.properties", output)
         self.assertIn(
+            "Run the setup helper commands for the missing local release inputs",
+            output,
+        )
+        self.assertIn(
+            "  - `python3 tool/setup_android_signing.py`",
+            output,
+        )
+        self.assertIn("MACLAW_ANDROID_STORE_FILE", output)
+        self.assertIn("MACLAW_ANDROID_STORE_PASSWORD", output)
+        self.assertIn("MACLAW_ANDROID_KEY_ALIAS", output)
+        self.assertIn("MACLAW_ANDROID_KEY_PASSWORD", output)
+        self.assertIn(
+            "Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state.",
+            output,
+        )
+        self.assertIn(
             "Re-run `"
             + release_evidence_commands.qa_preflight_command(
                 team_id=release_evidence_commands.DEFAULT_TEAM_ID,
@@ -377,7 +397,11 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("GUI/agent Ctrl+C handling", output)
         self.assertIn("copied backend session output", output)
         self.assertIn(
-            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq",
+            output,
+        )
+        self.assertIn(
+            "preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID",
             output,
         )
         self.assertIn("AI/digital-employee handoff evidence", output)
@@ -397,7 +421,7 @@ class ReleaseStatusReportTest(unittest.TestCase):
                     "Runtime boundary verification",
                     "ok",
                     [
-                        "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, or phone-side SSH credential save/read APIs",
+                        "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, terminal emulator dependencies, phone-side SSH credential save/read APIs, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields",
                     ],
                 ),
             ],
@@ -412,6 +436,9 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertIn("[OK] Runtime boundary verification", output)
         self.assertIn("phone-local SSH dependencies", output)
         self.assertIn("phone-side SSH credential save/read APIs", output)
+        self.assertIn("custom Hub URL configuration", output)
+        self.assertIn("redemption-code login", output)
+        self.assertIn("arbitrary third-party LLM provider/base URL/API-key fields", output)
         self.assertIn("Result: NOT READY.", output)
 
     def test_preflight_blocker_omits_powershell_placeholder_note_with_real_team_id(self) -> None:
@@ -434,6 +461,14 @@ class ReleaseStatusReportTest(unittest.TestCase):
         output = release_status_report.format_status(status)
 
         self.assertIn("--team-id ABCDE12345", output)
+        self.assertIn(
+            "python3 tool/setup_ios_export_options.py --team-id ABCDE12345 --export-method development",
+            output,
+        )
+        self.assertIn(
+            "Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state.",
+            output,
+        )
         self.assertNotIn("PowerShell treats unquoted `<...>` placeholders", output)
 
     def test_not_ready_with_valid_records_points_to_final_evidence_blockers(self) -> None:
@@ -694,6 +729,51 @@ class ReleaseStatusReportTest(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertIn("Result: READY", stdout.getvalue())
 
+    def test_main_can_write_not_ready_log(self) -> None:
+        root = self.make_root()
+        log_path = root / "docs" / "qa-builds" / "release-status.log"
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = release_status_report.main(
+                ["--root", str(root), "--log", str(log_path)],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Result: NOT READY.", stderr.getvalue())
+        self.assertIn("Result: NOT READY.", log_path.read_text(encoding="utf-8"))
+
+    def test_main_refuses_to_overwrite_existing_log_without_force(self) -> None:
+        root = self.make_root()
+        log_path = root / "docs" / "qa-builds" / "release-status.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("existing", encoding="utf-8")
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = release_status_report.main(
+                ["--root", str(root), "--log", str(log_path)],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertEqual("existing", log_path.read_text(encoding="utf-8"))
+        self.assertIn("pass --force to overwrite release status log", stderr.getvalue())
+
+    def test_main_overwrites_existing_log_with_force(self) -> None:
+        root = self.make_root()
+        log_path = root / "docs" / "qa-builds" / "release-status.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("existing", encoding="utf-8")
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = release_status_report.main(
+                ["--root", str(root), "--log", str(log_path), "--force"],
+            )
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Result: NOT READY.", log_path.read_text(encoding="utf-8"))
+        self.assertNotEqual("existing", log_path.read_text(encoding="utf-8"))
     def test_main_passes_ios_expected_values_to_status_builder(self) -> None:
         root = self.make_root()
         ready = release_status_report.ReleaseStatus(

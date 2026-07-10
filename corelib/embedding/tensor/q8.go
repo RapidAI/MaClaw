@@ -80,6 +80,611 @@ func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
 	MatMulQ8Bias(out, a, b, nil, M, N, K)
 }
 
+// argmaxPartials holds per-worker best buffers for MatMulQ8Argmax (pooled).
+type argmaxPartials struct {
+	v [][]float32
+	i [][]int
+	m int
+}
+
+var argmaxPartialPool = sync.Pool{New: func() any { return &argmaxPartials{} }}
+
+func getArgmaxPartials(nw, M int) *argmaxPartials {
+	p := argmaxPartialPool.Get().(*argmaxPartials)
+	if len(p.v) < nw || p.m < M {
+		p.v = make([][]float32, nw)
+		p.i = make([][]int, nw)
+		for w := 0; w < nw; w++ {
+			p.v[w] = make([]float32, M)
+			p.i[w] = make([]int, M)
+		}
+		p.m = M
+	} else {
+		p.v = p.v[:nw]
+		p.i = p.i[:nw]
+	}
+	neg := float32(-math.MaxFloat32)
+	for w := 0; w < nw; w++ {
+		for m := 0; m < M; m++ {
+			p.v[w][m] = neg
+			p.i[w][m] = 0
+		}
+	}
+	return p
+}
+
+// MatMulQ8Argmax computes per-row argmax of A @ B^T + bias without materializing
+// the full [M,N] matrix. Used for CTC greedy decode (N≈25k) to skip ~M*N stores
+// and a second full scan.
+//
+// Parallelizes over N (like MatMulQ8Bias): each worker owns a column range, keeps
+// per-row local bests, then a cheap merge. Avoids M-parallel which re-dequants B.
+func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
+	if M <= 0 || N <= 0 || K <= 0 {
+		return
+	}
+	nw := poolWorkers()
+	if nw <= 1 || !shouldParallel(M, N, K) {
+		p := getArgmaxPartials(1, M)
+		matMulQ8ArgmaxNRange(p.v[0], p.i[0], a, b, bias, M, N, K, 0, N)
+		copy(outIDs[:M], p.i[0])
+		argmaxPartialPool.Put(p)
+		return
+	}
+	// Per-worker partial argmax over its N slice, then merge.
+	if nw > N {
+		nw = N
+	}
+	p := getArgmaxPartials(nw, M)
+	ensureMatmulPool()
+	var wg sync.WaitGroup
+	chunk := (N + nw - 1) / nw
+	for w := 0; w < nw; w++ {
+		ns := w * chunk
+		ne := ns + chunk
+		if ne > N {
+			ne = N
+		}
+		if ns >= ne {
+			break
+		}
+		wg.Add(1)
+		ww := w
+		jobQueue <- matmulRangeJob{
+			start: ns, end: ne,
+			fn: func(ns, ne int) {
+				matMulQ8ArgmaxNRange(p.v[ww], p.i[ww], a, b, bias, M, N, K, ns, ne)
+			},
+			wg: &wg,
+		}
+	}
+	wg.Wait()
+	// Merge partials
+	for m := 0; m < M; m++ {
+		bestV := p.v[0][m]
+		bestI := p.i[0][m]
+		for w := 1; w < nw; w++ {
+			if p.v[w][m] > bestV {
+				bestV = p.v[w][m]
+				bestI = p.i[w][m]
+			}
+		}
+		outIDs[m] = bestI
+	}
+	argmaxPartialPool.Put(p)
+}
+
+// matMulQ8ArgmaxNRange updates bestV/bestI for all M rows over B columns [ns,ne).
+func matMulQ8ArgmaxNRange(bestV []float32, bestI []int, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int) {
+	_ = N
+	nBlocks := K / q8BlockSize
+	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+	hasBias := bias != nil
+	useDeq := useQ8DequantOnce(M, ne-ns, K, hasScales)
+
+	if useDeq {
+		// N-tile outer: dequant each B panel ONCE, then multiDot all M (was M-outer
+		// re-dequanting every A tile — costly for CTC N≈25k × M≈100).
+		nTile := q8BPanelRows(K, ne-ns)
+		panel := getQ8DequantBuf(nTile * K)
+		var dDual0, dDual1 [8]float32
+		var d8 [8]float32
+		mt := mTileForK(K)
+		for n0 := ns; n0 < ne; n0 += nTile {
+			nt := nTile
+			if n0+nt > ne {
+				nt = ne - n0
+			}
+			t := 0
+			for ; t+1 < nt; t += 2 {
+				dequantQ8RowDual(b, n0+t, n0+t+1, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K])
+			}
+			for ; t < nt; t++ {
+				dequantQ8Row(b, n0+t, panel[t*K:(t+1)*K])
+			}
+			m := 0
+			if mt >= 8 {
+				for ; m+7 < M; m += 8 {
+					aPanel := a[m*K : (m+8)*K]
+					// Update running bests in-place (no tile copy).
+					matMulPanelDualArgmax(aPanel, panel, bias, n0, K, nt, hasBias, &dDual0, &dDual1, &d8, 8, bestV[m:m+8], bestI[m:m+8])
+				}
+			}
+			if mt >= 4 {
+				for ; m+3 < M; m += 4 {
+					aPanel := a[m*K : (m+4)*K]
+					matMulPanelDualArgmax(aPanel, panel, bias, n0, K, nt, hasBias, &dDual0, &dDual1, &d8, 4, bestV[m:m+4], bestI[m:m+4])
+				}
+			}
+			for ; m < M; m++ {
+				aRow := a[m*K : m*K+K]
+				bv, bi := bestV[m], bestI[m]
+				for ti := 0; ti < nt; ti++ {
+					n := n0 + ti
+					s := Dot(aRow, panel[ti*K:(ti+1)*K])
+					if hasBias {
+						s += bias[n]
+					}
+					if s > bv {
+						bv, bi = s, n
+					}
+				}
+				bestV[m], bestI[m] = bv, bi
+			}
+		}
+		putQ8DequantBuf(panel)
+		return
+	}
+
+	// Fused dual multiDot over [ns,ne) — update bests in-place.
+	// CTC always has scales+bias; specialize that path (no per-col branches).
+	if hasScales && hasBias {
+		matMulQ8ArgmaxFusedScaledBias(bestV, bestI, a, b, bias, M, K, ns, ne, nBlocks)
+		return
+	}
+	matMulQ8ArgmaxFusedGeneric(bestV, bestI, a, b, bias, M, K, ns, ne, nBlocks, hasScales, hasBias)
+}
+
+// matMulQ8ArgmaxFusedScaledBias: fused Q8 multiDot argmax with f32 scales + bias.
+func matMulQ8ArgmaxFusedScaledBias(bestV []float32, bestI []int, a []float32, b *Q8Tensor, bias []float32, M, K, ns, ne, nBlocks int) {
+	var dDual0, dDual1 [8]float32
+	var d8 [8]float32
+	var d4 [4]float32
+	m := 0
+	for ; m+7 < M; m += 8 {
+		aPanel := a[m*K : (m+8)*K]
+		bv, bi := bestV[m:m+8], bestI[m:m+8]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot8T(&dDual0, &dDual1, aPanel, b, n, n+1, nBlocks, K)
+			updateArgmaxDual4(bv, bi, 0, n, &dDual0, bias[n], bias[n+1])
+			updateArgmaxDual4(bv, bi, 4, n, &dDual1, bias[n], bias[n+1])
+		}
+		for ; n < ne; n++ {
+			q8MultiDot8T(&d8, aPanel, b, n, nBlocks, K)
+			updateArgmax8(bv, bi, n, &d8, bias[n])
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		bv, bi := bestV[m:m+4], bestI[m:m+4]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
+			updateArgmaxDual4(bv, bi, 0, n, &dDual0, bias[n], bias[n+1])
+		}
+		for ; n < ne; n++ {
+			bn := bias[n]
+			q8MultiDot4T(&d4, aPanel, b, n, nBlocks, K)
+			for r := 0; r < 4; r++ {
+				v := d4[r] + bn
+				if v > bv[r] {
+					bv[r], bi[r] = v, n
+				}
+			}
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		bv, bi := bestV[m], bestI[m]
+		for n := ns; n < ne; n++ {
+			s := DotQ8RowScaled(aRow, b, n) + bias[n]
+			if s > bv {
+				bv, bi = s, n
+			}
+		}
+		bestV[m], bestI[m] = bv, bi
+	}
+}
+
+func matMulQ8ArgmaxFusedGeneric(bestV []float32, bestI []int, a []float32, b *Q8Tensor, bias []float32, M, K, ns, ne, nBlocks int, hasScales, hasBias bool) {
+	var dDual0, dDual1 [8]float32
+	var d8 [8]float32
+	var d4 [4]float32
+	m := 0
+	for ; m+7 < M; m += 8 {
+		aPanel := a[m*K : (m+8)*K]
+		bv, bi := bestV[m:m+8], bestI[m:m+8]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if hasBias {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			if hasScales {
+				q8DualMultiDot8T(&dDual0, &dDual1, aPanel, b, n, n+1, nBlocks, K)
+			} else {
+				q8DualMultiDot8(&dDual0, &dDual1, aPanel, b.Data, n, n+1, nBlocks, K)
+			}
+			updateArgmaxDual4(bv, bi, 0, n, &dDual0, bn0, bn1)
+			updateArgmaxDual4(bv, bi, 4, n, &dDual1, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if hasBias {
+				bn = bias[n]
+			}
+			if hasScales {
+				q8MultiDot8T(&d8, aPanel, b, n, nBlocks, K)
+			} else {
+				q8MultiDot8(&d8, aPanel, b.Data, n, nBlocks, K)
+			}
+			updateArgmax8(bv, bi, n, &d8, bn)
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		bv, bi := bestV[m:m+4], bestI[m:m+4]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if hasBias {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			if hasScales {
+				q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
+			} else {
+				q8DualMultiDot4(&dDual0, aPanel, b.Data, n, n+1, nBlocks, K)
+			}
+			updateArgmaxDual4(bv, bi, 0, n, &dDual0, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if hasBias {
+				bn = bias[n]
+			}
+			if hasScales {
+				q8MultiDot4T(&d4, aPanel, b, n, nBlocks, K)
+			} else {
+				q8MultiDot4(&d4, aPanel, b.Data, n, nBlocks, K)
+			}
+			for r := 0; r < 4; r++ {
+				v := d4[r] + bn
+				if v > bv[r] {
+					bv[r], bi[r] = v, n
+				}
+			}
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		bv, bi := bestV[m], bestI[m]
+		for n := ns; n < ne; n++ {
+			var s float32
+			if hasScales {
+				s = DotQ8RowScaled(aRow, b, n)
+			} else {
+				s = DotQ8Row(aRow, b.Data, n, nBlocks)
+			}
+			if hasBias {
+				s += bias[n]
+			}
+			if s > bv {
+				bv, bi = s, n
+			}
+		}
+		bestV[m], bestI[m] = bv, bi
+	}
+}
+
+// matMulPanelDualArgmax: like matMulPanelDual but updates running argmax instead of stores.
+// bestV/bestI are length rows (4 or 8) and updated in-place.
+// hasBias specialized (CTC always has bias) to drop per-column branches.
+func matMulPanelDualArgmax(aPanel, panel, bias []float32, n0, K, nt int, hasBias bool, dDual0, dDual1, d8 *[8]float32, rows int, bestV []float32, bestI []int) {
+	if hasBias {
+		matMulPanelDualArgmaxBias(aPanel, panel, bias, n0, K, nt, dDual0, dDual1, d8, rows, bestV, bestI)
+		return
+	}
+	matMulPanelDualArgmaxNoBias(aPanel, panel, n0, K, nt, dDual0, dDual1, d8, rows, bestV, bestI)
+}
+
+func matMulPanelDualArgmaxBias(aPanel, panel, bias []float32, n0, K, nt int, dDual0, dDual1, d8 *[8]float32, rows int, bestV []float32, bestI []int) {
+	t := 0
+	var dTri0, dTri1 [12]float32
+	useTriple := K == 512
+	if rows >= 8 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
+				n := n0 + t
+				multiDot8TripleB(&dTri0, &dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				updateArgmaxTriple4(bestV, bestI, 0, n, &dTri0, bias[n], bias[n+1], bias[n+2])
+				updateArgmaxTriple4(bestV, bestI, 4, n, &dTri1, bias[n], bias[n+1], bias[n+2])
+			}
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			updateArgmaxDual4(bestV, bestI, 0, n, dDual0, bias[n], bias[n+1])
+			updateArgmaxDual4(bestV, bestI, 4, n, dDual1, bias[n], bias[n+1])
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			updateArgmax8(bestV, bestI, n, d8, bias[n])
+		}
+		return
+	}
+	var d4 [4]float32
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
+			n := n0 + t
+			multiDot4TripleB(&dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			updateArgmaxTriple4(bestV, bestI, 0, n, &dTri0, bias[n], bias[n+1], bias[n+2])
+		}
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		updateArgmaxDual4(bestV, bestI, 0, n, dDual0, bias[n], bias[n+1])
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		bn := bias[n]
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		for r := 0; r < 4; r++ {
+			v := d4[r] + bn
+			if v > bestV[r] {
+				bestV[r], bestI[r] = v, n
+			}
+		}
+	}
+}
+
+func matMulPanelDualArgmaxNoBias(aPanel, panel []float32, n0, K, nt int, dDual0, dDual1, d8 *[8]float32, rows int, bestV []float32, bestI []int) {
+	t := 0
+	var dTri0, dTri1 [12]float32
+	useTriple := K == 512
+	if rows >= 8 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
+				n := n0 + t
+				multiDot8TripleB(&dTri0, &dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				updateArgmaxTriple4(bestV, bestI, 0, n, &dTri0, 0, 0, 0)
+				updateArgmaxTriple4(bestV, bestI, 4, n, &dTri1, 0, 0, 0)
+			}
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			updateArgmaxDual4(bestV, bestI, 0, n, dDual0, 0, 0)
+			updateArgmaxDual4(bestV, bestI, 4, n, dDual1, 0, 0)
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			updateArgmax8(bestV, bestI, n, d8, 0)
+		}
+		return
+	}
+	var d4 [4]float32
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
+			n := n0 + t
+			multiDot4TripleB(&dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			updateArgmaxTriple4(bestV, bestI, 0, n, &dTri0, 0, 0, 0)
+		}
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		updateArgmaxDual4(bestV, bestI, 0, n, dDual0, 0, 0)
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		for r := 0; r < 4; r++ {
+			v := d4[r]
+			if v > bestV[r] {
+				bestV[r], bestI[r] = v, n
+			}
+		}
+	}
+}
+
+// updateArgmaxDual4: d[0:4]=col n, d[4:8]=col n+1; row offset baseR in best arrays.
+func updateArgmaxDual4(bestV []float32, bestI []int, baseR, n int, d *[8]float32, bn0, bn1 float32) {
+	v0 := d[0] + bn0
+	v1 := d[4] + bn1
+	i0 := baseR
+	if v0 > bestV[i0] {
+		bestV[i0], bestI[i0] = v0, n
+	}
+	if v1 > bestV[i0] {
+		bestV[i0], bestI[i0] = v1, n+1
+	}
+	v0 = d[1] + bn0
+	v1 = d[5] + bn1
+	i0 = baseR + 1
+	if v0 > bestV[i0] {
+		bestV[i0], bestI[i0] = v0, n
+	}
+	if v1 > bestV[i0] {
+		bestV[i0], bestI[i0] = v1, n+1
+	}
+	v0 = d[2] + bn0
+	v1 = d[6] + bn1
+	i0 = baseR + 2
+	if v0 > bestV[i0] {
+		bestV[i0], bestI[i0] = v0, n
+	}
+	if v1 > bestV[i0] {
+		bestV[i0], bestI[i0] = v1, n+1
+	}
+	v0 = d[3] + bn0
+	v1 = d[7] + bn1
+	i0 = baseR + 3
+	if v0 > bestV[i0] {
+		bestV[i0], bestI[i0] = v0, n
+	}
+	if v1 > bestV[i0] {
+		bestV[i0], bestI[i0] = v1, n+1
+	}
+}
+
+// updateArgmaxTriple4: d[0:4]=n, d[4:8]=n+1, d[8:12]=n+2. Fully unrolled.
+func updateArgmaxTriple4(bestV []float32, bestI []int, baseR, n int, d *[12]float32, bn0, bn1, bn2 float32) {
+	idx := baseR
+	v0, v1, v2 := d[0]+bn0, d[4]+bn1, d[8]+bn2
+	if v0 > bestV[idx] {
+		bestV[idx], bestI[idx] = v0, n
+	}
+	if v1 > bestV[idx] {
+		bestV[idx], bestI[idx] = v1, n+1
+	}
+	if v2 > bestV[idx] {
+		bestV[idx], bestI[idx] = v2, n+2
+	}
+	idx = baseR + 1
+	v0, v1, v2 = d[1]+bn0, d[5]+bn1, d[9]+bn2
+	if v0 > bestV[idx] {
+		bestV[idx], bestI[idx] = v0, n
+	}
+	if v1 > bestV[idx] {
+		bestV[idx], bestI[idx] = v1, n+1
+	}
+	if v2 > bestV[idx] {
+		bestV[idx], bestI[idx] = v2, n+2
+	}
+	idx = baseR + 2
+	v0, v1, v2 = d[2]+bn0, d[6]+bn1, d[10]+bn2
+	if v0 > bestV[idx] {
+		bestV[idx], bestI[idx] = v0, n
+	}
+	if v1 > bestV[idx] {
+		bestV[idx], bestI[idx] = v1, n+1
+	}
+	if v2 > bestV[idx] {
+		bestV[idx], bestI[idx] = v2, n+2
+	}
+	idx = baseR + 3
+	v0, v1, v2 = d[3]+bn0, d[7]+bn1, d[11]+bn2
+	if v0 > bestV[idx] {
+		bestV[idx], bestI[idx] = v0, n
+	}
+	if v1 > bestV[idx] {
+		bestV[idx], bestI[idx] = v1, n+1
+	}
+	if v2 > bestV[idx] {
+		bestV[idx], bestI[idx] = v2, n+2
+	}
+}
+
+func updateArgmax8(bestV []float32, bestI []int, n int, d *[8]float32, bn float32) {
+	v := d[0] + bn
+	if v > bestV[0] {
+		bestV[0], bestI[0] = v, n
+	}
+	v = d[1] + bn
+	if v > bestV[1] {
+		bestV[1], bestI[1] = v, n
+	}
+	v = d[2] + bn
+	if v > bestV[2] {
+		bestV[2], bestI[2] = v, n
+	}
+	v = d[3] + bn
+	if v > bestV[3] {
+		bestV[3], bestI[3] = v, n
+	}
+	v = d[4] + bn
+	if v > bestV[4] {
+		bestV[4], bestI[4] = v, n
+	}
+	v = d[5] + bn
+	if v > bestV[5] {
+		bestV[5], bestI[5] = v, n
+	}
+	v = d[6] + bn
+	if v > bestV[6] {
+		bestV[6], bestI[6] = v, n
+	}
+	v = d[7] + bn
+	if v > bestV[7] {
+		bestV[7], bestI[7] = v, n
+	}
+}
+
+// argmaxQ8Row: argmax_n (dot(a, B[n]) + bias[n]) via dual-B Q8 dots.
+func argmaxQ8Row(a []float32, b *Q8Tensor, bias []float32, N, K int) int {
+	nBlocks := K / q8BlockSize
+	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+	bestID := 0
+	bestVal := float32(-math.MaxFloat32)
+	n := 0
+	if hasScales {
+		for ; n+1 < N; n += 2 {
+			s0, s1 := DotQ8RowDualScaled(a, b, n, n+1)
+			if bias != nil {
+				s0 += bias[n]
+				s1 += bias[n+1]
+			}
+			if s0 > bestVal {
+				bestVal, bestID = s0, n
+			}
+			if s1 > bestVal {
+				bestVal, bestID = s1, n+1
+			}
+		}
+		for ; n < N; n++ {
+			s := DotQ8RowScaled(a, b, n)
+			if bias != nil {
+				s += bias[n]
+			}
+			if s > bestVal {
+				bestVal, bestID = s, n
+			}
+		}
+		return bestID
+	}
+	for ; n+1 < N; n += 2 {
+		s0, s1 := DotQ8RowDual(a, b.Data, n, n+1, nBlocks)
+		if bias != nil {
+			s0 += bias[n]
+			s1 += bias[n+1]
+		}
+		if s0 > bestVal {
+			bestVal, bestID = s0, n
+		}
+		if s1 > bestVal {
+			bestVal, bestID = s1, n+1
+		}
+	}
+	for ; n < N; n++ {
+		s := DotQ8Row(a, b.Data, n, nBlocks)
+		if bias != nil {
+			s += bias[n]
+		}
+		if s > bestVal {
+			bestVal, bestID = s, n
+		}
+	}
+	return bestID
+}
+
 // MatMulQ8Bias is MatMulQ8 with optional bias fused into the store:
 // out[m,n] = dot(A[m], dequant(B[n])) + bias[n].
 //
@@ -107,6 +712,54 @@ func MatMulQ8Bias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
 	matMulQ8SerialM(out, a, b, bias, M, N, K)
 }
 
+// MatMulQ8BiasAdd is MatMulQ8Bias with residual accumulate:
+// out[m,n] += dot(A[m], dequant(B[n])) + bias[n].
+// Used for FFN down-projection residual (skips a temp buffer + Add pass).
+func MatMulQ8BiasAdd(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
+	if M <= 0 || N <= 0 || K <= 0 {
+		return
+	}
+	if M == 1 {
+		// Inline accumulate (no temp): dual-B Q8 dots.
+		nBlocks := K / q8BlockSize
+		hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+		aRow := a[:K]
+		n := 0
+		for ; n+1 < N; n += 2 {
+			var s0, s1 float32
+			if hasScales {
+				s0, s1 = DotQ8RowDualScaled(aRow, b, n, n+1)
+			} else {
+				s0, s1 = DotQ8RowDual(aRow, b.Data, n, n+1, nBlocks)
+			}
+			if bias != nil {
+				s0 += bias[n]
+				s1 += bias[n+1]
+			}
+			out[n] += s0
+			out[n+1] += s1
+		}
+		for ; n < N; n++ {
+			var s float32
+			if hasScales {
+				s = DotQ8RowScaled(aRow, b, n)
+			} else {
+				s = DotQ8Row(aRow, b.Data, n, nBlocks)
+			}
+			if bias != nil {
+				s += bias[n]
+			}
+			out[n] += s
+		}
+		return
+	}
+	if shouldParallel(M, N, K) {
+		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, true)
+		return
+	}
+	matMulQ8SerialMAct(out, a, b, bias, M, N, K, false, true)
+}
+
 // MatMulQ8BiasReLU is MatMulQ8Bias with ReLU fused at the store:
 // out[m,n] = max(0, dot + bias[n]). Used for FFN up-projection.
 func MatMulQ8BiasReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
@@ -119,10 +772,10 @@ func MatMulQ8BiasReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int
 		return
 	}
 	if shouldParallel(M, N, K) {
-		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, true)
+		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, true, false)
 		return
 	}
-	matMulQ8SerialMAct(out, a, b, bias, M, N, K, true)
+	matMulQ8SerialMAct(out, a, b, bias, M, N, K, true, false)
 }
 
 func reluInplace(x []float32) {
@@ -222,24 +875,35 @@ func matMulQ8Range_M1(out, a []float32, b *Q8Tensor, bias []float32, N, K, ns, n
 
 // matMulQ8SerialM: M-tile outer, N inner — A panel stays hot.
 func matMulQ8SerialM(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
-	matMulQ8SerialMAct(out, a, b, bias, M, N, K, false)
+	matMulQ8SerialMAct(out, a, b, bias, M, N, K, false, false)
 }
 
 // matMulQ8ParallelN_MTile partitions N across pool workers; each worker uses
 // M-tile-outer so its A panels stay hot for its B-column range.
 func matMulQ8ParallelN_MTile(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
-	matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false)
+	matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, false)
 }
 
-func storeDot4(out []float32, m, n, N int, d *[4]float32, bn float32, relu bool) {
+func storeDot4(out []float32, m, n, N int, d *[4]float32, bn float32, relu, accum bool) {
 	if relu {
 		for t := 0; t < 4; t++ {
 			v := d[t] + bn
 			if v < 0 {
 				v = 0
 			}
-			out[(m+t)*N+n] = v
+			if accum {
+				out[(m+t)*N+n] += v
+			} else {
+				out[(m+t)*N+n] = v
+			}
 		}
+		return
+	}
+	if accum {
+		out[m*N+n] += d[0] + bn
+		out[(m+1)*N+n] += d[1] + bn
+		out[(m+2)*N+n] += d[2] + bn
+		out[(m+3)*N+n] += d[3] + bn
 		return
 	}
 	out[m*N+n] = d[0] + bn
@@ -248,15 +912,30 @@ func storeDot4(out []float32, m, n, N int, d *[4]float32, bn float32, relu bool)
 	out[(m+3)*N+n] = d[3] + bn
 }
 
-func storeDot8(out []float32, m, n, N int, d *[8]float32, bn float32, relu bool) {
+func storeDot8(out []float32, m, n, N int, d *[8]float32, bn float32, relu, accum bool) {
 	if relu {
 		for t := 0; t < 8; t++ {
 			v := d[t] + bn
 			if v < 0 {
 				v = 0
 			}
-			out[(m+t)*N+n] = v
+			if accum {
+				out[(m+t)*N+n] += v
+			} else {
+				out[(m+t)*N+n] = v
+			}
 		}
+		return
+	}
+	if accum {
+		out[m*N+n] += d[0] + bn
+		out[(m+1)*N+n] += d[1] + bn
+		out[(m+2)*N+n] += d[2] + bn
+		out[(m+3)*N+n] += d[3] + bn
+		out[(m+4)*N+n] += d[4] + bn
+		out[(m+5)*N+n] += d[5] + bn
+		out[(m+6)*N+n] += d[6] + bn
+		out[(m+7)*N+n] += d[7] + bn
 		return
 	}
 	out[m*N+n] = d[0] + bn
@@ -269,16 +948,17 @@ func storeDot8(out []float32, m, n, N int, d *[8]float32, bn float32, relu bool)
 	out[(m+7)*N+n] = d[7] + bn
 }
 
-// q8BPanelRows picks N-tile width so the float B panel stays ~L1-sized.
+// q8BPanelRows picks N-tile width so the float B panel stays cache-friendly.
 // For wide N ranges (CTC under parallel workers) keep the panel smaller.
 func q8BPanelRows(K, nRange int) int {
 	if K <= 0 {
 		return 8
 	}
-	// Target ~32KB panel; shrink when the worker already owns a huge N slice.
+	// Target ~32KB panel (L1-friendly); CTC workers get slightly smaller
+	// panels so more tiles stay warm while still amortizing dequant.
 	budget := 32 * 1024
 	if nRange > 4096 {
-		budget = 16 * 1024
+		budget = 24 * 1024
 	}
 	nt := budget / (K * 4)
 	if nt < 4 {
@@ -287,8 +967,10 @@ func q8BPanelRows(K, nRange int) int {
 	if nt > 32 {
 		nt = 32
 	}
-	// Dual-B wants even tile width.
-	if nt&1 != 0 {
+	// Prefer multiple of 6 so triple-B (3) and dual-B (2) both tile cleanly.
+	if nt >= 6 {
+		nt = nt - (nt % 6)
+	} else if nt&1 != 0 {
 		nt--
 	}
 	if nt < 4 {
@@ -332,17 +1014,106 @@ func mTileForK(K int) int {
 	return 1
 }
 
-// matMulQ8Range computes columns [ns,ne) for all M rows.
-func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu bool) {
-	nBlocks := K / q8BlockSize
+// matMulQ8RangeFusedAccumScaled: FFN down-proj hot path.
+// hasScales + residual accum, no ReLU — no per-column scale/relu branches.
+// Bias is specialized: SenseVoice FFN always has bias (hot); nil-bias is rare.
+func matMulQ8RangeFusedAccumScaled(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int) {
+	if bias != nil {
+		matMulQ8RangeFusedAccumScaledBias(out, a, b, bias, M, N, K, ns, ne, nBlocks)
+		return
+	}
+	matMulQ8RangeFusedAccumScaledNoBias(out, a, b, M, N, K, ns, ne, nBlocks)
+}
+
+func matMulQ8RangeFusedAccumScaledBias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int) {
+	mt := mTileForK(K)
+	var dDual0, dDual1 [8]float32
 	var d4 [4]float32
 	var d8 [8]float32
-	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+	m := 0
+	if mt >= 8 {
+		for ; m+7 < M; m += 8 {
+			aPanel := a[m*K : (m+8)*K]
+			n := ns
+			for ; n+1 < ne; n += 2 {
+				q8DualMultiDot8T(&dDual0, &dDual1, aPanel, b, n, n+1, nBlocks, K)
+				storeDual4Accum(out, m, n, N, &dDual0, bias[n], bias[n+1])
+				storeDual4Accum(out, m+4, n, N, &dDual1, bias[n], bias[n+1])
+			}
+			for ; n < ne; n++ {
+				q8MultiDot8T(&d8, aPanel, b, n, nBlocks, K)
+				storeDot8Accum(out, m, n, N, &d8, bias[n])
+			}
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
+			storeDual4Accum(out, m, n, N, &dDual0, bias[n], bias[n+1])
+		}
+		for ; n < ne; n++ {
+			q8MultiDot4T(&d4, aPanel, b, n, nBlocks, K)
+			storeDot4Accum(out, m, n, N, &d4, bias[n])
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := ns; n < ne; n++ {
+			out[m*N+n] += DotQ8RowScaled(aRow, b, n) + bias[n]
+		}
+	}
+}
 
-	if !useQ8DequantOnce(M, N, K, hasScales) {
-		// Fused path: dual-B q8 multiDot; uses f32 Scales when available (K=2048 FFN).
-		var dDual0, dDual1 [8]float32
-		m := 0
+func matMulQ8RangeFusedAccumScaledNoBias(out, a []float32, b *Q8Tensor, M, N, K, ns, ne, nBlocks int) {
+	mt := mTileForK(K)
+	var dDual0, dDual1 [8]float32
+	var d4 [4]float32
+	var d8 [8]float32
+	m := 0
+	if mt >= 8 {
+		for ; m+7 < M; m += 8 {
+			aPanel := a[m*K : (m+8)*K]
+			n := ns
+			for ; n+1 < ne; n += 2 {
+				q8DualMultiDot8T(&dDual0, &dDual1, aPanel, b, n, n+1, nBlocks, K)
+				storeDual4Accum(out, m, n, N, &dDual0, 0, 0)
+				storeDual4Accum(out, m+4, n, N, &dDual1, 0, 0)
+			}
+			for ; n < ne; n++ {
+				q8MultiDot8T(&d8, aPanel, b, n, nBlocks, K)
+				storeDot8Accum(out, m, n, N, &d8, 0)
+			}
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
+			storeDual4Accum(out, m, n, N, &dDual0, 0, 0)
+		}
+		for ; n < ne; n++ {
+			q8MultiDot4T(&d4, aPanel, b, n, nBlocks, K)
+			storeDot4Accum(out, m, n, N, &d4, 0)
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := ns; n < ne; n++ {
+			out[m*N+n] += DotQ8RowScaled(aRow, b, n)
+		}
+	}
+}
+
+// matMulQ8RangeFusedGeneric: fused Q8 multiDot with optional ReLU/accum/scales.
+func matMulQ8RangeFusedGeneric(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int, hasScales, relu, accum bool, d4 *[4]float32, d8 *[8]float32) {
+	mt := mTileForK(K)
+	fastAccum := accum && !relu
+	var dDual0, dDual1 [8]float32
+	m := 0
+	if mt >= 8 {
 		for ; m+7 < M; m += 8 {
 			aPanel := a[m*K : (m+8)*K]
 			n := ns
@@ -356,8 +1127,13 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 				} else {
 					q8DualMultiDot8(&dDual0, &dDual1, aPanel, b.Data, n, n+1, nBlocks, K)
 				}
-				storeDual4(out, m, n, N, &dDual0, bn0, bn1, relu)
-				storeDual4(out, m+4, n, N, &dDual1, bn0, bn1, relu)
+				if fastAccum {
+					storeDual4Accum(out, m, n, N, &dDual0, bn0, bn1)
+					storeDual4Accum(out, m+4, n, N, &dDual1, bn0, bn1)
+				} else {
+					storeDual4(out, m, n, N, &dDual0, bn0, bn1, relu, accum)
+					storeDual4(out, m+4, n, N, &dDual1, bn0, bn1, relu, accum)
+				}
 			}
 			for ; n < ne; n++ {
 				bn := float32(0)
@@ -365,65 +1141,317 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 					bn = bias[n]
 				}
 				if hasScales {
-					q8MultiDot8T(&d8, aPanel, b, n, nBlocks, K)
+					q8MultiDot8T(d8, aPanel, b, n, nBlocks, K)
 				} else {
-					q8MultiDot8(&d8, aPanel, b.Data, n, nBlocks, K)
+					q8MultiDot8(d8, aPanel, b.Data, n, nBlocks, K)
 				}
-				storeDot8(out, m, n, N, &d8, bn, relu)
+				if fastAccum {
+					storeDot8Accum(out, m, n, N, d8, bn)
+				} else {
+					storeDot8(out, m, n, N, d8, bn, relu, accum)
+				}
 			}
 		}
-		for ; m+3 < M; m += 4 {
-			aPanel := a[m*K : (m+4)*K]
-			n := ns
-			for ; n+1 < ne; n += 2 {
-				bn0, bn1 := float32(0), float32(0)
-				if bias != nil {
-					bn0, bn1 = bias[n], bias[n+1]
-				}
-				if hasScales {
-					q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
-				} else {
-					q8DualMultiDot4(&dDual0, aPanel, b.Data, n, n+1, nBlocks, K)
-				}
-				storeDual4(out, m, n, N, &dDual0, bn0, bn1, relu)
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
 			}
-			for ; n < ne; n++ {
-				bn := float32(0)
-				if bias != nil {
-					bn = bias[n]
-				}
-				if hasScales {
-					q8MultiDot4T(&d4, aPanel, b, n, nBlocks, K)
-				} else {
-					q8MultiDot4(&d4, aPanel, b.Data, n, nBlocks, K)
-				}
-				storeDot4(out, m, n, N, &d4, bn, relu)
+			if hasScales {
+				q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, K)
+			} else {
+				q8DualMultiDot4(&dDual0, aPanel, b.Data, n, n+1, nBlocks, K)
+			}
+			if fastAccum {
+				storeDual4Accum(out, m, n, N, &dDual0, bn0, bn1)
+			} else {
+				storeDual4(out, m, n, N, &dDual0, bn0, bn1, relu, accum)
+			}
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			if hasScales {
+				q8MultiDot4T(d4, aPanel, b, n, nBlocks, K)
+			} else {
+				q8MultiDot4(d4, aPanel, b.Data, n, nBlocks, K)
+			}
+			if fastAccum {
+				storeDot4Accum(out, m, n, N, d4, bn)
+			} else {
+				storeDot4(out, m, n, N, d4, bn, relu, accum)
+			}
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := ns; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			var v float32
+			if hasScales {
+				v = DotQ8RowScaled(aRow, b, n) + bn
+			} else {
+				v = DotQ8Row(aRow, b.Data, n, nBlocks) + bn
+			}
+			if relu && v < 0 {
+				v = 0
+			}
+			if accum {
+				out[m*N+n] += v
+			} else {
+				out[m*N+n] = v
+			}
+		}
+	}
+}
+
+// matMulQ8Range computes columns [ns,ne) for all M rows.
+// accum: out += result (residual); otherwise out = result.
+func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu, accum bool) {
+	nBlocks := K / q8BlockSize
+	var d4 [4]float32
+	var d8 [8]float32
+	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+
+	if !useQ8DequantOnce(M, N, K, hasScales) {
+		// Fused path: dual-B q8 multiDot; uses f32 Scales when available (K=2048 FFN).
+		// FFN down-proj hot case: hasScales + accum residual — fully specialized.
+		if hasScales && accum && !relu {
+			matMulQ8RangeFusedAccumScaled(out, a, b, bias, M, N, K, ns, ne, nBlocks)
+			return
+		}
+		matMulQ8RangeFusedGeneric(out, a, b, bias, M, N, K, ns, ne, nBlocks, hasScales, relu, accum, &d4, &d8)
+		return
+	}
+
+	// Dequant each B row once into an L1-sized N-tile float panel, then multiDot.
+	// FFN up-proj (ReLU) and encoder plain store are specialized (no relu/accum flags).
+	if hasScales && relu && !accum {
+		matMulQ8RangeDeqReLU(out, a, b, bias, M, N, K, ns, ne)
+		return
+	}
+	if hasScales && !relu && !accum {
+		matMulQ8RangeDeqPlain(out, a, b, bias, M, N, K, ns, ne)
+		return
+	}
+	matMulQ8RangeDeqGeneric(out, a, b, bias, M, N, K, ns, ne, relu, accum, &d8)
+}
+
+// matMulQ8RangeDeqReLU: FFN up-proj — dequant panel + triple/dual multiDot + max(0,·).
+func matMulQ8RangeDeqReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int) {
+	nTile := q8BPanelRows(K, ne-ns)
+	panel := getQ8DequantBuf(nTile * K)
+	var dDual0, dDual1 [8]float32
+	var d8 [8]float32
+	var dTri0, dTri1 [12]float32
+	hasBias := bias != nil
+	mt := mTileForK(K)
+	useTriple := K == 512
+	for n0 := ns; n0 < ne; n0 += nTile {
+		nt := nTile
+		if n0+nt > ne {
+			nt = ne - n0
+		}
+		t := 0
+		for ; t+1 < nt; t += 2 {
+			dequantQ8RowDual(b, n0+t, n0+t+1, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K])
+		}
+		for ; t < nt; t++ {
+			dequantQ8Row(b, n0+t, panel[t*K:(t+1)*K])
+		}
+		m := 0
+		if mt >= 8 {
+			for ; m+7 < M; m += 8 {
+				aPanel := a[m*K : (m+8)*K]
+				matMulPanelDualReLU(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, useTriple, &dDual0, &dDual1, &d8, &dTri0, &dTri1, 8)
+			}
+		}
+		if mt >= 4 {
+			for ; m+3 < M; m += 4 {
+				aPanel := a[m*K : (m+4)*K]
+				matMulPanelDualReLU(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, useTriple, &dDual0, &dDual1, &d8, &dTri0, &dTri1, 4)
 			}
 		}
 		for ; m < M; m++ {
 			aRow := a[m*K : m*K+K]
-			for n := ns; n < ne; n++ {
-				bn := float32(0)
-				if bias != nil {
-					bn = bias[n]
+			for ti := 0; ti < nt; ti++ {
+				n := n0 + ti
+				v := Dot(aRow, panel[ti*K:(ti+1)*K])
+				if hasBias {
+					v += bias[n]
 				}
-				var v float32
-				if hasScales {
-					v = DotQ8RowScaled(aRow, b, n) + bn
-				} else {
-					v = DotQ8Row(aRow, b.Data, n, nBlocks) + bn
-				}
-				if relu && v < 0 {
+				if v < 0 {
 					v = 0
 				}
 				out[m*N+n] = v
 			}
 		}
+	}
+	putQ8DequantBuf(panel)
+}
+
+// matMulQ8RangeDeqPlain: encoder GEMM — dequant + multiDot, pure store (no ReLU/accum).
+func matMulQ8RangeDeqPlain(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int) {
+	nTile := q8BPanelRows(K, ne-ns)
+	panel := getQ8DequantBuf(nTile * K)
+	var dDual0, dDual1 [8]float32
+	var d8 [8]float32
+	var dTri0, dTri1 [12]float32
+	hasBias := bias != nil
+	mt := mTileForK(K)
+	useTriple := K == 512
+	for n0 := ns; n0 < ne; n0 += nTile {
+		nt := nTile
+		if n0+nt > ne {
+			nt = ne - n0
+		}
+		t := 0
+		for ; t+1 < nt; t += 2 {
+			dequantQ8RowDual(b, n0+t, n0+t+1, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K])
+		}
+		for ; t < nt; t++ {
+			dequantQ8Row(b, n0+t, panel[t*K:(t+1)*K])
+		}
+		m := 0
+		if mt >= 8 {
+			for ; m+7 < M; m += 8 {
+				aPanel := a[m*K : (m+8)*K]
+				matMulPanelDualPlain(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, useTriple, &dDual0, &dDual1, &d8, &dTri0, &dTri1, 8)
+			}
+		}
+		if mt >= 4 {
+			for ; m+3 < M; m += 4 {
+				aPanel := a[m*K : (m+4)*K]
+				matMulPanelDualPlain(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, useTriple, &dDual0, &dDual1, &d8, &dTri0, &dTri1, 4)
+			}
+		}
+		for ; m < M; m++ {
+			aRow := a[m*K : m*K+K]
+			for ti := 0; ti < nt; ti++ {
+				n := n0 + ti
+				v := Dot(aRow, panel[ti*K:(ti+1)*K])
+				if hasBias {
+					v += bias[n]
+				}
+				out[m*N+n] = v
+			}
+		}
+	}
+	putQ8DequantBuf(panel)
+}
+
+// matMulPanelDualPlain: encoder — triple/dual multiDot, pure store + bias (no flags).
+// hasBias is specialized (SenseVoice linears always bias) to drop per-column branches.
+func matMulPanelDualPlain(out, aPanel, panel, bias []float32, m, n0, N, K, nt int, hasBias, useTriple bool, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32, rows int) {
+	if hasBias {
+		matMulPanelDualPlainBias(out, aPanel, panel, bias, m, n0, N, K, nt, useTriple, dDual0, dDual1, d8, dTri0, dTri1, rows)
 		return
 	}
+	matMulPanelDualPlainNoBias(out, aPanel, panel, m, n0, N, K, nt, useTriple, dDual0, dDual1, d8, dTri0, dTri1, rows)
+}
 
-	// Dequant each B row once into an L1-sized N-tile float panel, then multiDot.
-	// M-tile adapts to K so A panel fits L1 (critical for FFN K=2048).
+func matMulPanelDualPlainBias(out, aPanel, panel, bias []float32, m, n0, N, K, nt int, useTriple bool, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32, rows int) {
+	t := 0
+	if rows >= 8 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
+				n := n0 + t
+				multiDot8TripleB(dTri0, dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				storeTriple4Plain(out, m, n, N, dTri0, bias[n], bias[n+1], bias[n+2])
+				storeTriple4Plain(out, m+4, n, N, dTri1, bias[n], bias[n+1], bias[n+2])
+			}
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			storeDual4Plain(out, m, n, N, dDual0, bias[n], bias[n+1])
+			storeDual4Plain(out, m+4, n, N, dDual1, bias[n], bias[n+1])
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			storeDot8Plain(out, m, n, N, d8, bias[n])
+		}
+		return
+	}
+	var d4 [4]float32
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
+			n := n0 + t
+			multiDot4TripleB(dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			storeTriple4Plain(out, m, n, N, dTri0, bias[n], bias[n+1], bias[n+2])
+		}
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		storeDual4Plain(out, m, n, N, dDual0, bias[n], bias[n+1])
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		storeDot4Plain(out, m, n, N, &d4, bias[n])
+	}
+}
+
+func matMulPanelDualPlainNoBias(out, aPanel, panel []float32, m, n0, N, K, nt int, useTriple bool, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32, rows int) {
+	t := 0
+	if rows >= 8 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
+				n := n0 + t
+				multiDot8TripleB(dTri0, dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				storeTriple4Plain(out, m, n, N, dTri0, 0, 0, 0)
+				storeTriple4Plain(out, m+4, n, N, dTri1, 0, 0, 0)
+			}
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			storeDual4Plain(out, m, n, N, dDual0, 0, 0)
+			storeDual4Plain(out, m+4, n, N, dDual1, 0, 0)
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			storeDot8Plain(out, m, n, N, d8, 0)
+		}
+		return
+	}
+	var d4 [4]float32
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
+			n := n0 + t
+			multiDot4TripleB(dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			storeTriple4Plain(out, m, n, N, dTri0, 0, 0, 0)
+		}
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		storeDual4Plain(out, m, n, N, dDual0, 0, 0)
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		storeDot4Plain(out, m, n, N, &d4, 0)
+	}
+}
+
+func matMulQ8RangeDeqGeneric(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu, accum bool, d8 *[8]float32) {
 	nTile := q8BPanelRows(K, ne-ns)
 	panel := getQ8DequantBuf(nTile * K)
 	var dDual0, dDual1 [8]float32
@@ -434,129 +1462,297 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 		if n0+nt > ne {
 			nt = ne - n0
 		}
-		for t := 0; t < nt; t++ {
+		t := 0
+		for ; t+1 < nt; t += 2 {
+			dequantQ8RowDual(b, n0+t, n0+t+1, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K])
+		}
+		for ; t < nt; t++ {
 			dequantQ8Row(b, n0+t, panel[t*K:(t+1)*K])
 		}
 		m := 0
 		if mt >= 8 {
 			for ; m+7 < M; m += 8 {
 				aPanel := a[m*K : (m+8)*K]
-				matMulPanelDual(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, relu, &dDual0, &dDual1, &d8, 8)
+				matMulPanelDual(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, relu, accum, &dDual0, &dDual1, d8, 8)
 			}
 		}
 		if mt >= 4 {
 			for ; m+3 < M; m += 4 {
 				aPanel := a[m*K : (m+4)*K]
-				matMulPanelDual(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, relu, &dDual0, &dDual1, &d8, 4)
-			}
-		}
-		// mt==2 or remainder: dual-row multiDot4 is overkill; use multiDot4 on pairs via dual with 2 rows... use 1-row Dot.
-		for ; m+1 < M; m += 2 {
-			// Two A rows × dual B via multiDot4DualB needs 4 A rows packing.
-			// Simple: two rows as multiDot4 with zero pad is wasteful — just Dot.
-			a0 := a[m*K : m*K+K]
-			a1 := a[(m+1)*K : (m+1)*K+K]
-			for t := 0; t < nt; t++ {
-				n := n0 + t
-				bn := float32(0)
-				if hasBias {
-					bn = bias[n]
-				}
-				bp := panel[t*K : (t+1)*K]
-				v0 := Dot(a0, bp) + bn
-				v1 := Dot(a1, bp) + bn
-				if relu {
-					if v0 < 0 {
-						v0 = 0
-					}
-					if v1 < 0 {
-						v1 = 0
-					}
-				}
-				out[m*N+n] = v0
-				out[(m+1)*N+n] = v1
+				matMulPanelDual(out, aPanel, panel, bias, m, n0, N, K, nt, hasBias, relu, accum, &dDual0, &dDual1, d8, 4)
 			}
 		}
 		for ; m < M; m++ {
 			aRow := a[m*K : m*K+K]
-			for t := 0; t < nt; t++ {
-				n := n0 + t
-				v := Dot(aRow, panel[t*K:(t+1)*K])
+			for ti := 0; ti < nt; ti++ {
+				n := n0 + ti
+				v := Dot(aRow, panel[ti*K:(ti+1)*K])
 				if hasBias {
 					v += bias[n]
 				}
 				if relu && v < 0 {
 					v = 0
 				}
-				out[m*N+n] = v
+				if accum {
+					out[m*N+n] += v
+				} else {
+					out[m*N+n] = v
+				}
 			}
 		}
 	}
 	putQ8DequantBuf(panel)
 }
 
-// matMulPanelDual runs dual-B multiDot for an A panel of 4 or 8 rows against
-// a dequantized B panel of nt columns starting at n0.
-func matMulPanelDual(out, aPanel, panel, bias []float32, m, n0, N, K, nt int, hasBias, relu bool, dDual0, dDual1 *[8]float32, d8 *[8]float32, rows int) {
+// matMulPanelDualReLU: FFN up — triple then dual, always store max(0, d+bias).
+// hasBias specialized (SenseVoice FFN always bias).
+func matMulPanelDualReLU(out, aPanel, panel, bias []float32, m, n0, N, K, nt int, hasBias, useTriple bool, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32, rows int) {
+	if !hasBias {
+		// rare: zero bias via plain zero constants
+		t := 0
+		if rows >= 8 {
+			if useTriple {
+				for ; t+2 < nt; t += 3 {
+					n := n0 + t
+					multiDot8TripleB(dTri0, dTri1, aPanel,
+						panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+					storeTriple4ReLU(out, m, n, N, dTri0, 0, 0, 0)
+					storeTriple4ReLU(out, m+4, n, N, dTri1, 0, 0, 0)
+				}
+			}
+			for ; t+1 < nt; t += 2 {
+				n := n0 + t
+				multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+				storeDual4ReLU(out, m, n, N, dDual0, 0, 0)
+				storeDual4ReLU(out, m+4, n, N, dDual1, 0, 0)
+			}
+			for ; t < nt; t++ {
+				n := n0 + t
+				multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+				storeDot8ReLU(out, m, n, N, d8, 0)
+			}
+			return
+		}
+		var d4 [4]float32
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
+				n := n0 + t
+				multiDot4TripleB(dTri0, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				storeTriple4ReLU(out, m, n, N, dTri0, 0, 0, 0)
+			}
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			storeDual4ReLU(out, m, n, N, dDual0, 0, 0)
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+			storeDot4ReLU(out, m, n, N, &d4, 0)
+		}
+		return
+	}
 	t := 0
 	if rows >= 8 {
-		if hasBias {
-			for ; t+1 < nt; t += 2 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
 				n := n0 + t
-				multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
-				storeDual4(out, m, n, N, dDual0, bias[n], bias[n+1], relu)
-				storeDual4(out, m+4, n, N, dDual1, bias[n], bias[n+1], relu)
+				multiDot8TripleB(dTri0, dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				storeTriple4ReLU(out, m, n, N, dTri0, bias[n], bias[n+1], bias[n+2])
+				storeTriple4ReLU(out, m+4, n, N, dTri1, bias[n], bias[n+1], bias[n+2])
 			}
-			for ; t < nt; t++ {
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			storeDual4ReLU(out, m, n, N, dDual0, bias[n], bias[n+1])
+			storeDual4ReLU(out, m+4, n, N, dDual1, bias[n], bias[n+1])
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			storeDot8ReLU(out, m, n, N, d8, bias[n])
+		}
+		return
+	}
+	var d4 [4]float32
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
+			n := n0 + t
+			multiDot4TripleB(dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			storeTriple4ReLU(out, m, n, N, dTri0, bias[n], bias[n+1], bias[n+2])
+		}
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		storeDual4ReLU(out, m, n, N, dDual0, bias[n], bias[n+1])
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		storeDot4ReLU(out, m, n, N, &d4, bias[n])
+	}
+}
+
+// matMulPanelDual runs multiDot for an A panel of 4 or 8 rows against
+// a dequantized B panel of nt columns starting at n0.
+// Prefers triple-B (3 cols) then dual-B then single for max A-load amortization.
+func matMulPanelDual(out, aPanel, panel, bias []float32, m, n0, N, K, nt int, hasBias, relu, accum bool, dDual0, dDual1 *[8]float32, d8 *[8]float32, rows int) {
+	// FFN up-proj: ReLU store without accum — branch-free max(0, ·).
+	fastReLU := relu && !accum
+	t := 0
+	var dTri0, dTri1 [12]float32
+	useTriple := K == 512 // specialized triple micro-kernel
+	if rows >= 8 {
+		if useTriple {
+			for ; t+2 < nt; t += 3 {
 				n := n0 + t
-				multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
-				storeDot8(out, m, n, N, d8, bias[n], relu)
+				multiDot8TripleB(&dTri0, &dTri1, aPanel,
+					panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+				bn0, bn1, bn2 := float32(0), float32(0), float32(0)
+				if hasBias {
+					bn0, bn1, bn2 = bias[n], bias[n+1], bias[n+2]
+				}
+				if fastReLU {
+					storeTriple4ReLU(out, m, n, N, &dTri0, bn0, bn1, bn2)
+					storeTriple4ReLU(out, m+4, n, N, &dTri1, bn0, bn1, bn2)
+				} else {
+					storeTriple4(out, m, n, N, &dTri0, bn0, bn1, bn2, relu, accum)
+					storeTriple4(out, m+4, n, N, &dTri1, bn0, bn1, bn2, relu, accum)
+				}
 			}
-		} else {
-			for ; t+1 < nt; t += 2 {
-				n := n0 + t
-				multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
-				storeDual4(out, m, n, N, dDual0, 0, 0, relu)
-				storeDual4(out, m+4, n, N, dDual1, 0, 0, relu)
+		}
+		for ; t+1 < nt; t += 2 {
+			n := n0 + t
+			multiDot8DualB(dDual0, dDual1, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+			bn0, bn1 := float32(0), float32(0)
+			if hasBias {
+				bn0, bn1 = bias[n], bias[n+1]
 			}
-			for ; t < nt; t++ {
-				n := n0 + t
-				multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
-				storeDot8(out, m, n, N, d8, 0, relu)
+			if fastReLU {
+				storeDual4ReLU(out, m, n, N, dDual0, bn0, bn1)
+				storeDual4ReLU(out, m+4, n, N, dDual1, bn0, bn1)
+			} else {
+				storeDual4(out, m, n, N, dDual0, bn0, bn1, relu, accum)
+				storeDual4(out, m+4, n, N, dDual1, bn0, bn1, relu, accum)
+			}
+		}
+		for ; t < nt; t++ {
+			n := n0 + t
+			bn := float32(0)
+			if hasBias {
+				bn = bias[n]
+			}
+			multiDot8(d8, aPanel, panel[t*K:(t+1)*K], K)
+			if fastReLU {
+				storeDot8ReLU(out, m, n, N, d8, bn)
+			} else {
+				storeDot8(out, m, n, N, d8, bn, relu, accum)
 			}
 		}
 		return
 	}
 	// 4-row panel
 	var d4 [4]float32
-	if hasBias {
-		for ; t+1 < nt; t += 2 {
+	if useTriple {
+		for ; t+2 < nt; t += 3 {
 			n := n0 + t
-			multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
-			storeDual4(out, m, n, N, dDual0, bias[n], bias[n+1], relu)
+			multiDot4TripleB(&dTri0, aPanel,
+				panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], panel[(t+2)*K:(t+3)*K], K)
+			bn0, bn1, bn2 := float32(0), float32(0), float32(0)
+			if hasBias {
+				bn0, bn1, bn2 = bias[n], bias[n+1], bias[n+2]
+			}
+			if fastReLU {
+				storeTriple4ReLU(out, m, n, N, &dTri0, bn0, bn1, bn2)
+			} else {
+				storeTriple4(out, m, n, N, &dTri0, bn0, bn1, bn2, relu, accum)
+			}
 		}
-		for ; t < nt; t++ {
-			n := n0 + t
-			multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
-			storeDot4(out, m, n, N, &d4, bias[n], relu)
+	}
+	for ; t+1 < nt; t += 2 {
+		n := n0 + t
+		multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
+		bn0, bn1 := float32(0), float32(0)
+		if hasBias {
+			bn0, bn1 = bias[n], bias[n+1]
 		}
-	} else {
-		for ; t+1 < nt; t += 2 {
-			n := n0 + t
-			multiDot4DualB(dDual0, aPanel, panel[t*K:(t+1)*K], panel[(t+1)*K:(t+2)*K], K)
-			storeDual4(out, m, n, N, dDual0, 0, 0, relu)
+		if fastReLU {
+			storeDual4ReLU(out, m, n, N, dDual0, bn0, bn1)
+		} else {
+			storeDual4(out, m, n, N, dDual0, bn0, bn1, relu, accum)
 		}
-		for ; t < nt; t++ {
-			n := n0 + t
-			multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
-			storeDot4(out, m, n, N, &d4, 0, relu)
+	}
+	for ; t < nt; t++ {
+		n := n0 + t
+		bn := float32(0)
+		if hasBias {
+			bn = bias[n]
+		}
+		multiDot4(&d4, aPanel, panel[t*K:(t+1)*K], K)
+		if fastReLU {
+			storeDot4ReLU(out, m, n, N, &d4, bn)
+		} else {
+			storeDot4(out, m, n, N, &d4, bn, relu, accum)
 		}
 	}
 }
 
+// storeTriple4 writes 4 A rows × 3 B columns from multiDot4TripleB layout:
+// d[0:4]=col n, d[4:8]=col n+1, d[8:12]=col n+2.
+func storeTriple4(out []float32, m, n, N int, d *[12]float32, bn0, bn1, bn2 float32, relu, accum bool) {
+	if relu {
+		for t := 0; t < 4; t++ {
+			v0 := d[t] + bn0
+			v1 := d[4+t] + bn1
+			v2 := d[8+t] + bn2
+			if v0 < 0 {
+				v0 = 0
+			}
+			if v1 < 0 {
+				v1 = 0
+			}
+			if v2 < 0 {
+				v2 = 0
+			}
+			if accum {
+				out[(m+t)*N+n] += v0
+				out[(m+t)*N+n+1] += v1
+				out[(m+t)*N+n+2] += v2
+			} else {
+				out[(m+t)*N+n] = v0
+				out[(m+t)*N+n+1] = v1
+				out[(m+t)*N+n+2] = v2
+			}
+		}
+		return
+	}
+	if accum {
+		out[m*N+n] += d[0] + bn0
+		out[(m+1)*N+n] += d[1] + bn0
+		out[(m+2)*N+n] += d[2] + bn0
+		out[(m+3)*N+n] += d[3] + bn0
+		out[m*N+n+1] += d[4] + bn1
+		out[(m+1)*N+n+1] += d[5] + bn1
+		out[(m+2)*N+n+1] += d[6] + bn1
+		out[(m+3)*N+n+1] += d[7] + bn1
+		out[m*N+n+2] += d[8] + bn2
+		out[(m+1)*N+n+2] += d[9] + bn2
+		out[(m+2)*N+n+2] += d[10] + bn2
+		out[(m+3)*N+n+2] += d[11] + bn2
+		return
+	}
+	storeTriple4Plain(out, m, n, N, d, bn0, bn1, bn2)
+}
+
 // storeDual4 writes 4 A rows × 2 B columns from multiDot4DualB layout:
 // d[0:4]=col n, d[4:8]=col n+1.
-func storeDual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32, relu bool) {
+func storeDual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32, relu, accum bool) {
 	if relu {
 		for t := 0; t < 4; t++ {
 			v0 := d[t] + bn0
@@ -567,28 +1763,336 @@ func storeDual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32, rel
 			if v1 < 0 {
 				v1 = 0
 			}
-			out[(m+t)*N+n] = v0
-			out[(m+t)*N+n+1] = v1
+			if accum {
+				out[(m+t)*N+n] += v0
+				out[(m+t)*N+n+1] += v1
+			} else {
+				out[(m+t)*N+n] = v0
+				out[(m+t)*N+n+1] = v1
+			}
 		}
 		return
 	}
-	out[m*N+n] = d[0] + bn0
-	out[(m+1)*N+n] = d[1] + bn0
-	out[(m+2)*N+n] = d[2] + bn0
-	out[(m+3)*N+n] = d[3] + bn0
-	out[m*N+n+1] = d[4] + bn1
-	out[(m+1)*N+n+1] = d[5] + bn1
-	out[(m+2)*N+n+1] = d[6] + bn1
-	out[(m+3)*N+n+1] = d[7] + bn1
+	if accum {
+		storeDual4Accum(out, m, n, N, d, bn0, bn1)
+		return
+	}
+	storeDual4Plain(out, m, n, N, d, bn0, bn1)
 }
 
-func matMulQ8SerialMAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu bool) {
-	matMulQ8Range(out, a, b, bias, M, N, K, 0, N, relu)
+// storeDual4Accum: residual accumulate (FFN down-proj), no ReLU branches.
+// Pair (n, n+1) per row so the two stores are adjacent in row-major out.
+// N=512 (SenseVoice hidden) uses constant row strides for better addressing.
+func storeDual4Accum(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] += d[0] + bn0
+		out[base+1] += d[4] + bn1
+		out[base+512] += d[1] + bn0
+		out[base+513] += d[5] + bn1
+		out[base+1024] += d[2] + bn0
+		out[base+1025] += d[6] + bn1
+		out[base+1536] += d[3] + bn0
+		out[base+1537] += d[7] + bn1
+		return
+	}
+	base := m * N
+	out[base+n] += d[0] + bn0
+	out[base+n+1] += d[4] + bn1
+	base += N
+	out[base+n] += d[1] + bn0
+	out[base+n+1] += d[5] + bn1
+	base += N
+	out[base+n] += d[2] + bn0
+	out[base+n+1] += d[6] + bn1
+	base += N
+	out[base+n] += d[3] + bn0
+	out[base+n+1] += d[7] + bn1
 }
 
-func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu bool) {
+func storeDot4Accum(out []float32, m, n, N int, d *[4]float32, bn float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] += d[0] + bn
+		out[base+512] += d[1] + bn
+		out[base+1024] += d[2] + bn
+		out[base+1536] += d[3] + bn
+		return
+	}
+	out[m*N+n] += d[0] + bn
+	out[(m+1)*N+n] += d[1] + bn
+	out[(m+2)*N+n] += d[2] + bn
+	out[(m+3)*N+n] += d[3] + bn
+}
+
+func storeDot8Accum(out []float32, m, n, N int, d *[8]float32, bn float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] += d[0] + bn
+		out[base+512] += d[1] + bn
+		out[base+1024] += d[2] + bn
+		out[base+1536] += d[3] + bn
+		out[base+2048] += d[4] + bn
+		out[base+2560] += d[5] + bn
+		out[base+3072] += d[6] + bn
+		out[base+3584] += d[7] + bn
+		return
+	}
+	out[m*N+n] += d[0] + bn
+	out[(m+1)*N+n] += d[1] + bn
+	out[(m+2)*N+n] += d[2] + bn
+	out[(m+3)*N+n] += d[3] + bn
+	out[(m+4)*N+n] += d[4] + bn
+	out[(m+5)*N+n] += d[5] + bn
+	out[(m+6)*N+n] += d[6] + bn
+	out[(m+7)*N+n] += d[7] + bn
+}
+
+// storeDual4Plain: encoder pure store (no ReLU/accum). Pair-adjacent columns.
+func storeDual4Plain(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] = d[0] + bn0
+		out[base+1] = d[4] + bn1
+		out[base+512] = d[1] + bn0
+		out[base+513] = d[5] + bn1
+		out[base+1024] = d[2] + bn0
+		out[base+1025] = d[6] + bn1
+		out[base+1536] = d[3] + bn0
+		out[base+1537] = d[7] + bn1
+		return
+	}
+	base := m * N
+	out[base+n] = d[0] + bn0
+	out[base+n+1] = d[4] + bn1
+	base += N
+	out[base+n] = d[1] + bn0
+	out[base+n+1] = d[5] + bn1
+	base += N
+	out[base+n] = d[2] + bn0
+	out[base+n+1] = d[6] + bn1
+	base += N
+	out[base+n] = d[3] + bn0
+	out[base+n+1] = d[7] + bn1
+}
+
+// storeTriple4Plain: encoder pure store, three adjacent columns per row.
+func storeTriple4Plain(out []float32, m, n, N int, d *[12]float32, bn0, bn1, bn2 float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base], out[base+1], out[base+2] = d[0]+bn0, d[4]+bn1, d[8]+bn2
+		out[base+512], out[base+513], out[base+514] = d[1]+bn0, d[5]+bn1, d[9]+bn2
+		out[base+1024], out[base+1025], out[base+1026] = d[2]+bn0, d[6]+bn1, d[10]+bn2
+		out[base+1536], out[base+1537], out[base+1538] = d[3]+bn0, d[7]+bn1, d[11]+bn2
+		return
+	}
+	base := m*N + n
+	out[base], out[base+1], out[base+2] = d[0]+bn0, d[4]+bn1, d[8]+bn2
+	base += N
+	out[base], out[base+1], out[base+2] = d[1]+bn0, d[5]+bn1, d[9]+bn2
+	base += N
+	out[base], out[base+1], out[base+2] = d[2]+bn0, d[6]+bn1, d[10]+bn2
+	base += N
+	out[base], out[base+1], out[base+2] = d[3]+bn0, d[7]+bn1, d[11]+bn2
+}
+
+func storeDot4Plain(out []float32, m, n, N int, d *[4]float32, bn float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] = d[0] + bn
+		out[base+512] = d[1] + bn
+		out[base+1024] = d[2] + bn
+		out[base+1536] = d[3] + bn
+		return
+	}
+	out[m*N+n] = d[0] + bn
+	out[(m+1)*N+n] = d[1] + bn
+	out[(m+2)*N+n] = d[2] + bn
+	out[(m+3)*N+n] = d[3] + bn
+}
+
+func storeDot8Plain(out []float32, m, n, N int, d *[8]float32, bn float32) {
+	if N == 512 {
+		base := m*512 + n
+		out[base] = d[0] + bn
+		out[base+512] = d[1] + bn
+		out[base+1024] = d[2] + bn
+		out[base+1536] = d[3] + bn
+		out[base+2048] = d[4] + bn
+		out[base+2560] = d[5] + bn
+		out[base+3072] = d[6] + bn
+		out[base+3584] = d[7] + bn
+		return
+	}
+	out[m*N+n] = d[0] + bn
+	out[(m+1)*N+n] = d[1] + bn
+	out[(m+2)*N+n] = d[2] + bn
+	out[(m+3)*N+n] = d[3] + bn
+	out[(m+4)*N+n] = d[4] + bn
+	out[(m+5)*N+n] = d[5] + bn
+	out[(m+6)*N+n] = d[6] + bn
+	out[(m+7)*N+n] = d[7] + bn
+}
+
+// storeDual4ReLU: FFN up-proj store max(0, d+bias), pair-adjacent columns.
+// N=2048 (SenseVoice FFN intermediate) uses constant strides.
+func storeDual4ReLU(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
+	if N == 2048 {
+		base := m*2048 + n
+		v0, v1 := d[0]+bn0, d[4]+bn1
+		if v0 < 0 {
+			v0 = 0
+		}
+		if v1 < 0 {
+			v1 = 0
+		}
+		out[base], out[base+1] = v0, v1
+		v0, v1 = d[1]+bn0, d[5]+bn1
+		if v0 < 0 {
+			v0 = 0
+		}
+		if v1 < 0 {
+			v1 = 0
+		}
+		out[base+2048], out[base+2049] = v0, v1
+		v0, v1 = d[2]+bn0, d[6]+bn1
+		if v0 < 0 {
+			v0 = 0
+		}
+		if v1 < 0 {
+			v1 = 0
+		}
+		out[base+4096], out[base+4097] = v0, v1
+		v0, v1 = d[3]+bn0, d[7]+bn1
+		if v0 < 0 {
+			v0 = 0
+		}
+		if v1 < 0 {
+			v1 = 0
+		}
+		out[base+6144], out[base+6145] = v0, v1
+		return
+	}
+	base := m * N
+	v0 := d[0] + bn0
+	v1 := d[4] + bn1
+	if v0 < 0 {
+		v0 = 0
+	}
+	if v1 < 0 {
+		v1 = 0
+	}
+	out[base+n], out[base+n+1] = v0, v1
+	base += N
+	v0 = d[1] + bn0
+	v1 = d[5] + bn1
+	if v0 < 0 {
+		v0 = 0
+	}
+	if v1 < 0 {
+		v1 = 0
+	}
+	out[base+n], out[base+n+1] = v0, v1
+	base += N
+	v0 = d[2] + bn0
+	v1 = d[6] + bn1
+	if v0 < 0 {
+		v0 = 0
+	}
+	if v1 < 0 {
+		v1 = 0
+	}
+	out[base+n], out[base+n+1] = v0, v1
+	base += N
+	v0 = d[3] + bn0
+	v1 = d[7] + bn1
+	if v0 < 0 {
+		v0 = 0
+	}
+	if v1 < 0 {
+		v1 = 0
+	}
+	out[base+n], out[base+n+1] = v0, v1
+}
+
+func storeTriple4ReLU(out []float32, m, n, N int, d *[12]float32, bn0, bn1, bn2 float32) {
+	if N == 2048 {
+		base := m*2048 + n
+		for t := 0; t < 4; t++ {
+			v0 := d[t] + bn0
+			v1 := d[4+t] + bn1
+			v2 := d[8+t] + bn2
+			if v0 < 0 {
+				v0 = 0
+			}
+			if v1 < 0 {
+				v1 = 0
+			}
+			if v2 < 0 {
+				v2 = 0
+			}
+			out[base], out[base+1], out[base+2] = v0, v1, v2
+			base += 2048
+		}
+		return
+	}
+	for t := 0; t < 4; t++ {
+		v0 := d[t] + bn0
+		v1 := d[4+t] + bn1
+		v2 := d[8+t] + bn2
+		if v0 < 0 {
+			v0 = 0
+		}
+		if v1 < 0 {
+			v1 = 0
+		}
+		if v2 < 0 {
+			v2 = 0
+		}
+		base := (m+t)*N + n
+		out[base], out[base+1], out[base+2] = v0, v1, v2
+	}
+}
+
+func storeDot4ReLU(out []float32, m, n, N int, d *[4]float32, bn float32) {
+	if N == 2048 {
+		base := m*2048 + n
+		for t := 0; t < 4; t++ {
+			v := d[t] + bn
+			if v < 0 {
+				v = 0
+			}
+			out[base] = v
+			base += 2048
+		}
+		return
+	}
+	for t := 0; t < 4; t++ {
+		v := d[t] + bn
+		if v < 0 {
+			v = 0
+		}
+		out[(m+t)*N+n] = v
+	}
+}
+
+func storeDot8ReLU(out []float32, m, n, N int, d *[8]float32, bn float32) {
+	for t := 0; t < 8; t++ {
+		v := d[t] + bn
+		if v < 0 {
+			v = 0
+		}
+		out[(m+t)*N+n] = v
+	}
+}
+
+func matMulQ8SerialMAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool) {
+	matMulQ8Range(out, a, b, bias, M, N, K, 0, N, relu, accum)
+}
+
+func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool) {
 	parallelRanges(N, func(ns, ne int) {
-		matMulQ8Range(out, a, b, bias, M, N, K, ns, ne, relu)
+		matMulQ8Range(out, a, b, bias, M, N, K, ns, ne, relu, accum)
 	})
 }
 
@@ -623,6 +2127,20 @@ func dequantQ8Row(t *Q8Tensor, row int, dst []float32) {
 		return
 	}
 	dequantRowInto(t.Data, row, nBlocks, dst)
+}
+
+// dequantQ8RowDual dequantizes two B rows into dst0/dst1 (panel dual fill).
+func dequantQ8RowDual(t *Q8Tensor, row0, row1 int, dst0, dst1 []float32) {
+	nBlocks := t.Cols / q8BlockSize
+	need := (row1 + 1) * nBlocks
+	if len(t.Scales) >= need && nBlocks > 0 {
+		dequantRowScaledDual(dst0, dst1, t.Data,
+			&t.Scales[row0*nBlocks], &t.Scales[row1*nBlocks],
+			row0*nBlocks*q8BlockBytes, row1*nBlocks*q8BlockBytes, nBlocks)
+		return
+	}
+	dequantQ8Row(t, row0, dst0)
+	dequantQ8Row(t, row1, dst1)
 }
 
 // dequantRowScaled dequantizes using preconverted f32 scales[0:nBlocks].

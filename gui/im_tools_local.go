@@ -457,6 +457,8 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	if err != nil {
 		return err.Error()
 	}
+	created := !localToolFileExists(absPath)
+	original, hasOriginal := localToolCodePreviewOriginal(absPath)
 	size, err := coretool.WriteTextFile(absPath, content, mode)
 	if err != nil {
 		if classifyLocalFileToolError(err).ReturnRawError() {
@@ -464,6 +466,7 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
 	}
+	h.emitLocalToolCodeFilePreview(ownerID, absPath, created, original, hasOriginal)
 	// Diagnostic: detect role-prefix hallucination in write_file content.
 	// This is the path where Browser: hallucinations in tool call arguments
 	// bypass all streaming filters and reach disk (and potentially the
@@ -513,6 +516,7 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 	if err != nil {
 		return err.Error()
 	}
+	original, hasOriginal := localToolCodePreviewOriginal(absPath)
 	replaceAll, _ := args["replace_all"].(bool)
 	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
 	if err != nil {
@@ -521,6 +525,7 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 		}
 		return fmt.Sprintf("编辑失败: %s", err.Error())
 	}
+	h.emitLocalToolCodeFilePreview(ownerID, absPath, false, original, hasOriginal)
 	return fmt.Sprintf("已编辑 %s（替换 %d 处，当前 %d 字节）", res.Path, res.Count, res.Size)
 }
 
@@ -537,6 +542,7 @@ func (h *IMMessageHandler) toolEditLines(args map[string]interface{}) string {
 	if err != nil {
 		return err.Error()
 	}
+	original, hasOriginal := localToolCodePreviewOriginal(absPath)
 	opStr, _ := args["operation"].(string)
 	if opStr == "" {
 		return "缺少 operation 参数（replace/insert/delete）"
@@ -563,12 +569,51 @@ func (h *IMMessageHandler) toolEditLines(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("行编辑失败: %s", err.Error())
 	}
+	h.emitLocalToolCodeFilePreview(ownerID, absPath, false, original, hasOriginal)
 
 	// Return a few lines around the edit point so the LLM can verify.
 	contextPreview := buildEditLineContext(absPath, startLine, res.TotalLines)
 
 	return fmt.Sprintf("已编辑 %s（%s %d 行，当前共 %d 行，%d 字节）\n%s",
 		res.Path, opStr, res.LinesChanged, res.TotalLines, res.Size, contextPreview)
+}
+
+func (h *IMMessageHandler) emitLocalToolCodeFilePreview(ownerID, absPath string, created bool, original string, hasOriginal bool) {
+	if h == nil || h.app == nil || h.app.codeEventEmitter == nil || strings.TrimSpace(absPath) == "" {
+		return
+	}
+	projectPath := h.executionProjectPathForOwner(ownerID)
+	sessionID := localToolCodePreviewSessionID(ownerID)
+	if hasOriginal {
+		emitCodeFilePreviewForPath(h.app, sessionID, projectPath, absPath, created, true, original)
+		return
+	}
+	emitCodeFilePreviewForPath(h.app, sessionID, projectPath, absPath, created, true)
+}
+
+func localToolCodePreviewSessionID(ownerID string) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return "local-tools"
+	}
+	return "local-tools:" + ownerID
+}
+
+func localToolFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func localToolCodePreviewOriginal(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > maxCodeFileSize {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !isCodePreviewTextContent(data) {
+		return "", false
+	}
+	return string(data), true
 }
 
 // buildEditLineContext reads a few lines around the edit point from the file

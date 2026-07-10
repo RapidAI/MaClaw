@@ -52,6 +52,14 @@ function emitCodeFileUpdate(data: any) {
     eventHandlers.get('code:file_update')?.(data);
 }
 
+function emitCodeSessionStart(data: any) {
+    eventHandlers.get('code:session_start')?.(data);
+}
+
+function emitCodeSessionEnd(data: any) {
+    eventHandlers.get('code:session_end')?.(data);
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Path A: restoreState with workflowID and docUpdatePhaseIDs
@@ -489,6 +497,65 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         expect(result.current.state.active).toBe(true);
     });
 
+    it('create file update ignores backend original so new files show full source', () => {
+        const { result } = renderHook(() => useCodePreviewState('pathA'));
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: '/src/new.ts',
+                file_name: 'new.ts',
+                content: 'export const value = true;',
+                original: '',
+                op_type: 'create',
+                language: 'typescript',
+                session_id: 'session-1',
+                project_path: 'pathA',
+            });
+        });
+
+        expect(result.current.state.files.get('/src/new.ts')?.original).toBeUndefined();
+        expect(result.current.state.files.get('/src/new.ts')?.opType).toBe('create');
+    });
+
+    it('modify file update ignores non-string original so invalid payloads do not enter diff', () => {
+        const { result } = renderHook(() => useCodePreviewState('pathA'));
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: '/src/changed.ts',
+                file_name: 'changed.ts',
+                content: 'export const value = 2;',
+                original: null,
+                op_type: 'modify',
+                language: 'typescript',
+                session_id: 'session-1',
+                project_path: 'pathA',
+            });
+        });
+
+        expect(result.current.state.files.get('/src/changed.ts')?.original).toBeUndefined();
+        expect(result.current.state.files.get('/src/changed.ts')?.opType).toBe('modify');
+    });
+
+    it('code:file_update matches normalized Windows project paths', () => {
+        const { result } = renderHook(() => useCodePreviewState('C:/Users/ma139/.maclaw/workspace/'));
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: 'src/app.ts',
+                file_name: 'app.ts',
+                content: 'export class App {}',
+                op_type: 'create',
+                language: 'typescript',
+                session_id: 'session-1',
+                project_path: 'c:\\users\\ma139\\.maclaw\\workspace',
+            });
+        });
+
+        expect(result.current.state.files.has('src/app.ts')).toBe(true);
+        expect(result.current.state.active).toBe(true);
+    });
+
     it('code:file_update without project_path is applied (backward compatible)', () => {
         const { result } = renderHook(() => useCodePreviewState('pathA'));
 
@@ -508,7 +575,7 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         expect(result.current.state.active).toBe(true);
     });
 
-    it('no activeTabProjectPath skips project-scoped events for local preview isolation', () => {
+    it('no activeTabProjectPath skips passive project-scoped events for local preview isolation', () => {
         const { result } = renderHook(() => useCodePreviewState());
 
         act(() => {
@@ -525,6 +592,82 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
 
         expect(result.current.state.files.has('/src/test.ts')).toBe(false);
         expect(result.current.state.active).toBe(false);
+    });
+
+    it('force_open project-scoped file update opens preview without activeTabProjectPath', () => {
+        const { result } = renderHook(() => useCodePreviewState());
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: '/src/generated.ts',
+                file_name: 'generated.ts',
+                content: 'export const generated = true;',
+                op_type: 'create',
+                language: 'typescript',
+                session_id: 'local-tools:desktop-user:C:/Users/ma139/.maclaw/workspace',
+                project_path: 'C:/Users/ma139/.maclaw/workspace',
+                force_open: true,
+            });
+        });
+
+        expect(result.current.state.files.has('/src/generated.ts')).toBe(true);
+        expect(result.current.state.activeFilePath).toBe('/src/generated.ts');
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.userClosed).toBe(false);
+    });
+
+    it('code:session_start with mismatched project_path is skipped', () => {
+        const { result } = renderHook(() => useCodePreviewState('pathA'));
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: '/src/a.ts',
+                file_name: 'a.ts',
+                content: 'a',
+                op_type: 'create',
+                language: 'typescript',
+                session_id: 'session-a',
+                project_path: 'pathA',
+            });
+        });
+        expect(result.current.state.files.has('/src/a.ts')).toBe(true);
+
+        act(() => {
+            emitCodeSessionStart({
+                session_id: 'session-b',
+                project_path: 'pathB',
+            });
+        });
+
+        expect(result.current.state.sessionID).toBe('session-a');
+        expect(result.current.state.files.has('/src/a.ts')).toBe(true);
+    });
+
+    it('code:session_end closes matching forced local session even when project_path is scoped', () => {
+        const { result } = renderHook(() => useCodePreviewState());
+
+        act(() => {
+            emitCodeFileUpdate({
+                file_path: '/src/generated.ts',
+                file_name: 'generated.ts',
+                content: 'export const generated = true;',
+                op_type: 'create',
+                language: 'typescript',
+                session_id: 'local-tools:desktop-user:C:/Users/ma139/.maclaw/workspace',
+                project_path: 'C:/Users/ma139/.maclaw/workspace',
+                force_open: true,
+            });
+        });
+        expect(result.current.state.sessionActive).toBe(true);
+
+        act(() => {
+            emitCodeSessionEnd({
+                session_id: 'local-tools:desktop-user:C:/Users/ma139/.maclaw/workspace',
+                project_path: 'C:/Users/ma139/.maclaw/workspace',
+            });
+        });
+
+        expect(result.current.state.sessionActive).toBe(false);
     });
 });
 

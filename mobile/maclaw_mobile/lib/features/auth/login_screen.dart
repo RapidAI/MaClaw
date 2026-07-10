@@ -31,7 +31,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   Future<void> _sendCode() async {
     final phone = _phoneController.text.trim();
-    if (phone.isEmpty || _sendingCode) return;
+    if (_sendingCode) return;
+    if (!_looksLikePhoneNumber(phone)) {
+      setState(() {
+        _message = '请输入有效手机号，只支持数字和常见手机号分隔符。';
+        _selectedHubCenterUrl = null;
+        _discoveredHubUrl = null;
+        _pendingLogin = null;
+      });
+      return;
+    }
     setState(() {
       _sendingCode = true;
       _message = '正在连接 MaClaw 官方 HubCenter...';
@@ -61,6 +70,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _message = '验证码发送失败：$error';
       });
     }
+  }
+
+  bool _looksLikePhoneNumber(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return false;
+    var digits = 0;
+    for (final codeUnit in trimmed.codeUnits) {
+      if (codeUnit >= 48 && codeUnit <= 57) {
+        digits++;
+        continue;
+      }
+      if (codeUnit == 32 ||
+          codeUnit == 43 ||
+          codeUnit == 45 ||
+          codeUnit == 40 ||
+          codeUnit == 41) {
+        continue;
+      }
+      return false;
+    }
+    return digits >= 8 && digits <= 15;
   }
 
   Future<void> _verifyCode() async {

@@ -481,7 +481,7 @@ class _AssistantWorkspaceIntro extends StatelessWidget {
                   label: '文档草稿',
                 ),
                 _AssistantCapabilityChip(
-                  icon: Icons.terminal_outlined,
+                  icon: Icons.manage_search_outlined,
                   label: '远程排障',
                 ),
               ],
@@ -571,7 +571,7 @@ class _AssistantQuickPrompts extends StatelessWidget {
     ),
     (
       label: '日志排障',
-      icon: Icons.terminal_outlined,
+      icon: Icons.fact_check_outlined,
       text: '帮我分析这段服务器日志，先说明风险，再给出需要人工确认的排查命令草案。',
     ),
   ];

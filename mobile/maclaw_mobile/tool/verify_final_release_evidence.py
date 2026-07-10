@@ -162,8 +162,15 @@ def _backend_ssh_record_errors(records: list[Path]) -> list[str]:
             errors.append(
                 f"{record.name}: copied backend session output evidence must include "
                 "the GUI/agent evidence line with actual values for Hub session ID, backend_session_id, "
-                "claimed_by, and numeric output_seq."
+                "concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq."
             )
+        for value in copied_output_values:
+            if validate_qa_build_record.raw_secret_errors(value):
+                errors.append(
+                    f"{record.name}: copied backend session output evidence must not contain "
+                    "raw secrets; keep the GUI/agent evidence line and replace credentials or private customer excerpts with redacted text or a traceable attachment ID."
+                )
+                break
     return errors
 
 
@@ -285,6 +292,11 @@ def next_action_hints(
     needs_release_evidence_links = any(
         error.startswith("Release evidence document") for error in errors
     )
+    backend_ssh_record_errors = [
+        error
+        for error in errors
+        if ": copied backend session output evidence" in error
+    ]
     needs_single_version = any(
         error.startswith("Final release evidence records must use the same version/build")
         for error in errors
@@ -303,6 +315,13 @@ def next_action_hints(
     if invalid_records:
         hints.append(
             release_evidence_commands.qa_build_record_report_hint(invalid_records[0]),
+        )
+    elif backend_ssh_record_errors:
+        record_name = backend_ssh_record_errors[0].split(":", 1)[0]
+        hints.append(
+            release_evidence_commands.qa_build_record_report_hint(
+                str(Path(records_dir) / record_name),
+            ),
         )
     if expected_log_names:
         expected_log_path = Path(records_dir) / expected_log_names[0]

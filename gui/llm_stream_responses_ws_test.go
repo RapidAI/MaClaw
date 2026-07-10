@@ -51,6 +51,8 @@ func TestResponsesWSEndpointNormalizesBaseURL(t *testing.T) {
 		{"full wss", "wss://api.example.com/v1/responses", "wss://api.example.com/v1/responses"},
 		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "wss://dashscope.aliyuncs.com/compatible-mode/v1/responses"},
 		{"glm v4", "https://open.bigmodel.cn/api/paas/v4", "wss://open.bigmodel.cn/api/paas/v4/responses"},
+		{"codex subscription base", "https://chatgpt.com/backend-api/codex", "wss://chatgpt.com/backend-api/codex/responses"},
+		{"codex subscription full", "wss://chatgpt.com/backend-api/codex/responses", "wss://chatgpt.com/backend-api/codex/responses"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -118,7 +118,7 @@ func TestValidateOpenAIProxyUpstreamConfigRequiresRemoteAuth(t *testing.T) {
 		},
 		{
 			name:    "oauth remote without key",
-			cfg:     OpenAIProxyConfig{URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth"},
+			cfg:     OpenAIProxyConfig{URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.4", AuthType: "oauth"},
 			wantErr: true,
 		},
 		{

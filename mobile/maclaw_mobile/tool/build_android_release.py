@@ -270,7 +270,14 @@ def main(argv: list[str] | None = None) -> int:
         print("QA artifact evidence:")
         for line in evidence_lines:
             print(line)
+    record_dir_label = str(args.record_dir or release_evidence_commands.DEFAULT_QA_RECORDS_DIR).replace("\\", "/")
     print("Record the artifact path, SHA256, version/build number, signing identity, and installer channel in the QA build record.")
+    print(
+        "After filling the signed-build QA record, run "
+        f"`python3 tool/validate_qa_build_record.py {record_dir_label}/<record>.md`; "
+        "if validation fails, run "
+        f"`python3 tool/qa_build_record_report.py {record_dir_label}/<record>.md`."
+    )
     return 0
 
 

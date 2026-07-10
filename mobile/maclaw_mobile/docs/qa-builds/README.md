@@ -21,7 +21,9 @@ placeholder QA records, or placeholder final evidence links to make the status
 look ready.
 
 ```bash
-python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log
+# Example for the template build used throughout this guide:
+python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-1.0.0+42.log
 python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md
 python3 tool/setup_android_signing.py
 python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -35,7 +37,7 @@ python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-1.0.0+42.lo
 python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" \
   --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" \
-  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
 ```
 
@@ -48,8 +50,8 @@ PowerShell treats unquoted `<...>` placeholders as redirection syntax, so replac
 all angle-bracket placeholders with real values before copying commands there;
 for dry-run previews with placeholders, wrap placeholder arguments in quotes.
 
-The handoff, runtime-boundary log, and release-gates log commands refuse to
-overwrite existing saved evidence files unless `--force` is provided.
+The release-status, handoff, runtime-boundary log, and release-gates log commands refuse to
+overwrite existing saved evidence files unless `--force` is provided. `release_status_report.py --log` writes the same READY/NOT READY transcript to `docs/qa-builds/`.
 Use `python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-<version+build>.md` to preview
 the handoff content without writing or overwriting the target file.
 When the target handoff file already contains a `Current Local Evidence Snapshot`
@@ -68,7 +70,7 @@ references while creating the record:
 python3 tool/create_qa_build_record.py --date 2026-07-02 --scope android-ios --version 1.0.0+42 \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" \
   --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" \
-  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"
 ```
 
@@ -90,7 +92,7 @@ For iOS-only internal QA, keep the Apple Team ID and export method on the iOS
 commands:
 
 ```bash
-python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-ios-1.0.0+42.log
 python3 tool/release_handoff.py --version 1.0.0+42 --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-1.0.0+42.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-ios-<version+build>.log
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -135,9 +137,26 @@ Completed records must include these Final Release Decision fields:
 Each field must use traceable output paths, command transcripts, or log
 attachment IDs. The runtime-boundary result must come from
 `tool/verify_runtime_boundary.py` and explicitly show no embedded Go corelib,
-Dart FFI, gomobile binding, dynamic library, or native corelib MethodChannel bridge;
-core MaClaw capabilities must remain behind the discovered Hub APIs, realtime
-channel, or explicitly authorized digital employee handoff.
+Dart FFI, gomobile binding, dynamic library, native corelib MethodChannel bridge,
+phone-local SSH dependency, terminal emulator dependency, phone-side SSH credential save/read API, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields; core MaClaw capabilities must
+remain behind the discovered Hub APIs, realtime channel, or explicitly authorized digital employee handoff.
+
+For backend SSH evidence, record MaClaw GUI-equivalent backend session
+management, not a phone-local SSH client check. The evidence must show the
+mobile-created Hub control record being claimed by an authorized GUI/agent
+worker, the GUI/agent-bound `backend_session_id`, and realtime
+`ssh_session` output with `output_chunk`/`output_seq` (ssh_session output with output_chunk/output_seq). Copied backend-session
+output must include a GUI/agent evidence line with actual values for the Hub
+session ID, `backend_session_id`, a concrete worker identity such as
+`claimed_by desktop-agent-1`, and numeric `output_seq`. Do not use generic
+worker labels, ad hoc terminal screenshots, or handoff plans/logs as completed
+signed-build QA records.
+
+If copied backend-session output contains credentials or private customer
+content, keep the GUI/agent evidence line and replace credentials or private
+customer excerpts with redacted text or a traceable attachment ID, preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID. `tool/qa_build_record_report.py`
+prints this targeted remediation when the copied-output evidence fails secret
+redaction.
 
 If validation fails while QA is still filling evidence, print a grouped gap
 report:

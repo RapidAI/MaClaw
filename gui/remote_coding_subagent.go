@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"sync"
@@ -1190,20 +1191,26 @@ func remoteCodingExitCodeValueIsZero(value string) bool {
 }
 
 type remoteHighRiskApprovalState struct {
-	mu         sync.Mutex
-	fullAccess bool
-	callback   ScopeApprovalCallback
+	mu                 sync.Mutex
+	highRiskFullAccess bool
+	pathFullAccess     bool
+	approvedDirs       map[string]bool
+	callback           ScopeApprovalCallback
 }
 
 const (
 	remoteHighRiskApprovalKind = "remote_high_risk_bash"
+	remoteDirectoryWriteKind   = "remote_shell_directory_write"
+	remotePathAccessKind       = "remote_path_access"
 	remoteSSHBashToolName      = "ssh_bash"
 )
 
 func newRemoteHighRiskApprovalState(callback ScopeApprovalCallback, fullAccess bool) *remoteHighRiskApprovalState {
 	return &remoteHighRiskApprovalState{
-		fullAccess: fullAccess,
-		callback:   callback,
+		highRiskFullAccess: fullAccess,
+		pathFullAccess:     fullAccess,
+		approvedDirs:       make(map[string]bool),
+		callback:           callback,
 	}
 }
 
@@ -1214,10 +1221,11 @@ func (s *remoteHighRiskApprovalState) configure(callback ScopeApprovalCallback, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.callback = callback
-	if preserveFullAccess && s.fullAccess {
+	if preserveFullAccess && (s.highRiskFullAccess || s.pathFullAccess) {
 		return
 	}
-	s.fullAccess = fullAccess
+	s.highRiskFullAccess = fullAccess
+	s.pathFullAccess = fullAccess
 }
 
 func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
@@ -1226,7 +1234,7 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 			return ScopeApprovalDeny
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("⚠️ 远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath))
+			onProgress(remoteScopeApprovalProgressMessage(req))
 		}
 		responseCh := make(chan ScopeApprovalDecision, 1)
 		approvalID := storePendingScopeApproval(handler, req, responseCh)
@@ -1238,26 +1246,78 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 		if loopCtx != nil {
 			select {
 			case decision := <-responseCh:
+				if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
+					handler.app.persistSubAgentFullAccess()
+				}
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
 				return ScopeApprovalDeny
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
+				decision := remoteScopeApprovalTimeoutDecision(req)
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("⚠️ 远程高风险命令确认超时，已拒绝执行: %s", req.Path))
+					onProgress(remoteScopeApprovalTimeoutProgress(req, decision))
 				}
-				return ScopeApprovalDeny
+				return decision
 			}
 		}
 		select {
 		case decision := <-responseCh:
+			if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
+				handler.app.persistSubAgentFullAccess()
+			}
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
-			return ScopeApprovalDeny
+			return remoteScopeApprovalTimeoutDecision(req)
 		}
 	}
+}
+
+func shouldPersistRemoteScopeFullAccess(req ScopeApprovalRequest, decision ScopeApprovalDecision) bool {
+	return decision == ScopeApprovalFullAccess && req.Kind != remoteHighRiskApprovalKind
+}
+
+func remoteScopeApprovalProgressMessage(req ScopeApprovalRequest) string {
+	message := strings.TrimSpace(req.Message)
+	switch req.Kind {
+	case localHighRiskApprovalKind:
+		return fmt.Sprintf("⚠️ 编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
+	case remoteHighRiskApprovalKind:
+		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
+	case remoteDirectoryWriteKind:
+		if message != "" {
+			return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s\n%s", req.Directory, req.ProjectPath, message)
+		}
+		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s", req.Directory, req.ProjectPath)
+	default:
+		if message != "" {
+			return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s\n%s", req.Path, req.ProjectPath, message)
+		}
+		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s", req.Path, req.ProjectPath)
+	}
+}
+
+func remoteScopeApprovalTimeoutDecision(req ScopeApprovalRequest) ScopeApprovalDecision {
+	if req.AutoAllow && (req.Kind == remoteDirectoryWriteKind || req.Kind == remotePathAccessKind) {
+		return ScopeApprovalAllowDir
+	}
+	return ScopeApprovalDeny
+}
+
+func remoteScopeApprovalTimeoutProgress(req ScopeApprovalRequest, decision ScopeApprovalDecision) string {
+	if decision == ScopeApprovalAllowDir {
+		dir := strings.TrimSpace(req.Directory)
+		if dir == "" {
+			dir = remotePathDir(req.Path)
+		}
+		return fmt.Sprintf("⚠️ 远程目录/路径确认超时，自动允许目录: %s", dir)
+	}
+	if req.Kind == localHighRiskApprovalKind {
+		return fmt.Sprintf("⚠️ 本地高风险命令确认超时，已拒绝执行: %s", req.Path)
+	}
+	return fmt.Sprintf("⚠️ 远程高风险命令确认超时，已拒绝执行: %s", req.Path)
 }
 
 func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection string) string {
@@ -1265,7 +1325,7 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 		return rejection
 	}
 	s.mu.Lock()
-	if s.fullAccess {
+	if s.highRiskFullAccess {
 		s.mu.Unlock()
 		return ""
 	}
@@ -1288,12 +1348,88 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 		return ""
 	case ScopeApprovalFullAccess:
 		s.mu.Lock()
-		s.fullAccess = true
+		s.highRiskFullAccess = true
 		s.mu.Unlock()
 		return ""
 	default:
 		return rejection
 	}
+}
+
+func (s *remoteHighRiskApprovalState) checkRemotePath(toolName, path, projectPath, kind, message string, allowDirDecision bool) string {
+	if s == nil {
+		return message
+	}
+	s.mu.Lock()
+	if s.pathFullAccess {
+		s.mu.Unlock()
+		return ""
+	}
+	if s.isApprovedLocked(path) {
+		s.mu.Unlock()
+		return ""
+	}
+	callback := s.callback
+	s.mu.Unlock()
+	if callback == nil {
+		return message
+	}
+	dir := remotePathDir(path)
+	if kind == remoteDirectoryWriteKind {
+		dir = remoteCleanPath(path)
+	}
+	decision := callback(ScopeApprovalRequest{
+		ToolName:    toolName,
+		Path:        path,
+		ProjectPath: projectPath,
+		Directory:   dir,
+		Kind:        kind,
+		Message:     message,
+		AutoAllow:   true,
+	})
+	switch decision {
+	case ScopeApprovalAllowOnce:
+		return ""
+	case ScopeApprovalAllowDir:
+		if !allowDirDecision {
+			return message
+		}
+		s.approveDir(dir)
+		return ""
+	case ScopeApprovalFullAccess:
+		s.mu.Lock()
+		s.pathFullAccess = true
+		s.mu.Unlock()
+		return ""
+	default:
+		return message
+	}
+}
+
+func (s *remoteHighRiskApprovalState) isApprovedLocked(path string) bool {
+	if s == nil || len(s.approvedDirs) == 0 {
+		return false
+	}
+	clean := remoteCleanPath(path)
+	for dir := range s.approvedDirs {
+		dir = strings.TrimRight(dir, "/")
+		if clean == dir || strings.HasPrefix(clean, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *remoteHighRiskApprovalState) approveDir(dir string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.approvedDirs == nil {
+		s.approvedDirs = make(map[string]bool)
+	}
+	s.approvedDirs[remoteCleanPath(dir)] = true
 }
 
 func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string {
@@ -1302,6 +1438,9 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 		return "错误: 需要 path 参数"
 	}
 	path = c.resolvePath(path)
+	if msg := c.requireRemoteProjectScope("ssh_read_file", path); msg != "" {
+		return msg
+	}
 	offset := remoteArgInt(args, 0, 0, 1000000, "offset", "start_line", "start", "startLine")
 	limit := remoteArgInt(args, 0, 0, 2000, "limit", "lines", "num_lines", "line_count")
 	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
@@ -1383,6 +1522,9 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 		return "错误: 需要 path 和 content 参数"
 	}
 	path = c.resolvePath(path)
+	if msg := c.requireRemoteProjectScope("ssh_write_file", path); msg != "" {
+		return msg
+	}
 
 	// For large content (>32KB), write in chunks to avoid PTY buffer overflow.
 	if len(content) > 32*1024 {
@@ -1512,6 +1654,9 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 		return "错误: 需要 path、old_str 和 new_str 参数"
 	}
 	path = c.resolvePath(path)
+	if msg := c.requireRemoteProjectScope("ssh_edit_file", path); msg != "" {
+		return msg
+	}
 
 	// Use base64 to safely transfer old/new strings without heredoc terminator conflicts.
 	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
@@ -1580,7 +1725,11 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 		if c == nil || c.agent == nil {
 			return msg
 		}
-		if approvalMsg := c.agent.highRiskApproval.check(command, workDir, msg); approvalMsg != "" {
+		if hasOnlyDirectoryCreationShellMutation(strings.ToLower(strings.Join(strings.Fields(command), " "))) {
+			if approvalMsg := c.requireRemoteShellDirectoryWriteApproval(command, workDir, msg); approvalMsg != "" {
+				return approvalMsg
+			}
+		} else if approvalMsg := c.agent.highRiskApproval.check(command, workDir, msg); approvalMsg != "" {
 			return approvalMsg
 		}
 	}
@@ -1622,6 +1771,9 @@ func (c *remoteCodingCallbacks) sshListDir(args map[string]interface{}) string {
 		path = c.defaultRemoteWorkingDir()
 	} else {
 		path = c.resolvePath(path)
+	}
+	if msg := c.requireRemoteProjectScope("ssh_list_dir", path); msg != "" {
+		return msg
 	}
 	result := c.execSSH(fmt.Sprintf("ls -la %s", remoteShellQuote(path)), 10)
 	c.trackRemoteSearch("ssh_list_dir", "ls -la "+path, path, result, remoteCodingToolOutcome(result) == "success")
@@ -1696,6 +1848,160 @@ func (c *remoteCodingCallbacks) resolvePath(path string) string {
 		return path
 	}
 	return strings.TrimRight(c.agent.projectDir, "/") + "/" + path
+}
+
+func (c *remoteCodingCallbacks) requireRemoteProjectScope(toolName, targetPath string) string {
+	projectPath := c.defaultRemoteWorkingDir()
+	if c != nil && c.agent != nil && strings.TrimSpace(c.agent.projectDir) != "" {
+		projectPath = c.agent.projectDir
+	}
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" || projectPath == "." {
+		return ""
+	}
+	if remotePathWithinDir(targetPath, projectPath) {
+		return ""
+	}
+	msg := remoteScopeRejection(toolName, targetPath, projectPath)
+	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil {
+		return c.agent.highRiskApproval.checkRemotePath(toolName, targetPath, projectPath, remotePathAccessKind, msg, true)
+	}
+	return msg
+}
+
+func (c *remoteCodingCallbacks) requireRemoteShellDirectoryWriteApproval(command, workDir, fallback string) string {
+	projectPath := ""
+	if c != nil && c.agent != nil {
+		projectPath = strings.TrimSpace(c.agent.projectDir)
+	}
+	if projectPath == "" {
+		projectPath = c.defaultRemoteWorkingDir()
+	}
+	if strings.TrimSpace(projectPath) == "" || projectPath == "." {
+		return fallback
+	}
+	if !remotePathWithinDir(workDir, projectPath) {
+		if msg := c.requireRemoteProjectScope(remoteSSHBashToolName, workDir); msg != "" {
+			return msg
+		}
+	}
+	targets, ok := remoteShellDirectoryCreationTargets(command, workDir)
+	if !ok {
+		return fallback
+	}
+	for _, target := range targets {
+		if remotePathWithinDir(target, projectPath) {
+			continue
+		}
+		if c != nil && c.agent != nil && c.agent.highRiskApproval != nil {
+			msg := remoteScopeRejection(remoteSSHBashToolName, target, projectPath)
+			if approvalMsg := c.agent.highRiskApproval.checkRemotePath(remoteSSHBashToolName, target, projectPath, remotePathAccessKind, msg, true); approvalMsg != "" {
+				return approvalMsg
+			}
+			continue
+		}
+		return remoteScopeRejection(remoteSSHBashToolName, target, projectPath)
+	}
+	if c == nil || c.agent == nil || c.agent.highRiskApproval == nil {
+		return fallback
+	}
+	msg := fmt.Sprintf("remote coding subagent requests directory creation via ssh_bash: %s", strings.Join(targets, ", "))
+	return c.agent.highRiskApproval.checkRemotePath(remoteSSHBashToolName, workDir, projectPath, remoteDirectoryWriteKind, msg, true)
+}
+
+func remoteShellDirectoryCreationTargets(command, workDir string) ([]string, bool) {
+	fields := shellCommandFields(command)
+	var targets []string
+	commandPosition := true
+	for i := 0; i < len(fields); i++ {
+		token := strings.ToLower(normalizeShellCommandToken(fields[i]))
+		if token == "" {
+			continue
+		}
+		if isShellCommandStartMarker(token) {
+			commandPosition = true
+			continue
+		}
+		if commandPosition {
+			if consumed, ok := shellCommandPrefixLength(fields[i:]); ok {
+				i += consumed - 1
+				commandPosition = true
+				continue
+			}
+			switch commandNameBase(normalizeShellExecutableToken(token)) {
+			case "mkdir", "md":
+				segmentArgs := commandSegmentFields(fields[i+1:])
+				for j := 0; j < len(segmentArgs); j++ {
+					arg := normalizeShellCommandToken(segmentArgs[j])
+					if arg == "" {
+						continue
+					}
+					if arg == "--" {
+						for _, literal := range segmentArgs[j+1:] {
+							literal = normalizeShellCommandToken(literal)
+							if literal == "" || shellDirectoryCreationTargetLooksDynamic(literal) {
+								return nil, false
+							}
+							targets = append(targets, remoteResolvePath(workDir, literal))
+						}
+						break
+					}
+					if shellMkdirOptionConsumesValue(arg) {
+						j++
+						continue
+					}
+					if strings.HasPrefix(arg, "-") {
+						continue
+					}
+					if shellDirectoryCreationTargetLooksDynamic(arg) {
+						return nil, false
+					}
+					targets = append(targets, remoteResolvePath(workDir, arg))
+				}
+			case "echo", "write-output", "printf":
+			default:
+				return nil, false
+			}
+		}
+		commandPosition = false
+	}
+	return targets, len(targets) > 0
+}
+
+func remoteResolvePath(workDir, p string) string {
+	if strings.HasPrefix(p, "/") {
+		return remoteCleanPath(p)
+	}
+	return remoteCleanPath(strings.TrimRight(workDir, "/") + "/" + p)
+}
+
+func remoteCleanPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "."
+	}
+	return pathpkg.Clean(p)
+}
+
+func remotePathDir(p string) string {
+	return pathpkg.Dir(remoteCleanPath(p))
+}
+
+func remotePathWithinDir(p, dir string) bool {
+	p = remoteCleanPath(p)
+	dir = strings.TrimRight(remoteCleanPath(dir), "/")
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+func remoteScopeRejection(toolName, path, projectPath string) string {
+	switch toolName {
+	case "ssh_read_file", "ssh_list_dir":
+		return fmt.Sprintf("refusing to read remote path outside the project: %s. Remote coding SubAgent may only use %s inside %s.", path, toolName, projectPath)
+	case remoteSSHBashToolName:
+		return fmt.Sprintf("refusing remote directory access outside the project: %s. Remote coding SubAgent ssh_bash working_dir and directory targets must stay inside %s.", path, projectPath)
+	default:
+		return fmt.Sprintf("refusing to modify remote path outside the project: %s. Remote coding SubAgent may only modify files inside %s.", path, projectPath)
+	}
 }
 
 // --- System Prompt ---

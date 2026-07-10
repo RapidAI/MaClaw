@@ -31,7 +31,7 @@ describe('CodingAgentCompactStatus', () => {
         expect(status.className).toContain('coding-agent-status--sidebar');
         expect(status.className).toContain('coding-agent-status--retrying');
         expect(status.style.display).toBe('grid');
-        expect(status.style.borderLeft).toBe('3px solid rgb(217, 119, 6)');
+        expect(status.style.border).toBe('1px solid rgba(100, 116, 139, 0.2)');
         expect(status.style.whiteSpace).toBe('');
     });
 
@@ -53,7 +53,7 @@ describe('CodingAgentCompactStatus', () => {
         expect(status.textContent).toContain('Apply patch');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
-        expect(status.getAttribute('aria-label')).toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u8fd0\u884c\u9519\u8bef | T4 | Apply patch');
+        expect(status.getAttribute('aria-label')).toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u5931\u8d25 | T4 | Apply patch');
         expect(status.getAttribute('data-active')).toBe('false');
         expect(status.getAttribute('data-phase')).toBe('failed');
         expect(status.getAttribute('data-terminal')).toBe('true');
@@ -62,7 +62,30 @@ describe('CodingAgentCompactStatus', () => {
         expect(status.className).toContain('coding-agent-status--failed');
         expect(status.style.display).toBe('flex');
         expect(status.style.whiteSpace).toBe('nowrap');
-        expect(status.style.color).toBe('rgb(220, 38, 38)');
+        expect(status.style.color).toBe('rgb(196, 61, 52)');
+    });
+
+    it('uses a non-alarming tone for expected TDD red-phase tool checks', () => {
+        render(
+            <CodingAgentCompactStatus
+                progress={{
+                    phase: 'running',
+                    taskID: 'T9',
+                    title: 'Run failing tests first',
+                    event: 'tool_finished',
+                    outcome: 'failed',
+                    summary: 'NOTE: These tests expect the driver to be NOT implemented yet. All tests should FAIL (red light) until implementation is complete.',
+                }}
+                lang="zh-Hans"
+                testId="compact-status"
+                variant="status-bar"
+            />,
+        );
+
+        const status = screen.getByTestId('compact-status');
+        expect(status.getAttribute('aria-label')).toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u5de5\u5177\u68c0\u67e5 | T9 | Run failing tests first');
+        expect(status.style.color).toBe('rgb(100, 116, 139)');
+        expect(status.style.border).toBe('1px solid rgba(100, 116, 139, 0.2)');
     });
 
     it('renders a Chinese sidebar monitor label for coding-agent task status', () => {

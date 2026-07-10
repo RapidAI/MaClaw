@@ -253,7 +253,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 output,
             )
             self.assertIn(
-                "- Runtime boundary verification result: Use `MaClaw Mobile runtime boundary verified. log: "
+                "- Runtime boundary verification result: Use `MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: "
                 + str(record.parent)
                 + "/runtime-boundary-1.0.0+42.log`",
                 output,
@@ -534,8 +534,12 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("server profile ID", output)
             self.assertIn("GUI/agent-bound backend_session_id", output)
             self.assertIn("mobile create/attach control request", output)
-            self.assertIn("visible claim/worker owner", output)
+            self.assertIn("visible concrete claim/worker owner", output)
             self.assertIn("claimed_by", output)
+            self.assertIn("`claimed_by desktop-agent-1`", output)
+            self.assertIn("not generic `worker`", output)
+            self.assertIn("`GUI/agent worker`", output)
+            self.assertIn("`MaClaw GUI agent worker`", output)
             self.assertIn("GUI/agent claim or worker handoff evidence", output)
             self.assertIn("explicit worker claim/update evidence", output)
             self.assertIn("not phone-local/ad hoc terminal evidence", output)
@@ -554,7 +558,7 @@ class QaBuildRecordReportTest(unittest.TestCase):
             self.assertIn("disconnect/reconnect through the managed session path", output)
             self.assertIn("copied backend session output", output)
             self.assertIn(
-                "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+                "GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq",
                 output,
             )
             self.assertIn(
@@ -731,6 +735,28 @@ class QaBuildRecordReportTest(unittest.TestCase):
                 output,
             )
 
+    def test_report_points_backend_ssh_copied_output_secrets_to_targeted_redaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self.complete_record_with_local_artifact(root).replace(
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
+                "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2 and stdout password=SuperSecret123; screenshot ssh-copy-42",
+            )
+            record = self.write_record(root, text)
+
+            report = qa_build_record_report.generate_report(record)
+            output = qa_build_record_report.format_report(report)
+
+            self.assertFalse(report.passed)
+            self.assertIn("How to fix secret redaction failures:", output)
+            self.assertIn("copied backend session output evidence", output)
+            self.assertIn("keep the GUI/agent evidence line", output)
+            self.assertIn("real Hub session ID", output)
+            self.assertIn("backend_session_id", output)
+            self.assertIn("concrete claimed_by worker identity", output)
+            self.assertIn("numeric output_seq", output)
+            self.assertIn("private customer excerpts", output)
+            self.assertIn("redacted text or a traceable attachment ID", output)
     def test_main_prints_pass_to_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

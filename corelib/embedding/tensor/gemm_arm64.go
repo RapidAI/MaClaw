@@ -53,6 +53,26 @@ func multiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
 	multiDot4DualB(out1, a[4*K:8*K], b0, b1, K)
 }
 
+func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
+	var d8 [8]float32
+	var d4 [4]float32
+	multiDot4DualB(&d8, a, b0, b1, K)
+	multiDot4(&d4, a, b2, K)
+	out[0], out[1], out[2], out[3] = d8[0], d8[1], d8[2], d8[3]
+	out[4], out[5], out[6], out[7] = d8[4], d8[5], d8[6], d8[7]
+	out[8], out[9], out[10], out[11] = d4[0], d4[1], d4[2], d4[3]
+}
+
+// MultiDot4TripleB is the public API for 4 A x 3 B micro-kernel.
+func MultiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
+	multiDot4TripleB(out, a, b0, b1, b2, K)
+}
+
+func multiDot8TripleB(out0, out1 *[12]float32, a, b0, b1, b2 []float32, K int) {
+	multiDot4TripleB(out0, a[:4*K], b0, b1, b2, K)
+	multiDot4TripleB(out1, a[4*K:8*K], b0, b1, b2, K)
+}
+
 func multiDot4Scalar(out *[4]float32, a, b []float32, K int) {
 	var s0, s1, s2, s3 float32
 	k := 0

@@ -504,7 +504,7 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
             record.write_text(
                 scoped_record("android-ios").replace(
-                    "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by MaClaw GUI agent worker output_seq 2; screenshot ssh-copy-42",
+                    "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal, with GUI/agent evidence line Hub session mobssh-12345 backend_session_id mobile-ssh-mobssh-12345 claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
                     "Copied backend session output evidence: Copied backend session output from backend-session:mobile-ssh-mobssh-12345 on server-profile:srv-prod to clipboard through the GUI/agent-managed SSHSessionManager path, not phone-local ad hoc terminal; screenshot ssh-copy-42",
                 ),
                 encoding="utf-8",
@@ -526,7 +526,77 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
                 )
 
         self.assertIn(
-            f"{record.name}: copied backend session output evidence must include the GUI/agent evidence line with actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq.",
+            f"{record.name}: copied backend session output evidence must include the GUI/agent evidence line with actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq.",
+            errors,
+        )
+
+    def test_final_release_rejects_generic_copied_backend_session_claimed_by(self) -> None:
+        generic_values = [
+            "MaClaw GUI agent worker",
+            "GUI/agent worker",
+            "worker",
+        ]
+        for generic_value in generic_values:
+            with self.subTest(generic_value=generic_value):
+                with tempfile.TemporaryDirectory() as tmp:
+                    records_dir = Path(tmp)
+                    record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+                    record.write_text(
+                        scoped_record("android-ios").replace(
+                            "claimed_by desktop-agent-1 output_seq 2; screenshot ssh-copy-42",
+                            f"claimed_by {generic_value} output_seq 2; screenshot ssh-copy-42",
+                        ),
+                        encoding="utf-8",
+                    )
+                    evidence = self._release_evidence_with_links(
+                        records_dir,
+                        [f"- [{record.name}](docs/qa-builds/{record.name})"],
+                    )
+
+                    with patch(
+                        "validate_qa_build_records_dir.validate_directory",
+                        return_value=[
+                            validate_qa_build_records_dir.RecordValidationResult(record, []),
+                        ],
+                    ):
+                        errors = verify_final_release_evidence.verify_final_release_evidence(
+                            records_dir,
+                            evidence,
+                        )
+
+                self.assertIn(
+                    f"{record.name}: copied backend session output evidence must include the GUI/agent evidence line with actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq.",
+                    errors,
+                )
+    def test_final_release_rechecks_copied_backend_session_output_redaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records_dir = Path(tmp)
+            record = records_dir / "2026-07-02-android-ios-1.0.0+42.md"
+            record.write_text(
+                scoped_record("android-ios").replace(
+                    "output_seq 2; screenshot ssh-copy-42",
+                    "output_seq 2; copied excerpt password=SuperSecret123; screenshot ssh-copy-42",
+                ),
+                encoding="utf-8",
+            )
+            evidence = self._release_evidence_with_links(
+                records_dir,
+                [f"- [{record.name}](docs/qa-builds/{record.name})"],
+            )
+
+            with patch(
+                "validate_qa_build_records_dir.validate_directory",
+                return_value=[
+                    validate_qa_build_records_dir.RecordValidationResult(record, []),
+                ],
+            ):
+                errors = verify_final_release_evidence.verify_final_release_evidence(
+                    records_dir,
+                    evidence,
+                )
+
+        self.assertIn(
+            f"{record.name}: copied backend session output evidence must not contain raw secrets; keep the GUI/agent evidence line and replace credentials or private customer excerpts with redacted text or a traceable attachment ID.",
             errors,
         )
     def test_android_scope_rejects_ios_only_record(self) -> None:
@@ -1044,6 +1114,20 @@ class VerifyFinalReleaseEvidenceTest(unittest.TestCase):
             text,
         )
 
+    def test_backend_ssh_final_layer_failure_points_to_record_report(self) -> None:
+        record = "2026-07-02-android-ios-1.0.0+42.md"
+        errors = [
+            f"{record}: copied backend session output evidence must not contain raw secrets; keep the GUI/agent evidence line and replace credentials or private customer excerpts with redacted text or a traceable attachment ID.",
+        ]
+
+        self.assertEqual(
+            [
+                release_evidence_commands.qa_build_record_report_hint(
+                    str(Path("docs/qa-builds") / record),
+                ),
+            ],
+            verify_final_release_evidence.next_action_hints(errors),
+        )
     def test_main_version_mismatch_points_to_single_version_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             records_dir = Path(tmp)

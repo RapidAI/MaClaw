@@ -6,6 +6,7 @@ import {
     activeCodingAgentProgress,
     codingAgentCommandStatusLabel,
     codingAgentCommandStatusTone,
+    codingAgentCommandPreviewText,
     codingAgentCompactText,
     codingAgentDiffCheckStatusLabel,
     codingAgentDiffCheckStatusTone,
@@ -92,6 +93,49 @@ describe('CodingAgentProgressStatus', () => {
             count: 3,
             files: ['b.go', 'a.go'],
         });
+    });
+
+    it('parses and displays bash commands on blocked or failed tool rows with full tooltip text', () => {
+        const command = 'Remove-Item -Path "D:\\testdriver\\tests\\_parse_check.ps1" -Force; Write-Output done';
+        const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const raw = `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Driver","detail":"bash","command":"${escapedCommand}","outcome":"blocked","summary":"blocked by guardrail","duration_ms":1}`;
+
+        const parsed = parseCodingAgentEventProgress(raw);
+        expect(parsed?.command).toBe(command);
+        expect(codingAgentCommandPreviewText(parsed!, 'en', 36)).toBe('cmd: Remove-Item -Path "D:\\testdriver\\te\u2026');
+
+        render(
+            <>
+                {renderCodingAgentProgressStatus(
+                    makeProgressMsg(raw),
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        const preview = screen.getByTestId('coding-agent-command-preview');
+        expect(preview.textContent).toContain('cmd: Remove-Item');
+        expect(preview.getAttribute('title')).toBe(command);
+    });
+
+    it('shows the command for failed remote bash, but not successful bash', () => {
+        expect(codingAgentCommandPreviewText({
+            phase: 'running',
+            title: 'Remote task',
+            event: 'tool_finished',
+            detail: 'ssh_bash',
+            outcome: 'failed',
+            command: 'make test',
+        }, 'en')).toBe('cmd: make test');
+        expect(codingAgentCommandPreviewText({
+            phase: 'running',
+            title: 'Local task',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'success',
+            command: 'go test ./...',
+        }, 'en')).toBeUndefined();
     });
 
     it('ignores malformed or non-coding structured events', () => {
@@ -356,7 +400,7 @@ describe('CodingAgentProgressStatus', () => {
 
     it('normalizes coding-agent tool outcome labels and tones', () => {
         expect(codingAgentToolOutcomeLabel('success', 'en')).toBe('Success');
-        expect(codingAgentToolOutcomeLabel('failed', 'zh-Hans')).toBe('\u8fd0\u884c\u9519\u8bef');
+        expect(codingAgentToolOutcomeLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
         expect(codingAgentToolOutcomeLabel('blocked', 'zh-Hans')).toBe('\u5df2\u963b\u65ad');
         expect(codingAgentToolOutcomeLabel('other', 'en')).toBe('Unknown');
         expect(codingAgentToolOutcomeTone('success').accent).toBe('#4f7f6f');
@@ -375,7 +419,7 @@ describe('CodingAgentProgressStatus', () => {
             event: 'tool_finished',
             detail: 'bash',
             outcome: 'failed',
-            summary: 'PowerShell exception: 无法将“g++”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。',
+            summary: 'PowerShell exception: g++ is not recognized as a cmdlet',
         }).accent).toBe('#64748b');
 
         expect(codingAgentProgressTone({
@@ -611,8 +655,8 @@ describe('CodingAgentProgressStatus', () => {
     });
 
     it('uses localized labels and product-friendly display separators', () => {
-        expect(codingAgentStatusLabel('failed', 'en')).toBe('Run Error');
-        expect(codingAgentStatusLabel('failed', 'zh-Hans')).toBe('\u8fd0\u884c\u9519\u8bef');
+        expect(codingAgentStatusLabel('failed', 'en')).toBe('Failed');
+        expect(codingAgentStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'en'))
             .toBe('Coding Agent | Running | T2 | Fix stale edit guard');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
@@ -738,10 +782,10 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const status = screen.getByTestId('coding-agent-progress');
-        expect(status.textContent).toContain('Quality Failed');
+        expect(status.textContent).toContain('Quality Not Passed');
         expect(status.textContent).toContain('1 issues');
         expect(status.textContent).toContain('T4');
-        expect(status.getAttribute('aria-label')).toBe('Coding Agent | Quality Failed | T4 | 1 issues | Apply patch');
+        expect(status.getAttribute('aria-label')).toBe('Coding Agent | Quality Not Passed | T4 | 1 issues | Apply patch');
         expect(status.style.border).toContain('rgba(196, 61, 52, 0.22)');
     });
 });

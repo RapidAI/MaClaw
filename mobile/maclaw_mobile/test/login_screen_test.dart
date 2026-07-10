@@ -9,6 +9,7 @@ import 'package:maclaw_mobile/features/auth/session_controller.dart';
 class _HubDiscoverySessionController extends SessionController {
   String _hubUrl = '';
   String? verifiedCode;
+  final requestedPhones = <String>[];
 
   @override
   String get currentHubUrl => _hubUrl;
@@ -55,6 +56,31 @@ class _HubDiscoverySessionController extends SessionController {
 }
 
 void main() {
+  testWidgets('phone login rejects non-phone input before HubCenter discovery',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _HubDiscoverySessionController();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(() => controller),
+        ],
+        child: const MaterialApp(home: LoginScreen()),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField).first, 'user19900001111');
+    await tester.tap(find.text('发送验证码'));
+    await tester.pump();
+
+    expect(controller.requestedPhones, isEmpty);
+    expect(
+      find.text('请输入有效手机号，只支持数字和常见手机号分隔符。'),
+      findsOneWidget,
+    );
+    expect(find.text('官方接入状态'), findsNothing);
+  });
   testWidgets('phone login is the only signed-out first screen path',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(900, 1200));

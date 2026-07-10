@@ -112,6 +112,8 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertIn("Team ID: ABCD123456", text)
         self.assertIn("Provisioning profiles: Runner profile UUID abc123; Share Extension profile UUID def456", text)
         self.assertIn("Record the .xcarchive path or TestFlight build number", text)
+        self.assertIn("python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md", text)
+        self.assertIn("python3 tool/qa_build_record_report.py docs/qa-builds/<record>.md", text)
 
     def test_main_record_dir_validates_local_archive_and_prints_relative_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +144,10 @@ class PlanIOSReleaseTest(unittest.TestCase):
         self.assertIn("iOS QA artifact evidence:", text)
         self.assertIn(
             "Archive/TestFlight build: ../../build/ios/archive/MaClawMobile.xcarchive",
+            text,
+        )
+        self.assertIn(
+            "python3 tool/validate_qa_build_record.py docs/qa-builds/<record>.md",
             text,
         )
 

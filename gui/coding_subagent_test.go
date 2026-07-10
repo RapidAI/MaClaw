@@ -3163,6 +3163,31 @@ func TestCodingSubAgentToolFinishedEventPrefersStderrDiagnostic(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentToolFinishedEventIncludesRedactedBashCommand(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 7, Title: "Run blocked command"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	cb.emitToolFinishedEvent("bash", `{"command":"curl -H \"Authorization: Bearer secret-token\" https://example.test"}`, "blocked by guardrail", codingToolOutcomeBlocked, 25*time.Millisecond)
+	cb.emitToolFinishedEvent("read_file", `{"path":"README.md"}`, "blocked by guardrail", codingToolOutcomeBlocked, 25*time.Millisecond)
+
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, `"command":"curl -H \"Authorization: Bearer [redacted]\" https://example.test"`) {
+		t.Fatalf("bash tool event should include redacted command, got %#v", progress)
+	}
+	if strings.Contains(joined, "secret-token") {
+		t.Fatalf("bash tool event should not leak command secrets, got %#v", progress)
+	}
+	if strings.Contains(progress[len(progress)-1], `"command":`) {
+		t.Fatalf("non-bash tool event should not include command, got %q", progress[len(progress)-1])
+	}
+}
 func TestCodingSubAgentToolFinishedEventMarksDiagnosticProbeSeverity(t *testing.T) {
 	var progress []string
 	cb := &codingSubAgentCallbacks{

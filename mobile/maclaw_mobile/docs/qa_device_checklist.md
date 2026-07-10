@@ -9,7 +9,7 @@ redact private customer content and raw secrets such as Authorization/Cookie
 headers, JWTs, API keys, cloud access key IDs, and URLs with embedded credentials.
 
 ```bash
-python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log
 python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-<version+build>.md
 python3 tool/setup_android_signing.py
 python3 tool/setup_ios_export_options.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -23,7 +23,7 @@ python3 tool/run_release_gates.py --log docs/qa-builds/release-gates-<version+bu
 python3 tool/create_qa_build_record.py --scope android-ios --version <version+build> \
   --release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-<version+build>.md" \
   --preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-<version+build>.log" \
-  --runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-<version+build>.log" \
+  --runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-<version+build>.log" \
   --automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-<version+build>.log"
 ```
 
@@ -42,7 +42,7 @@ already been saved, pass their traceable references to
 `--preflight-result`, `--runtime-boundary-result`, and
 `--automated-gates-result` so the Final Release
 Decision section starts with those evidence links already filled.
-The handoff, runtime-boundary log, and release-gates log commands refuse to
+The release-status, handoff, runtime-boundary log, and release-gates log commands refuse to
 overwrite existing saved evidence files unless `--force` is provided.
 Use `python3 tool/release_handoff.py --version <version+build> --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --dry-run --output docs/qa-builds/handoff-<version+build>.md` to preview
 the handoff content without writing or overwriting the target file.
@@ -70,7 +70,7 @@ For iOS-only internal QA, keep the Apple Team ID and export method on the iOS
 commands:
 
 ```bash
-python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development
+python3 tool/release_status_report.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-ios-<version+build>.log
 python3 tool/release_handoff.py --version <version+build> --scope ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-ios-<version+build>.md
 python3 tool/qa_preflight.py --scope ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/preflight-ios-<version+build>.log
 python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development
@@ -112,7 +112,10 @@ The completed record's Final Release Decision must include:
 - `Automated release gates result`
 
 Each field must use traceable output paths, command transcripts, or log
-attachment IDs.
+attachment IDs. The `Runtime boundary verification result` must come from
+`tool/verify_runtime_boundary.py` and prove no embedded Go corelib, Dart FFI,
+gomobile binding, dynamic library, native corelib MethodChannel bridge,
+phone-local SSH dependency, terminal emulator dependency, phone-side SSH credential save/read API, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields.
 
 Manual evidence fields must include a concise auditable note, traceable evidence
 filename or attachment ID, device log, or task/result identifier. Placeholder
@@ -360,6 +363,9 @@ it. Each permission evidence item must include the matching
   shows sanitized host, port, username, auth mode, tag, and note metadata.
 - Confirm password/private-key material stays on the authorized desktop/agent
   side and is not entered into the phone.
+- From the mobile foreground agent, create or attach the Hub backend-session
+  management record. Treat the record as a request for MaClaw GUI/agent to
+  claim and manage the session, not as evidence that the phone opened SSH.
 - Create or attach an agent/backend-managed SSH session, not phone-local or an
   ad hoc terminal.
 - Confirm the session is visible in the session list/status surface with the
@@ -369,20 +375,24 @@ it. Each permission evidence item must include the matching
   record the matching `output_chunk` and `output_seq` evidence for the same
   GUI/agent-bound `backend_session_id`.
 - Record the GUI/agent handoff evidence for the same GUI/agent-bound
-  `backend_session_id`, such as
-  `claimed_by`, `/api/mobile/ssh/sessions/claim`, worker handoff evidence, or
-  worker claim/update evidence that proves MaClaw GUI/agent claimed and managed
-  the session.
+  `backend_session_id`, including the actual `claimed_by` worker identity
+  reported by GUI/agent plus `/api/mobile/ssh/sessions/claim`, worker handoff
+  evidence, or worker claim/update evidence that proves MaClaw GUI/agent claimed
+  and managed the session. Generic values such as `worker` or `MaClaw GUI agent
+  worker` are not sufficient as QA evidence.
 - Send an interrupt from the phone and record GUI/agent Ctrl+C handling plus
   the Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt`
   request for the backend session without the phone executing SSH locally.
 - Disconnect and reconnect the backend session, preserving the session ID or
   recording the replacement session ID.
 - Copy backend session output for the same GUI/agent-bound
-  `backend_session_id`; the copied output or operator console note must include
+  `backend_session_id`; the copied output or backend-session output panel note must include
   a GUI/agent evidence line with actual values for the Hub session ID, `backend_session_id`,
-  `claimed_by`, and numeric `output_seq`. The `server-profile:<id>` only identifies the
+  concrete `claimed_by` worker identity, and numeric `output_seq`. The `server-profile:<id>` only identifies the
   selected sanitized server profile and is not sufficient as session proof.
+  If the copied backend-session output contains credentials or private customer
+  content, keep that GUI/agent evidence line and replace credentials or private
+  customer excerpts with redacted text or a traceable attachment ID.
 - In the QA record, capture action-specific evidence for host type, auth mode,
   Connect result, read-only command, command output excerpt, interrupt result,
   disconnect result, reconnect result, copied backend session output evidence,

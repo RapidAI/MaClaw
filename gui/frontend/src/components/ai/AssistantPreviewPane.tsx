@@ -222,19 +222,12 @@ export function AssistantPreviewPane({
             setActiveMode("agent");
             return;
         }
-        // Both opened simultaneously (e.g. user clicked workflow button which
-        // also restores code preview) — prefer workflow since it's the explicit
-        // user action target.
-        if (workflowOpened && codeOpened) {
-            setActiveMode("workflow");
+        if (codeOpened) {
+            setActiveMode("code");
             return;
         }
         if (workflowOpened) {
             setActiveMode("workflow");
-            return;
-        }
-        if (codeOpened) {
-            setActiveMode("code");
             return;
         }
         if (agentOpened && activeMode !== "workflow" && activeMode !== "code") {

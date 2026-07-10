@@ -193,7 +193,9 @@ class AuthService {
 
   String _requireNormalizedPhoneNumber(String phoneNumber) {
     final normalizedPhone = _normalizePhoneNumber(phoneNumber);
-    if (normalizedPhone.length < 8 || normalizedPhone.length > 15) {
+    if (!_phoneAccountValueCanNormalize(phoneNumber) ||
+        normalizedPhone.length < 8 ||
+        normalizedPhone.length > 15) {
       throw ArgumentError.value(
         phoneNumber,
         'phoneNumber',

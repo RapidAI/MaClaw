@@ -463,7 +463,7 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(card.textContent).toContain('Blocked (1)');
         expect(screen.getByTestId('sidebar-coding-agent-guardrail').getAttribute('data-guardrail-summary')).toBe('blocked | bash | category:git');
         expect(card.textContent).toContain('Commands');
-        expect(card.textContent).toContain('Not Passed (2)');
+        expect(card.textContent).toContain('Failed (2)');
         expect(screen.getByTestId('sidebar-coding-agent-commands').getAttribute('data-command-summary')).toBe('2 bash commands run, 1 failed: npm test');
         expect(card.textContent).toContain('Activity');
         expect(card.textContent).toContain('Changed (read 2 / modified 1 / created 1)');
@@ -537,6 +537,47 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(blockedTool?.getAttribute('data-tool-trace-outcome-state')).toBe('blocked');
         expect(blockedTool?.getAttribute('data-tool-trace-summary')).toBe('command refused');
         expect(blockedTool?.getAttribute('title')).toContain('command refused');
+    });
+
+    it('shows exploratory bash failures as neutral command checks in the sidebar details', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+                codingAgentProgress={{ phase: 'result', taskID: 'T5', title: 'Run expected red tests', event: 'command_summary', outcome: 'failed', summary: 'All tests should FAIL (red light) until implementation is complete.', count: 1 }}
+                codingAgentTurnSnapshot={{
+                    latest: { phase: 'result', taskID: 'T5', title: 'Run expected red tests', event: 'command_summary', outcome: 'failed', summary: 'All tests should FAIL (red light) until implementation is complete.', count: 1 },
+                    turnID: 'turn-5',
+                    taskID: 'T5',
+                    title: 'Run expected red tests',
+                    phase: 'result',
+                    commandStatus: 'failed',
+                    commandCount: 1,
+                    commandSummary: 'All tests should FAIL (red light) until implementation is complete.',
+                }}
+            />,
+        );
+
+        const commands = screen.getByTestId('sidebar-coding-agent-commands');
+        expect(commands.textContent).toContain('\u68c0\u67e5');
+        expect(commands.style.color).toBe('rgb(100, 116, 139)');
+        expect(commands.style.border).toBe('1px solid rgba(100, 116, 139, 0.2)');
     });
 
     it('keeps zero-length coding agent sidebar counts visible in data attributes', () => {

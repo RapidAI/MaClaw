@@ -7,7 +7,7 @@ session management, and digital employee task access.
 
 For a single local readiness summary, run:
 
-- `python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development`
+- `python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log`
 
 ## Service
 
@@ -109,7 +109,9 @@ For a single local readiness summary, run:
   PowerShell treats unquoted `<...>` placeholders as redirection syntax, so
   replace all angle-bracket placeholders with real values before copying
   commands there; for dry-run previews with placeholders, wrap placeholder
-  arguments in quotes.
+  arguments in quotes.  `release_status_report.py --log` writes the same READY/NOT READY transcript to
+  `docs/qa-builds/`; existing log files are protected unless `--force` is
+  passed, matching the other release evidence log helpers.
 - Then run
   `python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development`
   or use `--export-method app-store` for TestFlight/App Store Connect planning.
@@ -144,8 +146,19 @@ For a single local readiness summary, run:
 - Create, edit, insert a table, add a comment, run AI processing, export, and
   share PDF, Word, and Markdown.
 - Sync MaClaw GUI/agent server profiles through Hub, create or attach a backend
-  SSH session, copy output, send output to AI analysis, and clear the phone-side
-  cached profile when revoking mobile access.
+  SSH session management record, and verify the mobile-created Hub control
+  record is claimed by an authorized GUI/agent worker. Record the same
+  GUI/agent-bound `backend_session_id`, explicit worker claim/update evidence,
+  `ssh_session` realtime `output_chunk`/`output_seq`, a concrete worker identity
+  such as `claimed_by desktop-agent-1`, and proof that this is not phone-local
+  or ad hoc terminal evidence.
+- Copy backend session output only with a GUI/agent evidence line containing
+  actual values for Hub session ID, `backend_session_id`, concrete `claimed_by`
+  worker identity, and numeric `output_seq`; if copied output contains
+  credentials or private customer excerpts, preserve that evidence line and
+  replace the sensitive text with redacted text or a traceable attachment ID.
+  Send the redacted backend session output to AI analysis and clear the
+  phone-side cached profile when revoking mobile access.
 - Send backend session output or logs to an online digital employee, confirm
   the Hub/tenant handoff and sensitive-data warning, and verify the task is
   created without bypassing remote authorization.
@@ -269,4 +282,7 @@ approval:
 - `Automated release gates result`
 
 Each field must use traceable output paths, command transcripts, or log
-attachment IDs.
+attachment IDs. The `Runtime boundary verification result` must come from
+`tool/verify_runtime_boundary.py` and prove no embedded Go corelib, Dart FFI,
+gomobile binding, dynamic library, native corelib MethodChannel bridge,
+phone-local SSH dependency, terminal emulator dependency, phone-side SSH credential save/read API, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields.

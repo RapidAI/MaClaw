@@ -21,6 +21,7 @@ import {
     applySessionStart,
     applySessionEnd,
     applyResetSession,
+    cloneCodePreviewState,
     type CodeFile,
     type CodePreviewUIState,
 } from './useCodePreviewState';
@@ -161,6 +162,39 @@ describe('useCodePreviewState — Property Tests', () => {
         expect(state.activeFilePath).toBe('/src/b.ts');
     });
 
+    it('forceOpen file update takes over a stale active session', () => {
+        let state = applySessionStart(initialState(), 'old-session');
+        state = applyFileUpdate(state, {
+            sessionID: 'old-session',
+            filePath: '/src/old.ts',
+            fileName: 'old.ts',
+            content: 'old',
+            opType: 'modify',
+            language: 'typescript',
+            updatedAt: 1,
+        });
+        state = applyClosePanel(state);
+
+        state = applyFileUpdate(state, {
+            sessionID: 'local-tools:new',
+            filePath: '/src/new.ts',
+            fileName: 'new.ts',
+            content: 'new',
+            opType: 'modify',
+            language: 'typescript',
+            updatedAt: 2,
+            forceOpen: true,
+        });
+
+        expect(state.sessionID).toBe('local-tools:new');
+        expect(state.sessionActive).toBe(true);
+        expect(state.files.has('/src/old.ts')).toBe(false);
+        expect(state.files.has('/src/new.ts')).toBe(true);
+        expect(state.active).toBe(true);
+        expect(state.userClosed).toBe(false);
+        expect(state.activeFilePath).toBe('/src/new.ts');
+    });
+
     /**
      * **Validates: Requirements 2.1, 2.4**
      *
@@ -279,7 +313,7 @@ describe('useCodePreviewState — Property Tests', () => {
 
         const afterStaleFile = applyFileUpdate(state, {
             sessionID: 'session-b', filePath: '/src/b.ts', fileName: 'b.ts', content: 'b',
-            opType: 'modify', language: 'typescript', updatedAt: 2, forceOpen: true,
+            opType: 'modify', language: 'typescript', updatedAt: 2,
         });
         expect(afterStaleFile).toBe(state);
         expect(afterStaleFile.files.has('/src/b.ts')).toBe(false);
@@ -303,6 +337,13 @@ describe('useCodePreviewState — Property Tests', () => {
 
         const afterMatchingEnd = applySessionEnd(state, 'session-a');
         expect(afterMatchingEnd.sessionActive).toBe(false);
+
+        const afterEndedUnscopedStart = applySessionStart(afterMatchingEnd);
+        expect(afterEndedUnscopedStart).not.toBe(afterMatchingEnd);
+        expect(afterEndedUnscopedStart.files.size).toBe(0);
+        expect(afterEndedUnscopedStart.activeFilePath).toBe('');
+        expect(afterEndedUnscopedStart.sessionID).toBe('');
+        expect(afterEndedUnscopedStart.sessionActive).toBe(true);
     });
 
     it('resetSession clears all state', () => {
@@ -313,6 +354,23 @@ describe('useCodePreviewState — Property Tests', () => {
         });
         state = applyResetSession();
         expect(state).toEqual(initialState());
+    });
+
+    it('cloneCodePreviewState copies the files map for restore isolation', () => {
+        let snapshot = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'hello',
+            opType: 'create', language: 'typescript', updatedAt: 1,
+        });
+
+        const restored = cloneCodePreviewState(snapshot);
+        snapshot.files.set('/src/b.ts', {
+            filePath: '/src/b.ts', fileName: 'b.ts', content: 'later',
+            opType: 'create', language: 'typescript', updatedAt: 2,
+        });
+
+        expect(restored.files).not.toBe(snapshot.files);
+        expect(restored.files.has('/src/a.ts')).toBe(true);
+        expect(restored.files.has('/src/b.ts')).toBe(false);
     });
 
     it('applyFileUpdate ignores events with missing filePath', () => {

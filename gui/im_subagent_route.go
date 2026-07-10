@@ -27,8 +27,8 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			onProgress("Starting SubAgent tasks...")
 		}
 		codeSessionID := newCodingSubAgentCodeSessionID("subagent-workflow", ownerID)
-		emitCodingSubAgentCodeSessionStart(h.app, codeSessionID)
-		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID)
+		emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, taskOrch.ProjectPath)
+		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, taskOrch.ProjectPath)
 
 		runner := NewSubAgentTaskRunner(h, cfg, httpClient, taskOrch, loopCtx)
 		runner.codeSessionID = codeSessionID

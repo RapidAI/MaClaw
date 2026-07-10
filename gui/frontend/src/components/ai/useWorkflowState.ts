@@ -43,6 +43,16 @@ export interface WorkflowUIState {
 
 const DEFAULT_SPLIT_RATIO = 0.6;
 
+export function cloneWorkflowUIState(state: WorkflowUIState): WorkflowUIState {
+    return {
+        ...state,
+        phaseDocuments: new Map(state.phaseDocuments),
+        gateResults: new Map(state.gateResults),
+        phases: state.phases.map(phase => ({ ...phase })),
+        docUpdatePhaseIDs: new Set(state.docUpdatePhaseIDs),
+    };
+}
+
 function normalizeWorkflowDocumentContent(content: unknown): string {
     if (typeof content !== "string") return "";
     // Strip role-prefix hallucinations (Browser:/Tool:) that may leak through
@@ -566,7 +576,7 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         workflowID: workflowIDRef.current,
         docUpdatePhaseIDs: new Set(docUpdatePhaseIDsRef.current),
     };
-    const getSnapshot = useCallback((): WorkflowUIState => stateRef.current, []);
+    const getSnapshot = useCallback((): WorkflowUIState => cloneWorkflowUIState(stateRef.current), []);
 
     /** Overwrites the entire workflow UI state from a saved snapshot. */
     const restoreState = useCallback((snapshot: WorkflowUIState) => {
@@ -576,9 +586,9 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
         setWorkflowType(snapshot.workflowType);
         setCurrentPhaseID(snapshot.currentPhaseID);
         setLatestDocumentPhaseID(snapshot.latestDocumentPhaseID);
-        setPhaseDocuments(snapshot.phaseDocuments);
-        setGateResults(snapshot.gateResults);
-        setPhases(snapshot.phases);
+        setPhaseDocuments(new Map(snapshot.phaseDocuments));
+        setGateResults(new Map(snapshot.gateResults));
+        setPhases(snapshot.phases.map(phase => ({ ...phase })));
         setSuggestMaximize(snapshot.suggestMaximize);
         setSuggestMaximizeType(snapshot.suggestMaximizeType);
         setAwaitingForm(snapshot.awaitingForm === true);

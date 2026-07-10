@@ -36,7 +36,10 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                     "log: docs/qa-builds/preflight-1.0.0+42.log"
                 ),
                 "Runtime boundary verification result": (
-                    "MaClaw Mobile runtime boundary verified. "
+                    "MaClaw Mobile runtime boundary verified: no corelib, "
+                    "phone-local SSH, terminal emulator, phone-side SSH credential, "
+                    "custom Hub URL, redemption-code login, or third-party LLM "
+                    "provider/base URL/API-key regressions; "
                     "log: docs/qa-builds/runtime-boundary-1.0.0+42.log"
                 ),
                 "Automated release gates result": (
@@ -74,7 +77,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             'python3 tool/create_qa_build_record.py --scope android-ios --version 1.0.0+42 '
             '--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-1.0.0+42.md" '
             '--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-1.0.0+42.log" '
-            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-1.0.0+42.log" '
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-1.0.0+42.log" '
             '--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-1.0.0+42.log"',
             command,
         )
@@ -93,7 +96,10 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                     "log: tmp/qa-builds/preflight-android-1.0.0+42.log"
                 ),
                 "Runtime boundary verification result": (
-                    "MaClaw Mobile runtime boundary verified. "
+                    "MaClaw Mobile runtime boundary verified: no corelib, "
+                    "phone-local SSH, terminal emulator, phone-side SSH credential, "
+                    "custom Hub URL, redemption-code login, or third-party LLM "
+                    "provider/base URL/API-key regressions; "
                     "log: tmp/qa-builds/runtime-boundary-1.0.0+42.log"
                 ),
                 "Automated release gates result": (
@@ -111,7 +117,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             'python3 tool/create_qa_build_record.py --scope android --version 1.0.0+42 '
             '--release-handoff-result "release_handoff.py output saved to tmp/qa-builds/handoff-android-1.0.0+42.md" '
             '--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: tmp/qa-builds/preflight-android-1.0.0+42.log" '
-            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: tmp/qa-builds/runtime-boundary-1.0.0+42.log" '
+            '--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: tmp/qa-builds/runtime-boundary-1.0.0+42.log" '
             '--automated-gates-result "run_release_gates.py: 38 gates passed; log: tmp/qa-builds/release-gates-1.0.0+42.log" '
             "--records-dir tmp/qa-builds",
             release_evidence_commands.create_record_command(
@@ -170,7 +176,11 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
         ]:
             self.assertIn(expected, hint)
         self.assertIn(
-            "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq",
+            "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq",
+            hint,
+        )
+        self.assertIn(
+            "preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID",
             hint,
         )
         self.assertNotIn("--record-dir docs/qa-builds", hint)
@@ -691,6 +701,18 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
+            "python3 tool/release_status_report.py --scope android-ios --team-id ABCDE12345 --export-method ad-hoc --log docs/qa-builds/release-status-1.0.0+42.log",
+            release_evidence_commands.release_status_report_command(
+                team_id="ABCDE12345",
+                export_method="ad-hoc",
+                log=release_evidence_commands.release_status_log_path("1.0.0+42"),
+            ),
+        )
+        self.assertEqual(
+            "docs/qa-builds/release-status-android-1.0.0+42.log",
+            release_evidence_commands.release_status_log_path("1.0.0+42", scope="android"),
+        )
+        self.assertEqual(
             "python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method <export-method>",
             release_evidence_commands.release_status_report_command(),
         )
@@ -1032,6 +1054,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
             for command in [
                 release_evidence_commands.release_status_report_command(
                     export_method="development",
+                    log=release_evidence_commands.release_status_log_path(version),
                 ),
                 release_evidence_commands.qa_preflight_command(
                     scope="android-ios",
@@ -1101,7 +1124,7 @@ class ReleaseEvidenceCommandsTest(unittest.TestCase):
                 f"--scope android-ios --version {version}",
                 f'--release-handoff-result "release_handoff.py output saved to docs/qa-builds/handoff-{version}.md"',
                 f'--preflight-result "qa_preflight.py: Result READY for signed-build QA preparation; log: docs/qa-builds/preflight-{version}.log"',
-                f'--runtime-boundary-result "MaClaw Mobile runtime boundary verified. log: docs/qa-builds/runtime-boundary-{version}.log"',
+                f'--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-{version}.log"',
                 f'--automated-gates-result "run_release_gates.py: 38 gates passed; log: docs/qa-builds/release-gates-{version}.log"',
             ]:
                 self.assertIn(fragment, command)

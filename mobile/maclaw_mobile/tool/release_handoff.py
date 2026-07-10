@@ -289,6 +289,11 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
             team_id=ios_team_id,
             export_method=handoff.export_method,
             records_dir=handoff.records_dir,
+            log=release_evidence_commands.release_status_log_path(
+                handoff.version,
+                scope=handoff.scope,
+                records_dir=handoff.records_dir,
+            ),
         )
     )
     release_handoff_command = release_evidence_commands.release_handoff_command(
@@ -386,6 +391,18 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
             "- iOS archive/export path, Team ID, provisioning profile names or UUIDs, install/TestFlight result, and Share Extension result.",
         )
     placeholder_notes: list[str] = []
+    if platform_setup_commands:
+        if release_evidence_commands.scope_covers_android(handoff.scope):
+            placeholder_notes.append(
+                "- Android signing setup requires `MACLAW_ANDROID_STORE_FILE`, "
+                "`MACLAW_ANDROID_STORE_PASSWORD`, `MACLAW_ANDROID_KEY_ALIAS`, and "
+                "`MACLAW_ANDROID_KEY_PASSWORD` in the environment before running "
+                "`setup_android_signing.py`."
+            )
+        placeholder_notes.append(
+            "- Do not add placeholder signing/export files; use real local signing material "
+            "or keep the release in pre-signing setup state until the real inputs are available.",
+        )
     if (
         release_evidence_commands.scope_covers_ios(handoff.scope)
         and ios_team_id == release_evidence_commands.DEFAULT_TEAM_ID
@@ -459,7 +476,7 @@ def format_handoff(handoff: ReleaseHandoff) -> str:
         "GUI/agent claim or worker handoff with explicit worker claim/update evidence, "
         "`ssh_session` realtime events with `output_chunk` and `output_seq`, "
         "not phone-local/ad hoc terminal evidence, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, read-only command output, reconnect, "
-        "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id when used, "
+        "copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, with credentials or private customer excerpts replaced by redacted text or a traceable attachment ID while preserving that evidence line, AI analysis and digital employee handoff tied to that same GUI/agent-bound backend_session_id when used, "
         "and phone-side server-profile cache clear evidence.",
         "- Digital employee list, remote target invocation, completion/failure result, and notification evidence.",
         "- Weak-network/offline recovery evidence with timestamps.",

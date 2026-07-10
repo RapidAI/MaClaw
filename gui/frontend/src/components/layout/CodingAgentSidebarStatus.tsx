@@ -1,4 +1,4 @@
-import { codingAgentCommandStatusLabel, codingAgentCommandStatusTone, codingAgentDiffCheckStatusLabel, codingAgentDiffCheckStatusTone, codingAgentExplorationStatusLabel, codingAgentExplorationStatusTone, codingAgentFileActivityStatusLabel, codingAgentFileActivityStatusTone, codingAgentFilePreviewText, codingAgentGuardrailStatusLabel, codingAgentGuardrailStatusTone, codingAgentQualityStatusLabel, codingAgentQualityStatusTone, codingAgentToolOutcomeLabel, codingAgentToolOutcomeTone, codingAgentToolTraceText, codingAgentTurnSnapshotText, codingAgentVerificationStatusLabel, codingAgentVerificationStatusTone, formatCodingAgentDuration, normalizeCodingAgentCommandStatus, normalizeCodingAgentDiffCheckStatus, normalizeCodingAgentExplorationStatus, normalizeCodingAgentFileActivityStatus, normalizeCodingAgentGuardrailStatus, normalizeCodingAgentProgress, normalizeCodingAgentQualityStatus, normalizeCodingAgentToolOutcome, normalizeCodingAgentVerificationStatus, type CodingAgentProgress, type CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
+import { codingAgentCommandProgressLabel, codingAgentCommandProgressTone, codingAgentDiffCheckStatusLabel, codingAgentDiffCheckStatusTone, codingAgentExplorationStatusLabel, codingAgentExplorationStatusTone, codingAgentFileActivityStatusLabel, codingAgentFileActivityStatusTone, codingAgentFilePreviewText, codingAgentGuardrailStatusLabel, codingAgentGuardrailStatusTone, codingAgentQualityStatusLabel, codingAgentQualityStatusTone, codingAgentToolProgressLabel, codingAgentToolProgressTone, codingAgentToolTraceText, codingAgentTurnSnapshotText, codingAgentVerificationStatusLabel, codingAgentVerificationStatusTone, formatCodingAgentDuration, normalizeCodingAgentCommandStatus, normalizeCodingAgentDiffCheckStatus, normalizeCodingAgentExplorationStatus, normalizeCodingAgentFileActivityStatus, normalizeCodingAgentGuardrailStatus, normalizeCodingAgentProgress, normalizeCodingAgentQualityStatus, normalizeCodingAgentToolOutcome, normalizeCodingAgentVerificationStatus, type CodingAgentProgress, type CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { CodingAgentCompactStatus } from './CodingAgentCompactStatus';
 
 type CodingAgentSidebarStatusProps = {
@@ -32,16 +32,16 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang }: CodingAge
     const diffSummary = snapshot?.diffSummary;
     const cardText = snapshot ? codingAgentTurnSnapshotText(snapshot, lang) : undefined;
     const normalizedOutcome = normalizeCodingAgentToolOutcome(snapshot?.toolOutcome);
-    const outcomeTone = codingAgentToolOutcomeTone(snapshot?.toolOutcome);
-    const outcomeText = snapshot?.toolOutcome ? codingAgentToolOutcomeLabel(snapshot.toolOutcome, lang) : '';
+    const outcomeTone = codingAgentToolProgressTone(snapshot?.toolOutcome, snapshot?.tools?.[snapshot.tools.length - 1]?.summary, snapshot?.tool);
+    const outcomeText = snapshot?.toolOutcome ? codingAgentToolProgressLabel(snapshot.toolOutcome, lang, snapshot?.tools?.[snapshot.tools.length - 1]?.summary, snapshot?.tool) : '';
     const durationText = formatCodingAgentDuration(snapshot?.toolDurationMs);
     const traceText = snapshot ? codingAgentToolTraceText(snapshot, lang) : undefined;
     const guardrailState = normalizeCodingAgentGuardrailStatus(snapshot?.guardrailStatus);
     const guardrailText = snapshot?.guardrailStatus ? codingAgentGuardrailStatusLabel(snapshot.guardrailStatus, lang) : '';
     const guardrailTone = codingAgentGuardrailStatusTone(snapshot?.guardrailStatus);
     const commandState = normalizeCodingAgentCommandStatus(snapshot?.commandStatus);
-    const commandText = snapshot?.commandStatus ? codingAgentCommandStatusLabel(snapshot.commandStatus, lang) : '';
-    const commandTone = codingAgentCommandStatusTone(snapshot?.commandStatus);
+    const commandText = snapshot?.commandStatus ? codingAgentCommandProgressLabel(snapshot.commandStatus, lang, snapshot.commandSummary) : '';
+    const commandTone = codingAgentCommandProgressTone(snapshot?.commandStatus, snapshot?.commandSummary);
     const fileActivityState = normalizeCodingAgentFileActivityStatus(snapshot?.fileActivityStatus);
     const fileActivityText = snapshot?.fileActivityStatus ? codingAgentFileActivityStatusLabel(snapshot.fileActivityStatus, lang) : '';
     const fileActivityTone = codingAgentFileActivityStatusTone(snapshot?.fileActivityStatus);
@@ -134,10 +134,10 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang }: CodingAge
                                 }}
                             >
                                 {(snapshot?.tools || []).map((tool, index) => {
-                                    const traceTone = codingAgentToolOutcomeTone(tool.outcome);
+                                    const traceTone = codingAgentToolProgressTone(tool.outcome, tool.summary, tool.name);
                                     const traceOutcome = normalizeCodingAgentToolOutcome(tool.outcome);
                                     const traceDuration = formatCodingAgentDuration(tool.durationMs);
-                                    const traceLabelText = [tool.name, tool.outcome ? codingAgentToolOutcomeLabel(tool.outcome, lang) : undefined, traceDuration, tool.summary ? `(${tool.summary})` : undefined].filter(Boolean).join(' ');
+                                    const traceLabelText = [tool.name, tool.outcome ? codingAgentToolProgressLabel(tool.outcome, lang, tool.summary, tool.name) : undefined, traceDuration, tool.summary ? `(${tool.summary})` : undefined].filter(Boolean).join(' ');
                                     return (
                                         <span key={`${tool.name}-${index}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
                                             {index > 0 && <span aria-hidden="true" style={{ color: 'var(--theme-text-muted)' }}> -&gt; </span>}

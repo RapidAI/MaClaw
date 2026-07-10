@@ -109,9 +109,15 @@ class SetupAndroidSigningTest(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertIn("Wrote local Android signing config", stdout.getvalue())
-        self.assertIn("Complete iOS ExportOptions if this QA scope includes iOS", stdout.getvalue())
-        self.assertIn("python3 tool/qa_preflight.py", stdout.getvalue())
-        self.assertIn("do not commit android/key.properties", stdout.getvalue())
+        self.assertIn("Next for Android-only QA", stdout.getvalue())
+        self.assertIn("python3 tool/qa_preflight.py --scope android", stdout.getvalue())
+        self.assertIn("preflight-android-<version+build>.log", stdout.getvalue())
+        self.assertIn("For Android/iOS QA, complete iOS ExportOptions first", stdout.getvalue())
+        self.assertIn("--scope android-ios", stdout.getvalue())
+        self.assertIn("--team-id <APPLE_TEAM_ID>", stdout.getvalue())
+        self.assertIn("preflight-<version+build>.log", stdout.getvalue())
+        self.assertIn("Keep android/key.properties local", stdout.getvalue())
+        self.assertIn("do not add placeholder signing/export files", stdout.getvalue())
 
     def test_main_reports_missing_environment_without_traceback(self) -> None:
         root = self.make_root()

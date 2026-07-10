@@ -109,11 +109,11 @@ Use the `远程` tab for GUI-like backend SSH session management. Mobile should
 control sessions created and managed by an agent/backend session manager, not
 act as a standalone phone-local SSH terminal client.
 
-The mobile foreground assistant can help choose a server profile, explain a
-problem, and create or attach the Hub control record for the backend SSH
-session. The real session becomes active only after an authorized MaClaw
-GUI/agent worker claims that record and manages the session through the desktop
-`SSHSessionManager`.
+The mobile foreground assistant acts as a foreground agent for emergency
+maintenance: it can help choose a server profile, explain a problem, and create
+or attach the Hub control record for the backend SSH session manager. The real
+session becomes active only after an authorized MaClaw GUI/agent worker claims
+that record and manages the session through the desktop SSHSessionManager.
 
 Implementation details and the GUI reference model are tracked in
 `docs/backend_ssh_session_design.md`.

@@ -12,3 +12,4 @@ ios/Pods/
 ios/.symlinks/
 ios/ExportOptions.plist
 *.iml
+flutter_*.log

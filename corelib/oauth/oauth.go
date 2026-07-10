@@ -38,6 +38,12 @@ const (
 	TokenRefreshMargin = 5 * time.Minute
 )
 
+const (
+	// CodexSubscriptionDefaultModel is the current default model for OpenAI
+	// ChatGPT/Codex OAuth subscription endpoints.
+	CodexSubscriptionDefaultModel = "gpt-5.6-luna"
+)
+
 // Config 包含 OAuth 流程的配置参数。
 type Config struct {
 	ClientID      string
@@ -147,22 +153,8 @@ func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenRes
 		return nil, err
 	}
 
-	// 尝试 token exchange 获取 sk-... API key（与 Codex CLI 一致）
-	apiKey := result.AccessToken
-	if result.IDToken != "" {
-		key, err := ExchangeForAPIKey(cfg, result.IDToken)
-		if err == nil {
-			apiKey = key
-			log.Printf("[oauth] token exchange succeeded, got API key")
-		} else {
-			log.Printf("[oauth] token exchange failed (will use access_token): %v", err)
-		}
-	} else {
-		log.Printf("[oauth] no id_token, using access_token directly")
-	}
-
 	return &TokenResult{
-		AccessToken:    apiKey,
+		AccessToken:    result.AccessToken,
 		RawAccessToken: result.AccessToken,
 		RefreshToken:   result.RefreshToken,
 		ExpiresIn:      result.ExpiresIn,

@@ -53,9 +53,11 @@ Mobile connects only through the official Hub/tenant path:
 1. The app discovers an available HubCenter from the three preset official
    HubCenter URLs.
 2. HubCenter resolves the user's tenant Hub after phone login.
-3. The mobile foreground assistant or remote-server page asks the tenant Hub to
-   create or attach an SSH backend session control record for a sanitized server
-   profile published by MaClaw GUI/agent.
+3. The mobile foreground assistant or remote-server page acts as a foreground
+   agent: it asks the tenant Hub to create or attach an SSH backend session
+   management record for a sanitized server profile published by MaClaw
+   GUI/agent. The record is a durable management intent for the backend worker,
+   not a request for the phone to open an SSH transport.
 4. The tenant Hub records the session intent, pending input, status, and output
    cursor; an authorized MaClaw desktop/agent claims that control record.
 5. MaClaw GUI/core owns the real SSH connection through `SSHSessionManager`,
@@ -69,7 +71,9 @@ This is the same management pattern as MaClaw GUI: a foreground agent can ask
 for work, but the durable SSH session is created and maintained by the
 authorized GUI/agent worker. Mobile must therefore model SSH as an agent-managed
 background session with a Hub control record, not as an embedded terminal
-library.
+library. The mobile foreground agent creates and controls management records;
+it does not create SSH sockets, store server secrets, or replace the GUI/core
+background session managers.
 
 The phone should not call Go `corelib` directly. Flutter calls Hub APIs and
 realtime streams; the Hub/agent side may reuse the existing Go SSH manager.
@@ -81,7 +85,7 @@ but only as a foreground control-plane agent:
 
 1. The user asks the mobile assistant to inspect or maintain a known server.
 2. The assistant helps choose a Hub-synced server profile and creates or
-   attaches a backend SSH session control record in the tenant Hub.
+   attaches a Hub control record for the backend SSH session manager in the tenant Hub.
 3. The record remains queued or connecting until an authorized MaClaw GUI/agent
    worker claims it with machine authentication.
 4. The GUI/agent worker resolves the profile against its local `SSHHosts`,
@@ -107,7 +111,10 @@ from a simple SSH client:
 
 - Session ownership stays with the desktop GUI/agent worker and the
   `SSHSessionManager`; mobile only creates, attaches, observes, and controls a
-  Hub session record.
+  Hub session-management record. The mobile foreground agent may initiate the
+  record and queue confirmed operations, but the GUI/agent is the component that
+  creates, keeps alive, reconnects, interrupts, executes background work, and
+  performs file transfer on the real SSH session.
 - The foreground mobile agent is a session-management requester: it can create
   the Hub control record from the AI assistant or remote-server surface, attach
   to an existing record, queue input, request interrupt/reconnect/close, start
@@ -115,13 +122,15 @@ from a simple SSH client:
   employees. The record is not active until an authorized GUI/agent worker
   claims it and binds it to a backend managed SSH session.
 - Mobile must present this as MaClaw-style SSH backend management, not as a
-  terminal-first SSH client. A terminal-like output view is only the foreground
-  operator console for the managed record.
+  terminal-first SSH client. The foreground view is a selectable backend-session
+  output panel for the managed Hub record, not a terminal emulator surface.
 - Real SSH credentials, `SSHPool` connections, PTY handles, keepalive behavior,
   and lifecycle cleanup stay on the GUI/agent side.
 - Output is reported as managed session state with recent preview text,
-  incremental `output_chunk`, monotonic `output_seq`, last-activity status, and
-  backend session ID linkage.
+  incremental `output_chunk`, monotonic `output_seq`, last-activity status,
+  backend session ID linkage, and the actual worker `claimed_by` identity
+  reported by the authorized MaClaw GUI/agent. Mobile evidence must not replace
+  that worker identity with a generic placeholder.
 - User input is queued on the Hub record and applied by the GUI/agent through
   `WriteInputChecked`, so disconnected sessions can be detected and reconnected
   before input is retried.
@@ -145,8 +154,10 @@ from a simple SSH client:
 The mobile surface should expose the GUI/backend management capability, not a
 raw terminal socket. The mapping is:
 
-- Create/attach: mobile creates a Hub control record; GUI/agent claims it with
-  `/api/mobile/ssh/sessions/claim` and binds it to `SSHSessionManager.Create`.
+- Create/attach: the mobile foreground agent creates a Hub control record;
+  GUI/agent claims it with `/api/mobile/ssh/sessions/claim` and binds it to
+  `SSHSessionManager.Create`. The claim, not the phone button tap, is what
+  proves the backend managed session exists.
 - Session identity: mobile displays the Hub session ID, `backend_session_id`,
   server profile ID, claim/worker owner, and last update state so QA can prove
   the same managed session is used across actions.
@@ -154,8 +165,8 @@ raw terminal socket. The mapping is:
   through `WriteInputChecked` so broken sessions can reconnect before retry.
 - Output: GUI/agent reports preview plus incremental `output_chunk` and
   monotonic `output_seq`; mobile renders that managed output and may copy or
-  redact it for AI/digital-employee analysis. The mobile operator console and
-  copied output must include a GUI/agent evidence line with actual values for the Hub session ID,
+  redact it for AI/digital-employee analysis. The mobile backend-session
+  output panel and copied output must include a GUI/agent evidence line with actual values for the Hub session ID,
   GUI/agent-bound `backend_session_id`, worker `claimed_by`, and realtime
   numeric `output_seq`, so AI, digital-employee handoff, and QA records
   can prove the output came from the backend session manager rather than a
@@ -227,6 +238,15 @@ Machine-authenticated desktop/agent worker endpoints:
   server-profile editor.
 - `POST /api/mobile/ssh/sessions/claim`
 - `PATCH /api/mobile/ssh/sessions/{session_id}/worker`
+- `POST /api/mobile/ssh/tasks/claim`
+- `PATCH /api/mobile/ssh/tasks/{task_id}/worker`
+- `POST /api/mobile/ssh/files/claim`
+- `PATCH /api/mobile/ssh/files/{operation_id}/worker`
+
+Those worker endpoints are the mobile bridge for the GUI's backend SSH
+management ability: the phone creates or updates control records, while the
+authorized GUI/agent claims session, background-task, and file-operation work
+and executes it through the existing desktop-side managers.
 
 Phone-side removal of a server profile only clears local cached metadata and
 legacy local credential residue. It does not delete the MaClaw GUI/agent source

@@ -288,9 +288,10 @@ Server-profile cache clear confirmation:
 ```text
 # If notification evidence recorded a server-profile:<id> payload, include it
 # as the selected sanitized server profile, but tie every SSH smoke evidence
-# line below to the same GUI/agent-bound backend_session_id. The session should
-# be created/attached through the agent/backend session manager, not phone-local
-# and not an ad hoc terminal.
+# line below to the same GUI/agent-bound backend_session_id. The mobile
+# foreground agent may create/attach the Hub management record, but the session
+# is proven only after MaClaw GUI/agent claims and manages it. It must not be
+# phone-local and not an ad hoc terminal.
 Host type:
 Auth mode:
 Connect result:
@@ -298,9 +299,11 @@ Read-only command:
 Command output excerpt:
 # Include the backend `ssh_session` realtime event evidence for the same
 # GUI/agent-bound backend_session_id. The evidence must show incremental
-# backend session output fields `output_chunk` and `output_seq`, plus GUI/agent
-# `claimed_by` or claim/worker handoff evidence, explicit worker claim/update
-# evidence, and not phone-local/ad hoc terminal evidence; a static screenshot of
+# backend session output fields `output_chunk` and `output_seq`, plus the actual
+# worker `claimed_by` value reported by GUI/agent, claim/worker handoff evidence, and explicit worker claim/update
+# evidence. Generic values such as `worker` or `MaClaw GUI agent worker` are
+# not sufficient; record a concrete machine/agent identity and not phone-local/ad
+# hoc terminal evidence. A static screenshot of
 # an output pane is not enough.
 SSH realtime incremental output evidence:
 # Include phone-initiated interrupt evidence through the Hub control record or
@@ -311,9 +314,9 @@ Disconnect result:
 Reconnect result:
 Copied backend session output evidence:
 # Include copied backend session output evidence tied to the same
-# GUI/agent-bound backend_session_id. The copied output or operator console
-# note must include a GUI/agent evidence line with actual values for Hub session ID,
-# backend_session_id, claimed_by, and numeric output_seq so the copy can be traced to
+# GUI/agent-bound backend_session_id. The copied output or backend-session
+# output panel note must include a GUI/agent evidence line with actual values for Hub session ID,
+# backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq so the copy can be traced to
 # the backend session manager. A generic terminal screenshot or clipboard note
 # without that backend-managed session link is not enough.
 # Include the backend SSH session/log output preview, the
@@ -340,9 +343,12 @@ Release handoff result:
 Preflight result:
 # Paste `python3 tool/verify_runtime_boundary.py` output or log attachment ID.
 # This must prove the signed app has no embedded Go corelib, Dart FFI,
-# gomobile binding, dynamic library, or native corelib MethodChannel bridge;
-# core MaClaw capabilities must be reached through the discovered Hub APIs,
-# realtime channel, or explicitly authorized digital employee handoff.
+# gomobile binding, dynamic library, native corelib MethodChannel bridge,
+# phone-local SSH dependency, terminal emulator dependency, phone-side SSH
+# credential save/read API, custom Hub URL configuration, redemption-code login,
+# or arbitrary third-party LLM provider/base URL/API-key fields; core MaClaw
+# capabilities must be reached through the discovered Hub APIs, realtime channel,
+# or explicitly authorized digital employee handoff.
 Runtime boundary verification result:
 # Paste `python3 tool/run_release_gates.py` result, gate count, and log attachment ID.
 Automated release gates result:

@@ -99,6 +99,15 @@ func matMulLinearBias(out, a []float32, w linearWeight, bias []float32, M, N, K 
 	tensor.MatMulQ8Bias(out, a, w.q8, bias, M, N, K)
 }
 
+// matMulLinearArgmax: per-row argmax of a@w^T+bias without full logits (CTC greedy).
+func matMulLinearArgmax(outIDs []int, a []float32, w linearWeight, bias []float32, M, N, K int) {
+	if w.f32 != nil {
+		tensor.MatMulArgmax(outIDs, a, w.f32, bias, M, N, K)
+		return
+	}
+	tensor.MatMulQ8Argmax(outIDs, a, w.q8, bias, M, N, K)
+}
+
 // matMulLinearBiasReLU is matMul + bias + ReLU (FFN up-projection).
 func matMulLinearBiasReLU(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
 	if w.f32 != nil {
@@ -106,6 +115,15 @@ func matMulLinearBiasReLU(out, a []float32, w linearWeight, bias []float32, M, N
 		return
 	}
 	tensor.MatMulQ8BiasReLU(out, a, w.q8, bias, M, N, K)
+}
+
+// matMulLinearBiasAdd: out += a@w^T + bias (FFN residual, no temp buffer).
+func matMulLinearBiasAdd(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
+	if w.f32 != nil {
+		tensor.MatMulBiasAdd(out, a, w.f32, bias, M, N, K)
+		return
+	}
+	tensor.MatMulQ8BiasAdd(out, a, w.q8, bias, M, N, K)
 }
 
 // shouldStopNearEOS handles small Go-vs-ggml numeric differences at utterance end.

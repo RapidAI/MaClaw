@@ -80,6 +80,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		requiredArgs []string // params the skill expects
 	}
 	var candidates []candidate
+	skippedByTaskFit := 0
 	for _, s := range allSkills {
 		if s.Status != "active" {
 			continue
@@ -88,6 +89,10 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			continue // knowledge skills are reference docs, not executable
 		}
 		doc := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
+		if !codingSubAgentSkillFitsTask(taskDescription, doc) {
+			skippedByTaskFit++
+			continue
+		}
 		candidates = append(candidates, candidate{
 			name:         s.Name,
 			description:  s.Description,
@@ -137,10 +142,68 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	for i, r := range results {
 		names[i] = fmt.Sprintf("%s(%.2f)", r.Name, r.Score)
 	}
-	log.Printf("[coding-subagent] skill selection: task=%q candidates=%d matched=%s",
-		truncateLogText(taskDescription, 60), len(candidates), strings.Join(names, ", "))
+	log.Printf("[coding-subagent] skill selection: task=%q candidates=%d skipped_task_fit=%d matched=%s",
+		truncateLogText(taskDescription, 60), len(candidates), skippedByTaskFit, strings.Join(names, ", "))
 
 	return results
+}
+
+func codingSubAgentSkillFitsTask(taskDescription, skillDoc string) bool {
+	task := strings.ToLower(strings.TrimSpace(taskDescription))
+	doc := strings.ToLower(strings.TrimSpace(skillDoc))
+	if task == "" || doc == "" {
+		return true
+	}
+	if codingSubAgentTextHasAny(task, codingSubAgentDocumentIntentMarkers()) {
+		return true
+	}
+	if !codingSubAgentTextHasAny(task, codingSubAgentSoftwareTaskMarkers()) {
+		return true
+	}
+	if codingSubAgentTextHasAny(doc, codingSubAgentSoftwareSkillMarkers()) {
+		return true
+	}
+	return !codingSubAgentTextHasAny(doc, codingSubAgentDocumentSkillMarkers())
+}
+
+func codingSubAgentTextHasAny(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingSubAgentSoftwareTaskMarkers() []string {
+	return []string{
+		"code", "coding", "program", "software", "driver", "kernel", "windows", "linux",
+		"c++", "golang", "typescript", "javascript", "python", "rust", "cmake",
+		"build", "test", "tests", "tdd", "代码", "编程", "开发", "驱动", "实现", "修复", "测试",
+	}
+}
+
+func codingSubAgentSoftwareSkillMarkers() []string {
+	return []string{
+		"code", "coding", "program", "software", "driver", "kernel", "lint", "eslint",
+		"format", "refactor", "test", "tests", "playwright", "frontend", "backend", "ui",
+		"代码", "编程", "开发", "驱动", "实现", "修复", "测试", "前端", "后端", "界面",
+	}
+}
+
+func codingSubAgentDocumentSkillMarkers() []string {
+	return []string{
+		"ppt", "pptx", "powerpoint", "presentation", "slide", "slides", "deck",
+		"pdf", "word", "docx", "document", "contract", "文档", "合同", "演示", "幻灯片", "简报",
+	}
+}
+
+func codingSubAgentDocumentIntentMarkers() []string {
+	return []string{
+		"ppt", "pptx", "powerpoint", "presentation", "slide", "slides", "deck",
+		"pdf", "word", "docx", "document", "contract", "文档", "合同", "演示", "幻灯片", "简报",
+		"报告", "说明书", "开发文档", "设计文档",
+	}
 }
 
 // extractBigrams returns the set of character bigrams from text.

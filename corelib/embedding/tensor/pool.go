@@ -69,8 +69,26 @@ func ParallelRanges(total int, fn func(start, end int)) {
 	parallelRanges(total, fn)
 }
 
+// RunAsync submits fn to the matmul worker pool and returns a wait func.
+// Prefer this over bare `go fn()` in the encoder (reuses pool goroutines;
+// ~70 SANM layers × go would otherwise thrash the runtime).
+func RunAsync(fn func()) (wait func()) {
+	ensureMatmulPool()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	jobQueue <- matmulRangeJob{
+		start: 0, end: 1,
+		fn: func(_, _ int) { fn() },
+		wg: &wg,
+	}
+	return wg.Wait
+}
+
 // parallelRanges splits [0, total) into up to nw contiguous ranges and runs
 // fn(start,end) on the pool. fn must be safe for concurrent disjoint ranges.
+//
+// For large totals (matmul N-partition), prefer chunks ≥32 so workers are not
+// starved of B columns. Small totals (heads=4) keep full parallel width.
 func parallelRanges(total int, fn func(start, end int)) {
 	if total <= 0 {
 		return
@@ -78,6 +96,13 @@ func parallelRanges(total int, fn func(start, end int)) {
 	nw := poolWorkers()
 	if nw > total {
 		nw = total
+	}
+	// Wide partitions only: avoid N=512 → 12×42-col slices (A reload thrash).
+	if total >= 384 {
+		const minChunk = 32
+		if maxUseful := (total + minChunk - 1) / minChunk; nw > maxUseful {
+			nw = maxUseful
+		}
 	}
 	if nw <= 1 {
 		fn(0, total)
@@ -102,7 +127,8 @@ func parallelRanges(total int, fn func(start, end int)) {
 }
 
 // flopThreshold: below this, serial is faster than pool dispatch.
-const flopThreshold int64 = 1_500_000
+// ~1e6 ≈ M=8×N=256×K=512 — small encoder tiles stay serial; CTC/FFN still parallel.
+const flopThreshold int64 = 1_000_000
 
 func shouldParallel(M, N, K int) bool {
 	if poolWorkers() <= 1 {

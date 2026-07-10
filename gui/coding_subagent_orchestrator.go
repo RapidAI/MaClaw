@@ -350,6 +350,9 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 			taskDisplayNumber(task), r.orchestrator.ProjectPath, effectiveProjectPath)
 	}
 
+	if r.loopCtx != nil {
+		r.loopCtx.codeSessionID = r.activeCodeSessionID()
+	}
 	return runner(
 		r.handler,
 		r.cfg,

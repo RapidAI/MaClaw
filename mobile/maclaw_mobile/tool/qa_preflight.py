@@ -90,6 +90,53 @@ def _powershell_placeholder_note(
         "or quote placeholder arguments for dry-run previews."
     )
 
+def _preflight_blocker_setup_hint(
+    checks: list[PreflightCheck],
+    *,
+    scope: str,
+    ios_team_id: str | None,
+    ios_export_method: str | None,
+) -> str | None:
+    blocker_names = {check.name.lower() for check in checks if check.is_blocker}
+    commands: list[str] = []
+    notes: list[str] = []
+    if (
+        release_evidence_commands.scope_covers_android(scope)
+        and "android local signing inputs" in blocker_names
+    ):
+        commands.append(f"`{release_evidence_commands.setup_android_signing_command()}`")
+        notes.append(
+            "Android signing setup requires MACLAW_ANDROID_STORE_FILE, "
+            "MACLAW_ANDROID_STORE_PASSWORD, MACLAW_ANDROID_KEY_ALIAS, and "
+            "MACLAW_ANDROID_KEY_PASSWORD in the environment.",
+        )
+    if (
+        release_evidence_commands.scope_covers_ios(scope)
+        and "ios export options" in blocker_names
+    ):
+        setup_team_id = (
+            release_evidence_commands.DEFAULT_SIGNING_TEAM_ID
+            if ios_team_id in (None, release_evidence_commands.DEFAULT_TEAM_ID)
+            else ios_team_id
+        )
+        commands.append(
+            "`"
+            + release_evidence_commands.setup_ios_export_options_command(
+                team_id=setup_team_id,
+                export_method=ios_export_method or "development",
+            )
+            + "`",
+        )
+    if not commands:
+        return None
+    return (
+        "Run setup helper command(s) for the missing local release inputs: "
+        + "; ".join(commands)
+        + ". "
+        + " ".join(notes)
+        + " Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state."
+    ).strip()
+
 
 def validate_ios_export_options(
     root: Path,
@@ -300,7 +347,7 @@ def run_preflight(
         if runtime_boundary_errors
         else _ok(
             "Runtime boundary verification",
-            "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, or phone-side SSH credential save/read APIs",
+            "mobile runtime does not embed Go corelib, native bridges, phone-local SSH dependencies, terminal emulator dependencies, phone-side SSH credential save/read APIs, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields",
         )
     )
 
@@ -380,6 +427,7 @@ def run_preflight(
                 detail += f"; {len(out_of_scope_invalid)} out-of-scope invalid record(s) ignored for {_scope_label(scope)} preflight"
             checks.append(_ok("Existing QA build records", detail))
         else:
+            detail_extras: list[str] = []
             if has_preflight_blockers:
                 detail = (
                     "signed-build QA record creation is deferred until preflight "
@@ -399,13 +447,21 @@ def run_preflight(
                     )
                     + "` after fixing blockers"
                 )
+                setup_hint = _preflight_blocker_setup_hint(
+                    checks,
+                    scope=scope,
+                    ios_team_id=ios_team_id,
+                    ios_export_method=ios_export_method,
+                )
+                if setup_hint:
+                    detail_extras.append(setup_hint)
                 placeholder_note = _powershell_placeholder_note(
                     scope=scope,
                     ios_team_id=ios_team_id,
                     ios_export_method=ios_export_method,
                 )
                 if placeholder_note:
-                    detail += ". " + placeholder_note
+                    detail_extras.append(placeholder_note)
             else:
                 detail = signed_record_hint
             if out_of_scope_valid:
@@ -422,9 +478,10 @@ def run_preflight(
                     + detail
                 )
             checks.append(
-                _info(
-                    "Existing QA build records",
-                    detail,
+                PreflightCheck(
+                    name="Existing QA build records",
+                    status="info",
+                    details=[detail, *detail_extras],
                 ),
             )
 

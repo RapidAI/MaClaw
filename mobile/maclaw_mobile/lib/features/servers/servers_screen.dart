@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:xterm/xterm.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
@@ -432,7 +431,6 @@ class _BackendSSHSessionCardState
     extends ConsumerState<_BackendSSHSessionCard> {
   static const _maxCapturedOutputChars = 12000;
 
-  final _backendSessionTerminal = Terminal(maxLines: 1000);
   final _capturedOutput = StringBuffer();
   final _fileLocalPathController = TextEditingController();
   final _fileRemotePathController = TextEditingController();
@@ -440,6 +438,7 @@ class _BackendSSHSessionCardState
   String? _selectedId;
   String? _lastBackendSessionId;
   String? _activeManagedBackendSessionId;
+  String? _activeClaimedBy;
   int _lastRealtimeOutputSeq = 0;
   ServerProfile? _activeProfile;
   _MobileSSHConnectionState _connectionState =
@@ -507,6 +506,7 @@ class _BackendSSHSessionCardState
           : await controller.reconnectSession(_lastBackendSessionId!);
       _lastBackendSessionId = session.sessionId;
       _activeManagedBackendSessionId = mobileBackendSessionHandoffId(session);
+      _activeClaimedBy = mobileBackendSessionClaimedBy(session);
       _lastRealtimeOutputSeq = session.outputSeq;
       _writeBackendSessionOutput(
         '已创建/附着后台 SSH 会话 ${session.sessionId} · ${selectedProfile.name}\r\n',
@@ -563,6 +563,10 @@ class _BackendSSHSessionCardState
         session,
         fallback: mobileBackendSessionHandoffId(existing),
       );
+      _activeClaimedBy = mobileBackendSessionClaimedBy(
+        session,
+        fallback: mobileBackendSessionClaimedBy(existing),
+      );
       _lastRealtimeOutputSeq = session.outputSeq;
       _writeBackendSessionOutput(
         '已附着后台 SSH 会话 ${session.sessionId}'
@@ -614,6 +618,7 @@ class _BackendSSHSessionCardState
         _connectionState = _MobileSSHConnectionState.disconnected;
         _lastRealtimeOutputSeq = 0;
         _activeManagedBackendSessionId = null;
+        _activeClaimedBy = null;
       });
     }
   }
@@ -629,6 +634,10 @@ class _BackendSSHSessionCardState
       _activeManagedBackendSessionId = mobileBackendSessionHandoffId(
         session,
         fallback: _activeManagedBackendSessionId,
+      );
+      _activeClaimedBy = mobileBackendSessionClaimedBy(
+        session,
+        fallback: _activeClaimedBy,
       );
       _writeBackendSessionOutput('已请求中断后台 SSH 会话 $sessionId。\r\n');
     } catch (error) {
@@ -664,7 +673,6 @@ class _BackendSSHSessionCardState
   }
 
   void _writeBackendSessionOutput(String data, {bool capture = true}) {
-    _backendSessionTerminal.write(data);
     if (!capture || data.isEmpty) return;
     final wasEmpty = _capturedOutput.isEmpty;
     _capturedOutput.write(data);
@@ -692,14 +700,16 @@ class _BackendSSHSessionCardState
   String? _backendSessionEvidenceLine() {
     final sessionId = _lastBackendSessionId?.trim() ?? '';
     final backendSessionId = _activeManagedBackendSessionId?.trim() ?? '';
+    final claimedBy = _activeClaimedBy?.trim() ?? '';
     if (sessionId.isEmpty ||
         backendSessionId.isEmpty ||
+        claimedBy.isEmpty ||
         _lastRealtimeOutputSeq <= 0) {
       return null;
     }
     return 'GUI/agent 后台会话证据：Hub session $sessionId · '
         'backend_session_id $backendSessionId · '
-        'claimed_by GUI/agent worker · output_seq $_lastRealtimeOutputSeq';
+        'claimed_by $claimedBy · output_seq $_lastRealtimeOutputSeq';
   }
 
   Future<bool> sendCommand(String command) async {
@@ -863,6 +873,10 @@ class _BackendSSHSessionCardState
       session,
       fallback: _activeManagedBackendSessionId,
     );
+    _activeClaimedBy = mobileBackendSessionClaimedBy(
+      session,
+      fallback: _activeClaimedBy,
+    );
     var changed = false;
     final chunk = session.outputChunk;
     if (chunk.isNotEmpty && session.outputSeq > _lastRealtimeOutputSeq) {
@@ -935,9 +949,9 @@ class _BackendSSHSessionCardState
       const SnackBar(content: Text('后台会话输出已复制')),
     );
   }
+
   void _clearCapturedOutput() {
     _capturedOutput.clear();
-    _backendSessionTerminal.write('\x1B[2J\x1B[H');
     _writeBackendSessionOutput('后台会话输出已清空。\r\n', capture: false);
     setState(() {});
   }
@@ -970,7 +984,7 @@ class _BackendSSHSessionCardState
               children: [
                 Row(
                   children: [
-                    Icon(Icons.terminal_outlined, color: scheme.primary),
+                    Icon(Icons.hub_outlined, color: scheme.primary),
                     const SizedBox(width: 8),
                     Text(
                       'GUI/agent 后台 SSH 会话',
@@ -1099,15 +1113,23 @@ class _BackendSSHSessionCardState
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  '手机不会直连服务器；会话由 MaClaw GUI/agent 使用已授权配置创建、接管和回传输出。',
+                  '手机前台 agent 只创建 Hub 后台会话管理记录并发出经确认的操作请求；'
+                  '它不是手机本地 SSH 客户端，也不保存服务器密钥；'
+                  'MaClaw GUI/agent 负责接管、执行、保持会话、后台任务和文件操作。',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                 ),
                 const SizedBox(height: 12),
-                SizedBox(
-                  height: 280,
-                  child: TerminalView(_backendSessionTerminal),
+                _BackendSessionEvidencePanel(
+                  hubSessionId: _lastBackendSessionId,
+                  backendSessionId: _activeManagedBackendSessionId,
+                  claimedBy: _activeClaimedBy,
+                  outputSeq: _lastRealtimeOutputSeq,
+                ),
+                const SizedBox(height: 12),
+                _BackendSessionOutputPanel(
+                  output: _capturedOutput.toString(),
                 ),
               ],
             );
@@ -1120,12 +1142,130 @@ class _BackendSSHSessionCardState
   }
 }
 
+class _BackendSessionOutputPanel extends StatelessWidget {
+  final String output;
+
+  const _BackendSessionOutputPanel({required this.output});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = output.trim().isEmpty
+        ? '等待 MaClaw GUI/agent 回传后台会话输出。'
+        : output.trimRight();
+    return Container(
+      constraints: const BoxConstraints(minHeight: 180, maxHeight: 280),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: SelectableText(
+            text,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: output.trim().isEmpty
+                      ? scheme.onSurfaceVariant
+                      : scheme.onSurface,
+                ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendSessionEvidencePanel extends StatelessWidget {
+  final String? hubSessionId;
+  final String? backendSessionId;
+  final String? claimedBy;
+  final int outputSeq;
+
+  const _BackendSessionEvidencePanel({
+    required this.hubSessionId,
+    required this.backendSessionId,
+    required this.claimedBy,
+    required this.outputSeq,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final items = [
+      ('Hub 控制记录', hubSessionId),
+      ('GUI 会话 ID', backendSessionId),
+      ('接管者', claimedBy),
+      ('输出序号', outputSeq > 0 ? outputSeq.toString() : null),
+    ];
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.account_tree_outlined,
+                  size: 18,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '后台会话管理证据',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final item in items)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text('${item.$1}: ${_displayValue(item.$2)}'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _displayValue(String? value) {
+    final text = value?.trim() ?? '';
+    return text.isEmpty ? '等待 GUI/agent 回传' : text;
+  }
+}
+
 String? mobileBackendSessionHandoffId(
   MobileBackendSSHSession session, {
   String? fallback,
 }) {
   final backendSessionId = session.backendSessionId.trim();
   if (backendSessionId.isNotEmpty) return backendSessionId;
+  final fallbackId = fallback?.trim() ?? '';
+  return fallbackId.isEmpty ? null : fallbackId;
+}
+
+String? mobileBackendSessionClaimedBy(
+  MobileBackendSSHSession session, {
+  String? fallback,
+}) {
+  final claimedBy = session.claimedBy.trim();
+  if (claimedBy.isNotEmpty) return claimedBy;
   final fallbackId = fallback?.trim() ?? '';
   return fallbackId.isEmpty ? null : fallbackId;
 }
@@ -1575,7 +1715,7 @@ class _CommandRiskCard extends StatelessWidget {
               onChanged: (_) => onChanged(),
               decoration: const InputDecoration(
                 labelText: '命令草稿',
-                prefixIcon: Icon(Icons.terminal_outlined),
+                prefixIcon: Icon(Icons.code_outlined),
               ),
             ),
             const SizedBox(height: 10),
@@ -1732,7 +1872,7 @@ class _CommandActionBar extends ConsumerWidget {
           children: [
             for (final preset in presets)
               ActionChip(
-                avatar: const Icon(Icons.terminal_outlined, size: 18),
+                avatar: const Icon(Icons.playlist_add_check_outlined, size: 18),
                 label: Text(preset),
                 onPressed: () => onUseCommand(preset),
               ),

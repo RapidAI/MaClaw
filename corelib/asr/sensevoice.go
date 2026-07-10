@@ -108,6 +108,9 @@ type svEncoderBufs struct {
 	attnScores    []float32 // [maxFrames] single-worker scores
 	scoresScratch []float32 // [nWorkers * maxFrames]
 
+	// CTC greedy: per-frame argmax IDs (avoids materializing full logits)
+	ctcIDs []int
+
 	// Cached positional encoding [maxPosFrames * dim]
 	posEnc    []float32
 	posEncDim int
@@ -260,11 +263,11 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 	// 3. CMVN intentionally skipped for this GGUF convention (see loadCMVN comments).
 	_ = m.cmvnIstd
 
-	// 4. Encode — returns buffer owned by model until unlock
-	encOut := m.encode(lfrFeats, lfrFrames)
+	// 4. Encode + fused CTC argmax (skip full logits materialization)
+	frameIDs := m.encodeArgmax(lfrFeats, lfrFrames)
 
-	// 5. CTC decode
-	tokens := m.ctcGreedyDecode(encOut, lfrFrames+4)
+	// 5. CTC collapse (repeats + blank)
+	tokens := ctcCollapseIDs(frameIDs)
 
 	// 6. Detokenize
 	return m.svDetokenize(tokens), nil
@@ -446,12 +449,10 @@ func svApplyCMVNShiftScale(x []float32, numFrames, dim int, shift, scale []float
 }
 
 // ctcGreedyDecode applies argmax at each frame, collapses repeats, removes blank (0).
-// blankPenalty reduces the blank token's logit to improve recall on borderline frames.
+// Prefer encodeArgmax + ctcCollapseIDs on the hot Transcribe path.
 func (m *SenseVoiceModel) ctcGreedyDecode(logits []float32, numFrames int) []int {
 	vocab := m.hp.VocabSize
-	tokens := make([]int, 0, 32)
-	prevToken := -1
-
+	ids := make([]int, numFrames)
 	for f := 0; f < numFrames; f++ {
 		off := f * vocab
 		row := logits[off : off+vocab]
@@ -493,7 +494,16 @@ func (m *SenseVoiceModel) ctcGreedyDecode(logits []float32, numFrames int) []int
 				bestID = i
 			}
 		}
-		// CTC: collapse repeats and skip blank (token 0)
+		ids[f] = bestID
+	}
+	return ctcCollapseIDs(ids)
+}
+
+// ctcCollapseIDs collapses CTC frame IDs: drop blanks (0) and consecutive repeats.
+func ctcCollapseIDs(ids []int) []int {
+	tokens := make([]int, 0, 32)
+	prevToken := -1
+	for _, bestID := range ids {
 		if bestID != prevToken {
 			if bestID != 0 {
 				tokens = append(tokens, bestID)

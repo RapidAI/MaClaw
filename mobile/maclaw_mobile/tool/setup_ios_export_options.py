@@ -78,9 +78,20 @@ def main(argv: list[str] | None = None) -> int:
     payload = export_options_payload(args.team_id, args.export_method)
     print(f"Wrote local iOS export options: {target}")
     print(
-        "Run `python3 tool/qa_preflight.py "
-        f"--team-id {payload['teamID']} --export-method {payload['method']}` next; "
-        "keep ios/ExportOptions.plist local."
+        "Next for iOS-only QA: run "
+        "`python3 tool/qa_preflight.py --scope ios "
+        f"--team-id {payload['teamID']} --export-method {payload['method']} "
+        "--log docs/qa-builds/preflight-ios-<version+build>.log`."
+    )
+    print(
+        "For Android/iOS QA, ensure Android signing is configured, then run "
+        "`python3 tool/qa_preflight.py --scope android-ios "
+        f"--team-id {payload['teamID']} --export-method {payload['method']} "
+        "--log docs/qa-builds/preflight-<version+build>.log`."
+    )
+    print(
+        "Keep ios/ExportOptions.plist local and do not add placeholder "
+        "signing/export files."
     )
     return 0
 

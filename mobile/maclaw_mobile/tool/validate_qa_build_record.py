@@ -66,7 +66,7 @@ DOCUMENT_NOTIFICATION_PAYLOAD_RE = re.compile(
     r"(?i)\bdocument-(?:export|draft|upload):[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
 DOCUMENT_DRAFT_ID_RE = re.compile(
-    r"(?i)\bdocument-draft:[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
+    r"(?i)\bdocument-draft(?::|-id[-_:]?)[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b"
 )
 DOCUMENT_SHARE_UPLOAD_TASK_RE = re.compile(
     r"(?i)\b(?:document-)?(?:import|upload|share)[A-Za-z0-9._/-]*\d[A-Za-z0-9._/-]*\b"
@@ -941,6 +941,15 @@ def _is_preflight_result_evidence(value: str) -> bool:
 
 def _is_runtime_boundary_result_evidence(value: str) -> bool:
     normalized = value.strip().lower()
+    required_boundary_markers = (
+        "corelib",
+        "phone-local ssh",
+        "terminal emulator",
+        "phone-side ssh credential",
+        "custom hub url",
+        "redemption-code login",
+        "third-party llm provider/base url/api-key",
+    )
     return (
         _is_auditable_note(value)
         and "runtime" in normalized
@@ -951,6 +960,7 @@ def _is_runtime_boundary_result_evidence(value: str) -> bool:
             or "runtime boundary verified" in normalized
             or "runtime boundary verification" in normalized
         )
+        and all(marker in normalized for marker in required_boundary_markers)
         and any(marker in normalized for marker in (".log", "docs/qa-builds", "attachment"))
     )
 
@@ -1750,6 +1760,7 @@ def _is_ssh_realtime_incremental_output_evidence(value: str) -> bool:
         and "output_seq" in normalized
         and _has_gui_agent_backend_manager_evidence(value)
         and _has_backend_ssh_worker_claim_update_evidence(value)
+        and _claimed_by_identity(value) is not None
         and _rejects_phone_local_ssh_client_evidence(value)
         and _has_gui_agent_backend_session_ref(value)
     )
@@ -2045,6 +2056,36 @@ def _has_gui_agent_backend_session_ref(value: str) -> bool:
     )
 
 
+GENERIC_CLAIMED_BY_VALUES = {
+    "agent",
+    "desktop",
+    "desktop agent",
+    "gui agent",
+    "gui/agent",
+    "gui/agent worker",
+    "maclaw gui agent",
+    "maclaw gui agent worker",
+    "maclaw desktop agent",
+    "maclaw desktop worker",
+    "worker",
+}
+
+
+def _claimed_by_identity(value: str) -> str | None:
+    match = re.search(
+        r"(?i)\bclaimed_by\s*[:=]?\s*(?!output_seq\b)([A-Za-z0-9][A-Za-z0-9._:-]*[0-9._:-][A-Za-z0-9._:-]*)\b",
+        value,
+    )
+    if match is None:
+        return None
+    identity = " ".join(match.group(1).strip().split())
+    if not identity:
+        return None
+    normalized = identity.lower()
+    if normalized in GENERIC_CLAIMED_BY_VALUES:
+        return None
+    return identity
+
 def _has_gui_agent_evidence_line(value: str) -> bool:
     normalized = value.strip().lower()
     return (
@@ -2054,7 +2095,7 @@ def _has_gui_agent_evidence_line(value: str) -> bool:
                 "gui/agent evidence line",
                 "gui/agent 后台会话证据",
                 "后台会话证据",
-                "operator console evidence",
+                "backend-session output panel evidence",
             )
         )
         and re.search(
@@ -2067,15 +2108,9 @@ def _has_gui_agent_evidence_line(value: str) -> bool:
             value,
         )
         is not None
-        and re.search(
-            r"(?i)\bclaimed_by\s*[:=]?\s*(?!output_seq\b)[A-Za-z0-9][A-Za-z0-9 ._:-]{2,}?(?=\s+output_seq\b|[;,]|$)",
-            value,
-        )
-        is not None
+        and _claimed_by_identity(value) is not None
         and re.search(r"(?i)\boutput_seq\s*[:=]?\s*\d+\b", value) is not None
     )
-
-
 def _is_ssh_copied_output_evidence(value: str) -> bool:
     normalized = value.strip().lower()
     return (

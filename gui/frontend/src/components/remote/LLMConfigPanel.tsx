@@ -41,7 +41,7 @@ interface Props {
 }
 
 export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Props) {
-    const { showAlert, showConfirm } = useDialog();
+    const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
     const [loading, setLoading] = useState(false);
@@ -70,6 +70,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [loadError, setLoadError] = useState<string | null>(null);
     const [qrDialogOpen, setQrDialogOpen] = useState(false);
     const loadSeqRef = useRef(0);
+    const fetchModelsSeqRef = useRef(0);
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
@@ -95,14 +96,22 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 const info = await StartAnthropicOAuth();
                 // Open browser for user
                 window.open(info.auth_url, "_blank");
-                // Prompt user for code
-                const code = prompt("请粘贴浏览器页面中显示的授权码 (Authorization Code):");
-                if (!code) {
+                // Prompt user for code via custom dialog (avoid native browser prompt)
+                const code = await showPrompt(
+                    t(
+                        "Please paste the Authorization Code shown in the browser page:",
+                        "请粘贴浏览器页面中显示的授权码 (Authorization Code):",
+                    ),
+                    t("Authorization Code", "授权码"),
+                    {
+                        placeholder: t("Paste authorization code here", "在此粘贴授权码"),
+                    },
+                );
+                if (!code?.trim()) {
                     setDlgTestResult({ ok: false, msg: t("Cancelled", "已取消") });
-                    setOauthBusy(false);
                     return;
                 }
-                await CompleteAnthropicOAuth(code);
+                await CompleteAnthropicOAuth(code.trim());
             } else if (providerName === "GitHub Copilot") {
                 // GitHub Copilot: device code flow
                 const deviceInfo = await StartGitHubCopilotOAuth();
@@ -135,9 +144,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            setOauthBusy(false);
         }
-        setOauthBusy(false);
-    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus]);
+    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, showPrompt]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -316,16 +326,27 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     // Handler: fetch models from any provider's /models endpoint
     const handleFetchProviderModels = useCallback(async () => {
         if (!dlgProvider || !dlgProvider.url) return;
-        if (!dlgProvider.key) {
+        const isManagedAuth = dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso";
+        // OAuth/SSO: tokens are managed internally. Prefer the hydrated key from
+        // GetMaclawLLMProviders; if still empty, let the backend resolve from the
+        // credential store. Never ask the user to paste an API Key for managed auth.
+        if (!isManagedAuth && !dlgProvider.key) {
             setProviderModelsError(t("Please fill in API Key first", "请先填写 API Key"));
             return;
         }
+        const fetchSeq = ++fetchModelsSeqRef.current;
+        const fetchUrl = dlgProvider.url;
+        const fetchKey = dlgProvider.key || "";
+        const fetchProtocol = dlgProvider.protocol || "openai";
+        const fetchAgent = effectiveAgentType(dlgProvider);
         setProviderModelsFetching(true);
         setProviderModelsError(null);
         setProviderModels([]);
         setProviderModelListOpen(false);
         try {
-            const models = await FetchProviderModels(dlgProvider.url, dlgProvider.key, dlgProvider.protocol || "openai", effectiveAgentType(dlgProvider));
+            const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
+            // Discard stale results if the user switched provider mid-fetch.
+            if (fetchSeq !== fetchModelsSeqRef.current) return;
             setProviderModels(models || []);
             if (!models || models.length === 0) {
                 setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
@@ -334,11 +355,23 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setProviderModelListOpen(true);
             }
         } catch (e) {
-            setProviderModelsError(String(e));
+            if (fetchSeq !== fetchModelsSeqRef.current) return;
+            const msg = String(e);
+            // Map backend empty-credential errors to a clearer OAuth/SSO message.
+            if (isManagedAuth && /API Key 为空|API Key is empty|OAuth\/SSO/i.test(msg)) {
+                setProviderModelsError(t(
+                    "Please complete OAuth login first (token is managed internally)",
+                    "请先完成 OAuth 登录（凭证由内部管理，无需填写 API Key）",
+                ));
+            } else {
+                setProviderModelsError(msg);
+            }
             setProviderModels([]);
             setProviderModelListOpen(false);
         } finally {
-            setProviderModelsFetching(false);
+            if (fetchSeq === fetchModelsSeqRef.current) {
+                setProviderModelsFetching(false);
+            }
         }
     }, [dlgProvider, t]);
 

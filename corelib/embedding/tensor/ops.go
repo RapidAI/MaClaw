@@ -54,6 +54,49 @@ func MatMulBiasReLU(out, a, b, bias []float32, M, N, K int) {
 	reluInplace(out[:M*N])
 }
 
+// MatMulBiasAdd: out[m,n] += A@B^T + bias (residual accumulate, float B).
+func MatMulBiasAdd(out, a, b, bias []float32, M, N, K int) {
+	if M <= 0 || N <= 0 || K <= 0 {
+		return
+	}
+	if shouldParallel(M, N, K) {
+		parallelRanges(N, func(ns, ne int) {
+			matMulRangeDualAdd(out, a, b, bias, M, N, K, ns, ne)
+		})
+		return
+	}
+	matMulRangeDualAdd(out, a, b, bias, M, N, K, 0, N)
+}
+
+// MatMulArgmax: per-row argmax of A @ B^T + bias (float B), no full matrix store.
+func MatMulArgmax(outIDs []int, a, b, bias []float32, M, N, K int) {
+	if M <= 0 || N <= 0 || K <= 0 {
+		return
+	}
+	fn := func(ms, me int) {
+		for m := ms; m < me; m++ {
+			aRow := a[m*K : m*K+K]
+			bestID := 0
+			bestVal := float32(-1e38)
+			for n := 0; n < N; n++ {
+				s := vek32.Dot(aRow, b[n*K:n*K+K])
+				if bias != nil {
+					s += bias[n]
+				}
+				if s > bestVal {
+					bestVal, bestID = s, n
+				}
+			}
+			outIDs[m] = bestID
+		}
+	}
+	if M > 1 && poolWorkers() > 1 && int64(M)*int64(N)*int64(K) >= flopThreshold {
+		parallelRanges(M, fn)
+		return
+	}
+	fn(0, M)
+}
+
 func matMulParallelN_M1(out, a, b, bias []float32, N, K int) {
 	parallelRanges(N, func(ns, ne int) {
 		for n := ns; n < ne; n++ {
@@ -145,14 +188,98 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 }
 
 func storeF32Dual4(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
-	out[m*N+n] = d[0] + bn0
-	out[(m+1)*N+n] = d[1] + bn0
-	out[(m+2)*N+n] = d[2] + bn0
-	out[(m+3)*N+n] = d[3] + bn0
-	out[m*N+n+1] = d[4] + bn1
-	out[(m+1)*N+n+1] = d[5] + bn1
-	out[(m+2)*N+n+1] = d[6] + bn1
-	out[(m+3)*N+n+1] = d[7] + bn1
+	// Pair-adjacent (n, n+1) per row for better store locality.
+	base := m * N
+	out[base+n] = d[0] + bn0
+	out[base+n+1] = d[4] + bn1
+	base += N
+	out[base+n] = d[1] + bn0
+	out[base+n+1] = d[5] + bn1
+	base += N
+	out[base+n] = d[2] + bn0
+	out[base+n+1] = d[6] + bn1
+	base += N
+	out[base+n] = d[3] + bn0
+	out[base+n+1] = d[7] + bn1
+}
+
+func storeF32Dual4Add(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
+	base := m * N
+	out[base+n] += d[0] + bn0
+	out[base+n+1] += d[4] + bn1
+	base += N
+	out[base+n] += d[1] + bn0
+	out[base+n+1] += d[5] + bn1
+	base += N
+	out[base+n] += d[2] + bn0
+	out[base+n+1] += d[6] + bn1
+	base += N
+	out[base+n] += d[3] + bn0
+	out[base+n+1] += d[7] + bn1
+}
+
+// matMulRangeDualAdd: out += A@B^T + bias over columns [ns,ne).
+func matMulRangeDualAdd(out, a, b, bias []float32, M, N, K, ns, ne int) {
+	var d4 [4]float32
+	var d8 [8]float32
+	var dDual0, dDual1 [8]float32
+	m := 0
+	for ; m+7 < M; m += 8 {
+		aPanel := a[m*K : (m+8)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			multiDot8DualB(&dDual0, &dDual1, aPanel, b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], K)
+			storeF32Dual4Add(out, m, n, N, &dDual0, bn0, bn1)
+			storeF32Dual4Add(out, m+4, n, N, &dDual1, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			multiDot8(&d8, aPanel, b[n*K:n*K+K], K)
+			for t := 0; t < 8; t++ {
+				out[(m+t)*N+n] += d8[t] + bn
+			}
+		}
+	}
+	for ; m+3 < M; m += 4 {
+		aPanel := a[m*K : (m+4)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			multiDot4DualB(&dDual0, aPanel, b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], K)
+			storeF32Dual4Add(out, m, n, N, &dDual0, bn0, bn1)
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			multiDot4(&d4, aPanel, b[n*K:n*K+K], K)
+			out[m*N+n] += d4[0] + bn
+			out[(m+1)*N+n] += d4[1] + bn
+			out[(m+2)*N+n] += d4[2] + bn
+			out[(m+3)*N+n] += d4[3] + bn
+		}
+	}
+	for ; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := ns; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[m*N+n] += vek32.Dot(aRow, b[n*K:n*K+K]) + bn
+		}
+	}
 }
 
 // Dot computes the dot product of two vectors using SIMD acceleration.
@@ -545,14 +672,47 @@ func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim 
 }
 
 // softmaxInplaceInv writes exp(x-max) into scores and returns 1/sum (0 if empty/zero).
+// amd64: AVX2 max + Schraudolph exp vectorized for the attention hot path.
 func softmaxInplaceInv(scores []float32) float32 {
+	return softmaxInplaceInvASM(scores)
+}
+
+// softmaxInplaceInvDual: two equal-length rows (attention batch).
+func softmaxInplaceInvDual(sc0, sc1 []float32) (float32, float32) {
+	return softmaxInplaceInvDualASM(sc0, sc1)
+}
+
+// softmaxInplaceInvScalar is the pure-Go path (also used for short tails).
+func softmaxInplaceInvScalar(scores []float32) float32 {
 	rows := len(scores)
 	if rows == 0 {
 		return 0
 	}
-	max := vek32.Max(scores)
+	// Unrolled max (avoids vek call overhead on short score rows T~60-100).
+	max := scores[0]
+	i := 1
+	for ; i+3 < rows; i += 4 {
+		v0, v1, v2, v3 := scores[i], scores[i+1], scores[i+2], scores[i+3]
+		if v0 > max {
+			max = v0
+		}
+		if v1 > max {
+			max = v1
+		}
+		if v2 > max {
+			max = v2
+		}
+		if v3 > max {
+			max = v3
+		}
+	}
+	for ; i < rows; i++ {
+		if scores[i] > max {
+			max = scores[i]
+		}
+	}
 	var sum float32
-	i := 0
+	i = 0
 	for ; i+3 < rows; i += 4 {
 		v0 := fastExp(scores[i] - max)
 		v1 := fastExp(scores[i+1] - max)
@@ -575,7 +735,8 @@ func softmaxInplaceInv(scores []float32) float32 {
 // SoftmaxWeightedSumBatched writes nQ attention outputs sharing one V stream.
 // scores: [nQ][rows] row-major; values: strided rows of length dim starting at values[0].
 // Each query t writes out[(qf+t)*outStride+hOff : +dim].
-// Loads each V row once and FMAs into all nQ outputs (big win vs nQ separate passes).
+// Softmax writes exp(x-max) into scores; invSum is folded into V weights (no separate
+// MulNumber pass over the score rows).
 // nQ must be 4 or 8 (SenseVoice attention tiles).
 func SoftmaxWeightedSumBatched(out, scores, values []float32, nQ, rows, vStride, dim, outStride, hOff, qf int) {
 	if nQ <= 0 || rows <= 0 || dim <= 0 {
@@ -584,34 +745,56 @@ func SoftmaxWeightedSumBatched(out, scores, values []float32, nQ, rows, vStride,
 	if nQ > 8 {
 		nQ = 8
 	}
-	// Softmax each score row → exp weights; keep per-row invSum (stack, no alloc).
-	var invArr [8]float32
-	for t := 0; t < nQ; t++ {
-		invArr[t] = softmaxInplaceInv(scores[t*rows : (t+1)*rows])
+	var invs [8]float32
+	// Dual-row softmax when possible (attention nQ=4/8 equal-length rows).
+	t := 0
+	for ; t+1 < nQ; t += 2 {
+		sc0 := scores[t*rows : (t+1)*rows]
+		sc1 := scores[(t+1)*rows : (t+2)*rows]
+		inv0, inv1 := softmaxInplaceInvDual(sc0, sc1)
+		if inv0 == 0 {
+			clear(sc0)
+		}
+		if inv1 == 0 {
+			clear(sc1)
+		}
+		invs[t], invs[t+1] = inv0, inv1
 	}
-	inv := invArr[:nQ]
+	for ; t < nQ; t++ {
+		sc := scores[t*rows : (t+1)*rows]
+		inv := softmaxInplaceInv(sc)
+		if inv == 0 {
+			clear(sc)
+		}
+		invs[t] = inv
+	}
 	// Contiguous headDim=128 + small batch: specialized kernel.
 	if dim == 128 && vStride == 128 && (nQ == 8 || nQ == 4) {
-		weightedSumBatchedContig128(out, scores, values, inv, nQ, rows, outStride, hOff, qf)
+		weightedSumBatchedContig128(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
 		return
 	}
-	// Generic fallback: one SoftmaxWeightedSum per query (scores already exp'd).
+	// Generic fallback: fold inv per query via scaled weighted sum.
 	for t := 0; t < nQ; t++ {
 		oOff := (qf+t)*outStride + hOff
 		sc := scores[t*rows : (t+1)*rows]
-		if inv[t] == 0 {
+		inv := invs[t]
+		if inv == 0 {
 			clear(out[oOff : oOff+dim])
 			continue
 		}
-		weightedSumStridedScaled(out[oOff:oOff+dim], sc, values, rows, vStride, dim, inv[t])
+		weightedSumStridedScaled(out[oOff:oOff+dim], sc, values, rows, vStride, dim, inv)
 	}
 }
 
 // weightedSumBatchedContig128: nQ∈{4,8} queries × contiguous V [rows][128].
-// Outer loop over V rows so each 128-vector is loaded once.
-func weightedSumBatchedContig128(out, scores, values, inv []float32, nQ, rows, outStride, hOff, qf int) {
+// scores hold exp(x-max); invs[t] is 1/sum for query t (folded into weights).
+// Outer loop over V rows so each 128-vector is loaded once (AVX2 FMA kernel).
+// First V row seeds outputs (set); remaining rows accumulate — no clear pass.
+func weightedSumBatchedContig128(out, scores, values []float32, nQ, rows, outStride, hOff, qf int, invs [8]float32) {
 	const dim = 128
-	// Resolve output row slices.
+	if rows <= 0 {
+		return
+	}
 	var o0, o1, o2, o3, o4, o5, o6, o7 []float32
 	o0 = out[(qf+0)*outStride+hOff : (qf+0)*outStride+hOff+dim]
 	o1 = out[(qf+1)*outStride+hOff : (qf+1)*outStride+hOff+dim]
@@ -624,186 +807,79 @@ func weightedSumBatchedContig128(out, scores, values, inv []float32, nQ, rows, o
 		o7 = out[(qf+7)*outStride+hOff : (qf+7)*outStride+hOff+dim]
 	}
 
-	// Seed from V[0]
-	v0 := values[:dim]
-	w0 := scores[0*rows+0] * inv[0]
-	w1 := scores[1*rows+0] * inv[1]
-	w2 := scores[2*rows+0] * inv[2]
-	w3 := scores[3*rows+0] * inv[3]
-	var w4, w5, w6, w7 float32
+	// Seed: prefer set-add dual on V[0],V[1] (no out reload), then dual-add pairs.
 	if nQ >= 8 {
-		w4 = scores[4*rows+0] * inv[4]
-		w5 = scores[5*rows+0] * inv[5]
-		w6 = scores[6*rows+0] * inv[6]
-		w7 = scores[7*rows+0] * inv[7]
-	}
-	for i := 0; i < dim; i += 8 {
-		v := v0[i : i+8]
-		o0[i] = w0 * v[0]
-		o0[i+1] = w0 * v[1]
-		o0[i+2] = w0 * v[2]
-		o0[i+3] = w0 * v[3]
-		o0[i+4] = w0 * v[4]
-		o0[i+5] = w0 * v[5]
-		o0[i+6] = w0 * v[6]
-		o0[i+7] = w0 * v[7]
-		o1[i] = w1 * v[0]
-		o1[i+1] = w1 * v[1]
-		o1[i+2] = w1 * v[2]
-		o1[i+3] = w1 * v[3]
-		o1[i+4] = w1 * v[4]
-		o1[i+5] = w1 * v[5]
-		o1[i+6] = w1 * v[6]
-		o1[i+7] = w1 * v[7]
-		o2[i] = w2 * v[0]
-		o2[i+1] = w2 * v[1]
-		o2[i+2] = w2 * v[2]
-		o2[i+3] = w2 * v[3]
-		o2[i+4] = w2 * v[4]
-		o2[i+5] = w2 * v[5]
-		o2[i+6] = w2 * v[6]
-		o2[i+7] = w2 * v[7]
-		o3[i] = w3 * v[0]
-		o3[i+1] = w3 * v[1]
-		o3[i+2] = w3 * v[2]
-		o3[i+3] = w3 * v[3]
-		o3[i+4] = w3 * v[4]
-		o3[i+5] = w3 * v[5]
-		o3[i+6] = w3 * v[6]
-		o3[i+7] = w3 * v[7]
-		if nQ >= 8 {
-			o4[i] = w4 * v[0]
-			o4[i+1] = w4 * v[1]
-			o4[i+2] = w4 * v[2]
-			o4[i+3] = w4 * v[3]
-			o4[i+4] = w4 * v[4]
-			o4[i+5] = w4 * v[5]
-			o4[i+6] = w4 * v[6]
-			o4[i+7] = w4 * v[7]
-			o5[i] = w5 * v[0]
-			o5[i+1] = w5 * v[1]
-			o5[i+2] = w5 * v[2]
-			o5[i+3] = w5 * v[3]
-			o5[i+4] = w5 * v[4]
-			o5[i+5] = w5 * v[5]
-			o5[i+6] = w5 * v[6]
-			o5[i+7] = w5 * v[7]
-			o6[i] = w6 * v[0]
-			o6[i+1] = w6 * v[1]
-			o6[i+2] = w6 * v[2]
-			o6[i+3] = w6 * v[3]
-			o6[i+4] = w6 * v[4]
-			o6[i+5] = w6 * v[5]
-			o6[i+6] = w6 * v[6]
-			o6[i+7] = w6 * v[7]
-			o7[i] = w7 * v[0]
-			o7[i+1] = w7 * v[1]
-			o7[i+2] = w7 * v[2]
-			o7[i+3] = w7 * v[3]
-			o7[i+4] = w7 * v[4]
-			o7[i+5] = w7 * v[5]
-			o7[i+6] = w7 * v[6]
-			o7[i+7] = w7 * v[7]
+		inv0, inv1, inv2, inv3 := invs[0], invs[1], invs[2], invs[3]
+		inv4, inv5, inv6, inv7 := invs[4], invs[5], invs[6], invs[7]
+		var wa, wb [8]float32
+		r := 0
+		if rows >= 2 {
+			vA := values[:dim]
+			vB := values[dim : 2*dim]
+			wa[0], wa[1], wa[2], wa[3] = scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3
+			wa[4], wa[5], wa[6], wa[7] = scores[4*rows]*inv4, scores[5*rows]*inv5, scores[6*rows]*inv6, scores[7*rows]*inv7
+			wb[0], wb[1], wb[2], wb[3] = scores[0*rows+1]*inv0, scores[1*rows+1]*inv1, scores[2*rows+1]*inv2, scores[3*rows+1]*inv3
+			wb[4], wb[5], wb[6], wb[7] = scores[4*rows+1]*inv4, scores[5*rows+1]*inv5, scores[6*rows+1]*inv6, scores[7*rows+1]*inv7
+			wsumBatched8SetAdd128Dual(o0, o1, o2, o3, o4, o5, o6, o7, vA, vB, &wa, &wb)
+			r = 2
+		} else if rows == 1 {
+			wsumBatched8Set128(
+				o0, o1, o2, o3, o4, o5, o6, o7, values[:dim],
+				scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+				scores[4*rows]*inv4, scores[5*rows]*inv5, scores[6*rows]*inv6, scores[7*rows]*inv7,
+			)
+			return
 		}
+		for ; r+1 < rows; r += 2 {
+			vA := values[r*dim : (r+1)*dim]
+			vB := values[(r+1)*dim : (r+2)*dim]
+			wa[0], wa[1], wa[2], wa[3] = scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3
+			wa[4], wa[5], wa[6], wa[7] = scores[4*rows+r]*inv4, scores[5*rows+r]*inv5, scores[6*rows+r]*inv6, scores[7*rows+r]*inv7
+			wb[0], wb[1], wb[2], wb[3] = scores[0*rows+r+1]*inv0, scores[1*rows+r+1]*inv1, scores[2*rows+r+1]*inv2, scores[3*rows+r+1]*inv3
+			wb[4], wb[5], wb[6], wb[7] = scores[4*rows+r+1]*inv4, scores[5*rows+r+1]*inv5, scores[6*rows+r+1]*inv6, scores[7*rows+r+1]*inv7
+			wsumBatched8Add128Dual(o0, o1, o2, o3, o4, o5, o6, o7, vA, vB, &wa, &wb)
+		}
+		for ; r < rows; r++ {
+			vrow := values[r*dim : (r+1)*dim]
+			wsumBatched8Add128(
+				o0, o1, o2, o3, o4, o5, o6, o7, vrow,
+				scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+				scores[4*rows+r]*inv4, scores[5*rows+r]*inv5, scores[6*rows+r]*inv6, scores[7*rows+r]*inv7,
+			)
+		}
+		return
 	}
-
-	for r := 1; r < rows; r++ {
+	inv0, inv1, inv2, inv3 := invs[0], invs[1], invs[2], invs[3]
+	r := 0
+	if rows >= 2 {
+		wsumBatched4SetAdd128Dual(
+			o0, o1, o2, o3, values[:dim], values[dim:2*dim],
+			scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+			scores[0*rows+1]*inv0, scores[1*rows+1]*inv1, scores[2*rows+1]*inv2, scores[3*rows+1]*inv3,
+		)
+		r = 2
+	} else if rows == 1 {
+		wsumBatched4Set128(
+			o0, o1, o2, o3, values[:dim],
+			scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+		)
+		return
+	}
+	for ; r+1 < rows; r += 2 {
+		vA := values[r*dim : (r+1)*dim]
+		vB := values[(r+1)*dim : (r+2)*dim]
+		wsumBatched4Add128Dual(
+			o0, o1, o2, o3, vA, vB,
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+			scores[0*rows+r+1]*inv0, scores[1*rows+r+1]*inv1, scores[2*rows+r+1]*inv2, scores[3*rows+r+1]*inv3,
+		)
+	}
+	for ; r < rows; r++ {
 		vrow := values[r*dim : (r+1)*dim]
-		w0 = scores[0*rows+r] * inv[0]
-		w1 = scores[1*rows+r] * inv[1]
-		w2 = scores[2*rows+r] * inv[2]
-		w3 = scores[3*rows+r] * inv[3]
-		if nQ >= 8 {
-			w4 = scores[4*rows+r] * inv[4]
-			w5 = scores[5*rows+r] * inv[5]
-			w6 = scores[6*rows+r] * inv[6]
-			w7 = scores[7*rows+r] * inv[7]
-		}
-		for i := 0; i < dim; i += 8 {
-			v := vrow[i : i+8]
-			if w0 != 0 {
-				o0[i] += w0 * v[0]
-				o0[i+1] += w0 * v[1]
-				o0[i+2] += w0 * v[2]
-				o0[i+3] += w0 * v[3]
-				o0[i+4] += w0 * v[4]
-				o0[i+5] += w0 * v[5]
-				o0[i+6] += w0 * v[6]
-				o0[i+7] += w0 * v[7]
-			}
-			if w1 != 0 {
-				o1[i] += w1 * v[0]
-				o1[i+1] += w1 * v[1]
-				o1[i+2] += w1 * v[2]
-				o1[i+3] += w1 * v[3]
-				o1[i+4] += w1 * v[4]
-				o1[i+5] += w1 * v[5]
-				o1[i+6] += w1 * v[6]
-				o1[i+7] += w1 * v[7]
-			}
-			if w2 != 0 {
-				o2[i] += w2 * v[0]
-				o2[i+1] += w2 * v[1]
-				o2[i+2] += w2 * v[2]
-				o2[i+3] += w2 * v[3]
-				o2[i+4] += w2 * v[4]
-				o2[i+5] += w2 * v[5]
-				o2[i+6] += w2 * v[6]
-				o2[i+7] += w2 * v[7]
-			}
-			if w3 != 0 {
-				o3[i] += w3 * v[0]
-				o3[i+1] += w3 * v[1]
-				o3[i+2] += w3 * v[2]
-				o3[i+3] += w3 * v[3]
-				o3[i+4] += w3 * v[4]
-				o3[i+5] += w3 * v[5]
-				o3[i+6] += w3 * v[6]
-				o3[i+7] += w3 * v[7]
-			}
-			if nQ >= 8 {
-				if w4 != 0 {
-					o4[i] += w4 * v[0]
-					o4[i+1] += w4 * v[1]
-					o4[i+2] += w4 * v[2]
-					o4[i+3] += w4 * v[3]
-					o4[i+4] += w4 * v[4]
-					o4[i+5] += w4 * v[5]
-					o4[i+6] += w4 * v[6]
-					o4[i+7] += w4 * v[7]
-				}
-				if w5 != 0 {
-					o5[i] += w5 * v[0]
-					o5[i+1] += w5 * v[1]
-					o5[i+2] += w5 * v[2]
-					o5[i+3] += w5 * v[3]
-					o5[i+4] += w5 * v[4]
-					o5[i+5] += w5 * v[5]
-					o5[i+6] += w5 * v[6]
-					o5[i+7] += w5 * v[7]
-				}
-				if w6 != 0 {
-					o6[i] += w6 * v[0]
-					o6[i+1] += w6 * v[1]
-					o6[i+2] += w6 * v[2]
-					o6[i+3] += w6 * v[3]
-					o6[i+4] += w6 * v[4]
-					o6[i+5] += w6 * v[5]
-					o6[i+6] += w6 * v[6]
-					o6[i+7] += w6 * v[7]
-				}
-				if w7 != 0 {
-					o7[i] += w7 * v[0]
-					o7[i+1] += w7 * v[1]
-					o7[i+2] += w7 * v[2]
-					o7[i+3] += w7 * v[3]
-					o7[i+4] += w7 * v[4]
-					o7[i+5] += w7 * v[5]
-					o7[i+6] += w7 * v[6]
-					o7[i+7] += w7 * v[7]
-				}
-			}
-		}
+		wsumBatched4Add128(
+			o0, o1, o2, o3, vrow,
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+		)
 	}
 }
 
@@ -923,8 +999,21 @@ func MultiDot4DualB(out *[8]float32, a, b0, b1 []float32, K int) {
 	multiDot4DualB(out, a, b0, b1, K)
 }
 
+// MultiDot8DualB computes 8 A rows × 2 B vectors.
+// out0/out1 each hold dual-4 layout: [0:4]=b0, [4:8]=b1 for rows 0-3 / 4-7.
+// B stays hot across the two dual-4 micro-kernels.
+func MultiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
+	multiDot8DualB(out0, out1, a, b0, b1, K)
+}
+
+// MultiDot8TripleB computes 8 A rows × 3 B vectors via two triple-4 kernels.
+// out0/out1 each hold triple-4 layout: [0:4]=b0, [4:8]=b1, [8:12]=b2.
+func MultiDot8TripleB(out0, out1 *[12]float32, a, b0, b1, b2 []float32, K int) {
+	multiDot8TripleB(out0, out1, a, b0, b1, b2, K)
+}
+
 // FmaddInto computes out[i] += a[i] * b[i] (fused multiply-add, in-place on out).
-// 16-wide unroll for better ILP / auto-vectorization on FSMN hot path (hidden=512).
+// Dispatches to AVX2+FMA when available (FSMN hidden=512 hot path).
 func FmaddInto(out, a, b []float32) {
 	n := len(out)
 	if n > len(a) {
@@ -933,6 +1022,193 @@ func FmaddInto(out, a, b []float32) {
 	if n > len(b) {
 		n = len(b)
 	}
+	if n == 0 {
+		return
+	}
+	fmaddInto(out[:n], a[:n], b[:n])
+}
+
+// FmaddPlusOneInto computes out[i] += a[i]*(b[i]+1) = a[i]*b[i] + a[i].
+// Used by FSMN to fold residual V into the center kernel term (ki==pad).
+func FmaddPlusOneInto(out, a, b []float32) {
+	n := len(out)
+	if n > len(a) {
+		n = len(a)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	fmaddPlusOneInto(out[:n], a[:n], b[:n])
+}
+
+// Mul2Into: o_r[i] = a_r[i]*b[i] for r=0..1 (FSMN dual-frame seed).
+func Mul2Into(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	mul2Into(o0[:n], o1[:n], a0[:n], a1[:n], b[:n])
+}
+
+// Fmadd2Into: o_r[i] += a_r[i]*b[i] for r=0..1.
+func Fmadd2Into(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	fmadd2Into(o0[:n], o1[:n], a0[:n], a1[:n], b[:n])
+}
+
+// FmaddPlusOne2Into: o_r[i] += a_r[i]*(b[i]+1) for r=0..1.
+func FmaddPlusOne2Into(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	fmaddPlusOne2Into(o0[:n], o1[:n], a0[:n], a1[:n], b[:n])
+}
+
+// Mul4Into: o_r[i] = a_r[i]*b[i] for r=0..3 (FSMN seed; loads b once).
+func Mul4Into(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(o2) {
+		n = len(o2)
+	}
+	if n > len(o3) {
+		n = len(o3)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(a2) {
+		n = len(a2)
+	}
+	if n > len(a3) {
+		n = len(a3)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	mul4Into(o0[:n], o1[:n], o2[:n], o3[:n], a0[:n], a1[:n], a2[:n], a3[:n], b[:n])
+}
+
+// Fmadd4Into: o_r[i] += a_r[i]*b[i] for r=0..3 (FSMN quad; loads b once).
+func Fmadd4Into(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(o2) {
+		n = len(o2)
+	}
+	if n > len(o3) {
+		n = len(o3)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(a2) {
+		n = len(a2)
+	}
+	if n > len(a3) {
+		n = len(a3)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	fmadd4Into(o0[:n], o1[:n], o2[:n], o3[:n], a0[:n], a1[:n], a2[:n], a3[:n], b[:n])
+}
+
+// FmaddPlusOne4Into: o_r[i] += a_r[i]*(b[i]+1) for r=0..3 (FSMN center+V).
+func FmaddPlusOne4Into(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	if n > len(o1) {
+		n = len(o1)
+	}
+	if n > len(o2) {
+		n = len(o2)
+	}
+	if n > len(o3) {
+		n = len(o3)
+	}
+	if n > len(a0) {
+		n = len(a0)
+	}
+	if n > len(a1) {
+		n = len(a1)
+	}
+	if n > len(a2) {
+		n = len(a2)
+	}
+	if n > len(a3) {
+		n = len(a3)
+	}
+	if n > len(b) {
+		n = len(b)
+	}
+	if n == 0 {
+		return
+	}
+	fmaddPlusOne4Into(o0[:n], o1[:n], o2[:n], o3[:n], a0[:n], a1[:n], a2[:n], a3[:n], b[:n])
+}
+
+// Scalar fallbacks (used by generic/arm64 and amd64 non-AVX2).
+func fmaddIntoScalar(out, a, b []float32) {
+	n := len(out)
 	i := 0
 	for ; i+15 < n; i += 16 {
 		out[i] += a[i] * b[i]
@@ -967,16 +1243,68 @@ func FmaddInto(out, a, b []float32) {
 	}
 }
 
-// FmaddPlusOneInto computes out[i] += a[i]*(b[i]+1) = a[i]*b[i] + a[i].
-// Used by FSMN to fold residual V into the center kernel term (ki==pad).
-func FmaddPlusOneInto(out, a, b []float32) {
+func mul2IntoScalar(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bi := b[i]
+		o0[i] = a0[i] * bi
+		o1[i] = a1[i] * bi
+	}
+}
+
+func fmadd2IntoScalar(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bi := b[i]
+		o0[i] += a0[i] * bi
+		o1[i] += a1[i] * bi
+	}
+}
+
+func fmaddPlusOne2IntoScalar(o0, o1, a0, a1, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bp1 := b[i] + 1
+		o0[i] += a0[i] * bp1
+		o1[i] += a1[i] * bp1
+	}
+}
+
+func mul4IntoScalar(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bi := b[i]
+		o0[i] = a0[i] * bi
+		o1[i] = a1[i] * bi
+		o2[i] = a2[i] * bi
+		o3[i] = a3[i] * bi
+	}
+}
+
+func fmadd4IntoScalar(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bi := b[i]
+		o0[i] += a0[i] * bi
+		o1[i] += a1[i] * bi
+		o2[i] += a2[i] * bi
+		o3[i] += a3[i] * bi
+	}
+}
+
+func fmaddPlusOne4IntoScalar(o0, o1, o2, o3, a0, a1, a2, a3, b []float32) {
+	n := len(o0)
+	for i := 0; i < n; i++ {
+		bp1 := b[i] + 1
+		o0[i] += a0[i] * bp1
+		o1[i] += a1[i] * bp1
+		o2[i] += a2[i] * bp1
+		o3[i] += a3[i] * bp1
+	}
+}
+
+func fmaddPlusOneIntoScalar(out, a, b []float32) {
 	n := len(out)
-	if n > len(a) {
-		n = len(a)
-	}
-	if n > len(b) {
-		n = len(b)
-	}
 	i := 0
 	for ; i+15 < n; i += 16 {
 		out[i] += a[i]*b[i] + a[i]

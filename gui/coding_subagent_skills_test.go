@@ -64,6 +64,34 @@ func TestBigramJaccard_Empty(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentSkillFitsTaskFiltersDocumentSkillsForSoftwareTask(t *testing.T) {
+	task := "开发一个 windows 文件重定向驱动，支持 windows 8,10,11 (tests)"
+	for _, doc := range []string{
+		"pptx-generator Generate PowerPoint presentation slides deck",
+		"contract-review Review contract clauses and legal document text",
+		"pdf-word Convert PDF and Word docx documents",
+	} {
+		if codingSubAgentSkillFitsTask(task, doc) {
+			t.Fatalf("document skill %q should not fit software driver task", doc)
+		}
+	}
+}
+
+func TestCodingSubAgentSkillFitsTaskAllowsCodingAndExplicitDocumentIntent(t *testing.T) {
+	driverTask := "开发一个 windows 文件重定向驱动，支持 tests"
+	if !codingSubAgentSkillFitsTask(driverTask, "eslint-fixer 自动修复代码 lint 和 test 报错") {
+		t.Fatal("coding skill should fit software task")
+	}
+	if !codingSubAgentSkillFitsTask(driverTask, "ui-review 分析前端界面截图并给出优化建议") {
+		t.Fatal("UI skill should remain available for coding/frontend-adjacent tasks")
+	}
+
+	docTask := "为这个驱动项目生成开发文档和 pptx 演示"
+	if !codingSubAgentSkillFitsTask(docTask, "pptx-generator Generate PowerPoint presentation slides deck") {
+		t.Fatal("explicit document request should allow document skills")
+	}
+}
+
 func TestBuildCodingSubAgentSkillSection_Empty(t *testing.T) {
 	section := buildCodingSubAgentSkillSection(nil)
 	if section != "" {

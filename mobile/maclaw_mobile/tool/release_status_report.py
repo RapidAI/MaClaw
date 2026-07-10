@@ -137,6 +137,36 @@ def _preflight_command(status: ReleaseStatus) -> str:
     )
 
 
+def _preflight_blocker_setup_commands(status: ReleaseStatus) -> list[str]:
+    commands: list[str] = []
+    blocker_names = {
+        check.name.lower()
+        for check in status.preflight_checks
+        if check.is_blocker
+    }
+    if (
+        release_evidence_commands.scope_covers_android(status.scope)
+        and "android local signing inputs" in blocker_names
+    ):
+        commands.append("python3 tool/setup_android_signing.py")
+    if (
+        release_evidence_commands.scope_covers_ios(status.scope)
+        and "ios export options" in blocker_names
+    ):
+        commands.append(
+            "python3 tool/setup_ios_export_options.py --team-id "
+            + (
+                status.ios_team_id
+                or release_evidence_commands.DEFAULT_SIGNING_TEAM_ID
+            )
+            + " --export-method "
+            + (
+                status.ios_export_method
+                or release_evidence_commands.DEFAULT_EXPORT_METHOD
+            ),
+        )
+    return commands
+
 def _uses_angle_bracket_placeholders(status: ReleaseStatus) -> bool:
     if not release_evidence_commands.scope_covers_ios(status.scope):
         return False
@@ -156,6 +186,14 @@ def _records_dir_label(status: ReleaseStatus) -> str:
         return release_evidence_commands.DEFAULT_QA_RECORDS_DIR
     return str(records_dir)
 
+
+def write_log(path: Path, text: str, *, force: bool = False) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(
+            f"{path} already exists; pass --force to overwrite release status log",
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 def format_status(status: ReleaseStatus) -> str:
     records_dir_label = _records_dir_label(status)
@@ -236,6 +274,17 @@ def format_status(status: ReleaseStatus) -> str:
             for check in preflight_blockers:
                 lines.append(f"- [Preflight] {check.name}")
                 lines.extend(f"  - {detail}" for detail in check.details)
+            setup_commands = _preflight_blocker_setup_commands(status)
+            if setup_commands:
+                lines.append("- Run the setup helper commands for the missing local release inputs:")
+                lines.extend(f"  - `{command}`" for command in setup_commands)
+                if any(command == "python3 tool/setup_android_signing.py" for command in setup_commands):
+                    lines.append(
+                        "  - Android signing setup requires MACLAW_ANDROID_STORE_FILE, MACLAW_ANDROID_STORE_PASSWORD, MACLAW_ANDROID_KEY_ALIAS, and MACLAW_ANDROID_KEY_PASSWORD in the environment.",
+                    )
+                lines.append(
+                    "- Do not add placeholder signing/export files; use real local signing material or keep the release in pre-signing setup state.",
+                )
             lines.append(
                 f"- Re-run `{_preflight_command(status)}` after fixing the blockers.",
             )
@@ -255,7 +304,7 @@ def format_status(status: ReleaseStatus) -> str:
                 "or worker handoff plus explicit worker claim/update evidence and "
                 "`ssh_session` realtime `output_chunk`/`output_seq` proof, not phone-local/ad hoc terminal evidence, phone-initiated "
                 "interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend "
-                "session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, and AI/digital-employee handoff evidence tied to that "
+                "session output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID, and AI/digital-employee handoff evidence tied to that "
                 "same GUI/agent-bound backend_session_id when used.",
             )
         if blocking_invalid_records:
@@ -282,7 +331,7 @@ def format_status(status: ReleaseStatus) -> str:
                 "`output_chunk`/`output_seq` proof, plus "
                 "not phone-local/ad hoc terminal evidence, phone-initiated interrupt "
                 "evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` showing GUI/agent Ctrl+C handling, copied backend session "
-                "output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, claimed_by, and numeric output_seq, and AI/digital-employee handoff evidence tied to that same GUI/agent-bound "
+                "output with a GUI/agent evidence line containing actual values for Hub session ID, backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq, preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID, and AI/digital-employee handoff evidence tied to that same GUI/agent-bound "
                 "backend_session_id when used.",
             )
             lines.append(
@@ -349,6 +398,16 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="QA build records directory. Defaults to docs/qa-builds under root.",
     )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        help="Optional path to save the release status report output.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing --log file.",
+    )
     args = parser.parse_args(argv)
 
     status = build_status(
@@ -359,6 +418,12 @@ def main(argv: list[str] | None = None) -> int:
         records_dir=args.records_dir,
     )
     output = format_status(status)
+    try:
+        if args.log:
+            write_log(args.log, output, force=args.force)
+    except OSError as exc:
+        print(f"Failed to write release status log {args.log}: {exc}", file=sys.stderr)
+        return 1
     if status.ready:
         print(output, end="")
         return 0

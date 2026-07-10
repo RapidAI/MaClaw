@@ -169,6 +169,33 @@ func TestEmitCodeFileEvents_ReadsFileContent(t *testing.T) {
 	m.emitCodeFileEvents(s, events)
 }
 
+func TestBuildRemoteCodeFileEventFileReadUsesReadOpType(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "hello.go")
+	content := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	evt, ok := buildRemoteCodeFileEvent(&RemoteSession{ID: "test-session", ProjectPath: tmpDir}, ImportantEvent{
+		Type:        "file.read",
+		RelatedFile: "hello.go",
+	})
+
+	if !ok {
+		t.Fatal("buildRemoteCodeFileEvent returned ok=false")
+	}
+	if evt.OpType != "read" {
+		t.Fatalf("opType = %q, want read", evt.OpType)
+	}
+	if evt.Original != "" {
+		t.Fatalf("read original = %q, want empty", evt.Original)
+	}
+	if evt.Content != content {
+		t.Fatalf("content = %q, want %q", evt.Content, content)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // emitCodeFileEvents — file.change determines opType as "modify"
 // ---------------------------------------------------------------------------
@@ -236,6 +263,96 @@ func TestBuildCodingSubAgentCodeFileEvents(t *testing.T) {
 	}
 	if events[1].Original != "" {
 		t.Fatalf("created original = %q, want empty", events[1].Original)
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsForPathsHonorsForceOpen(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "preview.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := buildCodingSubAgentCodeFileEventsForPaths("local-tools", tmpDir, []subAgentCodeEventInput{{
+		path:      path,
+		created:   true,
+		forceOpen: true,
+	}})
+
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(events), events)
+	}
+	if events[0].FilePath != "preview.go" || events[0].OpType != "create" {
+		t.Fatalf("event = %#v, want create preview.go", events[0])
+	}
+	if !events[0].ForceOpen {
+		t.Fatal("ForceOpen = false, want true")
+	}
+	if events[0].Original != "" {
+		t.Fatalf("created original = %q, want empty", events[0].Original)
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsForPathsUsesOriginalOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "preview.go")
+	if err := os.WriteFile(path, []byte("package main\n\nconst value = 2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := "package main\n\nconst value = 1\n"
+	events := buildCodingSubAgentCodeFileEventsForPaths("local-tools", tmpDir, []subAgentCodeEventInput{{
+		path:      path,
+		forceOpen: true,
+		original:  &original,
+	}})
+
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(events), events)
+	}
+	if events[0].OpType != "modify" {
+		t.Fatalf("opType = %q, want modify", events[0].OpType)
+	}
+	if events[0].Original != original {
+		t.Fatalf("original = %q, want %q", events[0].Original, original)
+	}
+	if events[0].Content != "package main\n\nconst value = 2\n" {
+		t.Fatalf("content = %q", events[0].Content)
+	}
+}
+
+func TestLocalToolCodePreviewOriginalGuardsSizeAndBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	textPath := filepath.Join(tmpDir, "preview.txt")
+	if err := os.WriteFile(textPath, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := localToolCodePreviewOriginal(textPath); got != "before\n" || !ok {
+		t.Fatalf("text original = %q, %v; want before, true", got, ok)
+	}
+
+	emptyPath := filepath.Join(tmpDir, "empty.txt")
+	if err := os.WriteFile(emptyPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := localToolCodePreviewOriginal(emptyPath); got != "" || !ok {
+		t.Fatalf("empty original = %q, %v; want empty, true", got, ok)
+	}
+
+	binaryPath := filepath.Join(tmpDir, "preview.bin")
+	if err := os.WriteFile(binaryPath, []byte{0xff, 0x00, 0x01}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := localToolCodePreviewOriginal(binaryPath); got != "" || ok {
+		t.Fatalf("binary original = %q, %v; want empty, false", got, ok)
+	}
+
+	largePath := filepath.Join(tmpDir, "large.txt")
+	if err := os.WriteFile(largePath, make([]byte, maxCodeFileSize+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := localToolCodePreviewOriginal(largePath); got != "" || ok {
+		t.Fatalf("large original length = %d, %v; want empty, false", len(got), ok)
 	}
 }
 

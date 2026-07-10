@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +50,336 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 		t.Fatalf("doFetchModelsRequest() error = %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestPreserveManagedAuthSecretsKeepsOAuthKey(t *testing.T) {
+	existing := []corelib.MaclawLLMProvider{
+		{Name: "GitHub Copilot", AuthType: "oauth", Key: "copilot-token", RefreshToken: "gh-token", TokenExpiresAt: 123},
+		{Name: "DeepSeek", AuthType: "api_key", Key: "sk-deepseek"},
+	}
+	incoming := []corelib.MaclawLLMProvider{
+		{Name: "GitHub Copilot", AuthType: "oauth", Key: "", Model: "claude-sonnet-4"},
+		{Name: "DeepSeek", AuthType: "api_key", Key: ""},
+	}
+	got := preserveManagedAuthSecrets(incoming, existing)
+	if got[0].Key != "copilot-token" {
+		t.Fatalf("oauth key = %q, want preserved copilot-token", got[0].Key)
+	}
+	if got[0].RefreshToken != "gh-token" {
+		t.Fatalf("oauth refresh = %q, want preserved gh-token", got[0].RefreshToken)
+	}
+	if got[0].TokenExpiresAt != 123 {
+		t.Fatalf("oauth expires = %d, want 123", got[0].TokenExpiresAt)
+	}
+	// Non-managed providers should not be backfilled from empty UI fields.
+	if got[1].Key != "" {
+		t.Fatalf("api_key provider key = %q, want empty (user cleared)", got[1].Key)
+	}
+}
+
+func TestUrlsMatchForModelFetch(t *testing.T) {
+	if !urlsMatchForModelFetch("https://api.githubcopilot.com", "https://api.githubcopilot.com/") {
+		t.Fatal("expected trailing slash match")
+	}
+	if !urlsMatchForModelFetch("https://api.anthropic.com", "https://api.anthropic.com/v1") {
+		t.Fatal("expected parent/child path match")
+	}
+	if urlsMatchForModelFetch("https://api.githubcopilot.com", "https://api.anthropic.com") {
+		t.Fatal("expected different hosts not to match")
+	}
+}
+
+func TestResolveAPIKeyForModelFetchUsesProviderKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", AuthType: "oauth", Key: "internal-copilot-key"},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got := app.resolveAPIKeyForModelFetch("https://api.githubcopilot.com")
+	if got != "internal-copilot-key" {
+		t.Fatalf("resolveAPIKeyForModelFetch = %q, want internal-copilot-key", got)
+	}
+}
+
+func TestResolveAPIKeyForModelFetchPrefersExactManagedMatch(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			// Prefix match only — should lose to exact OAuth match below.
+			{Name: "Custom1", URL: "https://api.example.com", AuthType: "api_key", Key: "wrong-prefix-key", IsCustom: true},
+			{Name: "GitHub Copilot", URL: "https://api.example.com/v1", AuthType: "oauth", Key: "exact-oauth-key"},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got := app.resolveAPIKeyForModelFetch("https://api.example.com/v1")
+	if got != "exact-oauth-key" {
+		t.Fatalf("resolveAPIKeyForModelFetch = %q, want exact-oauth-key", got)
+	}
+}
+
+func TestResolveAPIKeyForModelFetchDoesNotUseGitHubTokenAsAPIKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			// Key empty: must NOT fall back to OAuthAccessToken (GitHub token).
+			{
+				Name:             "GitHub Copilot",
+				URL:              "https://api.githubcopilot.com",
+				AuthType:         "oauth",
+				Key:              "",
+				OAuthAccessToken: "gho_github_token_not_copilot_api_key",
+			},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got := app.resolveAPIKeyForModelFetch("https://api.githubcopilot.com")
+	if got != "" {
+		t.Fatalf("resolveAPIKeyForModelFetch = %q, want empty (must not use GitHub OAuthAccessToken as API key)", got)
+	}
+}
+
+func TestResolveAPIKeyForModelFetchUsesCopilotKeyNotOAuthAccessToken(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				Name:             "GitHub Copilot",
+				URL:              "https://api.githubcopilot.com",
+				AuthType:         "oauth",
+				Key:              "copilot-api-token",
+				OAuthAccessToken: "gho_github_token_should_not_win",
+			},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got := app.resolveAPIKeyForModelFetch("https://api.githubcopilot.com")
+	if got != "copilot-api-token" {
+		t.Fatalf("resolveAPIKeyForModelFetch = %q, want copilot-api-token", got)
+	}
+}
+
+func TestFetchProviderModelsResolvesEmptyOAuthKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer internal-copilot-key" {
+			t.Fatalf("Authorization = %q, want Bearer internal-copilot-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4","name":"Claude Sonnet 4"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "GitHub Copilot", URL: srv.URL, AuthType: "oauth", Key: "internal-copilot-key"},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	// Empty apiKey: must resolve from managed OAuth provider config.
+	items, err := app.fetchProviderModels(srv.URL, "", "openai", "openclaw", false)
+	if err != nil {
+		t.Fatalf("fetchProviderModels() error = %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "claude-sonnet-4" {
+		t.Fatalf("items = %+v, want claude-sonnet-4", items)
+	}
+}
+
+func TestGetMaclawLLMProvidersHydratesOAuthKeyFromCredentialStore(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	storePath := filepath.Join(tmpHome, "credentials.json")
+	store := oauth.NewFileCredentialStore(storePath)
+	if err := store.Modify("github-copilot", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "gh-long-lived",
+			RawAccessToken: "copilot-short-lived",
+			ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			// Key intentionally empty in config — should hydrate from store.
+			{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", AuthType: "oauth", Key: ""},
+		},
+		MaclawLLMCurrentProvider: "GitHub Copilot",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	var got string
+	for _, p := range data.Providers {
+		if p.Name == "GitHub Copilot" {
+			got = p.Key
+			break
+		}
+	}
+	if got != "copilot-short-lived" {
+		t.Fatalf("GitHub Copilot Key = %q, want copilot-short-lived from credential store", got)
+	}
+}
+
+func TestFetchProviderModelsCodexSubscriptionUsesCodexEndpoint(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var gotPath, gotAuth, gotAccount, gotBeta, gotOriginator string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("chatgpt-account-id")
+		gotBeta = r.Header.Get("OpenAI-Beta")
+		gotOriginator = r.Header.Get("originator")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4","object":"model"},{"id":"gpt-5.3-codex","object":"model"}]}`))
+	}))
+	defer srv.Close()
+
+	// Minimal JWT with auth.chatgpt_account_id for header extraction.
+	// payload: {"https://api.openai.com/auth":{"chatgpt_account_id":"acct-123"}}
+	jwt := "eyJhbGciOiJub25lIn0." +
+		base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-123"}}`)) +
+		".sig"
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              srv.URL + "/backend-api/codex",
+			AuthType:         "oauth",
+			Key:              "sk-should-not-be-used",
+			OAuthAccessToken: jwt,
+			WireAPI:          "responses-ws",
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// Frontend may pass sk- key; backend must use JWT against codex/models.
+	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "sk-should-not-be-used", "openai", "openclaw", false)
+	if err != nil {
+		t.Fatalf("fetchProviderModels: %v", err)
+	}
+	if gotPath != "/backend-api/codex/models" {
+		t.Fatalf("path = %q, want /backend-api/codex/models", gotPath)
+	}
+	if gotAuth != "Bearer "+jwt {
+		t.Fatalf("Authorization = %q, want Bearer JWT", gotAuth)
+	}
+	if gotAccount != "acct-123" {
+		t.Fatalf("chatgpt-account-id = %q, want acct-123", gotAccount)
+	}
+	if gotBeta != "responses=experimental" {
+		t.Fatalf("OpenAI-Beta = %q", gotBeta)
+	}
+	if gotOriginator != "codex_cli_rs" {
+		t.Fatalf("originator = %q", gotOriginator)
+	}
+	if len(items) != 2 || items[0].ID != "gpt-5.4" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestFetchProviderModelsCodexSubscriptionFallsBackToCatalogOn403(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate the broken /models path returning 403; codex/models also 403.
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"detail":"Forbidden"}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "eyJhbGciOiJub25lIn0.e30.sig", "openai", "openclaw", true)
+	if err != nil {
+		t.Fatalf("fetchProviderModels: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected built-in catalog fallback")
+	}
+	found := false
+	for _, it := range items {
+		if it.ID == "gpt-5.4" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("catalog missing gpt-5.4: %+v", items)
+	}
+}
+
+func TestResolveCodexAuthTokenPrefersJWTOverAPIKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api",
+			AuthType:         "oauth",
+			Key:              "sk-api-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	got := app.resolveCodexAuthToken("https://chatgpt.com/backend-api", "sk-from-frontend")
+	if got != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("resolveCodexAuthToken = %q, want JWT", got)
+	}
 }
 
 func TestFetchProviderModelsAnthropicUsesOfficialSDK(t *testing.T) {
@@ -724,6 +1055,101 @@ func TestUpsertCodeGenProviderStoresAvailableModelIDs(t *testing.T) {
 	}
 }
 
+func TestFetchCodeGenModelsUsesSavedProviderEndpointAndCachesModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var gotPath, gotAuth, gotClientName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotClientName = r.Header.Get(corelib.CodeGenClientNameHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto"},{"id":"qax-codegen/Claude","name":"Claude"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:      codegenProviderName,
+			URL:       srv.URL + "/api/v1",
+			Key:       "token-123",
+			Model:     "qax-codegen/Auto",
+			Protocol:  "openai",
+			AuthType:  "sso",
+			AgentType: corelib.CodeGenClientName,
+		}},
+		MaclawLLMCurrentProvider: codegenProviderName,
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	items, err := app.FetchCodeGenModels()
+	if err != nil {
+		t.Fatalf("FetchCodeGenModels() error = %v", err)
+	}
+	if gotPath != "/api/v1/models" {
+		t.Fatalf("path = %q, want /api/v1/models", gotPath)
+	}
+	if gotAuth != "Bearer token-123" {
+		t.Fatalf("Authorization = %q, want Bearer token-123", gotAuth)
+	}
+	if gotClientName != corelib.CodeGenClientName {
+		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, gotClientName, corelib.CodeGenClientName)
+	}
+	want := []CodeGenModelItem{{ID: "qax-codegen/Auto", Name: "Auto"}, {ID: "qax-codegen/Claude", Name: "Claude"}}
+	if !reflect.DeepEqual(items, want) {
+		t.Fatalf("items = %#v, want %#v", items, want)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := saved.MaclawLLMProviders[0].Models; !reflect.DeepEqual(got, []string{"qax-codegen/Auto", "qax-codegen/Claude"}) {
+		t.Fatalf("saved provider models = %#v", got)
+	}
+}
+
+func TestFetchCodeGenModelsFallsBackToCachedProviderModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`upstream unavailable`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     codegenProviderName,
+			URL:      srv.URL + "/api/v1",
+			Key:      "token-123",
+			Model:    "qax-codegen/Auto",
+			Protocol: "openai",
+			AuthType: "sso",
+			Models:   []string{"qax-codegen/Auto", " qax-codegen/Claude ", "qax-codegen/Auto"},
+		}},
+		MaclawLLMCurrentProvider: codegenProviderName,
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	items, err := app.FetchCodeGenModels()
+	if err != nil {
+		t.Fatalf("FetchCodeGenModels() error = %v", err)
+	}
+	want := []CodeGenModelItem{{ID: "qax-codegen/Auto", Name: "qax-codegen/Auto"}, {ID: "qax-codegen/Claude", Name: "qax-codegen/Claude"}}
+	if !reflect.DeepEqual(items, want) {
+		t.Fatalf("items = %#v, want cached %#v", items, want)
+	}
+}
+
 func TestSaveCodeGenModelChoiceRenamesExistingCodeGenModelEntry(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1366,8 +1792,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if first.Name != "OpenAI" {
 		t.Errorf("first provider Name = %q, want %q", first.Name, "OpenAI")
 	}
-	if first.URL != "https://chatgpt.com/backend-api" {
-		t.Errorf("OpenAI URL = %q, want %q", first.URL, "https://chatgpt.com/backend-api")
+	if first.URL != "https://chatgpt.com/backend-api/codex" {
+		t.Errorf("OpenAI URL = %q, want %q", first.URL, "https://chatgpt.com/backend-api/codex")
 	}
 	if first.Model != "gpt-5.4" {
 		t.Errorf("OpenAI Model = %q, want %q", first.Model, "gpt-5.4")
@@ -1382,9 +1808,9 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
 
-	deepseek := providers[1]
-	if deepseek.Name != "DeepSeek" {
-		t.Errorf("providers[1].Name = %q, want %q", deepseek.Name, "DeepSeek")
+	deepseek, ok := findProviderByName(providers, "DeepSeek")
+	if !ok {
+		t.Fatalf("providers missing DeepSeek: %+v", providers)
 	}
 	if deepseek.URL != "https://api.deepseek.com/v1" {
 		t.Errorf("DeepSeek URL = %q, want %q", deepseek.URL, "https://api.deepseek.com/v1")
@@ -1393,9 +1819,9 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("DeepSeek Model = %q, want %q", deepseek.Model, "deepseek-v4-flash")
 	}
 
-	zhipuCoding := providers[2]
-	if zhipuCoding.Name != "智谱编程" {
-		t.Errorf("providers[2].Name = %q, want %q", zhipuCoding.Name, "智谱编程")
+	zhipuCoding, ok := findProviderByName(providers, "智谱编程")
+	if !ok {
+		t.Fatalf("providers missing 智谱编程: %+v", providers)
 	}
 	if zhipuCoding.URL != "https://open.bigmodel.cn/api/anthropic" {
 		t.Errorf("智谱编程 URL = %q, want %q", zhipuCoding.URL, "https://open.bigmodel.cn/api/anthropic")
@@ -1410,9 +1836,9 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude code 2.0")
 	}
 
-	tokenPlan := providers[5]
-	if tokenPlan.Name != volcengineAgentPlanProviderName {
-		t.Errorf("providers[5].Name = %q, want %q", tokenPlan.Name, volcengineAgentPlanProviderName)
+	tokenPlan, ok := findProviderByName(providers, volcengineAgentPlanProviderName)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", volcengineAgentPlanProviderName, providers)
 	}
 	if tokenPlan.URL != "https://ark.cn-beijing.volces.com/api/plan/v3" {
 		t.Errorf("火山引擎 Agent Plan URL = %q, want %q", tokenPlan.URL, "https://ark.cn-beijing.volces.com/api/plan/v3")
@@ -1427,14 +1853,21 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "DeepSeek", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	if len(providers) < len(expectedNames) {
+		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
+	}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
 	}
 
-	if got := providers[4].AgentType; got != "claude code 2.0" {
+	kimi, ok := findProviderByName(providers, "Kimi")
+	if !ok {
+		t.Fatalf("providers missing Kimi: %+v", providers)
+	}
+	if got := kimi.AgentType; got != "claude code 2.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude code 2.0")
 	}
 
@@ -1491,7 +1924,7 @@ func TestGetMaclawLLMProviders_BackfillsVolcengineAgentPlanProvider(t *testing.T
 	cfg := corelib.AppConfig{
 		MaclawLLMCurrentProvider: "OpenAI",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth"},
+			{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.4", AuthType: "oauth"},
 			{Name: "Custom1", IsCustom: true},
 			{Name: "Custom2", IsCustom: true},
 		},

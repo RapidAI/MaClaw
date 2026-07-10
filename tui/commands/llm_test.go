@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 func TestLLMStatusUnconfiguredGuidesToTUISetup(t *testing.T) {
@@ -58,6 +59,42 @@ func TestLLMSetupCLIPresetsIncludeNoKeyLocalProviders(t *testing.T) {
 	}
 	if llmURLUsuallyNeedsKey("192.168.1.20:11434/v1") {
 		t.Fatal("raw LAN LLM endpoint should not require an API key")
+	}
+}
+
+func TestApplyOpenAIOAuthResultUsesCodexSubscriptionDefaults(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:          "OpenAI",
+			URL:           "https://api.openai.com/v1",
+			Model:         "gpt-4o",
+			AuthType:      "oauth",
+			ContextLength: 110000,
+		}},
+	}
+
+	applyOpenAIOAuthResultToConfig(&cfg, &oauth.TokenResult{
+		AccessToken:    "sk-exchanged",
+		RawAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+		RefreshToken:   "refresh-token",
+		ExpiresIn:      3600,
+	})
+
+	if len(cfg.MaclawLLMProviders) != 1 {
+		t.Fatalf("providers len = %d, want 1", len(cfg.MaclawLLMProviders))
+	}
+	provider := cfg.MaclawLLMProviders[0]
+	if provider.URL != "https://chatgpt.com/backend-api/codex" {
+		t.Fatalf("OpenAI OAuth URL = %q, want Codex subscription backend", provider.URL)
+	}
+	if provider.Model != "gpt-5.4" {
+		t.Fatalf("OpenAI OAuth model = %q, want gpt-5.4", provider.Model)
+	}
+	if provider.WireAPI != "responses-ws" {
+		t.Fatalf("OpenAI OAuth WireAPI = %q, want responses-ws", provider.WireAPI)
+	}
+	if provider.Key != "sk-exchanged" || provider.OAuthAccessToken != "eyJhbGciOiJub25lIn0.payload.sig" || provider.RefreshToken != "refresh-token" {
+		t.Fatalf("OpenAI OAuth tokens not preserved/applied: %+v", provider)
 	}
 }
 

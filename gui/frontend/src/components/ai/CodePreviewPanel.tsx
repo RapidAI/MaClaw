@@ -644,7 +644,7 @@ export function CodePreviewPanel({
 
     // Compute diff lines when active file has original content
     const diffLines = useMemo<DiffLine[] | null>(() => {
-        if (!activeFile?.original) return null;
+        if (activeFile?.original === undefined) return null;
         return computeDiff(activeFile.original, activeFile.content);
     }, [activeFile?.original, activeFile?.content]);
 
@@ -828,10 +828,10 @@ export function CodePreviewPanel({
                 }}
             >
                 {activeFile ? (
-                    activeFile.language === 'markdown' ? (
-                        <MarkdownPreview content={activeFile.content} theme={theme} />
-                    ) : diffLines ? (
+                    diffLines ? (
                         <DiffView diffLines={diffLines} theme={theme} />
+                    ) : activeFile.language === 'markdown' ? (
+                        <MarkdownPreview content={activeFile.content} theme={theme} />
                     ) : (
                         <PlainCodeView
                             content={activeFile.content}

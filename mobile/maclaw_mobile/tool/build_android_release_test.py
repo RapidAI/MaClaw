@@ -183,6 +183,7 @@ class BuildAndroidReleaseTest(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("flutter build apk --release", output.getvalue())
         self.assertIn("Dry run only", output.getvalue())
+        self.assertNotIn("validate_qa_build_record.py", output.getvalue())
 
     def test_main_reports_missing_key_properties_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -380,6 +381,14 @@ class BuildAndroidReleaseTest(unittest.TestCase):
         self.assertIn("Version/build number: 1.0.0+42", text)
         self.assertIn("Signing identity: Android release keystore alias maclaw-mobile", text)
         self.assertIn("Installer channel: internal app sharing", text)
+        self.assertIn(
+            "python3 tool/validate_qa_build_record.py " + str(record_dir).replace("\\", "/") + "/<record>.md",
+            text,
+        )
+        self.assertIn(
+            "python3 tool/qa_build_record_report.py " + str(record_dir).replace("\\", "/") + "/<record>.md",
+            text,
+        )
 
 
 if __name__ == "__main__":

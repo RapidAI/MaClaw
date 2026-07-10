@@ -28,72 +28,77 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 	emitter := m.app.codeEventEmitter
 
 	for _, evt := range events {
-		eventType := normalizeSummaryEventType(evt.Type)
-		if !eventType.IsFileEvent() {
+		codeEvent, ok := buildRemoteCodeFileEvent(s, evt)
+		if !ok {
 			continue
 		}
-
-		filePath := evt.RelatedFile
-		if filePath == "" {
-			// Try to extract file path from Summary for SDK events
-			filePath = extractFilePathFromSummary(evt.Summary)
-		}
-		if filePath == "" {
-			continue
-		}
-
-		// Resolve to absolute path using session's project path
-		absPath := filePath
-		if !filepath.IsAbs(filePath) && s.ProjectPath != "" {
-			absPath = filepath.Join(s.ProjectPath, filePath)
-		}
-
-		// File size guard: skip files > 1MB
-		info, err := os.Stat(absPath)
-		if err != nil {
-			log.Printf("[code-event] skip %s: stat error: %v", filePath, err)
-			continue
-		}
-		if info.Size() > maxCodeFileSize {
-			log.Printf("[code-event] skip %s: file too large (%d bytes)", filePath, info.Size())
-			continue
-		}
-
-		// Read current file content
-		content, err := os.ReadFile(absPath)
-		if err != nil {
-			log.Printf("[code-event] skip %s: read error: %v", filePath, err)
-			continue
-		}
-		if !isCodePreviewTextContent(content) {
-			log.Printf("[code-event] skip %s: binary or invalid UTF-8 content", filePath)
-			continue
-		}
-
-		fileName := filepath.Base(filePath)
-		language := detectLanguageFromExt(fileName)
-
-		opType := "create"
-		var original string
-
-		if eventType.IsFileChange() {
-			opType = "modify"
-			// Attempt to read original content via git show
-			original = gitShowOriginal(s.ProjectPath, absPath)
-		}
-
-		emitter.EmitCodeFileEvent(CodeFileEvent{
-			SessionID:   s.ID,
-			FilePath:    filePath,
-			FileName:    fileName,
-			AbsPath:     absPath,
-			Content:     string(content),
-			Original:    original,
-			OpType:      opType,
-			Language:    language,
-			ProjectPath: s.ProjectPath,
-		})
+		emitter.EmitCodeFileEvent(codeEvent)
 	}
+}
+
+func buildRemoteCodeFileEvent(s *RemoteSession, evt ImportantEvent) (CodeFileEvent, bool) {
+	if s == nil {
+		return CodeFileEvent{}, false
+	}
+	eventType := normalizeSummaryEventType(evt.Type)
+	if !eventType.IsFileEvent() {
+		return CodeFileEvent{}, false
+	}
+
+	filePath := evt.RelatedFile
+	if filePath == "" {
+		// Try to extract file path from Summary for SDK events.
+		filePath = extractFilePathFromSummary(evt.Summary)
+	}
+	if filePath == "" {
+		return CodeFileEvent{}, false
+	}
+
+	absPath := filePath
+	if !filepath.IsAbs(filePath) && s.ProjectPath != "" {
+		absPath = filepath.Join(s.ProjectPath, filePath)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		log.Printf("[code-event] skip %s: stat error: %v", filePath, err)
+		return CodeFileEvent{}, false
+	}
+	if info.Size() > maxCodeFileSize {
+		log.Printf("[code-event] skip %s: file too large (%d bytes)", filePath, info.Size())
+		return CodeFileEvent{}, false
+	}
+
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		log.Printf("[code-event] skip %s: read error: %v", filePath, err)
+		return CodeFileEvent{}, false
+	}
+	if !isCodePreviewTextContent(content) {
+		log.Printf("[code-event] skip %s: binary or invalid UTF-8 content", filePath)
+		return CodeFileEvent{}, false
+	}
+
+	fileName := filepath.Base(filePath)
+	opType := "read"
+	var original string
+	if eventType.IsFileChange() {
+		opType = "modify"
+		// Attempt to read original content via git show.
+		original = gitShowOriginal(s.ProjectPath, absPath)
+	}
+
+	return CodeFileEvent{
+		SessionID:   s.ID,
+		FilePath:    filePath,
+		FileName:    fileName,
+		AbsPath:     absPath,
+		Content:     string(content),
+		Original:    original,
+		OpType:      opType,
+		Language:    detectLanguageFromExt(fileName),
+		ProjectPath: s.ProjectPath,
+	}, true
 }
 
 func emitCodingSubAgentCodeFileEvents(app *App, sessionID, projectPath string, filesModified, filesCreated []string) {
@@ -105,18 +110,35 @@ func emitCodingSubAgentCodeFileEvents(app *App, sessionID, projectPath string, f
 	}
 }
 
-func emitCodingSubAgentCodeSessionStart(app *App, sessionID string) {
+func emitCodingSubAgentCodeSessionStart(app *App, sessionID string, projectPath ...string) {
 	if app == nil || app.codeEventEmitter == nil {
 		return
 	}
-	app.codeEventEmitter.EmitSessionStart(sessionID)
+	app.codeEventEmitter.EmitSessionStart(sessionID, projectPath...)
 }
 
-func emitCodingSubAgentCodeSessionEnd(app *App, sessionID string) {
+func emitCodingSubAgentCodeSessionEnd(app *App, sessionID string, projectPath ...string) {
 	if app == nil || app.codeEventEmitter == nil {
 		return
 	}
-	app.codeEventEmitter.EmitSessionEnd(sessionID)
+	app.codeEventEmitter.EmitSessionEnd(sessionID, projectPath...)
+}
+
+func emitCodeFilePreviewForPath(app *App, sessionID, projectPath, filePath string, created, forceOpen bool, originalOverride ...string) {
+	if app == nil || app.codeEventEmitter == nil {
+		return
+	}
+	input := subAgentCodeEventInput{
+		path:      filePath,
+		created:   created,
+		forceOpen: forceOpen,
+	}
+	if len(originalOverride) > 0 {
+		input.original = &originalOverride[0]
+	}
+	for _, evt := range buildCodingSubAgentCodeFileEventsForPaths(sessionID, projectPath, []subAgentCodeEventInput{input}) {
+		app.codeEventEmitter.EmitCodeFileEvent(evt)
+	}
 }
 
 func codingSubAgentCodeSessionID(scope, userID string) string {
@@ -139,17 +161,43 @@ func newCodingSubAgentCodeSessionID(scope, userID string) string {
 }
 
 func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModified, filesCreated []string) []CodeFileEvent {
+	inputs := make([]subAgentCodeEventInput, 0, len(filesModified)+len(filesCreated))
 	created := make(map[string]bool, len(filesCreated))
 	for _, filePath := range filesCreated {
 		if normalized := normalizeSubAgentCodeEventPath(filePath, projectPath); normalized.displayPath != "" {
 			created[normalized.displayPath] = true
 		}
 	}
+	for _, filePath := range filesModified {
+		normalized := normalizeSubAgentCodeEventPath(filePath, projectPath)
+		inputs = append(inputs, subAgentCodeEventInput{
+			path:      filePath,
+			created:   created[normalized.displayPath],
+			forceOpen: true,
+		})
+	}
+	for _, filePath := range filesCreated {
+		inputs = append(inputs, subAgentCodeEventInput{
+			path:      filePath,
+			created:   true,
+			forceOpen: true,
+		})
+	}
+	return buildCodingSubAgentCodeFileEventsForPaths(sessionID, projectPath, inputs)
+}
 
-	inputFiles := append(append([]string{}, filesModified...), filesCreated...)
+type subAgentCodeEventInput struct {
+	path      string
+	created   bool
+	forceOpen bool
+	original  *string
+}
+
+func buildCodingSubAgentCodeFileEventsForPaths(sessionID, projectPath string, inputFiles []subAgentCodeEventInput) []CodeFileEvent {
 	seen := make(map[string]bool, len(inputFiles))
 	events := make([]CodeFileEvent, 0, len(inputFiles))
-	for _, filePath := range inputFiles {
+	for _, input := range inputFiles {
+		filePath := input.path
 		normalized := normalizeSubAgentCodeEventPath(filePath, projectPath)
 		if normalized.displayPath == "" || normalized.absPath == "" || seen[normalized.displayPath] {
 			continue
@@ -184,8 +232,10 @@ func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModif
 
 		opType := "modify"
 		var original string
-		if created[normalized.displayPath] {
+		if input.created {
 			opType = "create"
+		} else if input.original != nil {
+			original = *input.original
 		} else {
 			original = gitShowOriginal(projectPath, normalized.absPath)
 		}
@@ -200,7 +250,7 @@ func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModif
 			Original:    original,
 			OpType:      opType,
 			Language:    detectLanguageFromExt(fileName),
-			ForceOpen:   true,
+			ForceOpen:   input.forceOpen,
 			ProjectPath: projectPath,
 		})
 	}

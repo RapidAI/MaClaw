@@ -479,7 +479,18 @@ jobs:
           if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
             VERSION="${BASH_REMATCH[1]}"
           else
-            VERSION=$(python3 -c "import json; print(json.load(open('TigerProxy/wails.json'))['info']['productVersion'])")
+            PYTHON_BIN="${PYTHON:-}"
+            if [ -z "$PYTHON_BIN" ]; then
+              if command -v python3 >/dev/null 2>&1; then
+                PYTHON_BIN=python3
+              elif command -v python >/dev/null 2>&1; then
+                PYTHON_BIN=python
+              else
+                echo "Python is required to read TigerProxy/wails.json" >&2
+                exit 1
+              fi
+            fi
+            VERSION=$("$PYTHON_BIN" -c "import json; print(json.load(open('TigerProxy/wails.json', encoding='utf-8'))['info']['productVersion'])")
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "TigerProxy version: $VERSION"
@@ -700,47 +711,32 @@ jobs:
           sed -i 's/^          //' "$APPDIR/AppRun"
           chmod +x "$APPDIR/AppRun"
 
-          ARCH=x86_64 ./appimagetool --no-appstream "$APPDIR" "dist/TigerProxy-x86_64.AppImage"
-
-          # Autostart helper script
-          cat > dist/tigerproxy-install-autostart.sh <<'EOF'
-          #!/bin/bash
-          # TigerProxy autostart installer - place AppImage permanently then run this.
-          APPIMAGE_PATH="${1:-$(ls "$(dirname "$(readlink -f "$0")")"/TigerProxy-*-x86_64.AppImage 2>/dev/null | head -1)}"
-          if [ ! -f "$APPIMAGE_PATH" ]; then
-            echo "Usage: $0 /path/to/TigerProxy.AppImage"; exit 1
-          fi
-          APPIMAGE_PATH=$(readlink -f "$APPIMAGE_PATH")
-          AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
-          mkdir -p "$AUTOSTART_DIR"
-          cat > "$AUTOSTART_DIR/tigerproxy.desktop" <<DESKTOP
-          [Desktop Entry]
-          Type=Application
-          Name=TigerProxy
-          Exec=$APPIMAGE_PATH --hidden
-          Icon=tigerproxy
-          Terminal=false
-          X-GNOME-Autostart-enabled=true
-          DESKTOP
-          echo "✅ TigerProxy autostart installed: $AUTOSTART_DIR/tigerproxy.desktop"
-          EOF
-          sed -i 's/^          //' dist/tigerproxy-install-autostart.sh
-          chmod +x dist/tigerproxy-install-autostart.sh
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run --no-appstream "$APPDIR" "dist/TigerProxy-x86_64.AppImage"
 
       # ---- Upload ----
-      - name: Upload TigerProxy artifacts
+      - name: Upload TigerProxy Windows installer
+        if: matrix.goos == 'windows'
         uses: actions/upload-artifact@v5
         with:
-          name: tigerproxy-${{ matrix.goos }}
-          path: |
-            dist/TigerProxy-Setup.exe
-            dist/TigerProxy_amd64.exe
-            dist/TigerProxy_arm64.exe
-            dist/TigerProxy-Universal.pkg
-            dist/TigerProxy.app/**
-            dist/TigerProxy-x86_64.AppImage
-            dist/TigerProxy_linux_amd64
-            dist/tigerproxy-install-autostart.sh
+          name: tigerproxy-windows-installer
+          if-no-files-found: error
+          path: dist/TigerProxy-Setup.exe
+
+      - name: Upload TigerProxy macOS installer
+        if: matrix.goos == 'darwin'
+        uses: actions/upload-artifact@v5
+        with:
+          name: tigerproxy-macos-installer
+          if-no-files-found: error
+          path: dist/TigerProxy-Universal.pkg
+
+      - name: Upload TigerProxy Linux installer
+        if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v5
+        with:
+          name: tigerproxy-linux-installer
+          if-no-files-found: error
+          path: dist/TigerProxy-x86_64.AppImage
 
   # ============================================================
   # macOS: GUI universal binary + PKG + TUI/tool (darwin)

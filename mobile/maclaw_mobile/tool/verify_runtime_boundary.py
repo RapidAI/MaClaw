@@ -80,12 +80,41 @@ RULES = (
         "Flutter Mobile backend SSH must stay behind Hub/GUI agent sessions, not a phone-local SSH client dependency.",
     ),
     BoundaryRule(
+        "terminal emulator dependency",
+        re.compile(r"\bxterm\b", re.IGNORECASE),
+        "Flutter Mobile remote maintenance must render Hub/GUI agent backend-session output, not ship a terminal emulator surface.",
+    ),
+    BoundaryRule(
         "phone-side ssh credential api",
         re.compile(
             r"\b(?:saveServerPassword|readServerPassword|saveServerPrivateKey|"
             r"readServerPrivateKey|readServerPrivateKeyPassphrase)\b",
         ),
         "Flutter Mobile must not expose phone-side SSH credential save/read APIs; credentials stay on MaClaw GUI/agent.",
+    ),
+    BoundaryRule(
+        "custom hub configuration surface",
+        re.compile(
+            r"(?:custom\s+hub|custom(?:Hub|Service|Base)Url|"
+            r"(?:hubUrl|hub_url)\s*=\s*TextEditingController|"
+            r"(?:Hub|服务)\s*(?:URL|地址)\s*(?:设置|配置|输入))",
+            re.IGNORECASE,
+        ),
+        "MaClaw Mobile must discover tenant Hubs through the three preset official HubCenters, not custom Hub URL configuration.",
+    ),
+    BoundaryRule(
+        "redemption-code login surface",
+        re.compile(r"(?:redemption[-_\s]?code|service-redemptions|redeemOfficialServiceCode|兑换码)", re.IGNORECASE),
+        "Signed-out mobile access must be phone/SMS login only; redemption-code login belongs outside mobile.",
+    ),
+    BoundaryRule(
+        "arbitrary third-party llm settings surface",
+        re.compile(
+            r"(?:TextEditingController\s*\([^)]*(?:provider|endpoint|apiKey|api_key)|"
+            r"(?:labelText|hintText)\s*:\s*['\"][^'\"]*(?:provider|endpoint|api\s*key|base\s*url))",
+            re.IGNORECASE,
+        ),
+        "Third-party LLM access on mobile must come only from MaClaw desktop GUI QR authorization, not arbitrary provider/base URL/API-key fields.",
     ),
 )
 
@@ -156,7 +185,12 @@ def write_log(path: Path, text: str, *, force: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify that MaClaw Mobile does not embed or bridge Go corelib.",
+        description=(
+            "Verify MaClaw Mobile''s official-service runtime boundary: no embedded "
+            "Go corelib/native bridge, no phone-local SSH or terminal emulator, no "
+            "phone-side SSH credential APIs, no custom Hub URL, no redemption-code "
+            "login, and no arbitrary third-party LLM provider/base URL/API-key fields."
+        ),
     )
     parser.add_argument(
         "--root",

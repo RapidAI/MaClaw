@@ -117,7 +117,7 @@ void main() {
     expect(
       readme,
       contains(
-        'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+        'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log',
       ),
     );
     expect(readme, contains('`NOT READY` means'));
@@ -202,6 +202,24 @@ void main() {
     expect(qaBuildsReadme, contains('dry-run preview preserves that snapshot'));
     expect(qaBuildsReadme, contains('saved file unchanged'));
     expect(qa, contains('completed signed-build QA'));
+    final checklist = readDoc('docs/release_checklist.md');
+    for (final expected in [
+      'SSH session management record',
+      'mobile-created Hub control',
+      'authorized GUI/agent worker',
+      'GUI/agent-bound `backend_session_id`',
+      'explicit worker claim/update evidence',
+      '`ssh_session` realtime `output_chunk`/`output_seq`',
+      'claimed_by desktop-agent-1',
+      'not phone-local',
+      'ad hoc terminal evidence',
+      'GUI/agent evidence line containing',
+      'actual values for Hub session ID',
+      'numeric `output_seq`',
+      'traceable attachment ID',
+    ]) {
+      expect(checklist, contains(expected));
+    }
     expectHandoffCommandsWriteEvidence(qa);
     expectScopedPreflightCommandsWriteLogs({
       'docs/release_evidence.md': evidence,
@@ -229,12 +247,17 @@ void main() {
     for (final expected in [
       'MaClaw mobile AI assistant',
       'MaClaw GUI-like multi-tab AI assistant',
-      'typed or voice input',
+      '`AI助手`',
+      '`主对话`',
+      'secondary-tab controls',
+      'typed and voice input',
+      'no legacy `查信息` entry',
       'assistant online answers with citations',
       'GUI/agent-managed backend SSH session management',
       'phone creates or',
       'controls Hub records',
-      'MaClaw desktop/agent owns the real SSH session',
+      'MaClaw desktop/agent claims the work',
+      'real SSH session',
       'only the three preset official HubCenter endpoints',
       'assistant history',
     ]) {
@@ -244,10 +267,38 @@ void main() {
       'does not expose custom Hub endpoint configuration',
       'Third-party LLM access is available only as an optional account/settings action',
       'first screen for an unregistered or signed-out user is phone registration/login',
+      'no redemption-code login on mobile',
+      'no arbitrary third-party LLM endpoint, base URL, provider URL, or API-key entry',
+      'verified `phone:<digits>` account uses its MaClaw official credits',
+      'post-SMS-verification usage evidence',
+      'concrete `llm-request-id` and `llm-usage-record`',
+      'MaClaw logo splash screen',
+      'rule out Flutter placeholder/template branding',
+      'signed-in `AI助手` first screen',
       'does not embed or directly call the Go `corelib` package',
       'official Hub or on authorized remote desktop/server digital employees',
       'AI assistant, emergency documents, backend SSH session management, digital employees',
       'SSH passwords, private keys, and passphrases stay on the authorized MaClaw GUI/agent side',
+      'Hub control record was claimed by a concrete GUI/agent worker',
+      'same GUI/agent-bound `backend_session_id`',
+      'realtime `ssh_session` `output_chunk`/`output_seq`',
+      'copied-output GUI/agent evidence line with actual Hub session ID',
+      'concrete `claimed_by` identity such as `claimed_by desktop-agent-1`',
+      'redacted text or a traceable attachment ID',
+      'The mobile `远程` surface must follow the MaClaw GUI SSH backend-management',
+      '`connect`, confirmed command input, `exec_background`',
+      '`check`/`wait`/`list`/`kill`',
+      'file `upload`/`download`/`list`',
+      'desktop-side `SSHSessionManager`',
+      '`SSHBackgroundTaskManager`',
+      'and SFTP path',
+      'share-to-app evidence',
+      'text, URL, image, PDF, Word, Excel, and CSV payloads',
+      '`permission-grant:<id>` tied to camera/photo, microphone/speech',
+      'media/file access, notification delivery/open',
+      'typed notification payload or tap/open evidence for document export',
+      'digital employee, and backend SSH abnormal/disconnect flows',
+      'traceable document draft, upload task, and export job IDs',
       'secure token storage',
       'GUI/agent-managed session contract',
       'remaining real-device QA needed for release evidence',
@@ -261,6 +312,14 @@ void main() {
       'information lookup',
       'SSH credentials stay in secure storage',
       'secure credential storage',
+      'phone-side SSH credential storage',
+      'phone-side SSH credential save',
+      'phone-side SSH credential read',
+      'mobile saves SSH passwords',
+      'mobile stores SSH private keys',
+      '手机保存 SSH 凭据',
+      '手机保存服务器密钥',
+      '手机录入 SSH 密码',
       'remaining Hub/agent work needed',
     ]) {
       expect(readmeText, isNot(contains(forbidden)));
@@ -515,6 +574,13 @@ void main() {
     }
     final evidence = readDoc('docs/release_evidence.md');
     expect(evidence, contains('phone-side SSH credential save/read API'));
+    expect(evidence, contains('custom Hub URL configuration'));
+    expect(evidence, contains('redemption-code login'));
+    expect(
+      evidence,
+      contains('arbitrary third-party LLM provider/base URL/API-key fields'),
+    );
+    expect(evidence, contains('terminal emulator dependency'));
     expect(evidence, contains('saveServerPassword'));
     expect(evidence, contains('readServerPrivateKey'));
   });
@@ -635,7 +701,7 @@ void main() {
       'docs/qa-builds/README.md': readDoc('docs/qa-builds/README.md'),
     };
     final runtimeResultPattern = RegExp(
-      r'--runtime-boundary-result "MaClaw Mobile runtime boundary verified\. log: docs/qa-builds/runtime-boundary-[^"]+\.log"',
+      r'--runtime-boundary-result "MaClaw Mobile runtime boundary verified: no corelib, phone-local SSH, terminal emulator, phone-side SSH credential, custom Hub URL, redemption-code login, or third-party LLM provider/base URL/API-key regressions; log: docs/qa-builds/runtime-boundary-[^"]+\.log"',
     );
     final gateResultPattern = RegExp(
       r'--automated-gates-result "run_release_gates\.py: \d+ gates passed; log: docs/qa-builds/release-gates-[^"]+\.log"',
@@ -913,12 +979,18 @@ void main() {
       'URLs with embedded credentials',
       'Backend SSH Session Smoke Test',
       'agent/backend-managed SSH session',
+      'mobile foreground agent',
+      'Hub backend-session',
+      'not as evidence that the phone opened SSH',
       'session list/status surface',
       'output_chunk',
       'output_seq',
       'claimed_by',
       '/api/mobile/ssh/sessions/claim',
       'worker claim/update evidence',
+      'If the copied backend-session output contains credentials or private customer',
+      'keep that GUI/agent evidence line',
+      'redacted text or a traceable attachment ID',
       'interrupt',
       'Disconnect and reconnect',
       'sensitive-data warning',
@@ -1008,7 +1080,7 @@ void main() {
     expect(
       evidenceText,
       contains(
-        'ui labels for copy/clear actions that say backend session output instead of terminal output',
+        'ui labels for copy/clear actions that say backend session output instead of terminal output and no terminal emulator dependency',
       ),
     );
     expect(
@@ -1098,6 +1170,16 @@ void main() {
     }
 
     for (final expected in [
+      '`POST /api/mobile/ssh/tasks/claim`',
+      '`PATCH /api/mobile/ssh/tasks/{task_id}/worker`',
+      '`POST /api/mobile/ssh/files/claim`',
+      '`PATCH /api/mobile/ssh/files/{operation_id}/worker`',
+      'authorized GUI/agent claims session, background-task, and file-operation work',
+      'executes it through the existing desktop-side managers',
+    ]) {
+      expect(design, contains(expected));
+    }
+    for (final expected in [
       'test/backend_ssh_command_test.dart',
       'test/mobile_realtime_client_test.dart',
       'test/mobile_realtime_bridge_test.dart',
@@ -1108,9 +1190,9 @@ void main() {
       'bridge dispatch of backend ssh task events',
       'per-session task cache',
       'queueing create, attach, reconnect, interrupt, input, and close control records',
-      'preserving terminal input carriage returns',
+      'preserving backend-session input carriage returns',
       'flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact',
-      '58 mobile backend ssh control-plane tests',
+      '59 mobile backend ssh control-plane tests',
       'request gui/agent-managed `exec_background`',
       '`check_task`, `wait_task`, `list_tasks`, `kill_task`, and backend file',
       'caches gui/agent background task status in the server controller',
@@ -1147,7 +1229,7 @@ void main() {
     expect(
       auditText,
       contains(
-        'copied backend session output evidence with a gui/agent evidence line containing actual values for hub session id, `backend_session_id`, `claimed_by`, and numeric `output_seq`',
+        'copied backend session output evidence with a gui/agent evidence line containing actual values for hub session id, `backend_session_id`, concrete `claimed_by` worker identity such as `claimed_by desktop-agent-1`, and numeric `output_seq`',
       ),
     );
 
@@ -1161,22 +1243,32 @@ void main() {
       'Phone-side removal of a server profile only clears local cached metadata',
       'Foreground Agent Flow',
       'foreground control-plane agent',
+      'acts as a foreground agent',
+      'Hub control record for the backend SSH session manager',
       'authorized MaClaw GUI/agent worker claims it with machine authentication',
       'reports `backend_session_id`, status, output preview, `output_chunk`, and `output_seq` back to Hub',
       'It must not present itself as owning the SSH transport or credentials',
       'the phone is the emergency operator interface',
       'Hub is the coordination queue',
+      'not a request for the phone to open an SSH transport',
+      'Hub session-management record',
+      'queue confirmed operations',
+      'executes background work',
+      'performs file transfer on the real SSH session',
       'MaClaw GUI/agent plus `SSHSessionManager` remain the backend session owner',
       'GUI-Equivalent Management Contract',
       'Session ownership stays with the desktop GUI/agent worker',
       'foreground mobile agent is a session-management requester',
+      'not a request for the phone to open an SSH transport',
+      'Hub session-management record',
+      'queue confirmed operations',
       'start background tasks',
       'request file operations',
       'authorized GUI/agent worker claims it',
       'backend managed SSH session',
       'MaClaw-style SSH backend management',
       'not as a terminal-first SSH client',
-      'foreground operator console for the managed record',
+      'foreground view is a selectable backend-session output panel',
       '`SSHSessionManager`',
       '`SSHPool` connections',
       'PTY handles',
@@ -1227,6 +1319,9 @@ void main() {
       '`probeShell`',
       'consecutive execution-failure tracking',
       'active backend session ID included for traceability',
+      'the mobile foreground agent creates a Hub control record',
+      'The claim, not the phone button tap, is what',
+      'proves the backend managed session exists',
       'simple SSH client',
     ]) {
       expect(designText, contains(expected));
@@ -1252,13 +1347,15 @@ void main() {
       'Reconnect result',
       'Copied backend session output evidence',
       'GUI/agent evidence line with actual values for Hub session ID',
-      'backend_session_id, claimed_by, and numeric output_seq',
+      'backend_session_id, concrete claimed_by worker identity such as claimed_by desktop-agent-1, and numeric output_seq',
       'backend session manager',
+      'foreground agent may create/attach the Hub management record',
+      'proven only after MaClaw GUI/agent claims and manages it',
     ]) {
       expect(template, contains(expected));
     }
     for (final expected in [
-      'copied output or operator console note must include',
+      'copied output or backend-session output panel note must include',
       'GUI/agent evidence line with actual values for the Hub session ID',
       '`backend_session_id`',
       '`claimed_by`',
@@ -1353,7 +1450,6 @@ void main() {
     ]) {
       expect(evidenceText, contains(expected));
     }
-
   });
   test('QA build record template captures every manual release gate', () {
     final template = readDoc('docs/qa_build_record_template.md');
@@ -1465,6 +1561,13 @@ void main() {
       'python3 tool/qa_preflight.py --log',
       'Runtime boundary verification result',
       'python3 tool/verify_runtime_boundary.py',
+      'phone-local SSH dependency',
+      'terminal emulator dependency',
+      'phone-side SSH',
+      'credential save/read API',
+      'custom Hub URL configuration',
+      'redemption-code login',
+      'arbitrary third-party LLM provider/base URL/API-key fields',
       'Automated release gates result',
       'python3 tool/run_release_gates.py',
       'gate count, and log attachment ID',
@@ -1594,6 +1697,15 @@ void main() {
     expect(checklist, contains('Release handoff result'));
     expect(checklist, contains('Preflight result'));
     expect(checklist, contains('Runtime boundary verification result'));
+    expect(checklist, contains('phone-local SSH dependency'));
+    expect(checklist, contains('terminal emulator dependency'));
+    expect(checklist, contains('phone-side SSH credential'));
+    expect(checklist, contains('custom Hub URL configuration'));
+    expect(checklist, contains('redemption-code login'));
+    expect(
+      checklist,
+      contains('arbitrary third-party LLM provider/base URL/API-key fields'),
+    );
     expect(checklist, contains('Automated release gates result'));
     expect(checklist, contains('python3 tool/verify_debug_apk_evidence.py'));
     expect(checklist, contains('tool/verify_manual_release_gates_test.py'));
@@ -1705,6 +1817,9 @@ void main() {
       contains('`release_handoff.py --dry-run --output ...` preview'),
     );
     expect(evidence, contains('tool/setup_android_signing.py'));
+    expect(evidence, contains('`--log` evidence capture'));
+    expect(evidence, contains('existing-log overwrite protection'));
+    expect(evidence, contains('`--force` replacement'));
     expect(evidence, contains('tool/setup_android_signing_test.py'));
     expect(evidence, contains('tool/release_status_report.py'));
     expect(evidence, contains('tool/release_status_report_test.py'));
@@ -1718,6 +1833,19 @@ void main() {
     expect(evidence, contains('tool/verify_manual_release_gates_test.py'));
     expect(evidence, contains('tool/verify_final_release_evidence.py'));
     expect(evidence, contains('tool/verify_final_release_evidence_test.py'));
+    expect(
+      evidence,
+      contains('final verification rechecks copied backend session output'),
+    );
+    expect(
+      evidence,
+      contains('rejects raw secrets in that copied output evidence'),
+    );
+    expect(
+      evidence,
+      contains('points backend-session final-layer failures back'),
+    );
+    expect(evidence, contains('qa_build_record_report.py'));
     expect(evidence, contains('auditable verification scope'));
     expect(evidence, contains('QA records directory'));
     expect(evidence, contains('tool/verify_android_release_signing.py'));
@@ -1725,10 +1853,33 @@ void main() {
     expect(evidence, contains('android/key.properties.example'));
     expect(evidence, contains('tool/build_android_release.py'));
     expect(evidence, contains('tool/build_android_release_test.py'));
+    expect(
+      evidence,
+      contains(
+        'successful signed artifact evidence output printing the next',
+      ),
+    );
+    expect(
+      evidence,
+      contains(
+        'python3 tool/validate_qa_build_record.py <records-dir>/<record>.md',
+      ),
+    );
+    expect(
+      evidence,
+      contains(
+        'python3 tool/qa_build_record_report.py <records-dir>/<record>.md',
+      ),
+    );
+    expect(evidence, contains('custom records-dir paths normalized'));
     expect(evidence, contains('tool/verify_ios_wrapper.py'));
     expect(evidence, contains('tool/verify_ios_wrapper_test.py'));
     expect(evidence, contains('tool/plan_ios_release.py'));
     expect(evidence, contains('tool/plan_ios_release_test.py'));
+    expect(
+      evidence,
+      contains('successful iOS signed archive/TestFlight evidence output'),
+    );
     expect(evidence, contains('tool/setup_ios_export_options.py'));
     expect(evidence, contains('tool/setup_ios_export_options_test.py'));
     expect(evidence, contains('ios/ExportOptions.plist.example'));
@@ -1901,7 +2052,7 @@ void main() {
       'python3 tool/build_android_release.py --artifact appbundle --build-name 1.0.0 --build-number 42 --record-dir docs/qa-builds',
       'python3 tool/plan_ios_release.py --team-id <REAL_APPLE_TEAM_ID> --export-method development --provisioning-profiles "<Runner profile UUID/name; Share Extension profile UUID/name>" --record-dir docs/qa-builds',
       'python3 tool/signed_artifact_evidence.py ios --archive-or-build "build/ios/archive/MaClawMobile.xcarchive"',
-      'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development',
+      'python3 tool/release_status_report.py --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --log docs/qa-builds/release-status-<version+build>.log',
       'python3 tool/release_handoff.py --version 1.0.0+42 --scope android-ios --team-id <APPLE_TEAM_ID> --export-method development --output docs/qa-builds/handoff-1.0.0+42.md',
       'python3 tool/release_status_report.py --scope android',
       'python3 tool/release_handoff.py --version 1.0.0+42 --scope android --output docs/qa-builds/handoff-android-1.0.0+42.md',
@@ -1917,8 +2068,29 @@ void main() {
       'Dart FFI',
       'gomobile binding',
       'native corelib MethodChannel bridge',
+      'phone-local SSH dependency',
+      'terminal emulator dependency',
+      'phone-side SSH credential',
+      'custom Hub URL configuration',
+      'redemption-code login',
+      'arbitrary',
+      'third-party LLM provider/base URL/API-key fields',
       'discovered Hub APIs',
       'explicitly authorized digital employee handoff',
+      'For backend SSH evidence, record MaClaw GUI-equivalent backend session',
+      'management, not a phone-local SSH client check',
+      'mobile-created Hub control record being claimed by an authorized GUI/agent',
+      'ssh_session output with output_chunk/output_seq',
+      'claimed_by desktop-agent-1',
+      'Do not use generic',
+      'worker labels, ad hoc terminal screenshots, or handoff plans/logs as completed',
+      'preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID',
+      'replacing credentials or private customer excerpts with redacted text or a traceable attachment ID',
+      'If copied backend-session output contains credentials or private customer',
+      'keep the GUI/agent evidence line and replace credentials or private',
+      'customer excerpts with redacted text or a traceable attachment ID',
+      'tool/qa_build_record_report.py',
+      'prints this targeted remediation',
       'Automated release gates result',
       'runtime-boundary log, and release-gates log commands refuse to',
       'overwrite existing saved evidence files unless `--force` is provided',
@@ -2037,14 +2209,14 @@ void main() {
     final handoff = readDoc('docs/qa-builds/handoff-0.1.0+1.md');
 
     for (final expected in [
-      'run on 2026-07-06 passed all',
+      'run on 2026-07-10 passed all',
       'final-release-evidence-20260706-backend-ssh-realtime.log',
       'runtime-boundary-20260706-backend-ssh-realtime.log',
       'The local transcript was saved under `docs/qa-builds/`',
       'attach the versioned `release-gates-<version+build>.log`',
       'from signed-build QA as external evidence',
-      'Refreshed after the 2026-07-06 preflight log guard automated release gate run.',
-      '7082525FC4AFE286A87EB14C17B22E3D15176DED7F5F83EF53902F42C0F536CB',
+      'Refreshed after the local 2026-07-10 debug APK build verification run.',
+      'CC367FEDE66721219CA398A9AD3FDD93B57969577579267E78529CDB095960E6',
       'These cannot be proven by local unit tests or the unsigned debug APK',
       'Android signed internal build',
       'Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result',
@@ -2052,7 +2224,7 @@ void main() {
       expect(evidence, contains(expected));
     }
     final gateLogMatches =
-        RegExp(r'release-gates-20260706-preflight-log-guard-rerun\.log')
+        RegExp(r'release-gates-continuation-2\.log')
             .allMatches(evidence)
             .map((match) => match.group(0)!)
             .toSet();
@@ -2152,6 +2324,7 @@ void main() {
       'ios/.symlinks/',
       'ios/ExportOptions.plist',
       '*.iml',
+      'flutter_*.log',
     ]) {
       expect(gitignore, contains(expected));
     }
@@ -2288,6 +2461,18 @@ void main() {
       'out-of-scope invalid records as ignored warnings while current-scope or unparseable invalid records still block',
       'reporting out-of-scope invalid records as ignored warnings instead of blocking Android-only or iOS-only link updates',
       'scoped final verification ignoring invalid records whose filenames clearly belong to the other platform',
+      'copied backend session output secret remediation',
+      'GUI/agent evidence line with real Hub session ID',
+      'concrete `claimed_by` worker identity',
+      'numeric `output_seq`',
+      'redacted text or a traceable attachment ID',
+      'private customer excerpts',
+      'preserving that evidence line while replacing credentials or private customer excerpts with redacted text or a traceable attachment ID',
+      'Documents backend SSH evidence as MaClaw GUI-equivalent backend session',
+      'management, not a phone-local SSH client check; copied backend-session',
+      'output must include actual Hub session ID, GUI/agent-bound',
+      '`backend_session_id`, concrete `claimed_by` worker identity such as',
+      '`claimed_by desktop-agent-1`, and numeric `output_seq`',
     ]) {
       expect(evidenceText, contains(expected));
     }

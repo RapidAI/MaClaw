@@ -19,6 +19,11 @@ func q8MultiDot4(out *[4]float32, a []float32, data []byte, row, nBlocks, K int)
 func q8MultiDot4T(out *[4]float32, a []float32, t *Q8Tensor, row, nBlocks, K int) {
 	if hasAVX2andFMA && nBlocks > 0 && len(a) >= 4*K && len(t.Scales) >= (row+1)*nBlocks {
 		rowOff := row * nBlocks * q8BlockBytes
+		// Fixed-geometry: K=512 remainder single-B (dual covers the main path).
+		if nBlocks == 16 {
+			q8MultiDot4ScaledAVX2N16(out, &a[0], &t.Data[0], &t.Scales[row*nBlocks], rowOff)
+			return
+		}
 		q8MultiDot4ScaledAVX2(out, &a[0], K, &t.Data[0], &t.Scales[row*nBlocks], rowOff, nBlocks)
 		return
 	}
@@ -67,15 +72,27 @@ func q8DualMultiDot4T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBl
 	need := (row1 + 1) * nBlocks
 	if hasAVX2andFMA && nBlocks > 0 && len(a) >= 4*K && len(t.Scales) >= need {
 		rowBytes := nBlocks * q8BlockBytes
-		q8DualMultiDot4ScaledAVX2(out, &a[0], K, &t.Data[0],
-			&t.Scales[row0*nBlocks], &t.Scales[row1*nBlocks],
-			row0*rowBytes, row1*rowBytes, nBlocks)
+		s0 := &t.Scales[row0*nBlocks]
+		s1 := &t.Scales[row1*nBlocks]
+		d := &t.Data[0]
+		// Fixed-geometry kernels for SenseVoice shapes (no K/nBlocks bookkeeping).
+		switch nBlocks {
+		case 16: // K=512 encoder / proj
+			q8DualMultiDot4ScaledAVX2N16(out, &a[0], d, s0, s1, row0*rowBytes, row1*rowBytes)
+			return
+		case 64: // K=2048 FFN down-proj (fused path)
+			q8DualMultiDot4ScaledAVX2N64(out, &a[0], d, s0, s1, row0*rowBytes, row1*rowBytes)
+			return
+		}
+		q8DualMultiDot4ScaledAVX2(out, &a[0], K, d, s0, s1, row0*rowBytes, row1*rowBytes, nBlocks)
 		return
 	}
 	q8DualMultiDot4(out, a, t.Data, row0, row1, nBlocks, K)
 }
 
 // q8DualMultiDot8: 8 A rows × 2 B via two dual-4 kernels.
+// dual-4×2 keeps all accums in YMM (no stack spill); measured faster than
+// one-pass 8-row with B1 accums on stack for K=2048.
 func q8DualMultiDot8(out0, out1 *[8]float32, a []float32, data []byte, row0, row1, nBlocks, K int) {
 	q8DualMultiDot4(out0, a[:4*K], data, row0, row1, nBlocks, K)
 	q8DualMultiDot4(out1, a[4*K:8*K], data, row0, row1, nBlocks, K)
@@ -93,6 +110,9 @@ func q8MultiDot4AVX2(out *[4]float32, a *float32, K int, data *byte, rowOff, nBl
 func q8MultiDot4ScaledAVX2(out *[4]float32, a *float32, K int, data *byte, scales *float32, rowOff, nBlocks int)
 
 //go:noescape
+func q8MultiDot4ScaledAVX2N16(out *[4]float32, a *float32, data *byte, scales *float32, rowOff int)
+
+//go:noescape
 func q8MultiDot8AVX2(out *[8]float32, a *float32, K int, data *byte, rowOff, nBlocks int)
 
 //go:noescape
@@ -100,6 +120,12 @@ func q8DualMultiDot4AVX2(out *[8]float32, a *float32, K int, data *byte, rowOff0
 
 //go:noescape
 func q8DualMultiDot4ScaledAVX2(out *[8]float32, a *float32, K int, data *byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int)
+
+//go:noescape
+func q8DualMultiDot4ScaledAVX2N16(out *[8]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
+
+//go:noescape
+func q8DualMultiDot4ScaledAVX2N64(out *[8]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
 
 func q8MultiDot4Scalar(out *[4]float32, a []float32, data []byte, row, nBlocks, K int) {
 	// Fallback: dequant once then multiDot4

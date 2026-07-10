@@ -80,6 +80,14 @@ const activeCodePreviewState = {
     userClosed: false,
 };
 
+const agentView = {
+    type: 'progress' as const,
+    id: 'agent-view-1',
+    title: 'Task',
+    steps: [],
+    actions: [],
+};
+
 const workflowState = {
     active: true,
     splitMode: true,
@@ -198,6 +206,78 @@ describe('AssistantPreviewPane', () => {
         fireEvent.click(screen.getByRole('tab', { name: 'Progress' }));
         expect(screen.getByRole('tab', { name: 'Progress' }).getAttribute('aria-selected')).toBe('true');
         expect(screen.getAllByText('Requirements').length).toBeGreaterThan(0);
+    });
+
+    it('prefers source when workflow and code preview open together', () => {
+        const { rerender } = render(
+            <AssistantPreviewPane
+                codePreviewState={emptyCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={false}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={{ ...workflowState, splitMode: false }}
+            />,
+        );
+
+        rerender(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByText('answer')).toBeTruthy();
+    });
+
+    it('keeps source preview available when an agent task view is visible', () => {
+        render(
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                dismissAgentView={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={true}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                submitAgentView={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: 'Agent Task' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Source' })).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
+
+        expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByText('answer')).toBeTruthy();
     });
 
     it('supports keyboard switching between preview tabs', () => {

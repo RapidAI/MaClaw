@@ -2,8 +2,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
-import { useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
-import { useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
+import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
+import { cloneCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
@@ -62,6 +62,7 @@ import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
+const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
 
 type ConversationBranchPointLike = {
@@ -74,6 +75,154 @@ type ConversationBranchPointLike = {
 };
 
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
+
+const ASSISTANT_PREVIEW_STATE_KEY = "ai_assistant_preview_state_v1";
+const ASSISTANT_PREVIEW_STATE_MAX_BYTES = 900_000;
+
+type StoredAssistantPreviewState = {
+    ownerTabId: string;
+    ownerProjectPath?: string;
+    previewMode: "workflow" | "code";
+    workflow: WorkflowUIState;
+    code: CodePreviewUIState;
+};
+
+function encodeWorkflowStateForStorage(state: WorkflowUIState) {
+    return {
+        ...state,
+        phaseDocuments: Array.from(state.phaseDocuments.entries()),
+        gateResults: Array.from(state.gateResults.entries()),
+        docUpdatePhaseIDs: Array.from(state.docUpdatePhaseIDs),
+    };
+}
+
+function decodeWorkflowStateFromStorage(raw: any): WorkflowUIState | null {
+    if (!raw || typeof raw !== "object") return null;
+    return {
+        active: raw.active === true,
+        splitMode: raw.splitMode === true,
+        splitRatio: typeof raw.splitRatio === "number" ? raw.splitRatio : 0.6,
+        workflowType: typeof raw.workflowType === "string" ? raw.workflowType : "",
+        currentPhaseID: typeof raw.currentPhaseID === "string" ? raw.currentPhaseID : "",
+        latestDocumentPhaseID: typeof raw.latestDocumentPhaseID === "string" ? raw.latestDocumentPhaseID : "",
+        phaseDocuments: new Map(Array.isArray(raw.phaseDocuments) ? raw.phaseDocuments : []),
+        gateResults: new Map(Array.isArray(raw.gateResults) ? raw.gateResults : []),
+        phases: Array.isArray(raw.phases) ? raw.phases : [],
+        suggestMaximize: raw.suggestMaximize === true,
+        suggestMaximizeType: typeof raw.suggestMaximizeType === "string" ? raw.suggestMaximizeType : "",
+        awaitingForm: raw.awaitingForm === true,
+        transientText: typeof raw.transientText === "string" ? raw.transientText : "",
+        workingDir: typeof raw.workingDir === "string" ? raw.workingDir : "",
+        workflowID: typeof raw.workflowID === "string" ? raw.workflowID : "",
+        docUpdatePhaseIDs: new Set(Array.isArray(raw.docUpdatePhaseIDs) ? raw.docUpdatePhaseIDs : []),
+    };
+}
+
+function encodeCodeStateForStorage(state: CodePreviewUIState) {
+    return {
+        ...state,
+        files: Array.from(state.files.entries()),
+    };
+}
+
+function decodeCodeStateFromStorage(raw: any): CodePreviewUIState | null {
+    if (!raw || typeof raw !== "object") return null;
+    return {
+        active: raw.active === true,
+        files: new Map(Array.isArray(raw.files) ? raw.files : []),
+        activeFilePath: typeof raw.activeFilePath === "string" ? raw.activeFilePath : "",
+        sessionID: typeof raw.sessionID === "string" ? raw.sessionID : "",
+        sessionActive: raw.sessionActive === true,
+        userClosed: raw.userClosed === true,
+    };
+}
+
+function readStoredAssistantPreviewState(): StoredAssistantPreviewState | null {
+    try {
+        const raw = localStorage.getItem(ASSISTANT_PREVIEW_STATE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const workflow = decodeWorkflowStateFromStorage(parsed?.workflow);
+        const code = decodeCodeStateFromStorage(parsed?.code);
+        if (!workflow || !code) return null;
+        return {
+            ownerTabId: typeof parsed.ownerTabId === "string" ? parsed.ownerTabId : "local",
+            ownerProjectPath: typeof parsed.ownerProjectPath === "string" ? parsed.ownerProjectPath : undefined,
+            previewMode: parsed.previewMode === "code" ? "code" : "workflow",
+            workflow,
+            code,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function writeStoredAssistantPreviewState(state: StoredAssistantPreviewState) {
+    try {
+        const hasWorkflowPreview = state.workflow.splitMode || state.workflow.phaseDocuments.size > 0 || state.workflow.active;
+        const hasCodePreview = state.code.active || state.code.files.size > 0;
+        if (!hasWorkflowPreview && !hasCodePreview) {
+            localStorage.removeItem(ASSISTANT_PREVIEW_STATE_KEY);
+            return;
+        }
+        const payload = {
+            ownerTabId: state.ownerTabId,
+            ownerProjectPath: state.ownerProjectPath,
+            previewMode: state.previewMode,
+            workflow: encodeWorkflowStateForStorage(state.workflow),
+            code: encodeCodeStateForStorage(state.code),
+        };
+        let serialized = JSON.stringify(payload);
+        if (serialized.length > ASSISTANT_PREVIEW_STATE_MAX_BYTES && hasCodePreview) {
+            if (!hasWorkflowPreview) {
+                localStorage.removeItem(ASSISTANT_PREVIEW_STATE_KEY);
+                return;
+            }
+            const codeDroppedPayload = {
+                ...payload,
+                previewMode: "workflow" as const,
+                code: encodeCodeStateForStorage({
+                    active: false,
+                    files: new Map(),
+                    activeFilePath: "",
+                    sessionID: "",
+                    sessionActive: false,
+                    userClosed: false,
+                }),
+            };
+            serialized = JSON.stringify(codeDroppedPayload);
+        }
+        if (serialized.length > ASSISTANT_PREVIEW_STATE_MAX_BYTES && state.workflow.phaseDocuments.size > 0) {
+            const workflowWithoutDocsPayload = {
+                ...payload,
+                previewMode: "workflow" as const,
+                workflow: encodeWorkflowStateForStorage({
+                    ...state.workflow,
+                    phaseDocuments: new Map(),
+                    gateResults: new Map(),
+                    docUpdatePhaseIDs: new Set(),
+                    transientText: "",
+                }),
+                code: encodeCodeStateForStorage({
+                    active: false,
+                    files: new Map(),
+                    activeFilePath: "",
+                    sessionID: "",
+                    sessionActive: false,
+                    userClosed: false,
+                }),
+            };
+            serialized = JSON.stringify(workflowWithoutDocsPayload);
+        }
+        if (serialized.length <= ASSISTANT_PREVIEW_STATE_MAX_BYTES) {
+            localStorage.setItem(ASSISTANT_PREVIEW_STATE_KEY, serialized);
+        } else {
+            localStorage.removeItem(ASSISTANT_PREVIEW_STATE_KEY);
+        }
+    } catch {
+        try { localStorage.removeItem(ASSISTANT_PREVIEW_STATE_KEY); } catch { /* ignore storage failures */ }
+    }
+}
 
 function normalizeWorkflowPhaseStatus(status: unknown): string {
     return String(status || "").trim().toLowerCase();
@@ -563,8 +712,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         projectPrepareTimersRef.current.clear();
     }, []);
     const prevActiveTabIdRef = useRef<string>(activeTab.id);
-    const previewStateMapRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(new Map());
-    const previewOwnerTabRef = useRef<string>(canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : "local");
+    const restoredPreviewStateRef = useRef<StoredAssistantPreviewState | null | undefined>(undefined);
+    if (restoredPreviewStateRef.current === undefined) {
+        restoredPreviewStateRef.current = readStoredAssistantPreviewState();
+    }
+    const restoredPreviewApplyingRef = useRef(false);
+    const restoredPreviewOwnerProjectPathRef = useRef<string | undefined>(restoredPreviewStateRef.current?.ownerProjectPath);
+    const previewStateMapRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(
+        restoredPreviewStateRef.current
+            ? new Map([[restoredPreviewStateRef.current.ownerTabId, {
+                workflow: cloneWorkflowUIState(restoredPreviewStateRef.current.workflow),
+                code: cloneCodePreviewState(restoredPreviewStateRef.current.code),
+                previewMode: restoredPreviewStateRef.current.previewMode,
+            }]])
+            : new Map(),
+    );
+    const previewOwnerTabRef = useRef<string>(restoredPreviewStateRef.current?.ownerTabId || (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : "local"));
     const previewOwnerResetPendingRef = useRef(false);
     const agentViewOwnerTabRef = useRef<string>(activeTab.id);
     useEffect(() => {
@@ -581,7 +744,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (canShowAssistantCodingPreviewForTab(ownerTab) && ownerTabId !== currentTabId) {
                 previewStateMapRef.current.set(ownerTabId, {
                     workflow: getWorkflowSnapshot(),
-                    code: { ...codePreviewState, files: new Map(codePreviewState.files) },
+                    code: cloneCodePreviewState(codePreviewState),
                     previewMode: currentPreviewMode,
                 });
             }
@@ -1227,6 +1390,84 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (state) { restoreWorkflowState(state.workflow); restoreCodePreviewState(state.code); }
         else { resetWorkflowState(); resetCodePreviewState(); }
     }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
+    useEffect(() => {
+        const restored = restoredPreviewStateRef.current;
+        if (!restored) return;
+        const currentOwner = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
+        if (!canShowAssistantCodingPreviewForTab(currentOwner)) {
+            const ownerTab = restored.ownerProjectPath
+                ? tabState.tabs.find(tab => tab.type === "project" && tab.projectPath === restored.ownerProjectPath)
+                : tabState.tabs.find(tab => tab.id === "local");
+            if (!ownerTab) return;
+            const nextOwnerTabId = ownerTab.id;
+            if (nextOwnerTabId !== restored.ownerTabId) {
+                const saved = previewStateMapRef.current.get(restored.ownerTabId);
+                if (saved) {
+                    previewStateMapRef.current.delete(restored.ownerTabId);
+                    previewStateMapRef.current.set(nextOwnerTabId, saved);
+                }
+                previewOwnerTabRef.current = nextOwnerTabId;
+            }
+        }
+        if (previewOwnerTabRef.current !== activeTab.id) return;
+        restoredPreviewApplyingRef.current = true;
+        restoredPreviewStateRef.current = null;
+        restoredPreviewOwnerProjectPathRef.current = undefined;
+        workflowStateRef.current = cloneWorkflowUIState(restored.workflow);
+        codePreviewStateRef.current = cloneCodePreviewState(restored.code);
+        restoreWorkflowState(restored.workflow);
+        restoreCodePreviewState(restored.code);
+    }, [activeTab.id, tabState.tabs, restoreWorkflowState, restoreCodePreviewState]);
+    const workflowStateRef = useRef(workflowState);
+    workflowStateRef.current = workflowState;
+    const codePreviewStateRef = useRef(codePreviewState);
+    codePreviewStateRef.current = codePreviewState;
+    const currentPreviewModeRef = useRef<"workflow" | "code">("workflow");
+    const persistPreviewStateRef = useRef<number | null>(null);
+    const previewPersistTabsRef = useRef(tabState.tabs);
+    previewPersistTabsRef.current = tabState.tabs;
+    const persistPreviewState = useCallback((options?: { immediate?: boolean }) => {
+        const save = () => {
+            persistPreviewStateRef.current = null;
+            const ownerTabId = previewOwnerTabRef.current;
+            const ownerTab = previewPersistTabsRef.current.find(tab => tab.id === ownerTabId);
+            if (!canShowAssistantCodingPreviewForTab(ownerTab)) return;
+            const savedOwnerState = previewStateMapRef.current.get(ownerTabId);
+            const ownerIsActiveTab = ownerTabId === activeTabIdRef.current;
+            const workflowToPersist = !ownerIsActiveTab && savedOwnerState ? savedOwnerState.workflow : workflowStateRef.current;
+            const codeToPersist = !ownerIsActiveTab && savedOwnerState ? savedOwnerState.code : codePreviewStateRef.current;
+            writeStoredAssistantPreviewState({
+                ownerTabId,
+                ownerProjectPath: ownerTab?.projectPath || restoredPreviewOwnerProjectPathRef.current,
+                previewMode: !ownerIsActiveTab && savedOwnerState ? savedOwnerState.previewMode : currentPreviewModeRef.current,
+                workflow: cloneWorkflowUIState(workflowToPersist),
+                code: cloneCodePreviewState(codeToPersist),
+            });
+        };
+        if (persistPreviewStateRef.current) {
+            window.clearTimeout(persistPreviewStateRef.current);
+            persistPreviewStateRef.current = null;
+        }
+        if (options?.immediate) {
+            save();
+            return;
+        }
+        persistPreviewStateRef.current = window.setTimeout(save, 250);
+    }, []);
+    useEffect(() => {
+        if (restoredPreviewApplyingRef.current) {
+            restoredPreviewApplyingRef.current = false;
+            return;
+        }
+        persistPreviewState();
+    }, [workflowState, codePreviewState, persistPreviewState]);
+    useEffect(() => () => {
+        if (persistPreviewStateRef.current) {
+            window.clearTimeout(persistPreviewStateRef.current);
+            persistPreviewStateRef.current = null;
+        }
+        persistPreviewState({ immediate: true });
+    }, [persistPreviewState]);
     const showAgentView = !!agentView && (agentViewOwnerTabRef.current === activeTab.id || (agentView.id?.startsWith("workflow:form:") ?? false));
     const codingPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
     // Suppress workflow doc preview when a workflow form is showing — the form
@@ -1236,9 +1477,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [workflowFormGeneratingPhaseID, setWorkflowFormGeneratingPhaseID] = useState<string | null>(null);
     const workflowAwaitingForm = workflowState.active && workflowState.awaitingForm;
     const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
-    const showCodePreview = codingPreviewAllowed && !showAgentView && codePreviewState.active;
+    const showCodePreview = codingPreviewAllowed && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
+    currentPreviewModeRef.current = showCodePreview && !showWorkflowPreview ? "code" : "workflow";
     const workflowCurrentPhaseMeta = useMemo(
         () => workflowState.phases.find(phase => phase.id === workflowState.currentPhaseID),
         [workflowState.currentPhaseID, workflowState.phases],
@@ -1272,8 +1514,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [activeSessionKey, agentView, workflowCurrentPhaseID, workflowFormActive, workflowState.active, workflowState.workflowID]);
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
-    const codePreviewStateRef = useRef(codePreviewState);
-    codePreviewStateRef.current = codePreviewState;
     // Toggle the entire right-side area (workflow doc preview + code preview) open/closed
     const handleTogglePreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
@@ -2336,7 +2576,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
     const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
-    const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
+    const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND || scopeApprovalPending?.kind === LOCAL_HIGH_RISK_APPROVAL_KIND;
+    const scopeApprovalIsRemoteHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
@@ -2349,10 +2590,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
                     <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
                         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
+                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
                         </div>
                         <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
-                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
+                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
                             <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
                                 <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
                                 <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>

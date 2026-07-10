@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"path/filepath"
 	"strings"
 
@@ -12,12 +13,12 @@ type CodeFileEvent struct {
 	SessionID   string `json:"session_id"`
 	FilePath    string `json:"file_path"`
 	FileName    string `json:"file_name"`
-	AbsPath     string `json:"abs_path,omitempty"`    // absolute path for tooltip/context menu
+	AbsPath     string `json:"abs_path,omitempty"` // absolute path for tooltip/context menu
 	Content     string `json:"content"`
-	Original    string `json:"original,omitempty"`    // empty for new files
-	OpType      string `json:"op_type"`               // "create", "modify", or "read"
-	Language    string `json:"language"`              // detected from extension
-	ForceOpen   bool   `json:"force_open,omitempty"`  // true when backend should override a manually closed preview
+	Original    string `json:"original"`               // empty for new files or empty original content
+	OpType      string `json:"op_type"`                // "create", "modify", or "read"
+	Language    string `json:"language"`               // detected from extension
+	ForceOpen   bool   `json:"force_open,omitempty"`   // true when backend should override a manually closed preview
 	ProjectPath string `json:"project_path,omitempty"` // project/working directory for frontend tab routing
 }
 
@@ -34,7 +35,12 @@ func NewCodeEventEmitter(app *App) *CodeEventEmitter {
 // EmitCodeFileEvent emits a code:file_update event to the frontend.
 // If app.ctx is nil, the call is silently skipped.
 func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
+	if e == nil || e.app == nil {
+		return
+	}
+	log.Printf("[code-event] emit file_update session=%q op=%s force_open=%v project=%q file=%q content_len=%d original_len=%d", evt.SessionID, evt.OpType, evt.ForceOpen, evt.ProjectPath, evt.FilePath, len(evt.Content), len(evt.Original))
 	if e.app.ctx == nil {
+		log.Printf("[code-event] skip file_update session=%q file=%q: app context is nil", evt.SessionID, evt.FilePath)
 		return
 	}
 	runtime.EventsEmit(e.app.ctx, "code:file_update", evt)
@@ -43,7 +49,11 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 // EmitSessionStart emits a code:session_start event when a coding session begins.
 // If app.ctx is nil, the call is silently skipped.
 func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...string) {
+	if e == nil || e.app == nil {
+		return
+	}
 	if e.app.ctx == nil {
+		log.Printf("[code-event] skip session_start session=%q: app context is nil", sessionID)
 		return
 	}
 	payload := map[string]string{
@@ -52,13 +62,18 @@ func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...str
 	if len(projectPath) > 0 && projectPath[0] != "" {
 		payload["project_path"] = projectPath[0]
 	}
+	log.Printf("[code-event] emit session_start session=%q project=%q", sessionID, payload["project_path"])
 	runtime.EventsEmit(e.app.ctx, "code:session_start", payload)
 }
 
 // EmitSessionEnd emits a code:session_end event when a coding session completes.
 // If app.ctx is nil, the call is silently skipped.
 func (e *CodeEventEmitter) EmitSessionEnd(sessionID string, projectPath ...string) {
+	if e == nil || e.app == nil {
+		return
+	}
 	if e.app.ctx == nil {
+		log.Printf("[code-event] skip session_end session=%q: app context is nil", sessionID)
 		return
 	}
 	payload := map[string]string{
@@ -67,6 +82,7 @@ func (e *CodeEventEmitter) EmitSessionEnd(sessionID string, projectPath ...strin
 	if len(projectPath) > 0 && projectPath[0] != "" {
 		payload["project_path"] = projectPath[0]
 	}
+	log.Printf("[code-event] emit session_end session=%q project=%q", sessionID, payload["project_path"])
 	runtime.EventsEmit(e.app.ctx, "code:session_end", payload)
 }
 

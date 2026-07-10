@@ -23,6 +23,7 @@ vi.mock('../../CustomDialog', () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
         showConfirm: vi.fn(),
+        showPrompt: vi.fn(),
     }),
 }));
 
