@@ -136,6 +136,19 @@ class SessionController extends AsyncNotifier<SessionState> {
     return bootstrap;
   }
 
+  Future<MobileBootstrap> revokeThirdPartyLlmAuthorization() async {
+    final current = state.valueOrNull;
+    if (current == null || !current.authenticated) {
+      throw StateError('请先登录 MaClaw 官方服务。');
+    }
+    final bootstrap = await ApiClient(
+      vault: ref.watch(secureVaultProvider),
+      hubUrl: current.hubUrl,
+    ).revokeThirdPartyLlmAuthorization();
+    state = AsyncData(current.copyWith(bootstrap: bootstrap));
+    return bootstrap;
+  }
+
   Future<void> signOut() async {
     _authService = null;
     await ref.watch(secureVaultProvider).clearSession();

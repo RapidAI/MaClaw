@@ -1313,6 +1313,12 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, body, models)
+		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
+			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
+				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, body, models)
+			}
+		}
 		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, billableModels)
 		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel)
 		logRequestedModel = strings.TrimSpace(requestedModel)
@@ -1635,6 +1641,12 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			return
 		}
 		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, chatBody, models)
+		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
+			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
+				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, chatBody, models)
+			}
+		}
 		authorizedModel, requestedModel, err := resolveAuthorizedModel(chatBody, billableModels)
 		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel)
 		logRequestedModel = strings.TrimSpace(requestedModel)
@@ -4171,6 +4183,24 @@ func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Re
 	}
 	status, models = filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
 	return status, models, reg, nil
+}
+
+// reloadAuthorizedModelsAfterEntitlementDenial performs one cache-bypassing
+// entitlement read after an empty/denied snapshot. Grant redemption and
+// account-group updates may race with the normal runtime cache TTL; retrying
+// the read once prevents a stale snapshot from becoming a false 403 while
+// keeping permanently unentitled requests cheap and bounded.
+func reloadAuthorizedModelsAfterEntitlementDenial(ctx context.Context, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID, email string) (*im.LLMProviderRegistry, []llmservice.AuthorizedModel, *llmservice.Registry, error) {
+	invalidateLLMEntitlementCaches(system)
+	providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	_, models, serviceReg, err := resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, userID, email, providerReg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return providerReg, models, serviceReg, nil
 }
 
 type llmBillingDenial struct {

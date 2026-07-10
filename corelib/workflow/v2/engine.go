@@ -866,22 +866,59 @@ func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) 
 		e.mu.Unlock()
 		return nil, nil
 	}
+	before := *ws
+	var snapshot EngineState
+	rollback := func() {
+		e.mu.Lock()
+		// Do not overwrite a newer transition that completed while persistence
+		// was in flight. The rollback is valid only while this exact advance
+		// snapshot is still the active in-memory state.
+		if current := e.workflows[userID]; current == ws &&
+			current.PhaseIndex == snapshot.PhaseIndex &&
+			current.CurrentPhase == snapshot.CurrentPhase &&
+			current.Status == snapshot.Status &&
+			current.UpdatedAt.Equal(snapshot.UpdatedAt) {
+			*current = before
+		}
+		e.mu.Unlock()
+	}
 	ws.PhaseIndex++
 	if ws.PhaseIndex >= len(tmpl.Phases) {
 		ws.Status = WorkflowCompleted
 		ws.UpdatedAt = time.Now()
+		snapshot = *ws
 		e.mu.Unlock()
+		if e.store != nil {
+			if err := e.store.SaveWorkflowState(&snapshot); err != nil {
+				rollback()
+				return nil, err
+			}
+		}
+		if e.callbacks != nil {
+			_ = e.callbacks.EmitPhaseUpdate(userID, &snapshot)
+		}
 		return &WorkflowResponse{Complete: true}, nil
 	}
 	ws.CurrentPhase = tmpl.Phases[ws.PhaseIndex].ID
+	ws.PhaseFormData = nil
 	ws.PhaseFormSubmitted = false
 	ws.PhaseFormSkipped = false
 	ws.UpdatedAt = time.Now()
 	nextPhase := tmpl.Phases[ws.PhaseIndex]
+	snapshot = *ws
 	e.mu.Unlock()
+	if e.store != nil {
+		if err := e.store.SaveWorkflowState(&snapshot); err != nil {
+			rollback()
+			return nil, err
+		}
+	}
+	if e.callbacks != nil {
+		_ = e.callbacks.EmitPhaseUpdate(userID, &snapshot)
+	}
 	// Sync to V2 machine.
 	if e.machine != nil {
-		e.machine.SetActivePhaseForTest(userID, ws.PhaseIndex)
+		e.machine.SetActivePhaseForTest(userID, snapshot.PhaseIndex)
 	}
 	if nextPhase.InputSchema != nil {
 		return &WorkflowResponse{
@@ -1067,6 +1104,7 @@ func (e *WorkflowEngine) syncEngineStateFromHandleResult(userID string, hr *Hand
 		}
 	case ActionRunPhase, ActionConfirmed:
 		ws.PendingReviewRevisionRequested = false
+		ws.PhaseFormData = nil
 		ws.PhaseFormSubmitted = false
 		ws.PhaseFormSkipped = false
 	}
@@ -1118,6 +1156,15 @@ func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool) { return ""
 func (e *WorkflowEngine) BuildPhasePrompt(userID string) string {
 	if e == nil {
 		return ""
+	}
+	// The native V2 state is the authoritative source for phase outputs and
+	// form data. Prefer it whenever it is available: rebuilding a WorkflowState
+	// from the legacy EngineState only retains the active phase's form data and
+	// can therefore drop information collected by earlier phases after advance.
+	if e.machine != nil {
+		if state := e.machine.GetActive(userID); state != nil {
+			return BuildPhasePrompt(state)
+		}
 	}
 	ws := e.GetActiveWorkflow(userID)
 	if ws == nil {

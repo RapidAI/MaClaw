@@ -28,8 +28,22 @@ func mapV2StateToV1(s *workflow.WorkflowState) *workflow.EngineState {
 		status = workflow.WorkflowActive
 	}
 	currentPhaseID := ""
+	pendingReviewPhaseID := ""
+	phaseFormSubmitted := false
+	var phaseFormData map[string]interface{}
 	if s.CurrentPhase >= 0 && s.CurrentPhase < len(s.Phases) {
-		currentPhaseID = s.Phases[s.CurrentPhase].ID
+		currentPhase := s.Phases[s.CurrentPhase]
+		currentPhaseID = currentPhase.ID
+		if currentPhase.Status == workflow.PhaseWaitingConfirm {
+			pendingReviewPhaseID = currentPhase.ID
+		}
+		if currentPhase.FormData != nil {
+			phaseFormSubmitted = true
+			phaseFormData = make(map[string]interface{}, len(currentPhase.FormData))
+			for key, value := range currentPhase.FormData {
+				phaseFormData[key] = value
+			}
+		}
 	}
 	phaseOutputs := make(map[string]string)
 	for _, p := range s.Phases {
@@ -38,16 +52,19 @@ func mapV2StateToV1(s *workflow.WorkflowState) *workflow.EngineState {
 		}
 	}
 	return &workflow.EngineState{
-		ID:           s.ID,
-		UserID:       s.UserID,
-		Type:         workflow.WorkflowType(s.Type),
-		CurrentPhase: currentPhaseID,
-		PhaseIndex:   s.CurrentPhase,
-		PhaseOutputs: phaseOutputs,
-		Status:       status,
-		CreatedAt:    s.CreatedAt,
-		UpdatedAt:    s.UpdatedAt,
-		ProjectPath:  s.ProjectPath,
+		ID:                   s.ID,
+		UserID:               s.UserID,
+		Type:                 workflow.WorkflowType(s.Type),
+		CurrentPhase:         currentPhaseID,
+		PhaseIndex:           s.CurrentPhase,
+		PhaseOutputs:         phaseOutputs,
+		PhaseFormData:        phaseFormData,
+		PhaseFormSubmitted:   phaseFormSubmitted,
+		PendingReviewPhaseID: pendingReviewPhaseID,
+		Status:               status,
+		CreatedAt:            s.CreatedAt,
+		UpdatedAt:            s.UpdatedAt,
+		ProjectPath:          s.ProjectPath,
 		Intent: workflow.StructuredIntent{
 			Category: workflow.WorkflowType(s.Type),
 			Summary:  s.Summary,

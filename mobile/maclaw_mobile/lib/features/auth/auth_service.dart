@@ -61,7 +61,7 @@ class AuthService {
       preferredHubCenterUrl: _selectedHubCenterUrl,
       operation: (client, hubCenterUrl) async {
         final routeResponse = await client.post<Map<String, dynamic>>(
-          '/api/entry/probe',
+          '/api/entry/resolve',
           data: {'phone_number': normalizedPhone},
           options: Options(
             headers: {'X-MaClaw-HubCenter-URL': hubCenterUrl},
@@ -238,23 +238,34 @@ class PhoneLoginHub {
 class PhoneLoginRouteResult {
   final String mode;
   final String message;
+  final String defaultHubId;
   final List<PhoneLoginHub> hubs;
 
   const PhoneLoginRouteResult({
     required this.mode,
     required this.message,
+    required this.defaultHubId,
     required this.hubs,
   });
 
   PhoneLoginHub? get selectedHub {
     if (hubs.isEmpty) return null;
-    for (final hub in hubs) {
-      if (hub.status == 'online' && hub.baseUrl.isNotEmpty) return hub;
+    final usable = hubs.where((hub) => hub.baseUrl.isNotEmpty).toList();
+    if (usable.isEmpty) return hubs.first;
+    final preferred = defaultHubId.trim();
+    if (preferred.isNotEmpty) {
+      final preferredHubs =
+          usable.where((hub) => hub.hubId == preferred).toList(growable: false);
+      if (preferredHubs.isNotEmpty) {
+        return _mostCompleteHub(preferredHubs);
+      }
     }
-    for (final hub in hubs) {
-      if (hub.baseUrl.isNotEmpty) return hub;
+    final online =
+        usable.where((hub) => hub.status == 'online').toList(growable: false);
+    if (online.isNotEmpty) {
+      return _mostCompleteHub(online);
     }
-    return hubs.first;
+    return _mostCompleteHub(usable);
   }
 
   factory PhoneLoginRouteResult.fromJson(Map<String, dynamic> json) {
@@ -262,6 +273,7 @@ class PhoneLoginRouteResult {
     return PhoneLoginRouteResult(
       mode: json['mode'] as String? ?? '',
       message: json['message'] as String? ?? '',
+      defaultHubId: json['default_hub_id'] as String? ?? '',
       hubs: rawHubs is List
           ? rawHubs
               .whereType<Map>()
@@ -276,6 +288,21 @@ class PhoneLoginRouteResult {
   }
 }
 
+PhoneLoginHub _mostCompleteHub(Iterable<PhoneLoginHub> candidates) {
+  return candidates.reduce((best, candidate) {
+    return _hubCompletenessScore(candidate) > _hubCompletenessScore(best)
+        ? candidate
+        : best;
+  });
+}
+
+int _hubCompletenessScore(PhoneLoginHub hub) {
+  return (hub.status == 'online' ? 8 : 0) +
+      (hub.tenantId.isNotEmpty ? 4 : 0) +
+      (hub.tenantName.isNotEmpty ? 2 : 0) +
+      (hub.name.isNotEmpty ? 1 : 0);
+}
+
 class PhoneLoginRequestResult {
   final String status;
   final String message;
@@ -287,6 +314,7 @@ class PhoneLoginRequestResult {
   final String hubCenterUrl;
   final int expiresMinutes;
   final int codeLength;
+  final int resendCooldownSeconds;
 
   const PhoneLoginRequestResult({
     required this.status,
@@ -299,6 +327,7 @@ class PhoneLoginRequestResult {
     required this.hubCenterUrl,
     required this.expiresMinutes,
     required this.codeLength,
+    this.resendCooldownSeconds = 60,
   });
 
   factory PhoneLoginRequestResult.fromJson(Map<String, dynamic> json) {
@@ -316,6 +345,8 @@ class PhoneLoginRequestResult {
           '',
       expiresMinutes: (json['expires_min'] as num?)?.toInt() ?? 0,
       codeLength: (json['code_length'] as num?)?.toInt() ?? 0,
+      resendCooldownSeconds:
+          (json['resend_cooldown_seconds'] as num?)?.toInt() ?? 60,
     );
   }
 
@@ -330,6 +361,7 @@ class PhoneLoginRequestResult {
     String? hubCenterUrl,
     int? expiresMinutes,
     int? codeLength,
+    int? resendCooldownSeconds,
   }) {
     return PhoneLoginRequestResult(
       status: status ?? this.status,
@@ -342,6 +374,8 @@ class PhoneLoginRequestResult {
       hubCenterUrl: hubCenterUrl ?? this.hubCenterUrl,
       expiresMinutes: expiresMinutes ?? this.expiresMinutes,
       codeLength: codeLength ?? this.codeLength,
+      resendCooldownSeconds:
+          resendCooldownSeconds ?? this.resendCooldownSeconds,
     );
   }
 }

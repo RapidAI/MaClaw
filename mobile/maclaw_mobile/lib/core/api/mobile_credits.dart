@@ -22,3 +22,20 @@ String trustedBootstrapCreditsAccount(MobileBootstrap? bootstrap) {
   if (llmCredits.isNotEmpty) return llmCredits;
   return trustedPhoneCreditsAccount(bootstrap.user.creditsAccount);
 }
+
+bool isMobileLlmConfigured(MobileBootstrap? bootstrap) {
+  if (bootstrap == null) return false;
+  final status = bootstrap.llmAccess.status.trim().toLowerCase();
+  final available = switch (status) {
+    'available' || 'authorized' || 'active' || 'ready' || 'configured' => true,
+    _ => false,
+  };
+  if (!available) return false;
+  if (bootstrap.llmAccess.official) {
+    return isTrustedPhoneCreditsAccount(bootstrap.llmAccess.creditsAccount);
+  }
+  if (bootstrap.llmAccess.desktopQrDelegated) {
+    return bootstrap.llmAccess.authorizationId.trim().isNotEmpty;
+  }
+  return false;
+}

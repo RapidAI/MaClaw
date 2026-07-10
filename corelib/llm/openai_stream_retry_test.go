@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -99,6 +100,31 @@ func TestDoOpenAIRequestStream_CompactsAfterToollessCompat400(t *testing.T) {
 	userContent, _ := user["content"].(string)
 	if !strings.Contains(userContent, "[Compatibility retry]") || !strings.Contains(userContent, "生成测试策略阶段文档") {
 		t.Fatalf("compact user content = %q", userContent)
+	}
+}
+
+func TestDoOpenAIRequestStreamPreservesStructuredHTTPErrorBody(t *testing.T) {
+	body := `{"code":"LLM_MODEL_FORBIDDEN","message":"no active model service entitlement","type":"invalid_request_error"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: server.URL, Model: "auto", Protocol: "openai"}
+	_, err := DoOpenAIRequestStream(context.Background(), cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hello"},
+	}, nil, server.Client(), nil)
+	if err == nil {
+		t.Fatal("expected HTTP 403 error")
+	}
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error type = %T, want HTTPStatusError", err)
+	}
+	if httpErr.StatusCode != http.StatusForbidden || string(httpErr.Body) != body {
+		t.Fatalf("structured HTTP error = status %d body %q", httpErr.StatusCode, string(httpErr.Body))
 	}
 }
 

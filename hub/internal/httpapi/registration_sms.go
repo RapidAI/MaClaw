@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	registrationSMSResendCooldownSeconds     = 60
 	registrationSMSBusinessRegister          = "registration"
 	registrationSMSBusinessChangeBoundPhone  = "change_bound_phone"
 	registrationSMSBusinessResetPassword     = "reset_password"

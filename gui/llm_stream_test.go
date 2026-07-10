@@ -270,6 +270,20 @@ func TestClassifyOpenAICompatibleHTTPError_ZhipuOverloadedHTTP200(t *testing.T) 
 	}
 }
 
+func TestClassifyOpenAICompatibleHTTPError_ModelServiceEntitlement(t *testing.T) {
+	err := &llm.HTTPStatusError{
+		StatusCode: http.StatusForbidden,
+		Body:       []byte(`{"code":"LLM_MODEL_FORBIDDEN","message":"no active model service entitlement","type":"invalid_request_error"}`),
+	}
+	got, ok := classifyOpenAICompatibleHTTPError(err, "MaClaw Hub")
+	if !ok {
+		t.Fatal("expected structured HTTP error to be classified")
+	}
+	if !strings.Contains(got, "模型服务权益") || strings.Contains(got, "body_len") {
+		t.Fatalf("unexpected entitlement error message: %q", got)
+	}
+}
+
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90,"retry_after_at":"2026-05-05T06:00:00Z"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")

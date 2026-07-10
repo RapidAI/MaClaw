@@ -53,8 +53,11 @@ mobile/android/signing.env.cmd
 mobile/maclaw_mobile/android/key.properties
 mobile/maclaw_mobile/android/*.jks
 mobile/maclaw_mobile/android/*.keystore
+mobile/maclaw_mobile/qa-signing/
 mobile/maclaw_mobile/docs/qa-builds/*
 !mobile/maclaw_mobile/docs/qa-builds/README.md
+!mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/
+!mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/**
 gui/LegacyTaskOutput.csv
 RapidSpeech.cpp/*.rar
 tmp-hub-admin-check.js

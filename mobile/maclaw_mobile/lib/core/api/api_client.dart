@@ -83,10 +83,30 @@ class ApiClient {
     );
   }
 
+  Future<MobileBootstrap> revokeThirdPartyLlmAuthorization() async {
+    final response = await _dio.delete<Map<String, dynamic>>(
+      '/api/mobile/llm/desktop-qr-authorizations',
+    );
+    final data = response.data ?? const {};
+    return MobileBootstrap.fromJson(
+      Map<String, dynamic>.from(data['bootstrap'] as Map? ?? data),
+    );
+  }
+
   Future<SearchAnswer> search(String query) async {
+    return searchWithContext(query);
+  }
+
+  Future<SearchAnswer> searchWithContext(
+    String query, {
+    List<String> context = const [],
+  }) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/mobile/search',
-      data: {'query': query},
+      data: {
+        'query': query,
+        if (context.isNotEmpty) 'context': context,
+      },
     );
     return SearchAnswer.fromJson(response.data ?? const {});
   }
@@ -481,8 +501,22 @@ Map<String, dynamic> _fileOperationPayload(Map<String, dynamic> data) {
 class SearchAnswer {
   final String answer;
   final List<SearchCitation> citations;
+  final String llmMode;
+  final String llmRequestId;
+  final String llmUsageRecordId;
 
-  const SearchAnswer({required this.answer, required this.citations});
+  const SearchAnswer({
+    required this.answer,
+    required this.citations,
+    this.llmMode = '',
+    this.llmRequestId = '',
+    this.llmUsageRecordId = '',
+  });
+
+  bool get hasLlmTrace =>
+      llmMode.isNotEmpty ||
+      llmRequestId.isNotEmpty ||
+      llmUsageRecordId.isNotEmpty;
 
   factory SearchAnswer.fromJson(Map<String, dynamic> json) {
     return SearchAnswer(
@@ -491,6 +525,9 @@ class SearchAnswer {
         for (final item in (json['citations'] as List? ?? const []))
           SearchCitation.fromJson(Map<String, dynamic>.from(item as Map)),
       ],
+      llmMode: (json['llm_mode'] as String? ?? '').trim(),
+      llmRequestId: (json['llm_request_id'] as String? ?? '').trim(),
+      llmUsageRecordId: (json['llm_usage_record_id'] as String? ?? '').trim(),
     );
   }
 }

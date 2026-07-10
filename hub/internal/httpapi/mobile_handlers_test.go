@@ -5,17 +5,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
+
+type mobileLLMTestSystemSettings struct {
+	mu     sync.Mutex
+	values map[string]string
+}
+
+func (s *mobileLLMTestSystemSettings) Set(_ context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.values == nil {
+		s.values = make(map[string]string)
+	}
+	s.values[key] = value
+	return nil
+}
+
+func (s *mobileLLMTestSystemSettings) Get(_ context.Context, key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.values[key]
+	if !ok {
+		return "", errors.New("setting not found")
+	}
+	return value, nil
+}
 
 func TestMobileRealtimeHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/realtime", nil)
@@ -321,6 +348,23 @@ func TestMobileLLMDesktopQRAuthorizationUpdatesBootstrap(t *testing.T) {
 		t.Fatalf("connection = %#v, want request hub URL", bootstrap["connection"])
 	}
 
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/llm/desktop-qr-authorizations", nil)
+	revokeReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	revokeRec := httptest.NewRecorder()
+	MobileLLMDesktopQRAuthorizationRevokeHandler(identity).ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d body=%s, want 200", revokeRec.Code, revokeRec.Body.String())
+	}
+	var revoked map[string]any
+	if err := json.Unmarshal(revokeRec.Body.Bytes(), &revoked); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	revokedBootstrap, _ := revoked["bootstrap"].(map[string]any)
+	revokedAccess, _ := revokedBootstrap["llm_access"].(map[string]any)
+	if revoked["status"] != "revoked" || revokedAccess["mode"] != "maclaw_official" {
+		t.Fatalf("revoke response = %#v, want official LLM bootstrap", revoked)
+	}
+
 	reuseReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-authorizations", bytes.NewReader(body))
 	reuseReq.Header.Set("Authorization", "Bearer "+viewerToken)
 	reuseRec := httptest.NewRecorder()
@@ -344,6 +388,66 @@ func TestMobileLLMDesktopQRAuthorizationRejectsInvalidPayload(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "INVALID_DESKTOP_QR") {
 		t.Fatalf("body = %s, want INVALID_DESKTOP_QR", rec.Body.String())
+	}
+}
+
+func TestMobileLLMAuthorizationEncryptedPersistenceRestoresAndRevokes(t *testing.T) {
+	settings := &mobileLLMTestSystemSettings{}
+	key := bytes.Repeat([]byte{0x42}, 32)
+	setMobileLLMAuthorizationPersistenceForTest(t, settings, key)
+	record := mobileLlmAuthorizationRecord{
+		AuthorizationID: "mllm_persisted",
+		OwnerID:         "user-1",
+		TenantID:        "tenant-1",
+		ProviderName:    "OpenAI Compatible",
+		ProviderURL:     "https://llm.example.com/v1",
+		APIKey:          "delegated-secret-key",
+		Model:           "gpt-4.1-mini",
+		Protocol:        "openai",
+		AuthorizedAt:    time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC),
+	}
+	if err := persistMobileLLMAuthorization(context.Background(), record); err != nil {
+		t.Fatalf("persist authorization: %v", err)
+	}
+	stored, err := settings.Get(context.Background(), "tenant:tenant-1:"+mobileLLMAuthorizationPersistenceKey("user-1"))
+	if err != nil {
+		t.Fatalf("read encrypted authorization: %v", err)
+	}
+	if strings.Contains(stored, record.APIKey) || strings.Contains(stored, record.ProviderURL) {
+		t.Fatalf("encrypted authorization leaked provider data: %s", stored)
+	}
+	mobileLlmAuthorizations.Lock()
+	delete(mobileLlmAuthorizations.authorizations, mobileLlmAuthorizationKey("tenant-1", "user-1"))
+	mobileLlmAuthorizations.Unlock()
+	access := mobileLlmAccessPayload(context.Background(), &auth.ViewerPrincipal{
+		TenantID: "tenant-1",
+		UserID:   "user-1",
+	})
+	if access["mode"] != "desktop_qr_third_party" || access["authorization_id"] != record.AuthorizationID {
+		t.Fatalf("restored bootstrap LLM access = %#v", access)
+	}
+	restored, ok := mobilePersistedLLMAuthorization(context.Background(), "tenant-1", "user-1")
+	if !ok || restored.APIKey != record.APIKey || restored.AuthorizationID != record.AuthorizationID {
+		t.Fatalf("restored authorization = %#v ok=%v", restored, ok)
+	}
+	if err := deletePersistedMobileLLMAuthorization(context.Background(), "tenant-1", "user-1"); err != nil {
+		t.Fatalf("delete authorization: %v", err)
+	}
+	mobileLlmAuthorizations.Lock()
+	delete(mobileLlmAuthorizations.authorizations, mobileLlmAuthorizationKey("tenant-1", "user-1"))
+	mobileLlmAuthorizations.Unlock()
+	if _, ok := mobilePersistedLLMAuthorization(context.Background(), "tenant-1", "user-1"); ok {
+		t.Fatal("revoked authorization was restored")
+	}
+}
+
+func TestMobileLLMAuthorizationEncryptionKeyRequires32Bytes(t *testing.T) {
+	if _, err := mobileLLMAuthorizationEncryptionKey("not-a-valid-key"); err == nil {
+		t.Fatal("invalid key was accepted")
+	}
+	key, err := mobileLLMAuthorizationEncryptionKey(strings.Repeat("42", 32))
+	if err != nil || len(key) != 32 {
+		t.Fatalf("hex key len=%d err=%v, want 32 bytes", len(key), err)
 	}
 }
 
@@ -410,7 +514,7 @@ func TestMobileSearchHandlerUsesOfficialLLMAndPreservesCitations(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !called || response["answer"] != "LLM summary" || response["llm_mode"] != "maclaw_official" || response["llm_request_id"] != "llm-mobile-1" {
+	if !called || response["answer"] != "LLM summary" || response["llm_mode"] != "maclaw_official" || response["llm_request_id"] != "llm-mobile-1" || response["llm_usage_record_id"] != "llm-mobile-1" {
 		t.Fatalf("response = %#v, want official LLM answer and trace", response)
 	}
 	citations, _ := response["citations"].([]any)
@@ -1835,6 +1939,22 @@ func clearMobileLLMAuthorizationsForTest(t *testing.T) {
 		mobileLlmAuthorizations.authorizations = previous
 		mobileLlmAuthorizations.qrSessions = previousQRSessions
 		mobileLlmAuthorizations.Unlock()
+	})
+}
+
+func setMobileLLMAuthorizationPersistenceForTest(t *testing.T, system *mobileLLMTestSystemSettings, key []byte) {
+	t.Helper()
+	mobileLLMAuthorizationPersistence.Lock()
+	previousSystem := mobileLLMAuthorizationPersistence.system
+	previousKey := append([]byte(nil), mobileLLMAuthorizationPersistence.key...)
+	mobileLLMAuthorizationPersistence.system = system
+	mobileLLMAuthorizationPersistence.key = append([]byte(nil), key...)
+	mobileLLMAuthorizationPersistence.Unlock()
+	t.Cleanup(func() {
+		mobileLLMAuthorizationPersistence.Lock()
+		mobileLLMAuthorizationPersistence.system = previousSystem
+		mobileLLMAuthorizationPersistence.key = previousKey
+		mobileLLMAuthorizationPersistence.Unlock()
 	})
 }
 

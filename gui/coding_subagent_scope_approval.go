@@ -25,10 +25,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
-// scopeApprovalTimeout is the countdown before auto-allowing.
-// 10 seconds: short enough to not block SubAgent, long enough for user to read and reject if needed.
+// scopeApprovalTimeout is the countdown before the backend resolves a pending
+// approval. Every request resolves to deny when the user does not respond;
+// the timeout is only a bounded wait for an explicit user decision.
 const scopeApprovalTimeout = 10 * time.Second
 
 // ScopeApprovalDecision is the user's response to a scope violation prompt.
@@ -51,7 +54,7 @@ type ScopeApprovalRequest struct {
 	Directory   string // the directory that would be approved with "allow_dir"
 	Kind        string // optional request kind; empty means project scope approval
 	Message     string // optional user-facing reason
-	AutoAllow   bool   // true when backend auto-allows on timeout
+	AutoAllow   bool   // legacy metadata; current approval timeouts always deny
 }
 
 // ScopeApprovalCallback is the function type for requesting user approval.
@@ -68,6 +71,7 @@ type scopeApprovalState struct {
 	highRiskFullAccess bool                  // task-scoped approval for high-risk shell commands only
 	approvedDirs       map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
 	onScopeApproval    ScopeApprovalCallback // nil = hard reject (legacy behavior)
+	auditApproval      func(ScopeApprovalRequest, ScopeApprovalDecision, string)
 }
 
 // newScopeApprovalState creates a new approval state.
@@ -75,9 +79,10 @@ type scopeApprovalState struct {
 // If fullAccess is true, all scope checks pass immediately (user previously granted full access).
 func newScopeApprovalState(callback ScopeApprovalCallback, fullAccess bool) *scopeApprovalState {
 	return &scopeApprovalState{
-		fullAccess:      fullAccess,
-		approvedDirs:    make(map[string]bool),
-		onScopeApproval: callback,
+		fullAccess:         fullAccess,
+		highRiskFullAccess: fullAccess,
+		approvedDirs:       make(map[string]bool),
+		onScopeApproval:    callback,
 	}
 }
 
@@ -98,7 +103,11 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 	// Full access granted — skip all scope checks.
 	s.mu.Lock()
 	if s.fullAccess {
+		audit := s.auditApproval
 		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath}, ScopeApprovalFullAccess, "automatic")
+		}
 		return ""
 	}
 	s.mu.Unlock()
@@ -112,6 +121,12 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 
 	// Check if this directory (or a parent) is already approved.
 	if s.isApproved(absPath) {
+		s.mu.Lock()
+		audit := s.auditApproval
+		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath, Directory: dir}, ScopeApprovalAllowDir, "automatic")
+		}
 		return "" // pre-approved, allow immediately
 	}
 
@@ -126,7 +141,7 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		Path:        path,
 		ProjectPath: projectPath,
 		Directory:   dir,
-		AutoAllow:   true,
+		AutoAllow:   false,
 	})
 
 	switch decision {
@@ -141,6 +156,56 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 	default:
 		return formatScopeRejection(toolName, path, projectPath)
 	}
+}
+
+// checkHighRisk asks the user before a shell command covered by a guardrail is
+// executed. An allow_dir decision is not meaningful for a command, and a
+// timeout must remain a denial.
+func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, workingDir, rejection string) string {
+	if s == nil {
+		return rejection
+	}
+	s.mu.Lock()
+	if s.highRiskFullAccess {
+		audit := s.auditApproval
+		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: command, ProjectPath: projectPath, Directory: workingDir, Kind: localHighRiskApprovalKind}, ScopeApprovalFullAccess, "automatic")
+		}
+		return ""
+	}
+	callback := s.onScopeApproval
+	s.mu.Unlock()
+	if callback == nil {
+		return rejection
+	}
+	decision := callback(ScopeApprovalRequest{
+		ToolName:    toolName,
+		Path:        command,
+		ProjectPath: projectPath,
+		Directory:   workingDir,
+		Kind:        localHighRiskApprovalKind,
+		Message:     rejection,
+		AutoAllow:   false,
+	})
+	switch decision {
+	case ScopeApprovalAllowOnce:
+		return ""
+	case ScopeApprovalFullAccess:
+		s.grantHighRiskFullAccess()
+		return ""
+	default:
+		return rejection
+	}
+}
+
+func (s *scopeApprovalState) setAuditCallback(callback func(ScopeApprovalRequest, ScopeApprovalDecision, string)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.auditApproval = callback
+	s.mu.Unlock()
 }
 
 // isApproved checks if a path falls within any previously approved directory.
@@ -225,6 +290,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		// If already cancelled, deny immediately.
 		if loopCtx != nil && loopCtx.IsCancelled() {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalDeny, "cancelled")
 			return ScopeApprovalDeny
 		}
 
@@ -248,44 +314,109 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 			emitScopeApprovalEvent(handler.app, approvalID, req)
 		}
 
-		// Timeout: if user doesn't respond within the countdown, allow automatically.
-		// Rationale: user launched SubAgent intentionally; most scope violations are
-		// legitimate (task references files outside the declared workspace). The dialog
-		// serves as a notification + opt-out, not a blocker.
+		// Timeout behavior depends on the request kind. Directory scope remains
+		// notification-like; high-risk commands must never be auto-approved.
 		timeout := time.NewTimer(scopeApprovalTimeout)
 		defer timeout.Stop()
 
-		// Block until response, cancellation, or timeout (auto-allow).
+		// Block until response, cancellation, or timeout.
 		if loopCtx != nil {
 			select {
 			case decision := <-responseCh:
+				recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
 				if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
+				recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 				return ScopeApprovalDeny
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
+				decision := remoteScopeApprovalTimeoutDecision(req)
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("\u26a0\ufe0f \u76ee\u5f55\u8d8a\u6743\u786e\u8ba4\u8d85\u65f6\uff0c\u81ea\u52a8\u5141\u8bb8\u76ee\u5f55: %s", req.Directory))
+					onProgress(remoteScopeApprovalTimeoutProgress(req, decision))
 				}
-				return ScopeApprovalAllowDir
+				recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
+				return decision
 			}
 		}
 		// No loopCtx — wait with timeout only.
 		select {
 		case decision := <-responseCh:
+			recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
 			if shouldPersistLocalScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
-			return ScopeApprovalAllowDir
+			decision := remoteScopeApprovalTimeoutDecision(req)
+			recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
+			return decision
 		}
 	}
+}
+
+// recordScopeApprovalAudit records every interactive scope/high-risk decision,
+// including approvals. The audit log sanitizes sensitive command arguments.
+func recordScopeApprovalAudit(handler *IMMessageHandler, approvalID string, req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
+	if handler == nil || handler.app == nil {
+		return
+	}
+	handler.app.ensureAuditLog()
+	if handler.app.auditLog == nil {
+		return
+	}
+	risk := security.RiskMedium
+	if strings.Contains(req.Kind, "high_risk") {
+		risk = security.RiskHigh
+	}
+	policy := security.PolicyUserOverride
+	if decision == ScopeApprovalDeny {
+		policy = security.PolicyDeny
+	}
+	_ = handler.app.auditLog.Log(security.AuditEntry{
+		Timestamp: time.Now(),
+		SessionID: approvalID,
+		ToolName:  req.ToolName,
+		Arguments: map[string]interface{}{
+			"path":         req.Path,
+			"directory":    req.Directory,
+			"project_path": req.ProjectPath,
+			"kind":         req.Kind,
+			"decision":     string(decision),
+			"source":       source,
+		},
+		RiskLevel:    risk,
+		PolicyAction: policy,
+		Result:       fmt.Sprintf("scope_approval_%s (%s)", decision, source),
+		Source:       "coding_subagent",
+	})
+}
+
+func recordSubAgentPermissionModeAudit(app *App, fullControl bool) {
+	if app == nil {
+		return
+	}
+	app.ensureAuditLog()
+	if app.auditLog == nil {
+		return
+	}
+	decision := "request_authorization"
+	if fullControl {
+		decision = "full_control"
+	}
+	_ = app.auditLog.Log(security.AuditEntry{
+		Timestamp:    time.Now(),
+		ToolName:     "coding_subagent_permission",
+		Arguments:    map[string]interface{}{"full_control": fullControl},
+		RiskLevel:    security.RiskHigh,
+		PolicyAction: security.PolicyUserOverride,
+		Result:       "permission_mode_" + decision,
+		Source:       "coding_subagent",
+	})
 }
 
 // pendingScopeApproval tracks an outstanding approval request.

@@ -21,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
@@ -39,6 +40,19 @@ func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
 	}
 	if !strings.Contains(result.Summary, "## 质量审计") || strings.Count(result.Summary, "## 质量审计") != 1 {
 		t.Fatalf("nil task summary should include one quality audit section, got %q", result.Summary)
+	}
+}
+
+func TestCodingSubAgentCodeSessionIDUsesLoopContext(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{loopCtx: &LoopContext{codeSessionID: "preview-session-42"}},
+	}
+	if got := cb.codeSessionID(); got != "preview-session-42" {
+		t.Fatalf("codeSessionID = %q, want active loop session", got)
+	}
+
+	if got := (&codingSubAgentCallbacks{}).codeSessionID(); got != "subagent-workflow" {
+		t.Fatalf("codeSessionID fallback = %q, want subagent-workflow", got)
 	}
 }
 
@@ -1777,8 +1791,8 @@ func TestRemoteDiffSelfCheckCommandAllowedByWindowsShellGuard(t *testing.T) {
 	if msg := rejectDisallowedCodingBashCommand("git status --short; git diff --stat"); msg != "" {
 		t.Fatalf("semicolon remote diff self-check should pass Windows shell guard, got %q", msg)
 	}
-	if msg := rejectDisallowedCodingBashCommand("git status --short && git diff --stat"); msg == "" {
-		t.Fatal("ampersand remote diff self-check should still be rejected by Windows shell guard")
+	if msg := rejectDisallowedCodingBashCommand("git status --short && git diff --stat"); msg != "" {
+		t.Fatalf("ampersand remote diff self-check should be normalized by the executor, got %q", msg)
 	}
 	if msg := rejectDisallowedCodingBashCommand("git reset --hard HEAD"); msg == "" {
 		t.Fatal("destructive git command should remain rejected")
@@ -2219,6 +2233,67 @@ func TestRemoteCodingSubAgentHighRiskBashCanBeUserApproved(t *testing.T) {
 	}
 	if gotReq.Kind != remoteHighRiskApprovalKind || gotReq.AutoAllow || !strings.Contains(gotReq.Message, "拒绝执行高风险命令") {
 		t.Fatalf("high-risk approval metadata = %#v", gotReq)
+	}
+}
+
+func TestLocalCodingHighRiskApprovalCanBeUserApproved(t *testing.T) {
+	var got ScopeApprovalRequest
+	state := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		got = req
+		return ScopeApprovalAllowOnce
+	}, false)
+
+	if msg := state.checkHighRisk("bash", "git reset --hard HEAD", `D:\testdriver`, `D:\testdriver`, "拒绝执行高风险命令"); msg != "" {
+		t.Fatalf("allow_once should allow the guarded command, got %q", msg)
+	}
+	if got.ToolName != "bash" || got.Kind != localHighRiskApprovalKind || got.Path != "git reset --hard HEAD" || got.AutoAllow {
+		t.Fatalf("local high-risk approval request = %#v", got)
+	}
+}
+
+func TestLocalCodingHighRiskApprovalRejectsAllowDirectory(t *testing.T) {
+	state := newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalAllowDir
+	}, false)
+	if msg := state.checkHighRisk("bash", "git reset --hard HEAD", `D:\testdriver`, `D:\testdriver`, "拒绝执行高风险命令"); msg == "" {
+		t.Fatal("allow_dir must not approve a high-risk command")
+	}
+}
+
+func TestScopeApprovalTimeoutAlwaysDenies(t *testing.T) {
+	for _, kind := range []string{"", remoteDirectoryWriteKind, remotePathAccessKind, localHighRiskApprovalKind, remoteHighRiskApprovalKind} {
+		if got := remoteScopeApprovalTimeoutDecision(ScopeApprovalRequest{Kind: kind, AutoAllow: true}); got != ScopeApprovalDeny {
+			t.Fatalf("timeout decision for kind %q = %q, want deny", kind, got)
+		}
+	}
+}
+
+func TestScopeApprovalAuditRecordsAllowedDecision(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	handler := &IMMessageHandler{app: app}
+	t.Cleanup(func() {
+		if app.auditLog != nil {
+			_ = app.auditLog.Close()
+		}
+	})
+	recordScopeApprovalAudit(handler, "scope_test", ScopeApprovalRequest{
+		ToolName:    "bash",
+		Path:        "git reset --hard HEAD",
+		ProjectPath: `D:\testdriver`,
+		Kind:        localHighRiskApprovalKind,
+	}, ScopeApprovalAllowOnce, "user")
+
+	app.ensureAuditLog()
+	entries, err := app.auditLog.Query(security.AuditFilter{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("audit entries = %d, err = %v", len(entries), err)
+	}
+	if entries[0].PolicyAction != security.PolicyUserOverride || !strings.Contains(entries[0].Result, "allow_once") {
+		t.Fatalf("allowed approval audit = %#v", entries[0])
+	}
+	if entries[0].Arguments["decision"] != string(ScopeApprovalAllowOnce) || entries[0].Arguments["source"] != "user" {
+		t.Fatalf("structured approval decision = %#v", entries[0].Arguments)
 	}
 }
 
@@ -3714,6 +3789,39 @@ func TestConvertUnquotedAndAndForPowerShellPreservesQuotedText(t *testing.T) {
 				t.Fatalf("convertUnquotedAndAndForPowerShell(%q) = %q, want %q", tc.command, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestHasUnquotedWindowsCmdSyntax(t *testing.T) {
+	cases := []struct {
+		command string
+		want    bool
+	}{
+		{command: `mkdir D:\\testdriver\\tests 2>nul || echo already exists`, want: true},
+		{command: `Write-Output "a || b"`, want: false},
+		{command: `Write-Output "a >nul"`, want: false},
+		{command: `Write-Output ok`, want: false},
+	}
+	for _, tc := range cases {
+		if got := hasUnquotedWindowsCmdSyntax(tc.command); got != tc.want {
+			t.Fatalf("hasUnquotedWindowsCmdSyntax(%q) = %v, want %v", tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestExecuteCodingBashWindowsUsesCmdForNulAndOrSyntax(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmd.exe syntax is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `echo probe 2>nul || echo fallback`,
+	}, nil)
+	if result.Kind != codingCommandResultOK {
+		t.Fatalf("cmd syntax probe should succeed, got %#v", result)
+	}
+	if !strings.Contains(result.Text, "probe") {
+		t.Fatalf("cmd syntax probe output = %q, want probe", result.Text)
 	}
 }
 
@@ -5430,13 +5538,16 @@ func TestHasWindowsShellCompatibilitySyntax(t *testing.T) {
 	}
 }
 
-func TestRejectDisallowedCodingBashCommandRejectsWindowsAndAnd(t *testing.T) {
+func TestRejectDisallowedCodingBashCommandAllowsWindowsAndAnd(t *testing.T) {
 	if normalizedRemotePlatform() != "windows" {
 		t.Skip("PowerShell command separator guardrail is Windows-specific")
 	}
-	msg := rejectDisallowedCodingBashCommand("mkdir -p build && cmake -S . -B build")
-	if !strings.Contains(msg, "PowerShell") || !strings.Contains(msg, "&&") || !strings.Contains(msg, "working_dir") {
-		t.Fatalf("expected Windows shell compatibility rejection, got %q", msg)
+	if msg := rejectDisallowedCodingBashCommand("cd build && cmake -S . -B build"); msg != "" {
+		t.Fatalf("unquoted && should be normalized by the executor, got %q", msg)
+	}
+	msg := rejectDisallowedCodingBashCommand("mkdir -p build")
+	if !strings.Contains(msg, "PowerShell") || !strings.Contains(msg, "mkdir -p") {
+		t.Fatalf("expected mkdir compatibility rejection, got %q", msg)
 	}
 	if msg := rejectDisallowedCodingBashCommand(`node -e "console.log('a && b'); console.log('mkdir -p docs')"`); msg != "" {
 		t.Fatalf("quoted bash-like text should not trigger Windows compatibility rejection, got %q", msg)

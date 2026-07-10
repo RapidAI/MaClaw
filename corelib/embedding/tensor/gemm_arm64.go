@@ -73,6 +73,30 @@ func multiDot8TripleB(out0, out1 *[12]float32, a, b0, b1, b2 []float32, K int) {
 	multiDot4TripleB(out1, a[4*K:8*K], b0, b1, b2, K)
 }
 
+func multiDot8TripleReLU(out, a, b0, b1, b2 []float32, m, n, N, K int, bn0, bn1, bn2 float32) bool {
+	return false
+}
+
+func multiDot8TriplePlain(out, a, b0, b1, b2 []float32, m, n, N, K int, bn0, bn1, bn2 float32) bool {
+	return false
+}
+
+func multiDot8TripleArgmax(bestV []float32, bestI []int, a, b0, b1, b2 []float32, n, K int, bn0, bn1, bn2 float32) bool {
+	return false
+}
+
+func multiDot8DualArgmax(bestV []float32, bestI []int, a, b0, b1 []float32, n, K int, bn0, bn1 float32) bool {
+	return false
+}
+
+func multiDot8DualPlain(out, a, b0, b1 []float32, m, n, N, K int, bn0, bn1 float32) bool {
+	return false
+}
+
+func multiDot8DualReLU(out, a, b0, b1 []float32, m, n, N, K int, bn0, bn1 float32) bool {
+	return false
+}
+
 func multiDot4Scalar(out *[4]float32, a, b []float32, K int) {
 	var s0, s1, s2, s3 float32
 	k := 0

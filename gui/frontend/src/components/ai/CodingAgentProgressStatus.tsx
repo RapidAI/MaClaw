@@ -340,6 +340,9 @@ export function codingAgentProgressStatusText(progress: CodingAgentProgress, lan
         case "diff_check":
             return `${label("Diff check", "Diff \u81ea\u68c0")} ${codingAgentDiffCheckStatusLabel(normalized.outcome, lang)}`;
         case "tool_finished":
+            if (codingAgentToolFailureLooksDiagnostic(normalized)) {
+                return codingAgentToolDiagnosticStatusText(normalized, lang);
+            }
             if (codingAgentToolFailureLooksExpectedOrRecoverable(normalized)) {
                 return label("Tool Check", "\u5de5\u5177\u68c0\u67e5");
             }
@@ -736,7 +739,7 @@ export function codingAgentToolOutcomeTone(outcome: string | undefined): CodingA
 
 function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): boolean {
     if (normalizeCodingAgentToolOutcome(progress.outcome) !== "failed") return false;
-    const text = [progress.detail, progress.summary].filter(Boolean).join("\n").toLowerCase();
+    const text = [progress.detail, progress.command, progress.summary].filter(Boolean).join("\n").toLowerCase();
     const hardFailureMarkers = [
         "assert",
         "access denied",
@@ -759,6 +762,12 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
     if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
     if ((progress.severity || "").trim().toLowerCase() === "diagnostic") return true;
     if (!text) return false;
+    if (codingAgentCommandLooksLikeEnvironmentProbe(progress.command)) return true;
+    if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) return true;
+    const toolName = (progress.detail || "").trim().toLowerCase();
+    if (["read_file", "list_directory", "ripgrep", "glob"].includes(toolName) && codingAgentPathLookupLooksUnsuccessful(text)) {
+        return true;
+    }
     const diagnosticMarkers = [
         "--version",
         "command not found",
@@ -795,6 +804,75 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "识别为 cmdlet",
     ];
     return diagnosticMarkers.some((marker) => text.includes(marker));
+}
+
+function codingAgentPathLookupLooksUnsuccessful(text: string): boolean {
+    return [
+        "file not found",
+        "no such file",
+        "path does not exist",
+        "path not found",
+        "cannot find the path",
+        "could not find the path",
+        "not found:",
+        "文件不存在",
+        "路径不存在",
+        "找不到文件",
+        "找不到路径",
+    ].some((marker) => text.includes(marker));
+}
+
+function codingAgentCommandLooksLikeExploratoryTest(command?: string, summary?: string): boolean {
+    const text = `${command || ""}\n${summary || ""}`.toLowerCase();
+    if (!text.trim()) return false;
+    if (["assert", "access denied", "fatal error", "linker command failed", "panic:", "permission denied", "traceback", "undefined reference"].some((marker) => text.includes(marker))) {
+        return false;
+    }
+    return [
+        "\\build\\tests\\",
+        "/build/tests/",
+        "\\tests\\release\\",
+        "/tests/release/",
+        "ctest",
+        "--gtest_list_tests",
+        "--list-tests",
+    ].some((marker) => text.includes(marker));
+}
+
+function codingAgentToolDiagnosticStatusText(progress: CodingAgentProgress, lang: string): string {
+    const command = (progress.command || "").toLowerCase();
+    const summary = (progress.summary || "").toLowerCase();
+    const detail = (progress.detail || "").trim().toLowerCase();
+    const label = (en: string, zh: string) => lang.startsWith("zh") ? zh : en;
+    if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) {
+        return label("Exploratory test did not pass", "探索性测试未通过");
+    }
+    if (["read_file", "list_directory", "ripgrep", "glob"].includes(detail) && codingAgentPathLookupLooksUnsuccessful(summary)) {
+        return label("File or path not found", "文件或路径不存在");
+    }
+    const commandUnavailable = ["command not found", "not recognized as", "\u65e0\u6cd5\u5c06", "\u8bc6\u522b\u4e3a cmdlet"].some((marker) => summary.includes(marker));
+    if (command.includes("clang++") && (commandUnavailable || command.includes("--version"))) return label("clang++ not found", "clang++ \u4e0d\u5b58\u5728");
+    if (command.includes("choco") && commandUnavailable) return label("choco not found", "choco \u4e0d\u5b58\u5728");
+    if (command.includes("visualstudio") || command.includes("microsoft visual studio") || command.includes("get-itemproperty")) {
+        return label("Visual Studio path not found", "Visual Studio \u8def\u5f84\u4e0d\u5b58\u5728");
+    }
+    if (command.includes("where cl.exe")) return label("cl.exe not found", "cl.exe \u4e0d\u5b58\u5728");
+    return label("Environment probe did not succeed", "\u73af\u5883\u63a2\u6d4b\u672a\u6210\u529f");
+}
+
+function codingAgentCommandLooksLikeEnvironmentProbe(command: string | undefined): boolean {
+    const normalized = (command || "").trim().toLowerCase();
+    if (!normalized) return false;
+    return [
+        "--version",
+        "where cl.exe",
+        "where msbuild.exe",
+        "where.exe",
+        "get-command",
+        "choco list",
+        "get-itemproperty",
+        "visualstudio\\sxs\\vs7",
+    ].some((marker) => normalized.includes(marker));
 }
 
 function codingAgentToolFailureLooksExpectedOrRecoverable(progress: CodingAgentProgress): boolean {

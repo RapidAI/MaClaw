@@ -26,7 +26,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked,
         inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary,
         lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
-        pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
+        pendingAttachmentsTestId, permissionMode, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
         showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, textareaAriaLabel, textareaTestId = "ai-input",
         theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput,
@@ -85,7 +85,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 setPendingAttachments={setPendingAttachments}
                 theme={t}
             />
-            <div data-testid={inputRowTestId} style={{ ...inputRowStyle, position: "relative", overflow: autocompleteOpen ? "visible" : undefined }}>
+            <div data-testid={inputRowTestId} style={{ ...inputRowStyle, position: "relative", overflow: (autocompleteOpen || !!inputOverlay) ? "visible" : "hidden" }}>
                 {inputOverlay}
                 <InputHistoryAutocomplete
                     open={autocompleteOpen}
@@ -164,6 +164,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         inputLocked={inputLocked}
                         lang={lang}
                         onComposeActionChange={onComposeActionChange}
+                        onPermissionModeChange={onPermissionModeChange}
                         onFireSlashCommand={onFireSlashCommand}
                         onInsertTemplate={onInsertTemplate}
                         onPlusMenuAction={onPlusMenuAction}
@@ -171,6 +172,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         theme={t}
                         themeMode={themeMode}
                         voiceInput={voiceInput}
+                        permissionMode={permissionMode}
                         showVoiceInput={showVoiceInput}
                         handleVoiceClick={handleVoiceClick}
                         handleVoicePointerDown={handleVoicePointerDown}

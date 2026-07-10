@@ -57,6 +57,82 @@ sumss_loop:
 	VZEROUPPER
 	RET
 
+// func sumSumsq512DualAVX2(s0, s1 *float32, out *[4]float32)
+// Lockstep sum/sumsq for two frames. out = {sum0, sq0, sum1, sq1}.
+// Frame: s0+0 s1+8 out+16 → 24
+TEXT ·sumSumsq512DualAVX2(SB), NOSPLIT, $0-24
+	MOVQ s0+0(FP), SI
+	MOVQ s1+8(FP), DI
+	MOVQ out+16(FP), R11
+	VXORPS Y0, Y0, Y0 // sum0
+	VXORPS Y1, Y1, Y1 // sq0
+	VXORPS Y2, Y2, Y2 // sum1
+	VXORPS Y3, Y3, Y3 // sq1
+	MOVQ $16, CX
+sumssd_loop:
+	VMOVUPS (SI), Y4
+	VMOVUPS 32(SI), Y5
+	VMOVUPS 64(SI), Y6
+	VMOVUPS 96(SI), Y7
+	VADDPS Y4, Y0, Y0
+	VADDPS Y5, Y0, Y0
+	VADDPS Y6, Y0, Y0
+	VADDPS Y7, Y0, Y0
+	VFMADD231PS Y4, Y4, Y1
+	VFMADD231PS Y5, Y5, Y1
+	VFMADD231PS Y6, Y6, Y1
+	VFMADD231PS Y7, Y7, Y1
+	VMOVUPS (DI), Y4
+	VMOVUPS 32(DI), Y5
+	VMOVUPS 64(DI), Y6
+	VMOVUPS 96(DI), Y7
+	VADDPS Y4, Y2, Y2
+	VADDPS Y5, Y2, Y2
+	VADDPS Y6, Y2, Y2
+	VADDPS Y7, Y2, Y2
+	VFMADD231PS Y4, Y4, Y3
+	VFMADD231PS Y5, Y5, Y3
+	VFMADD231PS Y6, Y6, Y3
+	VFMADD231PS Y7, Y7, Y3
+	ADDQ $128, SI
+	ADDQ $128, DI
+	DECQ CX
+	JNZ  sumssd_loop
+	// hsum Y0 → out[0]
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS X0, X8, X0
+	VSHUFPD $1, X0, X0, X15
+	VADDPS X0, X15, X0
+	VMOVSHDUP X0, X15
+	VADDSS X0, X15, X0
+	MOVSS X0, (R11)
+	// hsum Y1 → out[1]
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS X1, X8, X1
+	VSHUFPD $1, X1, X1, X15
+	VADDPS X1, X15, X1
+	VMOVSHDUP X1, X15
+	VADDSS X1, X15, X1
+	MOVSS X1, 4(R11)
+	// hsum Y2 → out[2]
+	VEXTRACTF128 $1, Y2, X8
+	VADDPS X2, X8, X2
+	VSHUFPD $1, X2, X2, X15
+	VADDPS X2, X15, X2
+	VMOVSHDUP X2, X15
+	VADDSS X2, X15, X2
+	MOVSS X2, 8(R11)
+	// hsum Y3 → out[3]
+	VEXTRACTF128 $1, Y3, X8
+	VADDPS X3, X8, X3
+	VSHUFPD $1, X3, X3, X15
+	VADDPS X3, X15, X3
+	VMOVSHDUP X3, X15
+	VADDSS X3, X15, X3
+	MOVSS X3, 12(R11)
+	VZEROUPPER
+	RET
+
 // func add2SumSumsq512AVX2(out, a, b *float32) (sum, sumsq float32)
 // out[i] += a[i]+b[i]; return sum/sumsq of new out.
 // Frame: out+0 a+8 b+16 sum+24 sumsq+28

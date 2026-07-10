@@ -4,6 +4,8 @@ import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./compos
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
 
+export type AssistantPermissionMode = "request" | "full";
+
 export interface AssistantInputComposerProps {
     browseFile: () => void;
     canSend: boolean;
@@ -42,6 +44,8 @@ export interface AssistantInputComposerProps {
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
     lang: string;
     pendingAttachments: AttachmentInfo[];
+    permissionMode?: AssistantPermissionMode;
+    onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     pendingAttachmentsTestId?: string;
     placeholderText: string;
     ready: boolean;

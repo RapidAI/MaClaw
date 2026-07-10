@@ -956,9 +956,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     final insertTable = find.byIcon(Icons.table_chart_outlined);
+    final insertList = find.byIcon(Icons.format_list_bulleted_outlined);
     final insertComment = find.byIcon(Icons.comment_outlined);
     await tester.ensureVisible(insertTable);
     await tester.tap(insertTable);
+    await tester.pump();
+    await tester.tap(insertList);
     await tester.pump();
     await tester.tap(insertComment);
     await tester.pump();
@@ -969,6 +972,7 @@ void main() {
     final saved = _EditableDraftDocumentsController.saved.single;
     expect(saved.markdown, contains('|'));
     expect(saved.markdown, contains('---'));
+    expect(saved.markdown, contains('- 要点一'));
     expect(saved.markdown, contains('批注'));
   });
 

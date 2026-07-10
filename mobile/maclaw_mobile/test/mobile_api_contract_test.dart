@@ -5,6 +5,9 @@ void main() {
   test('parses mobile AI assistant answer with citation snippets', () {
     final answer = SearchAnswer.fromJson({
       'answer': 'Check the latest incident notes.',
+      'llm_mode': 'official',
+      'llm_request_id': 'llm-mobile-1',
+      'llm_usage_record_id': 'llm-mobile-1',
       'citations': [
         {
           'title': 'Incident notes',
@@ -15,6 +18,10 @@ void main() {
     });
 
     expect(answer.answer, 'Check the latest incident notes.');
+    expect(answer.llmMode, 'official');
+    expect(answer.llmRequestId, 'llm-mobile-1');
+    expect(answer.llmUsageRecordId, 'llm-mobile-1');
+    expect(answer.hasLlmTrace, isTrue);
     expect(answer.citations, hasLength(1));
     expect(answer.citations.first.title, 'Incident notes');
     expect(answer.citations.first.url, 'https://example.test/incident');

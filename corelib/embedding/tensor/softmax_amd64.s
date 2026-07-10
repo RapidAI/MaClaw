@@ -32,6 +32,52 @@ sm_hmax_reduce:
 	VZEROUPPER
 	RET
 
+// func softmaxHMaxDualAVX2(sc0, sc1 *float32, n int, out *[2]float32)
+// Lockstep horizontal max over two equal-length rows (n multiple of 8).
+// Frame: sc0+0 sc1+8 n+16 out+24 → 32
+TEXT ·softmaxHMaxDualAVX2(SB), NOSPLIT, $0-32
+	MOVQ sc0+0(FP), SI
+	MOVQ sc1+8(FP), DI
+	MOVQ n+16(FP), CX
+	MOVQ out+24(FP), R11
+	VMOVUPS (SI), Y0
+	VMOVUPS (DI), Y1
+	ADDQ $32, SI
+	ADDQ $32, DI
+	SUBQ $8, CX
+	TESTQ CX, CX
+	JZ   sm_hmaxd_reduce
+
+sm_hmaxd_loop:
+	VMOVUPS (SI), Y2
+	VMAXPS Y2, Y0, Y0
+	VMOVUPS (DI), Y3
+	VMAXPS Y3, Y1, Y1
+	ADDQ $32, SI
+	ADDQ $32, DI
+	SUBQ $8, CX
+	JNZ  sm_hmaxd_loop
+
+sm_hmaxd_reduce:
+	// hmax Y0 → out[0]
+	VEXTRACTF128 $1, Y0, X2
+	VMAXPS X2, X0, X0
+	VSHUFPD $1, X0, X0, X2
+	VMAXPS X2, X0, X0
+	VMOVSHDUP X0, X2
+	VMAXSS X2, X0, X0
+	MOVSS X0, (R11)
+	// hmax Y1 → out[1]
+	VEXTRACTF128 $1, Y1, X2
+	VMAXPS X2, X1, X1
+	VSHUFPD $1, X1, X1, X2
+	VMAXPS X2, X1, X1
+	VMOVSHDUP X1, X2
+	VMAXSS X2, X1, X1
+	MOVSS X1, 4(R11)
+	VZEROUPPER
+	RET
+
 // func softmaxExpSumAVX2(scores *float32, n int, max, a, b, neg88 float32) float32
 // scores[i] = fastExp(scores[i]-max) for n elements (multiple of 8); return sum.
 // Dual-chunk (16 floats) when n>=16 for fewer branches.

@@ -24,3 +24,8 @@ func dequantRowScaledDual(dst0, dst1 []float32, data []byte, scales0, scales1 *f
 	dequantRowScaledASM(dst0, data, scales0, rowOff0, nBlocks)
 	dequantRowScaledASM(dst1, data, scales1, rowOff1, nBlocks)
 }
+
+func dequantRowScaledTriple(dst0, dst1, dst2 []float32, data []byte, scales0, scales1, scales2 *float32, rowOff0, rowOff1, rowOff2, nBlocks int) {
+	dequantRowScaledDual(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
+	dequantRowScaledASM(dst2, data, scales2, rowOff2, nBlocks)
+}

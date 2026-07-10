@@ -83,8 +83,10 @@ Run `python3 tool/qa_preflight.py --scope android-ios --team-id <APPLE_TEAM_ID> 
 before signed-build QA so the current preflight result is saved as evidence.
 Run `python3 tool/verify_runtime_boundary.py --log docs/qa-builds/runtime-boundary-<version+build>.log`
 for the matching runtime-boundary evidence file.
-The latest local `python tool\run_release_gates.py` run on 2026-07-10 passed all
-38 automated release gates, including Flutter analysis, the full Flutter test
+The latest completed local `python tool\run_release_gates.py` run on 2026-07-10 passed all 38 automated release gates, including Flutter analysis and the full Flutter test suite. The subsequent locale-coverage test added one Flutter test;
+the current standalone full Flutter suite passes 348 tests, while the saved
+38-gate transcript below is the preceding 339-test snapshot. The gate run
+included
 suite, runtime boundary verification, native wrapper regeneration/configuration,
 Go mobile API tests, QA build record scaffold tests, QA record directory
 validation, QA build record gap report tests, QA release evidence link helper
@@ -94,7 +96,7 @@ verifier tests, manual release gate verification, Android release signing
 verification, Android release build helper tests, iOS wrapper verification, iOS
 release plan helper tests, iOS export options setup helper tests, and Android
 debug APK build. The local transcript was saved under `docs/qa-builds/` as
-`release-gates-continuation-2.log`, which is ignored by default;
+`release-gates-notification-pending-final-20260710.log`;
 attach the versioned `release-gates-<version+build>.log`
 from signed-build QA as external evidence when preparing a release package.
 After a local debug APK build, run `python3 tool/update_debug_apk_evidence.py`
@@ -112,12 +114,83 @@ evidence logs must use that same version/build in the
 `final-release-evidence*.log` filename, and existing logs require `--force`
 before they can be overwritten.
 The current continuation run is intentionally still blocked before signed-build
-QA records exist; the preflight blocker transcript was saved as
-`docs/qa-builds/preflight-20260706-backend-ssh-realtime.log`, and the final
-evidence verifier failure transcript was saved as
-`docs/qa-builds/final-release-evidence-20260706-backend-ssh-realtime.log` and confirms
+QA records exist; the latest iOS preflight blocker transcript is saved as
+`docs/qa-builds/preflight-ios-current-20260711.log`, and the latest final
+evidence verifier failure transcript is saved as
+`docs/qa-builds/final-release-evidence-0.1.0+1-latest-20260710.log`. It confirms
 that final release evidence still requires at least one completed signed-build
 QA record.
+
+The latest Android-only final evidence verifier transcript is
+`docs/qa-builds/final-release-evidence-android-current-final.log`. It reaches
+the same conclusion: signing, automated checks, artifact evidence, and local
+runtime boundaries are valid, but release approval remains blocked until the
+incomplete Android QA record is replaced or completed with real device, Hub,
+notification, document, and GUI/agent-managed SSH evidence.
+
+The current operator handoff plan is saved as
+`docs/qa-builds/handoff-android-0.1.0+1-current.md`. It is intentionally marked
+`NOT READY` and contains the exact next commands and evidence fields for the
+real-device/Hub/GUI-agent QA session; creating the handoff file does not count
+as a completed signed-build QA record.
+
+The latest local continuation audit also passed the full Flutter suite (348
+tests), the Python release-tool suite (642 tests), and the targeted Hub mobile
+API suite (`go test ./hub/internal/httpapi -run
+'TestMobile(Bootstrap|Search|BackendSSH|RealtimeBackendSSH|SSHAnalyze)'
+-count=1`). `flutter analyze --no-fatal-infos` and the runtime-boundary verifier
+also pass. The Android release-status and preflight reruns remain intentionally
+`NOT READY`/`BLOCKED` because the existing signed-build QA record still lacks
+real-device and backend-session evidence; no release approval is implied by
+these local checks.
+
+The latest stage-wide rerun passed the same full Flutter suite (`348` tests),
+the aggregate Python release-tool suite (`642` tests), and Flutter static
+analysis with no issues. This is the current automated baseline after the
+Realtime recovery, artifact evidence, iOS preflight, and SSH documentation
+updates.
+- The current saved transcripts are
+  `docs/qa-builds/flutter-full-current-20260711.log` and
+  `docs/qa-builds/python-release-tools-current-20260711.log`; they independently
+  reproduce the same `348` Flutter tests and `642` Python tests with exit code
+  zero.
+
+The mobile runtime TODO/placeholder audit found no unimplemented feature
+branches in `lib/`; remaining nullable returns are input validation, optional
+state, or empty-state rendering paths. The next unfinished items are therefore
+manual release gates rather than local implementation stubs.
+
+The startup route audit also passed: loading session state renders the MaClaw
+logo Splash, signed-out state renders phone registration without HubCenter
+candidate URLs, signed-in official-LLM state opens the AI assistant, and an
+unconfigured LLM routes to the account setup surface. Shared links/documents
+remain pending until authentication and are then consumed by their intended
+assistant/document flow.
+
+The current `flutter test test/app_smoke_test.dart --concurrency=1` run passed
+all `15` app smoke tests, including phone-registration routing, signed-in
+official-assistant routing, missing-LLM configuration routing, pre-login
+shared-link/document/notification deferral, post-login consumption, and
+notification recovery to the assistant, documents, employees, and servers
+tabs.
+
+- Realtime recovery now refreshes the signed-in Bootstrap and invalidates
+  document, digital-employee, and backend SSH session/task caches when Hub
+  sends a `ready` frame after a WebSocket reconnect. This closes the local
+  stale-snapshot path when the socket is interrupted while the network remains
+  online; coverage is in `test/mobile_realtime_bridge_test.dart`, while real
+  device weak-network and Hub delivery evidence remains a manual gate.
+- The Realtime bridge regression now also closes the first stream, waits for
+  the configured reconnect delay, receives a second `ready` frame, and verifies
+  that Hub state refresh runs twice. The default production delay remains five
+  seconds; tests inject a zero delay so the reconnect path is deterministic.
+- The current document workflow regression passed `33` tests across
+  `test/documents_screen_test.dart` and `test/documents_state_test.dart`.
+  It covers PDF/Word/Markdown export requests, polling and realtime completion,
+  failed export/import retry, safe local filenames, export notifications,
+  downloaded-file sharing, and sensitive-title/message redaction. This is
+  client-side contract evidence; real Hub export job IDs and physical-device
+  share delivery remain manual gates.
 
 ## Resolved Automated Test Residuals
 
@@ -143,10 +216,10 @@ QA record.
 | Local debug APK evidence freshness | `tool/verify_debug_apk_evidence.py`, `tool/verify_debug_apk_evidence_test.py`, `tool/update_debug_apk_evidence.py`, `tool/update_debug_apk_evidence_test.py` |
 | Signed artifact evidence snippet generation | `tool/signed_artifact_evidence.py`, `tool/signed_artifact_evidence_test.py`, `docs/qa_build_record_template.md`, `docs/qa_device_checklist.md` |
 | Android release signing safety and local signed build helper | `tool/setup_android_signing.py`, `tool/setup_android_signing_test.py`, `tool/verify_android_release_signing.py`, `tool/verify_android_release_signing_test.py`, `tool/build_android_release.py`, `tool/build_android_release_test.py`, `android/app/build.gradle.kts`, `android/key.properties.example`, `.gitignore` |
-| iOS wrapper, Share Extension wiring, export options, and archive planning | `tool/verify_ios_wrapper.py`, `tool/verify_ios_wrapper_test.py`, `tool/setup_ios_export_options.py`, `tool/setup_ios_export_options_test.py`, `tool/plan_ios_release.py`, `tool/plan_ios_release_test.py`, `ios/ExportOptions.plist.example`, `ios/Runner/Info.plist`, `ios/ShareExtension/Info.plist`, `ios/Runner/Runner.entitlements`, `ios/ShareExtension/ShareExtension.entitlements` |
+| iOS wrapper, Share Extension target/Pod wiring, export options, and archive planning | `tool/verify_ios_wrapper.py`, `tool/verify_ios_wrapper_test.py`, `tool/setup_ios_export_options.py`, `tool/setup_ios_export_options_test.py`, `tool/plan_ios_release.py`, `tool/plan_ios_release_test.py`, `ios/ExportOptions.plist.example`, `ios/Podfile`, `ios/Runner.xcodeproj/project.pbxproj`, `ios/Runner/Info.plist`, `ios/ShareExtension/Info.plist`, `ios/Runner/Runner.entitlements`, `ios/ShareExtension/ShareExtension.entitlements` |
 | Manual release gate documentation parity | `tool/verify_manual_release_gates.py`, `tool/verify_manual_release_gates_test.py`, `docs/release_audit.md`, `docs/release_evidence.md`, `docs/qa_device_checklist.md`, `docs/qa_build_record_template.md` |
 | Final signed-build evidence package readiness | `tool/verify_final_release_evidence.py`, `tool/verify_final_release_evidence_test.py`, `docs/release_evidence.md`, `docs/qa-builds/README.md`, `docs/qa_device_checklist.md`; final verification rechecks copied backend session output for the GUI/agent evidence line, rejects raw secrets in that copied output evidence even when the QA directory result is already marked valid, and points backend-session final-layer failures back to `qa_build_record_report.py` for record-level remediation |
-| GUI-like AI assistant, multi-tab conversations, voice input, quick prompts, citations, redacted shared links/text, photo/file handoff | `test/assistant_screen_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
+| GUI-like chat window, user/assistant multi-turn context, multi-tab conversations, voice input, quick prompts, citations, redacted shared links/text, photo/file handoff | `test/assistant_screen_test.dart`, `test/api_client_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Emergency document templates, import, AI actions, edit helpers, API-boundary redaction, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
 | GUI-equivalent backend SSH session management, Hub-synced sanitized desktop server metadata, GUI/agent-bound `backend_session_id`, SSH realtime incremental output evidence through `ssh_session` `output_chunk`/`output_seq` events, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, `backend_session_id`, concrete `claimed_by` worker identity such as `claimed_by desktop-agent-1`, and numeric `output_seq`, AI analysis and AI/digital-employee handoff evidence tied to the same GUI/agent-bound `backend_session_id`, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/backend_ssh_command_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart`, `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession"` |
@@ -155,6 +228,222 @@ QA record.
 | Realtime document/digital employee updates | `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart` |
 
 ## Latest Local Verification
+
+2026-07-10:
+
+- Removed the legacy public HubCenter mobile service-redemption route. Mobile
+  account registration and login now have no server-side redemption-code route;
+  phone/SMS verification remains the only public mobile entry path.
+- Added regression coverage that both the legacy service-redemption and desktop
+  QR mobile-login routes return `404`.
+- Verified:
+  - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+  - `python -m unittest tool/run_release_gates_test.py`
+  - `flutter test test/release_docs_test.dart --concurrency=1 --reporter compact`
+- Built a local internal-QA Android Release APK `0.1.0+1` with the generated
+  non-debug QA certificate. `apksigner` verified APK Signature Scheme v2;
+  artifact SHA256 is
+  `236465c58d338f4d2714f4d38cce70b4412017e4f565148bd97667b60976a130`.
+  This is an internal build only and does not replace the production signing
+  or real-device QA gate.
+- Started the API 35 AVD `maclaw-api35`, installed the Release APK with
+  `adb install --no-streaming`, and verified the app process and MaClaw
+  package/activity. The current startup path does not request notification
+  permission before login; after clearing app data the UI hierarchy showed the
+  MaClaw logo and phone registration screen immediately, without exposing
+  HubCenter candidate addresses or Flutter branding. Notification permission
+  remains an explicit Account-screen action.
+- Sent an Android `ACTION_SEND` text intent and verified that the system share
+  resolver listed `MaClaw Mobile`. Full share-to-app payload handling and
+  microphone/camera prompts still require a signed-build QA record with a
+  real-device workflow and Hub account.
+- On the API 35 Android emulator, queried the installed Release APK for both
+  `ACTION_SEND` and `ACTION_SEND_MULTIPLE`. MaClaw Mobile was registered for
+  all required types: plain text, image, PDF, Word, Excel, and CSV MIME types.
+- Captured the latest signed Android API 35 emulator evidence under
+  `docs/qa-builds/android-api35-0.1.0+1/`: cold-start screenshot/UI dump,
+  package dump, and text/PDF/CSV share activity queries. The attachment records
+  the APK SHA256 and explicitly remains emulator evidence, not a physical-device
+  signed QA approval.
+- Refreshed signed Android API 35 cold-start evidence after the login copy
+  change as `startup-login-latest.png` and `startup-login-latest-ui.xml`.
+  The hierarchy contains the MaClaw logo, phone registration/login, and official
+  service wording, while containing no HubCenter candidate address or Flutter
+  branding.
+- Added assistant media-picker failure handling for camera, gallery, and file
+  selection errors. The UI now gives an actionable permission/retry message and
+  keeps the typed assistant composer usable; the camera failure path is covered
+  by `test/assistant_screen_test.dart`.
+- Reinstalled the latest signed Android API 35 APK after the media-picker
+  change and captured `startup-media-handling-latest.png` plus
+  `startup-media-handling-latest-ui.xml`; cold-start assertions passed for the
+  MaClaw logo and phone login screen with no HubCenter candidate or Flutter
+  branding.
+- Queried the latest signed APK on the API 35 emulator for all six required
+  share MIME registrations: plain text, image, PDF, Word, Excel, and CSV.
+  Each query resolved the MaClaw Mobile package; these are emulator intent
+  registration checks and do not replace real-device share workflow evidence.
+- Reinstalled the latest signed APK after adding the document list insertion
+  shortcut and captured `startup-document-list-latest.png` plus its UI dump;
+  MaClaw cold-start and no-HubCenter assertions passed again.
+- Remote maintenance command submission and GUI/agent background-task requests
+  now catch Hub failures, preserve the session output panel, and expose a
+  retryable error state instead of allowing a network exception to escape the
+  screen.
+- Reinstalled the latest signed APK after the remote-maintenance error handling
+  change and captured `startup-remote-command-latest.png` plus its UI dump;
+  the MaClaw phone-login cold-start assertions passed.
+- Rebuilt the signed APK after adding document-page file/camera/gallery picker
+  failure feedback and preserving the current draft/task state.
+- Added typed `assistant-task:` notifications for assistant requests that take
+  at least ten seconds and return an LLM request ID; notification taps route to
+  the AI assistant without exposing the answer body in the system tray.
+- Reinstalled the latest signed APK after the assistant notification change and
+  captured `startup-assistant-notification-latest.png` plus its UI dump; the
+  MaClaw phone-login cold-start assertions passed.
+- Sanitized the HubCenter unavailable exception and login error messages so
+  failed phone registration never renders preset HubCenter URLs. Added service
+  and Widget regression coverage for this boundary.
+- Sanitized desktop GUI QR authorization failures so upstream Hub URLs are not
+  rendered in the optional third-party LLM settings flow; added a pure-function
+  regression test while retaining scanner and paste Widget coverage.
+- Reinstalled the signed APK again on the API 35 emulator and captured
+  `signed-startup-login-latest.png` plus `signed-startup-login-latest-ui.xml`.
+  The installed package was `top.mypapers.maclaw.mobile`, version `0.1.0`, and
+  the hierarchy contained the MaClaw logo and phone registration/login entry
+  without HubCenter candidate text or Flutter branding. This remains emulator
+  preparation evidence and does not close the Android physical-device gate.
+- Built the current signed Android `0.1.0+1` APK from the latest source with
+  `tool/build_android_release.py`; the artifact is
+  `build/app/outputs/flutter-apk/app-release.apk` and its SHA256 is
+  `dc31f0b93c7620eeedb57714780ad244d110cab7d67df3fda2ec3c83892f9d6b`.
+  `tool/signed_artifact_evidence.py` recorded the artifact using the Google
+  Play internal testing channel label. This is a locally signed artifact and
+  does not claim Play upload or physical-device approval.
+- Installed that current signed APK on the API 35 emulator after clearing app
+  data and captured `android-api35-0.1.0+1/signed-release-latest/startup.png`
+  plus `startup.xml`. The UI dump contains `MaClaw`, `手机号注册/登录`, and the
+  official-service copy, with no HubCenter candidate address or Flutter
+  branding. This remains emulator evidence only.
+- Reinstalled the current signed APK after notification-provider failure
+  isolation was added; the refreshed `signed-release-latest` package dump,
+  startup UI dump, screenshot, and `apksigner-verify.txt` correspond to the
+  `dc31f0b93c7620eeedb57714780ad244d110cab7d67df3fda2ec3c83892f9d6b`
+  artifact. The cold-start assertions still pass, and the evidence remains
+  emulator-only.
+- Rebuilt the signed APK/AAB after the AppShell pending-document lifecycle fix.
+  The current artifacts are `build/app/outputs/flutter-apk/app-release.apk`
+  (SHA256 `8c71972cd5ea4b336ede1f21b8141606c51c9a112289f1e4c44021d1e1eaa70f`)
+  and `build/app/outputs/bundle/release/app-release.aab` (SHA256
+  `4884b7ef6e23e2d5e0ffa2cec69f032928f4a44e759c4c2bbe818b20f1fc1d94`),
+  with separate evidence under
+  `android-api35-0.1.0+1/signed-release-stateful-latest/`. APK v2 and AAB
+  `jarsigner` verification both pass. This is still local signed-build
+  preparation and does not claim real-device QA.
+- Installed that signed APK on the API 35 emulator successfully and refreshed
+  `signed-release-stateful-latest/startup.png`, `startup.xml`, and
+  `package-dump.txt`. The startup hierarchy contains MaClaw branding and no
+  HubCenter preset URL or Flutter branding; signed text/PDF/CSV and
+  `SEND_MULTIPLE` CSV resolver queries all resolve the MaClaw activity. This
+  remains signed-emulator evidence only.
+- Sent an explicit `ACTION_SEND` text Intent with a URL directly to the current
+  signed `MainActivity`; Android reported `Status: ok`, `LaunchState: COLD`,
+  and the captured hierarchy retained MaClaw branding without HubCenter or
+  Flutter branding. The delivery transcript and capture are retained as
+  `signed-release-stateful-latest/share-text-delivery.txt/.png/.xml`.
+- Queried the current signed APK on API 35 for Android `ACTION_SEND` and
+  `ACTION_SEND_MULTIPLE` registrations covering text, image, PDF, Word, Excel,
+  and CSV. Every query resolved `top.mypapers.maclaw.mobile`; the outputs are
+  retained under `android-api35-0.1.0+1/signed-release-latest/`. These are
+  signed-emulator intent-registration checks and do not replace real-device
+  share workflow evidence.
+- Built the matching signed Android `0.1.0+1` App Bundle with
+  `tool/build_android_release.py`; the artifact is
+  `build/app/outputs/bundle/release/app-release.aab`, size `57480413` bytes,
+  SHA256 `7ec9d6996dc8165149ce6637a228793b79d28c9b324f8c21d2d7646a3d493bd7`.
+  `jarsigner -verify` passed and its transcript is retained as
+  `signed-release-latest/aab-jarsigner-verify.txt`. APK/AAB artifact evidence
+  transcripts are also retained as `apk-artifact-evidence.txt` and
+  `aab-artifact-evidence.txt`. This is local signed distribution preparation
+  only; no Play upload or device approval is claimed.
+- Rebuilt `flutter build appbundle --release` from the current workspace and
+  rechecked the same AAB SHA256 (`7ec9d6996dc8165149ce6637a228793b79d28c9b324f8c21d2d7646a3d493bd7`);
+  `jarsigner -verify` returned exit code 0. This confirms the current release
+  configuration still produces the recorded signed bundle.
+- Verified the same APK with Android build-tools `36.0.0` `apksigner`: one
+  signer is present and APK Signature Scheme v2 verification succeeds. The
+  package dump and verifier output are retained beside the signed startup
+  capture as `package-dump.txt` and `apksigner-verify.txt`.
+- Rebuilt the signed Android APK after the QR authorization error-redaction
+  change, reinstalled it on API 35, and captured
+  `signed-startup-qr-redaction-latest.png` plus its UI dump. The new artifact
+  SHA256 is `236465c58d338f4d2714f4d38cce70b4412017e4f565148bd97667b60976a130`;
+  startup assertions passed and the evidence remains emulator-only.
+- Refreshed the signed APK API 35 share-registration queries after that rebuild:
+  `ACTION_SEND` for text, image, PDF, Word, Excel, and CSV plus
+  `ACTION_SEND_MULTIPLE` for CSV all included
+  `top.mypapers.maclaw.mobile/.MainActivity`. These are MIME registration
+  checks on the emulator; physical-device share workflows remain manual gates.
+- Ran the actual text `ACTION_SEND` flow with the rebuilt signed APK: Android
+  Resolver displayed `Share with MaClaw Mobile`, `Just once` was selected, and
+  the intent was delivered to the MaClaw activity. The delivered UI hierarchy
+  returned to the phone-login screen with the MaClaw logo and no HubCenter or
+  Flutter branding. Captures are
+  `share-text-signed-latest-resolver.*` and
+  `share-text-signed-latest-delivered.*` under the Android QA directory.
+- Live HubCenter route audit found that the deployed official route is
+  `/api/entry/resolve`, while the mobile client had incorrectly called the
+  Hub-only `/api/entry/probe` route. The client now calls `/api/entry/resolve`;
+  the default official endpoint no longer returns the previous route `404`.
+  Authentication tests now assert the corrected path and retain Hub/tenant
+  resolution coverage.
+- A read-only probe of all three preset official HubCenters was recorded in
+  `docs/qa-builds/hubcenter-discovery-readonly-20260710.log`. The default
+  `https://hubs.mypapers.top` returned HTTP 200 with an online Hub and tenant;
+  `https://hubs.maclaw.top` returned 502 and `https://hubs2.maclaw.top` reset
+  the connection. The probe used a synthetic phone identity and did not send
+  SMS or create an account, so it does not replace the real Hub/SMS smoke gate.
+- A follow-up probe found that the default HubCenter can return duplicate online
+  entries for the same Hub with the incomplete entry first. The mobile login
+  selector now chooses the most complete entry for the preferred Hub ID, keeping
+  tenant metadata for the SMS request; this is covered by the live response-shape
+  regression test.
+- Read-only live probe of `https://hubs.mypapers.top/api/entry/resolve` with a
+  synthetic phone identity returned HTTP `200`, an online default Hub
+  (`https://hub.mypapers.top`), and tenant routing data. No SMS send request was
+  made during this probe.
+- Added client-side selection of HubCenter's `default_hub_id` before the online
+  list fallback, with regression coverage for multi-Hub tenant ordering.
+- Added bounded HubCenter connect/send/receive timeouts (8s/8s/15s) so a
+  stalled official candidate does not block fallback to the remaining preset
+  endpoints; custom Dio timeout values remain respected.
+- Added the concrete iOS `ShareExtension` app-extension target, Runner PlugIns
+  embedding phase, target signing/resource settings, and Podfile dependency for
+  `receive_sharing_intent`; Xcode signing and real-device share QA remain manual.
+- HubCenter discovery now continues after candidate HTTP 404/408 responses,
+  with a phone-login regression test for an unavailable preset route.
+- Phone registration now enforces the Hub SMS resend cooldown in the mobile UI:
+  after a code is sent, the resend action is disabled for 60 seconds and shows
+  the remaining time, with lifecycle-safe timer cleanup and widget coverage.
+- Official mobile LLM responses now expose a read-only `llm_usage_record_id`
+  correlation field next to `llm_request_id`; the assistant displays this trace
+  reference for official-credit calls, while third-party GUI QR mode does not
+  fabricate an official usage record.
+- Notification startup now injects the initialized notification service into
+  the Riverpod scope used by the app shell, so taps on document, digital
+  employee, and server task notifications can be routed to the matching tab.
+- Backend SSH `ssh_file_operation` realtime events are now dispatched into a
+  per-session mobile cache and surfaced as recent operation status on the
+  server maintenance screen; request responses enter the same cache.
+- Network recovery also invalidates backend SSH task and file-operation caches
+  after the signed-in tenant bootstrap refresh, preventing stale pre-outage
+  control state from being presented after Hub connectivity returns.
+- App foreground resume now reuses the same signed-in Hub recovery path, so
+  returning from background refreshes the tenant bootstrap and reconnects the
+  mobile realtime bridge without starting recovery work on the login screen.
+- Re-ran `python tool/run_release_gates.py` after the protocol and timeout
+  changes: all 38 automated release gates passed, including the full 323-test
+  Flutter suite and Android Debug APK build.
 
 2026-07-05:
 
@@ -730,7 +1019,7 @@ QA record.
     rejects known mojibake/replacement markers, and verifies the iOS Runner
     bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 641 Python release tool tests.
+  - Passed: 642 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
@@ -1178,7 +1467,9 @@ QA record.
   - Covers the shared version-mismatch hint used when final QA records span
     multiple version/build values.
 - `python -m unittest tool\setup_android_signing_test.py`
-  - Passed: 8 Android signing setup helper tests.
+  - Passed: 9 Android signing setup helper tests.
+  - Covers normalizing Windows keystore paths before writing Java Properties,
+    preventing Gradle from dropping backslashes during signed builds.
   - Covers environment-variable validation, documented placeholder rejection,
     debug-keystore rejection, local `android/key.properties` writing,
     overwrite protection, successful CLI setup, missing-environment CLI
@@ -1675,15 +1966,15 @@ QA record.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 311 tests.
+  - Passed: 348 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
 - `flutter build apk --debug`
   - Passed.
   - Artifact: `build\app\outputs\flutter-apk\app-debug.apk`.
-  - Size: `205957901` bytes.
-  - SHA256: `CC367FEDE66721219CA398A9AD3FDD93B57969577579267E78529CDB095960E6`.
+  - Size: `205976425` bytes.
+  - SHA256: `65C9539800957E91844C3F0CA326F3B56C7BA0ADB01F39EC217E3282E789626C`.
   - Refreshed after the local 2026-07-10 debug APK build verification run.
   - CI artifact name: `maclaw-mobile-debug-apk`.
 - `python3 tool/verify_debug_apk_evidence.py`
@@ -1747,24 +2038,30 @@ QA record.
     media load and live share stream while still allowing the same file or link
     to be shared again after the duplicate window.
 - `flutter test test/mobile_network_status_test.dart test/assistant_retry_test.dart test/mobile_realtime_client_test.dart --concurrency=1 --reporter compact`
-  - Passed: 19 weak-network, assistant retry, and realtime client tests.
-  - Covers offline and restored network banners, HubCenter DNS fallback,
+  - Passed: 20 weak-network, assistant retry, and realtime client tests.
+  - Login UI keeps HubCenter discovery internal: the phone registration screen
+    no longer renders preset HubCenter candidates or selected Hub details;
+    authentication still probes the same official preset endpoints in the
+    background. Covers offline and restored network banners, HubCenter DNS fallback,
     conversion of unexpected probe failures into offline snapshots instead of
     stream errors, restored status after the next successful probe, assistant
     retry affordances, official discovered-Hub realtime ping/event parsing,
     backend `ssh_session` status/output payload parsing, incremental
     `output_chunk`/`output_seq` parsing, and external realtime paths being
     rejected before the mobile client opens a websocket outside the discovered
-    Hub.
+    Hub. Socket close failures are isolated so they cannot replace the original
+    stream result.
 - `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/documents_state_test.dart test/digital_employees_controller_test.dart --concurrency=1 --reporter compact`
-  - Passed: 33 realtime, document state, and digital employee controller tests.
+  - Passed: 34 realtime, document state, and digital employee controller tests.
   - Covers realtime bridge dispatch for document, digital employee, and backend
     SSH session events, parsing sparse realtime frames that put task/job/session
     ID and status at the top level while the nested payload only contains result
     fields, and applying those updates without losing typed notification IDs,
-    SSH session IDs, or task cache linkage.
+    SSH session IDs, or task cache linkage. Downstream event-application failures
+    are isolated so one stale or malformed update cannot terminate the realtime
+    subscription.
 - `flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart --concurrency=1 --reporter compact`
-  - Passed: 21 realtime and backend server controller tests.
+  - Passed: 22 realtime and backend server controller tests.
   - Covers Hub realtime parsing for `ssh_session`, `ssh_task`, and
     `ssh_file_operation` events, bridge dispatch of backend SSH task events to
     the server task controller, and sparse backend SSH task realtime updates
@@ -1773,7 +2070,7 @@ QA record.
     session controller queueing create, attach, reconnect, interrupt, input,
     and close control records for GUI/agent handling while preserving backend-session input carriage returns.
 - `flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact`
-  - Passed: 59 mobile backend SSH control-plane tests.
+  - Passed: 60 mobile backend SSH control-plane tests.
   - Covers the phone-side foreground path using tenant Hub APIs to create,
     attach, interrupt, reconnect, send input to, and close GUI/agent-managed
     backend SSH sessions; request GUI/agent-managed `exec_background`,
@@ -1810,7 +2107,7 @@ QA record.
     storage cleanup for login tokens plus legacy SSH credential residues without
     exposing phone-side SSH credential save/read APIs.
 - `flutter test test/mobile_notification_service_test.dart --concurrency=1 --reporter compact`
-  - Passed: 8 mobile notification service tests.
+  - Passed: 9 mobile notification service tests.
   - Covers typed notification payload routing for document, digital employee,
     and server alerts requiring a non-empty trackable ID after the prefix, while
     retaining legacy URL payload routing for document recovery. Invalid typed
@@ -1818,7 +2115,9 @@ QA record.
     not replace a valid pending notification payload. System notification title
     and body text is locally redacted for common passwords, tokens,
     Authorization headers, and private key blocks before reaching the OS
-    notification center.
+    notification center. Platform initialization, permission requests, and
+    notification display now fail closed when the optional notification plugin
+    is unavailable, leaving login, assistant, and task state usable.
 - `flutter analyze`
   - Passed after restoring readable app shell tab/share text and replacing
     mojibake-prone UI assertions with Unicode-safe test constants.
@@ -1864,6 +2163,12 @@ QA record.
   - Passed after replacing remaining terminal-shaped mobile icons with
     assistant/server-maintenance icons that reflect GUI/agent backend session
     management instead of a phone-local terminal surface.
+- `flutter analyze --no-fatal-infos`
+  - Passed on the current mobile workspace with `No issues found`.
+- `flutter test --concurrency=1 --reporter compact`
+  - Passed: all 344 Flutter tests, including the current login, GUI-like
+    assistant, voice input fallback, document, digital employee, backend SSH,
+    realtime, notification, and release-evidence coverage.
 - `flutter test test\assistant_screen_test.dart test\servers_screen_test.dart test\backend_ssh_command_test.dart --concurrency=1 --reporter compact`
   - Passed: 49 assistant and backend SSH screen/model tests.
   - Revalidated the GUI-like AI assistant, voice/file/camera entries,
@@ -1880,8 +2185,343 @@ QA record.
   - Revalidated the mobile `.gitignore` release-doc guard after adding
     `flutter_*.log`, so Flutter tool crash reports such as `flutter_01.log`
     remain local generated artifacts and do not pollute signed-build or QA
-    evidence worktrees.
+    evidence worktrees; `.tmp_*.log` is also ignored so local diagnostic
+    transcripts do not enter the mobile evidence worktree.
+- `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`
+  - Passed: current Hub mobile API regression suite.
+- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+  - Passed: current official HubCenter route and origin regression suite.
+- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
+  - Passed: current GUI/agent mobile digital-employee, document, server-profile,
+    and backend SSH handoff regression suite.
+- `flutter test test/mobile_realtime_bridge_test.dart test/mobile_realtime_client_test.dart test/digital_employees_screen_test.dart test/documents_screen_test.dart test/servers_screen_test.dart --concurrency=1 --reporter compact`
+  - Passed: 52 focused mobile control-plane tests covering document and digital-
+    employee realtime updates, backend SSH output/interrupt/GUI-agent handoff,
+    export/import behavior, and safe failure recovery.
+- `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`,
+  `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`,
+  and the current GUI mobile handoff regression command above
+  - Passed: Hub mobile API, official HubCenter route isolation, origin handling,
+    and GUI/agent mobile handoff regression suites.
+- `python tool/configure_platforms.py`, `python tool/verify_ios_wrapper.py`,
+  and `python tool/verify_runtime_boundary.py`
+  - Passed: native iOS wrapper generation, iOS wrapper structure, and the
+    mobile runtime boundary checks.
+- Signed Android API 35 cold-start evidence was refreshed after the login UI
+  change. The hierarchy contains the MaClaw logo and phone registration entry,
+  and contains no `HubCenter` candidate label or preset HubCenter URL. The
+  three official candidates remain internal to background discovery.
+- Current API 35 emulator permission evidence is retained under
+  `docs/qa-builds/android-api35-0.1.0+1/debug-latest/permissions-grant.txt`:
+  `permission-grant:<id>` succeeded for notifications, camera, microphone,
+  image media, and video media, and `dumpsys package` reports each as granted.
+  This is emulator evidence only and does not close the physical-device
+  permission gate.
+- The current Debug APK Manifest and API 35 resolver evidence are retained
+  under `docs/qa-builds/android-api35-0.1.0+1/debug-latest/`: `debug-manifest.txt`
+  records the mobile permissions and share filters, while the text, image, PDF,
+  Word/DOCX, Excel/XLSX, CSV, and `SEND_MULTIPLE` CSV resolver transcripts all
+  include `top.mypapers.maclaw.mobile/.MainActivity`. This remains emulator
+  resolver evidence, not physical-device share QA.
+- The same Debug APK cold-start capture (`startup.png`/`startup.xml`) contains
+  the `MaClaw` image content description and no `HubCenter` preset URL or
+  Flutter branding; the phone-login label is present in the Android hierarchy
+  (the emulator XML is UTF-8 text rendered through the platform accessibility
+  tree).
+- `flutter test test\app_smoke_test.dart --concurrency=1 --reporter compact`
+  - Passed: 15 app smoke tests, including signed-out shared-link,
+    shared-document, and opened-notification paths. Shared content and task
+    notifications remain pending while the phone registration screen is shown,
+    then are consumed by the AI assistant, document flow, or notification
+    recovery only after the session becomes authenticated.
+- The latest signed Android API 35 `ACTION_SEND` text flow was rechecked:
+  Android Resolver listed `Share with MaClaw Mobile`, `Just once` delivered the
+  intent to the MaClaw Mobile activity, and the resulting phone registration
+  hierarchy contained no HubCenter candidate address. The capture remains
+  emulator evidence and does not replace real-device share QA.
+- The current signed APK also received a direct `ACTION_SEND` text payload
+  after installation; the activity launched successfully and the assistant
+  displayed the shared content with a `分享来源` action. Evidence is
+  `share-text-latest.xml`/`share-text-latest.png` under
+  `docs/qa-builds/android-api35-0.1.0+1/signed-release-chat-latest/`. This
+  verifies the signed text-share handoff on the emulator, not all required
+  physical-device share payloads.
+- A signed-package URL share was also delivered directly to the running
+  activity; the assistant created a follow-up turn, preserved the URL as a
+  citation fallback, and showed the received-share state. Evidence is
+  `share-url-latest.xml`/`share-url-latest.png` in the same QA directory.
+- A signed-package image share was delivered through an Android MediaStore
+  `content://` URI, matching the URI form used by real sharing applications.
+  The app routed it to the `文档` tab and exposed the file/camera/gallery
+  import surface. Evidence is `share-image-latest.xml`/`share-image-latest.png`
+  in the same QA directory. This closes the signed-emulator image-share
+  smoke only; physical-device and Office/CSV share gates remain open.
+- Assistant camera, gallery, and file-import success feedback now preserves the
+  original mobile prompt and adds a second `upload task <taskId>` line when Hub
+  returns a document upload task. This keeps the image/document handoff
+  traceable from the assistant surface into the Documents tab; the behavior is
+  covered by `test/assistant_screen_test.dart` and remains separate from real
+  device task-ID evidence.
+- Speech-service platform errors are now forwarded through the voice adapter as
+  an explicit assistant error state. The composer exits listening mode and
+  remains available for typed input instead of waiting indefinitely; the Widget
+  regression is `assistant voice input exits listening mode after platform error`
+  in `test/assistant_screen_test.dart`.
+- Voice-session callbacks now carry a generation token. A late `done` or
+  `notListening` callback from an older platform session cannot change the
+  state or transcript of a newer session; typed input remains available when
+  speech startup fails. Static analysis and the focused assistant/voice/smoke
+  suite passed after this change.
+- The account feature summary now distinguishes always-available local task
+  notifications from optional remote Push. When Hub bootstrap has
+  `push_notifications:false`, the account page shows `本地通知` as enabled and
+  does not present a misleading enabled/disabled remote Push chip; the account
+  Widget regression passes.
+- Rebuilt the latest signed Android APK after the realtime recovery changes.
+  The current artifact SHA256 is
+  `9DAC173F4075C39CB204310E204D694F2DF2381DAA8C2B2618255292DB335586`,
+  size `78483910` bytes; install and cold-start assertions passed on the API 35
+  emulator. This remains emulator evidence and does not close physical-device
+  QA. The fresh hierarchy capture is
+  `startup-notification-boundary-20260711.xml`/`startup-notification-boundary-20260711.png` under
+  `docs/qa-builds/android-api35-0.1.0+1/signed-release-chat-latest/`; it shows
+  the MaClaw image and phone registration surface with no Flutter branding or
+  HubCenter candidate URLs.
+- The same current signed APK resolver run matched
+  `top.mypapers.maclaw.mobile/.MainActivity` for `text/plain`, `image/*`,
+  `application/pdf`, DOCX, XLSX, and `text/csv` `ACTION_SEND` payloads. The
+  current query transcripts are `share-text-current-activity.txt`,
+  `share-image-current-activity.txt`, `share-pdf-current-activity.txt`,
+  `share-docx-current-activity.txt`, `share-xlsx-current-activity.txt`, and
+  `share-csv-current-activity.txt` under the same signed-release QA directory.
+  This is signed-emulator resolver evidence; real-device share delivery remains
+  an open release gate.
+- The current signed APK also received
+  `https://example.com/maclaw-current-share` through a direct URL-style
+  `ACTION_SEND` Intent. The cold-start capture is
+  `share-url-current.xml`/`share-url-current.png` in the signed-release QA
+  directory; it shows the MaClaw phone-registration surface without Flutter
+  branding or HubCenter candidates. Because this emulator run was signed out,
+  the URL remained in the authenticated-session pending-share path; logged-in
+  assistant consumption still requires the real phone/Hub smoke and is not
+  claimed by this capture.
+- Rebuilt the matching signed Android App Bundle for version/build `0.1.0+1`.
+  The current AAB SHA256 is
+  `666E94341680697ED38395ED789AE10E83E00A0D48A385DA992913EF6816D16D`,
+  size `57510646` bytes, and `jarsigner -verify` returned success. APK and AAB
+  use the same internal QA signing identity and remain internal-testing
+  artifacts.
+- Account-screen notification permission results now expose a generated
+  `permission-grant:<id>` trace token without phone numbers, Hub URLs, or
+  credentials. The service and Account Widget coverage verifies both granted
+  and denied outcomes; this token makes a real permission prompt/result easier
+  to attach to the signed QA record and is not itself proof of device grant.
+- Successful assistant voice, camera, gallery, and file-import flows now expose
+  scoped `permission-grant:microphone-*`, `permission-grant:camera-*`, or
+  `permission-grant:media-*` evidence tokens alongside their status/result.
+  These IDs only correlate a successful app operation with the QA capture; they
+  do not replace the platform permission prompt or real-device grant record.
+- Direct imports from the `文档` tab now expose the same scoped media/camera
+  evidence on the upload task card; shared-file intents intentionally do not
+  fabricate a permission token. Document import state and retry tests remain
+  green after this change.
+- The latest signed APK also opened the account page, scrolled to the
+  notification permission action, and completed the Android 13+ permission
+  request. The post-request hierarchy reports `通知权限已开启，长任务和 SSH
+  异常会提醒你`; evidence is
+  `notification-permission-latest.xml`/`notification-permission-latest.png`
+  in the same QA directory. This remains emulator permission evidence.
+- The signed assistant then opened the system camera through `拍照提问` and
+  returned to the assistant after the camera activity was dismissed. The
+  The latest permission-trace signed APK also received a real Android
+  `ACTION_SEND` URL intent (`https://example.com/maclaw-latest`) and returned to
+  the MaClaw phone-login screen without Flutter branding. Captures are
+  `share-url-permission-latest.xml` and `share-url-permission-latest.png` in
+  `signed-release-chat-latest/`; this remains signed-emulator evidence.
+  runtime permission snapshot records `CAMERA`, `RECORD_AUDIO`,
+  `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, and `POST_NOTIFICATIONS` as granted;
+  evidence is `assistant-after-camera-latest.png`,
+  `assistant-after-camera-latest.xml`, and `permissions-runtime-latest.txt`.
+  This is emulator permission/entry-point evidence, not physical-device QA.
+- `flutter test test/desktop_llm_qr_test.dart test/account_screen_test.dart --concurrency=1 --reporter compact`
+  - Passed: desktop GUI QR authorization tests, including scanner/paste flow,
+    malformed payload rejection, provider-secret field rejection, and local
+    expiry validation before Hub authorization.
 ## Manual Release Gates
+
+- A real phone-number SMS/Hub smoke was completed on 2026-07-10 using the API
+  35 Android emulator. The masked account ending in `0398` completed SMS
+  verification, opened the GUI-like AI assistant, and showed the discovered
+  Hub, `tenant_default`, MaClaw official LLM mode, and masked phone credits
+  status. Evidence is stored under
+  `docs/qa-builds/real-phone-hub-smoke-20260710/`; it contains no SMS code or
+  token. This reduces the Hub discovery smoke gap but does not replace signed
+  physical-device, iOS, or real-server QA.
+
+- The current GUI-like chat/voice-input implementation was rebuilt as a clean
+  signed Android Release APK. Artifact evidence is stored under
+  `docs/qa-builds/android-api35-0.1.0+1/signed-release-chat-latest/`.
+  SHA256: `CDF64E473958269ED25212A26F04CA71311296D94E065FC47E32CDDB3F4B7674`.
+  The stable internal-QA certificate allowed the APK to replace the existing
+  emulator installation successfully. The fresh-start and startup captures
+  below are attributed to this artifact. The separate
+  `voice-listening.xml`/`voice-listening.png` capture shows the active
+  “正在听写，识别结果会填入 AI 助手输入框” state; this remains
+  emulator evidence from the signed QA session and does not close
+  physical-device QA.
+
+- The rebuilt stable-signing APK was installed on a clean Android API 35
+  emulator. Cold start evidence confirms the MaClaw logo, `手机号注册/登录`,
+  the official-credits explanation, and `发送验证码`; no Flutter placeholder
+  branding is present. Evidence is `fresh-start-latest.xml` and
+  `fresh-start-latest.png` in the same QA directory. This is clean-emulator
+  launch evidence; SMS/Hub verification still requires the documented account
+  smoke flow.
+  After the speech-status callback change, the APK was rebuilt and installed
+  successfully over the signed API 35 session; the latest cold-start capture
+  is `startup-chat-latest.xml`/`startup-chat-latest.png` and still exposes the
+  GUI-like chat, `主对话`, secondary-tab, and voice-input entry points.
+
+- The same signed API 35 session opened the `远程` tab after the real phone
+  login. Its UI hierarchy confirms that server profiles are synchronized from
+  the official Hub's MaClaw GUI/agent authorization, that the phone does not
+  collect or connect with SSH credentials, and that the empty state offers
+  only backend-session request/refresh actions. No remote command was issued;
+  evidence is `remote-screen.png` and `remote-screen.xml` in the same QA
+  directory. This verifies the mobile control-plane boundary, not a real
+  server execution or GUI/agent attachment.
+
+- After the late `done` callback race guard, the previously signed Release APK
+  was built with SHA256
+  `B2C53995602A39D8F14E7A99725206972EF08C1B51CA7C7E4F26C2C4A0F5AF02`.
+  It was then installed successfully on the API 35 emulator. The runtime
+  capture `voice-completed-latest.xml`/`voice-completed-latest.png` shows the
+  platform speech session completing automatically, the voice action returning
+  to `开始语音输入`, and the completed-transcript status being shown. This is
+  emulator evidence and does not close physical-device QA.
+
+- The latest signed session also opened the `员工` tab through the discovered
+  Hub/tenant and returned live digital-employee data. The hierarchy shows
+  multiple online employees, `远程端在线`, `按需唤起`, and the mobile actions
+  `发起任务` and `分析日志/输出`. No task was submitted during this smoke;
+  evidence is `digital-employee-latest.xml`/`digital-employee-latest.png` in
+  the same QA directory. This verifies the Hub-backed mobile entry point, not
+  a real server task execution.
+- Opening the first employee's task form shows explicit `服务器`/`电脑`/`文档`/
+  `核查` task types, server-oriented emergency templates, a checked safety
+  option that keeps high-risk commands as drafts, and a separate `提交任务`
+  action. The form was closed without submission; evidence is
+  `digital-task-form-latest.xml`/`digital-task-form-latest.png` in the same QA
+  directory. This verifies the mobile authorization boundary, not execution.
+
+- Current continuation verification also passed the targeted Hub mobile API
+  suite: `go test ./hub/internal/httpapi -run
+  'TestMobile(Bootstrap|Search|BackendSSH|RealtimeBackendSSH|SSHAnalyze)'
+  -count=1`. The GUI control-plane suite passed with
+  `go test ./gui -run
+  'Test(MobileDigitalEmployeeCandidateIDs|RemoteHubClient.*Mobile|MobileDocumentSourceMarkdown|ResolveMobileBackendSSHHost|MobileServerProfilesFromSSHHosts|ProcessMobileBackendSSHSession)'
+  -count=1`. These are backend contract and worker-handling checks; they do
+  not replace a real GUI/agent attached to a real server.
+
+- The latest rerun of both suites passed again after the mobile realtime
+  recovery changes. This confirms the control-record contract still covers
+  session creation/attach, worker claim and update, queued input, interrupt,
+  reconnect, background task/file operations, and SSH analysis; it remains
+  contract evidence rather than a real GUI/agent-to-server execution record.
+- The backend SSH contract audit also confirmed that Hub assigns the monotonic
+  `output_seq` when accepting each non-empty worker `output_chunk`, then
+  returns it in the worker response and `ssh_session` Realtime event. The
+  desktop worker does not invent a phone-side sequence, so ordering remains a
+  Hub-owned invariant; the mobile client additionally ignores stale event
+  sequences.
+
+- A current HubCenter rerun was attempted with the documented mobile route
+  filter, but the Go build is presently blocked before tests start by the
+  unrelated untracked `corelib/embedding/tensor/avx512_kernels_amd64.s`
+  assembly file (`invalid instruction ... VMOVSS X28, X0`). The earlier passing
+  HubCenter transcript remains recorded above; this continuation does not
+  alter or delete that user-owned file.
+
+- `python tool/qa_preflight.py --scope ios --log docs/qa-builds/preflight-ios-0.1.0+1-20260710.log`
+  - Current result: `BLOCKED` only because the real Apple Team ID/export
+  options are not configured. iOS wrapper, Share Extension, URL schemes,
+  App Group wiring, and runtime boundary checks pass; no placeholder
+  `ExportOptions.plist` is being created.
+- The current rerun is recorded at
+  `docs/qa-builds/preflight-ios-current-20260711.log`; it reports the same
+  single blocker, missing real `ios/ExportOptions.plist`, while the iOS wrapper,
+  Share Extension, runtime boundary, and release-document checks remain OK.
+- A further iOS preflight rerun is recorded at
+  `docs/qa-builds/preflight-ios-current-rerun-20260710.log`; it again reports
+  only the missing real `ios/ExportOptions.plist`. The wrapper verifier and
+  the dedicated iOS wrapper/export-options/release-plan suite passed all `27`
+  tests, so no placeholder signing configuration was added.
+- `python tool/release_status_report.py --scope ios --team-id '<APPLE_TEAM_ID>' --export-method development --log docs/qa-builds/release-status-ios-0.1.0+1-latest-20260710.log --force`
+  - Current result: `NOT READY` for the same missing real Apple signing/export
+    inputs; the mobile implementation remains in pre-signing setup state.
+- `python tool/release_status_report.py --scope android --log docs/qa-builds/release-status-android-0.1.0+1-latest-20260710.log --force`
+  - Current result: `NOT READY` because there are zero completed in-scope
+    signed-build QA records. This is an intentional release blocker; the local
+    signed APK and emulator captures remain preparation evidence only.
+
+- The latest Android release-status rerun is saved as
+  `docs/qa-builds/release-status-android-current-final.log`, and the matching
+  preflight rerun is `docs/qa-builds/preflight-android-current-final.log`.
+  Both continue to report the same single invalid QA record, while signing
+  inputs, runtime boundary, release documentation, and current artifact
+  consistency checks remain OK. No formal Android release approval is implied.
+- The latest final-evidence verifier output is saved as
+  `docs/qa-builds/final-release-evidence-android-current-20260711.log`. It
+  confirms the release tooling and artifact checks are runnable, but rejects
+  the Android scope because the signed QA record still has no completed
+  post-SMS-verification LLM usage, real-device permission/share, notification,
+  or GUI/Agent-managed SSH evidence.
+- The current continuation rerun of the backend contracts passed from the
+  repository root: Hub mobile API tests are recorded in
+  `docs/qa-builds/go-mobile-httpapi-current-20260711.log`, and GUI/Agent
+  mobile SSH/digital-employee handling tests are recorded in
+  `docs/qa-builds/go-gui-mobile-current-20260711.log`. Both end with `ok`;
+  these remain contract evidence and do not replace a real GUI/Agent session
+  attached to a real server.
+- The current iOS preflight is recorded in
+  `docs/qa-builds/preflight-ios-current-20260711.log`; `verify_ios_wrapper.py`
+  passes in `docs/qa-builds/ios-wrapper-current-20260711.log`. The preflight
+  has exactly one blocker: the real Apple Team ID/export configuration has not
+  produced `ios/ExportOptions.plist`. No placeholder signing/export file was
+  added.
+- The current scoped release-status transcripts are
+  `docs/qa-builds/release-status-android-current-20260711.log` and
+  `docs/qa-builds/release-status-ios-current-20260711.log`. Android reports
+  signing/runtime/documentation checks OK but rejects the incomplete QA record;
+  iOS reports the missing real export options and has no in-scope signed QA
+  record. Both correctly remain `NOT READY`.
+- The Android handoff and final-evidence verifier were regenerated after the
+  latest APK/AAB refresh. The handoff transcript is
+  `docs/qa-builds/handoff-android-0.1.0+1-current-20260711.log`; the final
+  verifier transcript is
+  `docs/qa-builds/final-release-evidence-android-current-20260711.stdout.log`.
+  Both retain `NOT READY` because the QA record is incomplete, while the
+  handoff itself remains a plan rather than release approval.
+- The Android QA record now links the signed API 35 emulator share resolver and
+  delivery captures for plain text, URL, image, PDF, Word, Excel, and CSV under
+  `signed-release-chat-latest`. The record gap report increased from `44/85` to
+  `48/85` filled occurrences; these captures document local emulator behavior
+  only and do not satisfy the remaining real-device share/import gates.
+- An unauthenticated probe of the actual HubCenter discovery route on
+  2026-07-11 is recorded in `docs/qa-builds/hubcenter-probe-20260711.log`.
+  `POST /api/entry/resolve` returned an online `https://hub.mypapers.top` from
+  `hubs.mypapers.top`; `hubs.maclaw.top` returned `502`, and `hubs2.maclaw.top`
+  closed the connection. The discovered Hub's SMS route advertises `POST` via
+  an `OPTIONS` probe, while its protected mobile bootstrap and realtime routes
+  returned `401`; the SMS POST was intentionally not called. This is partial
+  discovery evidence only; SMS verification, tenant authentication, official
+  Credits/LLM usage, and real Hub smoke remain open.
+- A real phone verification request was sent once through the discovered Hub on
+  2026-07-11 and returned HTTP `200`, `purpose=verify_bound_phone`, tenant
+  `tenant_default`, six-digit code length, and a five-minute expiry. The
+  response did not expose the code; the redacted request evidence is
+  `docs/qa-builds/sms-request-20260711.log`. This proves SMS dispatch setup,
+  not successful code verification or authenticated LLM usage.
 
 These cannot be proven by local unit tests or the unsigned debug APK:
 

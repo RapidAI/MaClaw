@@ -155,6 +155,31 @@ type WorkflowTemplate struct {
 	SemanticOnly bool
 }
 
+// BackfillPhaseDependenciesFromTemplate adds dependencies introduced by a newer
+// template to an already-persisted workflow state. It only fills an empty
+// DependsOnFull field, preserving explicit dependencies captured when the
+// workflow was created.
+func BackfillPhaseDependenciesFromTemplate(state *WorkflowState, tmpl *WorkflowTemplate) bool {
+	if state == nil || tmpl == nil {
+		return false
+	}
+	changed := false
+	for i := range state.Phases {
+		if len(state.Phases[i].DependsOnFull) != 0 {
+			continue
+		}
+		for _, spec := range tmpl.Phases {
+			if spec.ID != state.Phases[i].ID || len(spec.DependsOnFull) == 0 {
+				continue
+			}
+			state.Phases[i].DependsOnFull = append([]string(nil), spec.DependsOnFull...)
+			changed = true
+			break
+		}
+	}
+	return changed
+}
+
 // TemplateRegistry holds all registered workflow templates.
 type TemplateRegistry struct {
 	mu        sync.RWMutex
@@ -463,7 +488,11 @@ func PresentationTemplate() *WorkflowTemplate {
 				},
 			},
 			{ID: "outline", Name: "内容大纲", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
-			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			// A slide script is an expansion of the approved outline.  This is a
+			// data dependency, not merely helpful background, so it must receive the
+			// complete outline rather than the default short previous-phase summary.
+			{ID: "slide_scripting", Name: "逐页脚本", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc,
+				DependsOnFull: []string{"outline"}},
 			{ID: "ppt_generation", Name: "PPT 生成", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindArtifactGeneration, MutationScope: MutationScopeArtifact,
 				DependsOnFull: []string{"slide_scripting", "outline"}},
 		},

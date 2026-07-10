@@ -11,12 +11,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
-	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -43,6 +43,12 @@ type IMMessageHandler struct {
 	// workflowEngine removed — V2 is the sole workflow engine.
 	unifiedClassifier *intent.UnifiedIntentClassifier
 	steeringStore     *steering.Store
+
+	// workflowV2Adapters owns durable document bridges for V2 workflows when
+	// the host has not installed the legacy engine callback adapter. Adapters
+	// retain workflow-instance state, so they must be scoped per owner rather
+	// than shared across concurrent desktop/IM workflows.
+	workflowV2Adapters sync.Map // map[string]*GUIWorkflowAdapter
 
 	// standaloneConfig holds the config from NewIMMessageHandlerStandalone.
 	// nil when constructed via NewIMMessageHandler (GUI mode).

@@ -98,6 +98,8 @@ func parallelRanges(total int, fn func(start, end int)) {
 		nw = total
 	}
 	// Wide partitions only: avoid N=512 → 12×42-col slices (A reload thrash).
+	// Keep minChunk=32: fatter floors (64/256) cut workers to ≤8 and regressed
+	// e2e ~126ms → ~190ms+ on 8745HS (parallelism loss > L3 thrash savings).
 	if total >= 384 {
 		const minChunk = 32
 		if maxUseful := (total + minChunk - 1) / minChunk; nw > maxUseful {

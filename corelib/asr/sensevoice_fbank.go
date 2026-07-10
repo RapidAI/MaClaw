@@ -263,6 +263,7 @@ func svMelFilterbankRange(pcm, out []float32, fs, fe int) {
 			ks := band.start
 			var melEnergy float32
 			j := 0
+			// Sparse bands are typically short; manual unroll beats generic Dot call overhead.
 			for ; j+7 < len(w); j += 8 {
 				melEnergy += power[ks+j]*w[j] + power[ks+j+1]*w[j+1] +
 					power[ks+j+2]*w[j+2] + power[ks+j+3]*w[j+3] +
@@ -402,8 +403,71 @@ func complexFFTHalf32(real, imag []float32) {
 			imag[idx2] = imag[idx1] - ti
 			real[idx1] += tr
 			imag[idx1] += ti
-			// Quad-k butterflies when halfSize is large (size>=16 → better ILP).
+			// Octet-k then quad-k butterflies when halfSize is large (ILP).
 			k := 1
+			if halfSize >= 16 {
+				for ; k+7 < halfSize; k += 8 {
+					c0, s0 := cosT[k], sinT[k]
+					c1, s1 := cosT[k+1], sinT[k+1]
+					c2, s2 := cosT[k+2], sinT[k+2]
+					c3, s3 := cosT[k+3], sinT[k+3]
+					c4, s4 := cosT[k+4], sinT[k+4]
+					c5, s5 := cosT[k+5], sinT[k+5]
+					c6, s6 := cosT[k+6], sinT[k+6]
+					c7, s7 := cosT[k+7], sinT[k+7]
+					j1 := i + k
+					hs := halfSize
+					// Upper leg loads first (j1+hs..) then lower (j1..) — more ILP.
+					rU0, iU0 := real[j1+hs], imag[j1+hs]
+					rU1, iU1 := real[j1+1+hs], imag[j1+1+hs]
+					rU2, iU2 := real[j1+2+hs], imag[j1+2+hs]
+					rU3, iU3 := real[j1+3+hs], imag[j1+3+hs]
+					rU4, iU4 := real[j1+4+hs], imag[j1+4+hs]
+					rU5, iU5 := real[j1+5+hs], imag[j1+5+hs]
+					rU6, iU6 := real[j1+6+hs], imag[j1+6+hs]
+					rU7, iU7 := real[j1+7+hs], imag[j1+7+hs]
+					tR0 := rU0*c0 - iU0*s0
+					tI0 := rU0*s0 + iU0*c0
+					tR1 := rU1*c1 - iU1*s1
+					tI1 := rU1*s1 + iU1*c1
+					tR2 := rU2*c2 - iU2*s2
+					tI2 := rU2*s2 + iU2*c2
+					tR3 := rU3*c3 - iU3*s3
+					tI3 := rU3*s3 + iU3*c3
+					tR4 := rU4*c4 - iU4*s4
+					tI4 := rU4*s4 + iU4*c4
+					tR5 := rU5*c5 - iU5*s5
+					tI5 := rU5*s5 + iU5*c5
+					tR6 := rU6*c6 - iU6*s6
+					tI6 := rU6*s6 + iU6*c6
+					tR7 := rU7*c7 - iU7*s7
+					tI7 := rU7*s7 + iU7*c7
+					rL0, iL0 := real[j1], imag[j1]
+					rL1, iL1 := real[j1+1], imag[j1+1]
+					rL2, iL2 := real[j1+2], imag[j1+2]
+					rL3, iL3 := real[j1+3], imag[j1+3]
+					rL4, iL4 := real[j1+4], imag[j1+4]
+					rL5, iL5 := real[j1+5], imag[j1+5]
+					rL6, iL6 := real[j1+6], imag[j1+6]
+					rL7, iL7 := real[j1+7], imag[j1+7]
+					real[j1+hs], imag[j1+hs] = rL0-tR0, iL0-tI0
+					real[j1], imag[j1] = rL0+tR0, iL0+tI0
+					real[j1+1+hs], imag[j1+1+hs] = rL1-tR1, iL1-tI1
+					real[j1+1], imag[j1+1] = rL1+tR1, iL1+tI1
+					real[j1+2+hs], imag[j1+2+hs] = rL2-tR2, iL2-tI2
+					real[j1+2], imag[j1+2] = rL2+tR2, iL2+tI2
+					real[j1+3+hs], imag[j1+3+hs] = rL3-tR3, iL3-tI3
+					real[j1+3], imag[j1+3] = rL3+tR3, iL3+tI3
+					real[j1+4+hs], imag[j1+4+hs] = rL4-tR4, iL4-tI4
+					real[j1+4], imag[j1+4] = rL4+tR4, iL4+tI4
+					real[j1+5+hs], imag[j1+5+hs] = rL5-tR5, iL5-tI5
+					real[j1+5], imag[j1+5] = rL5+tR5, iL5+tI5
+					real[j1+6+hs], imag[j1+6+hs] = rL6-tR6, iL6-tI6
+					real[j1+6], imag[j1+6] = rL6+tR6, iL6+tI6
+					real[j1+7+hs], imag[j1+7+hs] = rL7-tR7, iL7-tI7
+					real[j1+7], imag[j1+7] = rL7+tR7, iL7+tI7
+				}
+			}
 			if halfSize >= 8 {
 				for ; k+3 < halfSize; k += 4 {
 					c0, s0 := cosT[k], sinT[k]

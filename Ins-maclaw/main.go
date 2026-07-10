@@ -198,8 +198,9 @@ func runInstall(ctx context.Context, opts installOptions) (installResult, error)
 	if opts.CheckOnly {
 		return result, nil
 	}
-	log(tr("cli.downloading"))
-	path, err := downloadInstaller(ctx, opts.Brand.ProductName, targetFileName, release.DownloadURL, release.SHA256, opts.Progress)
+	path, err := downloadInstaller(ctx, opts.Brand.ProductName, targetFileName, release.DownloadURL, release.SHA256, opts.Progress, func(node string) {
+		log(downloadStartMessage(node, runtime.GOOS, runtime.GOARCH, targetFileName))
+	})
 	if err != nil {
 		return result, fmt.Errorf("download failed: %w", err)
 	}
@@ -214,6 +215,14 @@ func runInstall(ctx context.Context, opts installOptions) (installResult, error)
 	}
 	time.Sleep(300 * time.Millisecond)
 	return result, nil
+}
+
+// downloadStartMessage makes the selected download node and the host platform
+// explicit immediately before the installer download starts. Asset selection is
+// intentionally based on the running installer's GOOS/GOARCH, rather than on
+// user input, so the displayed architecture always matches the downloaded one.
+func downloadStartMessage(source, goos, goarch, targetFileName string) string {
+	return fmt.Sprintf(tr("cli.downloading"), source, goos, goarch, targetFileName)
 }
 
 func resolveBrand(input string) (brandOption, error) {

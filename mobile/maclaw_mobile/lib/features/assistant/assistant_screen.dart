@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/platform/mobile_permission_evidence.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/mobile_shared_intent.dart';
@@ -107,6 +108,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   String? _voiceStatus;
   String? _handledSharedIntentId;
   String _lastVoiceTranscript = '';
+  String? _voicePermissionEvidence;
+  int _voiceSessionGeneration = 0;
 
   @override
   void initState() {
@@ -130,12 +133,19 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   void _searchManually(String query) {
     ref.read(assistantSharedCitationProvider.notifier).state = null;
     ref.read(assistantTabsProvider.notifier).setActiveSharedCitation(null);
-    ref.read(assistantSearchProvider.notifier).search(query);
+    unawaited(ref.read(assistantSearchProvider.notifier).search(query));
+    _setQuery('');
   }
 
   Future<void> _toggleVoiceInput() async {
     if (_listening) {
-      await _voiceInput.stop();
+      _voiceSessionGeneration++;
+      try {
+        await _voiceInput.stop();
+      } on Object {
+        // The platform service may already have stopped after a permission or
+        // lifecycle change; the UI still needs to leave listening mode.
+      }
       setState(() {
         _listening = false;
         _voiceStatus = '语音输入已停止';
@@ -146,21 +156,52 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         appLanguageChinese;
     final localeId = assistantSpeechLocaleForLanguage(language);
     _lastVoiceTranscript = '';
-    final ready = await _voiceInput.start(
-      localeId: localeId,
-      onText: (text) {
-        if (!mounted) return;
-        final merged = assistantQueryWithVoiceTranscript(
-          _queryController.text,
-          text,
-          previousTranscript: _lastVoiceTranscript,
-        );
-        _lastVoiceTranscript = text.trim();
-        _setQuery(merged);
-        setState(() => _voiceStatus = '已识别语音，检查后可发送给 AI 助手');
-      },
-    );
-    if (!mounted) return;
+    _voicePermissionEvidence = null;
+    final sessionGeneration = ++_voiceSessionGeneration;
+    setState(() {
+      _listening = true;
+      _voiceStatus = '正在启动语音输入';
+    });
+    bool ready = false;
+    try {
+      ready = await _voiceInput.start(
+        onStatus: (status) {
+          if (!mounted ||
+              sessionGeneration != _voiceSessionGeneration ||
+              !_listening ||
+              (status != 'done' &&
+                  status != 'notListening' &&
+                  status != 'error')) {
+            return;
+          }
+          setState(() {
+            _listening = false;
+            _voiceStatus = status == 'error'
+                ? '\u8bed\u97f3\u8bc6\u522b\u670d\u52a1\u4e2d\u65ad\uff0c\u53ef\u7ee7\u7eed\u4f7f\u7528\u6587\u5b57\u8f93\u5165'
+                : '\u8bed\u97f3\u8f93\u5165\u5df2\u5b8c\u6210\uff0c\u8bf7\u68c0\u67e5\u8bc6\u522b\u7ed3\u679c\u540e\u53ef\u53d1\u9001';
+          });
+        },
+        localeId: localeId,
+        onText: (text) {
+          if (!mounted || sessionGeneration != _voiceSessionGeneration) {
+            return;
+          }
+          final merged = assistantQueryWithVoiceTranscript(
+            _queryController.text,
+            text,
+            previousTranscript: _lastVoiceTranscript,
+          );
+          _lastVoiceTranscript = text.trim();
+          _setQuery(merged);
+          setState(() => _voiceStatus = '已识别语音，检查后可发送给 AI 助手');
+        },
+      );
+    } on Object {
+      // Keep typed assistant input available when a platform speech service
+      // throws before it can report a normal unavailable result.
+      ready = false;
+    }
+    if (!mounted || sessionGeneration != _voiceSessionGeneration) return;
     if (!ready) {
       setState(() {
         _listening = false;
@@ -171,24 +212,39 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       );
       return;
     }
-    setState(() {
-      _listening = true;
-      _voiceStatus = '正在听写，识别结果会填入 AI 助手输入框';
-    });
+    if (_listening) {
+      setState(() {
+        _voicePermissionEvidence = mobilePermissionGrantEvidence('microphone');
+        _voiceStatus = '正在听写，识别结果会填入 AI 助手输入框';
+      });
+    }
   }
 
   Future<void> _pickImage() async {
-    final path = await ref.read(assistantCameraImagePathPickerProvider)();
+    String? path;
+    try {
+      path = await ref.read(assistantCameraImagePathPickerProvider)();
+    } on Object {
+      _showInputFailure('无法打开相机，请检查相机权限后重试。');
+      return;
+    }
     if (path == null || path.isEmpty) return;
     _setQuery('请分析刚拍摄的图片，并给出可执行结论。');
     await _uploadToDocuments(
       path,
+      permissionEvidence: mobilePermissionGrantEvidence('camera'),
       successMessage: '图片已提交文档解析，完成后可在“文档”页继续处理。',
     );
   }
 
   Future<void> _pickGalleryImage() async {
-    final path = await ref.read(assistantGalleryImagePathPickerProvider)();
+    String? path;
+    try {
+      path = await ref.read(assistantGalleryImagePathPickerProvider)();
+    } on Object {
+      _showInputFailure('无法打开相册，请检查照片权限后重试。');
+      return;
+    }
     if (path == null || path.isEmpty) return;
     _setQuery('请分析这张截图或相册图片，提取关键信息并给出下一步。');
     await _uploadToDocuments(
@@ -198,7 +254,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   Future<void> _pickFile() async {
-    final path = await ref.read(assistantFilePathPickerProvider)();
+    String? path;
+    try {
+      path = await ref.read(assistantFilePathPickerProvider)();
+    } on Object {
+      _showInputFailure('无法打开文件选择器，请重试。');
+      return;
+    }
     if (path == null || path.isEmpty) return;
     _setQuery('请总结刚导入文件或截图的关键信息。');
     await _uploadToDocuments(
@@ -210,6 +272,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _uploadToDocuments(
     String path, {
     required String successMessage,
+    String? permissionEvidence,
   }) async {
     await ref
         .read(documentsControllerProvider.notifier)
@@ -222,9 +285,29 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       );
       return;
     }
+    final uploadTaskId = documentState.valueOrNull?.uploadTask?.taskId;
+    final effectivePermissionEvidence =
+        permissionEvidence ?? mobilePermissionGrantEvidence('media');
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(successMessage)),
+      SnackBar(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(successMessage),
+            Text(effectivePermissionEvidence),
+            if (uploadTaskId != null && uploadTaskId.isNotEmpty)
+              Text('upload task $uploadTaskId'),
+          ],
+        ),
+      ),
     );
+  }
+
+  void _showInputFailure(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _consumeSharedIntent() {
@@ -317,6 +400,37 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           },
         ),
         const SizedBox(height: 12),
+        if (activeTab.messages.isEmpty)
+          result.when(
+            data: (answer) => answer == null
+                ? const _AssistantWorkspaceIntro()
+                : _AssistantAnswerCard(
+                    query: query,
+                    answer: answer.answer,
+                    citations: answer.citations,
+                    llmMode: answer.llmMode,
+                    llmRequestId: answer.llmRequestId,
+                    llmUsageRecordId: answer.llmUsageRecordId,
+                    fallbackCitation: sharedCitation,
+                  ),
+            error: (error, _) => _AssistantErrorCard(
+              error: error,
+              query: query,
+            ),
+            loading: () => const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: LinearProgressIndicator(),
+              ),
+            ),
+          )
+        else
+          _AssistantConversationView(
+            messages: activeTab.messages,
+            result: result,
+            fallbackCitation: sharedCitation,
+          ),
+        const SizedBox(height: 18),
         TextField(
           controller: _queryController,
           minLines: 3,
@@ -353,6 +467,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                 ),
               ),
             ],
+          ),
+        ],
+        if (_voicePermissionEvidence != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            _voicePermissionEvidence!,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
           ),
         ],
         const SizedBox(height: 10),
@@ -393,33 +516,107 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 18),
-        result.when(
-          data: (answer) => answer == null
-              ? const _AssistantWorkspaceIntro()
-              : _AssistantAnswerCard(
-                  query: query,
-                  answer: answer.answer,
-                  citations: answer.citations,
-                  fallbackCitation: sharedCitation,
-                ),
-          error: (error, _) => _AssistantErrorCard(
-            error: error,
-            query: query,
-          ),
-          loading: () => const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: LinearProgressIndicator(),
-            ),
-          ),
-        ),
         const SizedBox(height: 12),
         _AssistantHistoryCard(
           history: history,
           onSelect: _setQuery,
         ),
       ],
+    );
+  }
+}
+
+class _AssistantConversationView extends StatelessWidget {
+  final List<AssistantConversationMessage> messages;
+  final AsyncValue<SearchAnswer?> result;
+  final SearchCitation? fallbackCitation;
+
+  const _AssistantConversationView({
+    required this.messages,
+    required this.result,
+    this.fallbackCitation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final lastUserQuery = messages
+        .where((message) => message.role == 'user')
+        .map((message) => message.text)
+        .lastOrNull;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.forum_outlined,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 8),
+            Text('对话窗口', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(width: 8),
+            Text(
+              '${messages.where((message) => message.role == 'user').length} 轮',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        for (var index = 0; index < messages.length; index++)
+          _buildMessage(context, messages[index], index == messages.length - 1),
+        if (result.isLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: LinearProgressIndicator(),
+          ),
+        if (result.hasError)
+          _AssistantErrorCard(
+            error: result.error!,
+            query: lastUserQuery ?? '',
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMessage(
+    BuildContext context,
+    AssistantConversationMessage message,
+    bool isLatest,
+  ) {
+    if (message.role == 'user') {
+      final scheme = Theme.of(context).colorScheme;
+      return Align(
+        alignment: AlignmentDirectional.centerEnd,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 620),
+          margin: const EdgeInsets.only(bottom: 10, left: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            color: scheme.primaryContainer,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+              bottomLeft: Radius.circular(16),
+              bottomRight: Radius.circular(4),
+            ),
+          ),
+          child: Text(message.text),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: _AssistantAnswerCard(
+        query: message.query,
+        answer: message.text,
+        citations: message.citations,
+        llmMode: message.llmMode,
+        llmRequestId: message.llmRequestId,
+        llmUsageRecordId: message.llmUsageRecordId,
+        fallbackCitation: isLatest ? fallbackCitation : null,
+      ),
     );
   }
 }
@@ -874,12 +1071,18 @@ class _AssistantAnswerCard extends ConsumerWidget {
   final String query;
   final String answer;
   final List<SearchCitation> citations;
+  final String llmMode;
+  final String llmRequestId;
+  final String llmUsageRecordId;
   final SearchCitation? fallbackCitation;
 
   const _AssistantAnswerCard({
     required this.query,
     required this.answer,
     required this.citations,
+    required this.llmMode,
+    required this.llmRequestId,
+    required this.llmUsageRecordId,
     this.fallbackCitation,
   });
 
@@ -903,6 +1106,20 @@ class _AssistantAnswerCard extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             Text(answer),
+            if (assistantLlmTraceText(
+              llmMode: llmMode,
+              llmRequestId: llmRequestId,
+              llmUsageRecordId: llmUsageRecordId,
+            ).isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _AssistantLlmTrace(
+                text: assistantLlmTraceText(
+                  llmMode: llmMode,
+                  llmRequestId: llmRequestId,
+                  llmUsageRecordId: llmUsageRecordId,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -989,6 +1206,84 @@ class _AssistantAnswerCard extends ConsumerWidget {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('已整理为${documentTemplateLabel(template)}草稿')),
+    );
+  }
+}
+
+String assistantLlmTraceText({
+  required String llmMode,
+  required String llmRequestId,
+  String llmUsageRecordId = '',
+}) {
+  final normalizedMode = llmMode.trim();
+  final normalizedRequestId = llmRequestId.trim();
+  final normalizedUsageRecordId = llmUsageRecordId.trim();
+  if (normalizedMode.isEmpty &&
+      normalizedRequestId.isEmpty &&
+      normalizedUsageRecordId.isEmpty) {
+    return '';
+  }
+  final modeLabel = switch (normalizedMode) {
+    'official' => 'MaClaw 官方服务',
+    'desktop_qr_third_party' => '桌面 GUI 授权服务',
+    _ when normalizedMode.isEmpty => 'Hub LLM 服务',
+    _ => 'Hub LLM 服务（$normalizedMode）',
+  };
+  final lines = <String>[modeLabel];
+  if (normalizedRequestId.isNotEmpty) {
+    lines.add('请求 ID: $normalizedRequestId');
+  }
+  if (normalizedUsageRecordId.isNotEmpty) {
+    lines.add('用量记录: $normalizedUsageRecordId');
+  }
+  return lines.join('\n');
+}
+
+class _AssistantLlmTrace extends ConsumerWidget {
+  final String text;
+
+  const _AssistantLlmTrace({required this.text});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsetsDirectional.fromSTEB(10, 8, 4, 8),
+        child: Row(
+          children: [
+            Icon(
+              Icons.receipt_long_outlined,
+              size: 18,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '请求追踪\n$text',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+            IconButton(
+              tooltip: '复制请求追踪',
+              onPressed: () async {
+                await ref.read(assistantClipboardWriterProvider).call(text);
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('请求追踪已复制')),
+                );
+              },
+              icon: const Icon(Icons.content_copy_outlined),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

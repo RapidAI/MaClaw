@@ -129,13 +129,14 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":                  true,
-			"tenant_id":           tenantID,
-			"expires_min":         cfg.CodeTTLMinutes,
-			"code_length":         cfg.CodeLength,
-			"purpose":             business,
-			"daily_sms_limit":     cfg.DailySMSLimit,
-			"daily_sms_remaining": remaining,
+			"ok":                      true,
+			"tenant_id":               tenantID,
+			"expires_min":             cfg.CodeTTLMinutes,
+			"code_length":             cfg.CodeLength,
+			"purpose":                 business,
+			"daily_sms_limit":         cfg.DailySMSLimit,
+			"daily_sms_remaining":     remaining,
+			"resend_cooldown_seconds": registrationSMSResendCooldownSeconds,
 		})
 	}
 }

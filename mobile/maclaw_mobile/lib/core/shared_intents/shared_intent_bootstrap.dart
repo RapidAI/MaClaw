@@ -66,8 +66,9 @@ class _SharedIntentBootstrapState extends ConsumerState<SharedIntentBootstrap> {
   @override
   void initState() {
     super.initState();
-    _mediaSubscription =
-        ReceiveSharingIntent.instance.getMediaStream().listen(_handleMedia);
+    _mediaSubscription = ReceiveSharingIntent.instance
+        .getMediaStream()
+        .listen(_handleMedia, onError: _handleMediaError);
     unawaited(_loadInitialMedia());
   }
 
@@ -78,9 +79,24 @@ class _SharedIntentBootstrapState extends ConsumerState<SharedIntentBootstrap> {
   }
 
   Future<void> _loadInitialMedia() async {
-    final media = await ReceiveSharingIntent.instance.getInitialMedia();
-    _handleMedia(media);
-    ReceiveSharingIntent.instance.reset();
+    try {
+      final media = await ReceiveSharingIntent.instance.getInitialMedia();
+      _handleMedia(media);
+    } on Object {
+      // A broken share provider must not prevent the phone login or assistant
+      // shell from starting.
+    } finally {
+      try {
+        ReceiveSharingIntent.instance.reset();
+      } on Object {
+        // Reset is best effort when the platform share provider is unavailable.
+      }
+    }
+  }
+
+  void _handleMediaError(Object error, StackTrace stackTrace) {
+    // The share surface is optional; keep the rest of the app usable when the
+    // platform stream fails or permission is denied.
   }
 
   void _handleMedia(List<SharedMediaFile> media) {

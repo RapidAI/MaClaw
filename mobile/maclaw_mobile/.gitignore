@@ -7,9 +7,14 @@ build/
 android/.gradle/
 android/.kotlin/
 android/local.properties
+android/key.properties
+android/*.jks
+android/*.keystore
+qa-signing/
 ios/Flutter/ephemeral/
 ios/Pods/
 ios/.symlinks/
 ios/ExportOptions.plist
 *.iml
 flutter_*.log
+.tmp_*.log

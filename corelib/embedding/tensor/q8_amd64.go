@@ -51,19 +51,51 @@ func dequantRowIntoASM(dst []float32, data []byte, rowOff, nBlocks int) {
 }
 
 func dequantRowScaledASM(dst []float32, data []byte, scales *float32, rowOff, nBlocks int) {
-	if hasAVX2andFMA && nBlocks > 0 {
-		dequantRowScaledAVX2(dst, data, scales, rowOff, nBlocks)
-		return
+	if nBlocks > 0 {
+		if hasAVX512 {
+			dequantRowScaledAVX512(dst, data, scales, rowOff, nBlocks)
+			return
+		}
+		if hasAVX2andFMA {
+			dequantRowScaledAVX2(dst, data, scales, rowOff, nBlocks)
+			return
+		}
 	}
 	sc := unsafe.Slice(scales, nBlocks)
 	dequantRowScaledScalar(dst, data, sc, rowOff, nBlocks)
 }
 
 func dequantRowScaledDual(dst0, dst1 []float32, data []byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int) {
-	if hasAVX2andFMA && nBlocks > 0 && len(dst0) >= nBlocks*q8BlockSize && len(dst1) >= nBlocks*q8BlockSize {
-		dequantRowScaledDualAVX2(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
-		return
+	if nBlocks > 0 && len(dst0) >= nBlocks*q8BlockSize && len(dst1) >= nBlocks*q8BlockSize {
+		if hasAVX512 {
+			dequantRowScaledDualAVX512(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
+			return
+		}
+		if hasAVX2andFMA {
+			dequantRowScaledDualAVX2(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
+			return
+		}
 	}
 	dequantRowScaledASM(dst0, data, scales0, rowOff0, nBlocks)
 	dequantRowScaledASM(dst1, data, scales1, rowOff1, nBlocks)
 }
+
+func dequantRowScaledTriple(dst0, dst1, dst2 []float32, data []byte, scales0, scales1, scales2 *float32, rowOff0, rowOff1, rowOff2, nBlocks int) {
+	if nBlocks > 0 && len(dst0) >= nBlocks*q8BlockSize && len(dst1) >= nBlocks*q8BlockSize && len(dst2) >= nBlocks*q8BlockSize {
+		if hasAVX512 {
+			dequantRowScaledTripleAVX512(dst0, dst1, dst2, data, scales0, scales1, scales2, rowOff0, rowOff1, rowOff2, nBlocks)
+			return
+		}
+	}
+	dequantRowScaledDual(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
+	dequantRowScaledASM(dst2, data, scales2, rowOff2, nBlocks)
+}
+
+//go:noescape
+func dequantRowScaledAVX512(dst []float32, data []byte, scales *float32, rowOff, nBlocks int)
+
+//go:noescape
+func dequantRowScaledDualAVX512(dst0, dst1 []float32, data []byte, scales0, scales1 *float32, rowOff0, rowOff1, nBlocks int)
+
+//go:noescape
+func dequantRowScaledTripleAVX512(dst0, dst1, dst2 []float32, data []byte, scales0, scales1, scales2 *float32, rowOff0, rowOff1, rowOff2, nBlocks int)

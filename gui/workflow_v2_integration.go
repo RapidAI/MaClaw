@@ -652,6 +652,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 	// Without this, the old workflow's phase progress (completed checkmarks) bleeds into the new panel.
 	if prevState := wf.machine.GetActive(msg.UserID); prevState != nil {
 		wf.machine.Cancel(msg.UserID)
+		h.workflowV2Adapters.Delete(msg.UserID)
 		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
 			"id":             prevState.ID,
 			"status":         string(v2.StatusCancelled),
@@ -772,6 +773,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		h.emitWorkflowV2Progress(msg.UserID, hr.State)
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "所有阶段已完成！工作流结束。"}}
 	case v2.ActionCancelled:
+		h.workflowV2Adapters.Delete(msg.UserID)
 		if hr.State != nil {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{"id": hr.State.ID, "status": string(v2.StatusCancelled), "type": hr.State.Type, "project_path": workflowEventProjectPath(hr.State), "event_scope_id": h.app.getEventScopeID(hr.State.UserID)})
 		} else {
@@ -780,6 +782,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{"event_scope_id": h.app.getEventScopeID(msg.UserID)})
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已取消"}}
 	case v2.ActionCancelAndExecute:
+		h.workflowV2Adapters.Delete(msg.UserID)
 		originalRequest := ""
 		if hr.State != nil {
 			originalRequest = hr.State.Summary
@@ -805,6 +808,16 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	if state == nil {
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流阶段无法启动：工作流状态不存在", Error: "workflow state is nil"}}
 	}
+	// Templates may gain explicit data dependencies after a workflow has already
+	// been persisted. Backfill only missing metadata so resumed workflows receive
+	// the same safe handoff semantics as newly created ones.
+	if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil && wf.machine.GetRegistry() != nil {
+		if tmpl := wf.machine.GetRegistry().Get(state.Type); v2.BackfillPhaseDependenciesFromTemplate(state, tmpl) {
+			if err := wf.store.Save(state); err != nil {
+				log.Printf("[workflow-v2] dependency metadata backfill persistence failed: user=%s err=%v", userID, err)
+			}
+		}
+	}
 	phase := state.ActivePhase()
 	if phase == nil {
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
@@ -814,6 +827,12 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
 		h.emitWorkflowV2Progress(userID, state)
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "请在右侧面板填写信息后提交。"}}
+	}
+	if missing := v2.MissingFullDependencies(state); len(missing) > 0 {
+		errText := fmt.Sprintf("阶段 %s 缺少已确认的前序产出物：%s", phase.ID, strings.Join(missing, "、"))
+		log.Printf("[workflow-v2] phase blocked by missing dependencies: user=%s type=%s phase=%s missing=%v", userID, state.Type, phase.ID, missing)
+		h.emitWorkflowV2Progress(userID, state)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: errText + "。请恢复或重新执行缺失阶段后再继续。", Error: errText}}
 	}
 	if err := ensureWorkflowV2PhaseWorkDir(state); err != nil {
 		log.Printf("[workflow-v2] phase workdir unavailable: user=%s type=%s phase=%s project=%q err=%v", userID, state.Type, phase.ID, state.ProjectPath, err)
@@ -951,6 +970,16 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseUpdateEvent(state *v2.WorkflowStat
 // without suggest_maximize side effects. Used for tab-switch refresh where the
 // panel state is already restored and doesn't need maximize suggestions.
 func (h *IMMessageHandler) emitWorkflowV2ProgressPayloadOnly(userID string, state *v2.WorkflowState) {
+	if adapter := h.workflowV2GUIAdapter(userID); adapter != nil {
+		// Keep V2 on the same persistence/instance-namespacing path as legacy
+		// workflows. Previously V2 only emitted an event, so its documents were
+		// never made available to the adapter's durable workflow store.
+		_ = adapter.EmitPhaseUpdate(userID, mapV2StateToV1(state))
+		if state != nil && state.Status != v2.StatusActive {
+			h.workflowV2Adapters.Delete(userID)
+		}
+		return
+	}
 	h.emitWorkflowV2PhaseUpdateEvent(state)
 }
 
@@ -960,7 +989,11 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 	if h.app == nil || state == nil {
 		return
 	}
-	h.emitWorkflowV2PhaseUpdateEvent(state)
+	if adapter := h.workflowV2GUIAdapter(userID); adapter != nil {
+		_ = adapter.EmitPhaseUpdate(userID, mapV2StateToV1(state))
+	} else {
+		h.emitWorkflowV2PhaseUpdateEvent(state)
+	}
 
 	// Also emit suggest_maximize for desktop panel to auto-expand.
 	// But NOT when the active phase is waiting for form input — there's no
@@ -979,6 +1012,10 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
 			"event_scope_id": h.app.getEventScopeID(state.UserID),
 		})
+		// The per-owner adapter retains instance metadata for persistence. Once
+		// the workflow is terminal, release it so a later task cannot inherit
+		// stale state and long-running IM sessions do not retain adapters forever.
+		h.workflowV2Adapters.Delete(userID)
 	}
 }
 
@@ -1488,6 +1525,13 @@ func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 			workflowID = state.ID
 		}
 	}
+	if adapter := h.workflowV2GUIAdapter(userID); adapter != nil {
+		// Persist before publishing the UI update. This is intentionally shared
+		// with the legacy path so a completed V2 phase always has a durable
+		// Markdown representation in addition to its authoritative SQLite output.
+		_ = adapter.EmitDocUpdate(userID, phaseID, content)
+		return
+	}
 	emitWorkflowV2Event(h.app, "workflow:doc_update", map[string]interface{}{
 		"phase_id":       phaseID,
 		"content":        content,
@@ -1495,6 +1539,29 @@ func (h *IMMessageHandler) emitDocUpdateV2(userID, phaseID, content string) {
 		"workflow_id":    workflowID,
 		"event_scope_id": h.app.getEventScopeID(userID),
 	})
+}
+
+func (h *IMMessageHandler) workflowV2GUIAdapter(userID string) *GUIWorkflowAdapter {
+	if h == nil || h.app == nil || h.app.workflowEngine == nil {
+		return nil
+	}
+	engine := h.app.workflowEngine
+	if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+		return adapter
+	}
+	// V2 workflows bypass the legacy engine's normal start path. Keep an
+	// adapter dedicated to each workflow owner instead of replacing another
+	// host callback or sharing mutable instance state between users.
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	if adapter, ok := h.workflowV2Adapters.Load(userID); ok {
+		return adapter.(*GUIWorkflowAdapter)
+	}
+	adapter := NewGUIWorkflowAdapter(h.app, engine)
+	actual, _ := h.workflowV2Adapters.LoadOrStore(userID, adapter)
+	return actual.(*GUIWorkflowAdapter)
 }
 
 // cancelWorkflowV2 cancels any active V2 workflow for the user.

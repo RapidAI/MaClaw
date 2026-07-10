@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
+import '../../core/platform/mobile_permission_evidence.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
@@ -18,6 +19,9 @@ final documentsControllerProvider =
     AsyncNotifierProvider<DocumentsController, DocumentsState>(
   DocumentsController.new,
 );
+
+final documentPermissionEvidenceProvider =
+    StateProvider<String?>((ref) => null);
 
 final documentDraftHistoryProvider =
     AsyncNotifierProvider<DocumentDraftHistoryController, List<DocumentDraft>>(
@@ -374,20 +378,43 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   Future<void> pickAndUploadDocument() async {
-    final picked = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: mobileDocumentImportExtensions,
-    );
-    final path = picked?.files.single.path;
-    if (path == null || path.isEmpty) return;
-    await uploadSharedDocument(path);
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: mobileDocumentImportExtensions,
+      );
+      final path = picked?.files.single.path;
+      if (path == null || path.isEmpty) return;
+      ref.read(documentPermissionEvidenceProvider.notifier).state =
+          mobilePermissionGrantEvidence('media');
+      await uploadSharedDocument(path);
+    } on Object {
+      _setImportError('无法打开文件选择器，请检查文件权限后重试。');
+    }
   }
 
   Future<void> pickImageAndUploadDocument(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(source: source);
-    final path = picked?.path;
-    if (path == null || path.isEmpty) return;
-    await uploadSharedDocument(path);
+    try {
+      final picked = await ImagePicker().pickImage(source: source);
+      final path = picked?.path;
+      if (path == null || path.isEmpty) return;
+      ref.read(documentPermissionEvidenceProvider.notifier).state =
+          mobilePermissionGrantEvidence(
+        source == ImageSource.camera ? 'camera' : 'media',
+      );
+      await uploadSharedDocument(path);
+    } on Object {
+      _setImportError(
+        source == ImageSource.camera
+            ? '无法打开相机，请检查相机权限后重试。'
+            : '无法打开相册，请检查照片权限后重试。',
+      );
+    }
+  }
+
+  void _setImportError(String message) {
+    final current = state.valueOrNull ?? const DocumentsState();
+    state = AsyncData(current.copyWith(operationError: message));
   }
 
   Future<void> uploadSharedDocument(String path) async {
@@ -614,13 +641,31 @@ class DocumentsState {
   final DocumentExportJob? exportJob;
   final MobileDocumentUploadTask? uploadTask;
   final String? lastUploadPath;
+  final String? operationError;
 
   const DocumentsState({
     this.draft,
     this.exportJob,
     this.uploadTask,
     this.lastUploadPath,
+    this.operationError,
   });
+
+  DocumentsState copyWith({
+    DocumentDraft? draft,
+    DocumentExportJob? exportJob,
+    MobileDocumentUploadTask? uploadTask,
+    String? lastUploadPath,
+    String? operationError,
+  }) {
+    return DocumentsState(
+      draft: draft ?? this.draft,
+      exportJob: exportJob ?? this.exportJob,
+      uploadTask: uploadTask ?? this.uploadTask,
+      lastUploadPath: lastUploadPath ?? this.lastUploadPath,
+      operationError: operationError,
+    );
+  }
 
   bool get canRetryLastUpload =>
       uploadTask?.status == 'failed' && (lastUploadPath?.isNotEmpty ?? false);

@@ -12,6 +12,7 @@ import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
 import 'digital_employee.dart';
+import 'digital_employee_chat_screen.dart';
 import 'digital_employees_controller.dart';
 
 typedef DigitalEmployeeResultTextAction = Future<void> Function(String text);
@@ -478,91 +479,100 @@ class _DigitalEmployeeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                CircleAvatar(
-                  backgroundColor: employee.online
-                      ? scheme.secondaryContainer
-                      : scheme.surfaceContainerHighest,
-                  child: Icon(
-                    employee.online
-                        ? Icons.smart_toy_outlined
-                        : Icons.cloud_off,
-                    color: employee.online
-                        ? scheme.onSecondaryContainer
-                        : scheme.onSurfaceVariant,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => DigitalEmployeeChatScreen(employee: employee),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: employee.online
+                        ? scheme.secondaryContainer
+                        : scheme.surfaceContainerHighest,
+                    child: Icon(
+                      employee.online
+                          ? Icons.smart_toy_outlined
+                          : Icons.cloud_off,
+                      color: employee.online
+                          ? scheme.onSecondaryContainer
+                          : scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        employee.name,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      Text(
-                        employee.machineId,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
-                      ),
-                    ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          employee.name,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        Text(
+                          employee.machineId,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                _StatusChip(online: employee.online),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(employee.skillDescription),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _EmployeeInfoChip(
-                  icon: Icons.security_outlined,
-                  label: employee.accessPolicyLabel,
-                ),
-                _EmployeeInfoChip(
-                  icon: Icons.memory_outlined,
-                  label: employee.runtimeLabel,
-                  emphasized: employee.runtimeMissing,
-                ),
-                _EmployeeInfoChip(
-                  icon: Icons.power_settings_new_outlined,
-                  label: employee.residencyLabel,
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: _TaskButton(employee: employee),
-                ),
-                const SizedBox(width: 10),
-                IconButton.outlined(
-                  tooltip: '分析日志/输出',
-                  onPressed: employee.canSubmitTask
-                      ? () => _TaskButton.showTaskSheet(
-                            context,
-                            employee,
-                            initialPrompt:
-                                '请读取并分析远程服务器/电脑最近的后台会话输出和关键日志，重点说明异常、影响范围、排查依据和建议命令。高风险命令只给草案，不要自动执行。',
-                          )
-                      : null,
-                  icon: const Icon(Icons.plagiarism_outlined),
-                ),
-              ],
-            ),
-          ],
+                  _StatusChip(online: employee.online),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(employee.skillDescription),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _EmployeeInfoChip(
+                    icon: Icons.security_outlined,
+                    label: employee.accessPolicyLabel,
+                  ),
+                  _EmployeeInfoChip(
+                    icon: Icons.memory_outlined,
+                    label: employee.runtimeLabel,
+                    emphasized: employee.runtimeMissing,
+                  ),
+                  _EmployeeInfoChip(
+                    icon: Icons.power_settings_new_outlined,
+                    label: employee.residencyLabel,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _TaskButton(employee: employee),
+                  ),
+                  const SizedBox(width: 10),
+                  IconButton.outlined(
+                    tooltip: '分析日志/输出',
+                    onPressed: employee.canSubmitTask
+                        ? () => _TaskButton.showTaskSheet(
+                              context,
+                              employee,
+                              initialPrompt:
+                                  '请读取并分析远程服务器/电脑最近的后台会话输出和关键日志，重点说明异常、影响范围、排查依据和建议命令。高风险命令只给草案，不要自动执行。',
+                            )
+                        : null,
+                    icon: const Icon(Icons.plagiarism_outlined),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

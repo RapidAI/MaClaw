@@ -240,19 +240,34 @@ func (m *StateMachine) HandleInput(userID, text string) (*HandleResult, error) {
 			m.mu.Unlock()
 			return result, err
 		case "modify":
+			previous := snapshotWorkflowState(state)
 			phase.Status = PhaseRunning
 			phase.Output = "" // clear previous output
-			m.store.Save(state)
+			if err := m.store.Save(state); err != nil {
+				*state = previous
+				m.mu.Unlock()
+				return nil, fmt.Errorf("save revised workflow state: %w", err)
+			}
 			m.mu.Unlock()
 			return &HandleResult{Action: ActionModify, Phase: phase, ModifyHint: text, State: state}, nil
 		case "cancel":
+			previous := snapshotWorkflowState(state)
 			state.Status = StatusCancelled
-			m.store.Save(state)
+			if err := m.store.Save(state); err != nil {
+				*state = previous
+				m.mu.Unlock()
+				return nil, fmt.Errorf("save cancelled workflow state: %w", err)
+			}
 			m.mu.Unlock()
 			return &HandleResult{Action: ActionCancelled, State: state}, nil
 		case "cancel_execute":
+			previous := snapshotWorkflowState(state)
 			state.Status = StatusCancelled
-			m.store.Save(state)
+			if err := m.store.Save(state); err != nil {
+				*state = previous
+				m.mu.Unlock()
+				return nil, fmt.Errorf("save cancelled workflow state: %w", err)
+			}
 			m.mu.Unlock()
 			return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
 		default:
@@ -489,6 +504,8 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	if phase == nil {
 		return fmt.Errorf("no active phase")
 	}
+	previous := *state
+	previous.Phases = append([]Phase(nil), state.Phases...)
 	sanitizedOutput := SanitizePhaseOutputWithKind(phase.ID, phase.Kind, output)
 	if err := validatePhaseOutputForCompletion(state.Type, phase.ID, sanitizedOutput); err != nil {
 		if phase.NeedsConfirm {
@@ -515,7 +532,11 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 		}
 	}
 	state.UpdatedAt = time.Now()
-	return m.store.Save(state)
+	if err := m.store.Save(state); err != nil {
+		*state = previous
+		return err
+	}
+	return nil
 }
 
 func validatePhaseOutputForCompletion(workflowType, phaseID, output string) error {
@@ -1065,24 +1086,37 @@ func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback 
 
 	case "cancel":
 		// User cancels the workflow.
+		previous := *state
 		state.Status = StatusCancelled
 		state.UpdatedAt = time.Now()
-		m.store.Save(state)
+		if err := m.store.Save(state); err != nil {
+			*state = previous
+			return nil, fmt.Errorf("save cancelled workflow state: %w", err)
+		}
 		return &HandleResult{Action: ActionCancelled, State: state}, nil
 
 	case "switch_task":
 		// Cancel workflow so caller can re-route the message.
+		previous := *state
 		state.Status = StatusCancelled
 		state.UpdatedAt = time.Now()
-		m.store.Save(state)
+		if err := m.store.Save(state); err != nil {
+			*state = previous
+			return nil, fmt.Errorf("save cancelled workflow state: %w", err)
+		}
 		return &HandleResult{Action: ActionCancelAndExecute, State: state}, nil
 
 	default:
 		// "supplement", "other", or anything else — reopen phase for revision.
+		previous := *state
+		previous.Phases = append([]Phase(nil), state.Phases...)
 		phase.Status = PhaseRunning
 		phase.Output = "" // clear previous output for re-generation
 		state.UpdatedAt = time.Now()
-		m.store.Save(state)
+		if err := m.store.Save(state); err != nil {
+			*state = previous
+			return nil, fmt.Errorf("save revised workflow state: %w", err)
+		}
 		return &HandleResult{Action: ActionModify, Phase: phase, ModifyHint: feedback, State: state}, nil
 	}
 }
@@ -1093,6 +1127,7 @@ func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback 
 // Rolls back in-memory mutations if store.Save fails, so the returned
 // HandleResult always references persisted state.
 func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error) {
+	previous := snapshotWorkflowState(state)
 	phase := state.ActivePhase()
 	if phase != nil && phase.Status != PhaseSkipped {
 		phase.Status = PhaseCompleted
@@ -1104,11 +1139,7 @@ func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error
 		state.Status = StatusCompleted
 		state.UpdatedAt = time.Now()
 		if err := m.store.Save(state); err != nil {
-			state.CurrentPhase--
-			state.Status = StatusActive
-			if phase != nil && phase.Status != PhaseSkipped {
-				phase.Status = PhaseWaitingConfirm
-			}
+			*state = previous
 			return nil, fmt.Errorf("save workflow state: %w", err)
 		}
 		return &HandleResult{Action: ActionConfirmed, State: state}, nil
@@ -1119,14 +1150,19 @@ func (m *StateMachine) advanceLocked(state *WorkflowState) (*HandleResult, error
 	next.Status = PhaseRunning
 	state.UpdatedAt = time.Now()
 	if err := m.store.Save(state); err != nil {
-		state.CurrentPhase--
-		next.Status = PhasePending
-		if phase != nil && phase.Status != PhaseSkipped {
-			phase.Status = PhaseWaitingConfirm
-		}
+		*state = previous
 		return nil, fmt.Errorf("save workflow state: %w", err)
 	}
 	return &HandleResult{Action: ActionRunPhase, Phase: next, State: state}, nil
+}
+
+// snapshotWorkflowState copies the fields mutated during a state transition.
+// WorkflowStore implementations used in tests may retain pointers, so rollback
+// must restore both the state header and the phase slice after a failed write.
+func snapshotWorkflowState(state *WorkflowState) WorkflowState {
+	snapshot := *state
+	snapshot.Phases = append([]Phase(nil), state.Phases...)
+	return snapshot
 }
 
 // --- Helpers ---

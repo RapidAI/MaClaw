@@ -492,6 +492,48 @@ void main() {
     expect(updated.lastActivityAt, DateTime.utc(2026, 7, 6, 9, 4));
   });
 
+  test('backend SSH realtime events ignore stale output sequences', () async {
+    final container = ProviderContainer(
+      overrides: [apiClientProvider.overrideWithValue(null)],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(backendSshSessionsProvider.future);
+    final controller = container.read(backendSshSessionsProvider.notifier);
+    await controller.applyRealtimeEvent(
+      const MobileRealtimeEvent(
+        type: 'ssh_session',
+        payload: {
+          'session_id': 'mobssh-order',
+          'status': 'connected',
+          'state': 'running',
+          'output_chunk': 'new output\n',
+          'output_seq': 12,
+        },
+      ),
+    );
+    await controller.applyRealtimeEvent(
+      const MobileRealtimeEvent(
+        type: 'ssh_session',
+        payload: {
+          'session_id': 'mobssh-order',
+          'status': 'disconnected',
+          'state': 'disconnect',
+          'output_chunk': 'stale output\n',
+          'output_seq': 11,
+        },
+      ),
+    );
+
+    final session = container
+        .read(backendSshSessionsProvider)
+        .valueOrNull!['mobssh-order']!;
+    expect(session.outputSeq, 12);
+    expect(session.outputChunk, 'new output\n');
+    expect(session.status, 'connected');
+    expect(session.state, 'running');
+  });
+
   test('backend SSH abnormal realtime events notify once and redact details',
       () async {
     final notifications = _RecordingNotificationService();
@@ -662,6 +704,57 @@ void main() {
     expect(tasks.single.status, 'completed');
     expect(tasks.single.logTail, 'done');
     expect(tasks.single.exitCode, 0);
+  });
+
+  test('backend SSH file operation realtime events update session cache',
+      () async {
+    final container = ProviderContainer(
+      overrides: [apiClientProvider.overrideWithValue(null)],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(backendSshFileOperationsProvider.future);
+    await container
+        .read(backendSshFileOperationsProvider.notifier)
+        .applyRealtimeEvent(
+          const MobileRealtimeEvent(
+            type: 'ssh_file_operation',
+            payload: {
+              'operation_id': 'op-1',
+              'session_id': 'mobssh-1',
+              'action': 'download',
+              'status': 'running',
+              'remote_path': '/var/log/app.log',
+            },
+          ),
+        );
+    final operations = container
+        .read(backendSshFileOperationsProvider)
+        .valueOrNull!['mobssh-1']!;
+    expect(operations, hasLength(1));
+    expect(operations.single.operationId, 'op-1');
+    expect(operations.single.action, 'download');
+    expect(operations.single.status, 'running');
+
+    await container
+        .read(backendSshFileOperationsProvider.notifier)
+        .applyRealtimeEvent(
+          const MobileRealtimeEvent(
+            type: 'ssh_file_operation',
+            payload: {
+              'operation_id': 'op-1',
+              'session_id': 'mobssh-1',
+              'status': 'completed',
+              'bytes_transferred': 128,
+            },
+          ),
+        );
+    final updated = container
+        .read(backendSshFileOperationsProvider)
+        .valueOrNull!['mobssh-1']!;
+    expect(updated, hasLength(1));
+    expect(updated.single.status, 'completed');
+    expect(updated.single.bytesTransferred, 128);
   });
 
   test('server command history redacts labels but preserves executable command',

@@ -886,6 +886,10 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				// refreshFileSnapshot also sets filesRead[key]=true, which allows
 				// subsequent write_file to the same file without read_file first.
 				c.refreshFileSnapshot(p)
+				// Surface successful file changes immediately. Waiting until the whole
+				// subagent task completes leaves the source preview blank while the
+				// agent is still running its remaining checks.
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, created, true)
 			}
 			return result
 		}
@@ -906,6 +910,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, false, true)
 			}
 			return result
 		}
@@ -926,6 +931,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, false, true)
 			}
 			return result
 		}
@@ -934,8 +940,16 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		bashArgs := c.withDefaultWorkingDir(args)
 		if command, _ := bashArgs["command"].(string); command != "" {
 			if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-				c.trackCommandResult(bashArgs, msg, false)
-				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+				workingDir, _ := bashArgs["working_dir"].(string)
+				if c.subagent != nil && c.subagent.scopeApproval != nil {
+					msg = c.subagent.scopeApproval.checkHighRisk("bash", command, c.projectPath(), workingDir, msg)
+				}
+				if msg == "" {
+					// The user approved this guarded command; continue to the executor.
+				} else {
+					c.trackCommandResult(bashArgs, msg, false)
+					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+				}
 			}
 		}
 		if wd, _ := bashArgs["working_dir"].(string); wd != "" {
@@ -1983,7 +1997,7 @@ func rejectWindowsShellCompatibilityCommand(command string) string {
 	if !hasWindowsShellCompatibilitySyntax(command) {
 		return ""
 	}
-	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax such as `mkdir -p` or `&&`. Use PowerShell syntax with `;` separators and set working_dir to the command directory.", command)
+	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax such as `mkdir -p`. Use PowerShell syntax and set working_dir to the command directory.", command)
 }
 
 func hasWindowsShellCompatibilitySyntax(command string) bool {
@@ -1993,9 +2007,6 @@ func hasWindowsShellCompatibilitySyntax(command string) bool {
 		token := strings.ToLower(normalizeShellCommandToken(fields[i]))
 		if token == "" {
 			continue
-		}
-		if token == "&&" {
-			return true
 		}
 		if isShellCommandStartMarker(token) {
 			commandPosition = true
@@ -9526,6 +9537,11 @@ func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
 
 // codeSessionID returns the active code session ID for preview routing.
 func (c *codingSubAgentCallbacks) codeSessionID() string {
+	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
+		if sessionID := strings.TrimSpace(c.subagent.loopCtx.codeSessionID); sessionID != "" {
+			return sessionID
+		}
+	}
 	return "subagent-workflow"
 }
 
@@ -10620,6 +10636,9 @@ func RunTaskWithSubAgent(
 	if handler != nil && handler.app != nil {
 		fullAccess := handler.app.isSubAgentFullAccessGranted()
 		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress), fullAccess)
+		sa.scopeApproval.setAuditCallback(func(req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
+			recordScopeApprovalAudit(handler, "", req, decision, source)
+		})
 	}
 
 	// Wire knowledge stores for experience recall and project doc lookup.

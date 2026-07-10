@@ -42,6 +42,11 @@ bash(command="pip install pymupdf && python -c \"import fitz; doc=fitz.open(r'�
 - 【严禁】说"无法读取文件"或"无法访问本地文件"——你有 bash 工具可以用 Python 解析文档
 `
 
+const (
+	fullDependencyRuneBudget      = 30000
+	fullDependencyTotalRuneBudget = 60000
+)
+
 // BuildPhasePrompt constructs the system prompt injection for the current phase.
 func BuildPhasePrompt(state *WorkflowState) string {
 	if state == nil {
@@ -71,15 +76,11 @@ func BuildPhasePrompt(state *WorkflowState) string {
 
 	// Previous phase outputs — strategy depends on dependency declaration.
 	//
-	// DependsOnFull phases: the current phase needs detailed content from these
-	// prior phases. Instead of injecting the content inline (which blows up
-	// context for large documents like 50-page scripts), we inject a FILE PATH
-	// REFERENCE. The phase output is already persisted to disk by the workflow
-	// adapter. The LLM reads it on-demand via read_file during execution.
-	//
-	// This design treats prior phase outputs as working data (on disk), not as
-	// static prompt instructions. It scales to any document size — 5 pages or
-	// 500 pages use the same execution path.
+	// DependsOnFull phases: the current phase has a hard data dependency on the
+	// prior output. Inject that authoritative state directly. Do not make the
+	// model discover an alleged file on disk: phase output is guaranteed by the
+	// state machine, whereas UI delivery and project-file persistence are
+	// asynchronous integration concerns. This keeps phase handoff deterministic.
 	//
 	// Non-DependsOnFull phases: inject a short 500-rune summary (enough for
 	// context awareness without polluting the prompt).
@@ -87,6 +88,18 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	for _, dep := range phase.DependsOnFull {
 		fullDepSet[dep] = true
 	}
+	// A declared full dependency is a correctness precondition. Do not silently
+	// fall back to generic project search or a partial summary when a prior phase
+	// was skipped, failed, or its output was not recorded.
+	missingDependencies := MissingFullDependencies(state)
+	if len(missingDependencies) > 0 {
+		sort.Strings(missingDependencies)
+		sb.WriteString("## 前序产出物不可用\n\n")
+		sb.WriteString(fmt.Sprintf("本阶段依赖以下已确认的完整产出物，但当前工作流状态中未找到：%s。\n", strings.Join(missingDependencies, "、")))
+		sb.WriteString("不要搜索项目目录、PDF、记忆或其他交付文件来猜测内容；请停止生成并要求恢复或重新执行缺失的前序阶段。\n")
+		return sb.String()
+	}
+	remainingFullBudget := fullDependencyTotalRuneBudget
 	hasPrevOutputs := false
 	for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
 		if state.Phases[i].Output != "" {
@@ -103,30 +116,26 @@ func BuildPhasePrompt(state *WorkflowState) string {
 			}
 			output := stripBase64DataURLs(p.Output)
 			if fullDepSet[p.ID] {
-				// Full dependency: inject file reference + brief structure preview.
-				// The LLM must read_file to get the full content during execution.
+				// Full dependency: retain a deliberately generous, deterministic
+				// context budget. The remaining text is explicitly marked as a
+				// transport limit rather than directing the model to search for files.
 				outputRunes := []rune(output)
 				runeCount := len(outputRunes)
-				// Provide a structure preview so LLM understands the format.
-				previewBudget := 2000
-				if previewBudget > runeCount {
-					previewBudget = runeCount
+				fullBudget := fullDependencyRuneBudget
+				if fullBudget > remainingFullBudget {
+					fullBudget = remainingFullBudget
 				}
-				preview := string(outputRunes[:previewBudget])
-				truncated := runeCount > previewBudget
+				if fullBudget > runeCount {
+					fullBudget = runeCount
+				}
+				remainingFullBudget -= fullBudget
+				fullOutput := string(outputRunes[:fullBudget])
+				truncated := runeCount > fullBudget
 
 				if !truncated {
-					// Content fits entirely in preview — inject inline, no read_file needed.
-					sb.WriteString(fmt.Sprintf("### %s（完整，%d字）\n%s\n\n", p.Name, runeCount, preview))
+					sb.WriteString(fmt.Sprintf("### %s（完整，%d字）\n%s\n\n", p.Name, runeCount, fullOutput))
 				} else {
-					// Content exceeds preview budget — inject preview + read_file instruction.
-					sb.WriteString(fmt.Sprintf("### %s（%d字，需读取完整文件）\n", p.Name, runeCount))
-					sb.WriteString(fmt.Sprintf("以下为前 %d 字结构预览：\n%s\n...(预览截断)\n\n", previewBudget, preview))
-					sb.WriteString(fmt.Sprintf("⚠️ 执行本阶段时，必须先使用 read_file 读取「%s」的完整内容。", p.Name))
-					if state.ProjectPath != "" && state.ProjectPath != "." {
-						sb.WriteString(fmt.Sprintf("\n文件位置：在 %s/.maclaw/workflow/ 目录下查找对应 .md 文件（使用 list_directory 确认文件名）。", state.ProjectPath))
-					}
-					sb.WriteString("\n逐页/逐段读取后，再按内容逐个生成产物。不要仅凭上方预览工作。\n\n")
+					sb.WriteString(fmt.Sprintf("### %s（%d字；当前上下文载入前%d字）\n%s\n...(受上下文传输上限截断；不得搜索或转换其他交付文件来替代该阶段产物)\n\n", p.Name, runeCount, fullBudget, fullOutput))
 				}
 			} else {
 				// Default: truncate to 500 runes summary
@@ -157,6 +166,38 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		}
 		sb.WriteString(RenderFormDataFields(phase, true))
 		sb.WriteString("\n")
+	}
+
+	// Keep information collected by earlier form phases available to every later
+	// phase. FormData belongs to the phase that collected it, so looking only at
+	// the active phase loses inputs such as a PPT's topic, audience, page count,
+	// and style as soon as the workflow advances. The rendered values preserve
+	// the same sensitive-field masking as active-phase form data.
+	if state.CurrentPhase > 0 {
+		hasPriorFormData := false
+		for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+			if len(state.Phases[i].FormData) > 0 {
+				hasPriorFormData = true
+				break
+			}
+		}
+		if hasPriorFormData {
+			sb.WriteString("## ⚠️ 工作流已收集的结构化信息（必须继承，禁止重复询问）\n\n")
+			sb.WriteString("以下信息已在前序阶段由用户确认；请直接继承并使用，除非用户明确要求修改。\n\n")
+			for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+				prior := &state.Phases[i]
+				if len(prior.FormData) == 0 {
+					continue
+				}
+				name := strings.TrimSpace(prior.Name)
+				if name == "" {
+					name = prior.ID
+				}
+				sb.WriteString(fmt.Sprintf("### %s\n", name))
+				sb.WriteString(RenderFormDataFields(prior, true))
+				sb.WriteString("\n")
+			}
+		}
 	}
 
 	// Inject supplementary documents as reference context for LLM generation.
@@ -221,6 +262,35 @@ func BuildPhasePrompt(state *WorkflowState) string {
 	sb.WriteString(phaseInstruction(WorkflowType(state.Type), phase.ID))
 
 	return sb.String()
+}
+
+// MissingFullDependencies returns the hard dependencies of the active phase
+// that have no recorded prior output. Callers must block execution when this is
+// non-empty; generic project search is not a substitute for workflow state.
+func MissingFullDependencies(state *WorkflowState) []string {
+	if state == nil || state.ActivePhase() == nil {
+		return nil
+	}
+	phase := state.ActivePhase()
+	missing := make([]string, 0, len(phase.DependsOnFull))
+	for _, dep := range phase.DependsOnFull {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		found := false
+		for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+			if state.Phases[i].ID == dep && strings.TrimSpace(state.Phases[i].Output) != "" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, dep)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // RenderFormDataFields renders the FormData key-value pairs as a bullet list.

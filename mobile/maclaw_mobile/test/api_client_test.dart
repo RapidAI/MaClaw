@@ -10,6 +10,42 @@ import 'package:maclaw_mobile/features/documents/document_draft.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('assistant follow-up posts recent conversation context to Hub',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'answer': '继续处理上一轮问题。',
+        'citations': const [],
+        'llm_mode': 'maclaw_official',
+        'llm_request_id': 'req-follow-up',
+      }),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final answer = await client.searchWithContext(
+      '继续处理',
+      context: const [
+        'user: 上一轮问题',
+        'assistant: 上一轮回答',
+      ],
+    );
+
+    expect(answer.llmRequestId, 'req-follow-up');
+    expect(adapter.requests.single.path, '/api/mobile/search');
+    expect(adapter.requests.single.data, {
+      'query': '继续处理',
+      'context': [
+        'user: 上一轮问题',
+        'assistant: 上一轮回答',
+      ],
+    });
+  });
+
   test('desktop GUI QR LLM authorization posts to discovered Hub', () async {
     FlutterSecureStorage.setMockInitialValues({});
     const qrPayload =
@@ -66,6 +102,53 @@ void main() {
     expect(bootstrap.connection.hubUrl, 'https://tenant-a.maclaw.top');
     expect(bootstrap.llmAccess.desktopQrDelegated, isTrue);
     expect(bootstrap.llmAccess.authorizationId, 'qr-auth-1');
+  });
+
+  test('third-party LLM authorization revoke uses the discovered Hub',
+      () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final adapter = _RecordingApiAdapter(
+      (request) => _jsonResponse({
+        'status': 'revoked',
+        'bootstrap': {
+          'user': {
+            'user_id': 'user-1',
+            'email': 'phone:13800000000',
+            'tenant_id': 'tenant-1',
+          },
+          'connection': {
+            'selected_hubcenter_url': 'https://hubs.maclaw.top',
+            'hub_url': 'https://tenant-a.maclaw.top',
+            'hub_id': 'hub-a',
+            'tenant_id': 'tenant-1',
+          },
+          'llm_access': {
+            'mode': 'maclaw_official',
+            'status': 'available',
+            'credits_account': 'phone:13800000000',
+          },
+          'services': {},
+          'features': {},
+          'limits': {},
+        },
+      }),
+    );
+    final client = ApiClient(
+      vault: const SecureVault(),
+      dio: Dio()..httpClientAdapter = adapter,
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    final bootstrap = await client.revokeThirdPartyLlmAuthorization();
+
+    expect(adapter.requests, hasLength(1));
+    expect(adapter.requests.single.method, 'DELETE');
+    expect(
+      adapter.requests.single.path,
+      '/api/mobile/llm/desktop-qr-authorizations',
+    );
+    expect(bootstrap.llmAccess.official, isTrue);
+    expect(bootstrap.llmAccess.desktopQrDelegated, isFalse);
   });
 
   test('desktop GUI QR LLM authorization rejects non MaClaw GUI payloads',

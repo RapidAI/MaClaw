@@ -9,6 +9,9 @@ func softmaxExpSumAVX2(scores *float32, n int, max, a, b, neg88 float32) float32
 func softmaxHMaxAVX2(scores *float32, n int) float32
 
 //go:noescape
+func softmaxHMaxDualAVX2(sc0, sc1 *float32, n int, out *[2]float32)
+
+//go:noescape
 func softmaxExpSumDualAVX2(sc0, sc1 *float32, n int, max0, max1, a, b, neg88 float32, out *[2]float32)
 
 func softmaxInplaceInvASM(scores []float32) float32 {
@@ -54,8 +57,9 @@ func softmaxInplaceInvDualASM(sc0, sc1 []float32) (inv0, inv1 float32) {
 		return softmaxInplaceInvScalar(sc0), softmaxInplaceInvScalar(sc1)
 	}
 	body := n &^ 7
-	max0 := softmaxHMaxAVX2(&sc0[0], body)
-	max1 := softmaxHMaxAVX2(&sc1[0], body)
+	var maxs [2]float32
+	softmaxHMaxDualAVX2(&sc0[0], &sc1[0], body, &maxs)
+	max0, max1 := maxs[0], maxs[1]
 	for i := body; i < n; i++ {
 		if sc0[i] > max0 {
 			max0 = sc0[i]

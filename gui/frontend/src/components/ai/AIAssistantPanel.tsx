@@ -26,6 +26,7 @@ import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
+import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
@@ -318,6 +319,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [saveTaskName, setSaveTaskName] = useState("");
     const [savingTask, setSavingTask] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
+    const [permissionMode, setPermissionMode] = useState<AssistantPermissionMode>("request");
     const [workflowStartingLabel, setWorkflowStartingLabel] = useState<string | null>(null);
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
@@ -340,6 +342,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         LoadConfig().then((cfg) => {
             setWorkflowEnabled(cfg?.workflow_enabled === true);
+            setPermissionMode(cfg?.subagent_full_access === true ? "full" : "request");
         }).catch(() => { /* ignore */ });
         const off = EventsOn("config-changed", (cfg: any) => {
             if (cfg && typeof cfg.workflow_enabled === "boolean") {
@@ -347,9 +350,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else if (cfg && cfg.workflow_enabled === undefined) {
                 setWorkflowEnabled(false);
             }
+            if (cfg && typeof cfg.subagent_full_access === "boolean") {
+                setPermissionMode(cfg.subagent_full_access ? "full" : "request");
+            }
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
+    const handlePermissionModeChange = useCallback((mode: AssistantPermissionMode) => {
+        const next = mode === "full" ? "full" : "request";
+        const previous = permissionMode;
+        setPermissionMode(next);
+        void PatchConfigFields({ subagent_full_access: next === "full" }).then((saved) => {
+            setPermissionMode(saved?.subagent_full_access === true ? "full" : "request");
+        }).catch(() => {
+            setPermissionMode(previous);
+        });
+    }, [permissionMode]);
     const handleToggleWorkflow = useCallback(() => {
         setWorkflowEnabled(prev => {
             const next = !prev;
@@ -2123,7 +2139,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         voiceInput,
     });
     const handleSend = useCallback(async () => {
-        if (sendInFlightRef.current) return;
+        // Prevent duplicate submits before the session reports busy, but keep
+        // the type-ahead queue usable while an existing session is running.
+        if (sendInFlightRef.current && !submitLocked && !queueEditDraftActive) return;
         const rawInputValue = inputRef.current?.value ?? inputValue;
         const text = applyComposeActionToText(rawInputValue, composeAction);
         if (isBtwCommandText(text) && sendBtwMessage) {
@@ -2603,7 +2621,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Task", "本任务放行", "本任務放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Later", "以后放行", "以後放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
                             <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
                         </div>
                     </div>
@@ -2695,7 +2713,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 onFireSlashCommand: handleFireSlashCommand,
                                 onInsertTemplate: handleInsertTemplate,
                                 onPlusMenuAction: handlePlusMenuAction,
+                                onPermissionModeChange: handlePermissionModeChange,
                                 pendingAttachments,
+                                permissionMode,
                                 ready,
                                 recallHistory,
                                 rememberHistoryEdit,
@@ -2746,7 +2766,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         theme={t}
                     />
                 )}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (

@@ -23,6 +23,13 @@ import (
 // Prevents repeating the downgrade probe on subsequent requests for the same model.
 var maxOutputTokensCache sync.Map
 
+func streamHTTPStatusError(statusCode int, body []byte) error {
+	if statusCode <= 0 {
+		return nil
+	}
+	return &HTTPStatusError{StatusCode: statusCode, Body: append([]byte(nil), body...)}
+}
+
 // LoadMaxOutputTokensCache returns the cached output token limit for a model (if any).
 // Used by external packages (e.g. gui) that build request frames independently.
 func LoadMaxOutputTokensCache(modelKey string) (int, bool) {
@@ -159,7 +166,7 @@ func DoOpenAIRequestStreamWithReasoning(
 				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
 				compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
 				if len(compactMessages) == 0 {
-					return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+					return nil, streamHTTPStatusError(statusCode, body)
 				}
 				compactRetryAttempted = true
 				log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 %s", endpoint, upstreamModel, cfg.Model, traceFields)
@@ -175,7 +182,7 @@ func DoOpenAIRequestStreamWithReasoning(
 						return nil, fmt.Errorf("[%s] %w", endpoint, err)
 					}
 					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-					return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+					return nil, streamHTTPStatusError(statusCode, body)
 				}
 				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 			} else {
@@ -197,13 +204,13 @@ func DoOpenAIRequestStreamWithReasoning(
 					return nil, fmt.Errorf("[%s] %w", endpoint, err)
 				}
 				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-				return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+				return nil, streamHTTPStatusError(statusCode, body)
 			}
 			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 		}
 		if err != nil {
 			if statusCode != http.StatusOK {
-				return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+				return nil, streamHTTPStatusError(statusCode, body)
 			}
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}

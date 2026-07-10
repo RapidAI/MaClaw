@@ -88,6 +88,25 @@ func PackQKV128(dstQ, dstK, dstV, srcQ, srcK, srcV []float32, scale float32) {
 	Copy128(dstV, srcV)
 }
 
+// PackQKV4Heads128 packs all 4 heads for one frame (generic fallback).
+func PackQKV4Heads128(qDst, kDst, vDst, qkv []float32, nFrames, f int, scale float32) {
+	need := 4 * nFrames * 128
+	if nFrames <= 0 || f < 0 || f >= nFrames ||
+		len(qDst) < need || len(kDst) < need || len(vDst) < need || len(qkv) < 1536 {
+		return
+	}
+	const hidden = 512
+	for h := 0; h < 4; h++ {
+		hOff := h * 128
+		dstOff := (h*nFrames + f) * 128
+		PackQKV128(
+			qDst[dstOff:dstOff+128], kDst[dstOff:dstOff+128], vDst[dstOff:dstOff+128],
+			qkv[hOff:hOff+128], qkv[hidden+hOff:hidden+hOff+128], qkv[2*hidden+hOff:2*hidden+hOff+128],
+			scale,
+		)
+	}
+}
+
 func wsumBatched4Add128(o0, o1, o2, o3, v []float32, w0, w1, w2, w3 float32) {
 	for i := 0; i < 128; i++ {
 		vi := v[i]

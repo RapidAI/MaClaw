@@ -613,6 +613,11 @@ func isSubAgentTransientProviderError(text string) bool {
 		strings.Contains(lower, "openai") ||
 		strings.Contains(lower, "bigmodel")
 	if isSubAgentRateLimitError(lower) ||
+		// Hub entitlement state can briefly lag credits/account changes. Keep
+		// this retryable only through the orchestrator's bounded retry budget;
+		// a permanently unentitled account will still fail with a clear cause.
+		strings.Contains(lower, "llm_model_forbidden") ||
+		strings.Contains(lower, "no active model service entitlement") ||
 		strings.Contains(lower, "http 500") ||
 		strings.Contains(lower, "http 502") ||
 		strings.Contains(lower, "http 503") ||

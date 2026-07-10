@@ -7,6 +7,7 @@ import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
 import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand, type PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
+import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 // --- Data ---
 
@@ -388,6 +389,8 @@ export interface WelcomeComposerProps {
     onInsertTemplate?: (template: string) => void;
     onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     pendingAttachments: AttachmentInfo[];
+    permissionMode?: AssistantPermissionMode;
+    onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     ready: boolean;
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
@@ -543,6 +546,8 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     onInsertTemplate={cp.onInsertTemplate}
                     onPlusMenuAction={cp.onPlusMenuAction}
                     pendingAttachments={cp.pendingAttachments}
+                    permissionMode={cp.permissionMode}
+                    onPermissionModeChange={cp.onPermissionModeChange}
                     placeholderText={
                         getComposeActionPlaceholder(cp.composeAction, isZh)
                             || (isZh ? "描述你的需求，或直接问我任何问题..." : "Describe what you need, or ask me anything...")

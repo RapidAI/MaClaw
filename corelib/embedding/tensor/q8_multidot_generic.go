@@ -48,6 +48,29 @@ func q8DualMultiDot8T(out0, out1 *[8]float32, a []float32, t *Q8Tensor, row0, ro
 	q8DualMultiDot8(out0, out1, a, t.Data, row0, row1, nBlocks, K)
 }
 
+func q8TryDual8AccumN512(out, a []float32, t *Q8Tensor, m, n, nBlocks, K int, bn0, bn1 float32) bool {
+	return false
+}
+
+func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne, nBlocks int) bool {
+	return false
+}
+
+func q8TripleMultiDot4T(out *[12]float32, a []float32, t *Q8Tensor, row0, row1, row2, nBlocks, K int) {
+	var d8 [8]float32
+	var d4 [4]float32
+	q8DualMultiDot4T(&d8, a, t, row0, row1, nBlocks, K)
+	q8MultiDot4T(&d4, a, t, row2, nBlocks, K)
+	out[0], out[1], out[2], out[3] = d8[0], d8[1], d8[2], d8[3]
+	out[4], out[5], out[6], out[7] = d8[4], d8[5], d8[6], d8[7]
+	out[8], out[9], out[10], out[11] = d4[0], d4[1], d4[2], d4[3]
+}
+
+func q8TripleMultiDot8T(out0, out1 *[12]float32, a []float32, t *Q8Tensor, row0, row1, row2, nBlocks, K int) {
+	q8TripleMultiDot4T(out0, a[:4*K], t, row0, row1, row2, nBlocks, K)
+	q8TripleMultiDot4T(out1, a[4*K:8*K], t, row0, row1, row2, nBlocks, K)
+}
+
 func dotQ8RowDual(a []float32, data []byte, row0, row1, nBlocks int) (float32, float32) {
 	return DotQ8Row(a, data, row0, nBlocks), DotQ8Row(a, data, row1, nBlocks)
 }

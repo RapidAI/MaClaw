@@ -99,6 +99,19 @@ class SetupAndroidSigningTest(unittest.TestCase):
             (root / "android" / "key.properties").read_text(encoding="utf-8"),
         )
 
+    def test_write_key_properties_normalizes_windows_store_path(self) -> None:
+        root = self.make_root()
+        config, errors = setup_android_signing.config_from_env(
+            self.env(r"D:\qa\maclaw-mobile.jks"),
+        )
+
+        self.assertEqual([], errors)
+        assert config is not None
+        setup_android_signing.write_key_properties(root, config)
+
+        text = (root / "android" / "key.properties").read_text(encoding="utf-8")
+        self.assertIn("storeFile=D:/qa/maclaw-mobile.jks", text)
+
     def test_main_writes_config_from_environment(self) -> None:
         root = self.make_root()
         (root / "android" / "release.jks").write_text("keystore", encoding="utf-8")

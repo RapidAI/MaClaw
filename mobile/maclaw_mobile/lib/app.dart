@@ -6,6 +6,7 @@ import 'core/api/mobile_bootstrap.dart';
 import 'core/api/mobile_credits.dart';
 import 'core/api/mobile_realtime_bridge.dart';
 import 'core/notifications/mobile_notification_service.dart';
+import 'core/network/mobile_network_recovery.dart';
 import 'core/security/mobile_redaction.dart';
 import 'core/settings/app_preferences.dart';
 import 'features/account/account_screen.dart';
@@ -19,10 +20,20 @@ import 'features/servers/servers_screen.dart';
 import 'shared/app_shell.dart';
 import 'shared/theme.dart';
 
-GoRouter mobileRouterForFeatures(MobileFeatures features) => GoRouter(
-      initialLocation: mobileInitialPathForFeatures(features),
+GoRouter mobileRouterForFeatures(
+  MobileFeatures features, {
+  String? initialPath,
+}) =>
+    GoRouter(
+      initialLocation: initialPath != null &&
+              mobilePathEnabledForFeatures(initialPath, features)
+          ? initialPath
+          : mobileInitialPathForFeatures(features),
       redirect: (context, state) {
         final path = state.uri.path;
+        if (initialPath == '/account' && path == '/assistant') {
+          return '/account';
+        }
         if (mobilePathEnabledForFeatures(path, features)) return null;
         return mobileInitialPathForFeatures(features);
       },
@@ -66,25 +77,7 @@ GoRouter mobileRouterForFeatures(MobileFeatures features) => GoRouter(
     );
 
 bool mobileLlmConfigured(MobileBootstrap? bootstrap) {
-  if (bootstrap == null) return false;
-  final status = bootstrap.llmAccess.status.toLowerCase().trim();
-  if (!_mobileLlmStatusAvailable(status)) {
-    return false;
-  }
-  if (bootstrap.llmAccess.official) {
-    return isTrustedPhoneCreditsAccount(bootstrap.llmAccess.creditsAccount);
-  }
-  if (bootstrap.llmAccess.desktopQrDelegated) {
-    return bootstrap.llmAccess.authorizationId.trim().isNotEmpty;
-  }
-  return false;
-}
-
-bool _mobileLlmStatusAvailable(String status) {
-  return switch (status) {
-    'available' || 'authorized' || 'active' || 'ready' || 'configured' => true,
-    _ => false,
-  };
+  return isMobileLlmConfigured(bootstrap);
 }
 
 String? mobileNotificationTargetPath(
@@ -126,6 +119,10 @@ String mobileNotificationRecoveryMessage(String payload, String? targetPath) {
       value.startsWith(mobileServerProfileNotificationPrefix)) {
     return '已打开任务提醒：请在远程页查看后台 SSH 会话或服务器档案';
   }
+  if (targetPath == '/assistant' &&
+      value.startsWith(mobileAssistantTaskNotificationPrefix)) {
+    return '已打开任务提醒：请在 AI 助手页查看长任务结果';
+  }
   return detail;
 }
 
@@ -135,13 +132,18 @@ class MaClawMobileApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider);
+    ref.watch(mobileNetworkRecoveryProvider);
+    ref.watch(mobileAppLifecycleRecoveryProvider);
     ref.watch(mobileRealtimeBridgeProvider);
     final preferences =
         ref.watch(appPreferencesProvider).valueOrNull ?? const AppPreferences();
     final routerConfig = session.maybeWhen(
       data: (state) {
         if (!state.authenticated) return _loginRouter;
-        return mobileRouterForFeatures(state.bootstrap!.features);
+        return mobileRouterForFeatures(
+          state.bootstrap!.features,
+          initialPath: mobileLlmConfigured(state.bootstrap) ? null : '/account',
+        );
       },
       orElse: () => _loadingRouter,
     );

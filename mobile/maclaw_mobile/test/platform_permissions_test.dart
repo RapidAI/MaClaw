@@ -1,8 +1,20 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:maclaw_mobile/core/platform/mobile_permission_evidence.dart';
 
 void main() {
+  test('permission evidence IDs are scoped, traceable, and non-sensitive', () {
+    final id = mobilePermissionGrantEvidence(
+      'Microphone permission',
+      now: DateTime.utc(2026, 7, 11, 1, 2, 3),
+    );
+
+    expect(id, startsWith('permission-grant:microphone-permission-'));
+    expect(id, isNot(contains('156')));
+    expect(id, isNot(contains('hub')));
+  });
+
   test('android manifest declares mobile capability permissions', () {
     final manifest =
         File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
@@ -15,6 +27,25 @@ void main() {
     expect(manifest, contains('android.permission.READ_MEDIA_VIDEO'));
     expect(manifest, contains('android.permission.READ_EXTERNAL_STORAGE'));
     expect(manifest, contains('android:maxSdkVersion="32"'));
+  });
+
+  test('notification initialization does not prompt before phone login', () {
+    final source = File(
+      'lib/core/notifications/mobile_notification_service.dart',
+    ).readAsStringSync();
+    final initializeStart = source.indexOf('Future<void> initialize()');
+    final nextMember = source.indexOf(
+      'MobileNotificationOpen? get latestOpenedNotification',
+      initializeStart,
+    );
+    expect(initializeStart, greaterThanOrEqualTo(0));
+    expect(nextMember, greaterThan(initializeStart));
+    final initializeBody = source.substring(initializeStart, nextMember);
+
+    expect(initializeBody, contains('requestAlertPermission: false'));
+    expect(initializeBody, contains('requestBadgePermission: false'));
+    expect(initializeBody, contains('requestSoundPermission: false'));
+    expect(initializeBody, isNot(contains('await requestPermissions()')));
   });
 
   test('android wrapper keeps official package, deep link, and share entries',
@@ -65,7 +96,9 @@ void main() {
     expect(plist, contains('<key>NSLocalNetworkUsageDescription</key>'));
     expect(
       plist,
-      contains('<string>用于发现 MaClaw 官方 Hub 并同步 GUI/agent 管理的后台 SSH 会话状态。</string>'),
+      contains(
+        '<string>用于发现 MaClaw 官方 Hub 并同步 GUI/agent 管理的后台 SSH 会话状态。</string>',
+      ),
     );
     expect(plist, isNot(contains('?/string>')));
     expect(plist, isNot(contains('鐢')));

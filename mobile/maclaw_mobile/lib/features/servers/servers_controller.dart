@@ -34,6 +34,12 @@ final backendSshTasksProvider = AsyncNotifierProvider<BackendSshTasksController,
   BackendSshTasksController.new,
 );
 
+final backendSshFileOperationsProvider = AsyncNotifierProvider<
+    BackendSshFileOperationsController,
+    Map<String, List<MobileBackendSSHFileOperation>>>(
+  BackendSshFileOperationsController.new,
+);
+
 class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
   @override
   Future<List<ServerProfile>> build() async {
@@ -214,6 +220,13 @@ class BackendSshSessionsController
     final current = state.valueOrNull ?? await future;
     final incoming = MobileBackendSSHSession.fromJson(event.payload);
     final existing = current[incoming.sessionId];
+    final incomingOutputSeq = incoming.outputSeq;
+    if (existing != null &&
+        event.payload.containsKey('output_seq') &&
+        incomingOutputSeq > 0 &&
+        existing.outputSeq > incomingOutputSeq) {
+      return;
+    }
     final session = existing == null
         ? incoming
         : _mergeBackendSSHRealtimeSession(
@@ -518,18 +531,20 @@ class BackendSshTasksController
     required String action,
     String localPath = '',
     String remotePath = '',
-  }) {
+  }) async {
     final normalized = sessionId.trim();
     final normalizedAction = action.trim();
     if (normalized.isEmpty || normalizedAction.isEmpty) {
       throw ArgumentError('sessionId and action are required');
     }
-    return _requireApiClient().requestBackendSSHFileOperation(
+    final operation = await _requireApiClient().requestBackendSSHFileOperation(
       sessionId: normalized,
       action: normalizedAction,
       localPath: localPath.trim(),
       remotePath: remotePath.trim(),
     );
+    await ref.read(backendSshFileOperationsProvider.notifier).put(operation);
+    return operation;
   }
 
   Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
@@ -576,6 +591,32 @@ class BackendSshTasksController
         if (item.taskId != taskId) item,
     ];
     state = AsyncData({...current, sessionId: next});
+  }
+}
+
+class BackendSshFileOperationsController
+    extends AsyncNotifier<Map<String, List<MobileBackendSSHFileOperation>>> {
+  @override
+  Future<Map<String, List<MobileBackendSSHFileOperation>>> build() async =>
+      const {};
+
+  Future<void> put(MobileBackendSSHFileOperation operation) async {
+    final sessionId = operation.sessionId.trim();
+    final operationId = operation.operationId.trim();
+    if (sessionId.isEmpty || operationId.isEmpty) return;
+    final current = state.valueOrNull ?? await future;
+    final operations = current[sessionId] ?? const [];
+    final next = [
+      operation,
+      for (final item in operations)
+        if (item.operationId.trim() != operationId) item,
+    ].take(20).toList();
+    state = AsyncData({...current, sessionId: next});
+  }
+
+  Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
+    if (!event.sshFileOperation || event.payload.isEmpty) return;
+    await put(MobileBackendSSHFileOperation.fromJson(event.payload));
   }
 }
 

@@ -223,3 +223,324 @@ func TestMatMulQ8MultiDot(t *testing.T) {
 		}
 	}
 }
+
+// TestMultiDot8TripleArgmax matches multiDot8TripleB + updateArgmaxTriple4.
+func TestMultiDot8TripleArgmax(t *testing.T) {
+	K := 512
+	a := make([]float32, 8*K)
+	b0 := make([]float32, K)
+	b1 := make([]float32, K)
+	b2 := make([]float32, K)
+	for i := range a {
+		a[i] = float32(i%11)*0.01 - 0.05
+	}
+	for i := 0; i < K; i++ {
+		b0[i] = float32((i%7)-3) * 0.02
+		b1[i] = float32((i%5)-2) * 0.03
+		b2[i] = float32((i%9)-4) * 0.01
+	}
+	bn0, bn1, bn2 := float32(0.1), float32(-0.05), float32(0.2)
+	n := 12
+
+	var d0, d1 [12]float32
+	multiDot8TripleB(&d0, &d1, a, b0, b1, b2, K)
+	refV := make([]float32, 8)
+	refI := make([]int, 8)
+	for i := range refV {
+		refV[i] = float32(-1e30)
+		refI[i] = -1
+	}
+	updateArgmaxTriple4(refV, refI, 0, n, &d0, bn0, bn1, bn2)
+	updateArgmaxTriple4(refV, refI, 4, n, &d1, bn0, bn1, bn2)
+
+	gotV := make([]float32, 8)
+	gotI := make([]int, 8)
+	for i := range gotV {
+		gotV[i] = float32(-1e30)
+		gotI[i] = -1
+	}
+	if !multiDot8TripleArgmax(gotV, gotI, a, b0, b1, b2, n, K, bn0, bn1, bn2) {
+		t.Skip("fused argmax not available")
+	}
+	for r := 0; r < 8; r++ {
+		if gotI[r] != refI[r] || math.Abs(float64(gotV[r]-refV[r])) > 1e-4 {
+			t.Fatalf("row %d: got id=%d v=%v want id=%d v=%v", r, gotI[r], gotV[r], refI[r], refV[r])
+		}
+	}
+}
+
+// TestMultiDot8DualK560 matches dual-4×2 scalar for entry feats_dim=560.
+func TestMultiDot8DualK560(t *testing.T) {
+	K := 560
+	a := make([]float32, 8*K)
+	b0 := make([]float32, K)
+	b1 := make([]float32, K)
+	for i := range a {
+		a[i] = float32(i%13)*0.01 - 0.06
+	}
+	for i := 0; i < K; i++ {
+		b0[i] = float32((i%7)-3) * 0.02
+		b1[i] = float32((i%5)-2) * 0.03
+	}
+	var got0, got1, ref0, ref1 [8]float32
+	multiDot8DualB(&got0, &got1, a, b0, b1, K)
+	multiDot4DualBScalar(&ref0, a[:4*K], b0, b1, K)
+	multiDot4DualBScalar(&ref1, a[4*K:8*K], b0, b1, K)
+	for i := 0; i < 8; i++ {
+		if abs32(got0[i]-ref0[i]) > 2e-3 || abs32(got1[i]-ref1[i]) > 2e-3 {
+			t.Fatalf("i=%d got %v/%v want %v/%v", i, got0[i], got1[i], ref0[i], ref1[i])
+		}
+	}
+}
+
+// TestDotQ8RowScaledAVX512 matches scalar scaled dot (and dual shares A).
+func TestDotQ8RowScaledAVX512(t *testing.T) {
+	K := 2048
+	raw := make([]float32, 2*K)
+	a := make([]float32, K)
+	for i := 0; i < K; i++ {
+		a[i] = float32((i%13)-6) * 0.02
+		raw[i] = float32((i%7)-3) * 0.05
+		raw[K+i] = float32((i%11)-5) * 0.04
+	}
+	w := QuantizeToQ8(raw, 2, K)
+	got0 := DotQ8RowScaled(a, w, 0)
+	// Reference via dequant + Dot
+	buf := make([]float32, K)
+	w.DequantRow(0, buf)
+	want0 := Dot(a, buf)
+	if abs32(got0-want0) > 2e-3 {
+		t.Fatalf("row0: got %v want %v", got0, want0)
+	}
+	s0, s1 := DotQ8RowDualScaled(a, w, 0, 1)
+	w.DequantRow(1, buf)
+	want1 := Dot(a, buf)
+	if abs32(s0-want0) > 2e-3 || abs32(s1-want1) > 2e-3 {
+		t.Fatalf("dual: got %v,%v want %v,%v", s0, s1, want0, want1)
+	}
+}
+
+func abs32(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// TestMultiDot8DualArgmax matches multiDot8DualB + updateArgmaxDual4.
+func TestMultiDot8DualArgmax(t *testing.T) {
+	K := 512
+	a := make([]float32, 8*K)
+	b0 := make([]float32, K)
+	b1 := make([]float32, K)
+	for i := range a {
+		a[i] = float32(i%11)*0.01 - 0.05
+	}
+	for i := 0; i < K; i++ {
+		b0[i] = float32((i%7)-3) * 0.02
+		b1[i] = float32((i%5)-2) * 0.03
+	}
+	bn0, bn1 := float32(0.1), float32(-0.05)
+	n := 7
+
+	var d0, d1 [8]float32
+	multiDot8DualB(&d0, &d1, a, b0, b1, K)
+	refV := make([]float32, 8)
+	refI := make([]int, 8)
+	for i := range refV {
+		refV[i] = float32(-1e30)
+		refI[i] = -1
+	}
+	updateArgmaxDual4(refV, refI, 0, n, &d0, bn0, bn1)
+	updateArgmaxDual4(refV, refI, 4, n, &d1, bn0, bn1)
+
+	gotV := make([]float32, 8)
+	gotI := make([]int, 8)
+	for i := range gotV {
+		gotV[i] = float32(-1e30)
+		gotI[i] = -1
+	}
+	if !multiDot8DualArgmax(gotV, gotI, a, b0, b1, n, K, bn0, bn1) {
+		t.Skip("fused dual argmax not available")
+	}
+	for r := 0; r < 8; r++ {
+		if gotI[r] != refI[r] || math.Abs(float64(gotV[r]-refV[r])) > 1e-4 {
+			t.Fatalf("row %d: got id=%d v=%v want id=%d v=%v", r, gotI[r], gotV[r], refI[r], refV[r])
+		}
+	}
+}
+
+// TestMatMulQ8Argmax_CTC exercises CTC K=512 argmax end-to-end.
+func TestMatMulQ8Argmax_CTC(t *testing.T) {
+	M, N, K := 16, 96, 512 // N multiple of 3 for triple coverage
+	a := make([]float32, M*K)
+	raw := make([]float32, N*K)
+	bias := make([]float32, N)
+	for i := range a {
+		a[i] = float32(i%11)*0.01 - 0.05
+	}
+	for i := range raw {
+		raw[i] = float32((i%9)-4) * 0.05
+	}
+	for i := range bias {
+		bias[i] = float32(i%5)*0.02 - 0.04
+	}
+	w := QuantizeToQ8(raw, N, K)
+
+	// Reference: same MatMulQ8Argmax path with fused disabled is hard; use
+	// two runs consistency via dequant multiDot by comparing scores from
+	// a second independent argmax over MatMulQ8Bias (same Q8 math as deq path).
+	logits := make([]float32, M*N)
+	MatMulQ8Bias(logits, a, w, bias, M, N, K)
+	refI := make([]int, M)
+	for m := 0; m < M; m++ {
+		bi, bv := 0, logits[m*N]
+		for n := 1; n < N; n++ {
+			if logits[m*N+n] > bv {
+				bv, bi = logits[m*N+n], n
+			}
+		}
+		refI[m] = bi
+	}
+
+	gotI := make([]int, M)
+	MatMulQ8Argmax(gotI, a, w, bias, M, N, K)
+	for m := 0; m < M; m++ {
+		if gotI[m] != refI[m] {
+			got := logits[m*N+gotI[m]]
+			ref := logits[m*N+refI[m]]
+			if math.Abs(float64(got-ref)) > 2e-3 {
+				t.Fatalf("m=%d: got id %d (%.6f) want %d (%.6f)", m, gotI[m], got, refI[m], ref)
+			}
+		}
+	}
+}
+
+// TestMatMulQ8Bias_EncoderN512 exercises N=512/K=512 encoder plain (triple+bias fuse).
+func TestMatMulQ8Bias_EncoderN512(t *testing.T) {
+	testMatMulQ8BiasShape(t, 16, 512, 512)
+}
+
+// TestMatMulQ8Bias_QKVN1536 exercises N=1536/K=512 fused-QKV plain store.
+func TestMatMulQ8Bias_QKVN1536(t *testing.T) {
+	testMatMulQ8BiasShape(t, 16, 1536, 512)
+}
+
+func testMatMulQ8BiasShape(t *testing.T, M, N, K int) {
+	t.Helper()
+	a := make([]float32, M*K)
+	raw := make([]float32, N*K)
+	bias := make([]float32, N)
+	for i := range a {
+		a[i] = float32(i%11)*0.01 - 0.05
+	}
+	for i := range raw {
+		raw[i] = float32((i%9)-4) * 0.05
+	}
+	for i := range bias {
+		bias[i] = float32(i%5)*0.02 - 0.04
+	}
+	w := QuantizeToQ8(raw, N, K)
+
+	// Reference: serial dequant+dot (MatMulQ8Bias is the path under test;
+	// compare against Dot after dequant for independence).
+	out := make([]float32, M*N)
+	MatMulQ8Bias(out, a, w, bias, M, N, K)
+
+	ref := make([]float32, M*N)
+	buf := make([]float32, K)
+	nBlocks := K / q8BlockSize
+	for n := 0; n < N; n++ {
+		dequantRowInto(w.Data, n, nBlocks, buf)
+		bn := bias[n]
+		for m := 0; m < M; m++ {
+			var s float32
+			for k := 0; k < K; k++ {
+				s += a[m*K+k] * buf[k]
+			}
+			ref[m*N+n] = s + bn
+		}
+	}
+	for i := range out {
+		if math.Abs(float64(out[i]-ref[i])) > 2e-3 {
+			t.Fatalf("idx %d (m=%d n=%d): got %v want %v", i, i/N, i%N, out[i], ref[i])
+		}
+	}
+}
+
+// TestMatMulQ8BiasReLU_FFNUp exercises N=2048/K=512 FFN up (triple+ReLU fuse).
+func TestMatMulQ8BiasReLU_FFNUp(t *testing.T) {
+	M, N, K := 16, 2048, 512
+	a := make([]float32, M*K)
+	raw := make([]float32, N*K)
+	bias := make([]float32, N)
+	for i := range a {
+		a[i] = float32(i%11)*0.01 - 0.05
+	}
+	for i := range raw {
+		raw[i] = float32((i%9)-4) * 0.05
+	}
+	for i := range bias {
+		bias[i] = float32(i%5)*0.02 - 0.04
+	}
+	w := QuantizeToQ8(raw, N, K)
+
+	// Reference: MatMulQ8Bias then ReLU.
+	ref := make([]float32, M*N)
+	MatMulQ8Bias(ref, a, w, bias, M, N, K)
+	for i := range ref {
+		if ref[i] < 0 {
+			ref[i] = 0
+		}
+	}
+
+	out := make([]float32, M*N)
+	MatMulQ8BiasReLU(out, a, w, bias, M, N, K)
+	for i := range out {
+		if math.Abs(float64(out[i]-ref[i])) > 2e-3 {
+			t.Fatalf("idx %d (m=%d n=%d): got %v want %v", i, i/N, i%N, out[i], ref[i])
+		}
+	}
+}
+
+// TestMatMulQ8BiasAdd_FFNDown exercises the N=512/K=2048 residual path
+// (including AVX-512 fused dual8-accum / VNNI prequant when available).
+// A is non-negative to match SenseVoice FFN-down (post-ReLU) activations.
+func TestMatMulQ8BiasAdd_FFNDown(t *testing.T) {
+	M, N, K := 16, 512, 2048
+	a := make([]float32, M*K)
+	raw := make([]float32, N*K)
+	bias := make([]float32, N)
+	for i := range a {
+		a[i] = float32(i%11) * 0.01 // ≥0 like ReLU output
+	}
+	for i := range raw {
+		raw[i] = float32((i%9)-4) * 0.05
+	}
+	for i := range bias {
+		bias[i] = float32(i%5)*0.02 - 0.04
+	}
+	w := QuantizeToQ8(raw, N, K)
+
+	// Seed residual so accumulate is non-trivial.
+	out := make([]float32, M*N)
+	ref := make([]float32, M*N)
+	for i := range out {
+		out[i] = float32(i%7) * 0.1
+		ref[i] = out[i]
+	}
+
+	// Reference: MatMulQ8Bias into temp then Add.
+	tmp := make([]float32, M*N)
+	MatMulQ8Bias(tmp, a, w, bias, M, N, K)
+	for i := range ref {
+		ref[i] += tmp[i]
+	}
+
+	MatMulQ8BiasAdd(out, a, w, bias, M, N, K)
+	for i := range out {
+		if math.Abs(float64(out[i]-ref[i])) > 2e-3 {
+			t.Fatalf("idx %d (m=%d n=%d): got %v want %v", i, i/N, i%N, out[i], ref[i])
+		}
+	}
+}

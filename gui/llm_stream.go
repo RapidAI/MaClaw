@@ -279,6 +279,9 @@ func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) s
 	if friendly := classifyHubErrorBody(body); friendly != "" {
 		return friendly
 	}
+	if code == "LLM_MODEL_FORBIDDEN" || strings.Contains(strings.ToLower(msg), "no active model service entitlement") {
+		return "当前账号没有可用的模型服务权益，请开通模型服务、检查订阅状态，或切换其他模型提供方 (HTTP 403)"
+	}
 
 	// Hub wraps upstream provider auth failures as LLM_UPSTREAM_AUTH_FAILED
 	// and rate limits as LLM_UPSTREAM_RATE_LIMITED with descriptive Chinese

@@ -43,8 +43,9 @@ func LayerNormBias512Dual(d0, s0, d1, s1, w, b []float32) {
 	)
 	var sum0, sq0, sum1, sq1 float32
 	if hasAVX2andFMA {
-		sum0, sq0 = sumSumsq512AVX2(&s0[0])
-		sum1, sq1 = sumSumsq512AVX2(&s1[0])
+		var ss [4]float32
+		sumSumsq512DualAVX2(&s0[0], &s1[0], &ss)
+		sum0, sq0, sum1, sq1 = ss[0], ss[1], ss[2], ss[3]
 	} else {
 		sum0, sq0 = sumSumsq512Scalar(s0)
 		sum1, sq1 = sumSumsq512Scalar(s1)
@@ -106,6 +107,7 @@ func FuseAdd2AndLN512Dual(out0, a0, b0, dst0, out1, a1, b1, dst1, w, bias []floa
 		eps    = 1e-5
 		invDim = float32(1.0 / 512.0)
 	)
+	// Sequential per-frame sum (interleaved dual thrashs L1: 6 streams × 2 frames).
 	var sum0, sq0, sum1, sq1 float32
 	if hasAVX2andFMA {
 		sum0, sq0 = add2SumSumsq512AVX2(&out0[0], &a0[0], &b0[0])
@@ -171,6 +173,7 @@ func FuseAdd1AndLN512Dual(out0, a0, dst0, out1, a1, dst1, w, bias []float32) {
 		eps    = 1e-5
 		invDim = float32(1.0 / 512.0)
 	)
+	// Sequential per-frame sum (same L1 reason as FuseAdd2 dual).
 	var sum0, sq0, sum1, sq1 float32
 	if hasAVX2andFMA {
 		sum0, sq0 = add1SumSumsq512AVX2(&out0[0], &a0[0])
@@ -201,6 +204,9 @@ func FuseAdd1AndLN512Dual(out0, a0, dst0, out1, a1, dst1, w, bias []float32) {
 
 //go:noescape
 func sumSumsq512AVX2(src *float32) (sum, sumsq float32)
+
+//go:noescape
+func sumSumsq512DualAVX2(s0, s1 *float32, out *[4]float32)
 
 //go:noescape
 func add2SumSumsq512AVX2(out, a, b *float32) (sum, sumsq float32)

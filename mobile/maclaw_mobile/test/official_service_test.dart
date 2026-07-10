@@ -21,6 +21,111 @@ void main() {
     );
   });
 
+  test('HubCenter unavailable errors do not expose candidate URLs', () {
+    const error = OfficialHubCenterUnavailableException([
+      OfficialHubCenterAttempt(
+        url: 'https://hubs.mypapers.top',
+        available: false,
+        message: 'HTTP 502',
+      ),
+      OfficialHubCenterAttempt(
+        url: 'https://hubs.maclaw.top',
+        available: false,
+        message: 'timeout',
+      ),
+    ]);
+
+    expect(error.toString(), contains('No official MaClaw HubCenter'));
+    expect(error.toString(), isNot(contains('https://')));
+    expect(error.attempts, hasLength(2));
+  });
+
+  test('HubCenter discovery falls through a failed preset', () async {
+    final attempts = <String>[];
+    final first = maclawOfficialHubCenterUrls[0];
+    final second = maclawOfficialHubCenterUrls[1];
+
+    final resolution = await tryOfficialHubCenters<String>(
+      hubCenterUrls: maclawOfficialHubCenterUrls,
+      operation: (_, candidate) async {
+        attempts.add(candidate);
+        if (candidate == first) {
+          throw DioException(
+            requestOptions: RequestOptions(path: '/api/entry/resolve'),
+            response: Response(
+              statusCode: 502,
+              requestOptions: RequestOptions(path: '/api/entry/resolve'),
+            ),
+          );
+        }
+        return candidate;
+      },
+    );
+
+    expect(resolution.selectedHubCenterUrl, second);
+    expect(resolution.value, second);
+    expect(attempts, [first, second]);
+    expect(resolution.attempts, hasLength(2));
+    expect(resolution.attempts.first.available, isFalse);
+    expect(resolution.attempts.last.available, isTrue);
+  });
+
+  test('official HubCenter clients use bounded mobile network timeouts', () {
+    final client = officialHubCenterDio(
+      null,
+      hubCenterUrl: maclawDefaultHubCenterUrl,
+    );
+
+    expect(client.options.connectTimeout, maclawHubCenterConnectTimeout);
+    expect(client.options.sendTimeout, maclawHubCenterSendTimeout);
+    expect(client.options.receiveTimeout, maclawHubCenterReceiveTimeout);
+  });
+
+  test('official HubCenter timeout defaults do not overwrite custom values',
+      () {
+    final client = officialHubCenterDio(
+      Dio(
+        BaseOptions(
+          baseUrl: maclawDefaultHubCenterUrl,
+          connectTimeout: const Duration(seconds: 2),
+        ),
+      ),
+      hubCenterUrl: maclawDefaultHubCenterUrl,
+    );
+
+    expect(client.options.connectTimeout, const Duration(seconds: 2));
+    expect(client.options.sendTimeout, maclawHubCenterSendTimeout);
+    expect(client.options.receiveTimeout, maclawHubCenterReceiveTimeout);
+  });
+
+  test('discovered Hub clients use bounded mobile network timeouts', () {
+    final client = discoveredHubDio(
+      null,
+      hubUrl: 'https://tenant-a.maclaw.top/path',
+    );
+
+    expect(client.options.baseUrl, 'https://tenant-a.maclaw.top');
+    expect(client.options.connectTimeout, maclawHubCenterConnectTimeout);
+    expect(client.options.sendTimeout, maclawHubCenterSendTimeout);
+    expect(client.options.receiveTimeout, maclawHubCenterReceiveTimeout);
+  });
+
+  test('discovered Hub timeout defaults do not overwrite custom values', () {
+    final client = discoveredHubDio(
+      Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 2),
+          receiveTimeout: const Duration(seconds: 3),
+        ),
+      ),
+      hubUrl: 'https://tenant-a.maclaw.top',
+    );
+
+    expect(client.options.connectTimeout, const Duration(seconds: 2));
+    expect(client.options.sendTimeout, maclawHubCenterSendTimeout);
+    expect(client.options.receiveTimeout, const Duration(seconds: 3));
+  });
+
   test('api client resolves relative paths against discovered Hub', () {
     final client = ApiClient(hubUrl: 'https://tenant-a.maclaw.top');
 

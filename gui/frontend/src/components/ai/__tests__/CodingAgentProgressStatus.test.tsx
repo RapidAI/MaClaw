@@ -21,6 +21,7 @@ import {
     codingAgentQualityStatusLabel,
     codingAgentQualityStatusTone,
     codingAgentProgressTone,
+    codingAgentProgressStatusText,
     formatCodingAgentDuration,
     codingAgentStatusClassName,
     codingAgentStatusDataAttrs,
@@ -56,6 +57,36 @@ const makeProgressMsg = (content: string, id = content): ChatMessage => ({
 });
 
 describe('CodingAgentProgressStatus', () => {
+    it('treats a missing exploratory file as a neutral lookup result', () => {
+        const progress = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'read_file',
+            outcome: 'failed',
+            summary: 'file not found: C:\\testdriver\\missing.cpp',
+        })}`);
+        expect(progress).toBeTruthy();
+        expect(codingAgentProgressTone(progress!).accent).not.toBe('#c43d34');
+        expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('文件或路径不存在');
+    });
+
+    it('treats an existing test-binary probe as a neutral exploratory result', () => {
+        const progress = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'D:\\testdriver\\build\\tests\\Release\\catch_thief_tests.exe',
+            summary: 'test process returned a non-zero result',
+        })}`);
+        expect(progress).toBeTruthy();
+        expect(codingAgentProgressTone(progress!).accent).not.toBe('#c43d34');
+        expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('探索性测试未通过');
+    });
     it('parses coding agent progress with phase, task id, and title', () => {
         expect(parseCodingAgentProgress('Coding Agent: running T2 - Fix stale edit guard')).toEqual({
             phase: 'running',
@@ -430,6 +461,35 @@ describe('CodingAgentProgressStatus', () => {
             outcome: 'failed',
             summary: 'PowerShell exception: g++ is not recognized as a cmdlet',
         }).accent).toBe('#64748b');
+
+        expect(codingAgentProgressTone({
+            phase: 'running',
+            title: 'Locate compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'where cl.exe 2>&1; Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7" 2>&1',
+            summary: 'PowerShell error: cannot find the requested registry path',
+        }).accent).toBe('#64748b');
+        expect(codingAgentProgressStatusText({
+            phase: 'running',
+            title: 'Locate compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'where cl.exe 2>&1; Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7" 2>&1',
+            summary: 'PowerShell error: cannot find the requested registry path',
+        }, 'zh-Hans')).toBe('Visual Studio \u8def\u5f84\u4e0d\u5b58\u5728');
+
+        expect(codingAgentProgressStatusText({
+            phase: 'running',
+            title: 'Probe compiler',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'clang++ --version',
+            summary: 'PowerShell exception: command probe returned exit code 1',
+        }, 'zh-Hans')).toBe('clang++ \u4e0d\u5b58\u5728');
 
         expect(codingAgentProgressTone({
             phase: 'running',

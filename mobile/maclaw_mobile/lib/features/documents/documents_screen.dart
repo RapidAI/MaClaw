@@ -124,6 +124,16 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         state.when(
           data: (value) => Column(
             children: [
+              if (value.operationError != null) ...[
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.error_outline),
+                    title: const Text('导入操作未完成'),
+                    subtitle: Text(value.operationError!),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               _UploadStatus(state: value),
               if (value.uploadTask != null && value.draft != null)
                 const SizedBox(height: 12),
@@ -646,6 +656,11 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
                   label: const Text('插入表格'),
                 ),
                 OutlinedButton.icon(
+                  onPressed: () => _insertSnippet('\n\n- 要点一\n- 要点二\n'),
+                  icon: const Icon(Icons.format_list_bulleted_outlined),
+                  label: const Text('插入列表'),
+                ),
+                OutlinedButton.icon(
                   onPressed: () => _insertSnippet('\n\n> 批注：\n'),
                   icon: const Icon(Icons.comment_outlined),
                   label: const Text('插入批注'),
@@ -846,6 +861,7 @@ class _UploadStatus extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final upload = state.uploadTask;
     if (upload == null) return const SizedBox.shrink();
+    final permissionEvidence = ref.watch(documentPermissionEvidenceProvider);
     final statusLabel = _uploadStatusLabel(upload.status);
     final failed = upload.status == 'failed';
     final inProgress = _uploadInProgress(upload.status);
@@ -871,6 +887,11 @@ class _UploadStatus extends ConsumerWidget {
                   ),
                   const SizedBox(height: 4),
                   Text('导入任务 ${upload.taskId}：$statusLabel'),
+                  if (permissionEvidence != null &&
+                      permissionEvidence.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(permissionEvidence),
+                  ],
                   if (upload.message.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(

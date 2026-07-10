@@ -1376,6 +1376,7 @@ func TestIsSubAgentTransientProviderErrorRequiresProviderContextForGenericTimeou
 		{name: "provider gateway timeout", text: `openai upstream request timeout`, want: true},
 		{name: "provider unexpected eof", text: `anthropic request failed: unexpected EOF`, want: true},
 		{name: "provider http 408", text: `LLM call failed: HTTP 408 request timeout`, want: true},
+		{name: "hub entitlement sync", text: `LLM call failed: HTTP 403: LLM_MODEL_FORBIDDEN no active model service entitlement`, want: true},
 		{name: "local command deadline", text: `bash command failed: context deadline exceeded`, want: false},
 		{name: "local http deadline", text: `integration test failed: Post "http://127.0.0.1:3000/health": context deadline exceeded`, want: false},
 		{name: "local connection reset", text: `integration test failed: connection reset by peer`, want: false},

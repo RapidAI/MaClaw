@@ -22,6 +22,12 @@ void main() {
       ),
       '/servers',
     );
+    expect(
+      mobileNotificationPayloadBasePath(
+        mobileAssistantTaskNotificationPayload('llm-1'),
+      ),
+      '/assistant',
+    );
     expect(mobileNotificationPayloadBasePath('legacy-raw-id'), isNull);
   });
 
@@ -34,6 +40,7 @@ void main() {
       isNull,
     );
     expect(mobileNotificationPayloadBasePath('server-profile:'), isNull);
+    expect(mobileNotificationPayloadBasePath('assistant-task:'), isNull);
     expect(
       mobileNotificationPayloadBasePath('https://tenant.example/tasks/job-1'),
       '/documents',
@@ -56,6 +63,18 @@ void main() {
     expect(text, isNot(contains('raw-password')));
     expect(text, isNot(contains('raw-bearer')));
     expect(text, isNot(contains('raw-private-key')));
+  });
+
+  test('notification permission result explains platform denial', () {
+    const result = MobileNotificationPermissionResult(
+      androidGranted: false,
+      grantId: 'notification-test-1',
+    );
+
+    expect(result.hasPlatformResult, isTrue);
+    expect(result.granted, isFalse);
+    expect(result.message, contains('系统设置'));
+    expect(result.message, contains('permission-grant:notification-test-1'));
   });
 
   test('notification open payload can be recorded and consumed', () {

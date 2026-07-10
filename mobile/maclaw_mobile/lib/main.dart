@@ -7,10 +7,14 @@ import 'core/shared_intents/shared_intent_bootstrap.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await MobileNotificationService().initialize();
+  final notifications = MobileNotificationService();
+  await notifications.initialize();
   runApp(
-    const ProviderScope(
-      child: SharedIntentBootstrap(child: MaClawMobileApp()),
+    ProviderScope(
+      overrides: [
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+      ],
+      child: const SharedIntentBootstrap(child: MaClawMobileApp()),
     ),
   );
 }

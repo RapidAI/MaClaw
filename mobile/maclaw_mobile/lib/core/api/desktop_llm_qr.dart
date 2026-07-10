@@ -7,12 +7,14 @@ class DesktopLlmQrPayload {
   final String type;
   final String sessionId;
   final String hubUrl;
+  final DateTime? expiresAt;
 
   const DesktopLlmQrPayload({
     required this.raw,
     required this.type,
     required this.sessionId,
     required this.hubUrl,
+    this.expiresAt,
   });
 }
 
@@ -93,10 +95,29 @@ DesktopLlmQrPayload parseMaclawDesktopLlmQrPayload(String qrPayload) {
       'hub_url must be the HTTPS MaClaw Hub URL from the desktop GUI QR.',
     );
   }
+  final expiresAt = _parseExpiry(decoded['expires_at']);
+  if (expiresAt != null && !expiresAt.isAfter(DateTime.now().toUtc())) {
+    throw const FormatException(
+      'The MaClaw desktop GUI QR authorization session has expired.',
+    );
+  }
   return DesktopLlmQrPayload(
     raw: raw,
     type: type,
     sessionId: sessionId,
     hubUrl: hubUrl,
+    expiresAt: expiresAt,
   );
+}
+
+DateTime? _parseExpiry(Object? value) {
+  if (value == null) return null;
+  if (value is! String || value.trim().isEmpty) {
+    throw const FormatException('expires_at must be an ISO-8601 timestamp.');
+  }
+  final parsed = DateTime.tryParse(value.trim());
+  if (parsed == null) {
+    throw const FormatException('expires_at must be an ISO-8601 timestamp.');
+  }
+  return parsed.toUtc();
 }

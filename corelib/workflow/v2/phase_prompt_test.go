@@ -148,6 +148,155 @@ func TestBuildPhasePrompt_PPTGenerationRequiresPPTXArtifactSkill(t *testing.T) {
 	}
 }
 
+func TestBuildPhasePrompt_FullDependencyUsesAuthoritativeOutput(t *testing.T) {
+	outline := "# Outline\n" + strings.Repeat("slide-detail ", 700)
+	state := &WorkflowState{
+		Type: string(WorkflowPresentationDesign),
+		Phases: []Phase{
+			{ID: "outline", Name: "Outline", Output: outline},
+			{ID: "slide_scripting", Name: "Slide scripting", DependsOnFull: []string{"outline"}},
+		},
+		CurrentPhase: 1,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	if !strings.Contains(prompt, outline) {
+		t.Fatal("full dependency was not injected into the next-phase prompt")
+	}
+	if strings.Contains(prompt, "read_file") || strings.Contains(prompt, ".maclaw/workflow/") {
+		t.Fatalf("full dependency must not make the model discover a file:\n%s", prompt)
+	}
+}
+
+func TestPresentationTemplate_SlideScriptingDependsOnOutline(t *testing.T) {
+	tmpl := PresentationTemplate()
+	for _, phase := range tmpl.Phases {
+		if phase.ID != "slide_scripting" {
+			continue
+		}
+		if len(phase.DependsOnFull) != 1 || phase.DependsOnFull[0] != "outline" {
+			t.Fatalf("slide_scripting DependsOnFull = %#v, want [outline]", phase.DependsOnFull)
+		}
+		return
+	}
+	t.Fatal("slide_scripting phase missing")
+}
+
+func TestBuildPhasePrompt_FullDependenciesRespectAggregateBudget(t *testing.T) {
+	first := strings.Repeat("a", fullDependencyRuneBudget+100)
+	second := strings.Repeat("b", fullDependencyRuneBudget+100)
+	state := &WorkflowState{
+		Phases: []Phase{
+			{ID: "first", Name: "First", Output: first},
+			{ID: "second", Name: "Second", Output: second},
+			{ID: "final", Name: "Final", DependsOnFull: []string{"first", "second"}},
+		},
+		CurrentPhase: 2,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	if strings.Count(prompt, "...(受上下文传输上限截断") != 2 {
+		t.Fatalf("full dependencies should each declare a transport truncation:\n%s", prompt)
+	}
+	if strings.Count(prompt, "a") < fullDependencyRuneBudget || strings.Count(prompt, "b") < fullDependencyRuneBudget {
+		t.Fatalf("each dependency should receive its per-dependency budget")
+	}
+}
+
+func TestBuildPhasePrompt_MissingFullDependencyBlocksGeneration(t *testing.T) {
+	state := &WorkflowState{
+		Phases: []Phase{
+			{ID: "outline", Name: "Outline"},
+			{ID: "slide_scripting", Name: "Slide scripting", DependsOnFull: []string{"outline"}},
+		},
+		CurrentPhase: 1,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	if !strings.Contains(prompt, "outline") || !strings.Contains(prompt, "前序产出物不可用") {
+		t.Fatalf("missing dependency should be explicit:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "不要搜索项目目录、PDF、记忆") {
+		t.Fatalf("missing dependency prompt must prohibit fallback discovery:\n%s", prompt)
+	}
+}
+
+func TestMissingFullDependencies(t *testing.T) {
+	state := &WorkflowState{
+		Phases: []Phase{
+			{ID: "outline", Output: "ready"},
+			{ID: "style"},
+			{ID: "script", DependsOnFull: []string{"style", "outline", "absent"}},
+		},
+		CurrentPhase: 2,
+	}
+	if got := strings.Join(MissingFullDependencies(state), ","); got != "absent,style" {
+		t.Fatalf("MissingFullDependencies = %q, want absent,style", got)
+	}
+}
+
+func TestBackfillPhaseDependenciesFromTemplate(t *testing.T) {
+	state := &WorkflowState{Phases: []Phase{
+		{ID: "outline"},
+		{ID: "script"},
+		{ID: "final", DependsOnFull: []string{"explicit"}},
+	}}
+	tmpl := &WorkflowTemplate{Phases: []PhaseTemplate{
+		{ID: "script", DependsOnFull: []string{"outline"}},
+		{ID: "final", DependsOnFull: []string{"script"}},
+	}}
+	if !BackfillPhaseDependenciesFromTemplate(state, tmpl) {
+		t.Fatal("expected template dependency backfill")
+	}
+	if got := strings.Join(state.Phases[1].DependsOnFull, ","); got != "outline" {
+		t.Fatalf("backfilled dependencies = %q", got)
+	}
+	if got := strings.Join(state.Phases[2].DependsOnFull, ","); got != "explicit" {
+		t.Fatalf("explicit dependencies overwritten: %q", got)
+	}
+}
+
+func TestBuildPhasePrompt_InheritsPriorPhaseFormData(t *testing.T) {
+	state := &WorkflowState{
+		Type:    string(WorkflowPresentationDesign),
+		Summary: "制作产品发布会 PPT",
+		Phases: []Phase{
+			{
+				ID:   "audience_goal",
+				Name: "受众与目标",
+				InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{
+					{Name: "topic", Label: "主题", Type: "text"},
+					{Name: "audience", Label: "目标受众", Type: "text"},
+					{Name: "page_count", Label: "期望页数", Type: "text"},
+					{Name: "style", Label: "风格偏好", Type: "text"},
+				}},
+				FormData: map[string]interface{}{
+					"topic":      "2026 产品发布会",
+					"audience":   "公司高管",
+					"page_count": "16 页",
+					"style":      "科技商务",
+				},
+			},
+			{ID: "outline", Name: "内容大纲"},
+		},
+		CurrentPhase: 1,
+	}
+
+	prompt := BuildPhasePrompt(state)
+	for _, want := range []string{
+		"工作流已收集的结构化信息",
+		"主题**：2026 产品发布会",
+		"目标受众**：公司高管",
+		"期望页数**：16 页",
+		"风格偏好**：科技商务",
+		"禁止重复询问",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt should inherit prior form data; missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPhasePrompt_GenericArtifactPhaseUsesSemanticGuidance(t *testing.T) {
 	state := &WorkflowState{
 		Type:        "custom_report_workflow",

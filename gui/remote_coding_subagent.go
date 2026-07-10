@@ -118,7 +118,21 @@ func (r *RemoteCodingSubAgent) setHighRiskApprovalCallback(callback ScopeApprova
 	} else {
 		r.highRiskApproval.configure(callback, fullAccess, preserveFullAccess)
 	}
+	if r.handler != nil && r.handler.app != nil {
+		r.highRiskApproval.setAuditCallback(func(req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
+			recordScopeApprovalAudit(r.handler, "", req, decision, source)
+		})
+	}
 	r.highRiskApprovalExplicit = explicit
+}
+
+func (s *remoteHighRiskApprovalState) setAuditCallback(callback func(ScopeApprovalRequest, ScopeApprovalDecision, string)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.auditApproval = callback
+	s.mu.Unlock()
 }
 
 // SetKnowledgeStores configures the coding experience store and general knowledge store.
@@ -1221,6 +1235,7 @@ type remoteHighRiskApprovalState struct {
 	pathFullAccess     bool
 	approvedDirs       map[string]bool
 	callback           ScopeApprovalCallback
+	auditApproval      func(ScopeApprovalRequest, ScopeApprovalDecision, string)
 }
 
 const (
@@ -1256,6 +1271,7 @@ func (s *remoteHighRiskApprovalState) configure(callback ScopeApprovalCallback, 
 func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		if loopCtx != nil && loopCtx.IsCancelled() {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalDeny, "cancelled")
 			return ScopeApprovalDeny
 		}
 		if onProgress != nil {
@@ -1271,12 +1287,14 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 		if loopCtx != nil {
 			select {
 			case decision := <-responseCh:
+				recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
 				if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
 				return decision
 			case <-loopCtx.CancelC:
 				pendingScopeApprovals.Delete(approvalID)
+				recordScopeApprovalAudit(handler, approvalID, req, ScopeApprovalDeny, "cancelled")
 				return ScopeApprovalDeny
 			case <-timeout.C:
 				pendingScopeApprovals.Delete(approvalID)
@@ -1284,18 +1302,22 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 				if onProgress != nil {
 					onProgress(remoteScopeApprovalTimeoutProgress(req, decision))
 				}
+				recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
 				return decision
 			}
 		}
 		select {
 		case decision := <-responseCh:
+			recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
 			if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}
 			return decision
 		case <-timeout.C:
 			pendingScopeApprovals.Delete(approvalID)
-			return remoteScopeApprovalTimeoutDecision(req)
+			decision := remoteScopeApprovalTimeoutDecision(req)
+			recordScopeApprovalAudit(handler, approvalID, req, decision, "timeout")
+			return decision
 		}
 	}
 }
@@ -1325,22 +1347,15 @@ func remoteScopeApprovalProgressMessage(req ScopeApprovalRequest) string {
 }
 
 func remoteScopeApprovalTimeoutDecision(req ScopeApprovalRequest) ScopeApprovalDecision {
-	if req.AutoAllow && (req.Kind == remoteDirectoryWriteKind || req.Kind == remotePathAccessKind) {
-		return ScopeApprovalAllowDir
-	}
 	return ScopeApprovalDeny
 }
 
 func remoteScopeApprovalTimeoutProgress(req ScopeApprovalRequest, decision ScopeApprovalDecision) string {
-	if decision == ScopeApprovalAllowDir {
-		dir := strings.TrimSpace(req.Directory)
-		if dir == "" {
-			dir = remotePathDir(req.Path)
-		}
-		return fmt.Sprintf("⚠️ 远程目录/路径确认超时，自动允许目录: %s", dir)
-	}
 	if req.Kind == localHighRiskApprovalKind {
 		return fmt.Sprintf("⚠️ 本地高风险命令确认超时，已拒绝执行: %s", req.Path)
+	}
+	if req.Kind == remoteDirectoryWriteKind || req.Kind == remotePathAccessKind || req.Kind == "" {
+		return fmt.Sprintf("⚠️ 目录/路径确认超时，已拒绝访问: %s", req.Path)
 	}
 	return fmt.Sprintf("⚠️ 远程高风险命令确认超时，已拒绝执行: %s", req.Path)
 }
@@ -1351,7 +1366,11 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 	}
 	s.mu.Lock()
 	if s.highRiskFullAccess {
+		audit := s.auditApproval
 		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: remoteSSHBashToolName, Path: command, ProjectPath: workingDir, Directory: workingDir, Kind: remoteHighRiskApprovalKind}, ScopeApprovalFullAccess, "automatic")
+		}
 		return ""
 	}
 	callback := s.callback
@@ -1387,11 +1406,19 @@ func (s *remoteHighRiskApprovalState) checkRemotePath(toolName, path, projectPat
 	}
 	s.mu.Lock()
 	if s.pathFullAccess {
+		audit := s.auditApproval
 		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath, Directory: remotePathDir(path), Kind: kind}, ScopeApprovalFullAccess, "automatic")
+		}
 		return ""
 	}
 	if s.isApprovedLocked(path) {
+		audit := s.auditApproval
 		s.mu.Unlock()
+		if audit != nil {
+			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath, Directory: remotePathDir(path), Kind: kind}, ScopeApprovalAllowDir, "automatic")
+		}
 		return ""
 	}
 	callback := s.callback
@@ -1410,7 +1437,7 @@ func (s *remoteHighRiskApprovalState) checkRemotePath(toolName, path, projectPat
 		Directory:   dir,
 		Kind:        kind,
 		Message:     message,
-		AutoAllow:   true,
+		AutoAllow:   false,
 	})
 	switch decision {
 	case ScopeApprovalAllowOnce:

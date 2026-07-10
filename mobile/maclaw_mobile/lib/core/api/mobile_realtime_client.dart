@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,8 +63,20 @@ class MobileRealtimeClient {
     try {
       await channel.ready.timeout(timeout);
       channel.sink.add(encodePing());
+      final pong = Completer<void>();
+      final subscription = channel.stream.listen((raw) {
+        final event = MobileRealtimeEvent.tryParse(raw);
+        if (event?.pong == true && !pong.isCompleted) {
+          pong.complete();
+        }
+      });
+      try {
+        await pong.future.timeout(timeout);
+      } finally {
+        await subscription.cancel();
+      }
     } finally {
-      await channel.sink.close();
+      await _closeChannel(channel);
     }
   }
 
@@ -80,7 +93,15 @@ class MobileRealtimeClient {
         }
       }
     } finally {
+      await _closeChannel(channel);
+    }
+  }
+
+  Future<void> _closeChannel(WebSocketChannel channel) async {
+    try {
       await channel.sink.close();
+    } on Object {
+      // Closing is best effort; preserve the original connect/stream result.
     }
   }
 

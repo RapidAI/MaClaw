@@ -7,7 +7,7 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
@@ -23,6 +23,8 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock
     initiateVEConversationMock: vi.fn().mockResolvedValue({ session_id: 'session-ve-a' }),
     addVEToGroupMock: vi.fn().mockResolvedValue(undefined),
     renameGroupDiscussionMock: vi.fn().mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' }),
+    getConversationBranchPointsMock: vi.fn().mockResolvedValue([]),
+    patchConfigFieldsMock: vi.fn().mockResolvedValue({}),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -71,6 +73,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
     GroupDiscussionGetConsultationDetail: vi.fn().mockResolvedValue({ discussion: { id: 'disc-1', topic: 'Vendor audit', status: 'open', local_relation: 'owned_ve_invited', readonly: true, participant_ids: ['ve-a'] }, messages: [] }),
     GroupDiscussionRenameConsultation: renameGroupDiscussionMock,
+    GetConversationBranchPoints: getConversationBranchPointsMock,
+    PatchConfigFields: patchConfigFieldsMock,
     GroupDiscussionSendHistoryMessage: vi.fn().mockResolvedValue(undefined),
     GroupDiscussionDownloadAttachment: vi.fn().mockResolvedValue({ local_path: 'D:/maclaw/data/file.pdf' }),
     ListVirtualEmployees: listVirtualEmployeesMock,
@@ -1031,14 +1035,17 @@ describe('AIAssistantPanel property tests', () => {
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
-        expect(buttons).toHaveLength(7);
-        expect(buttons[0]?.getAttribute('title')).toBe('Buy service redemption cards');
-        expect(buttons[1]?.getAttribute('title')).toBe('Search tasks');
-        expect(buttons[2]?.getAttribute('title')).toContain('Voice readback OFF');
-        expect(buttons[3]?.getAttribute('title')).toBe('Switch to dark mode');
-        expect(buttons[4]?.getAttribute('title')).toBe('Knowledge Base');
-        expect(buttons[5]?.getAttribute('title')).toBe('Refresh news');
-        expect(buttons[6]?.getAttribute('title')).toBe('New conversation');
+        const titledButtons = buttons.map(button => button.getAttribute('title')).filter((title): title is string => !!title);
+        expect(titledButtons).toEqual([
+            '通知',
+            'Buy service redemption cards',
+            'Search tasks',
+            'Voice readback OFF - click to enable',
+            'Switch to dark mode',
+            'Knowledge Base',
+            'Refresh news',
+            'New conversation',
+        ]);
     });
 
     it('opens current tenant card store URL from config', async () => {
@@ -1051,7 +1058,7 @@ describe('AIAssistantPanel property tests', () => {
             remote_viewer_token: 'viewer token',
         }), openURL);
 
-        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
     });
 
     it('opens current tenant Hub card store URL even when hub_id is configured', async () => {
@@ -1066,7 +1073,7 @@ describe('AIAssistantPanel property tests', () => {
             remote_viewer_token: 'viewer token',
         }), openURL);
 
-        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {

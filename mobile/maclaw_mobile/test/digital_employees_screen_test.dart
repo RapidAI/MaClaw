@@ -6,6 +6,7 @@ import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
+import 'package:maclaw_mobile/features/digital_employees/digital_employee_chat_screen.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee_prompt.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_screen.dart';
@@ -448,6 +449,14 @@ void main() {
     expect(find.text('远程运行时缺失'), findsOneWidget);
     expect(find.text('发起任务'), findsNWidgets(2));
     expect(find.byTooltip('分析日志/输出'), findsNWidgets(2));
+
+    await tester.tap(find.byType(Card).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(DigitalEmployeeChatScreen), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.textContaining('Hub'), findsWidgets);
+    Navigator.of(tester.element(find.byType(DigitalEmployeeChatScreen))).pop();
+    await tester.pumpAndSettle();
 
     await tester
         .tap(find.byTooltip('\u5206\u6790\u65e5\u5fd7/\u8f93\u51fa').first);

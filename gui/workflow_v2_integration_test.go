@@ -207,6 +207,98 @@ func TestEnsureWorkflowV2PhaseWorkDirCreatesMissingProjectPath(t *testing.T) {
 	}
 }
 
+func TestWorkflowV2DocUpdatePersistsPhaseDocument(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	projectPath := t.TempDir()
+	state := &v2.WorkflowState{
+		ID:          "wf-v2-persist-doc",
+		UserID:      "test-v2-persist-doc",
+		Type:        string(v2.WorkflowPresentationDesign),
+		Status:      v2.StatusActive,
+		ProjectPath: projectPath,
+		Phases: []v2.Phase{{
+			ID:     "outline",
+			Name:   "Outline",
+			Status: v2.PhaseWaitingConfirm,
+		}},
+	}
+
+	handler.emitWorkflowV2Progress(state.UserID, state)
+	handler.emitDocUpdateV2(state.UserID, "outline", "# Outline\n\nAuthoritative phase output")
+
+	path := filepath.Join(projectPath, ".maclaw", "workflow", state.ID, workflowPhaseFileNameForTemplate(handler.app.workflowEngine.GetRegistry().Match(v2.WorkflowPresentationDesign), "outline"))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("V2 phase document was not persisted: %v", err)
+	}
+	if !strings.Contains(string(content), "Authoritative phase output") {
+		t.Fatalf("persisted document = %q", content)
+	}
+}
+
+func TestWorkflowV2GUIAdapterIsScopedPerUser(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	first := handler.workflowV2GUIAdapter("workflow-user-a")
+	second := handler.workflowV2GUIAdapter("workflow-user-b")
+	if first == nil || second == nil {
+		t.Fatal("expected V2 GUI adapters")
+	}
+	if first == second {
+		t.Fatal("V2 workflows for different users must not share adapter instance state")
+	}
+	if first != handler.workflowV2GUIAdapter("workflow-user-a") {
+		t.Fatal("same user should keep the same V2 adapter")
+	}
+}
+
+func TestWorkflowV2GUIAdapterIsReleasedOnTerminalState(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-user-terminal"
+	if handler.workflowV2GUIAdapter(userID) == nil {
+		t.Fatal("expected V2 GUI adapter")
+	}
+	handler.emitWorkflowV2Progress(userID, &v2.WorkflowState{UserID: userID, Status: v2.StatusCompleted})
+	if _, ok := handler.workflowV2Adapters.Load(userID); ok {
+		t.Fatal("terminal workflow should release its V2 GUI adapter")
+	}
+}
+
+func TestWorkflowV2PayloadOnlyReleasesTerminalAdapter(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-user-terminal-payload"
+	if handler.workflowV2GUIAdapter(userID) == nil {
+		t.Fatal("expected V2 GUI adapter")
+	}
+	handler.emitWorkflowV2ProgressPayloadOnly(userID, &v2.WorkflowState{UserID: userID, Status: v2.StatusCancelled})
+	if _, ok := handler.workflowV2Adapters.Load(userID); ok {
+		t.Fatal("terminal payload refresh should release its V2 GUI adapter")
+	}
+}
+
+func TestRunWorkflowV2PhaseBlocksMissingFullDependency(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	state := &v2.WorkflowState{
+		ID:           "wf-missing-dependency",
+		UserID:       "test-missing-dependency",
+		Type:         string(v2.WorkflowPresentationDesign),
+		Status:       v2.StatusActive,
+		ProjectPath:  t.TempDir(),
+		CurrentPhase: 1,
+		Phases: []v2.Phase{
+			{ID: "outline", Status: v2.PhaseCompleted},
+			{ID: "slide_scripting", DependsOnFull: []string{"outline"}, Status: v2.PhaseRunning},
+		},
+	}
+
+	result := handler.runWorkflowV2Phase(state.UserID, state, "")
+	if result.WorkflowAgentLoop || result.Response == nil || result.Response.Error == "" {
+		t.Fatalf("missing dependency must block the agent loop: %#v", result)
+	}
+	if !strings.Contains(result.Response.Error, "outline") {
+		t.Fatalf("blocker should identify missing dependency: %q", result.Response.Error)
+	}
+}
+
 func TestEnsureWorkflowV2PhaseWorkDirNormalizesProjectPath(t *testing.T) {
 	projectPath := filepath.Join(t.TempDir(), "presentation_design")
 	state := &v2.WorkflowState{

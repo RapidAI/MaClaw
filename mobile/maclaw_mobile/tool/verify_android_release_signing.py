@@ -31,6 +31,7 @@ REQUIRED_GITIGNORE_MARKERS = (
     'mobile/maclaw_mobile/android/key.properties',
     'mobile/maclaw_mobile/android/*.jks',
     'mobile/maclaw_mobile/android/*.keystore',
+    'mobile/maclaw_mobile/qa-signing/',
 )
 
 REQUIRED_KEY_PROPERTIES_EXAMPLE_MARKERS = (

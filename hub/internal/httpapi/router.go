@@ -124,6 +124,7 @@ func NewRouter(
 		tenantIMRuntimeStopper = stopper
 	}
 	mux := http.NewServeMux()
+	ConfigureMobileLLMAuthorizationPersistence(system)
 	requireAdmin := func(h http.HandlerFunc) http.HandlerFunc {
 		return RequireAdmin(admins, h, tenantRepo)
 	}
@@ -400,6 +401,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/realtime", MobileRealtimeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-sessions", MobileLLMDesktopQRSessionHandler(identity))
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
+	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
 	mux.HandleFunc("POST /api/mobile/documents/drafts", MobileDocumentDraftHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))

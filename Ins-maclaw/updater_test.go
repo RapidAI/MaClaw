@@ -179,6 +179,28 @@ func TestTargetAssetNameForPlatforms(t *testing.T) {
 	}
 }
 
+func TestDownloadStartMessageShowsSelectedNodeAndArchitecture(t *testing.T) {
+	old := activeLanguage
+	defer func() { activeLanguage = old }()
+
+	activeLanguage = langEnglish
+	got := downloadStartMessage("r2", "linux", "arm64", "MaClaw-aarch64-u2404.AppImage")
+	for _, want := range []string{"Selected download node: r2", "Current system architecture: linux/arm64", "MaClaw-aarch64-u2404.AppImage"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("download start message %q does not contain %q", got, want)
+		}
+	}
+}
+
+func TestDownloadNodeName(t *testing.T) {
+	if got := downloadNodeName("https://mirror.example:8443/releases/MaClaw-Setup.exe"); got != "mirror.example:8443" {
+		t.Fatalf("download node = %q", got)
+	}
+	if got := downloadNodeName("not a URL"); got != "not a URL" {
+		t.Fatalf("invalid download node = %q", got)
+	}
+}
+
 func TestSplitDownloadURLsDedupes(t *testing.T) {
 	got := splitDownloadURLs(" https://a.example/file\nhttps://b.example/file\nhttps://a.example/file\t")
 	want := []string{"https://a.example/file", "https://b.example/file"}

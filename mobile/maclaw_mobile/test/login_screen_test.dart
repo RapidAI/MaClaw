@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
+import 'package:maclaw_mobile/core/api/official_service.dart';
 import 'package:maclaw_mobile/features/auth/auth_service.dart';
 import 'package:maclaw_mobile/features/auth/login_screen.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
@@ -10,6 +11,7 @@ class _HubDiscoverySessionController extends SessionController {
   String _hubUrl = '';
   String? verifiedCode;
   final requestedPhones = <String>[];
+  bool failRequest = false;
 
   @override
   String get currentHubUrl => _hubUrl;
@@ -21,6 +23,15 @@ class _HubDiscoverySessionController extends SessionController {
   Future<PhoneLoginRequestResult> requestPhoneLogin({
     required String phoneNumber,
   }) async {
+    if (failRequest) {
+      throw const OfficialHubCenterUnavailableException([
+        OfficialHubCenterAttempt(
+          url: 'https://hubs.mypapers.top',
+          available: false,
+          message: 'HTTP 502',
+        ),
+      ]);
+    }
     return PhoneLoginRequestResult(
       status: 'sent',
       message: 'code sent',
@@ -107,10 +118,20 @@ void main() {
     await tester.tap(find.text('发送验证码'));
     await tester.pump();
 
-    expect(find.text('https://hubs.maclaw.top'), findsOneWidget);
-    expect(find.text('https://tenant-a.maclaw.top'), findsOneWidget);
-    expect(find.text('官方接入状态'), findsOneWidget);
-    expect(find.byIcon(Icons.verified_outlined), findsOneWidget);
+    expect(find.text('https://hubs.maclaw.top'), findsNothing);
+    expect(find.text('https://tenant-a.maclaw.top'), findsNothing);
+    expect(find.textContaining('HubCenter'), findsNothing);
+    expect(find.text('官方接入状态'), findsNothing);
+    expect(find.byIcon(Icons.verified_outlined), findsNothing);
+    expect(find.text('重新发送验证码（60秒）'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, '重新发送验证码（60秒）'),
+          )
+          .onPressed,
+      isNull,
+    );
 
     await tester.enterText(find.byType(TextField).at(1), '303246');
     await tester.ensureVisible(find.text('验证并登录'));
@@ -122,6 +143,27 @@ void main() {
       find.text('登录成功，已接入手机号账户的官方服务 credits。'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('phone login failures do not render HubCenter candidates',
+      (tester) async {
+    final controller = _HubDiscoverySessionController()..failRequest = true;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(() => controller),
+        ],
+        child: const MaterialApp(home: LoginScreen()),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField).first, '19900001111');
+    await tester.tap(find.text('发送验证码'));
+    await tester.pump();
+
+    expect(find.text('验证码发送失败，请检查网络或稍后重试。'), findsOneWidget);
+    expect(find.textContaining('https://'), findsNothing);
+    expect(find.textContaining('HubCenter'), findsNothing);
   });
 }
 

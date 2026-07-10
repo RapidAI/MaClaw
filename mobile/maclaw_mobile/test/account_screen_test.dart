@@ -308,6 +308,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('扫码授权'), findsOneWidget);
+    expect(find.text('恢复官方 LLM'), findsOneWidget);
+    expect(find.text('撤销授权'), findsOneWidget);
     expect(apiClient.requestedStatusPath, '/api/llm/service/status');
     expect(find.text('官方 credits'), findsOneWidget);
     expect(find.text('80'), findsOneWidget);
@@ -315,6 +317,8 @@ void main() {
     expect(find.text('12.50'), findsOneWidget);
     expect(find.text('maclaw-chat'), findsOneWidget);
     expect(find.textContaining('助手联网'), findsWidgets);
+    expect(find.textContaining('本地通知'), findsOneWidget);
+    expect(find.textContaining('远程 Push'), findsNothing);
     expect(find.text('联网搜索'), findsNothing);
 
     expect(find.textContaining('助手联网接口'), findsOneWidget);
@@ -368,6 +372,7 @@ void main() {
     expect(find.text('phone:user19900001111'), findsNothing);
     expect(find.text('MaClaw 官方 credits 使用 phone:199****1111'), findsNothing);
     expect(find.text('phone:199****1111'), findsOneWidget);
+    expect(find.text('恢复官方 LLM'), findsNothing);
   });
 
   testWidgets('clears local work records without deleting server access data',
@@ -464,7 +469,12 @@ void main() {
 
   testWidgets('requests notification permission from account screen',
       (tester) async {
-    final notifications = _FakeNotificationService();
+    final notifications = _FakeNotificationService(
+      result: const MobileNotificationPermissionResult(
+        androidGranted: true,
+        grantId: 'notification-account-test',
+      ),
+    );
     await _pumpAccount(tester, notifications: notifications);
 
     await tester.scrollUntilVisible(
@@ -476,7 +486,14 @@ void main() {
     await tester.pump();
 
     expect(notifications.requested, 1);
-    expect(find.text('通知权限已开启，长任务和 SSH 异常会提醒你'), findsOneWidget);
+    expect(
+      find.textContaining('通知权限已开启，长任务和 SSH 异常会提醒你'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('permission-grant:notification-account-test'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('shows denied notification permission result from account screen',
@@ -567,7 +584,7 @@ void main() {
       'https://llm.example.com/v1\nsk-test-secret',
     );
     await tester.tap(find.text('确认授权'));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(_qrAuthorizationPayloads, isEmpty);
     expect(

@@ -78,6 +78,22 @@ background session managers.
 The phone should not call Go `corelib` directly. Flutter calls Hub APIs and
 realtime streams; the Hub/agent side may reuse the existing Go SSH manager.
 
+## Third-Party LLM Authorization Storage
+
+Desktop GUI LLM QR authorization is tenant- and user-scoped at the Hub. It is
+never returned to mobile as a provider key. To preserve a delegated provider
+across a Hub restart, deploy the Hub with
+`MACLAW_MOBILE_LLM_ENCRYPTION_KEY`: an exact 32-byte key encoded as base64 or
+64 hexadecimal characters. The Hub encrypts the complete delegated provider
+record using AES-256-GCM, binds the ciphertext to the tenant and user as
+additional authenticated data, and stores only the ciphertext in tenant-scoped
+system settings. Revoking the authorization deletes both the encrypted record
+and the in-memory entry, returning the mobile account to MaClaw official
+credits.
+
+Without that key, delegated authorization remains memory-only and is never
+written as plaintext. It will need to be scanned again after a Hub restart.
+
 ## Foreground Agent Flow
 
 The mobile AI assistant is allowed to initiate emergency server maintenance,
@@ -292,9 +308,11 @@ the authorized MaClaw GUI/agent side rather than the phone.
 
 Mobile realtime parsing now recognizes `ssh_session` events and caches backend
 SSH session status/output updates for the server surface. Hub worker updates
-now include `output_chunk` and `output_seq` fields, and the desktop worker can
-continue claiming its active backend SSH sessions so it can report incremental
-backend session output rather than only the first connection snapshot.
+carry `output_chunk`; the Hub assigns the next monotonic `output_seq` when a
+new chunk is accepted and includes that sequence in the worker response and
+Realtime event. This keeps ordering authoritative at the Hub while allowing
+the desktop worker to continue claiming active backend SSH sessions and report
+incremental output rather than only the first connection snapshot.
 
 Server-profile sync is now available in the first direction needed for mobile
 emergency use: the desktop worker publishes sanitized `SSHHosts` metadata to

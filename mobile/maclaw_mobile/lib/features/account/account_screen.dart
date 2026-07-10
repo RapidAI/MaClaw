@@ -25,6 +25,8 @@ final mobileLlmServiceStatusProvider =
   return client.llmServiceStatus(session.bootstrap!.services.llmStatusPath);
 });
 
+final accountRealtimeCheckProvider = StateProvider<String?>((ref) => null);
+
 class AccountScreen extends ConsumerWidget {
   const AccountScreen({super.key});
 
@@ -171,8 +173,10 @@ class AccountScreen extends ConsumerWidget {
     WidgetRef ref,
     MobileBootstrap? bootstrap,
   ) async {
+    ref.read(accountRealtimeCheckProvider.notifier).state = 'checking';
     final services = bootstrap?.services;
     if (services == null || !services.realtimeConfigured) {
+      ref.read(accountRealtimeCheckProvider.notifier).state = 'failed';
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('官方服务尚未下发实时通道配置')),
       );
@@ -182,11 +186,13 @@ class AccountScreen extends ConsumerWidget {
       await ref
           .read(mobileRealtimeClientProvider)
           .pingOnce(path: services.realtimePath);
+      ref.read(accountRealtimeCheckProvider.notifier).state = 'success';
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('实时通道自检成功')),
       );
     } catch (error) {
+      ref.read(accountRealtimeCheckProvider.notifier).state = 'failed';
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('实时通道自检失败：$error')),
@@ -202,12 +208,54 @@ class AccountScreen extends ConsumerWidget {
     );
   }
 
+  Future<void> _revokeThirdPartyLlmAuthorization(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('撤销第三方 LLM 授权？'),
+        content: const Text(
+          '撤销后，移动端会立即恢复使用该手机号账户的 MaClaw 官方 credits。'
+          '之后仍可通过桌面 GUI 重新扫码授权。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('撤销授权'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await ref
+          .read(sessionControllerProvider.notifier)
+          .revokeThirdPartyLlmAuthorization();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已恢复使用 MaClaw 官方 LLM credits')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('撤销第三方 LLM 授权失败：$error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider).valueOrNull;
     final bootstrap = session?.bootstrap;
     final preferences = ref.watch(appPreferencesProvider);
     final llmServiceStatus = ref.watch(mobileLlmServiceStatusProvider);
+    final realtimeCheck = ref.watch(accountRealtimeCheckProvider);
     return ScreenScaffold(
       title: '我的',
       subtitle: '官方服务绑定、额度、模型/助手联网状态、凭据和本地隐私数据。',
@@ -217,6 +265,20 @@ class AccountScreen extends ConsumerWidget {
         icon: const Icon(Icons.logout),
       ),
       children: [
+        if (realtimeCheck != null)
+          Card(
+            child: ListTile(
+              leading: Icon(
+                realtimeCheck == 'success'
+                    ? Icons.check_circle_outline
+                    : realtimeCheck == 'failed'
+                        ? Icons.error_outline
+                        : Icons.sync,
+              ),
+              title: Text(_realtimeCheckTitle(realtimeCheck)),
+              subtitle: Text(_realtimeCheckSubtitle(realtimeCheck)),
+            ),
+          ),
         if (bootstrap == null)
           ActionTile(
             icon: Icons.login_outlined,
@@ -227,6 +289,17 @@ class AccountScreen extends ConsumerWidget {
                 ref.read(sessionControllerProvider.notifier).signOut(),
           )
         else ...[
+          if (!isMobileLlmConfigured(bootstrap)) ...[
+            ActionTile(
+              icon: Icons.settings_suggest_outlined,
+              title: '配置 MaClaw LLM 服务',
+              subtitle:
+                  '当前账户尚未绑定可用 LLM。官方服务通过手机号账户 credits 使用；如需第三方服务，请扫描 MaClaw GUI 生成的授权二维码。',
+              actionLabel: '打开配置',
+              onPressed: () => _openLlmQrAuthorization(context),
+            ),
+            const SizedBox(height: 12),
+          ],
           _AccountSummaryCard(
             bootstrap: bootstrap,
             serviceUrl: session?.hubUrl ?? '',
@@ -246,6 +319,16 @@ class AccountScreen extends ConsumerWidget {
             actionLabel: '扫码授权',
             onPressed: () => _openLlmQrAuthorization(context),
           ),
+          if (bootstrap.llmAccess.desktopQrDelegated) ...[
+            const SizedBox(height: 12),
+            ActionTile(
+              icon: Icons.undo_outlined,
+              title: '恢复官方 LLM',
+              subtitle: '撤销当前桌面 GUI 二维码授权，恢复使用手机号账户绑定的 MaClaw 官方 credits。',
+              actionLabel: '撤销授权',
+              onPressed: () => _revokeThirdPartyLlmAuthorization(context, ref),
+            ),
+          ],
           const SizedBox(height: 12),
           _ServiceStatusCard(bootstrap: bootstrap),
           const SizedBox(height: 12),
@@ -305,6 +388,25 @@ class AccountScreen extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  String _realtimeCheckTitle(String status) {
+    return switch (status) {
+      'checking' => '\u5b9e\u65f6\u901a\u9053\u68c0\u67e5\u4e2d',
+      'success' => '\u5b9e\u65f6\u901a\u9053\u53ef\u7528',
+      _ => '\u5b9e\u65f6\u901a\u9053\u68c0\u67e5\u5931\u8d25',
+    };
+  }
+
+  String _realtimeCheckSubtitle(String status) {
+    return switch (status) {
+      'checking' =>
+        '\u6b63\u5728\u8fde\u63a5\u5b98\u65b9 WebSocket\uff0c\u8bf7\u7a0d\u5019\u2026',
+      'success' =>
+        '\u5df2\u53d1\u9001\u79fb\u52a8\u7aef ping\uff0c\u53ef\u7ee7\u7eed\u4f7f\u7528\u957f\u4efb\u52a1\u548c\u6570\u5b57\u5458\u5de5\u72b6\u6001\u901a\u9053\u3002',
+      _ =>
+        '\u8bf7\u68c0\u67e5\u5b98\u65b9 Hub \u7f51\u7edc\u914d\u7f6e\u540e\u91cd\u8bd5\u3002',
+    };
   }
 
   String _notificationSubtitle(MobileFeatures? features) {
@@ -768,10 +870,9 @@ class _FeatureStatusCard extends StatelessWidget {
                   label: '数字员工',
                   enabled: features.digitalEmployees,
                 ),
-                _FeatureChip(
-                  label: '通知',
-                  enabled: features.pushNotifications,
-                ),
+                const _FeatureChip(label: '本地通知', enabled: true),
+                if (features.pushNotifications)
+                  const _FeatureChip(label: '远程 Push', enabled: true),
               ],
             ),
           ],

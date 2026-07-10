@@ -141,6 +141,9 @@ For a single local readiness summary, run:
   result has either cited answer evidence or a document upload task ID.
 - Share a URL into the app and confirm it remains a citation even if assistant
   online access returns no extra source.
+- Share text, a URL, or a supported document while signed out; complete phone
+  login and confirm the pending item is consumed by the assistant or document
+  import flow rather than discarded.
 - Take a photo or import a file from the assistant screen and confirm it enters
   the document parsing flow.
 - Create, edit, insert a table, add a comment, run AI processing, export, and
@@ -166,7 +169,7 @@ For a single local readiness summary, run:
   brief includes phone-friendly output requirements and high-risk command draft
   rules, poll status, copy/share the result, and verify remote-side
   authorization rules are still enforced.
-- Confirm document/export, digital employee, and SSH abnormal notifications are
+- Confirm assistant long-task, document/export, digital employee, and SSH abnormal notifications are
   delivered with typed payload or tap/open evidence, including document,
   `digital-employee-task:`, and `server-profile:` payload targets.
 - Confirm offline/weak-network warnings appear and that assistant online,

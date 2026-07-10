@@ -316,40 +316,12 @@ func svMultiHeadAttentionFused(out, qkv []float32, nFrames, nHeads, headDim, hid
 func packQKVHeads(qDst, kDst, vDst, qkv []float32, nFrames, nHeads, headDim, hidden int, qScale float32) {
 	qkvStride := 3 * hidden
 	if headDim == 128 {
-		// Two-frame outer: keep qkv rows streaming with better ILP.
-		// PackQKV128 fuses Q*scale + K + V for one head (fewer call boundaries).
-		// nHeads=4 (SenseVoice hidden=512) is fully unrolled.
+		// nHeads=4 (SenseVoice): PackQKV4Heads128 packs all heads per frame
+		// (one call keeps the [Q|K|V] row hot vs 4×PackQKV128).
 		f := 0
 		if nHeads == 4 {
-			for ; f+1 < nFrames; f += 2 {
-				row0 := qkv[f*qkvStride:]
-				row1 := qkv[(f+1)*qkvStride:]
-				// head 0..3
-				for h, hOff := 0, 0; h < 4; h, hOff = h+1, hOff+128 {
-					d0 := (h*nFrames + f) * 128
-					d1 := d0 + 128
-					tensor.PackQKV128(
-						qDst[d0:d0+128], kDst[d0:d0+128], vDst[d0:d0+128],
-						row0[hOff:hOff+128], row0[hidden+hOff:hidden+hOff+128], row0[2*hidden+hOff:2*hidden+hOff+128],
-						qScale,
-					)
-					tensor.PackQKV128(
-						qDst[d1:d1+128], kDst[d1:d1+128], vDst[d1:d1+128],
-						row1[hOff:hOff+128], row1[hidden+hOff:hidden+hOff+128], row1[2*hidden+hOff:2*hidden+hOff+128],
-						qScale,
-					)
-				}
-			}
 			for ; f < nFrames; f++ {
-				row := qkv[f*qkvStride:]
-				for h, hOff := 0, 0; h < 4; h, hOff = h+1, hOff+128 {
-					dstOff := (h*nFrames + f) * 128
-					tensor.PackQKV128(
-						qDst[dstOff:dstOff+128], kDst[dstOff:dstOff+128], vDst[dstOff:dstOff+128],
-						row[hOff:hOff+128], row[hidden+hOff:hidden+hOff+128], row[2*hidden+hOff:2*hidden+hOff+128],
-						qScale,
-					)
-				}
+				tensor.PackQKV4Heads128(qDst, kDst, vDst, qkv[f*qkvStride:], nFrames, f, qScale)
 			}
 			return
 		}

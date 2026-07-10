@@ -1,11 +1,20 @@
 package v2
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
+
+type failingSaveWorkflowStore struct {
+	*MemoryStore
+}
+
+func (s *failingSaveWorkflowStore) Save(*WorkflowState) error {
+	return errors.New("injected save failure")
+}
 
 func setupTestMachine() *StateMachine {
 	store := NewMemoryStore()
@@ -17,6 +26,71 @@ func setupTestMachine() *StateMachine {
 		return ClassifyConfirmIntentKeyword(userText)
 	})
 	return m
+}
+
+func TestApplyReviewIntentRestoresStateWhenSaveFails(t *testing.T) {
+	store := &failingSaveWorkflowStore{MemoryStore: NewMemoryStore()}
+	templates := NewTemplateRegistry()
+	RegisterBuiltinTemplates(templates)
+	m := NewStateMachine(store, templates)
+
+	state := &WorkflowState{
+		ID:     "wf-failure",
+		UserID: "user-failure",
+		Type:   "presentation_design",
+		Status: StatusActive,
+		Phases: []Phase{{
+			ID:     "audience_goal",
+			Status: PhaseWaitingConfirm,
+			Output: "已生成的受众分析",
+		}},
+	}
+	// Seed the embedded memory store directly; the outer store rejects writes.
+	store.MemoryStore.states[state.UserID] = state
+
+	for _, intent := range []string{"cancel", "switch_task", "supplement"} {
+		if _, err := m.ApplyReviewIntent(state.UserID, intent, "补充信息"); err == nil {
+			t.Fatalf("ApplyReviewIntent(%q) should fail when Save fails", intent)
+		}
+		if state.Status != StatusActive || state.Phases[0].Status != PhaseWaitingConfirm || state.Phases[0].Output != "已生成的受众分析" {
+			t.Fatalf("ApplyReviewIntent(%q) leaked an unpersisted mutation: %#v", intent, state)
+		}
+	}
+}
+
+func TestRecordOutputAndAdvanceRestoreStateWhenSaveFails(t *testing.T) {
+	store := &failingSaveWorkflowStore{MemoryStore: NewMemoryStore()}
+	templates := NewTemplateRegistry()
+	RegisterBuiltinTemplates(templates)
+	m := NewStateMachine(store, templates)
+
+	state := &WorkflowState{
+		ID:     "wf-output-failure",
+		UserID: "user-output-failure",
+		Type:   "presentation_design",
+		Status: StatusActive,
+		Phases: []Phase{
+			{ID: "audience_goal", Status: PhaseRunning, NeedsConfirm: true},
+			{ID: "outline", Status: PhasePending},
+		},
+	}
+	store.MemoryStore.states[state.UserID] = state
+
+	if err := m.RecordOutput(state.UserID, "受众分析"); err == nil {
+		t.Fatal("RecordOutput should fail when Save fails")
+	}
+	if state.CurrentPhase != 0 || state.Phases[0].Status != PhaseRunning || state.Phases[0].Output != "" {
+		t.Fatalf("RecordOutput leaked an unpersisted mutation: %#v", state)
+	}
+
+	state.Phases[0].Status = PhaseWaitingConfirm
+	state.Phases[0].Output = "受众分析"
+	if _, err := m.ApplyReviewIntent(state.UserID, "confirm", ""); err == nil {
+		t.Fatal("confirm should fail when advancing cannot be saved")
+	}
+	if state.CurrentPhase != 0 || state.Status != StatusActive || state.Phases[0].Status != PhaseWaitingConfirm || state.Phases[1].Status != PhasePending {
+		t.Fatalf("advance leaked an unpersisted mutation: %#v", state)
+	}
 }
 
 func TestCreate(t *testing.T) {

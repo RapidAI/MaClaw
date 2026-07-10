@@ -277,6 +277,33 @@ func PackQKV128(dstQ, dstK, dstV, srcQ, srcK, srcV []float32, scale float32) {
 	Copy128(dstV, srcV)
 }
 
+// PackQKV4Heads128 packs all 4 SenseVoice heads for one frame.
+// qkv is one frame of fused [Q|K|V] (len≥1536); q/k/vDst are [4][nFrames][128].
+func PackQKV4Heads128(qDst, kDst, vDst, qkv []float32, nFrames, f int, scale float32) {
+	need := 4 * nFrames * 128
+	if nFrames <= 0 || f < 0 || f >= nFrames ||
+		len(qDst) < need || len(kDst) < need || len(vDst) < need || len(qkv) < 1536 {
+		return
+	}
+	if hasAVX2andFMA {
+		packQKV4Heads128AVX2(&qDst[0], &kDst[0], &vDst[0], &qkv[0], nFrames, f, scale)
+		return
+	}
+	const hidden = 512
+	for h := 0; h < 4; h++ {
+		hOff := h * 128
+		dstOff := (h*nFrames + f) * 128
+		PackQKV128(
+			qDst[dstOff:dstOff+128], kDst[dstOff:dstOff+128], vDst[dstOff:dstOff+128],
+			qkv[hOff:hOff+128], qkv[hidden+hOff:hidden+hOff+128], qkv[2*hidden+hOff:2*hidden+hOff+128],
+			scale,
+		)
+	}
+}
+
+//go:noescape
+func packQKV4Heads128AVX2(qDst, kDst, vDst, qkv *float32, nFrames, f int, scale float32)
+
 //go:noescape
 func wsumBatched4Add128AVX2(o0, o1, o2, o3, v *float32, w0, w1, w2, w3 float32)
 
@@ -291,6 +318,9 @@ func wsumBatched4SetAdd128DualAVX2(o0, o1, o2, o3, va, vb *float32, wa0, wa1, wa
 
 //go:noescape
 func wsumBatched8Add128DualAVX2(o0, o1, o2, o3, o4, o5, o6, o7, va, vb, wa, wb *float32)
+
+//go:noescape
+func wsumBatched8Add128DualAVX512(o0, o1, o2, o3, o4, o5, o6, o7, va, vb, wa, wb *float32)
 
 //go:noescape
 func wsumBatched8SetAdd128DualAVX2(o0, o1, o2, o3, o4, o5, o6, o7, va, vb, wa, wb *float32)
@@ -343,6 +373,13 @@ func wsumBatched4SetAdd128Dual(o0, o1, o2, o3, va, vb []float32, wa0, wa1, wa2, 
 
 // wsumBatched8Add128Dual: out_t += wa[t]*va + wb[t]*vb.
 func wsumBatched8Add128Dual(o0, o1, o2, o3, o4, o5, o6, o7, va, vb []float32, wa, wb *[8]float32) {
+	if hasAVX512 && len(va) >= 128 && len(vb) >= 128 && len(o0) >= 128 {
+		wsumBatched8Add128DualAVX512(
+			&o0[0], &o1[0], &o2[0], &o3[0], &o4[0], &o5[0], &o6[0], &o7[0],
+			&va[0], &vb[0], &wa[0], &wb[0],
+		)
+		return
+	}
 	if hasAVX2andFMA && len(va) >= 128 && len(vb) >= 128 && len(o0) >= 128 {
 		wsumBatched8Add128DualAVX2(
 			&o0[0], &o1[0], &o2[0], &o3[0], &o4[0], &o5[0], &o6[0], &o7[0],

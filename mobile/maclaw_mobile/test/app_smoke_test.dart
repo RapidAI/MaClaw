@@ -10,7 +10,11 @@ import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
 import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
 import 'package:maclaw_mobile/core/settings/app_preferences.dart';
 import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
+import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
+import 'package:maclaw_mobile/core/shared_intents/shared_intent_bootstrap.dart';
+import 'package:maclaw_mobile/features/assistant/assistant_controller.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
+import 'package:maclaw_mobile/features/documents/documents_controller.dart';
 
 class _SignedOutSessionController extends SessionController {
   @override
@@ -32,6 +36,63 @@ class _SignedInSessionController extends SessionController {
 class _LoadingSessionController extends SessionController {
   @override
   Future<SessionState> build() => Completer<SessionState>().future;
+}
+
+class _TransitioningSessionController extends SessionController {
+  @override
+  Future<SessionState> build() async => const SessionState.signedOut();
+
+  void completeLogin() {
+    state = AsyncData(
+      SessionState.signedIn(
+        hubUrl: 'https://tenant-a.maclaw.top',
+        bootstrap: _bootstrap(
+          llmAccess: const MobileLlmAccess(
+            mode: 'maclaw_official',
+            status: 'available',
+            authorizationId: '',
+            authorizedBy: '',
+            creditsAccount: 'phone:19900001111',
+            authorizedAt: null,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingSharedLinkController extends MobileSharedIntentController {
+  @override
+  MobileSharedIntent? build() => MobileSharedIntent(
+        id: 'pending-link-after-login',
+        kind: MobileSharedIntentKind.link,
+        value: 'https://status.example.com/incident/42',
+        message: '请在登录后继续分析这个链接',
+        receivedAt: DateTime.utc(2026, 7, 10),
+      );
+}
+
+class _PendingSharedDocumentController extends MobileSharedIntentController {
+  @override
+  MobileSharedIntent? build() => MobileSharedIntent(
+        id: 'pending-document-after-login',
+        kind: MobileSharedIntentKind.file,
+        value: '/tmp/incident-report.pdf',
+        mimeType: 'application/pdf',
+        receivedAt: DateTime.utc(2026, 7, 10),
+      );
+}
+
+class _PendingDocumentFlowController extends DocumentsController {
+  static final uploadedPaths = <String>[];
+
+  @override
+  Future<DocumentsState> build() async => const DocumentsState();
+
+  @override
+  Future<void> uploadSharedDocument(String path) async {
+    uploadedPaths.add(path);
+  }
 }
 
 class _TestAppPreferencesController extends AppPreferencesController {
@@ -97,9 +158,189 @@ void main() {
     expect(find.text(_llmSetupTitle), findsNothing);
     expect(find.text(_connectOfficialService), findsNothing);
     expect(find.text(_connectQrProvider), findsNothing);
-    expect(find.textContaining('https://hubs.mypapers.top'), findsOneWidget);
-    expect(find.textContaining('https://hubs.maclaw.top'), findsOneWidget);
-    expect(find.textContaining('https://hubs2.maclaw.top'), findsOneWidget);
+    expect(find.textContaining('https://hubs.mypapers.top'), findsNothing);
+    expect(find.textContaining('https://hubs.maclaw.top'), findsNothing);
+    expect(find.textContaining('https://hubs2.maclaw.top'), findsNothing);
+  });
+
+  testWidgets('keeps a shared link pending until phone login completes',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 10),
+              ),
+            ),
+          ),
+          sessionControllerProvider.overrideWith(
+            _TransitioningSessionController.new,
+          ),
+          mobileSharedIntentProvider.overrideWith(
+            _PendingSharedLinkController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_phoneRegistrationLogin), findsOneWidget);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MaClawMobileApp)),
+      listen: false,
+    );
+    expect(
+      container.read(mobileSharedIntentProvider)?.id,
+      'pending-link-after-login',
+    );
+
+    (container.read(sessionControllerProvider.notifier)
+            as _TransitioningSessionController)
+        .completeLogin();
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(find.text(_assistantTab), findsWidgets);
+    expect(
+      container.read(assistantQueryProvider),
+      contains('https://status.example.com/incident/42'),
+    );
+    expect(container.read(mobileSharedIntentProvider), isNull);
+  });
+
+  testWidgets('keeps a shared document pending until phone login completes',
+      (tester) async {
+    _PendingDocumentFlowController.uploadedPaths.clear();
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 10),
+              ),
+            ),
+          ),
+          sessionControllerProvider.overrideWith(
+            _TransitioningSessionController.new,
+          ),
+          mobileSharedIntentProvider.overrideWith(
+            _PendingSharedDocumentController.new,
+          ),
+          documentsControllerProvider.overrideWith(
+            _PendingDocumentFlowController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_phoneRegistrationLogin), findsOneWidget);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MaClawMobileApp)),
+      listen: false,
+    );
+    expect(
+      container.read(mobileSharedIntentProvider)?.id,
+      'pending-document-after-login',
+    );
+
+    (container.read(sessionControllerProvider.notifier)
+            as _TransitioningSessionController)
+        .completeLogin();
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(
+      _PendingDocumentFlowController.uploadedPaths,
+      ['/tmp/incident-report.pdf'],
+    );
+    expect(container.read(mobileSharedIntentProvider), isNull);
+  });
+
+  testWidgets('keeps an opened task notification until phone login completes',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final notifications = MobileNotificationService();
+    notifications.handleNotificationResponse(
+      const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        payload: 'document-export:job-before-login',
+      ),
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(null),
+          mobileNotificationServiceProvider.overrideWithValue(notifications),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 10),
+              ),
+            ),
+          ),
+          sessionControllerProvider.overrideWith(
+            _TransitioningSessionController.new,
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+        ],
+        child: const MaClawMobileApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(_phoneRegistrationLogin), findsOneWidget);
+    expect(
+      notifications.latestOpenedNotification?.payload,
+      'document-export:job-before-login',
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MaClawMobileApp)),
+      listen: false,
+    );
+
+    (container.read(sessionControllerProvider.notifier)
+            as _TransitioningSessionController)
+        .completeLogin();
+    await tester.pumpAndSettle();
+
+    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_openedTaskNotification), findsOneWidget);
+    expect(find.textContaining('document-export:job-before-login'), findsOneWidget);
+    expect(notifications.consumeLastOpenedPayload(), isNull);
   });
 
   testWidgets('signed-in official LLM opens the assistant tab', (tester) async {
@@ -372,7 +613,7 @@ void main() {
     expect(notifications.latestOpenedNotification, isNull);
   });
 
-  testWidgets('signed-in missing LLM still opens the mobile workspace',
+  testWidgets('signed-in missing LLM opens the configuration screen',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     addTearDown(store.close);
@@ -409,10 +650,11 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pumpAndSettle();
 
-    expect(find.text(_llmSetupTitle), findsNothing);
-    expect(find.text(_assistantTab), findsWidgets);
-    expect(find.text(_mainConversation), findsOneWidget);
+    expect(find.textContaining('配置 MaClaw LLM 服务'), findsOneWidget);
+    expect(find.text(_assistantTab), findsOneWidget);
+    expect(find.text(_mainConversation), findsNothing);
   });
 
   testWidgets(
@@ -453,9 +695,10 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pumpAndSettle();
 
-    expect(find.text(_llmSetupTitle), findsNothing);
-    expect(find.text(_mainConversation), findsOneWidget);
+    expect(find.textContaining('配置 MaClaw LLM 服务'), findsOneWidget);
+    expect(find.text(_mainConversation), findsNothing);
   });
 
   test('mobileLlmConfigured accepts official and desktop QR delegated access',
@@ -618,6 +861,10 @@ void main() {
       mobileNotificationTargetPath('server-profile:srv-prod', features),
       '/servers',
     );
+    expect(
+      mobileNotificationTargetPath('assistant-task:llm-1', features),
+      '/assistant',
+    );
     expect(mobileNotificationTargetPath('raw-id', features), isNull);
     expect(
       mobileNotificationTargetPath(
@@ -662,6 +909,10 @@ void main() {
         '/assistant',
       ),
       '已打开任务提醒',
+    );
+    expect(
+      mobileNotificationRecoveryMessage('assistant-task:llm-1', '/assistant'),
+      '已打开任务提醒：请在 AI 助手页查看长任务结果',
     );
     expect(
       mobileNotificationRecoveryMessage('raw-id', null),

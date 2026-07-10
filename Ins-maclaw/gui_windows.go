@@ -42,17 +42,17 @@ const (
 	wizardClientHeight = 540
 
 	// Layout geometry: content area starts after sidebar
-	wizardSidebarWidth  = 178
-	wizardContentLeft   = 194  // sidebar + gap
-	wizardContentRight  = 750  // right margin from client edge
-	wizardPanelInset    = 20   // inset from content edges to panel interior
-	wizardPanelLeft     = wizardContentLeft + wizardPanelInset  // 214
-	wizardPanelRight    = wizardContentRight - wizardPanelInset // 730
-	wizardBrandItemH    = 66   // vertical stride between brand options
-	wizardBrandCardH    = 62   // visible card height (< stride to leave gap)
-	wizardButtonW       = 90
-	wizardButtonH       = 30
-	wizardButtonGap     = 16   // horizontal gap between buttons
+	wizardSidebarWidth = 178
+	wizardContentLeft  = 194                                   // sidebar + gap
+	wizardContentRight = 750                                   // right margin from client edge
+	wizardPanelInset   = 20                                    // inset from content edges to panel interior
+	wizardPanelLeft    = wizardContentLeft + wizardPanelInset  // 214
+	wizardPanelRight   = wizardContentRight - wizardPanelInset // 730
+	wizardBrandItemH   = 66                                    // vertical stride between brand options
+	wizardBrandCardH   = 62                                    // visible card height (< stride to leave gap)
+	wizardButtonW      = 90
+	wizardButtonH      = 30
+	wizardButtonGap    = 16 // horizontal gap between buttons
 
 	cwUseDefault      = 0x80000000
 	swHide            = 0
@@ -522,7 +522,12 @@ func startWizardInstall(hwnd uintptr) {
 			CheckOnly:      checkOnly,
 			NoLaunch:       noLaunch,
 			WaitInstaller:  true,
-			Log:            func(string) {},
+			Log: func(message string) {
+				wizardMu.Lock()
+				wizardProgressText = message
+				wizardMu.Unlock()
+				procPostMessageW.Call(hwnd, wmInstallProgress, 0, 0)
+			},
 			Progress: func(downloaded, total int64) {
 				text := fmt.Sprintf(tr("downloading.bytes"), humanBytes(downloaded))
 				if total > 0 {

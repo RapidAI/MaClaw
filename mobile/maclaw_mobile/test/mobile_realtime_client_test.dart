@@ -17,7 +17,8 @@ void main() {
   test('pingOnce connects to official realtime channel and closes it',
       () async {
     Uri? connectedUri;
-    final channel = _FakeWebSocketChannel();
+    final controller = StreamController<Object?>();
+    final channel = _FakeWebSocketChannel(stream: controller.stream);
     final client = MobileRealtimeClient(
       readToken: () async => null,
       readHubUrl: () async => 'https://tenant-a.maclaw.top',
@@ -27,7 +28,13 @@ void main() {
       },
     );
 
-    await client.pingOnce();
+    final ping = client.pingOnce();
+    await Future<void>.delayed(Duration.zero);
+    controller
+      ..add(jsonEncode({'type': 'ready'}))
+      ..add(jsonEncode({'type': 'pong'}));
+    await ping;
+    await controller.close();
 
     expect(
       connectedUri.toString(),
@@ -38,6 +45,21 @@ void main() {
       'type': 'ping',
       'client': 'maclaw_mobile',
     });
+    expect(channel.sink.closed, isTrue);
+  });
+
+  test('pingOnce fails when Hub does not acknowledge the ping', () async {
+    final channel = _FakeWebSocketChannel();
+    final client = MobileRealtimeClient(
+      readToken: () async => null,
+      readHubUrl: () async => 'https://tenant-a.maclaw.top',
+      connect: (_) => channel,
+    );
+
+    await expectLater(
+      client.pingOnce(timeout: const Duration(milliseconds: 20)),
+      throwsA(isA<TimeoutException>()),
+    );
     expect(channel.sink.closed, isTrue);
   });
 
@@ -229,6 +251,28 @@ void main() {
     expect(received.map((event) => event.type), ['ready', 'pong']);
     expect(channel.sink.closed, isTrue);
   });
+
+  test('events preserves stream completion when channel close fails', () async {
+    final controller = StreamController<Object?>();
+    final channel = _FakeWebSocketChannel(
+      stream: controller.stream,
+      throwOnClose: true,
+    );
+    final client = MobileRealtimeClient(
+      readToken: () async => null,
+      readHubUrl: () async => 'https://tenant-a.maclaw.top',
+      connect: (_) => channel,
+    );
+
+    final received = <MobileRealtimeEvent>[];
+    final subscription = client.events().listen(received.add);
+    controller.add(jsonEncode({'type': 'pong'}));
+    await controller.close();
+    await subscription.asFuture<void>();
+
+    expect(received.single.pong, isTrue);
+    expect(channel.sink.closed, isTrue);
+  });
 }
 
 class _FakeWebSocketChannel implements WebSocketChannel {
@@ -236,10 +280,12 @@ class _FakeWebSocketChannel implements WebSocketChannel {
 
   _FakeWebSocketChannel({
     Stream? stream,
-  }) : _stream = stream ?? const Stream.empty();
+    bool throwOnClose = false,
+  })  : _stream = stream ?? const Stream.empty(),
+        sink = _FakeWebSocketSink(throwOnClose: throwOnClose);
 
   @override
-  final _FakeWebSocketSink sink = _FakeWebSocketSink();
+  final _FakeWebSocketSink sink;
 
   @override
   Future<void> get ready => Future<void>.value();
@@ -261,9 +307,12 @@ class _FakeWebSocketChannel implements WebSocketChannel {
 }
 
 class _FakeWebSocketSink implements WebSocketSink {
+  final bool throwOnClose;
   final List<Object?> sent = [];
   bool closed = false;
   final Completer<void> _done = Completer<void>();
+
+  _FakeWebSocketSink({this.throwOnClose = false});
 
   @override
   void add(event) => sent.add(event);
@@ -281,6 +330,9 @@ class _FakeWebSocketSink implements WebSocketSink {
   @override
   Future close([int? closeCode, String? closeReason]) async {
     closed = true;
+    if (throwOnClose) {
+      throw StateError('close failed');
+    }
     if (!_done.isCompleted) {
       _done.complete();
     }

@@ -9,6 +9,14 @@ typedef LlmQrPayloadScannerBuilder = Widget Function(
   ValueChanged<String> onPayload,
 );
 
+String friendlyDesktopLlmAuthorizationError(Object error) {
+  final message = error.toString().toLowerCase();
+  if (message.contains('expired')) {
+    return '桌面 GUI 授权二维码已过期，请回到电脑端重新生成。';
+  }
+  return '桌面 GUI 授权服务暂时不可用，请确认二维码有效后重试。';
+}
+
 class LlmQrAuthorizationScreen extends ConsumerStatefulWidget {
   final Widget? scanner;
   final LlmQrPayloadScannerBuilder? scannerBuilder;
@@ -43,7 +51,7 @@ class _LlmQrAuthorizationScreenState
       parseMaclawDesktopLlmQrPayload(text);
     } on FormatException catch (error) {
       setState(() {
-        _message = '授权失败：${error.message}';
+        _message = '授权失败：${_friendlyQrError(error.message)}';
       });
       return;
     }
@@ -64,9 +72,19 @@ class _LlmQrAuthorizationScreenState
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _message = '授权失败：$error';
+        _message = '授权失败：${friendlyDesktopLlmAuthorizationError(error)}';
       });
     }
+  }
+
+  String _friendlyQrError(String message) {
+    if (message.contains('expired')) {
+      return '桌面 GUI 授权二维码已过期，请回到电脑端重新生成。';
+    }
+    if (message.contains('ISO-8601')) {
+      return '桌面 GUI 授权二维码时间格式无效，请重新生成。';
+    }
+    return message;
   }
 
   void _handleDetect(BarcodeCapture capture) {

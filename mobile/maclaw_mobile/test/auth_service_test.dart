@@ -16,9 +16,10 @@ void main() {
   test('requestPhoneLogin resolves Hub through HubCenter and sends SMS on Hub',
       () async {
     final adapter = _RecordingAuthAdapter((request) {
-      if (request.path == '/api/entry/probe') {
+      if (request.path == '/api/entry/resolve') {
         return _jsonResponse({
           'mode': 'matched',
+          'default_hub_id': 'hub-a',
           'hubs': [
             {
               'hub_id': 'hub-a',
@@ -35,6 +36,7 @@ void main() {
         'tenant_id': 'tenant-a',
         'expires_min': 5,
         'code_length': 6,
+        'resend_cooldown_seconds': 42,
       });
     });
     final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
@@ -49,9 +51,10 @@ void main() {
     expect(result.hubCenterUrl, maclawDefaultHubCenterUrl);
     expect(result.expiresMinutes, 5);
     expect(result.codeLength, 6);
+    expect(result.resendCooldownSeconds, 42);
     expect(adapter.requests, hasLength(2));
     expect(adapter.requests.first.baseUrl, maclawDefaultHubCenterUrl);
-    expect(adapter.requests.first.path, '/api/entry/probe');
+    expect(adapter.requests.first.path, '/api/entry/resolve');
     expect(adapter.requests.first.data, {'phone_number': '19900001111'});
     expect(adapter.requests.last.baseUrl, 'https://tenant-a.maclaw.top');
     expect(adapter.requests.last.path, '/api/enroll/sms/send-code');
@@ -61,13 +64,83 @@ void main() {
     });
   });
 
+  test(
+      'requestPhoneLogin accepts the live multiple-Hub discovery response shape',
+      () async {
+    final adapter = _RecordingAuthAdapter((request) {
+      if (request.path == '/api/entry/resolve') {
+        return _jsonResponse({
+          'email': 'phone:19900000000',
+          'mode': 'multiple',
+          'default_hub_id': 'hub-live',
+          'default_pwa_url': 'https://hub.mypapers.top/app',
+          'hubs': [
+            {
+              'hub_id': 'hub-live',
+              'base_url': 'https://hub.mypapers.top',
+              'status': 'online',
+            },
+            {
+              'hub_id': 'hub-live',
+              'tenant_id': 'vantagics',
+              'tenant_name': 'Vantagics',
+              'name': 'MaClaw Official',
+              'base_url': 'https://hub.mypapers.top',
+              'status': 'online',
+            },
+          ],
+        });
+      }
+      return _jsonResponse({
+        'status': 'sent',
+        'expires_min': 5,
+        'code_length': 6,
+      });
+    });
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
+
+    final result = await service.requestPhoneLogin('19900000000');
+
+    expect(result.hubUrl, 'https://hub.mypapers.top');
+    expect(result.hubId, 'hub-live');
+    expect(result.tenantId, 'vantagics');
+    expect(result.tenantName, 'Vantagics');
+    expect(adapter.requests.last.data, {
+      'phone_number': '19900000000',
+      'tenant_id': 'vantagics',
+    });
+  });
+
+  test('phone login honors HubCenter default hub before list ordering', () {
+    final route = PhoneLoginRouteResult.fromJson({
+      'mode': 'multiple',
+      'default_hub_id': 'hub-b',
+      'hubs': [
+        {
+          'hub_id': 'hub-a',
+          'base_url': 'https://a.maclaw.top',
+          'status': 'online',
+        },
+        {
+          'hub_id': 'hub-b',
+          'tenant_id': 'tenant-b',
+          'base_url': 'https://b.maclaw.top',
+          'status': 'online',
+        },
+      ],
+    });
+
+    expect(route.selectedHub?.hubId, 'hub-b');
+    expect(route.selectedHub?.tenantId, 'tenant-b');
+  });
+
   test('phone login falls back to the next official HubCenter on 5xx',
       () async {
     final adapter = _RecordingAuthAdapter((request) {
       if (request.baseUrl == maclawDefaultHubCenterUrl) {
         return _jsonResponse({'error': 'temporarily unavailable'}, 503);
       }
-      if (request.path == '/api/entry/probe') {
+      if (request.path == '/api/entry/resolve') {
         return _jsonResponse({
           'hubs': [
             {
@@ -93,6 +166,38 @@ void main() {
         'https://hubs.maclaw.top',
         'https://tenant-a.maclaw.top',
       ],
+    );
+  });
+
+  test('phone login falls back when a preset HubCenter has no mobile route',
+      () async {
+    final adapter = _RecordingAuthAdapter((request) {
+      if (request.baseUrl == maclawDefaultHubCenterUrl) {
+        return _jsonResponse({'error': 'route unavailable'}, 404);
+      }
+      if (request.path == '/api/entry/resolve') {
+        return _jsonResponse({
+          'default_hub_id': 'hub-a',
+          'hubs': [
+            {
+              'hub_id': 'hub-a',
+              'tenant_id': 'tenant-a',
+              'base_url': 'https://tenant-a.maclaw.top',
+              'status': 'online',
+            }
+          ],
+        });
+      }
+      return _jsonResponse({'status': 'sent', 'expires_minutes': 5}, 200);
+    });
+    final service = AuthService(dio: Dio()..httpClientAdapter = adapter);
+
+    final result = await service.requestPhoneLogin('19900001111');
+
+    expect(result.hubCenterUrl, 'https://hubs.maclaw.top');
+    expect(
+      adapter.requests.map((request) => request.baseUrl),
+      contains(maclawDefaultHubCenterUrl),
     );
   });
 

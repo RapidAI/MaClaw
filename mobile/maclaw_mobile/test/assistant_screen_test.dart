@@ -25,22 +25,41 @@ class _TestAppPreferencesController extends AppPreferencesController {
 class _FakeAssistantVoiceInput implements AssistantVoiceInput {
   final String text;
   final bool ready;
+  final bool throwOnStart;
+  final bool finishAfterStart;
+  final bool errorAfterStart;
   String? localeId;
   bool stopped = false;
 
   _FakeAssistantVoiceInput({
     required this.text,
     this.ready = true,
+    this.throwOnStart = false,
+    this.finishAfterStart = false,
+    this.errorAfterStart = false,
   });
 
   @override
   Future<bool> start({
     required String localeId,
     required ValueChanged<String> onText,
+    ValueChanged<String>? onStatus,
   }) async {
     this.localeId = localeId;
+    if (throwOnStart) {
+      throw StateError('speech service unavailable');
+    }
     if (!ready) return false;
     onText(text);
+    if (finishAfterStart) {
+      Future<void>.microtask(() => onStatus?.call('done'));
+    }
+    if (errorAfterStart) {
+      Future<void>.delayed(
+        const Duration(milliseconds: 1),
+        () => onStatus?.call('error'),
+      );
+    }
     return true;
   }
 
@@ -54,6 +73,8 @@ class _ResultAssistantSearchController extends AssistantSearchController {
   @override
   Future<SearchAnswer?> build() async => const SearchAnswer(
         answer: '结论：官方服务运行正常。',
+        llmMode: 'official',
+        llmRequestId: 'llm-mobile-1',
         citations: [
           SearchCitation(
             title: 'MaClaw 状态页',
@@ -84,12 +105,33 @@ class _RecordingAssistantSearchController extends AssistantSearchController {
 
 class _FakeSearchApiClient extends ApiClient {
   static final queries = <String>[];
+  static final contexts = <List<String>>[];
 
   _FakeSearchApiClient() : super();
 
   @override
   Future<SearchAnswer> search(String query) async {
     queries.add(query);
+    contexts.add(const []);
+    return SearchAnswer(
+      answer: '移动助手回答：$query',
+      citations: const [
+        SearchCitation(
+          title: '官方服务来源',
+          url: 'https://hubs.mypapers.top/status',
+          snippet: '来自 MaClaw 官方服务的助手联网结果。',
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<SearchAnswer> searchWithContext(
+    String query, {
+    List<String> context = const [],
+  }) async {
+    queries.add(query);
+    contexts.add(context);
     return SearchAnswer(
       answer: '移动助手回答：$query',
       citations: const [
@@ -284,6 +326,17 @@ class _FakeHistoryStore extends MobileLocalStore {
 }
 
 void main() {
+  test('assistant trace exposes official usage record correlation', () {
+    expect(
+      assistantLlmTraceText(
+        llmMode: 'official',
+        llmRequestId: 'llm-mobile-1',
+        llmUsageRecordId: 'llm-mobile-1',
+      ),
+      contains('用量记录: llm-mobile-1'),
+    );
+  });
+
   test('assistant citation merge preserves shared URL fallback', () {
     final merged = mergeAssistantCitations(
       const [],
@@ -662,6 +715,7 @@ void main() {
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     _FakeSearchApiClient.queries.clear();
+    _FakeSearchApiClient.contexts.clear();
     addTearDown(store.close);
 
     await tester.pumpWidget(
@@ -696,8 +750,10 @@ void main() {
     await tester.pump();
 
     expect(find.textContaining('当前 Hub 未启用 AI 助手服务能力'), findsOneWidget);
+    await tester.drag(find.byType(ListView).first, const Offset(0, -500));
+    await tester.pump();
     final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '发送给 AI 助手'),
+      find.widgetWithText(FilledButton, '发送给 AI 助手').first,
     );
     expect(sendButton.onPressed, isNull);
     expect(_FakeSearchApiClient.queries, isEmpty);
@@ -859,12 +915,12 @@ void main() {
     await tester.tap(find.text('主对话'));
     await tester.pumpAndSettle();
     expect(find.textContaining('main incident'), findsWidgets);
-    expect(find.text('移动助手回答：secondary incident'), findsOneWidget);
+    expect(find.text('移动助手回答：secondary incident'), findsWidgets);
 
     await tester.tap(find.textContaining('secondary in').first);
     await tester.pumpAndSettle();
     expect(find.textContaining('secondary incident'), findsWidgets);
-    expect(find.text('移动助手回答：main incident'), findsOneWidget);
+    expect(find.text('移动助手回答：main incident'), findsWidgets);
     expect(
       _FakeSearchApiClient.queries,
       ['main incident', 'secondary incident'],
@@ -918,6 +974,61 @@ void main() {
     expect(store.entries, hasLength(1));
     expect(store.entries.single.query, '查一下 MaClaw 官方移动服务状态');
     expect(store.entries.single.answerPreview, contains('移动助手回答'));
+  });
+
+  testWidgets('assistant sends recent conversation context on follow-up',
+      (tester) async {
+    final store = _FakeHistoryStore([]);
+    _FakeSearchApiClient.queries.clear();
+    _FakeSearchApiClient.contexts.clear();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          apiClientProvider.overrideWithValue(_FakeSearchApiClient()),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    final input = find.widgetWithText(TextField, '问 MaClaw AI 助手');
+    await tester.enterText(input, 'first message');
+    await tester.pump();
+    await tester.drag(find.byType(ListView).first, const Offset(0, -500));
+    await tester.pump();
+    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.enterText(input, 'follow up');
+    await tester.pump();
+    await tester.drag(find.byType(ListView).first, const Offset(0, -500));
+    await tester.pump();
+    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(_FakeSearchApiClient.queries, ['first message', 'follow up']);
+    expect(_FakeSearchApiClient.contexts, hasLength(2));
+    expect(
+      _FakeSearchApiClient.contexts[1],
+      contains('user: first message'),
+    );
+    expect(
+      _FakeSearchApiClient.contexts[1],
+      contains('assistant: 移动助手回答：first message'),
+    );
   });
 
   testWidgets('assistant voice input fills the assistant query',
@@ -999,6 +1110,90 @@ void main() {
     );
   });
 
+  testWidgets('assistant voice input exits listening mode after completion',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(
+      text: 'voice prompt',
+      finishAfterStart: true,
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.mic_none).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.byIcon(Icons.mic_none), findsWidgets);
+    expect(find.textContaining('voice prompt'), findsOneWidget);
+  });
+
+  testWidgets('assistant voice input exits listening mode after platform error',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(
+      text: '',
+      errorAfterStart: true,
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.mic_none).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.byIcon(Icons.mic_none), findsWidgets);
+    expect(
+      find.textContaining('\u8bed\u97f3\u8bc6\u522b\u670d\u52a1\u4e2d\u65ad'),
+      findsOneWidget,
+    );
+    expect(find.byType(TextField), findsOneWidget);
+  });
+
   testWidgets('assistant voice input explains unavailable microphone',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
@@ -1032,6 +1227,79 @@ void main() {
     await tester.pump();
 
     expect(find.text('语音输入不可用，请检查麦克风权限'), findsWidgets);
+  });
+
+  testWidgets('assistant camera picker failure keeps a usable text composer',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantCameraImagePathPickerProvider.overrideWithValue(
+            () async => throw StateError('camera permission denied'),
+          ),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.photo_camera_outlined));
+    await tester.pump();
+
+    expect(find.textContaining('无法打开相机'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+  });
+
+  testWidgets('assistant voice input recovers from platform speech errors',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(text: '', throwOnStart: true);
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('开始语音输入'));
+    await tester.pump();
+
+    expect(find.text('语音输入不可用，请检查麦克风权限'), findsWidgets);
+    expect(find.widgetWithText(TextField, '问 MaClaw AI 助手'), findsOneWidget);
   });
 
   testWidgets('assistant file import enters document parsing flow',
@@ -1218,27 +1486,31 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.drag(find.byType(ListView).first, const Offset(0, -650));
-    await tester.pump(const Duration(milliseconds: 300));
-
     expect(find.text('来源'), findsOneWidget);
     expect(find.text('MaClaw 状态页'), findsOneWidget);
     expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
     expect(find.text('复制链接'), findsOneWidget);
     expect(find.text('复制引用'), findsOneWidget);
     expect(find.text('分享来源'), findsOneWidget);
+    expect(find.text('请求追踪\nMaClaw 官方服务\n请求 ID: llm-mobile-1'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('复制请求追踪'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(copiedTexts, hasLength(1));
+    expect(copiedTexts.single, contains('llm-mobile-1'));
 
     await tester.tap(find.text('分享结果'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(sharedTexts, hasLength(1));
     expect(sharedTexts.single, contains('结论：官方服务运行正常。'));
     expect(sharedTexts.single, contains('https://hubs.mypapers.top/status'));
+    expect(sharedTexts.single, isNot(contains('llm-mobile-1')));
 
     await tester.tap(find.text('复制结果'));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(copiedTexts, hasLength(1));
-    expect(copiedTexts.single, contains('结论：官方服务运行正常。'));
-    expect(copiedTexts.single, contains('MaClaw 状态页'));
+    expect(copiedTexts, hasLength(2));
+    expect(copiedTexts.last, contains('结论：官方服务运行正常。'));
+    expect(copiedTexts.last, contains('MaClaw 状态页'));
 
     await tester.tap(find.text('复制链接'));
     await tester.pump(const Duration(milliseconds: 300));

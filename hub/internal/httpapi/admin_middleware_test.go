@@ -631,8 +631,8 @@ func TestGlobalAdminCanDeactivateReactivateAndDeleteTenant(t *testing.T) {
 		t.Fatalf("reactivated tenant login status = %d body=%s", activeLogin.Code, activeLogin.Body.String())
 	}
 
-	deleteResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/tenants/tenant_lifecycle", nil, token)
-	if deleteResp.Code != http.StatusOK || !bytes.Contains(deleteResp.Body.Bytes(), []byte(`"deleted_at"`)) {
+	deleteResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/tenants/tenant_lifecycle", map[string]any{"password": "StrongPassword123!"}, token)
+	if deleteResp.Code != http.StatusOK || !bytes.Contains(deleteResp.Body.Bytes(), []byte(`"purged":true`)) {
 		t.Fatalf("delete tenant status=%d body=%s", deleteResp.Code, deleteResp.Body.String())
 	}
 	waitTenantCallbackStatus(t, callbackBodies, "deleted")
@@ -649,7 +649,7 @@ func TestGlobalAdminCanDeactivateReactivateAndDeleteTenant(t *testing.T) {
 		if item.Action == "tenant.status_updated" {
 			sawStatus = true
 		}
-		if item.Action == "tenant.deleted" {
+		if item.Action == "tenant.hard_deleted" {
 			sawDelete = true
 		}
 	}

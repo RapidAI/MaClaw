@@ -346,6 +346,87 @@ pqkv_loop:
 	VZEROUPPER
 	RET
 
+// func packQKV4Heads128AVX2(qDst, kDst, vDst, qkv *float32, nFrames, f int, scale float32)
+// SenseVoice: pack all 4 heads for one frame. qkv layout [Q:512|K:512|V:512].
+// Packed layout [nHeads=4][nFrames][128]. Keeps qkv row hot; one call vs 4×PackQKV128.
+// Frame: qDst+0 kDst+8 vDst+16 qkv+24 nFrames+32 f+40 scale+48 → 52
+TEXT ·packQKV4Heads128AVX2(SB), NOSPLIT, $0-52
+	MOVQ qDst+0(FP), R8
+	MOVQ kDst+8(FP), R9
+	MOVQ vDst+16(FP), R10
+	MOVQ qkv+24(FP), SI
+	MOVQ nFrames+32(FP), AX
+	MOVQ f+40(FP), DX
+	MOVSS scale+48(FP), X0
+	VBROADCASTSS X0, Y0
+
+	// headStrideBytes = nFrames * 128 * 4 = nFrames << 9
+	MOVQ AX, R11
+	SHLQ $9, R11
+	// frameOffBytes = f * 128 * 4 = f << 9
+	MOVQ DX, R12
+	SHLQ $9, R12
+
+	XORQ CX, CX // h = 0..3
+pqkv4_head:
+	// dstOff = h*headStride + frameOff
+	MOVQ CX, R13
+	IMULQ R11, R13
+	ADDQ R12, R13
+	// src offsets: Q at h*512B, K at 2048+h*512B, V at 4096+h*512B
+	MOVQ CX, R14
+	SHLQ $9, R14
+	LEAQ (SI)(R14*1), DI
+	LEAQ 2048(SI)(R14*1), BX
+	LEAQ 4096(SI)(R14*1), R15
+
+	// 4×32 floats = 128 floats per head
+	MOVQ $4, AX
+pqkv4_chunk:
+	VMOVUPS (DI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS Y1, (R8)(R13*1)
+	VMOVUPS 32(DI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS Y1, 32(R8)(R13*1)
+	VMOVUPS 64(DI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS Y1, 64(R8)(R13*1)
+	VMOVUPS 96(DI), Y1
+	VMULPS Y0, Y1, Y1
+	VMOVUPS Y1, 96(R8)(R13*1)
+
+	VMOVUPS (BX), Y2
+	VMOVUPS 32(BX), Y3
+	VMOVUPS Y2, (R9)(R13*1)
+	VMOVUPS Y3, 32(R9)(R13*1)
+	VMOVUPS 64(BX), Y2
+	VMOVUPS 96(BX), Y3
+	VMOVUPS Y2, 64(R9)(R13*1)
+	VMOVUPS Y3, 96(R9)(R13*1)
+
+	VMOVUPS (R15), Y4
+	VMOVUPS 32(R15), Y5
+	VMOVUPS Y4, (R10)(R13*1)
+	VMOVUPS Y5, 32(R10)(R13*1)
+	VMOVUPS 64(R15), Y4
+	VMOVUPS 96(R15), Y5
+	VMOVUPS Y4, 64(R10)(R13*1)
+	VMOVUPS Y5, 96(R10)(R13*1)
+
+	ADDQ $128, DI
+	ADDQ $128, BX
+	ADDQ $128, R15
+	ADDQ $128, R13
+	DECQ AX
+	JNZ  pqkv4_chunk
+
+	INCQ CX
+	CMPQ CX, $4
+	JNE  pqkv4_head
+	VZEROUPPER
+	RET
+
 // func mul2IntoAVX2(o0,o1, a0,a1, b *float32, n int)
 // o_r[i] = a_r[i]*b[i] for r=0..1. Loads b once (FSMN dual-frame seed).
 // Frame: o0+0 o1+8 a0+16 a1+24 b+32 n+40 = 48

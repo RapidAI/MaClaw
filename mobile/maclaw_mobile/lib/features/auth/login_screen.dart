@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/api/official_service.dart';
 import 'auth_service.dart';
 import 'session_controller.dart';
 
@@ -17,16 +18,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _codeController = TextEditingController();
   PhoneLoginRequestResult? _pendingLogin;
   String? _message;
-  String? _selectedHubCenterUrl;
-  String? _discoveredHubUrl;
   bool _sendingCode = false;
   bool _verifying = false;
+  Timer? _resendTimer;
+  int _resendSecondsRemaining = 0;
 
   @override
   void dispose() {
     _phoneController.dispose();
     _codeController.dispose();
+    _resendTimer?.cancel();
     super.dispose();
+  }
+
+  void _startResendCooldown(int seconds) {
+    _resendTimer?.cancel();
+    if (seconds <= 0 || !mounted) return;
+    setState(() => _resendSecondsRemaining = seconds);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_resendSecondsRemaining <= 1) {
+        timer.cancel();
+        setState(() => _resendSecondsRemaining = 0);
+        return;
+      }
+      setState(() => _resendSecondsRemaining--);
+    });
   }
 
   Future<void> _sendCode() async {
@@ -35,17 +55,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!_looksLikePhoneNumber(phone)) {
       setState(() {
         _message = '请输入有效手机号，只支持数字和常见手机号分隔符。';
-        _selectedHubCenterUrl = null;
-        _discoveredHubUrl = null;
         _pendingLogin = null;
       });
       return;
     }
     setState(() {
       _sendingCode = true;
-      _message = '正在连接 MaClaw 官方 HubCenter...';
-      _selectedHubCenterUrl = null;
-      _discoveredHubUrl = null;
+      _message = '正在连接 MaClaw 官方服务...';
       _pendingLogin = null;
     });
     try {
@@ -56,18 +72,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       setState(() {
         _sendingCode = false;
         _pendingLogin = result;
-        _selectedHubCenterUrl = result.hubCenterUrl;
-        _discoveredHubUrl = result.hubUrl;
         final ttl =
             result.expiresMinutes > 0 ? '${result.expiresMinutes} 分钟内' : '';
         _message =
             result.message.isEmpty ? '验证码已发送，请在$ttl输入短信验证码。' : result.message;
       });
+      _startResendCooldown(
+        result.resendCooldownSeconds > 0 ? result.resendCooldownSeconds : 60,
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _sendingCode = false;
-        _message = '验证码发送失败：$error';
+        _message = '验证码发送失败，请检查网络或稍后重试。';
       });
     }
   }
@@ -120,7 +137,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (!mounted) return;
       setState(() {
         _verifying = false;
-        _message = '验证码验证失败：$error';
+        _message = '验证码验证失败，请稍后重试。';
       });
     }
   }
@@ -158,63 +175,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
             ),
             const SizedBox(height: 20),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: [
-                    Icon(Icons.hub_outlined, color: scheme.primary),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'HubCenter 候选：${maclawOfficialHubCenterUrls.join(' / ')}',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_selectedHubCenterUrl != null || _discoveredHubUrl != null) ...[
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.verified_outlined, color: scheme.primary),
-                          const SizedBox(width: 10),
-                          Text(
-                            '官方接入状态',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (_selectedHubCenterUrl != null)
-                        _LoginInfoRow(
-                          label: 'HubCenter',
-                          value: _selectedHubCenterUrl!,
-                        ),
-                      if (_discoveredHubUrl != null)
-                        _LoginInfoRow(
-                          label: 'Hub',
-                          value: _discoveredHubUrl!,
-                        ),
-                      if ((_pendingLogin?.tenantId ?? '').isNotEmpty)
-                        _LoginInfoRow(
-                          label: '租户',
-                          value: _pendingLogin!.tenantId,
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
             TextField(
               controller: _phoneController,
               keyboardType: TextInputType.phone,
@@ -226,14 +186,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: _sendingCode ? null : _sendCode,
+              onPressed: _sendingCode || _resendSecondsRemaining > 0
+                  ? null
+                  : _sendCode,
               icon: _sendingCode
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.sms_outlined),
-              label: Text(_pendingLogin == null ? '发送验证码' : '重新发送验证码'),
+              label: Text(
+                _pendingLogin == null
+                    ? '发送验证码'
+                    : _resendSecondsRemaining > 0
+                        ? '重新发送验证码（$_resendSecondsRemaining秒）'
+                        : '重新发送验证码',
+              ),
             ),
             if (_pendingLogin != null) ...[
               const SizedBox(height: 18),
@@ -268,44 +236,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _LoginInfoRow extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _LoginInfoRow({
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 82,
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-        ],
       ),
     );
   }

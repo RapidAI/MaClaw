@@ -52,6 +52,19 @@ function renderLeft(overrides: Partial<Parameters<typeof AssistantInputActionsLe
 }
 
 describe("AssistantInputActionsLeft plus menu", () => {
+    it("shows the permission mode selector and reports changes", () => {
+        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        const selector = screen.getByTestId("ai-permission-mode") as HTMLSelectElement;
+        expect(selector.value).toBe("request");
+        expect(screen.getByRole("option", { name: "请求授权" })).toBeTruthy();
+        expect(screen.getByRole("option", { name: "完全控制" })).toBeTruthy();
+
+        fireEvent.change(selector, { target: { value: "full" } });
+        expect(onPermissionModeChange).toHaveBeenCalledWith("full");
+    });
+
     it("places + before the attachment button and lists iconed commands", () => {
         renderLeft();
 

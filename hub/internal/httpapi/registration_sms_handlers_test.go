@@ -208,7 +208,7 @@ func TestRegistrationSMSSendCodeHandlerUsesTenantPhoneConfig(t *testing.T) {
 	if provider.sendReq.PhoneNumber != "19900001111" || provider.sendReq.TemplateCode != "100001" || provider.sendReq.TemplateParam != `{"code":"##code##","min":"5"}` {
 		t.Fatalf("unexpected send request: %+v", provider.sendReq)
 	}
-	if !strings.Contains(rr.Body.String(), `"tenant_id":"tenant_acme"`) || !strings.Contains(rr.Body.String(), `"code_length":6`) {
+	if !strings.Contains(rr.Body.String(), `"tenant_id":"tenant_acme"`) || !strings.Contains(rr.Body.String(), `"code_length":6`) || !strings.Contains(rr.Body.String(), `"resend_cooldown_seconds":60`) {
 		t.Fatalf("unexpected response: %s", rr.Body.String())
 	}
 }

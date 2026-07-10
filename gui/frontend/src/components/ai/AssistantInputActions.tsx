@@ -14,6 +14,7 @@ import {
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { VoiceLevelVisualizer } from "./aiAssistantControls";
+import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 interface AssistantInputActionsProps {
     attachButtonTestId?: string;
@@ -30,9 +31,11 @@ interface AssistantInputActionsProps {
     finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;
     inputLocked: boolean;
     inputValue: string;
+    permissionMode?: AssistantPermissionMode;
     isBusy: boolean;
     lang: string;
     onComposeActionChange?: (action: ComposeAction | null) => void;
+    onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     /** Fire a no-arg slash command immediately (e.g. /memory). */
     onFireSlashCommand?: (command: FireSlashCommand) => void;
     /** Insert a command template into the input (e.g. /loop ...). */
@@ -96,6 +99,7 @@ export function AssistantInputActionsLeft({
     inputLocked,
     lang,
     onComposeActionChange,
+    onPermissionModeChange,
     onFireSlashCommand,
     onInsertTemplate,
     onPlusMenuAction,
@@ -103,6 +107,7 @@ export function AssistantInputActionsLeft({
     theme: t,
     themeMode,
     voiceInput,
+    permissionMode = "request",
     showVoiceInput = true,
     handleVoiceClick,
     handleVoicePointerDown,
@@ -116,6 +121,7 @@ export function AssistantInputActionsLeft({
     | "inputLocked"
     | "lang"
     | "onComposeActionChange"
+    | "onPermissionModeChange"
     | "onFireSlashCommand"
     | "onInsertTemplate"
     | "onPlusMenuAction"
@@ -128,6 +134,7 @@ export function AssistantInputActionsLeft({
     | "handleVoicePointerDown"
     | "handleVoicePointerLeave"
     | "finishVoicePointer"
+    | "permissionMode"
 >) {
     const voiceDisabled = !ready || voiceInput.state === "transcribing" || !voiceInput.asrReady;
     const [plusMenuOpen, setPlusMenuOpen] = useState(false);
@@ -432,6 +439,17 @@ export function AssistantInputActionsLeft({
                 )}
             </button>}
             {showVoiceInput && voiceInput.error && <span style={{ color: t.errorText, fontSize: "11px", alignSelf: "center", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={voiceInput.error}>{voiceInput.error}</span>}
+            <select
+                aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")}
+                data-testid="ai-permission-mode"
+                value={permissionMode}
+                onChange={(event) => onPermissionModeChange?.(event.target.value as AssistantPermissionMode)}
+                title={localizeText(lang, "Permission mode", "权限模式", "權限模式")}
+                style={{ height: "24px", maxWidth: "92px", padding: "0 2px", border: `1px solid ${t.fieldBorder}`, borderRadius: 4, background: t.fieldBg, color: t.textMuted, fontSize: "11px", outline: "none", cursor: "pointer" }}
+            >
+                <option value="request">{localizeText(lang, "Ask", "请求授权", "請求授權")}</option>
+                <option value="full">{localizeText(lang, "Full control", "完全控制", "完全控制")}</option>
+            </select>
         </>
     );
 }

@@ -368,6 +368,14 @@ void main() {
     );
     expect(guideText, contains('verified `phone:<digits>` account'));
     expect(guideText, contains('Third-party LLM access is optional'));
+    expect(
+      guideText,
+      contains('show its LLM service mode and a copyable request ID'),
+    );
+    expect(
+      guideText,
+      contains('can revoke it and immediately return the mobile assistant'),
+    );
     expect(guideText, contains('does not expose a redemption-code login path'));
     expect(guideText, isNot(contains('disables the search feature')));
     expect(
@@ -920,7 +928,7 @@ void main() {
       'text, URLs, images, PDFs, Word, Excel, and CSV files',
       'Ask one assistant question by voice',
       'photo/image/screenshot question',
-      'document/export, digital employee, and SSH abnormal notifications',
+      'assistant long-task, document/export, digital employee, and SSH abnormal notifications',
       'typed payload or tap/open evidence',
       'offline/weak-network warnings',
       'visible HTTPS',
@@ -1188,7 +1196,7 @@ void main() {
       'test/mobile_realtime_client_test.dart',
       'test/mobile_realtime_bridge_test.dart',
       'flutter test test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart --concurrency=1 --reporter compact',
-      '21 realtime and backend server controller tests',
+      '22 realtime and backend server controller tests',
       '`ssh_task`',
       '`ssh_file_operation`',
       'bridge dispatch of backend ssh task events',
@@ -1196,7 +1204,7 @@ void main() {
       'queueing create, attach, reconnect, interrupt, input, and close control records',
       'preserving backend-session input carriage returns',
       'flutter test test/api_client_test.dart test/mobile_realtime_client_test.dart test/mobile_realtime_bridge_test.dart test/servers_controller_test.dart test/servers_screen_test.dart test/backend_ssh_command_test.dart --concurrency=1 --reporter compact',
-      '59 mobile backend ssh control-plane tests',
+      '60 mobile backend ssh control-plane tests',
       'request gui/agent-managed `exec_background`',
       '`check_task`, `wait_task`, `list_tasks`, `kill_task`, and backend file',
       'caches gui/agent background task status in the server controller',
@@ -1399,7 +1407,7 @@ void main() {
       'realtime Hub URL confirmation',
       'Voice transcript and photo/image/screenshot assistant input produce cited answers or document tasks',
       'real-device voice/photo smoke remains manual',
-      'Document/export, digital employee, and SSH abnormal notifications are delivered with typed payload/open evidence',
+      'Assistant long-task, document/export, digital employee, and SSH abnormal notifications are delivered with typed payload/open evidence',
       'real-device notification delivery remains manual',
       'Offline or weak-network warnings appear and Hub services recover after connectivity returns',
       'real Hub/network recovery smoke remains manual',
@@ -2214,20 +2222,20 @@ void main() {
 
     for (final expected in [
       'run on 2026-07-10 passed all',
-      'final-release-evidence-20260706-backend-ssh-realtime.log',
+      'final-release-evidence-0.1.0+1-latest-20260710.log',
       'runtime-boundary-20260706-backend-ssh-realtime.log',
       'The local transcript was saved under `docs/qa-builds/`',
       'attach the versioned `release-gates-<version+build>.log`',
       'from signed-build QA as external evidence',
       'Refreshed after the local 2026-07-10 debug APK build verification run.',
-      'CC367FEDE66721219CA398A9AD3FDD93B57969577579267E78529CDB095960E6',
+      '65C9539800957E91844C3F0CA326F3B56C7BA0ADB01F39EC217E3282E789626C',
       'These cannot be proven by local unit tests or the unsigned debug APK',
       'Android signed internal build',
       'Signed APK/AAB path, SHA256, signing identity, build number, installer channel, and install result',
     ]) {
       expect(evidence, contains(expected));
     }
-    final gateLogMatches = RegExp(r'release-gates-continuation-2\.log')
+    final gateLogMatches = RegExp(r'release-gates-notification-pending-final-20260710\.log')
         .allMatches(evidence)
         .map((match) => match.group(0)!)
         .toSet();
@@ -2328,6 +2336,7 @@ void main() {
       'ios/ExportOptions.plist',
       '*.iml',
       'flutter_*.log',
+      '.tmp_*.log',
     ]) {
       expect(gitignore, contains(expected));
     }

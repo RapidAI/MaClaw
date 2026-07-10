@@ -187,7 +187,7 @@ func splitDownloadURLs(urls string) []string {
 	return cleaned
 }
 
-func downloadInstaller(ctx context.Context, productName, targetFileName, downloadURLs, expectedSHA256 string, onProgress progressFunc) (string, error) {
+func downloadInstaller(ctx context.Context, productName, targetFileName, downloadURLs, expectedSHA256 string, onProgress progressFunc, onNode func(string)) (string, error) {
 	urls := splitDownloadURLs(downloadURLs)
 	if len(urls) == 0 {
 		return "", fmt.Errorf("download url is empty")
@@ -198,15 +198,34 @@ func downloadInstaller(ctx context.Context, productName, targetFileName, downloa
 	}
 	var lastErr error
 	for _, candidateURL := range urls {
+		normalizedURL, err := normalizeDownloadURL(candidateURL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if onNode != nil {
+			onNode(downloadNodeName(normalizedURL))
+		}
 		_ = os.Remove(destPath)
 		_ = os.Remove(destPath + ".download")
-		if err := downloadInstallerFromURL(ctx, productName, candidateURL, destPath, targetFileName, expectedSHA256, onProgress); err == nil {
+		if err := downloadInstallerFromURL(ctx, productName, normalizedURL, destPath, targetFileName, expectedSHA256, onProgress); err == nil {
 			return destPath, nil
 		} else {
 			lastErr = err
 		}
 	}
 	return "", fmt.Errorf("all download sources failed: %w", lastErr)
+}
+
+// downloadNodeName returns the host of the URL about to be requested. This is
+// the actual download node, which may differ from the manifest node that
+// supplied the release metadata when fallback mirrors are available.
+func downloadNodeName(downloadURL string) string {
+	parsed, err := url.Parse(downloadURL)
+	if err != nil || parsed.Host == "" {
+		return downloadURL
+	}
+	return parsed.Host
 }
 
 func installerDownloadPath(targetFileName string) (string, error) {

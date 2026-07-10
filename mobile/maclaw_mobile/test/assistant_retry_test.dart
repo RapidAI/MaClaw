@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
+import 'package:maclaw_mobile/features/assistant/assistant_controller.dart';
 import 'package:maclaw_mobile/features/assistant/assistant_screen.dart';
 import 'package:maclaw_mobile/features/assistant/assistant_voice_input.dart';
 
@@ -7,6 +8,21 @@ void main() {
   test('assistant retry is available only when query has text', () {
     expect(canRetryAssistantQuery('  总结这个链接  '), isTrue);
     expect(canRetryAssistantQuery('   '), isFalse);
+  });
+
+  test('assistant long task notification requires duration and request id', () {
+    expect(
+      shouldNotifyAssistantLongTask(const Duration(seconds: 11), 'llm-1'),
+      isTrue,
+    );
+    expect(
+      shouldNotifyAssistantLongTask(const Duration(seconds: 9), 'llm-1'),
+      isFalse,
+    );
+    expect(
+      shouldNotifyAssistantLongTask(const Duration(seconds: 11), '  '),
+      isFalse,
+    );
   });
 
   test('assistant speech locale follows app language', () {

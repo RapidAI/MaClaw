@@ -96,10 +96,13 @@ def write_key_properties(root: Path, config: AndroidSigningConfig, force: bool =
             f"{target} already exists; pass --force to overwrite local signing config",
         )
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Java Properties treats backslashes as escapes. Normalize Windows paths so
+    # Gradle receives a usable path instead of silently dropping separators.
+    store_file = config.store_file.replace("\\", "/")
     target.write_text(
         "\n".join(
             [
-                f"storeFile={config.store_file}",
+                f"storeFile={store_file}",
                 f"storePassword={config.store_password}",
                 f"keyAlias={config.key_alias}",
                 f"keyPassword={config.key_password}",

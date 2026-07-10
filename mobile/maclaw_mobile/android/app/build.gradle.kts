@@ -86,6 +86,60 @@ android {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     signingConfigs {
         if (maclawReleaseSigningConfigured) {
             create("release") {

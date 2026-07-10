@@ -34,11 +34,21 @@ handoff.
 4. The app then opens the multi-tab assistant and uses the verified
    `phone:<digits>` account's MaClaw official credits for LLM calls.
 
+The app does not request notification permission during startup or phone
+registration/login. After signing in, request task and SSH notifications from
+the Account settings page when they are needed.
+
 MaClaw official LLM access is the default after phone verification. Third-party
 LLM access is optional and lives under the account/settings area. It is allowed
 only when authorized by scanning or pasting the provider QR code generated from
 the LLM configuration screen in MaClaw desktop GUI. A desktop QR never creates an account, signs in, or issues a mobile token. Phone/SMS verification remains the only mobile registration and login path. The mobile app does not accept
-arbitrary third-party LLM endpoints, provider base URLs, or API keys.
+arbitrary third-party LLM endpoints, provider base URLs, or API keys. The app
+rejects malformed or expired desktop authorization QR payloads locally before
+sending them to the Hub; request a new QR code from the desktop GUI when that
+happens.
+When a desktop GUI QR authorization is active, account settings can revoke it
+and immediately return the mobile assistant to the phone account's MaClaw
+official credits.
 
 ## AI Assistant
 
@@ -49,11 +59,18 @@ conversation, voice input, screenshot/photo questions, document handoff,
 server-log analysis, and digital employee task handoff.
 
 Assistant questions use the Hub LLM execution path. By default it applies the verified phone account's MaClaw official credits, request ID, and usage record. When the signed-in user has authorized a MaClaw desktop GUI LLM QR in settings, the Hub instead proxies that stored third-party authorization without sending its API key to the phone.
+Each completed answer can show its LLM service mode and a copyable request ID for
+support or Hub usage reconciliation. This request-tracing metadata is not added
+to shared result text or generated document drafts.
 
 The assistant is the primary signed-in workspace. Optional bootstrap feature
 flags can hide documents, backend SSH session management, digital employees, or push notification
 capabilities, but they do not remove the `AI助手` entry, even if Hub sends `assistant:false`, or make digital
 employees the default landing page.
+In the current mobile release, task-completion reminders use the local
+notification service and Realtime updates. Remote Push is opt-in only when a
+future Hub/mobile transport declares `push_notifications:true`; the app does
+not claim FCM/APNs delivery while that capability is false.
 If the current Hub disables assistant online access, the assistant keeps the
 workspace open, disables `发送给 AI 助手`, and explains that voice input, image/file
 handoff, and document drafting remain available.
@@ -66,6 +83,9 @@ handoff, and document drafting remain available.
 - Tap the camera, gallery screenshot/image, or attachment buttons to send a
   photo, screenshot, or file into the document parsing flow.
 - Share text or URLs from another app into MaClaw Mobile.
+- If the app is signed out when content is shared, the pending text, URL, or
+  supported document remains available through phone login and is then routed
+  to the AI assistant or document import flow.
 - Review source citations before sharing or turning the result into a document.
 - Tap `整理为草稿` in the result card and choose a document template.
 - Query result copy/share/draft actions and copied/shared citations redact

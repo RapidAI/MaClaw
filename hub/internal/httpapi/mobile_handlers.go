@@ -561,7 +561,11 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 		tenantID = principal.TenantID
 	}
 	hubURL := mobileRequestBaseURL(r)
-	llmAccess := mobileLlmAccessPayload(principal)
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	llmAccess := mobileLlmAccessPayload(ctx, principal)
 	phoneNumber := mobilePrincipalPhoneNumber(email)
 	creditsAccount := mobilePrincipalCreditsAccount(email, userID)
 	return map[string]any{
@@ -635,12 +639,20 @@ func mobileRequestBaseURL(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-func mobileLlmAccessPayload(principal *auth.ViewerPrincipal) map[string]any {
+func mobileLlmAccessPayload(ctx context.Context, principal *auth.ViewerPrincipal) map[string]any {
 	if principal != nil {
 		key := mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)
 		mobileLlmAuthorizations.Lock()
 		record, ok := mobileLlmAuthorizations.authorizations[key]
 		mobileLlmAuthorizations.Unlock()
+		if !ok {
+			record, ok = mobilePersistedLLMAuthorization(ctx, principal.TenantID, principal.UserID)
+			if ok {
+				mobileLlmAuthorizations.Lock()
+				mobileLlmAuthorizations.authorizations[key] = record
+				mobileLlmAuthorizations.Unlock()
+			}
+		}
 		if ok {
 			return map[string]any{
 				"mode":             "desktop_qr_third_party",
@@ -808,12 +820,41 @@ func MobileLLMDesktopQRAuthorizationHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
 			return
 		}
+		if err := persistMobileLLMAuthorization(r.Context(), record); err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_AUTHORIZATION_STORE_FAILED", "failed to persist desktop LLM authorization")
+			return
+		}
 		mobileLlmAuthorizations.Lock()
 		mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)] = record
 		mobileLlmAuthorizations.Unlock()
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "authorized",
+			"bootstrap": mobileBootstrapPayloadForRequest(principal, r),
+		})
+	}
+}
+
+// MobileLLMDesktopQRAuthorizationRevokeHandler removes the current viewer's
+// delegated desktop GUI LLM authorization. The next bootstrap falls back to
+// the phone account's MaClaw official LLM credits.
+func MobileLLMDesktopQRAuthorizationRevokeHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		if err := deletePersistedMobileLLMAuthorization(r.Context(), principal.TenantID, principal.UserID); err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_AUTHORIZATION_DELETE_FAILED", "failed to revoke desktop LLM authorization")
+			return
+		}
+		mobileLlmAuthorizations.Lock()
+		delete(mobileLlmAuthorizations.authorizations, mobileLlmAuthorizationKey(principal.TenantID, principal.UserID))
+		mobileLlmAuthorizations.Unlock()
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "revoked",
 			"bootstrap": mobileBootstrapPayloadForRequest(principal, r),
 		})
 	}
@@ -1060,7 +1101,7 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 		requestID := ""
 		mode := "maclaw_official"
 		prompt := mobileSearchPrompt(query, citations, req.Context)
-		if delegated, ok := mobileThirdPartyLLMAuthorization(principal.TenantID, principal.UserID); ok {
+		if delegated, ok := mobileThirdPartyLLMAuthorization(r.Context(), principal.TenantID, principal.UserID); ok {
 			mode = "desktop_qr_third_party"
 			answer, requestID, err = mobileThirdPartySearchAnswer(r.Context(), delegated, prompt)
 		} else if officialLLM != nil {
@@ -1070,10 +1111,17 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			writeError(w, http.StatusBadGateway, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
 			return
 		}
+		usageRecordID := ""
+		if mode == "maclaw_official" && strings.TrimSpace(requestID) != "" {
+			// The official Hub usage buffer and access log correlate credits to
+			// this request ID; expose only the read-only trace reference.
+			usageRecordID = requestID
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"answer": answer, "citations": citations, "query": query,
 			"tenant_id": principal.TenantID, "user_id": principal.UserID,
-			"llm_mode": mode, "llm_request_id": requestID, "status": "ready",
+			"llm_mode": mode, "llm_request_id": requestID,
+			"llm_usage_record_id": usageRecordID, "status": "ready",
 		})
 	}
 }
@@ -1132,10 +1180,18 @@ func mobileOfficialSearchAnswer(r *http.Request, handler http.Handler, prompt st
 	}
 	return strings.TrimSpace(response.Choices[0].Message.Content), requestID, nil
 }
-func mobileThirdPartyLLMAuthorization(tenantID, userID string) (mobileLlmAuthorizationRecord, bool) {
+func mobileThirdPartyLLMAuthorization(ctx context.Context, tenantID, userID string) (mobileLlmAuthorizationRecord, bool) {
 	mobileLlmAuthorizations.Lock()
-	defer mobileLlmAuthorizations.Unlock()
 	record, ok := mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(tenantID, userID)]
+	mobileLlmAuthorizations.Unlock()
+	if !ok {
+		record, ok = mobilePersistedLLMAuthorization(ctx, tenantID, userID)
+		if ok {
+			mobileLlmAuthorizations.Lock()
+			mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(tenantID, userID)] = record
+			mobileLlmAuthorizations.Unlock()
+		}
+	}
 	return record, ok && strings.TrimSpace(record.ProviderURL) != "" && strings.TrimSpace(record.APIKey) != ""
 }
 

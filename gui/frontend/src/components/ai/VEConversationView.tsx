@@ -934,6 +934,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (sessionId) {
                     sessionIdRef.current = sessionId;
                     clearAuthPendingTimer();
+                    // A newly initiated conversation starts with a local intro,
+                    // even when the backend returns a reused sticky session ID.
+                    if ((participants?.length || 0) === 0) {
+                        skipHistoryLoadSessionIdsRef.current.add(sessionId);
+                    }
                 }
                 let localIntroAfterClear: VEMessage | null = null;
                 if (showLocalIntroAfterClearRef.current) {
@@ -1692,6 +1697,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             </div>
 
             <AssistantInputStack
+                allowInputOverflow={mentionOpen}
                 attachButtonTestId="ve-attach-button"
                 browseFile={handleAttachmentSelect}
                 canSend={canSend}

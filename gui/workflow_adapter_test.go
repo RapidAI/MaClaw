@@ -11,6 +11,38 @@ import (
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
+func TestMapV2StateToV1PreservesReviewAndActiveFormState(t *testing.T) {
+	state := &workflow.WorkflowState{
+		ID:           "wf-ppt",
+		UserID:       "user-1",
+		Type:         string(workflow.WorkflowPresentationDesign),
+		Summary:      "制作发布会 PPT",
+		CurrentPhase: 0,
+		Status:       workflow.StatusActive,
+		Phases: []workflow.Phase{{
+			ID:     "audience_goal",
+			Name:   "受众与目标",
+			Status: workflow.PhaseWaitingConfirm,
+			FormData: map[string]interface{}{
+				"topic": "2026 产品发布会",
+			},
+		}},
+	}
+
+	mapped := mapV2StateToV1(state)
+	if mapped.PendingReviewPhaseID != "audience_goal" {
+		t.Fatalf("PendingReviewPhaseID = %q, want audience_goal", mapped.PendingReviewPhaseID)
+	}
+	if !mapped.PhaseFormSubmitted || mapped.PhaseFormData["topic"] != "2026 产品发布会" {
+		t.Fatalf("active form state was not preserved: submitted=%v data=%#v", mapped.PhaseFormSubmitted, mapped.PhaseFormData)
+	}
+
+	state.Phases[0].FormData["topic"] = "changed after mapping"
+	if mapped.PhaseFormData["topic"] != "2026 产品发布会" {
+		t.Fatalf("mapped form data aliases V2 state: %#v", mapped.PhaseFormData)
+	}
+}
+
 func TestNormalizeWorkflowStateForFrontendCanonicalizesAllPhaseFields(t *testing.T) {
 	state := &workflow.EngineState{
 		CurrentPhase:         "tech_design",

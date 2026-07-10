@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
@@ -21,6 +24,13 @@ final assistantSearchProvider =
   AssistantSearchController.new,
 );
 
+const assistantLongTaskNotificationThreshold = Duration(seconds: 10);
+
+bool shouldNotifyAssistantLongTask(Duration elapsed, String requestId) {
+  return elapsed >= assistantLongTaskNotificationThreshold &&
+      requestId.trim().isNotEmpty;
+}
+
 final searchHistoryProvider =
     AsyncNotifierProvider<SearchHistoryController, List<SearchHistoryEntry>>(
   SearchHistoryController.new,
@@ -34,6 +44,7 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
     final text = query.trim();
     if (text.isEmpty) return;
     final tabId = ref.read(assistantTabsProvider).activeTabId;
+    final tab = ref.read(assistantTabsProvider).activeTab;
     final client = ref.read(apiClientProvider);
     if (client == null) {
       state = AsyncError(
@@ -52,16 +63,113 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
       return;
     }
+    final previousMessages = tab.messages.length > 8
+        ? tab.messages.sublist(tab.messages.length - 8)
+        : tab.messages;
+    final context = [
+      for (final message in previousMessages)
+        '${message.role}: ${message.text}',
+    ];
+    ref.read(assistantTabsProvider.notifier).appendMessage(
+          tabId,
+          AssistantConversationMessage.user(text),
+        );
     state = const AsyncLoading();
     ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
+    final startedAt = DateTime.now();
     state = await AsyncValue.guard(() async {
-      final answer = await client.search(text);
+      final answer = context.isEmpty
+          ? await client.search(text)
+          : await client.searchWithContext(text, context: context);
       await ref
           .read(searchHistoryProvider.notifier)
           .record(text, answer.answer);
       return answer;
     });
     ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, state);
+    final answer = state.valueOrNull;
+    if (answer != null) {
+      ref.read(assistantTabsProvider.notifier).appendMessage(
+            tabId,
+            AssistantConversationMessage.assistant(
+              query: text,
+              text: answer.answer,
+              citations: answer.citations,
+              llmMode: answer.llmMode,
+              llmRequestId: answer.llmRequestId,
+              llmUsageRecordId: answer.llmUsageRecordId,
+            ),
+          );
+    }
+    if (answer != null &&
+        shouldNotifyAssistantLongTask(
+          DateTime.now().difference(startedAt),
+          answer.llmRequestId,
+        )) {
+      unawaited(_notifyLongTask(answer.llmRequestId));
+    }
+  }
+
+  Future<void> _notifyLongTask(String requestId) async {
+    try {
+      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+            title: 'AI 助手任务完成',
+            body: '长任务已完成，点击回到 AI 助手查看完整结果。',
+            payload: mobileAssistantTaskNotificationPayload(requestId),
+          );
+    } on Object {
+      // A notification plugin failure must not change the completed answer.
+    }
+  }
+}
+
+class AssistantConversationMessage {
+  final String id;
+  final String role;
+  final String text;
+  final String query;
+  final List<SearchCitation> citations;
+  final String llmMode;
+  final String llmRequestId;
+  final String llmUsageRecordId;
+
+  const AssistantConversationMessage({
+    required this.id,
+    required this.role,
+    required this.text,
+    this.query = '',
+    this.citations = const [],
+    this.llmMode = '',
+    this.llmRequestId = '',
+    this.llmUsageRecordId = '',
+  });
+
+  factory AssistantConversationMessage.user(String text) {
+    return AssistantConversationMessage(
+      id: 'user-${DateTime.now().microsecondsSinceEpoch}',
+      role: 'user',
+      text: text,
+    );
+  }
+
+  factory AssistantConversationMessage.assistant({
+    required String query,
+    required String text,
+    List<SearchCitation> citations = const [],
+    String llmMode = '',
+    String llmRequestId = '',
+    String llmUsageRecordId = '',
+  }) {
+    return AssistantConversationMessage(
+      id: 'assistant-${DateTime.now().microsecondsSinceEpoch}',
+      role: 'assistant',
+      text: text,
+      query: query,
+      citations: citations,
+      llmMode: llmMode,
+      llmRequestId: llmRequestId,
+      llmUsageRecordId: llmUsageRecordId,
+    );
   }
 }
 
@@ -73,6 +181,7 @@ class AssistantConversationTab {
   final AsyncValue<SearchAnswer?> result;
   final bool resultTouched;
   final SearchCitation? sharedCitation;
+  final List<AssistantConversationMessage> messages;
 
   const AssistantConversationTab({
     required this.id,
@@ -82,6 +191,7 @@ class AssistantConversationTab {
     this.result = const AsyncData(null),
     this.resultTouched = false,
     this.sharedCitation,
+    this.messages = const [],
   });
 
   AssistantConversationTab copyWith({
@@ -90,6 +200,7 @@ class AssistantConversationTab {
     AsyncValue<SearchAnswer?>? result,
     bool? resultTouched,
     SearchCitation? sharedCitation,
+    List<AssistantConversationMessage>? messages,
     bool clearSharedCitation = false,
   }) {
     return AssistantConversationTab(
@@ -101,6 +212,7 @@ class AssistantConversationTab {
       resultTouched: resultTouched ?? this.resultTouched,
       sharedCitation:
           clearSharedCitation ? null : sharedCitation ?? this.sharedCitation,
+      messages: messages ?? this.messages,
     );
   }
 }
@@ -203,6 +315,19 @@ class AssistantTabsController extends Notifier<AssistantTabsState> {
         for (final tab in state.tabs)
           if (tab.id == tabId)
             tab.copyWith(result: result, resultTouched: true)
+          else
+            tab,
+      ],
+    );
+  }
+
+  void appendMessage(String tabId, AssistantConversationMessage message) {
+    state = AssistantTabsState(
+      activeTabId: state.activeTabId,
+      tabs: [
+        for (final tab in state.tabs)
+          if (tab.id == tabId)
+            tab.copyWith(messages: [...tab.messages, message])
           else
             tab,
       ],

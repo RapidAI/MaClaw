@@ -114,6 +114,17 @@ func invalidateLLMRuntimeCaches(system store.SystemSettingsRepository) {
 	globalLLMRuntimeCache.mu.Unlock()
 }
 
+func invalidateLLMEntitlementCaches(system store.SystemSettingsRepository) {
+	if system == nil {
+		return
+	}
+	key := llmRuntimeCacheKey(system)
+	globalLLMRuntimeCache.mu.Lock()
+	delete(globalLLMRuntimeCache.providers, key)
+	delete(globalLLMRuntimeCache.services, key)
+	globalLLMRuntimeCache.mu.Unlock()
+}
+
 func llmRuntimeCacheKey(system store.SystemSettingsRepository) string {
 	rv := reflect.ValueOf(system)
 	if !rv.IsValid() {

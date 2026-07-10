@@ -5,6 +5,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo, BufferEntry } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
+import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 interface AssistantInputStackProps {
     attachButtonTestId?: string;
@@ -42,6 +43,7 @@ interface AssistantInputStackProps {
     inputBarTestId?: string;
     inputLocked: boolean;
     inputOverlay?: React.ReactNode;
+    allowInputOverflow?: boolean;
     inputRef: React.Ref<HTMLTextAreaElement>;
     inputRowTestId?: string;
     inputValue: string;
@@ -50,6 +52,8 @@ interface AssistantInputStackProps {
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
     lang: string;
     pendingAttachments: AttachmentInfo[];
+    permissionMode?: AssistantPermissionMode;
+    onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     pendingAttachmentsTestId?: string;
     placeholderText: string;
     queuePanelTestId?: string;
@@ -87,8 +91,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
-        inputLocked, inputOverlay, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
-        pendingAttachmentsTestId, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
+        inputLocked, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
+        pendingAttachmentsTestId, permissionMode, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
         showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
         themeMode, toolbarTestId, updateInputValue, voiceInput,
@@ -141,8 +145,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     maxHeight: "55%",
                     height: inputAreaHeight ? `${inputAreaHeight}px` : undefined,
                     minWidth: 0,
-                    // Keep visible so history autocomplete / overlays can paint above the textarea.
-                    overflow: "visible",
+                    overflow: allowInputOverflow ? "visible" : "hidden",
                     background: inline ? t.inputBarBg : "transparent",
                     borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                     ['--wails-draggable' as any]: 'no-drag',
@@ -188,6 +191,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     lang={lang}
                     pendingAttachments={pendingAttachments}
                     pendingAttachmentsTestId={pendingAttachmentsTestId}
+                    permissionMode={permissionMode}
+                    onPermissionModeChange={onPermissionModeChange}
                     placeholderText={placeholderText}
                     ready={ready}
                     recallHistory={recallHistory}

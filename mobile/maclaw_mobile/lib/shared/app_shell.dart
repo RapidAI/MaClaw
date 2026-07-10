@@ -7,43 +7,63 @@ import '../core/shared_intents/mobile_shared_intent.dart';
 import '../core/shared_intents/shared_intent_bootstrap.dart';
 import '../features/auth/session_controller.dart';
 
-class AppShell extends ConsumerWidget {
+class AppShell extends ConsumerStatefulWidget {
   final Widget child;
 
   const AppShell({super.key, required this.child});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends ConsumerState<AppShell> {
+  @override
+  void initState() {
+    super.initState();
+    ref.listenManual<MobileSharedIntent?>(
+      mobileSharedIntentProvider,
+      (previous, next) {
+        if (next == null) return;
+        _routeSharedIntent(next);
+      },
+      fireImmediately: true,
+    );
+  }
+
+  void _routeSharedIntent(MobileSharedIntent intent) {
+    final features =
+        ref.read(sessionControllerProvider).valueOrNull?.bootstrap?.features ??
+            defaultMobileFeatures;
+    final target = sharedIntentTargetPath(intent, features);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.go(target);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            intent.opensDocuments ? _sharedFileMessage : _sharedContentMessage,
+          ),
+        ),
+      );
+      if (!sharedIntentCanBeConsumedAtTarget(intent, target)) {
+        ref.read(mobileSharedIntentProvider.notifier).clear(intent.id);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final features =
         ref.watch(sessionControllerProvider).valueOrNull?.bootstrap?.features ??
             defaultMobileFeatures;
     final tabs = mobileAppTabsForFeatures(features);
-
-    ref.listen(mobileSharedIntentProvider, (previous, next) {
-      if (next == null) return;
-      final target = sharedIntentTargetPath(next, features);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!context.mounted) return;
-        context.go(target);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              next.opensDocuments ? _sharedFileMessage : _sharedContentMessage,
-            ),
-          ),
-        );
-        if (!sharedIntentCanBeConsumedAtTarget(next, target)) {
-          ref.read(mobileSharedIntentProvider.notifier).clear(next.id);
-        }
-      });
-    });
 
     final location = GoRouterState.of(context).uri.path;
     final index = tabs.indexWhere((tab) => location.startsWith(tab.path));
     final selectedIndex = index < 0 ? 0 : index;
 
     return Scaffold(
-      body: SafeArea(child: child),
+      body: SafeArea(child: widget.child),
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedIndex,
         onDestinationSelected: (next) => context.go(tabs[next].path),

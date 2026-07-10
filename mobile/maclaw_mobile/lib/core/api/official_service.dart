@@ -8,6 +8,12 @@ const maclawOfficialHubCenterUrls = [
 ];
 const maclawMobileRealtimePath = '/api/mobile/realtime';
 
+// Keep candidate discovery responsive on mobile networks. A stalled official
+// endpoint must not prevent trying the next preset HubCenter.
+const maclawHubCenterConnectTimeout = Duration(seconds: 8);
+const maclawHubCenterSendTimeout = Duration(seconds: 8);
+const maclawHubCenterReceiveTimeout = Duration(seconds: 15);
+
 @Deprecated('Use maclawDefaultHubCenterUrl for HubCenter discovery.')
 const maclawOfficialServiceUrl = maclawDefaultHubCenterUrl;
 @Deprecated('Use maclawMobileRealtimePath.')
@@ -47,10 +53,7 @@ class OfficialHubCenterUnavailableException implements Exception {
 
   @override
   String toString() {
-    final detail = attempts
-        .map((attempt) => '${attempt.url}: ${attempt.message}')
-        .join('; ');
-    return 'No official MaClaw HubCenter is currently reachable. $detail';
+    return 'No official MaClaw HubCenter is currently reachable.';
   }
 }
 
@@ -108,7 +111,14 @@ Dio officialHubCenterDio(Dio? dio, {String? hubCenterUrl}) {
     );
   }
   if (dio == null) {
-    return Dio(BaseOptions(baseUrl: selectedHubCenter));
+    return Dio(
+      BaseOptions(
+        baseUrl: selectedHubCenter,
+        connectTimeout: maclawHubCenterConnectTimeout,
+        sendTimeout: maclawHubCenterSendTimeout,
+        receiveTimeout: maclawHubCenterReceiveTimeout,
+      ),
+    );
   }
   final baseUrl = dio.options.baseUrl.trim();
   if (baseUrl.isNotEmpty && !isMaclawOfficialHubCenterUrl(baseUrl)) {
@@ -117,6 +127,9 @@ Dio officialHubCenterDio(Dio? dio, {String? hubCenterUrl}) {
     );
   }
   dio.options.baseUrl = selectedHubCenter;
+  dio.options.connectTimeout ??= maclawHubCenterConnectTimeout;
+  dio.options.sendTimeout ??= maclawHubCenterSendTimeout;
+  dio.options.receiveTimeout ??= maclawHubCenterReceiveTimeout;
   return dio;
 }
 
@@ -146,7 +159,9 @@ List<String> _orderedOfficialHubCenters({
 bool _shouldTryNextHubCenter(DioException error) {
   final statusCode = error.response?.statusCode;
   if (statusCode == null) return true;
-  return statusCode >= 500;
+  // A missing route or an upstream timeout means this preset is unavailable;
+  // keep discovery moving through the remaining official candidates.
+  return statusCode == 404 || statusCode == 408 || statusCode >= 500;
 }
 
 String _hubCenterErrorMessage(DioException error) {
@@ -160,7 +175,14 @@ String _hubCenterErrorMessage(DioException error) {
 Dio discoveredHubDio(Dio? dio, {required String hubUrl}) {
   final normalizedHubUrl = normalizeDiscoveredHubUrl(hubUrl);
   if (dio == null) {
-    return Dio(BaseOptions(baseUrl: normalizedHubUrl));
+    return Dio(
+      BaseOptions(
+        baseUrl: normalizedHubUrl,
+        connectTimeout: maclawHubCenterConnectTimeout,
+        sendTimeout: maclawHubCenterSendTimeout,
+        receiveTimeout: maclawHubCenterReceiveTimeout,
+      ),
+    );
   }
   final baseUrl = dio.options.baseUrl.trim();
   if (baseUrl.isNotEmpty && !sameOrigin(baseUrl, normalizedHubUrl)) {
@@ -169,6 +191,9 @@ Dio discoveredHubDio(Dio? dio, {required String hubUrl}) {
     );
   }
   dio.options.baseUrl = normalizedHubUrl;
+  dio.options.connectTimeout ??= maclawHubCenterConnectTimeout;
+  dio.options.sendTimeout ??= maclawHubCenterSendTimeout;
+  dio.options.receiveTimeout ??= maclawHubCenterReceiveTimeout;
   return dio;
 }
 

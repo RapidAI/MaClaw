@@ -716,39 +716,55 @@ class _BackendSSHSessionCardState
     final payload = backendSshCommandPayload(command);
     final sessionId = _lastBackendSessionId;
     if (!_connected || payload == null || sessionId == null) return false;
-    final result =
-        await ref.read(backendSshSessionsProvider.notifier).sendInput(
-              sessionId: sessionId,
-              input: payload,
-            );
-    if (result.output.trim().isNotEmpty) {
-      _writeBackendSessionOutput(result.output);
-    } else {
-      _writeBackendSessionOutput(
-        '命令已投递到后台 SSH 会话 $sessionId，等待 GUI/agent 处理。\r\n',
-      );
+    try {
+      final result =
+          await ref.read(backendSshSessionsProvider.notifier).sendInput(
+                sessionId: sessionId,
+                input: payload,
+              );
+      if (result.output.trim().isNotEmpty) {
+        _writeBackendSessionOutput(result.output);
+      } else {
+        _writeBackendSessionOutput(
+          '命令已投递到后台 SSH 会话 $sessionId，等待 GUI/agent 处理。\r\n',
+        );
+      }
+      return true;
+    } catch (error) {
+      _writeBackendSessionOutput('后台 SSH 命令投递失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+      return false;
     }
-    return true;
   }
 
   Future<bool> startBackgroundTask(String command) async {
     final text = command.trim();
     final sessionId = _lastBackendSessionId;
     if (!_connected || text.isEmpty || sessionId == null) return false;
-    final task =
-        await ref.read(backendSshTasksProvider.notifier).startBackgroundTask(
-              sessionId: sessionId,
-              command: text,
-              tailLines: 80,
-            );
-    _writeBackendSessionOutput(
-      '已请求 GUI/agent 后台任务 ${task.taskId}'
-      '${task.status.trim().isEmpty ? '' : ' · ${task.status.trim()}'}\r\n',
-    );
-    if (task.logTail.trim().isNotEmpty) {
-      _writeBackendSessionOutput(task.logTail);
+    try {
+      final task =
+          await ref.read(backendSshTasksProvider.notifier).startBackgroundTask(
+                sessionId: sessionId,
+                command: text,
+                tailLines: 80,
+              );
+      _writeBackendSessionOutput(
+        '已请求 GUI/agent 后台任务 ${task.taskId}'
+        '${task.status.trim().isEmpty ? '' : ' · ${task.status.trim()}'}\r\n',
+      );
+      if (task.logTail.trim().isNotEmpty) {
+        _writeBackendSessionOutput(task.logTail);
+      }
+      return true;
+    } catch (error) {
+      _writeBackendSessionOutput('后台任务请求失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+      return false;
     }
-    return true;
   }
 
   Future<void> _refreshBackgroundTasks() async {
@@ -983,6 +999,11 @@ class _BackendSSHSessionCardState
             final reconnectId = _reconnectProfileId(profiles);
             final backendSessions = ref.watch(backendSshSessionsProvider);
             final backendTasks = ref.watch(backendSshTasksProvider);
+            final backendFileOperations =
+                ref.watch(backendSshFileOperationsProvider);
+            final fileOperations =
+                backendFileOperations.valueOrNull?[_lastBackendSessionId] ??
+                    const <MobileBackendSSHFileOperation>[];
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1110,6 +1131,7 @@ class _BackendSSHSessionCardState
                   localPathController: _fileLocalPathController,
                   remotePathController: _fileRemotePathController,
                   connected: _connected,
+                  operations: fileOperations,
                   onActionChanged: (value) => setState(
                     () => _fileOperationAction = value ?? _fileOperationAction,
                   ),
@@ -1566,6 +1588,7 @@ class _BackendFileOperationCard extends StatelessWidget {
   final TextEditingController localPathController;
   final TextEditingController remotePathController;
   final bool connected;
+  final List<MobileBackendSSHFileOperation> operations;
   final ValueChanged<String?> onActionChanged;
   final VoidCallback onSubmit;
 
@@ -1574,6 +1597,7 @@ class _BackendFileOperationCard extends StatelessWidget {
     required this.localPathController,
     required this.remotePathController,
     required this.connected,
+    required this.operations,
     required this.onActionChanged,
     required this.onSubmit,
   });
@@ -1659,6 +1683,23 @@ class _BackendFileOperationCard extends StatelessWidget {
               icon: const Icon(Icons.add_task_outlined),
               label: const Text('请求文件操作'),
             ),
+            if (operations.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Text('最近文件操作状态'),
+              const SizedBox(height: 6),
+              for (final operation in operations.take(3))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '${operation.action.isEmpty ? '文件操作' : operation.action} · '
+                    '${operation.status} · '
+                    '${operation.message.isEmpty ? operation.operationId : operation.message}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+            ],
           ],
         ),
       ),

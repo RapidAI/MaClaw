@@ -185,19 +185,26 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		// Auto-convert unquoted bash-style && to PowerShell-compatible ;.
-		// LLMs frequently generate && despite being told to use PowerShell syntax.
-		// PowerShell 5.1 doesn't support && (only 7+ does), but quoted text must
-		// remain untouched because it can be data passed to tests or scripts.
-		psCommand := convertUnquotedAndAndForPowerShell(command)
-		shellName = passthroughRuntimeProgram("powershell.exe")
-		// Wrap the command so Go observes the real command result. Native
-		// tools often write progress to stderr even when they exit 0, while
-		// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
-		// keeps stderr visible but classifies success primarily by $LASTEXITCODE.
-		wrappedPS := wrapCodingPowerShellCommand(psCommand)
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
-			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+		if hasUnquotedWindowsCmdSyntax(command) {
+			// Commands using cmd.exe control operators (for example `||` or
+			// `2>nul`) must not be parsed by Windows PowerShell 5.1.
+			shellName = passthroughRuntimeProgram("cmd.exe")
+			shellArgs = []string{"/d", "/s", "/c", command}
+		} else {
+			// Auto-convert unquoted bash-style && to PowerShell-compatible ;.
+			// LLMs frequently generate && despite being told to use PowerShell syntax.
+			// PowerShell 5.1 doesn't support && (only 7+ does), but quoted text must
+			// remain untouched because it can be data passed to tests or scripts.
+			psCommand := convertUnquotedAndAndForPowerShell(command)
+			shellName = passthroughRuntimeProgram("powershell.exe")
+			// Wrap the command so Go observes the real command result. Native
+			// tools often write progress to stderr even when they exit 0, while
+			// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
+			// keeps stderr visible but classifies success primarily by $LASTEXITCODE.
+			wrappedPS := wrapCodingPowerShellCommand(psCommand)
+			shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
+				"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+		}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
@@ -266,6 +273,28 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	}
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+func hasUnquotedWindowsCmdSyntax(command string) bool {
+	var b strings.Builder
+	var quote rune
+	for _, r := range command {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			b.WriteByte(' ')
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	plain := strings.ToLower(b.String())
+	return strings.Contains(plain, "||") || strings.Contains(plain, ">nul") || strings.Contains(plain, "> nul")
 }
 
 func codingCommandEnv() []string {

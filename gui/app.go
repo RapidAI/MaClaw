@@ -6883,6 +6883,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	a.configMu.Unlock()
+	if fullControl, ok := patch["subagent_full_access"].(bool); ok {
+		recordSubAgentPermissionModeAudit(a, fullControl)
+	}
 
 	// When workflow is toggled off, dismiss the frontend workflow panel immediately.
 	// Without this, the progress board stays visible until the next user message.
