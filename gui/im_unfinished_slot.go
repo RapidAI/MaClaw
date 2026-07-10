@@ -154,7 +154,6 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 		UpdatedAt:    time.Now(),
 	}
 	h.memory.UpsertUnfinishedSlot(userID, slot)
-	h.memory.BindUnfinishedSlot(userID, slotID)
 	log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q (project=%q)", userID, truncateRunes(interruptedTask, 80), interruptedProjectPath)
 	return slot
 }
@@ -266,7 +265,7 @@ func localizedPreviousTaskDismissedMessage(lang string) string {
 }
 
 func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trimmed string, freshTask bool, decision explicitTaskSlotDecision, unfinishedSlot *agent.UnfinishedTaskSlot) (*IMAgentResponse, bool) {
-	if unfinishedSlot == nil || unfinishedSlot.Source.IsSessionExit() || msg.IsBackground || freshTask || isSlotActionCommand(trimmed) || decision.StartNewTask || decision.ResumeSlotID != "" {
+	if unfinishedSlot == nil || !unfinishedSlotNeedsDecision(unfinishedSlot) || unfinishedSlot.Source.IsSessionExit() || msg.IsBackground || freshTask || isSlotActionCommand(trimmed) || decision.StartNewTask || decision.ResumeSlotID != "" {
 		return nil, false
 	}
 
@@ -312,6 +311,20 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		UnfinishedSlot:     unfinishedTask,
 		RecoverableSession: recoverableSession,
 	}, true
+}
+
+// unfinishedSlotNeedsDecision distinguishes a recovery candidate from an
+// already active continuation. Only the former should be offered as a choice.
+func unfinishedSlotNeedsDecision(slot *agent.UnfinishedTaskSlot) bool {
+	if slot == nil {
+		return false
+	}
+	switch slot.Status {
+	case agent.UnfinishedTaskSlotStatusResumed, agent.UnfinishedTaskSlotStatusCompleted:
+		return false
+	default:
+		return true
+	}
 }
 
 func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {

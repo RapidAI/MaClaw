@@ -11,7 +11,6 @@
     <section class="topbar">
       <div>
         <h1>TigerProxy</h1>
-        <p>CodeGen 本地协议转发</p>
       </div>
       <div id="tokenStats" class="token-stats">
         <span title="实际输入 / 原始输入 tokens">↑ <strong id="promptTokens">0</strong><small id="promptBefore" class="before-cache"></small></span>
@@ -28,12 +27,15 @@
       <div class="status-group">
         <span class="author">作者：Daniel 博士</span>
         <span id="loginChip" class="chip muted">未登录</span>
-        <span id="statusBadge" class="badge">启动中</span>
-        <button id="hideBtn" class="window-hide" title="隐藏主界面">隐藏</button>
+        <button id="hideBtn" class="window-hide" type="button" title="隐藏主界面" aria-label="隐藏主界面">×</button>
       </div>
     </section>
 
     <div class="topbar-actions">
+      <div class="runtime-status" aria-live="polite">
+        <span class="runtime-status-label">运行状态</span>
+        <span id="statusBadge" class="badge">启动中</span>
+      </div>
       <div class="actions">
         <button id="installCodexBtn" class="ghost codex-btn" style="display:none;">安装 Codex Desktop</button>
         <button id="configCodexBtn" class="ghost codex-btn">配置 Codex</button>

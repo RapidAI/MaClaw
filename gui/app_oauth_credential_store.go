@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -128,8 +129,8 @@ func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, provi
 			}
 			updated := &oauth.StoredCredential{
 				Type:           old.Type,
-				AccessToken:    old.AccessToken,    // GitHub token (long-lived)
-				RawAccessToken: copilotResp.Token,  // Copilot API token (short-lived)
+				AccessToken:    old.AccessToken,   // GitHub token (long-lived)
+				RawAccessToken: copilotResp.Token, // Copilot API token (short-lived)
 				RefreshToken:   old.RefreshToken,
 				ExpiresAt:      copilotResp.ExpiresAt,
 			}
@@ -201,7 +202,13 @@ func (a *App) syncCredentialToConfig(providerName string, cred *oauth.StoredCred
 // resolveProviderKeyFromStore reads the access token from the credential store.
 // Falls back to the provider's Key field if store has no entry.
 func (a *App) resolveProviderKeyFromStore(provider corelib.MaclawLLMProvider) string {
+	legacyCodexJWT := func() string {
+		return provider.CodexSubscriptionOAuthToken()
+	}
 	if a.credentialStore == nil {
+		if token := legacyCodexJWT(); token != "" {
+			return token
+		}
 		return provider.Key
 	}
 	storeID := credentialStoreProviderID(provider)
@@ -219,7 +226,20 @@ func (a *App) resolveProviderKeyFromStore(provider corelib.MaclawLLMProvider) st
 
 	cred, err := a.credentialStore.Read(storeID)
 	if err != nil || cred == nil {
+		if token := legacyCodexJWT(); token != "" {
+			return token
+		}
 		return provider.Key // fallback
+	}
+	if storeID == "openai" && provider.IsCodexSubscriptionOAuthProvider() && cred.RawAccessToken != "" {
+		// Older versions stored an exchanged sk- key in AccessToken. The ChatGPT
+		// Codex backend requires the OAuth JWT retained in RawAccessToken.
+		return cred.RawAccessToken
+	}
+	if storeID == "openai" && provider.IsCodexSubscriptionOAuthProvider() && strings.HasPrefix(cred.AccessToken, "sk-") {
+		if token := legacyCodexJWT(); token != "" {
+			return token
+		}
 	}
 	return cred.AccessToken
 }

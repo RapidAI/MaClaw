@@ -53,6 +53,5 @@ func (h *IMMessageHandler) createMaxRoundsUnfinishedSlot(userID string, history 
 		ResumePrompt: "The user sent 'continue' to resume this task. Continue from completed work in the conversation history and avoid repeating completed steps.\n",
 		Source:       agent.UnfinishedTaskSlotSourceMaxRounds,
 	})
-	h.memory.BindUnfinishedSlot(userID, slotID)
 	log.Printf("[MaxRounds] created unfinished slot %s for user %s, task=%q", slotID, userID, truncateRunes(originalTask, 80))
 }

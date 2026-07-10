@@ -3032,6 +3032,32 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('marks the originating unfinished slot as resumed immediately after its action is selected', async () => {
+        mockSendResponse = {
+            text: 'unfinished task',
+            error: '',
+            unfinished_slot: {
+                slot_id: 'slot-resume-ui',
+                status: 'interrupted',
+                actions: [{ label: 'Resume', command: '__resume_unfinished__ slot-resume-ui', style: 'default' }],
+            },
+        };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('check task');
+        });
+        mockSendResponse = { text: 'continuing', error: '' };
+
+        await act(async () => {
+            await result.current.executeAction('__resume_unfinished__ slot-resume-ui');
+        });
+
+        const slot = result.current.messages.find(message => message.unfinishedSlot?.slotID === 'slot-resume-ui')?.unfinishedSlot;
+        expect(slot?.status).toBe('resumed');
+        expect(slot?.actions).toEqual([]);
+    });
+
     it('normalizes structured recoverable session payloads into assistant messages', async () => {
         mockSendResponse = {
             text: '',

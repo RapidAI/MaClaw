@@ -144,9 +144,8 @@ type codeExchangeResult struct {
 // ExchangeCode 使用授权码向 token endpoint 换取 access_token。
 // 发送 POST 请求，form-encoded body 包含 grant_type、code、code_verifier、redirect_uri、client_id。
 //
-// 获取 access_token 后，尝试通过 RFC 8693 token exchange 获取 API key (sk-...)。
-// 如果 token exchange 成功，用 sk-... key 调用 api.openai.com/v1/responses。
-// 如果 token exchange 失败，直接用 access_token（可能仅适用于 chatgpt.com/backend-api）。
+// ChatGPT Codex subscription requests use the OAuth access_token directly as
+// their Bearer credential. Do not exchange it for a platform sk- API key.
 func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenResult, error) {
 	result, err := exchangeCodeInternal(cfg, code, codeVerifier, redirectURI)
 	if err != nil {
@@ -356,17 +355,8 @@ func CompleteHeadlessOAuth(cfg Config, params *HeadlessOAuthParams, callbackURL 
 		return nil, fmt.Errorf("token exchange 失败: %w", err)
 	}
 
-	// 尝试 token exchange 获取 sk-... API key
-	apiKey := exchanged.AccessToken
-	if exchanged.IDToken != "" {
-		key, exchangeErr := ExchangeForAPIKey(cfg, exchanged.IDToken)
-		if exchangeErr == nil {
-			apiKey = key
-		}
-	}
-
 	return &TokenResult{
-		AccessToken:    apiKey,
+		AccessToken:    exchanged.AccessToken,
 		RawAccessToken: exchanged.AccessToken,
 		RefreshToken:   exchanged.RefreshToken,
 		ExpiresIn:      exchanged.ExpiresIn,
@@ -442,22 +432,8 @@ func RunOAuthFlowCtx(ctx context.Context, cfg Config) (*TokenResult, error) {
 		return nil, fmt.Errorf("oauth flow: %w", err)
 	}
 
-	// 7. 尝试 token exchange 获取 sk-... API key
-	apiKey := exchanged.AccessToken
-	if exchanged.IDToken != "" {
-		key, exchangeErr := ExchangeForAPIKey(cfg, exchanged.IDToken)
-		if exchangeErr == nil {
-			apiKey = key
-			log.Printf("[oauth] OAuth flow: token exchange succeeded, got API key")
-		} else {
-			log.Printf("[oauth] OAuth flow: token exchange failed (will use access_token): %v", exchangeErr)
-		}
-	} else {
-		log.Printf("[oauth] OAuth flow: no id_token, using access_token directly")
-	}
-
 	return &TokenResult{
-		AccessToken:    apiKey,
+		AccessToken:    exchanged.AccessToken,
 		RawAccessToken: exchanged.AccessToken,
 		RefreshToken:   exchanged.RefreshToken,
 		ExpiresIn:      exchanged.ExpiresIn,

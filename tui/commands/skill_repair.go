@@ -150,7 +150,9 @@ func applyRepairLLMProvider(llmCfg *corelib.MaclawLLMConfig, p corelib.MaclawLLM
 	if llmCfg.URL == "" {
 		llmCfg.URL = strings.TrimSpace(p.URL)
 	}
-	if llmCfg.Key == "" {
+	if token := p.CodexSubscriptionOAuthToken(); token != "" {
+		llmCfg.Key = token
+	} else if llmCfg.Key == "" {
 		llmCfg.Key = strings.TrimSpace(p.Key)
 	}
 	if llmCfg.Model == "" {

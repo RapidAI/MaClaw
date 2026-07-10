@@ -74,7 +74,9 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 	// Resolve AgentType and SupportsVision from the current provider (not stored as flat fields).
 	for _, p := range cfg.MaclawLLMProviders {
 		if p.Name == cfg.MaclawLLMCurrentProvider {
-			if strings.TrimSpace(llm.Key) == "" {
+			if token := p.CodexSubscriptionOAuthToken(); token != "" {
+				llm.Key = token
+			} else if strings.TrimSpace(llm.Key) == "" {
 				llm.Key = strings.TrimSpace(p.Key)
 			}
 			if p.TimeoutSec > 0 {
@@ -424,10 +426,17 @@ func llmMissingProviderKey(cfg corelib.AppConfig) bool {
 }
 
 func currentLLMProviderKeyFromAppConfig(cfg corelib.AppConfig) string {
+	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	for _, provider := range cfg.MaclawLLMProviders {
+		if strings.TrimSpace(provider.Name) == current {
+			if token := provider.CodexSubscriptionOAuthToken(); token != "" {
+				return token
+			}
+		}
+	}
 	if key := strings.TrimSpace(cfg.MaclawLLMKey); key != "" {
 		return key
 	}
-	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
 	for _, provider := range cfg.MaclawLLMProviders {
 		if strings.TrimSpace(provider.Name) == current {
 			return strings.TrimSpace(provider.Key)
@@ -985,7 +994,7 @@ func defaultOpenAIOAuthProvider() corelib.MaclawLLMProvider {
 	return corelib.MaclawLLMProvider{
 		Name:          "OpenAI",
 		URL:           "https://chatgpt.com/backend-api/codex",
-		Model:         "gpt-5.4",
+		Model:         oauth.CodexSubscriptionDefaultModel,
 		AuthType:      "oauth",
 		ContextLength: 110000,
 		TimeoutSec:    corelib.DefaultLLMTimeoutSec,

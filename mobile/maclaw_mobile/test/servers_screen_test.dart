@@ -1435,7 +1435,6 @@ void main() {
       ),
     );
     expect(api.inputs, isEmpty);
-
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 50));
   });

@@ -26,7 +26,7 @@ Status legend:
 
 | Checklist item | Status | Evidence needed |
 | --- | --- | --- |
-| App uses exactly three preset official HubCenters and discovers the user's Hub/tenant | Automated evidence | `test/official_service_test.dart`, `test/auth_service_test.dart`, `test/session_state_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1` |
+| App uses exactly three preset official HubCenters and discovers the user's Hub/tenant | Automated evidence | `test/official_service_test.dart`, `test/auth_service_test.dart`, `test/session_state_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1` |
 | No custom Hub URL setting in UI, storage, or API client | Automated evidence | `test/official_service_surface_test.dart`, `test/official_service_test.dart` |
 | Mobile account login uses phone number plus SMS verification only, resolves Hub/tenant through HubCenter, and signs in with the discovered Hub token | Automated evidence | `test/auth_service_test.dart`, `test/login_screen_test.dart`, `test/app_smoke_test.dart` |
 | Verified phone accounts use MaClaw official LLM credits bound to `phone:<digits>` | Automated evidence | `test/auth_service_test.dart`, `test/mobile_bootstrap_test.dart`, `test/login_screen_test.dart`, `test/app_smoke_test.dart`; real Hub credit balance remains part of Hub discovery smoke |
@@ -107,7 +107,7 @@ Status legend:
 | Checklist item | Status | Evidence needed |
 | --- | --- | --- |
 | Go mobile API tests pass | Automated evidence | `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1` |
-| Go mobile HubCenter discovery tests pass | Automated evidence | `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1` |
+| Go mobile HubCenter discovery tests pass | Automated evidence | `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1` |
 | Go mobile GUI/digital employee tests pass | Automated evidence | `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1` |
 | Platform configuration tests pass | Automated evidence | `python tool/configure_platforms_test.py` |
 | Runtime boundary verifier passes | Automated evidence | `python tool/verify_runtime_boundary.py`, `python -m unittest tool/verify_runtime_boundary_test.py` |

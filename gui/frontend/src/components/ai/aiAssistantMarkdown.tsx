@@ -710,6 +710,12 @@ function renderUnfinishedSlotCard(
     lang: string,
 ): React.ReactNode {
     const actions = slot.actions || [];
+    const status = slot.status?.trim().toLowerCase();
+    const cardTitle = status === 'resumed'
+        ? localizeText(lang, "Task resumed", "\u4efb\u52a1\u5df2\u7ee7\u7eed", "\u4efb\u52d9\u5df2\u7e7c\u7e8c")
+        : status === 'completed'
+            ? localizeText(lang, "Task completed", "\u4efb\u52a1\u5df2\u5b8c\u6210", "\u4efb\u52d9\u5df2\u5b8c\u6210")
+            : localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805");
     return (
         <div
             data-testid="unfinished-slot-card"
@@ -722,7 +728,7 @@ function renderUnfinishedSlotCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805")}
+                {cardTitle}
             </div>
             {slot.status && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>

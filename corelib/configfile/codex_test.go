@@ -35,6 +35,16 @@ func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
 	}
 }
 
+func TestBuildCodexConfigTomlContentKeepsGenericFallbackModel(t *testing.T) {
+	content := BuildCodexConfigTomlContent("https://api.example.com/v1", "", "custom", "responses")
+	if !strings.Contains(content, `model = "gpt-5.4"`) {
+		t.Fatalf("generic provider fallback model changed unexpectedly:\n%s", content)
+	}
+	if strings.Contains(content, "gpt-5.6-luna") {
+		t.Fatalf("generic provider must not inherit the OpenAI OAuth model:\n%s", content)
+	}
+}
+
 func TestWriteCodexConfigAddsCodeGenClientNameHeader(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

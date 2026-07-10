@@ -182,9 +182,12 @@ raw terminal socket. The mapping is:
   task, owns the task ID, streams status/log tails back to Hub, and records the
   same `backend_session_id`.
 - File operations: mobile can request GUI-equivalent `upload`, `download`, and
-  remote `list` operations only through the backend session path. The
+  remote `stat`/`list` operations only through the backend session path. The
   GUI/agent performs SFTP with its local SSH credentials and publishes sanitized
-  progress/result metadata back to Hub.
+  progress/result metadata back to Hub. `local_path` always names a path on the
+  claimed GUI/agent machine, never a phone file. Hub and mobile reject
+  `upload`/`download` requests unless both `local_path` and `remote_path` are
+  supplied; `stat`/`list` require `remote_path`.
 
 ## Required Mobile Capabilities
 

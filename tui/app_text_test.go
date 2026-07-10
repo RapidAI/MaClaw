@@ -348,6 +348,25 @@ func TestBuildLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigUsesJWTForLegacyCodexOAuthProvider(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMKey:             "sk-legacy-platform-key",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api/codex",
+			Key:              "sk-legacy-platform-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+			AuthType:         "oauth",
+			Model:            "gpt-5.6-luna",
+		}},
+	}
+
+	if got := buildLLMConfigFromAppConfig(cfg).Key; got != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("LLM key = %q, want raw OAuth JWT", got)
+	}
+}
+
 func TestSimpleChatMessagesFiltersAndLimitsHistory(t *testing.T) {
 	history := []agent.ConversationEntry{
 		{Role: "tool", Content: "ignored"},

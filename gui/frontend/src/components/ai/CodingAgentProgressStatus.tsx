@@ -359,10 +359,11 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
         tone = neutralAttentionToneDark;
     }
     const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    const displayText = codingAgentDisplayText(progress, lang);
     const statusText = codingAgentProgressStatusText(progress, lang);
     const metaText = codingAgentProgressMetaText(progress, lang);
     const commandPreview = codingAgentCommandPreviewText(progress, lang);
+    const commandAriaText = commandPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${(progress.command || "").trim()}` : undefined;
+    const displayText = codingAgentDisplayText(progress, lang);
     return (
         <div
             key={msg.id}
@@ -397,6 +398,8 @@ export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgent
             {commandPreview && (
                 <span
                     data-testid="coding-agent-command-preview"
+                    role="note"
+                    aria-label={commandAriaText}
                     title={progress.command}
                     style={{
                         color: t.fieldLabel,
@@ -571,7 +574,8 @@ export function codingAgentCommandPreviewText(progress: CodingAgentProgress, lan
     if ((normalized.event || "").trim().toLowerCase() !== "tool_finished") return undefined;
     const toolName = (normalized.detail || "").trim().toLowerCase();
     if (toolName !== "bash" && toolName !== "ssh_bash") return undefined;
-    if (normalizeCodingAgentToolOutcome(normalized.outcome) === "success") return undefined;
+    const outcome = normalizeCodingAgentToolOutcome(normalized.outcome);
+    if (outcome !== "failed" && outcome !== "blocked") return undefined;
     const command = (normalized.command || "").trim();
     if (!command) return undefined;
     const label = lang.startsWith("zh") ? "\u547d\u4ee4" : "cmd";

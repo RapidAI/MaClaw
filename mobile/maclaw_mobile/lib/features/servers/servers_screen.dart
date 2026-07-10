@@ -820,8 +820,12 @@ class _BackendSSHSessionCardState
     final remotePath = _fileRemotePathController.text.trim();
     final localPath = _fileLocalPathController.text.trim();
     if (!_connected || sessionId == null || action.isEmpty) return;
-    if (remotePath.isEmpty && localPath.isEmpty) {
-      setState(() => _lastError = '请填写远端路径，或填写 GUI/agent 侧本地路径。');
+    final needsDesktopPath = action == 'upload' || action == 'download';
+    if (remotePath.isEmpty || (needsDesktopPath && localPath.isEmpty)) {
+      final message = needsDesktopPath
+          ? '上传和下载都需要远端路径及 GUI/agent 侧本地路径。'
+          : '查看文件状态和列目录需要远端路径。';
+      setState(() => _lastError = message);
       return;
     }
     try {

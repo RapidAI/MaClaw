@@ -37,8 +37,8 @@ handoff.
 MaClaw official LLM access is the default after phone verification. Third-party
 LLM access is optional and lives under the account/settings area. It is allowed
 only when authorized by scanning or pasting the provider QR code generated from
-the LLM configuration screen in MaClaw desktop GUI. The mobile app does not
-accept arbitrary third-party LLM endpoints, provider base URLs, or API keys.
+the LLM configuration screen in MaClaw desktop GUI. A desktop QR never creates an account, signs in, or issues a mobile token. Phone/SMS verification remains the only mobile registration and login path. The mobile app does not accept
+arbitrary third-party LLM endpoints, provider base URLs, or API keys.
 
 ## AI Assistant
 
@@ -47,6 +47,8 @@ assistant but adapted for short mobile sessions. It is not a search-only page:
 current-information checking is one assistant capability alongside normal
 conversation, voice input, screenshot/photo questions, document handoff,
 server-log analysis, and digital employee task handoff.
+
+Assistant questions use the Hub LLM execution path. By default it applies the verified phone account's MaClaw official credits, request ID, and usage record. When the signed-in user has authorized a MaClaw desktop GUI LLM QR in settings, the Hub instead proxies that stored third-party authorization without sending its API key to the phone.
 
 The assistant is the primary signed-in workspace. Optional bootstrap feature
 flags can hide documents, backend SSH session management, digital employees, or push notification

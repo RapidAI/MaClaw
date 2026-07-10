@@ -1750,6 +1750,82 @@ func redactCodingSubAgentLogValue(value interface{}) {
 	}
 }
 
+func hasOnlyDirectoryCreationShellMutation(command string) bool {
+	fields := shellCommandFields(command)
+	sawTarget := false
+	commandPosition := true
+	for i := 0; i < len(fields); i++ {
+		token := strings.ToLower(normalizeShellCommandToken(fields[i]))
+		if token == "" {
+			continue
+		}
+		if isShellCommandStartMarker(token) {
+			commandPosition = true
+			continue
+		}
+		if !commandPosition {
+			continue
+		}
+		if consumed, ok := shellCommandPrefixLength(fields[i:]); ok {
+			i += consumed - 1
+			commandPosition = true
+			continue
+		}
+		switch commandNameBase(normalizeShellExecutableToken(token)) {
+		case "mkdir", "md":
+			args := commandSegmentFields(fields[i+1:])
+			foundInSegment := false
+			for j := 0; j < len(args); j++ {
+				arg := normalizeShellCommandToken(args[j])
+				if arg == "" {
+					continue
+				}
+				if arg == "--" {
+					for _, literal := range args[j+1:] {
+						literal = normalizeShellCommandToken(literal)
+						if literal == "" || shellDirectoryCreationTargetLooksDynamic(literal) {
+							return false
+						}
+						foundInSegment = true
+					}
+					break
+				}
+				if shellMkdirOptionConsumesValue(arg) {
+					j++
+					continue
+				}
+				if strings.HasPrefix(arg, "-") {
+					continue
+				}
+				if shellDirectoryCreationTargetLooksDynamic(arg) {
+					return false
+				}
+				foundInSegment = true
+			}
+			if !foundInSegment {
+				return false
+			}
+			sawTarget = true
+		default:
+			return false
+		}
+		commandPosition = false
+	}
+	return sawTarget
+}
+
+func shellDirectoryCreationTargetLooksDynamic(target string) bool {
+	return strings.ContainsAny(target, "$*?`|&;<>") || strings.Contains(target, "${")
+}
+
+func shellMkdirOptionConsumesValue(option string) bool {
+	option = strings.ToLower(strings.TrimSpace(option))
+	switch option {
+	case "-m", "--mode", "--context":
+		return true
+	}
+	return false
+}
 func compactCodingSubAgentLogText(text string, maxRunes int) string {
 	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 	if text == "" {

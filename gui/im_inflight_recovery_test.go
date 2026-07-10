@@ -66,6 +66,45 @@ func TestBuildUnfinishedSlotHintUsesConfiguredChineseLanguage(t *testing.T) {
 	}
 }
 
+func TestUnfinishedSlotHintDoesNotInterruptResumedTask(t *testing.T) {
+	h := &IMMessageHandler{}
+	slot := &agent.UnfinishedTaskSlot{SlotID: "slot-resumed", Status: agent.UnfinishedTaskSlotStatusResumed}
+	resp, handled := h.maybeReturnUnfinishedSlotHint(IMUserMessage{UserID: "desktop-user", Text: "继续处理"}, "继续处理", false, explicitTaskSlotDecision{}, slot)
+	if handled || resp != nil {
+		t.Fatalf("resumed task was prompted again: handled=%v resp=%#v", handled, resp)
+	}
+}
+
+func TestRecoverInterruptedTaskCreatesPendingSlotWithoutBindingIt(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	memory.SetInFlightTask("desktop-user", "finish the upload", "D:/work/project")
+	h := &IMMessageHandler{memory: memory}
+
+	slot := h.recoverInterruptedTaskSlot("desktop-user", nil)
+	if slot == nil || slot.Status != agent.UnfinishedTaskSlotStatusInterrupted {
+		t.Fatalf("recovered slot = %#v, want interrupted pending slot", slot)
+	}
+	if active := memory.ActiveUnfinishedSlot("desktop-user"); active != nil {
+		t.Fatalf("recovery bound slot before user confirmation: %#v", active)
+	}
+}
+
+func TestMaxRoundsCreatesPendingSlotWithoutBindingIt(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	h := &IMMessageHandler{memory: memory}
+	h.createMaxRoundsUnfinishedSlot("desktop-user", []agent.ConversationEntry{{Role: "user", Content: "finish the upload"}})
+
+	slot := memory.GetUnfinishedSlot("desktop-user")
+	if slot == nil || slot.Status != agent.UnfinishedTaskSlotStatusMaxRoundsReached {
+		t.Fatalf("max-rounds slot = %#v, want pending max-rounds slot", slot)
+	}
+	if active := memory.ActiveUnfinishedSlot("desktop-user"); active != nil {
+		t.Fatalf("max-rounds slot was bound before user confirmation: %#v", active)
+	}
+}
+
 func TestBuildResumeSlotActionsUseConfiguredChineseLanguage(t *testing.T) {
 	previousLang, _ := agentViewCurrentLang.Load().(string)
 	setAgentViewLang("zh-Hans")

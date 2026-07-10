@@ -74,7 +74,7 @@ func TestApplyOpenAIOAuthResultUsesCodexSubscriptionDefaults(t *testing.T) {
 	}
 
 	applyOpenAIOAuthResultToConfig(&cfg, &oauth.TokenResult{
-		AccessToken:    "sk-exchanged",
+		AccessToken:    "eyJhbGciOiJub25lIn0.payload.sig",
 		RawAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
 		RefreshToken:   "refresh-token",
 		ExpiresIn:      3600,
@@ -87,14 +87,30 @@ func TestApplyOpenAIOAuthResultUsesCodexSubscriptionDefaults(t *testing.T) {
 	if provider.URL != "https://chatgpt.com/backend-api/codex" {
 		t.Fatalf("OpenAI OAuth URL = %q, want Codex subscription backend", provider.URL)
 	}
-	if provider.Model != "gpt-5.4" {
-		t.Fatalf("OpenAI OAuth model = %q, want gpt-5.4", provider.Model)
+	if provider.Model != oauth.CodexSubscriptionDefaultModel {
+		t.Fatalf("OpenAI OAuth model = %q, want %s", provider.Model, oauth.CodexSubscriptionDefaultModel)
 	}
 	if provider.WireAPI != "responses-ws" {
 		t.Fatalf("OpenAI OAuth WireAPI = %q, want responses-ws", provider.WireAPI)
 	}
-	if provider.Key != "sk-exchanged" || provider.OAuthAccessToken != "eyJhbGciOiJub25lIn0.payload.sig" || provider.RefreshToken != "refresh-token" {
+	if provider.Key != "eyJhbGciOiJub25lIn0.payload.sig" || provider.OAuthAccessToken != "eyJhbGciOiJub25lIn0.payload.sig" || provider.RefreshToken != "refresh-token" {
 		t.Fatalf("OpenAI OAuth tokens not preserved/applied: %+v", provider)
+	}
+}
+
+func TestCurrentLLMProviderKeyUsesJWTForLegacyCodexOAuthProvider(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api/codex",
+			Key:              "sk-legacy-platform-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+			AuthType:         "oauth",
+		}},
+	}
+	if got := currentLLMProviderKeyFromAppConfig(cfg); got != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("current LLM key = %q, want raw OAuth JWT", got)
 	}
 }
 
@@ -426,6 +442,33 @@ func TestLoadLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 	if info["configured"] != true || info["missing_key"] != false {
 		t.Fatalf("provider-key JSON = configured %#v missing_key %#v", info["configured"], info["missing_key"])
+	}
+}
+
+func TestLoadLLMConfigUsesJWTForLegacyCodexOAuthProvider(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	if err := NewFileConfigStore(dataDir).SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMKey:             "sk-legacy-platform-key",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api/codex",
+			Key:              "sk-legacy-platform-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+			AuthType:         "oauth",
+			Model:            "gpt-5.6-luna",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	llmCfg, err := LoadLLMConfig()
+	if err != nil {
+		t.Fatalf("LoadLLMConfig: %v", err)
+	}
+	if llmCfg.Key != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("LLM key = %q, want raw OAuth JWT", llmCfg.Key)
 	}
 }
 

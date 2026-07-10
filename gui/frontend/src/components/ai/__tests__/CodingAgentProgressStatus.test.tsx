@@ -117,6 +117,8 @@ describe('CodingAgentProgressStatus', () => {
         const preview = screen.getByTestId('coding-agent-command-preview');
         expect(preview.textContent).toContain('cmd: Remove-Item');
         expect(preview.getAttribute('title')).toBe(command);
+        expect(preview.getAttribute('role')).toBe('note');
+        expect(preview.getAttribute('aria-label')).toBe(`Command: ${command}`);
     });
 
     it('shows the command for failed remote bash, but not successful bash', () => {
@@ -134,6 +136,13 @@ describe('CodingAgentProgressStatus', () => {
             event: 'tool_finished',
             detail: 'bash',
             outcome: 'success',
+            command: 'go test ./...',
+        }, 'en')).toBeUndefined();
+        expect(codingAgentCommandPreviewText({
+            phase: 'running',
+            title: 'Pending result',
+            event: 'tool_finished',
+            detail: 'bash',
             command: 'go test ./...',
         }, 'en')).toBeUndefined();
     });

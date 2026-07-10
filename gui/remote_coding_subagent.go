@@ -896,6 +896,7 @@ func (c *remoteCodingCallbacks) LLMRequestContext(iteration int) (context.Contex
 func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string {
 	startedAt := time.Now()
 	canonicalName := strings.ToLower(strings.TrimSpace(name))
+	var normalizedArgsJSON string
 
 	// Defer tool_finished event emission — guarantees pairing with tool_started
 	// regardless of early returns (parse errors, nil handler, etc.)
@@ -911,6 +912,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				Phase:      codingAgentEventPhaseRunning.String(),
 				Detail:     strings.TrimSpace(name),
 				Title:      "远程编码",
+				Command:    remoteCodingToolEventCommand(canonicalName, normalizedArgsJSON),
 				Outcome:    outcome,
 				DurationMS: duration.Milliseconds(),
 			}
@@ -928,7 +930,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		}
 	}()
 
-	normalizedArgsJSON := normalizeCodingSubAgentToolArguments(argsJSON)
+	normalizedArgsJSON = normalizeCodingSubAgentToolArguments(argsJSON)
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(normalizedArgsJSON), &args); err != nil {
 		result = fmt.Sprintf("参数解析失败: %v", err)
@@ -990,11 +992,33 @@ func remoteCodingToolRequiresSSHHandler(name string) bool {
 	}
 }
 
+func remoteCodingToolEventCommand(name, argsJSON string) string {
+	if strings.ToLower(strings.TrimSpace(name)) != remoteSSHBashToolName {
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+	applyRemoteCodingSubAgentToolArgumentAliases(remoteSSHBashToolName, args)
+	return strings.TrimSpace(redactCodingSubAgentFreeformLogText(remoteArgStr(args, "command")))
+}
 func remoteCodingToolOutcome(result string) string {
+	if remoteCodingToolResultLooksBlocked(result) {
+		return "blocked"
+	}
 	if remoteCodingToolResultLooksFailed(result) {
 		return "failed"
 	}
 	return "success"
+}
+
+func remoteCodingToolResultLooksBlocked(result string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(result))
+	return strings.Contains(result, "\u62d2\u7edd\u6267\u884c\u9ad8\u98ce\u9669\u547d\u4ee4") ||
+		strings.HasPrefix(normalized, "refusing remote directory access outside the project:") ||
+		strings.HasPrefix(normalized, "refusing to modify remote path outside the project:") ||
+		strings.HasPrefix(normalized, "refusing to read remote path outside the project:")
 }
 
 func remoteCodingToolFailureIsDiagnostic(name, argsJSON, result, outcome string) bool {
@@ -1037,6 +1061,7 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 		"permission denied",
 		"unavailable",
 		"unknown tool",
+		"ninja: build stopped: subcommand failed",
 	} {
 		if strings.Contains(lower, pattern) {
 			return true

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -2122,6 +2123,77 @@ func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
 	}
 }
 
+func TestDirectoryCreationShellMutationGuard(t *testing.T) {
+	for _, command := range []string{
+		"mkdir -p build",
+		"mkdir --mode 755 generated && mkdir -- cache",
+	} {
+		if !hasOnlyDirectoryCreationShellMutation(command) {
+			t.Fatalf("directory-only command should be eligible for scoped approval: %q", command)
+		}
+	}
+	for _, command := range []string{
+		"mkdir build; touch build/marker",
+		"mkdir $TARGET",
+		"mkdir build && go test ./...",
+		"mkdir -p",
+	} {
+		if hasOnlyDirectoryCreationShellMutation(command) {
+			t.Fatalf("non-static or mixed command should not be eligible for scoped approval: %q", command)
+		}
+	}
+}
+
+func TestRemoteShellDirectoryCreationTargets(t *testing.T) {
+	targets, ok := remoteShellDirectoryCreationTargets("mkdir -p generated && mkdir --mode 755 ../shared", "/repo/project")
+	if !ok {
+		t.Fatal("static mkdir targets should be parsed")
+	}
+	want := []string{"/repo/project/generated", "/repo/shared"}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("directory targets = %#v, want %#v", targets, want)
+	}
+	if _, ok := remoteShellDirectoryCreationTargets("mkdir $TARGET", "/repo/project"); ok {
+		t.Fatal("dynamic directory target should not be parsed for scoped approval")
+	}
+}
+func TestRemoteCodingSubAgentDirectoryCreationRequestsScopedApproval(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: "/repo/project"}}
+	var gotReq ScopeApprovalRequest
+	cb.agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		gotReq = req
+		return ScopeApprovalAllowOnce
+	}, false)
+
+	result := cb.sshBash(map[string]interface{}{"command": "mkdir -p generated"})
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("approved directory creation should proceed to SSH handler, got %q", result)
+	}
+	if gotReq.ToolName != remoteSSHBashToolName || gotReq.Kind != remoteDirectoryWriteKind || gotReq.Path != "/repo/project" || gotReq.ProjectPath != "/repo/project" {
+		t.Fatalf("directory approval request = %#v", gotReq)
+	}
+}
+func TestRemoteCodingSubAgentDirectoryApprovalPersistsForDirectory(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: "/repo/project"}}
+	calls := 0
+	cb.agent.SetHighRiskApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		if req.Kind != remoteDirectoryWriteKind {
+			t.Fatalf("approval kind = %q, want %q", req.Kind, remoteDirectoryWriteKind)
+		}
+		return ScopeApprovalAllowDir
+	}, false)
+
+	for _, command := range []string{"mkdir generated", "mkdir artifacts"} {
+		result := cb.sshBash(map[string]interface{}{"command": command})
+		if !strings.Contains(result, "handler unavailable") {
+			t.Fatalf("approved directory command should proceed to SSH handler, command=%q result=%q", command, result)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("directory approval should be reused within the approved directory, calls=%d", calls)
+	}
+}
 func TestRemoteCodingSubAgentHighRiskBashCanBeUserApproved(t *testing.T) {
 	cb := &remoteCodingCallbacks{
 		agent: &RemoteCodingSubAgent{projectDir: "/repo/project"},
@@ -2379,6 +2451,21 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 	}
 }
 
+func TestRemoteCodingToolOutcomeClassifiesGuardrailBlocks(t *testing.T) {
+	for _, result := range []string{
+		"\u62d2\u7edd\u6267\u884c\u9ad8\u98ce\u9669\u547d\u4ee4: rm -rf build",
+		"refusing remote directory access outside the project: /srv/other",
+		"refusing to modify remote path outside the project: /srv/other",
+		"refusing to read remote path outside the project: /srv/other",
+	} {
+		if got := remoteCodingToolOutcome(result); got != "blocked" {
+			t.Fatalf("remoteCodingToolOutcome(%q) = %q, want blocked", result, got)
+		}
+	}
+	if got := remoteCodingToolOutcome("ninja: build stopped: subcommand failed"); got != "failed" {
+		t.Fatalf("real command failure should remain failed, got %q", got)
+	}
+}
 func TestRemoteCodingSubAgentToolFinishedEventUsesFailureOutcomeClassifier(t *testing.T) {
 	var progress []string
 	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
@@ -2413,6 +2500,32 @@ func TestRemoteCodingSubAgentToolFinishedEventUsesFailureOutcomeClassifier(t *te
 	}
 }
 
+func TestRemoteCodingSubAgentToolFinishedEventIncludesRedactedBashCommand(t *testing.T) {
+	var progress []string
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		onProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}}
+
+	result := cb.executeRemoteTool("ssh_bash", `{"command":"curl -H \"Authorization: Bearer secret-token\" https://example.test"}`)
+	if !strings.Contains(result, "handler unavailable") {
+		t.Fatalf("expected handler unavailable result, got %q", result)
+	}
+
+	for _, line := range progress {
+		event, ok := parseCodingAgentEventText(line)
+		if !ok || event.Event != codingAgentEventKindToolFinished.String() {
+			continue
+		}
+		want := `curl -H "Authorization: Bearer [redacted]" https://example.test`
+		if event.Command != want {
+			t.Fatalf("remote bash command = %q, want %q", event.Command, want)
+		}
+		return
+	}
+	t.Fatalf("expected remote tool_finished event, progress=%#v", progress)
+}
 func TestRemoteCodingToolFailureDiagnosticSeverityClassifier(t *testing.T) {
 	if !remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"g++ --version 2>&1; cmake --version 2>&1"}`, "g++: command not found", "failed") {
 		t.Fatal("remote diagnostic probe failure should be marked diagnostic")

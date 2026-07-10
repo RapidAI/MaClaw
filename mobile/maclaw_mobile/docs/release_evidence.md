@@ -31,7 +31,7 @@ Run these before handing a build to QA:
 
 ```bash
 go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
-go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1
+go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1
 go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
 cd mobile/maclaw_mobile
 python3 -m unittest tool/configure_platforms_test.py
@@ -133,7 +133,7 @@ QA record.
 
 | Area | Evidence |
 | --- | --- |
-| Official HubCenter discovery only | `test/official_service_test.dart`, `test/official_service_surface_test.dart`, `test/auth_service_test.dart`, `test/mobile_realtime_client_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts"` |
+| Official HubCenter discovery only | `test/official_service_test.dart`, `test/official_service_surface_test.dart`, `test/auth_service_test.dart`, `test/mobile_realtime_client_test.dart`, `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts"` |
 | Mobile API contracts | `test/mobile_api_contract_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*"` |
 | Native Android/iOS wrapper settings | `tool/configure_platforms_test.py`, `test/platform_permissions_test.dart` |
 | Runtime boundary: no embedded Go `corelib`, FFI, gomobile, native corelib bridge, phone-local SSH dependency, terminal emulator dependency, phone-side SSH credential save/read API, custom Hub URL configuration, redemption-code login, or arbitrary third-party LLM provider/base URL/API-key fields | `tool/verify_runtime_boundary.py`, `tool/verify_runtime_boundary_test.py`, `test/release_docs_test.dart`; signed-build QA can save `--log` output as evidence |
@@ -182,7 +182,7 @@ QA record.
     unregistered QR Hub URLs are rejected before proxy dispatch and that
     upstream consume failures do not leak Hub response bodies.
 - Verified:
-  - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+  - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`
   - `flutter test test\auth_service_test.dart test\api_client_test.dart test\login_screen_test.dart test\account_screen_test.dart --concurrency=1 --reporter compact`
   - `flutter analyze`
 
@@ -1539,25 +1539,16 @@ QA record.
 - `go test ./hub/internal/httpapi -run "TestMobile.*" -count=1`
   - Passed; revalidated on the current worktree after the export download URL
     safety updates.
-- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1`
+- `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`
   - Passed; revalidated on the current worktree after the desktop GUI QR
     HubCenter proxy updates.
-  - Covers the legacy mobile service-redemption compatibility endpoint resolving
-    Hub/tenant without issuing a mobile login token from HubCenter, unknown
-    redemption rejection, and rejection of legacy provider-only desktop LLM QR
-    payloads at HubCenter. This endpoint is not exposed as a MaClaw Mobile login
-    surface; phone/SMS login remains the mobile entry path.
-  - Covers desktop GUI mobile QR session bootstrap through HubCenter: HubCenter
-    verifies that the QR `hub_url` belongs to a registered online Hub before
-    proxying the original payload to the Hub one-time consume endpoint, enriches
-    successful responses with the verified registered Hub ID and Hub URL even
-    when the Hub response attempts to return different values, and rejects
-    unregistered QR Hub URLs before any proxy request is dispatched.
-  - Covers sanitizing non-2xx Hub consume failures so upstream Hub response
-    bodies are not leaked to mobile clients, and covers same-origin comparison
-    with explicit default ports such as `https://host:443` and `http://host:80`.
-  - Covers rejecting registered but non-HTTPS QR Hub URLs before proxy
-    dispatch, matching the mobile app's HTTPS-only discovered Hub requirement.
+  - Covers the mobile account boundary: the legacy service-redemption route and
+    legacy desktop-QR mobile-login route both return `404`, leaving phone/SMS
+    verification as the only mobile registration and login path.
+  - Covers same-origin comparison with explicit default ports such as
+    `https://host:443` and `http://host:80`, which remains used when the
+    signed-in app validates the discovered Hub origin for desktop GUI LLM QR
+    authorization.
 - `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`
   - Passed; revalidated after aligning MaClaw Mobile server maintenance language
     and QA evidence around GUI/agent-managed backend SSH sessions.

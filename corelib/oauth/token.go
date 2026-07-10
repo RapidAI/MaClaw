@@ -65,22 +65,10 @@ func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
 		return nil, fmt.Errorf("token refresh: response missing access_token")
 	}
 
-	// 尝试 token exchange 获取 sk-... API key
-	apiKey := tok.AccessToken
-	if tok.IDToken != "" {
-		key, err := ExchangeForAPIKey(cfg, tok.IDToken)
-		if err == nil {
-			apiKey = key
-			log.Printf("[oauth] token refresh: exchange succeeded, got API key")
-		} else {
-			log.Printf("[oauth] token refresh: exchange failed (will use access_token): %v", err)
-		}
-	} else {
-		log.Printf("[oauth] token refresh: no id_token, using access_token directly")
-	}
-
+	// Codex subscription endpoints authenticate with the refreshed OAuth JWT.
+	// A token exchange yields a platform sk- key, which those endpoints reject.
 	return &TokenResult{
-		AccessToken:    apiKey,
+		AccessToken:    tok.AccessToken,
 		RawAccessToken: tok.AccessToken,
 		RefreshToken:   tok.RefreshToken,
 		ExpiresIn:      tok.ExpiresIn,

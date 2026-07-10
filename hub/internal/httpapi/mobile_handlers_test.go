@@ -330,160 +330,6 @@ func TestMobileLLMDesktopQRAuthorizationUpdatesBootstrap(t *testing.T) {
 	}
 }
 
-func TestMobileLLMDesktopQRSessionConsumeIssuesMobileToken(t *testing.T) {
-	clearMobileLLMAuthorizationsForTest(t)
-	identity, _, _ := newHTTPAPITestServices(t)
-	desktopViewerToken, _ := issueViewerToken(t, identity, "mobile-first-qr@example.com")
-	createBody, _ := json.Marshal(map[string]any{
-		"name":     "OpenAI Compatible",
-		"url":      "https://llm.example.com/v1",
-		"key":      "sk-test",
-		"model":    "gpt-4.1-mini",
-		"protocol": "openai",
-	})
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions", bytes.NewReader(createBody))
-	createReq.Host = "tenant-a.maclaw.top"
-	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
-	createRec := httptest.NewRecorder()
-	MobileLLMDesktopQRSessionHandler(identity).ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("create status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
-	}
-	var createResponse map[string]any
-	if err := json.Unmarshal(createRec.Body.Bytes(), &createResponse); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
-	qrPayload, _ := createResponse["qr_payload"].(string)
-	body, _ := json.Marshal(map[string]string{"qr_payload": qrPayload})
-	consumeReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
-	consumeReq.Host = "tenant-a.maclaw.top"
-	consumeRec := httptest.NewRecorder()
-
-	MobileLLMDesktopQRSessionConsumeHandler(identity).ServeHTTP(consumeRec, consumeReq)
-
-	if consumeRec.Code != http.StatusOK {
-		t.Fatalf("consume status=%d body=%s, want 200", consumeRec.Code, consumeRec.Body.String())
-	}
-	var response map[string]any
-	if err := json.Unmarshal(consumeRec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode consume response: %v", err)
-	}
-	if response["access_token"] == "" || response["hub_url"] != "https://tenant-a.maclaw.top" {
-		t.Fatalf("response = %#v, want token and request hub url", response)
-	}
-	bootstrap, ok := response["bootstrap"].(map[string]any)
-	if !ok {
-		t.Fatalf("bootstrap = %#v, want map", response["bootstrap"])
-	}
-	llmAccess, ok := bootstrap["llm_access"].(map[string]any)
-	if !ok || llmAccess["mode"] != "desktop_qr_third_party" || llmAccess["provider_name"] != "OpenAI Compatible" {
-		t.Fatalf("llm_access = %#v, want desktop QR delegated provider", bootstrap["llm_access"])
-	}
-	if _, leaked := llmAccess["key"]; leaked {
-		t.Fatalf("llm_access leaked key: %#v", llmAccess)
-	}
-	principal, err := identity.AuthenticateViewer(auth.WithTenant(context.Background(), "tenant-1"), response["access_token"].(string))
-	if err != nil || principal == nil || principal.Email != "mobile-first-qr@example.com" {
-		t.Fatalf("AuthenticateViewer principal=%#v err=%v, want QR owner", principal, err)
-	}
-	reuseReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
-	reuseRec := httptest.NewRecorder()
-	MobileLLMDesktopQRSessionConsumeHandler(identity).ServeHTTP(reuseRec, reuseReq)
-	if reuseRec.Code != http.StatusBadRequest || !strings.Contains(reuseRec.Body.String(), "already been used") {
-		t.Fatalf("reuse status=%d body=%s, want used-session rejection", reuseRec.Code, reuseRec.Body.String())
-	}
-}
-
-func TestMobileDesktopAuthQRSessionConsumeIssuesTokenWithoutLLMAuthorization(t *testing.T) {
-	clearMobileLLMAuthorizationsForTest(t)
-	identity, _, _ := newHTTPAPITestServices(t)
-	desktopViewerToken, _ := issueViewerToken(t, identity, "phone:19900001111")
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
-	createReq.Host = "tenant-a.maclaw.top"
-	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
-	createRec := httptest.NewRecorder()
-
-	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
-
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("create status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
-	}
-	var createResponse map[string]any
-	if err := json.Unmarshal(createRec.Body.Bytes(), &createResponse); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
-	qrPayload, _ := createResponse["qr_payload"].(string)
-	if qrPayload == "" || !strings.Contains(qrPayload, "maclaw_mobile_desktop_authorization") {
-		t.Fatalf("qr_payload = %q, want mobile desktop authorization payload", qrPayload)
-	}
-	body, _ := json.Marshal(map[string]string{"qr_payload": qrPayload})
-	consumeReq := httptest.NewRequest(http.MethodPost, "/api/mobile/llm/desktop-qr-sessions/consume", bytes.NewReader(body))
-	consumeReq.Host = "tenant-a.maclaw.top"
-	consumeRec := httptest.NewRecorder()
-
-	MobileLLMDesktopQRSessionConsumeHandler(identity).ServeHTTP(consumeRec, consumeReq)
-
-	if consumeRec.Code != http.StatusOK {
-		t.Fatalf("consume status=%d body=%s, want 200", consumeRec.Code, consumeRec.Body.String())
-	}
-	var response map[string]any
-	if err := json.Unmarshal(consumeRec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode consume response: %v", err)
-	}
-	if response["access_token"] == "" || response["hub_url"] != "https://tenant-a.maclaw.top" {
-		t.Fatalf("response = %#v, want token and request hub url", response)
-	}
-	bootstrap, ok := response["bootstrap"].(map[string]any)
-	if !ok {
-		t.Fatalf("bootstrap = %#v, want map", response["bootstrap"])
-	}
-	llmAccess, ok := bootstrap["llm_access"].(map[string]any)
-	if !ok || llmAccess["mode"] == "desktop_qr_third_party" {
-		t.Fatalf("llm_access = %#v, want non-delegated mobile auth bootstrap", bootstrap["llm_access"])
-	}
-	principal, err := identity.AuthenticateViewer(auth.WithTenant(context.Background(), "tenant-1"), response["access_token"].(string))
-	if err != nil || principal == nil || principal.Email != "phone:19900001111" {
-		t.Fatalf("AuthenticateViewer principal=%#v err=%v, want QR owner", principal, err)
-	}
-}
-
-func TestMobileDesktopAuthQRSessionRequiresVerifiedPhoneIdentity(t *testing.T) {
-	clearMobileLLMAuthorizationsForTest(t)
-	identity, _, _ := newHTTPAPITestServices(t)
-	desktopViewerToken, _ := issueViewerToken(t, identity, "desktop-owner@example.com")
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
-	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
-	createRec := httptest.NewRecorder()
-
-	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
-
-	if createRec.Code != http.StatusForbidden || !strings.Contains(createRec.Body.String(), "PHONE_IDENTITY_REQUIRED") {
-		t.Fatalf("status=%d body=%s, want phone identity requirement", createRec.Code, createRec.Body.String())
-	}
-}
-
-func TestMobileDesktopAuthQRSessionAllowsEmailUserWithBoundPhone(t *testing.T) {
-	clearMobileLLMAuthorizationsForTest(t)
-	identity, _, _ := newHTTPAPITestServices(t)
-	desktopViewerToken, enroll := issueViewerToken(t, identity, "desktop-owner@example.com")
-	user, err := identity.UsersRepo().GetByID(auth.WithTenant(context.Background(), enroll.TenantID), enroll.UserID)
-	if err != nil || user == nil {
-		t.Fatalf("GetByID user=%#v err=%v", user, err)
-	}
-	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), enroll.TenantID), user, "19900001111"); err != nil {
-		t.Fatalf("BindVerifiedPhoneToUser: %v", err)
-	}
-	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
-	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
-	createRec := httptest.NewRecorder()
-
-	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
-
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
-	}
-}
-
 func TestMobileLLMDesktopQRAuthorizationRejectsInvalidPayload(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "mobile-llm-invalid@example.com")
@@ -510,7 +356,7 @@ func TestMobileLLMDesktopQRAuthorizationRejectsMobileAuthPayload(t *testing.T) {
 
 	MobileLLMDesktopQRAuthorizationHandler(identity).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not an LLM authorization session") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "MaClaw GUI LLM authorization session") {
 		t.Fatalf("status = %d body=%s, want non-LLM QR rejection", rec.Code, rec.Body.String())
 	}
 }
@@ -526,6 +372,101 @@ func TestMobileSearchHandlerRequiresViewerToken(t *testing.T) {
 	}
 }
 
+func TestMobileSearchHandlerUsesOfficialLLMAndPreservesCitations(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-search-official@example.com")
+	previousSearch := mobileWebSearch
+	mobileWebSearch = func(context.Context, string, int) ([]websearch.SearchResult, error) {
+		return []websearch.SearchResult{{Title: "Status source", URL: "https://example.test/status", Snippet: "healthy"}}, nil
+	}
+	t.Cleanup(func() { mobileWebSearch = previousSearch })
+	called := false
+	official := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			t.Fatalf("official path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+viewerToken {
+			t.Fatalf("official request did not preserve viewer token")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode official request: %v", err)
+		}
+		if body["model"] != "auto" {
+			t.Fatalf("model = %#v, want auto", body["model"])
+		}
+		w.Header().Set("X-MaClaw-Request-ID", "llm-mobile-1")
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "LLM summary"}}}})
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/search", strings.NewReader(`{"query":"server status"}`))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	MobileSearchHandler(identity, official).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !called || response["answer"] != "LLM summary" || response["llm_mode"] != "maclaw_official" || response["llm_request_id"] != "llm-mobile-1" {
+		t.Fatalf("response = %#v, want official LLM answer and trace", response)
+	}
+	citations, _ := response["citations"].([]any)
+	if len(citations) != 1 {
+		t.Fatalf("citations = %#v, want source preserved", response["citations"])
+	}
+}
+func TestMobileSearchHandlerUsesDesktopQRProviderWithoutLeakingKey(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-search-third-party@example.com")
+	principalReq := httptest.NewRequest(http.MethodGet, "/api/mobile/bootstrap", nil)
+	principalReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	principal, err := authenticateViewerRequest(principalReq, identity)
+	if err != nil {
+		t.Fatalf("authenticate viewer: %v", err)
+	}
+	providerCalled := false
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled = true
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("provider path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer delegated-key" {
+			t.Fatalf("provider authorization was not preserved")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "Delegated answer"}}}})
+	}))
+	defer provider.Close()
+	clearMobileLLMAuthorizationsForTest(t)
+	key := mobileLlmAuthorizationKey(principal.TenantID, principal.UserID)
+	mobileLlmAuthorizations.Lock()
+	mobileLlmAuthorizations.authorizations[key] = mobileLlmAuthorizationRecord{ProviderURL: provider.URL + "/v1", APIKey: "delegated-key", Model: "delegated-model", Protocol: "openai"}
+	mobileLlmAuthorizations.Unlock()
+	previousSearch := mobileWebSearch
+	mobileWebSearch = func(context.Context, string, int) ([]websearch.SearchResult, error) { return nil, nil }
+	t.Cleanup(func() { mobileWebSearch = previousSearch })
+	officialCalled := false
+	official := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { officialCalled = true })
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/search", strings.NewReader(`{"query":"server status"}`))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	MobileSearchHandler(identity, official).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if officialCalled || !providerCalled || strings.Contains(rec.Body.String(), "delegated-key") {
+		t.Fatalf("provider dispatch result = official:%v provider:%v body:%s", officialCalled, providerCalled, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["answer"] != "Delegated answer" || response["llm_mode"] != "desktop_qr_third_party" {
+		t.Fatalf("response = %#v", response)
+	}
+}
 func TestMobileSearchFormatsResultsWithCitations(t *testing.T) {
 	results := []websearch.SearchResult{
 		{
@@ -1180,6 +1121,26 @@ func TestMobileBackendSSHTasksAndFilesQueueControlRecords(t *testing.T) {
 		t.Fatalf("file operation = %+v, want queued GUI/agent file operation", fileOp.Operation)
 	}
 
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "download requires desktop path", body: `{"action":"download","remote_path":"/var/log/app.log"}`},
+		{name: "upload requires remote path", body: `{"action":"upload","local_path":"desktop-files/report.txt"}`},
+		{name: "stat requires remote path", body: `{"action":"stat","local_path":"desktop-files/report.txt"}`},
+		{name: "list requires remote path", body: `{"action":"list","local_path":"desktop-files"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/sessions/"+sessionID+"/files", strings.NewReader(tc.body))
+			req.SetPathValue("sessionId", sessionID)
+			req.Header.Set("Authorization", "Bearer "+viewerToken)
+			rec := httptest.NewRecorder()
+			MobileBackendSSHSessionFilesHandler(identity).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want %d", rec.Code, rec.Body.String(), http.StatusBadRequest)
+			}
+		})
+	}
 	claimTaskReq := httptest.NewRequest(http.MethodPost, "/api/mobile/ssh/tasks/claim", nil)
 	claimTaskReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
 	claimTaskReq.Header.Set("X-Machine-ID", enroll.MachineID)

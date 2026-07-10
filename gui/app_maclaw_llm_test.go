@@ -264,6 +264,92 @@ func TestGetMaclawLLMProvidersHydratesOAuthKeyFromCredentialStore(t *testing.T) 
 	}
 }
 
+func TestResolveProviderKeyFromStoreUsesRawOpenAIJWT(t *testing.T) {
+	store := oauth.NewFileCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := store.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "sk-legacy-platform-key",
+			RawAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{credentialStore: store}
+	got := app.resolveProviderKeyFromStore(corelib.MaclawLLMProvider{
+		Name:     "OpenAI",
+		URL:      "https://chatgpt.com/backend-api/codex",
+		AuthType: "oauth",
+	})
+	if got != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("resolved OpenAI credential = %q, want raw OAuth JWT", got)
+	}
+}
+
+func TestGetMaclawLLMConfigUsesRawJWTFromLegacyOpenAIConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api/codex",
+			Model:            oauth.CodexSubscriptionDefaultModel,
+			AuthType:         "oauth",
+			Key:              "sk-legacy-platform-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.payload.sig",
+			WireAPI:          "responses-ws",
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if got := app.GetMaclawLLMConfig().Key; got != "eyJhbGciOiJub25lIn0.payload.sig" {
+		t.Fatalf("GetMaclawLLMConfig().Key = %q, want raw OAuth JWT", got)
+	}
+}
+
+func TestGetMaclawLLMConfigPrefersRefreshedCredentialStoreJWT(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "eyJhbGciOiJub25lIn0.fresh.sig",
+			RawAccessToken: "eyJhbGciOiJub25lIn0.fresh.sig",
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "OpenAI",
+			URL:              "https://chatgpt.com/backend-api/codex",
+			Model:            oauth.CodexSubscriptionDefaultModel,
+			AuthType:         "oauth",
+			Key:              "sk-legacy-platform-key",
+			OAuthAccessToken: "eyJhbGciOiJub25lIn0.stale.sig",
+			WireAPI:          "responses-ws",
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if got := app.GetMaclawLLMConfig().Key; got != "eyJhbGciOiJub25lIn0.fresh.sig" {
+		t.Fatalf("GetMaclawLLMConfig().Key = %q, want refreshed credential-store JWT", got)
+	}
+}
+
 func TestFetchProviderModelsCodexSubscriptionUsesCodexEndpoint(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -347,15 +433,16 @@ func TestFetchProviderModelsCodexSubscriptionFallsBackToCatalogOn403(t *testing.
 	if len(items) == 0 {
 		t.Fatal("expected built-in catalog fallback")
 	}
-	found := false
-	for _, it := range items {
-		if it.ID == "gpt-5.4" {
-			found = true
-			break
-		}
+	wanted := map[string]bool{
+		"gpt-5.6-luna":  true,
+		"gpt-5.6-terra": true,
+		"gpt-5.6-sol":   true,
 	}
-	if !found {
-		t.Fatalf("catalog missing gpt-5.4: %+v", items)
+	for _, it := range items {
+		delete(wanted, it.ID)
+	}
+	if len(wanted) != 0 {
+		t.Fatalf("catalog missing GPT-5.6 variants %v: %+v", wanted, items)
 	}
 }
 
@@ -379,6 +466,17 @@ func TestResolveCodexAuthTokenPrefersJWTOverAPIKey(t *testing.T) {
 	got := app.resolveCodexAuthToken("https://chatgpt.com/backend-api", "sk-from-frontend")
 	if got != "eyJhbGciOiJub25lIn0.payload.sig" {
 		t.Fatalf("resolveCodexAuthToken = %q, want JWT", got)
+	}
+}
+
+func TestResolveCodexAuthTokenRejectsPlatformAPIKeyWithoutJWT(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if got := app.resolveCodexAuthToken("https://chatgpt.com/backend-api", "sk-platform-key"); got != "" {
+		t.Fatalf("resolveCodexAuthToken = %q, want empty without a JWT", got)
 	}
 }
 
@@ -1795,8 +1893,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if first.URL != "https://chatgpt.com/backend-api/codex" {
 		t.Errorf("OpenAI URL = %q, want %q", first.URL, "https://chatgpt.com/backend-api/codex")
 	}
-	if first.Model != "gpt-5.4" {
-		t.Errorf("OpenAI Model = %q, want %q", first.Model, "gpt-5.4")
+	if first.Model != oauth.CodexSubscriptionDefaultModel {
+		t.Errorf("OpenAI Model = %q, want %q", first.Model, oauth.CodexSubscriptionDefaultModel)
 	}
 	if first.AuthType != "oauth" {
 		t.Errorf("OpenAI AuthType = %q, want %q", first.AuthType, "oauth")

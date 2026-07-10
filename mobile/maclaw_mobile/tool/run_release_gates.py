@@ -42,7 +42,7 @@ def release_gates() -> list[ReleaseGate]:
                 "test",
                 "./hubcenter/internal/httpapi",
                 "-run",
-                "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts",
+                "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts",
                 "-count=1",
             ],
         ),

@@ -613,6 +613,25 @@ func (p MaclawLLMProvider) UserAgent() string {
 	return "openclaw"
 }
 
+// IsCodexSubscriptionOAuthProvider reports whether this provider targets
+// ChatGPT's Codex subscription backend.
+func (p MaclawLLMProvider) IsCodexSubscriptionOAuthProvider() bool {
+	if strings.TrimSpace(p.Name) != "OpenAI" ||
+		!strings.Contains(strings.ToLower(p.URL), "chatgpt.com") {
+		return false
+	}
+	return true
+}
+
+// CodexSubscriptionOAuthToken returns the OAuth JWT for ChatGPT's Codex
+// subscription backend. The backend does not accept platform sk- API keys.
+func (p MaclawLLMProvider) CodexSubscriptionOAuthToken() string {
+	if !p.IsCodexSubscriptionOAuthProvider() {
+		return ""
+	}
+	return strings.TrimSpace(p.OAuthAccessToken)
+}
+
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。
 type MaclawLLMConfig struct {
 	URL                      string `json:"url"`

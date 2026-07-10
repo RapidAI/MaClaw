@@ -1977,6 +1977,20 @@ function removeActionCommandFromMessages(messages: ChatMessage[], command: strin
     return messages.map(message => removeActionCommandFromMessage(message, command));
 }
 
+function markUnfinishedSlotResumed(messages: ChatMessage[], slotID: string): ChatMessage[] {
+    return messages.map(message => {
+        if (message.unfinishedSlot?.slotID !== slotID) return message;
+        return {
+            ...message,
+            unfinishedSlot: {
+                ...message.unfinishedSlot,
+                status: 'resumed',
+                actions: [],
+            },
+        };
+    });
+}
+
 /**
  * Remove ALL actions from the message that contains the given command.
  * Used for one-shot, mutually exclusive button groups (ask_user choices,
@@ -4381,10 +4395,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         const resumeMatch = command.match(/^__resume_unfinished__\s+(\S+)$/);
         if (resumeMatch) {
-            setMessages(prev => removeActionCommandFromMessages(prev, command));
+            const slotID = resumeMatch[1]?.trim() || '';
+            setMessages(prev => markUnfinishedSlotResumed(removeActionCommandFromMessages(prev, command), slotID));
             const resumeText = localizeText(uiLang, "Continue previous unfinished task", "\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
             return sendMessage(resumeText, {
-                resumeSlotID: resumeMatch[1]?.trim() || '',
+                resumeSlotID: slotID,
                 uiAction: true,
                 displayText: resumeText,
             });

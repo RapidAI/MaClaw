@@ -337,7 +337,11 @@ void main() {
       'SMS verification succeeds',
       'multi-tab assistant',
       'account/settings area',
+      'Assistant questions use the Hub LLM execution path',
+      'without sending its API key to the phone',
       'MaClaw desktop GUI',
+      'A desktop QR never creates an account',
+      'only mobile registration and login path',
       'provider base URLs, or API keys',
       '`$assistantTab` tab',
       'do not remove the `$assistantTab` entry',
@@ -1635,7 +1639,7 @@ void main() {
       'python3 tool/verify_android_release_signing.py',
       'python3 tool/verify_ios_wrapper.py',
       'python3 tool/verify_runtime_boundary.py',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       'flutter test test/release_docs_test.dart --concurrency=1 --reporter compact',
       'flutter pub get',
       'flutter analyze',
@@ -1687,7 +1691,7 @@ void main() {
     expect(
       checklist,
       contains(
-        'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+        'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       ),
     );
     expect(checklist, contains('tool/run_release_gates.py'));
@@ -1898,7 +1902,7 @@ void main() {
 
     expectInOrder(checklist, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
@@ -1944,7 +1948,7 @@ void main() {
 
     expectInOrder(evidence, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
-      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemption|DesktopQRSession)|TestSameURLOriginHandlesDefaultPorts" -count=1',
+      'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
       'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'cd mobile/maclaw_mobile',
       'python3 -m unittest tool/configure_platforms_test.py',
@@ -2223,11 +2227,10 @@ void main() {
     ]) {
       expect(evidence, contains(expected));
     }
-    final gateLogMatches =
-        RegExp(r'release-gates-continuation-2\.log')
-            .allMatches(evidence)
-            .map((match) => match.group(0)!)
-            .toSet();
+    final gateLogMatches = RegExp(r'release-gates-continuation-2\.log')
+        .allMatches(evidence)
+        .map((match) => match.group(0)!)
+        .toSet();
     expect(gateLogMatches, hasLength(1));
     final gateLogName = gateLogMatches.single;
     expect(handoff, contains('Current Local Evidence Snapshot'));

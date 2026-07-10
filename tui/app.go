@@ -397,7 +397,9 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 	// Resolve provider-specific fields from the current provider entry.
 	for _, p := range cfg.MaclawLLMProviders {
 		if tuiCanonicalHubServiceProviderName(p.Name) == currentProvider {
-			if strings.TrimSpace(llm.Key) == "" {
+			if token := p.CodexSubscriptionOAuthToken(); token != "" {
+				llm.Key = token
+			} else if strings.TrimSpace(llm.Key) == "" {
 				llm.Key = strings.TrimSpace(p.Key)
 			}
 			if p.TimeoutSec > 0 {

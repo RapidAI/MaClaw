@@ -136,7 +136,7 @@ func canonicalVolcengineTokenPlanProviderName(name string) string {
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
-		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
+		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: oauth.CodexSubscriptionDefaultModel, AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -513,8 +513,7 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 			if wireAPI == "" && authKind.IsOAuth() {
 				wireAPI = "responses-ws"
 			}
-			// For OAuth providers: if token exchange succeeded, Key contains sk-... API key;
-			// otherwise fall back to OAuthAccessToken (raw access_token).
+			// ChatGPT Codex subscription endpoints authenticate with the raw OAuth JWT.
 			// Primary: read from independent CredentialStore (Pi-aligned).
 			// Fallback: config.json fields.
 			key := p.Key
@@ -2912,6 +2911,9 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 // codex/models endpoint is unavailable. Keep ids aligned with Codex CLI.
 func codexSubscriptionModelCatalog() []ProviderModelItem {
 	ids := []string{
+		"gpt-5.6-luna",
+		"gpt-5.6-terra",
+		"gpt-5.6-sol",
 		"gpt-5.5",
 		"gpt-5.4",
 		"gpt-5.4-mini",
@@ -2972,8 +2974,9 @@ func (a *App) resolveCodexAuthToken(baseURL, frontendKey string) string {
 	if frontendKey != "" && !strings.HasPrefix(frontendKey, "sk-") {
 		return frontendKey
 	}
-	// Last resort: may still be a JWT if exchange never ran.
-	return frontendKey
+	// A platform API key is never valid for the ChatGPT subscription backend.
+	// Returning an empty token makes the caller use its built-in model catalog.
+	return ""
 }
 
 // fetchCodexSubscriptionModels lists models for OpenAI ChatGPT OAuth (Codex).

@@ -2876,6 +2876,24 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('shows a resumed unfinished slot as an active continuation', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Task is continuing.',
+                unfinishedSlot: { slotID: 'slot-resumed', status: 'resumed', title: 'Resume task', actions: [] },
+            }),
+        ];
+
+        const { getByText, getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/Task resumed|\u4efb\u52a1\u5df2\u7ee7\u7eed/)).toBeTruthy();
+        expect(getByTestId('unfinished-slot-status').textContent || '').toMatch(/Status: resumed|\u5df2\u6062\u590d/);
+    });
+
     it('unfinished slot action buttons size to text without overflowing the card', () => {
         const messages: ChatMessage[] = [
             makeMsg({
